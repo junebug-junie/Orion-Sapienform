@@ -40,13 +40,13 @@ Orion is a **living knowledge system** designed to grow, adapt, and co-create wi
 ### Mermaid Diagram
 ```mermaid
 flowchart TD
-    User[🌐 User] --> UI[UI (Web/Voice)]
-    UI --> Core[FastAPI Core<br/>(Whisper, LLM, TTS)]
-    Core --> Bus[Redis Event Bus]
-    Bus --> Memory[Memory<br/>(RDF + Chroma)]
-    Bus --> Vision[Vision<br/>(Cameras + ML)]
-    Memory --> Mesh[🖥 Orion Mesh<br/>(Atlas, Chrysalis, Argus, Pis...)]
-    Vision --> Mesh
+    user[User] --> ui[UI - Web + Voice]
+    ui --> core[FastAPI Core - Whisper / LLM / TTS]
+    core --> bus[Redis Event Bus]
+    bus --> mem[Memory - RDF + Chroma]
+    bus --> vis[Vision - Cameras + ML]
+    mem --> mesh[Orion Mesh - Atlas, Chrysalis, Argus, Pis]
+    vis --> mesh
 ```
 ### ASCII Sketch
 ```

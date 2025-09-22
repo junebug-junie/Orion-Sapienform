@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+numpy==1.26.4
+tqdm==4.66.5
+sentence-transformers==3.0.1
+llama-cpp-python==0.2.89
+pypdf==4.3.1
+

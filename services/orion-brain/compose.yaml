@@ -1,0 +1,35 @@
+services:
+  brain-service:
+    container_name: orion-brain-service
+    build:
+      context: .
+    image: orion-brain-service:latest
+    environment:
+      BACKENDS: ${BACKENDS:-http://llm-brain:11434}
+      SELECTION_POLICY: ${SELECTION_POLICY:-least_conn}
+      HEALTH_INTERVAL_SEC: ${HEALTH_INTERVAL_SEC:-5}
+      CONNECT_TIMEOUT_SEC: ${CONNECT_TIMEOUT_SEC:-10}
+      READ_TIMEOUT_SEC: ${READ_TIMEOUT_SEC:-600}
+      PORT: ${PORT:-8088}
+      # Bus / events
+      REDIS_URL: ${REDIS_URL:-redis://orion-redis:6379/0}
+      SERVICE_NAME: ${SERVICE_NAME:-orion-brain}
+      EVENTS_ENABLE: ${EVENTS_ENABLE:-"true"}
+      EVENTS_STREAM: ${EVENTS_STREAM:-orion:evt:gateway}
+      BUS_OUT_ENABLE: ${BUS_OUT_ENABLE:-"true"}
+      BUS_OUT_STREAM: ${BUS_OUT_STREAM:-orion:bus:out}
+    ports: ["${PORT:-8088}:8088"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8088/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    networks:
+      app-net:
+        aliases: ["brain-service"]     # stable DNS name on the shared net
+
+networks:
+  app-net:
+    external: true
+    name: app-net

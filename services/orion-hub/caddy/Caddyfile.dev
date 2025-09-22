@@ -1,0 +1,3 @@
+:80 {
+    reverse_proxy http://voice-app:8080
+}

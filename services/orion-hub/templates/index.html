@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orion Voice Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-8">
+  <div class="w-full max-w-7xl mx-auto flex flex-col md:flex-row gap-8">
+
+<!-- Left Panel: Orion's State Visualizer -->
+<div class="w-full md:w-1/4 bg-gray-900 rounded-2xl shadow-lg p-6 flex flex-col items-center justify-start">
+  <h2 class="text-xl font-bold text-white mb-4">Orion's State</h2>
+  <div id="stateVisualizerContainer" class="w-full h-64 bg-gray-800/50 rounded-lg overflow-hidden">
+    <canvas id="stateVisualizer" class="w-full h-full"></canvas>
+  </div>
+</div>
+
+
+    <!-- Center Panel: Main Application -->
+    <div class="w-full md:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-6 md:p-8 space-y-6 flex flex-col">
+      <div class="text-center">
+        <h1 class="text-3xl font-bold text-white">Orion Voice Assistant</h1>
+        <p id="status" class="text-gray-400 mt-2">Press and hold the button to speak</p>
+      </div>
+
+      <div class="flex justify-center items-center py-8 relative">
+        <button id="recordButton" class="bg-red-600 hover:bg-red-700 text-white rounded-full w-24 h-24 flex items-center justify-center transition-transform transform focus:outline-none focus:ring-4 focus:ring-red-500/50">
+          <svg id="micIcon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" x2="12" y1="19" y2="22"></line>
+          </svg>
+        </button>
+        <button id="interruptButton" class="hidden absolute bg-gray-600 hover:bg-gray-700 text-white rounded-full w-16 h-16 flex items-center justify-center transition-opacity focus:outline-none focus:ring-4 focus:ring-gray-500/50">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="6" width="12" height="12"></rect>
+          </svg>
+        </button>
+      </div>
+
+      <div id="visualizerContainer" class="w-full h-24 bg-gray-800/50 rounded-lg">
+        <canvas id="visualizer" class="w-full h-full"></canvas>
+      </div>
+
+      <div class="flex-grow flex flex-col">
+        <div id="conversation" class="space-y-4 flex-grow max-h-96 overflow-y-auto p-4 bg-gray-800/50 rounded-lg">
+          <!-- Conversation will be appended here -->
+        </div>
+        <div class="flex justify-end gap-2 mt-2">
+          <button id="copyButton" class="text-xs text-gray-400 hover:text-white">Copy</button>
+          <button id="clearButton" class="text-xs text-gray-400 hover:text-white">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel: Settings -->
+    <div class="w-full md:w-1/4 bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
+      <h2 class="text-xl font-bold text-white text-center">Settings</h2>
+
+      <div class="space-y-2">
+        <label for="instructions" class="text-sm font-medium text-gray-400">Instructions for Orion</label>
+        <textarea id="instructions" rows="4" class="w-full bg-gray-700 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">
+You are Orion, a helpful and friendly assistant. Do not mention that you are an LLM or AI model. Keep your responses concise and conversational.
+        </textarea>
+      </div>
+
+      <div class="space-y-2">
+        <label for="contextControl" class="flex justify-between text-sm font-medium text-gray-400">
+          <span>Context Length</span>
+          <span id="contextValue">10</span>
+        </label>
+        <input id="contextControl" type="range" min="2" max="20" value="10" step="2" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+      </div>
+
+      <div class="space-y-2">
+        <label for="tempControl" class="flex justify-between text-sm font-medium text-gray-400">
+          <span>Model Temp</span>
+          <span id="tempValue">0.7</span>
+        </label>
+        <input id="tempControl" type="range" min="0.1" max="1.0" value="0.7" step="0.1" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+      </div>
+
+      <div class="space-y-2">
+        <label for="speedControl" class="flex justify-between text-sm font-medium text-gray-400">
+          <span>Speech Speed</span>
+          <span id="speedValue">0.5</span>
+        </label>
+        <input id="speedControl" type="range" min="0.97" max="1.2" value="1.0" step="0.01" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+      </div>
+
+      <div class="space-y-2">
+        <label for="styleControl" class="text-sm font-medium text-gray-400">Speech Visualizer Style</label>
+        <select id="styleControl" class="w-full bg-gray-700 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500">
+          <option value="waveform">Waveform</option>
+          <option value="bars">Frequency Bars</option>
+        </select>
+      </div>
+
+      <div class="space-y-2">
+        <label for="colorControl" class="text-sm font-medium text-gray-400">Color Scheme</label>
+        <select id="colorControl" class="w-full bg-gray-700 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500">
+          <option value="orion">Orion Blue</option>
+          <option value="retro">Retro Green</option>
+          <option value="vaporwave">Vaporwave</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

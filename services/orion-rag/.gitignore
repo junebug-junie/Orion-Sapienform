@@ -1,0 +1,48 @@
+# === Build Artifacts ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.log
+
+# === Virtual Environments ===
+.venv/
+env/
+venv/
+ENV/
+
+# === Local Models & Caches ===
+models/
+models/**/*.gguf
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.pth
+models/**/*.pt
+models/**/*.ckpt
+.cache/
+.cache/**
+/cache/
+/cache/**
+
+# === Data & Indexes ===
+data/index.pkl
+data/**/*.pkl
+data/**/*.npz
+data/**/*.npy
+
+# === Container & Build ===
+*.pid
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+docker-compose.override.yml
+
+# === IDE / Editor junk ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

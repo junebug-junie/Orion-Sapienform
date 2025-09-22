@@ -1,0 +1,20 @@
+services:
+  llm-brain:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    restart: unless-stopped
+
+  brain-service:
+    build:
+      context: .
+    image: orion-brain-service:latest
+    environment:
+      - BACKENDS=http://llm-brain:11434
+      - SELECTION_POLICY=least_conn
+      - HEALTH_INTERVAL_SEC=5
+      - CONNECT_TIMEOUT_SEC=10
+      - READ_TIMEOUT_SEC=600
+      - PORT=8088
+    depends_on: [llm-brain]
+    ports: ["8088:8088"]     # host:container (container fixed to 8088)
+    restart: unless-stopped

@@ -1,0 +1,23 @@
+# Ignore data & cache
+data/*
+!data/sources/sample.txt       # keep a tiny example file if needed for tests
+.cache/
+__pycache__/
+
+# Ignore git & editor junk
+.git
+.gitignore
+*.pyc
+*.pyo
+*.pyd
+*.swp
+*.swo
+.DS_Store
+
+# Ignore virtualenvs
+.venv/
+env/
+venv/
+
+# Ignore large local models
+models/

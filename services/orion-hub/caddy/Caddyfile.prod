@@ -1,0 +1,3 @@
+orion.conjourney.net {
+    reverse_proxy http://voice-app:8080
+}

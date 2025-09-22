@@ -1,0 +1,9 @@
+RAG (Retrieval-Augmented Generation) is a pattern where a language model retrieves
+relevant context from external data (documents, knowledge bases, etc.) and then uses that
+context to generate an answer. This helps the model stay grounded in factual, up-to-date,
+and organization-specific information without retraining the model itself.
+
+Key benefits:
+- Answers are supported by retrieved passages (“citations”).
+- You can update or replace the document store without retraining.
+- Smaller local models can punch above their weight when given good context.

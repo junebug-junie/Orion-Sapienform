@@ -1,0 +1,15 @@
+services:
+  collapse-mirror:
+    build: .
+    restart: unless-stopped
+    networks:
+      - orion-net
+    volumes:
+      - /mnt/storage/collapse-mirror:/mnt/storage/collapse-mirror
+    ports:
+      - "8085:8085"
+
+networks:
+  orion-net:
+    aliases: orion-collapse-mirror
+    external: true

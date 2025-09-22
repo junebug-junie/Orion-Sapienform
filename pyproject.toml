@@ -1,30 +1,55 @@
 [project]
-name = "orion"
+name = "orion-sapienform"
 version = "0.1.0"
-description = "Emergent AI System Repo"
+description = "Monorepo for Orion Sapienform services"
 authors = [
-    {name = "orion", email = "orion@orion.com"},
-    {name = "Juniper Feld", email = "june.d.feld@gmail.com"}
+    { name = "Orion", email = "orion@conjourney.net" },
+    { name = "Juniper Feld", email = "june.d.feld@gmail.com" }
 ]
 readme = "README.md"
-requires-python = "3.13.4"
+requires-python = ">=3.12,<3.13"
+
+# Base shared dependencies (common to all services)
 dependencies = [
-    "requests (>=2.32.4,<3.0.0)",
-    "chromadb (>=1.0.12,<2.0.0)",
-    "sqlalchemy (==2.0.41)",
-    "psycopg2-binary (>=2.9.10,<3.0.0)",
-    "rdflib (>=7.1.4,<8.0.0)",
-    "pytest (>=8.4.0,<9.0.0)",
-    "redis[hiredis] (>=6.2.0,<7.0.0)",
-    "opencv-python (>=4.11.0.86,<5.0.0.0)",
-    "opencv-contrib-python (>=4.11.0.86,<5.0.0.0)",
+    "python-dotenv>=1.0,<2.0",
+    "requests>=2.32.4,<3.0.0",
+    "pydantic>=2.9.2,<3.0.0"
 ]
 
-[tool.poetry]
-packages = [{include = "orion", from = "src"}]
+[tool.poetry.group.brain.dependencies]
+fastapi = ">=0.115.0,<0.116.0"
+uvicorn = ">=0.30.6,<0.31.0"
+httpx = ">=0.27.2,<0.28.0"
+uvloop = ">=0.20.0,<0.21.0"
+redis = { version = ">=5.0.7,<6.0.0", extras = ["hiredis"] }
 
-[tool.poetry.dependencies]
-python-dotenv = "^1.0"
+[tool.poetry.group.collapse-mirror.dependencies]
+chromadb = ">=1.0.12,<2.0.0"
+fastapi = ">=0.115.0,<0.116.0"
+google-auth = ">=2.40.3,<3.0.0"
+googleapis-common-protos = ">=1.70.0,<2.0.0"
+uvicorn = { version = ">=0.30.6,<0.31.0", extras = ["standard"] }
+
+[tool.poetry.group.vision.dependencies]
+opencv-python = ">=4.11.0.86,<5.0.0.0"
+opencv-contrib-python = ">=4.11.0.86,<5.0.0.0"
+fastapi = ">=0.115.0,<0.116.0"
+uvicorn = ">=0.30.6,<0.31.0"
+
+[tool.poetry.group.hub.dependencies]
+fastapi = ">=0.115.0,<0.116.0"
+uvicorn = ">=0.30.6,<0.31.0"
+aiohttp = ">=3.10.5,<4.0.0"
+redis = { version = ">=5.0.7,<6.0.0", extras = ["hiredis"] }
+
+[tool.poetry.group.rag.dependencies]
+fastapi = ">=0.115.0,<0.116.0"
+uvicorn = ">=0.30.6,<0.31.0"
+numpy = ">=1.26.4,<2.0.0"
+tqdm = ">=4.66.5,<5.0.0"
+sentence-transformers = ">=3.0.1,<4.0.0"
+llama-cpp-python = ">=0.2.89,<0.3.0"
+pypdf = ">=4.3.1,<5.0.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

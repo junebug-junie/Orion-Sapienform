@@ -1,0 +1,72 @@
+services:
+
+  voice-app:
+    build:
+      context: /mnt/services
+      dockerfile: ai-voice-service/Dockerfile
+    volumes:
+      - ./templates:/app/templates
+    ports:
+      - "8080"
+    depends_on:
+      coqui-tts: { condition: service_started }
+    restart: unless-stopped
+    environment:
+      # Whisper settings
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
+      - WHISPER_DEVICE=${WHISPER_DEVICE}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
+
+      # Point to external brain + bus
+      - BRAIN_URL=${BRAIN_URL}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      
+      # TTS service
+      - TTS_URL=http://coqui-tts:5002/api/tts
+
+      # CUDA runtime
+      - NVIDIA_VISIBLE_DEVICES=all
+    runtime: nvidia
+    networks:
+      - app-net
+
+  coqui-tts:
+    image: ghcr.io/coqui-ai/tts-cpu
+    ports:
+      - "5002"
+    environment:
+      - TTS_MODEL_NAME=tts_models/en/ljspeech/vits
+    restart: unless-stopped
+    entrypoint: tts-server
+    networks:
+      - app-net
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile.${MODE:-dev}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - voice-app
+    networks:
+      - app-net
+    environment:
+      - SITE_ADDR=${SITE_ADDR}
+      - TLS_DIRECTIVE=${TLS_DIRECTIVE}
+      - GLOBAL_OPTS=${GLOBAL_OPTS}
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  app-net:
+    aliases: orion-voice-app
+    driver: bridge
+

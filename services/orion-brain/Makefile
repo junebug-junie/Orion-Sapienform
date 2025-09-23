@@ -37,8 +37,17 @@ help:
 	@echo ""
 	@echo "Vars: PORT NET BACKENDS MODEL REDIS_URL USERS PROMPT AUTO_DEV_REDIS AUTO_DEV_OLLAMA"
 
-start-prod: _net _ensure_redis _ensure_llm _brain_up _wait_ready _health _models _maybe_clients
+start-prod: _net _ensure_redis _ensure_llm _brain_up _wait_ready _health _models _pull_model _maybe_clients
 	@echo "✔ start-prod complete: http://localhost:$(PORT)"
+
+# --- new target to always ensure model is pulled ---
+_pull_model:
+	@echo "→ ensuring model $(MODEL) is available in llm-brain"
+	@if docker ps --format '{{.Names}}' | grep -qx orion-brain-llm-brain-1; then \
+		docker exec -it orion-brain-llm-brain-1 ollama pull $(MODEL) || true; \
+	else \
+		echo "⚠ llm-brain container not running, skipping model pull"; \
+	fi
 
 stop-prod:
 	@docker compose down --remove-orphans || true

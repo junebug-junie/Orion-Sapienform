@@ -2,8 +2,8 @@ services:
 
   voice-app:
     build:
-      context: /mnt/services
-      dockerfile: ai-voice-service/Dockerfile
+      context: ../..
+      dockerfile: services/Orion-Sapienform/services/orion-hub/Dockerfile
     volumes:
       - ./templates:/app/templates
     ports:
@@ -21,7 +21,7 @@ services:
       - BRAIN_URL=${BRAIN_URL}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-      
+
       # TTS service
       - TTS_URL=http://coqui-tts:5002/api/tts
 
@@ -67,6 +67,5 @@ volumes:
 
 networks:
   app-net:
-    aliases: orion-voice-app
     driver: bridge
 

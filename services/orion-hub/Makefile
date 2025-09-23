@@ -1,66 +1,48 @@
-# Makefile for Orion Hub
+# Orion Hub Makefile
+# ==================
+# Convenience targets for local dev and prod deployments of orion-hub
 
-# Default env
+NET  ?= app-net
 MODE ?= dev
-COMPOSE = MODE=$(MODE) docker compose
+LOG_TAIL ?= 200
 
-# =====================
-# Lifecycle Targets
-# =====================
+.PHONY: up down restart build status logs log shell env
 
-start: ## Start services (MODE defaults to dev)
-	@$(COMPOSE) up -d
+## Start Orion Hub in the selected MODE (dev|prod)
+up:
+	@MODE=$(MODE) docker compose up -d --build
+	@echo "✔ Orion Hub started in $(MODE) mode"
 
-start-build: ## Start with fresh build
-	@$(COMPOSE) up -d --build
+## Stop Orion Hub and remove orphan containers
+down:
+	@docker compose down --remove-orphans
 
-stop: ## Stop services (no volume removal)
-	@$(COMPOSE) down
+## Restart Orion Hub
+restart: down up
 
-down: ## Stop services & remove volumes/orphans
-	@$(COMPOSE) down --volumes --remove-orphans
+## Build images without starting containers
+build:
+	@docker compose build
 
-nuke: ## Remove containers, volumes, networks (CAREFUL!)
-	@$(COMPOSE) down --volumes --remove-orphans
-	@docker network prune -f
-
-# =====================
-# Logs & Status
-# =====================
-
-logs: ## Tail all logs (200 lines)
-	@$(COMPOSE) logs -f --tail=200
-
-log-voice: ## Tail logs for voice-app
-	@$(COMPOSE) logs -f voice-app
-
-log-tts: ## Tail logs for coqui-tts
-	@$(COMPOSE) logs -f coqui-tts
-
-log-caddy: ## Tail logs for caddy
-	@$(COMPOSE) logs -f caddy
-
-status: ## Show container status
+## Show running containers for this service
+status:
 	@docker compose ps
 
-# =====================
-# Dev Utils
-# =====================
+## Follow logs from all services
+logs:
+	@docker compose logs -f --tail=$(LOG_TAIL)
 
-tunnel: ## SSH tunnel to remote dev host (edit host as needed)
-	ssh -N -L 18080:127.0.0.1:80 janus@192.168.1.7
+## Follow logs from a specific service: make log SVC=voice-app
+SVC ?= voice-app
+log:
+	@docker compose logs -f --tail=$(LOG_TAIL) $(SVC)
 
-shell: ## Exec into voice-app container
-	@docker exec -it orion-voice-app /bin/bash
+## Open a shell inside the main voice-app container
+shell:
+	@docker compose exec -it voice-app /bin/bash || docker compose exec -it voice-app /bin/sh
 
-rebuild: ## Rebuild without cache
-	@$(COMPOSE) build --no-cache
-
-# =====================
-# Help Target
-# =====================
-
-help: ## Show this help message
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
-
+## Show effective env values
+env:
+	@echo "MODE=$(MODE)"
+	@echo "NET=$(NET)"
+	@echo "LOG_TAIL=$(LOG_TAIL)"

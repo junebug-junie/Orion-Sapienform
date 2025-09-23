@@ -4,10 +4,12 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y build-essential curl && rm -rf /var/lib/apt/lists/*
 
-COPY . /app
-COPY requirements.txt .
+COPY services/orion-brain/requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txthttpx==0.27.2 uvloop==0.20.0 redis==5.0.7
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the service code
+COPY services/orion-brain /app
 
 ENV PORT=8088
 EXPOSE 8088

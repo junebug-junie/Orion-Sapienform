@@ -1,9 +1,9 @@
 services:
   orion-redis:
-    container_name: orion-redis               # stable name for exec & scripts
     image: redis:7-alpine
-    command: ["redis-server","--appendonly","yes","--maxmemory-policy","allkeys-lru"]
-    ports: ["6379:6379"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
     volumes:
       - orion_redis_data:/data
     restart: unless-stopped
@@ -13,35 +13,37 @@ services:
       timeout: 2s
       retries: 5
     networks:
-      app-net:
-        aliases: ["orion-redis"]              # DNS name others can use
+      - app-net
 
   redis-commander:
-    container_name: orion-redis-commander
     image: rediscommander/redis-commander:latest
     environment:
       - REDIS_HOSTS=orion:orion-redis:6379:0
-    ports: ["8085:8085"]
+    ports:
+      - "8085:8085"
+    restart: unless-stopped
     depends_on:
       orion-redis:
         condition: service_healthy
-    networks: [app-net]
+    networks:
+      - app-net
 
   redis-exporter:
-    container_name: orion-redis-exporter
     image: oliver006/redis_exporter:latest
     environment:
       - REDIS_ADDR=redis://orion-redis:6379
-    ports: ["9121:9121"]
+    ports:
+      - "9121:9121"
+    restart: unless-stopped
     depends_on:
       orion-redis:
         condition: service_healthy
-    networks: [app-net]
+    networks:
+      - app-net
 
 networks:
   app-net:
     external: true
-    name: app-net
 
 volumes:
   orion_redis_data:

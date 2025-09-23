@@ -1,8 +1,9 @@
 NET ?= app-net
 
-.PHONY: up down status tail tail.events tail.out ps logs
+.PHONY: up down status ps logs tail cli tail.stream
 
 up:
+	@docker network inspect $(NET) >/dev/null 2>&1 || docker network create $(NET)
 	@docker compose up -d
 	@echo "✔ Redis: tcp://localhost:6379"
 	@echo "✔ Redis Commander: http://localhost:8085"
@@ -14,18 +15,21 @@ down:
 status: ps
 ps:
 	@docker compose ps
-	@docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' | awk 'NR==1||/orion-redis|redis-commander|redis_exporter/'
+	@docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' \
+	  | awk 'NR==1||/orion-redis|redis-commander|redis_exporter/'
 
 logs:
 	@docker compose logs -f --tail=100
 
-# Raw MONITOR stream (be careful in prod)
+# Raw MONITOR stream (dev only — can be noisy)
 tail:
 	@docker compose exec -T orion-redis redis-cli MONITOR
 
-# Tail Orion event streams (works with default stream names)
-tail.events:
-	@docker compose exec -T orion-redis redis-cli XREVRANGE orion\\:evt\\:gateway + - COUNT 20
+# Tail any stream (default = events)
+STREAM ?= orion:evt:gateway
+tail.stream:
+	@docker compose exec -T orion-redis redis-cli XREVRANGE $(STREAM) + - COUNT 20
 
-tail.out:
-	@docker compose exec -T orion-redis redis-cli XREVRANGE orion\\:bus\\:out + - COUNT 20
+# Shortcut to drop into redis-cli
+cli:
+	@docker compose exec -it orion-redis redis-cli

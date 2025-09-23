@@ -154,8 +154,13 @@ json-smoke:
 	  -H 'content-type: application/json' \
 	  -d '{"model":"$(MODEL)","prompt":"Say hi, then stop.","options":{"num_predict":32},"stream":false,"return_json":true,"user_id":"u1","session_id":"s1"}' | jq
 
+BUS_SERVICE ?= orion-redis
+
 bus.tail:
-	@docker exec -it orion-redis redis-cli XREVRANGE $(EVENTS_STREAM) + - COUNT 10
+	@docker compose -f ../orion-bus/compose.yml exec -T $(BUS_SERVICE) \
+	  redis-cli XREVRANGE $(EVENTS_STREAM) + - COUNT 10
 
 bus.out.tail:
-	@docker exec -it orion-redis redis-cli XREVRANGE $(BUS_OUT_STREAM) + - COUNT 10
+	@docker compose -f ../orion-bus/compose.yml exec -T $(BUS_SERVICE) \
+	  redis-cli XREVRANGE $(BUS_OUT_STREAM) + - COUNT 10
+

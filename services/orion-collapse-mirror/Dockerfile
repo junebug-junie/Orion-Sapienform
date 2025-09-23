@@ -2,17 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY app/ ./app/
-
-CMD ["python", "-m", "app.main"]
-FROM python:3.12-slim
-
-WORKDIR /app
-
-# Install build tools in case some deps compile wheels
+# Install system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl \
     && rm -rf /var/lib/apt/lists/*
@@ -20,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip tooling
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Copy requirements first (cache-friendly)
+# Copy requirements first
 COPY services/orion-collapse-mirror/requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
@@ -28,8 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY services/orion-collapse-mirror/app ./app
 
-# Expose default port (if it runs a FastAPI server)
+# Expose consistent port
 EXPOSE 8085
 
-# Run the service
-CMD ["python", "-m", "app.main"]
+# Run via uvicorn (not python -m)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8087", "--reload"]

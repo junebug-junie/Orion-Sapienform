@@ -3,13 +3,16 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-collapse-mirror/Dockerfile
+    image: orion-collapse-mirror:latest
     restart: unless-stopped
     networks:
       - app-net
+    environment:
+      - POSTGRES_URI=sqlite:////mnt/storage/collapse-mirrors/collapse.db
     volumes:
-      - collapse_data:/app/data
+      - ./data/collapse:/mnt/storage/collapse-mirrors
     ports:
-      - "8085:8085"
+      - "8087:8087"
 
 volumes:
   collapse_data:

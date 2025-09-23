@@ -42,7 +42,7 @@ def get_db():
 # 🧠 Connect to Chroma persistent memory
 collection = None
 if os.getenv("CHRONICLE_MODE") != "cloud":
-    chroma_client = PersistentClient(path="/mnt/storage/collapse-mirrors/chroma"))
+    chroma_client = PersistentClient(path="/mnt/storage/collapse-mirrors/chroma")
     collection = chroma_client.get_or_create_collection("collapse_mirror")
 
 # 📦 Initialize FastAPI router

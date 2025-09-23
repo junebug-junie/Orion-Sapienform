@@ -25,9 +25,10 @@ redis = { version = ">=5.0.7,<6.0.0", extras = ["hiredis"] }
 
 [tool.poetry.group.collapse-mirror.dependencies]
 chromadb = ">=1.0.12,<2.0.0"
-fastapi = ">=0.115.0,<0.116.0"
+fastapi = "==0.115.9"
 google-auth = ">=2.40.3,<3.0.0"
 googleapis-common-protos = ">=1.70.0,<2.0.0"
+SQLAlchemy = "==2.0.43"
 uvicorn = { version = ">=0.30.6,<0.31.0", extras = ["standard"] }
 
 [tool.poetry.group.vision.dependencies]

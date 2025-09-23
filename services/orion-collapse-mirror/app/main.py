@@ -1,11 +1,13 @@
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from conjourney_sdk import collapse_log
+#from app.api import collapse
+from app.core import collapse_log
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
-app = FastAPI()
+app = FastAPI(title="Orion Collapse Mirror")
 print("POSTGRES_URI:", os.getenv("POSTGRES_URI"))
 
 # Optional: CORS setup if SDK/frontend will call this API
@@ -19,6 +21,10 @@ app.add_middleware(
 
 # Mount collapse mirror logging routes
 app.include_router(collapse_log.router, prefix="/api")
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 @app.get("/")
 def read_root():

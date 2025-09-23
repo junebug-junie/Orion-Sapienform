@@ -27,8 +27,18 @@ status:
 logs:
 	@docker compose logs -f --tail=200 $(SERVICE)
 
-smoke:
-	@echo "→ Running health check..."
-	@curl -s http://localhost:$(PORT)/health || echo "Health check failed."
+
+ingest:
+	@curl -s http://localhost:$(PORT)/ingest \
+	  -H "Content-Type: application/json" \
+	  -d '{"path":"$(SRC_FILE)"}' | jq
+
+ask:
+	@curl -s http://localhost:$(PORT)/ask \
+	  -H "Content-Type: application/json" \
+	  -d '{"question":"$(QUESTION)"}' | jq
+
+smoke: health ingest ask
+	@echo "✔ Smoke test finished against $(SRC_FILE)"
 
 rebuild: down up

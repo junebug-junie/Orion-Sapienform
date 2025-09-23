@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- knobs (override via env: VAR=value ./rebuild_orion.sh) ---
+# --- knobs ---
 NET=${NET:-app-net}
 BUS_DIR=${BUS_DIR:-/mnt/services/Orion-Sapienform/services/orion-bus}
 BRAIN_DIR=${BRAIN_DIR:-/mnt/services/Orion-Sapienform/services/orion-brain}
+RAG_DIR=${RAG_DIR:-/mnt/services/Orion-Sapienform/services/orion-rag}
+HUB_DIR=${HUB_DIR:-/mnt/services/Orion-Sapienform/services/orion-hub}
+MIRROR_DIR=${MIRROR_DIR:-/mnt/services/Orion-Sapienform/services/orion-collapse-mirror}
 CLIENT_DIR=${CLIENT_DIR:-/mnt/services/Orion-Sapienform/services/orion-llm-client}
+
 PORT=${PORT:-8088}
+RAG_PORT=${RAG_PORT:-8001}
+HUB_PORT=${HUB_PORT:-8080}
+MIRROR_PORT=${MIRROR_PORT:-8085}
+
 BACKENDS=${BACKENDS:-http://llm-brain:11434}
 MODEL=${MODEL:-mistral:instruct}
 USERS=${USERS:-2}
@@ -15,11 +23,15 @@ MANAGED_REDIS_URL=${MANAGED_REDIS_URL:-}
 SKIP_BUS=${SKIP_BUS:-0}
 PRUNE=${PRUNE:-0}
 
-if [[ -n "$MANAGED_REDIS_URL" ]]; then
-  export REDIS_URL="$MANAGED_REDIS_URL"
-  SKIP_BUS=1
-  echo "ℹ Using managed Redis: $MANAGED_REDIS_URL"
-fi
+# --- helpers ---
+compose_file() {
+  if [[ -f "$1/docker-compose.yml" ]]; then echo "$1/docker-compose.yml"
+  elif [[ -f "$1/docker-compose.yaml" ]]; then echo "$1/docker-compose.yaml"
+  elif [[ -f "$1/compose.yml" ]]; then echo "$1/compose.yml"
+  elif [[ -f "$1/compose.yaml" ]]; then echo "$1/compose.yaml"
+  else die "No compose file found in $1"
+  fi
+}
 
 die() { echo "✖ $*" >&2; exit 1; }
 
@@ -32,8 +44,19 @@ wait_for_http() {
   return 1
 }
 
+# managed redis override
+if [[ -n "$MANAGED_REDIS_URL" ]]; then
+  export REDIS_URL="$MANAGED_REDIS_URL"
+  SKIP_BUS=1
+  echo "ℹ Using managed Redis: $MANAGED_REDIS_URL"
+fi
+
 echo "== Teardown =="
 ( cd "$BRAIN_DIR" && docker compose down --remove-orphans || true )
+( cd "$BRAIN_DIR" && docker rm -f orion-llm-brain >/dev/null 2>&1 || true )
+( cd "$RAG_DIR" && docker compose down --remove-orphans || true )
+( cd "$HUB_DIR" && docker compose down --remove-orphans || true )
+( cd "$MIRROR_DIR" && docker compose down --remove-orphans || true )
 if [[ "$SKIP_BUS" == "0" ]]; then
   ( cd "$BUS_DIR" && docker compose down --remove-orphans || true )
 fi
@@ -46,37 +69,71 @@ echo "== Network =="
 docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET"
 docker network ls | awk '/'"$NET"'$/{print "✔ network:",$2}'
 
+# bus
 if [[ "$SKIP_BUS" == "0" ]]; then
   echo "== Start Redis bus =="
-  ( cd "$BUS_DIR" && docker compose up -d )
-  RID="$(docker compose -f "$BUS_DIR/docker-compose.yml" ps -q orion-redis || true)"
+  ( cd "$BUS_DIR" && docker compose -f "$(compose_file "$BUS_DIR")" up -d )
+  RID="$(docker compose -f "$(compose_file "$BUS_DIR")" ps -q orion-redis || true)"
   [[ -n "$RID" ]] || die "Redis container not found; check your orion-bus compose."
   docker exec -it "$RID" redis-cli PING || true
 else
   echo "ℹ SKIP_BUS=1: assuming Redis is already up."
 fi
 
-echo "== Build & start brain stack =="
+# brain
+echo "== Build & start orion-brain stack =="
 (
   cd "$BRAIN_DIR" && \
   BACKENDS="$BACKENDS" PORT="$PORT" \
   REDIS_URL="${REDIS_URL:-redis://orion-redis:6379/0}" SERVICE_NAME="orion-brain" \
   EVENTS_ENABLE="${EVENTS_ENABLE:-true}" EVENTS_STREAM="${EVENTS_STREAM:-orion:evt:gateway}" \
   BUS_OUT_ENABLE="${BUS_OUT_ENABLE:-true}" BUS_OUT_STREAM="${BUS_OUT_STREAM:-orion:bus:out}" \
-  docker compose up -d --build
+  docker compose -f "$(compose_file "$BRAIN_DIR")" up -d --build
 )
 
-# resolve llm-brain container created by compose
-LLM=$(docker compose -f "$BRAIN_DIR/docker-compose.yml" ps -q llm-brain || true)
+LLM=$(docker compose -f "$(compose_file "$BRAIN_DIR")" ps -q llm-brain || true)
 [[ -n "$LLM" ]] || die "llm-brain container not found after compose up."
 
 echo "→ ensuring model: $MODEL in $LLM"
 docker exec -it "$LLM" ollama pull "$MODEL" || true
 
-echo "→ waiting for brain-service on :$PORT ..."
-wait_for_http "http://localhost:$PORT/health" 80 0.25 || die "brain-service did not become healthy"
+echo "→ waiting for orion-brain on :$PORT ..."
+wait_for_http "http://localhost:$PORT/health" 80 0.25 || die "orion-brain did not become healthy"
 curl -s "http://localhost:$PORT/models" | jq . || true
 
+# rag
+echo "== Build & start orion-rag stack =="
+(
+  cd "$RAG_DIR" && \
+  PORT="$RAG_PORT" BRAIN_URL="http://orion-brain:$PORT" \
+  REDIS_URL="${REDIS_URL:-redis://orion-redis:6379/0}" SERVICE_NAME="orion-rag" \
+  docker compose -f "$(compose_file "$RAG_DIR")" up -d --build
+)
+echo "→ waiting for orion-rag on :$RAG_PORT ..."
+wait_for_http "http://localhost:$RAG_PORT/health" 80 0.25 || die "orion-rag did not become healthy"
+
+# hub
+echo "== Build & start orion-hub stack =="
+(
+  cd "$HUB_DIR" && \
+  PORT="$HUB_PORT" BRAIN_URL="http://orion-brain:$PORT" \
+  REDIS_URL="${REDIS_URL:-redis://orion-redis:6379/0}" SERVICE_NAME="orion-hub" \
+  docker compose -f "$(compose_file "$HUB_DIR")" up -d --build
+)
+echo "→ waiting for orion-hub on :$HUB_PORT ..."
+wait_for_http "http://localhost:$HUB_PORT/docs" 80 0.25 || die "orion-hub did not become healthy"
+
+# collapse mirror
+echo "== Build & start orion-collapse-mirror stack =="
+(
+  cd "$MIRROR_DIR" && \
+  PORT="$MIRROR_PORT" REDIS_URL="${REDIS_URL:-redis://orion-redis:6379/0}" SERVICE_NAME="orion-collapse-mirror" \
+  docker compose -f "$(compose_file "$MIRROR_DIR")" up -d --build
+)
+echo "→ waiting for orion-collapse-mirror on :$MIRROR_PORT ..."
+wait_for_http "http://localhost:$MIRROR_PORT/health" 80 0.25 || die "orion-collapse-mirror did not become healthy"
+
+# client
 echo "== Build client image =="
 docker build -t orion-llm-client:0.1 "$CLIENT_DIR"
 

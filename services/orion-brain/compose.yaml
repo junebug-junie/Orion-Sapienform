@@ -23,8 +23,8 @@ services:
       EVENTS_STREAM: ${EVENTS_STREAM:-orion:evt:gateway}
       BUS_OUT_ENABLE: ${BUS_OUT_ENABLE:-"true"}
       BUS_OUT_STREAM: ${BUS_OUT_STREAM:-orion:bus:out}
-
-    ports: ["${PORT:-8088}:8088"]
+    ports:
+      - "${PORT:-8088}:8088"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8088/health >/dev/null || exit 1"]
@@ -33,6 +33,14 @@ services:
       retries: 10
     networks:
       app-net:
+        aliases: ["orion-brain"]
+
+  llm-brain:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    networks:
+      app-net:
+        aliases: ["llm-brain"]
 
 networks:
   app-net:

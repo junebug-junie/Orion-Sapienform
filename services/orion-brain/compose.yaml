@@ -1,6 +1,6 @@
 services:
 
-  brain-service:
+  orion-brain:
     build:
       context: ../..
       dockerfile: services/orion-brain/Dockerfile

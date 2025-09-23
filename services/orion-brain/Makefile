@@ -70,7 +70,7 @@ _ensure_redis:
 			docker run -d --name orion-redis --network $(NET) -p 6379:6379 \
 			  redis:7-alpine redis-server --appendonly yes >/dev/null; \
 		else \
-			echo "⚠ orion-redis not running on $(NET). Start your bus: cd /mnt/services/orion-bus && docker compose up -d"; \
+			echo "⚠ orion-redis not running on $(NET). Start your bus: cd /mnt/services/Orion-Sapienform/services/orion-bus && docker compose up -d"; \
 		fi; \
 	else \
 		echo "✔ using Redis at $(REDIS_URL)"; \
@@ -97,24 +97,24 @@ _ensure_llm:
 	fi
 
 _brain_up:
-	@echo "→ starting brain-service on :$(PORT) (BACKENDS=$(BACKENDS))"
+	@echo "→ starting orion-brain on :$(PORT) (BACKENDS=$(BACKENDS))"
 	@BACKENDS="$(BACKENDS)" PORT="$(PORT)" \
 	REDIS_URL="$(REDIS_URL)" SERVICE_NAME="$(SERVICE_NAME)" \
 	EVENTS_ENABLE="$(EVENTS_ENABLE)" EVENTS_STREAM="$(EVENTS_STREAM)" \
 	BUS_OUT_ENABLE="$(BUS_OUT_ENABLE)" BUS_OUT_STREAM="$(BUS_OUT_STREAM)" \
 	docker compose up -d --build
-	@docker ps --format 'table {{.Names}}\t{{.Ports}}' | awk 'NR==1||/brain-service/'
+	@docker ps --format 'table {{.Names}}\t{{.Ports}}' | awk 'NR==1||/orion-brain/'
 
 _wait_ready:
-	@echo "→ waiting for brain-service to be ready on :$(PORT) ..."
+	@echo "→ waiting for orion-brain to be ready on :$(PORT) ..."
 	@for i in $$(seq 1 40); do \
 	  if curl -fsS "http://localhost:$(PORT)/health" >/dev/null; then \
 	    echo "✔ brain-service ready"; exit 0; \
 	  fi; \
 	  sleep 0.25; \
 	done; \
-	echo "✖ timed out waiting for brain-service"; \
-	docker compose logs --no-color brain-service | tail -n 80; \
+	echo "✖ timed out waiting for orion-brian"; \
+	docker compose logs --no-color orion-brain | tail -n 80; \
 	exit 1
 
 _health:
@@ -127,10 +127,10 @@ _maybe_clients:
 	@if [ "$(USERS)" -gt 0 ]; then \
 		$(MAKE) -s _client_img; \
 		i=1; delay=$$(awk 'BEGIN{printf "%.3f", $(STAGGER_MS)/1000.0}'); \
-		echo "→ launching $(USERS) client(s) on $(NET) → brain-service:$(PORT)"; \
+		echo "→ launching $(USERS) client(s) on $(NET) → orion-brain:$(PORT)"; \
 		while [ $$i -le $(USERS) ]; do \
 			docker run --rm --network $(NET) \
-			  -e ORION_BRAIN_URL=http://brain-service:$(PORT) \
+			  -e ORION_BRAIN_URL=http://orion-brain:$(PORT) \
 			  -e ORION_MODEL=$(MODEL) \
 			  $(CLIENT_IMG) \
 			  python -m orion_llm_client.examples.simple_generate "[client $$i] $(PROMPT)" & \

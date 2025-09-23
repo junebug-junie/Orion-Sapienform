@@ -1,15 +1,19 @@
 services:
-  collapse-mirror:
-    build: .
+  orion-collapse-mirror:
+    build:
+      context: ../..
+      dockerfile: services/orion-collapse-mirror/Dockerfile
     restart: unless-stopped
     networks:
-      - orion-net
+      - app-net
     volumes:
-      - /mnt/storage/collapse-mirror:/mnt/storage/collapse-mirror
+      - collapse_data:/app/data
     ports:
       - "8085:8085"
 
+volumes:
+  collapse_data:
+
 networks:
-  orion-net:
-    aliases: orion-collapse-mirror
+  app-net:
     external: true

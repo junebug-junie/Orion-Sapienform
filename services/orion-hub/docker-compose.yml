@@ -3,7 +3,7 @@ services:
   voice-app:
     build:
       context: ../..
-      dockerfile: services/Orion-Sapienform/services/orion-hub/Dockerfile
+      dockerfile: services/orion-hub/Dockerfile
     volumes:
       - ./templates:/app/templates
     ports:

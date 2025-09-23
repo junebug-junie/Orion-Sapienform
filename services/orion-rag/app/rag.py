@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Dict
 import os
+from fastembed import TextEmbedding
 from orion_llm_client import OrionLLMClient
 
 # ---- chunking ----
@@ -21,10 +22,8 @@ _EMBED = None
 _MODEL = os.getenv("RAG_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 
 def get_embedder():
-    """Lazy-load the FastEmbed model, reusing it across requests."""
     global _EMBED
     if _EMBED is None:
-        from fastembed import TextEmbedding
         cache = os.getenv("FASTEMBED_CACHE_PATH")
         _EMBED = TextEmbedding(model_name=_MODEL, cache_dir=cache)
     return _EMBED

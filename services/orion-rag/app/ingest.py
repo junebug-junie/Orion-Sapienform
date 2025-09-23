@@ -28,7 +28,12 @@ def ingest_text(text: str, source: str = "inline", chunk_size=600, overlap=120) 
     return len(chunks)
 
 def ingest_path(path: str, **kw) -> int:
+    # Resolve to /app/data/sources if not absolute
+    if not os.path.isabs(path):
+        path = os.path.join("/app/data/sources", path)
+
     if not os.path.exists(path):
         raise RuntimeError(f"File not found: {path}")
+
     text = read_file(path)
     return ingest_text(text, source=os.path.abspath(path), **kw)

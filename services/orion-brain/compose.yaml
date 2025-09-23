@@ -38,6 +38,8 @@ services:
   llm-brain:
     image: ollama/ollama:latest
     restart: unless-stopped
+    expose:
+      - "11434"
     networks:
       app-net:
         aliases: ["llm-brain"]

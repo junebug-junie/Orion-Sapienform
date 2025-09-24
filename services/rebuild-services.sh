@@ -116,10 +116,11 @@ wait_for_http "http://localhost:$RAG_PORT/health" 80 0.25 || die "orion-rag did 
 echo "== Build & start orion-hub stack =="
 (
   cd "$HUB_DIR" && \
-  PORT="$HUB_PORT" BRAIN_URL="http://orion-brain:$PORT" \
+  PORT="$HUB_PORT" \
   REDIS_URL="${REDIS_URL:-redis://orion-redis:6379/0}" SERVICE_NAME="orion-hub" \
-  docker compose -f "$(compose_file "$HUB_DIR")" up -d --build
+  docker compose --env-file "$HUB_DIR/.env" -f "$(compose_file "$HUB_DIR")" up -d --build
 )
+
 echo "→ waiting for orion-hub on :$HUB_PORT ..."
 for i in {1..80}; do
   if curl -sf "http://localhost:$HUB_PORT/docs" >/dev/null; then

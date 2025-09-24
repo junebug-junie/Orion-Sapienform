@@ -30,6 +30,15 @@ services:
       EVENTS_STREAM: orion:evt:rag
       BUS_OUT_ENABLE: "true"
       BUS_OUT_STREAM: orion:bus:out
+        - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
     volumes:
       - ./data:/app/data
       - .cache/fastembed:/cache/fastembed

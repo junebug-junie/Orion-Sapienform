@@ -9,6 +9,78 @@ This service is part of the Orion Sapienform ecosystem.
 
 ---
 
+## Deployment
+
+### Docker Compose
+
+The service is configured in `docker-compose.yml`:
+
+```yaml
+services:
+  orion-collapse-mirror:
+    build:
+      context: ../..
+      dockerfile: services/orion-collapse-mirror/Dockerfile
+    image: orion-collapse-mirror:latest
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - POSTGRES_URI=sqlite:////mnt/storage/collapse-mirrors/collapse.db
+    volumes:
+      - /mnt/storage/collapse-mirrors:/mnt/storage/collapse-mirrors
+    ports:
+      - "8087:8087"
+
+networks:
+  app-net:
+    external: true
+```
+
+### Dockerfile
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system deps
+RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 \
+    build-essential curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip tooling
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy requirements first
+COPY services/orion-collapse-mirror/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app code
+COPY services/orion-collapse-mirror/app ./app
+
+EXPOSE 8087
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8087", "--reload"]
+```
+
+### Launch via rebuild script
+
+`services/rebuild-services.sh` includes:
+
+```bash
+# collapse mirror
+echo "== Build & start orion-collapse-mirror stack =="
+(
+  cd "$MIRROR_DIR" && \
+  PORT="$MIRROR_PORT" REDIS_URL="${REDIS_URL:-redis://orion-redis:6379/0}" SERVICE_NAME="orion-collapse-mirror" \
+  docker compose -f "$(compose_file "$MIRROR_DIR")" up -d --build
+)
+echo "→ waiting for orion-collapse-mirror on :$MIRROR_PORT ..."
+wait_for_http "http://localhost:$MIRROR_PORT/health" 80 0.25 || die "orion-collapse-mirror did not become healthy"
+```
+
+---
+
 ## API Usage
 
 ### Health Check
@@ -65,17 +137,15 @@ curl -s "http://localhost:8087/api/log/query?prompt=Orion+dream" | jq
 
 ---
 
-## SQLite Setup
+## SQLite Access
 
-First-time setup:
+The container already includes `sqlite3`. You can open the database shell with:
 
 ```bash
-docker exec -it orion-collapse-mirror-orion-collapse-mirror-1 bash
-apt-get update && apt-get install -y sqlite3
-sqlite3 /mnt/storage/collapse-mirrors/collapse.db
+docker exec -it orion-collapse-mirror-orion-collapse-mirror-1 sqlite3 /mnt/storage/collapse-mirrors/collapse.db
 ```
 
-Inside the SQLite shell:
+Inside SQLite:
 
 ```sql
 .tables
@@ -83,7 +153,7 @@ Inside the SQLite shell:
 SELECT * FROM collapse_mirror LIMIT 5;
 ```
 
-Export to file:
+Export:
 
 ```sql
 .output /mnt/storage/collapse-mirrors/export.csv
@@ -97,13 +167,11 @@ SELECT * FROM collapse_mirror;
 
 ## ChromaDB Inspection
 
-Open a Python shell inside the container:
+Inspect semantic embeddings:
 
 ```bash
 docker exec -it orion-collapse-mirror-orion-collapse-mirror-1 python
 ```
-
-Then run:
 
 ```python
 from chromadb import PersistentClient
@@ -116,18 +184,11 @@ print("Sample Query:", coll.query(query_texts=["Orion dream"], n_results=3))
 
 ---
 
-## Notes on Local Paths
+## Notes on Paths
 
-You saw a path like:
+* Host path for persistence: `/mnt/storage/collapse-mirrors`
+* Container path (mounted): `/mnt/storage/collapse-mirrors`
+* Files inside:
 
-```
-services/orion-collapse-mirror/services/orion-collapse-mirror/data/collapse
-```
-
-This happens because of **Docker bind mounts** and the repo’s nested service structure.
-
-* `services/orion-collapse-mirror` → the service root in your monorepo
-* `services/orion-collapse-mirror/services/orion-collapse-mirror` → an extra nested directory created when mounting volumes during builds
-* `data/collapse` → persistent directory inside the container where SQLite/Chroma expect to store collapse logs
-
-It’s safe to clean up the redundant nesting if you want — the live database should be in `/mnt/storage/collapse-mirrors/` inside the container.
+  * `collapse.db` → SQLite database
+  * `chroma/` → ChromaDB collection data

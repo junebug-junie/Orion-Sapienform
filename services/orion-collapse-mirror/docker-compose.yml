@@ -10,7 +10,7 @@ services:
     environment:
       - POSTGRES_URI=sqlite:////mnt/storage/collapse-mirrors/collapse.db
     volumes:
-      - ./data/collapse:/mnt/storage/collapse-mirrors
+      - /mnt/storage/collapse-mirrors:/mnt/storage/collapse-mirrors
     ports:
       - "8087:8087"
 

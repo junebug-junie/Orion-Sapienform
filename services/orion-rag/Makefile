@@ -10,6 +10,7 @@ help:
 	@echo "  up         -> build and start RAG service"
 	@echo "  down       -> stop and remove RAG service"
 	@echo "  status     -> show container status and mapped ports"
+	@echo "  health     -> show health
 	@echo "  logs       -> tail logs for the RAG service"
 	@echo "  smoke      -> run a health check on /health endpoint"
 	@echo "  rebuild    -> teardown, rebuild, restart service"
@@ -23,6 +24,9 @@ down:
 
 status:
 	@docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' | awk 'NR==1||/$(SERVICE)/||/orion-qdrant/'
+
+health:
+	@curl -sf http://localhost:$(PORT)/health | jq .
 
 logs:
 	@docker compose logs -f --tail=200 $(SERVICE)

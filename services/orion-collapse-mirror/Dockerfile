@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY services/orion-collapse-mirror/app ./app
 
 # Expose consistent port
-EXPOSE 8085
+EXPOSE 8087
 
 # Run via uvicorn (not python -m)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8087", "--reload"]

@@ -7,7 +7,7 @@ services:
     volumes:
       - ./templates:/app/templates
     ports:
-      - "8080"
+      - "${HUB_PORT:-8080}:8080"
     depends_on:
       coqui-tts: { condition: service_started }
     restart: unless-stopped

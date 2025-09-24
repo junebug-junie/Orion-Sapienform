@@ -13,7 +13,7 @@ CLIENT_DIR=${CLIENT_DIR:-/mnt/services/Orion-Sapienform/services/orion-llm-clien
 PORT=${PORT:-8088}
 RAG_PORT=${RAG_PORT:-8001}
 HUB_PORT=${HUB_PORT:-8080}
-MIRROR_PORT=${MIRROR_PORT:-8085}
+MIRROR_PORT=${MIRROR_PORT:-8087}
 
 BACKENDS=${BACKENDS:-http://llm-brain:11434}
 MODEL=${MODEL:-mistral:instruct}
@@ -121,7 +121,16 @@ echo "== Build & start orion-hub stack =="
   docker compose -f "$(compose_file "$HUB_DIR")" up -d --build
 )
 echo "→ waiting for orion-hub on :$HUB_PORT ..."
-wait_for_http "http://localhost:$HUB_PORT/docs" 80 0.25 || die "orion-hub did not become healthy"
+for i in {1..80}; do
+  if curl -sf "http://localhost:$HUB_PORT/docs" >/dev/null; then
+    echo "✔ orion-hub is healthy on :$HUB_PORT"
+    break
+  fi
+  sleep 0.25
+done || {
+  echo "✖ orion-hub did not become healthy"
+  exit 1
+}
 
 # collapse mirror
 echo "== Build & start orion-collapse-mirror stack =="

@@ -24,6 +24,11 @@ down:
 logs:
 	@docker compose logs -f $(SERVICE)
 
+sql-db-limit-5:
+	@docker exec -it $(CONTAINER) \
+		sqlite3 $(DB_PATH) \
+ 		"SELECT * FROM collapse_mirror ORDER BY timestamp DESC LIMIT 5;"
+
 sqlite:
 	@docker exec -it $(CONTAINER) sqlite3 $(DB_PATH)
 

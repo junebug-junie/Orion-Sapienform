@@ -2,12 +2,15 @@ from fastapi import APIRouter, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 from uuid import uuid4
+import json
+import os
+import redis
 import requests
 from chromadb import PersistentClient
 from sqlalchemy import Column, String, Text, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-import os
+from datetime import datetime, timezone
 
 # 📦 SQLAlchemy setup
 Base = declarative_base()
@@ -27,8 +30,8 @@ class CollapseMirrorEntrySQL(Base):
     summary = Column(Text)
     mantra = Column(Text)
     causal_echo = Column(Text, nullable=True)
-    timestamp = Column(String)
-    environment = Column(String)
+    timestamp = Column(String, nullable=True)
+    environment = Column(String, nullable=True)
 
 Base.metadata.create_all(bind=engine)
 
@@ -45,6 +48,10 @@ if os.getenv("CHRONICLE_MODE") != "cloud":
     chroma_client = PersistentClient(path="/mnt/storage/collapse-mirrors/chroma")
     collection = chroma_client.get_or_create_collection("collapse_mirror")
 
+# 📡 Redis bus (independent mesh backbone)
+REDIS_URL = os.getenv("REDIS_URL", "redis://orion-redis:6379/0")
+bus = redis.Redis.from_url(REDIS_URL)
+
 # 📦 Initialize FastAPI router
 router = APIRouter()
 
@@ -59,18 +66,27 @@ class CollapseMirrorEntry(BaseModel):
     summary: str
     mantra: str
     causal_echo: Optional[str] = None
-    timestamp: str
-    environment: str
+    timestamp: Optional[str] = None
+    environment: Optional[str] = None
+
+    def with_defaults(self):
+        """Ensure timestamp + environment are always set."""
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+        if not self.environment:
+            self.environment = os.getenv("CHRONICLE_ENVIRONMENT", "dev")
+        return self
 
 # 📥 Log a new Collapse Mirror
 @router.post("/log/collapse")
 def log_collapse(entry: CollapseMirrorEntry, db: Session = Depends(get_db)):
+    entry = entry.with_defaults()
     if not collection:
         raise RuntimeError("Chroma memory is not active in cloud mode.")
 
     entry_id = f"collapse_{uuid4().hex}"
 
-    # Flatten and clean metadata
+    # Flatten metadata for SQL/Chroma
     metadata = entry.dict()
     if isinstance(metadata["observer_state"], list):
         metadata["observer_state"] = ", ".join(metadata["observer_state"])
@@ -87,6 +103,9 @@ def log_collapse(entry: CollapseMirrorEntry, db: Session = Depends(get_db)):
     sql_entry = CollapseMirrorEntrySQL(id=entry_id, **metadata)
     db.add(sql_entry)
     db.commit()
+
+    # 📡 Publish to Redis bus for downstream ingesters (e.g., orion-gdb-client)
+    bus.publish("collapse:new", json.dumps({"id": entry_id, **metadata}))
 
     return {
         "id": entry_id,
@@ -105,10 +124,14 @@ def query_memory(
     n_results: int = 3
 ):
     filter_conditions = {}
-    if observer: filter_conditions["observer"] = observer
-    if type: filter_conditions["type"] = type
-    if emergent_entity: filter_conditions["emergent_entity"] = emergent_entity
-    if mantra: filter_conditions["mantra"] = mantra
+    if observer:
+        filter_conditions["observer"] = observer
+    if type:
+        filter_conditions["type"] = type
+    if emergent_entity:
+        filter_conditions["emergent_entity"] = emergent_entity
+    if mantra:
+        filter_conditions["mantra"] = mantra
 
     results = collection.query(
         query_texts=[prompt],

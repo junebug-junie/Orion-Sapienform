@@ -9,6 +9,7 @@ services:
       - app-net
     environment:
       - POSTGRES_URI=sqlite:////mnt/storage/collapse-mirrors/collapse.db
+      - REDIS_URL=redis://orion-redis:6379/0
     volumes:
       - /mnt/storage/collapse-mirrors:/mnt/storage/collapse-mirrors
     ports:

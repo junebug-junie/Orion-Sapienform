@@ -31,6 +31,7 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-gdb-client/Dockerfile
+    image: orion-gdb-client
     restart: unless-stopped
     networks:
       - app-net
@@ -39,6 +40,7 @@ services:
       GRAPHDB_URL: http://graphdb:7200
       SERVICE_NAME: orion-gdb-client
       GRAPHDB_REPO: collapse
+      BUS_CHANNEL: collapse:new
     depends_on:
       graphdb:
         condition: service_healthy

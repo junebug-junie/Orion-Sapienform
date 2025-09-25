@@ -12,6 +12,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy requirements first
 COPY services/orion-collapse-mirror/requirements.txt .
+# Copy tools into container
+COPY services/orion-collapse-mirror/tools ./tools
 
 RUN pip install --no-cache-dir -r requirements.txt
 

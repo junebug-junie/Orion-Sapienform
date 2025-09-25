@@ -132,6 +132,31 @@ kill <PID>
 
 ---
 
+## 🔗 Service Data Flow
+
+Here’s how the pieces connect inside the Orion mesh:
+
+```
+[orion-collapse-mirror] → (writes collapse.db + emits Redis events)
+           │
+           ▼
+      [orion-bus / Redis]
+           │
+           ▼
+  [orion-gdb-client] → (subscribes to collapse:new, converts JSON → RDF)
+           │
+           ▼
+        [GraphDB]
+```
+
+* **orion-collapse-mirror**: persists collapse events to SQLite and publishes them to Redis.
+* **orion-gdb-client**: listens for events, converts them to RDF triples, and inserts into GraphDB.
+* **GraphDB**: stores triples and applies inference/rules.
+
+No extra ports are needed for `orion-gdb-client` — it runs headless on the `app-net` and talks directly to `graphdb:7200`.
+
+---
+
 ## 🧠 V2: Schema & Inference (Planned)
 
 Future work will extend GraphDB beyond raw triples to support **structured reasoning**:

@@ -14,3 +14,9 @@ class CollapseMirrorEntry(BaseModel):
     causal_echo: Optional[str] = None
     timestamp: str
     environment: str
+
+    def with_timestamp(self):
+        """Ensure the entry has a UTC ISO timestamp."""
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+        return self

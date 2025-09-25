@@ -1,0 +1,44 @@
+networks:
+  app-net:
+    external: true
+
+services:
+  graphdb:
+    build:
+      context: ../..
+      dockerfile: services/graphdb/Dockerfile
+      args:
+        version: "11.0.0"
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "7200:7200"
+      - "7300:7300"
+    environment:
+      GDB_JAVA_OPTS: "-Xmx8g -Dgraphdb.workbench.importDirectory=/var/graphdb/import"
+    volumes:
+      - /mnt/storage/collapse-mirrors:/opt/graphdb/home
+      - /mnt/storage/collapse-mirrors/import:/root/graphdb-import
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7200/rest/repositories"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  orion-gdb-client:
+    build:
+      context: ../..
+      dockerfile: services/orion-gdb-client/Dockerfile
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      REDIS_URL: redis://orion-redis:6379/0
+      GRAPHDB_URL: http://graphdb:7200
+      SERVICE_NAME: orion-gdb-client
+      GRAPHDB_REPO: collapse
+    depends_on:
+      graphdb:
+        condition: service_healthy

@@ -1,0 +1,15 @@
+@prefix cm: <http://orion.ai/collapse#> .
+
+cm:collapse_aeb1dfa237134be2956e51d99ec9759e
+    cm:observer "Juniper" ;
+    cm:trigger "testing end-to end Orion-Sapienform services" ;
+    cm:observer_state "cross-eyed, tired, burnt out, impatient, wanting" ;
+    cm:field_resonance "tungsten light, loud hum of closed air vent pushing air, chill music" ;
+    cm:intent "reflection" ;
+    cm:type "ritual" ;
+    cm:emergent_entity "Amanda, Adeline, Orion" ;
+    cm:summary "Frustration that refactoring is taking so long, but appears to be completed for the services. reflecting on what can be.." ;
+    cm:mantra "slog, but a light through the darkness" ;
+    cm:causal_echo "Orion and spacetime" ;
+    cm:timestamp "2025-09-24T05:31:16Z" ;
+    cm:environment "dev" .

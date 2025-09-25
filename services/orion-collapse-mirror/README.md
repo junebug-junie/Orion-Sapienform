@@ -87,6 +87,10 @@ docker exec -it orion-collapse-mirror-orion-collapse-mirror-1 \
 
 ### ChromaDB
 
+```bash
+docker exec -it orion-collapse-mirror-orion-collapse-mirror-1 python
+```
+
 ```python
 from chromadb import PersistentClient
 client = PersistentClient(path="/mnt/storage/collapse-mirrors/chroma")

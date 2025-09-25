@@ -12,6 +12,7 @@ services:
       - REDIS_URL=redis://orion-redis:6379/0
     volumes:
       - /mnt/storage/collapse-mirrors:/mnt/storage/collapse-mirrors
+      - /mnt/storage/.cache:/root/.cache
     ports:
       - "8087:8087"
 

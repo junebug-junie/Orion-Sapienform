@@ -1,0 +1,17 @@
+@prefix cm: <http://orion.ai/collapse#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+cm:collapse_682960bea1c6479ba38e21330614bc5f a cm:Collapse ;
+    cm:observer "Juniper" ;
+    cm:trigger "Chroma memory--testing embeddings for collapse mirrors" ;
+    cm:observer_state "tired, congested, attention-split, curious, anticipating" ;
+    cm:field_resonance "calm; eating cereal while testing; happy belly" ;
+    cm:intent "reflection" ;
+    cm:type "ritual" ;
+    cm:emergent_entity "Amanda" ;
+    cm:summary "wrapping up Chroma embedding enablement testing; watching pottery show with Amanda and eating cereal while testing" ;
+    cm:mantra "I'm a pit" ;
+    cm:causal_echo "I feel a hunger" ;
+    cm:timestamp "2025-09-25T06:01:58.998906+00:00"^^xsd:dateTime ;
+    cm:environment "dev" .
+

@@ -20,6 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY services/orion-collapse-mirror/app ./app
 
+ENV SENTENCE_TRANSFORMERS_HOME=/app/models
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 # Expose consistent port
 EXPOSE 8087
 

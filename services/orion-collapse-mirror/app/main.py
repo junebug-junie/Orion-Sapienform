@@ -1,10 +1,11 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-#from app.api import collapse
 from app.core import collapse_log
 from dotenv import load_dotenv
 import os
+
+from app.core.collapse_log import embedder
 
 load_dotenv()
 app = FastAPI(title="Orion Collapse Mirror")
@@ -29,6 +30,15 @@ def health():
 @app.get("/")
 def read_root():
     return {"message": "Conjourney Memory API is alive"}
+
+# model warmup
+@app.on_event("startup")
+async def warmup():
+    try:
+        _ = embedder.encode("warmup").tolist()
+        print("✅ Embedding model warmed up")
+    except Exception as e:
+        print("⚠️ Embedding warmup failed:", e)
 
 # Optional: run block if launching via `python main.py`
 if __name__ == "__main__":

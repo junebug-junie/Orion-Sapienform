@@ -1,115 +1,155 @@
 import os
+import sys
 import json
+import time
 import redis
 import requests
-import time
 
 from rdflib import Graph, Namespace, URIRef, Literal
-from rdflib.namespace import RDF, RDFS, XSD
+from rdflib.namespace import RDF, XSD
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-GRAPHDB_BASE = os.getenv("GRAPHDB_URL", "http://graphdb:7200")
-REPO = os.getenv("GRAPHDB_REPO", "collapse")
-STATEMENTS_URL = f"{GRAPHDB_BASE}/repositories/{REPO}/statements"
-REPOS_URL = f"{GRAPHDB_BASE}/rest/repositories"
+# ---- Environment / Config
+REDIS_URL     = os.getenv("REDIS_URL", "redis://orion-redis:6379/0")
+CHANNEL       = os.getenv("BUS_CHANNEL", "collapse:new")
+GRAPHDB_BASE  = os.getenv("GRAPHDB_URL", "http://graphdb:7200")
+REPO          = os.getenv("GRAPHDB_REPO", "collapse")
 
-r = redis.Redis.from_url(REDIS_URL)
+REST_REPOS    = f"{GRAPHDB_BASE}/rest/repositories"
+STATEMENTS_URL= f"{GRAPHDB_BASE}/repositories/{REPO}/statements"
+
 CM = Namespace("http://orion.ai/collapse#")
 
-def wait_for_graphdb(timeout=60, interval=3):
-    """Poll GraphDB REST API until it's ready or timeout expires."""
+# ---- Logging helper
+def log(*args):
+    print(*args, flush=True)
+
+# ---- GraphDB readiness + repo management
+def wait_for_graphdb(max_wait_sec=120, interval=3):
     start = time.time()
-    while time.time() - start < timeout:
+    while time.time() - start < max_wait_sec:
         try:
-            resp = requests.get(REPOS_URL, timeout=5)
-            if resp.status_code == 200:
-                print("✅ GraphDB is ready")
-                return True
+            r = requests.get(REST_REPOS, timeout=5)
+            if r.status_code == 200:
+                log("✅ GraphDB reachable")
+                return
         except requests.exceptions.RequestException:
             pass
-        print("⏳ Waiting for GraphDB to start...")
+        log("⏳ Waiting for GraphDB…")
         time.sleep(interval)
     raise RuntimeError("❌ GraphDB did not become ready in time")
 
 def ensure_repo_exists():
-    resp = requests.get(REPOS_URL)
-    if resp.status_code == 200 and REPO in resp.text:
-        print(f"ℹ️ Repository '{REPO}' already exists")
-        return
-
-    storage_path = f"/opt/graphdb/home/data/repositories/{REPO}"
-
-    ttl = f"""
-    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-    @prefix rep: <http://www.openrdf.org/config/repository#> .
-    @prefix sr: <http://www.openrdf.org/config/repository/sail#> .
-    @prefix sail: <http://www.openrdf.org/config/sail#> .
-    @prefix owlim: <http://www.ontotext.com/trree/owlim#> .
-
-    [] a rep:Repository ;
-       rep:repositoryID "{REPO}" ;
-       rdfs:label "Collapse Mirror Repository" ;
-       rep:repositoryImpl [
-          rep:repositoryType "graphdb:SailRepository" ;
-          sr:sailImpl [
-             sail:sailType "graphdb:Sail" ;
-             owlim:ruleset "rdfsplus-optimized" ;
-             owlim:storage-folder "{storage_path}" ;
-          ]
-       ] .
-    """
-
-    files = {"config": ("repo.ttl", ttl, "application/x-turtle")}
-    resp = requests.post(REPOS_URL, files=files)
-    print("↩️ Repo creation response:", resp.status_code, resp.text[:500])
-    resp.raise_for_status()
-    print(f"✅ Created repository '{REPO}'")
-
-
-def insert_triples(triples):
-    """Insert a batch of RDF triples into GraphDB."""
-    g = Graph()
-    for s, p, o in triples:
-        g.add((URIRef(s), URIRef(p), Literal(o)))
-    data = g.serialize(format="nt")
-    resp = requests.post(STATEMENTS_URL, data=data, headers={"Content-Type": "application/n-triples"})
-    resp.raise_for_status()
-
-
-def handle_event(msg):
     try:
-        payload = msg["data"]
-        if isinstance(payload, bytes):
-            payload = payload.decode("utf-8")
-        data = json.loads(payload)
-
-        collapse_id = data.get("id")
-        triples = []
-        if collapse_id and data.get("trigger"):
-            triples.append((f"{CM}{collapse_id}", f"{CM}trigger", data["trigger"]))
-        if collapse_id and data.get("reflection"):
-            triples.append((f"{CM}{collapse_id}", f"{CM}reflection", data["reflection"]))
-
-        if triples:
-            insert_triples(triples)
-            print(f"✅ Stored collapse {collapse_id} into GraphDB")
-        else:
-            print(f"⚠️ No valid triples for event: {data}")
-
+        r = requests.get(REST_REPOS, timeout=10)
+        r.raise_for_status()
+        repos = r.json()
+        if any(x.get("id") == REPO for x in repos):
+            log(f"✅ Repository '{REPO}' present")
+            return
     except Exception as e:
-        print(f"⚠️ Error handling event: {e}")
+        log(f"⚠️ Failed to list repositories: {e}")
 
+    # GraphDB 11 config (use graphdb: vocab, SailStore)
+    cfg_ttl = f"""
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rep:     <http://www.openrdf.org/config/repository#> .
+@prefix sr:      <http://www.openrdf.org/config/repository/sail#> .
+@prefix sail:    <http://www.openrdf.org/config/sail#> .
+@prefix graphdb: <http://www.ontotext.com/trree/graphdb#> .
+
+[] a rep:Repository ;
+   rep:repositoryID "{REPO}" ;
+   rdfs:label "Collapse Mirror Repository" ;
+   rep:repositoryImpl [
+     rep:repositoryType "graphdb:SailRepository" ;
+     sr:sailImpl [
+       sail:sailType "graphdb:SailStore" ;
+       graphdb:ruleset "rdfsplus-optimized"
+     ]
+   ] .
+""".strip()
+
+    r = requests.post(
+        REST_REPOS,
+        headers={"Content-Type": "text/turtle"},
+        data=cfg_ttl.encode("utf-8"),
+        timeout=15
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(f"❌ Repo create failed: {r.status_code} {r.text[:500]}")
+    log(f"✅ Created repository '{REPO}'")
+
+# ---- RDF builder and push
+def build_graph(entry_id: str, payload: dict) -> Graph:
+    """
+    Map collapse payload to RDF. We:
+    - type the subject as cm:Collapse
+    - add all scalar fields as cm:<key> "value"
+    - collapse lists (e.g., observer_state) to comma-joined strings
+    """
+    g = Graph()
+    g.bind("cm", CM)
+
+    s = URIRef(f"{CM}{entry_id}")
+    g.add((s, RDF.type, CM.Collapse))
+    g.add((s, CM.id, Literal(entry_id, datatype=XSD.string)))
+
+    for k, v in payload.items():
+        if v is None:
+            continue
+        # flatten lists to a readable string
+        if isinstance(v, list):
+            v = ", ".join(map(str, v))
+        # store everything as xsd:string for simplicity
+        g.add((s, URIRef(str(CM) + k), Literal(v, datatype=XSD.string)))
+
+    return g
+
+def push_graph(g: Graph):
+    ttl = g.serialize(format="turtle")
+    r = requests.post(
+        STATEMENTS_URL,
+        headers={"Content-Type": "text/turtle"},
+        data=ttl,
+        timeout=15
+    )
+    if r.status_code not in (200, 204):
+        raise RuntimeError(f"❌ Push failed: {r.status_code} {r.text[:500]}")
+
+# ---- Redis subscriber loop
+def main():
+    log(f"ENV → REDIS_URL={REDIS_URL}  GRAPHDB={GRAPHDB_BASE}  REPO={REPO}  CHANNEL={CHANNEL}")
+    wait_for_graphdb()
+    ensure_repo_exists()
+
+    r = redis.Redis.from_url(REDIS_URL)
+    ps = r.pubsub()
+    ps.subscribe(CHANNEL)
+    log(f"📡 Listening on Redis channel '{CHANNEL}'")
+
+    for msg in ps.listen():
+        if msg.get("type") != "message":
+            continue
+        try:
+            raw = msg["data"]
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            data = json.loads(raw)
+
+            entry_id = data.pop("id", None)
+            if not entry_id:
+                log("⚠️ Skipping message without 'id'"); continue
+
+            # Build and push RDF
+            g = build_graph(entry_id, data)
+            push_graph(g)
+            log(f"✅ Ingested {entry_id} → GraphDB ({len(g)} triples)")
+        except Exception as e:
+            log(f"❌ Error ingesting message: {e}",)
 
 if __name__ == "__main__":
-    wait_for_graphdb(timeout=120)
-    ensure_repo_exists()
-    print(f"🎉 Repository '{REPO}' is ready, waiting for Redis events…")
-
-    pubsub = r.pubsub()
-    pubsub.subscribe("collapse:new")
-    print("📡 Listening for collapse:new events...")
-
-    for message in pubsub.listen():
-        if message["type"] == "message":
-            handle_event(message)
-1
+    try:
+        main()
+    except Exception as e:
+        log(f"💥 Fatal: {e}")
+        sys.exit(1)

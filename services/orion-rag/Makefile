@@ -1,7 +1,7 @@
 # Orion RAG Service Makefile
 NET ?= app-net
 PORT ?= 8001
-SERVICE ?= orion-rag-service
+SERVICE ?= orion-rag
 
 .PHONY: up down status logs smoke rebuild
 
@@ -17,7 +17,7 @@ help:
 
 up:
 	@docker compose up -d --build
-	@echo "✔ Orion RAG service running at http://localhost:$(PORT)"
+	@echo "✔ Orion RAG running at http://localhost:$(PORT)"
 
 down:
 	@docker compose down --remove-orphans

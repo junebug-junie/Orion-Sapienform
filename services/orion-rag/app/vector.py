@@ -24,20 +24,37 @@ def get_client() -> QdrantClient:
 
 
 def ensure_collection(dim: int):
-    """Create collection if not exists (idempotent)."""
+    """Ensure Qdrant collection exists with correct dim. Recreate if mismatch."""
     global _dim
     _dim = dim
     cli = get_client()
+
     try:
-        existing = {c.name for c in cli.get_collections().collections}
-        if COLLECTION not in existing:
+        collections = {c.name: c for c in cli.get_collections().collections}
+        if COLLECTION not in collections:
             logger.info(f"Creating Qdrant collection '{COLLECTION}' with dim={dim}")
             cli.create_collection(
                 collection_name=COLLECTION,
                 vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
             )
         else:
-            logger.debug(f"Collection '{COLLECTION}' already exists; skipping create.")
+            # Check existing dimension
+            info = cli.get_collection(COLLECTION)
+            existing_dim = info.config.params.vectors.size
+            if existing_dim != dim:
+                logger.warning(
+                    f"Collection '{COLLECTION}' has dim={existing_dim}, "
+                    f"but embedder requires dim={dim}. Recreating..."
+                )
+                cli.delete_collection(COLLECTION)
+                cli.create_collection(
+                    collection_name=COLLECTION,
+                    vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
+                )
+            else:
+                logger.debug(
+                    f"Collection '{COLLECTION}' already exists with correct dim={dim}."
+                )
     except UnexpectedResponse as e:
         logger.error(f"Failed to ensure collection '{COLLECTION}': {e}")
         raise

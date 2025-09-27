@@ -19,7 +19,7 @@ def chunk_text(text: str, chunk_size: int = 600, overlap: int = 120) -> List[str
 
 # ---- embeddings (FastEmbed) ----
 _EMBED = None
-_MODEL = os.getenv("RAG_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+_MODEL = os.getenv("RAG_EMBED_MODEL", "BAAI/bge-large-en-v1.5")
 
 def get_embedder():
     global _EMBED

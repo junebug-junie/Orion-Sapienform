@@ -1,64 +1,51 @@
-from pydantic_settings import BaseSettings
-from pydantic import AnyUrl
-from typing import Optional
+import os
 
-class Settings(BaseSettings):
-    # Orion integration
-    BRAIN_URL: str = "https://orion-brain:8088"
-    ORION_BUS_URL: str = "redis://orion-redis:6379/0"
-    ORION_BUS_ENABLED: bool = True
+class Settings:
+    """
+    Lightweight settings loader that:
+    - Reads from environment variables
+    - Provides type casting (int, float, bool, tuple)
+    - Defaults to str if no caster is defined
+    """
 
-    # Video source: e.g., "/dev/video0", "rtsp://user:pass@host:554/stream", "rtmp://..."
-    SOURCE: str = "/dev/video0"
-    WIDTH: int = 1280
-    HEIGHT: int = 720
-    FPS: int = 15
+    # mapping of known env keys -> caster
+    _casters = {
+        "WIDTH": int,
+        "HEIGHT": int,
+        "FPS": int,
+        "DETECT_EVERY_N_FRAMES": int,
+        "MOTION_MIN_AREA": int,
+        "FACE_SCALE_FACTOR": float,
+        "FACE_MIN_NEIGHBORS": int,
+        "FACE_MIN_SIZE": lambda v: tuple(map(int, v.split(","))),
+        "ANNOTATE": lambda v: str(v).lower() in ("1", "true", "yes"),
 
-    # Comma-separated detector list: "motion,face"
-    DETECTORS: str = "motion,face"
+        "ENABLE_UI": lambda v: str(v).lower() in ("1", "true", "yes"),
+        "PRESENCE_TIMEOUT": int,
+        "PRESENCE_LABEL": str,
 
-    # Minimum area (px) to report motion
-    MOTION_MIN_AREA: int = 2000
+        "ENABLE_YOLO": lambda v: str(v).lower() in ("1", "true", "yes"),
+        "YOLO_MODEL": str,
+        "YOLO_CLASSES": str,
+        "YOLO_CONF": float,
+        "YOLO_DEVICE": str,
 
-    # Face detector scale/params
-    FACE_SCALE_FACTOR: float = 1.1
-    FACE_MIN_NEIGHBORS: int = 5
-    FACE_MIN_SIZE: int = 30
+        "LLM_MODEL": str,
+        "BRAIN_URL": str,
+        "ORION_BUS_ENABLED": lambda v: str(v).lower() in ("1", "true", "yes"),
+        "ORION_BUS_URL": str,
+    }
 
-    ENABLE_PRESENCE: bool = False
-    PRESENCE_TIMEOUT: int = 60
-    PRESENCE_LABEL: str = "Juniper"
+    def __getattr__(self, name: str):
+        env_key = name.upper()
+        val = os.getenv(env_key)
+        if val is None:
+            raise AttributeError(f"Missing setting: {name}")
 
-    # Stream identifier (for events)
-    STREAM_ID: str = "default"
-
-    # Redis URL for publishing events (pub only; consumers can subscribe separately)
-    #REDIS_URL: Optional[str] = None  # e.g., "redis://redis:6379/0"
-
-    # Optional HTTP webhook to receive events
-    EVENT_WEBHOOK_URL: Optional[AnyUrl] = None
-
-    # Throttle detection to every N frames (>=1)
-    DETECT_EVERY_N_FRAMES: int = 2
-
-    # Whether to draw annotations on frames
-    ANNOTATE: bool = True
-
-    # JPEG encoding quality (1-100)
-    JPEG_QUALITY: int = 80
-
-    # Expose basic web UI (index.html)
-    ENABLE_UI: bool = True
-
-    class Config:
-      env_File = ".env"
+        caster = self._casters.get(env_key, str)
+        try:
+            return caster(val)
+        except Exception as e:
+            raise ValueError(f"Failed to cast {env_key}={val!r}: {e}")
 
 settings = Settings()
-
-
-# YOLO (GPU-friendly) toggles
-ENABLE_YOLO: bool = False
-YOLO_MODEL: str = "yolov8n.pt"   # file in /app/models or hub path
-YOLO_CLASSES: str = "person"     # comma-separated names; leave empty for all
-YOLO_CONF: float = 0.25
-YOLO_DEVICE: str = "0"           # "0" (GPU0), "cuda:0", or "cpu"

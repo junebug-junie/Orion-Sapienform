@@ -57,3 +57,13 @@ health:
 
 snapshot:
 	@curl -s http://localhost:8000/snapshot.jpg --output snapshot.jpg && echo "✔ saved snapshot.jpg"
+
+gpu-check:
+	@docker compose exec -T orion-vision python3 -c "import torch; \
+print('Torch CUDA available:', torch.cuda.is_available()); \
+print('CUDA device count:', torch.cuda.device_count()); \
+[print(f'Device {i}:', torch.cuda.get_device_name(i)) for i in range(torch.cuda.device_count())]; \
+from ultralytics import YOLO; \
+model = YOLO('yolov8n.pt'); \
+model.to('cuda:1'); \
+print('YOLO device:', model.device)"

@@ -31,27 +31,29 @@ if "motion" in settings.DETECTORS.split(","):
     detectors.append(("motion", MotionDetector(min_area=settings.MOTION_MIN_AREA)))
 if "face" in settings.DETECTORS.split(","):
     detectors.append(("face", FaceDetector(
-        cascade_path=getattr(settings, "FACE_CASCADE_PATH", "/app/haar/haarcascade_frontalface_default.xml"),
+        cascade_path=settings.FACE_CASCADE_PATH,
         scale_factor=settings.FACE_SCALE_FACTOR,
         min_neighbors=settings.FACE_MIN_NEIGHBORS,
         min_size=settings.FACE_MIN_SIZE,
     )))
-
 # Optional YOLO (GPU-capable). Enable via ENABLE_YOLO=1 (and run container with --gpus all).
-if getattr(settings, "ENABLE_YOLO", False):
-    classes = set([c.strip() for c in (settings.YOLO_CLASSES or "").split(",") if c.strip()]) or None
+if settings.ENABLE_YOLO:
+    classes = {c.strip() for c in settings.YOLO_CLASSES.split(",") if c.strip()} or None
+    device = f"cuda:{settings.YOLO_DEVICE}" if settings.YOLO_DEVICE.isdigit() else settings.YOLO_DEVICE
     detectors.append(("yolo", YoloDetector(
         model_path=settings.YOLO_MODEL,
         classes=classes,
         conf=settings.YOLO_CONF,
-        device=settings.YOLO_DEVICE
+        device=device
     )))
 
-if getattr(settings, "ENABLE_PRESENCE", False):
+# Prescense detctors
+if settings.ENABLE_PRESENCE:
     detectors.append(("presence", PresenceDetector(
         timeout=settings.PRESENCE_TIMEOUT,
         label=settings.PRESENCE_LABEL
     )))
+
 last_event = None
 _frame_counter = 0
 
@@ -113,7 +115,7 @@ async def on_start():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "detectors": settings.DECTECTORS if hasattr(settings, "DECTECTORS") else settings.DETECTORS}
+    return {"ok": True, "detectors": settings.DETECTORS}
 
 @app.get("/", response_class=HTMLResponse)
 async def index():

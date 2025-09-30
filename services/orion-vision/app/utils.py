@@ -9,8 +9,19 @@ def draw_boxes(frame, boxes: List[Tuple[int,int,int,int]], label: str):
         cv2.putText(frame, label, (x, max(0,y-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
 
 def encode_jpeg(frame):
-    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), settings.JPEG_QUALITY])
-    return buf.tobytes() if ok else None
+    try:
+        quality = int(settings.JPEG_QUALITY) if hasattr(settings, "JPEG_QUALITY") else 95
+    except ValueError:
+        quality = 95
+
+    ok, buf = cv2.imencode(
+        ".jpg",
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    )
+    if not ok:
+        return None
+    return buf.tobytes()
 
 def now_ts():
     return int(time.time()*1000)

@@ -1,13 +1,12 @@
-services:
-  redis:
-    image: redis:7-alpine
-    container_name: vision-redis
+version: "3.9"
 
-  vision:
-    build: .
-    container_name: vision-service
-    depends_on:
-      - redis
+services:
+  orion-vision:
+    build:
+      context: ../..
+      dockerfile: services/orion-vision/Dockerfile
+    container_name: orion-vision
+    restart: unless-stopped
     environment:
       SOURCE: "${REOLINK_URL}"
       WIDTH: "${WIDTH}"
@@ -16,16 +15,22 @@ services:
       DETECTORS: "${DETECTORS}"
       MOTION_MIN_AREA: "${MOTION_MIN_AREA}"
       STREAM_ID: "${STREAM_ID}"
-      REDIS_URL: "redis://redis:6379/0"
       ENABLE_UI: "${ENABLE_UI}"
-
-      # YOLO config
       ENABLE_YOLO: "${ENABLE_YOLO}"
       YOLO_MODEL: "${YOLO_MODEL}"
       YOLO_CLASSES: "${YOLO_CLASSES}"
       YOLO_CONF: "${YOLO_CONF}"
-      YOLO_DEVICE: "${YOLO_DEVICE}"
+      YOLO_DEVICE: "1"
+      BRAIN_URL: "${BRAIN_URL}"
+      ORION_BUS_URL: "${ORION_BUS_URL}"
+      ORION_BUS_ENABLED: "${ORION_BUS_ENABLED}"
     ports:
       - "8000:8000"
     deploy: {}
-    gpus: all
+    runtime: nvidia
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

@@ -3,6 +3,11 @@ from pydantic import AnyUrl
 from typing import Optional
 
 class Settings(BaseSettings):
+    # Orion integration
+    BRAIN_URL: str = "https://orion-brain:8088"
+    ORION_BUS_URL: str = "redis://orion-redis:6379/0"
+    ORION_BUS_ENABLED: bool = True
+
     # Video source: e.g., "/dev/video0", "rtsp://user:pass@host:554/stream", "rtmp://..."
     SOURCE: str = "/dev/video0"
     WIDTH: int = 1280
@@ -10,7 +15,7 @@ class Settings(BaseSettings):
     FPS: int = 15
 
     # Comma-separated detector list: "motion,face"
-    DETECTORS: str = "motion"
+    DETECTORS: str = "motion,face"
 
     # Minimum area (px) to report motion
     MOTION_MIN_AREA: int = 2000
@@ -28,7 +33,7 @@ class Settings(BaseSettings):
     STREAM_ID: str = "default"
 
     # Redis URL for publishing events (pub only; consumers can subscribe separately)
-    REDIS_URL: Optional[str] = None  # e.g., "redis://redis:6379/0"
+    #REDIS_URL: Optional[str] = None  # e.g., "redis://redis:6379/0"
 
     # Optional HTTP webhook to receive events
     EVENT_WEBHOOK_URL: Optional[AnyUrl] = None
@@ -44,6 +49,9 @@ class Settings(BaseSettings):
 
     # Expose basic web UI (index.html)
     ENABLE_UI: bool = True
+
+    class Config:
+      env_File = ".env"
 
 settings = Settings()
 

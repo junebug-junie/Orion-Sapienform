@@ -1,4 +1,4 @@
-
+import base64
 import asyncio, time, json
 from fastapi import FastAPI, Response, UploadFile, File
 from fastapi.responses import HTMLResponse, StreamingResponse, PlainTextResponse
@@ -9,7 +9,7 @@ from .settings import settings
 from .capture import CameraSource
 from .utils import draw_boxes, encode_jpeg
 from .schemas import Detection, Event
-from .bus import EventBus
+from orionbus import OrionBus
 
 from .detectors.motion import MotionDetector
 from .detectors.face import FaceDetector
@@ -18,8 +18,9 @@ from .detectors.presence import PresenceDetector
 
 app = FastAPI(title="Vision Service", version="0.1.0")
 
-loop = asyncio.get_event_loop()
-bus = EventBus(loop)
+#loop = asyncio.get_event_loop()
+#bus = EventBus(loop) #local
+bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
 
 cam = CameraSource(settings.SOURCE)
 cam.start()
@@ -30,7 +31,7 @@ if "motion" in settings.DETECTORS.split(","):
     detectors.append(("motion", MotionDetector(min_area=settings.MOTION_MIN_AREA)))
 if "face" in settings.DETECTORS.split(","):
     detectors.append(("face", FaceDetector(
-        cascade_path="/app/haar/haarcascade_frontalface_default.xml",
+        cascade_path=getattr(settings, "FACE_CASCADE_PATH", "/app/haar/haarcascade_frontalface_default.xml"),
         scale_factor=settings.FACE_SCALE_FACTOR,
         min_neighbors=settings.FACE_MIN_NEIGHBORS,
         min_size=settings.FACE_MIN_SIZE,
@@ -97,13 +98,18 @@ async def detector_loop():
                 detections = detections
             )
             last_event = ev
-            bus.put_nowait(json.loads(ev.json()))
+            # Ensure datetime is serializable
+            ev_dict = ev.dict()
+            ev_dict["ts"] = ev.ts.isoformat()
+
+            bus.publish("vision.events", ev_dict)
+
             # Update last annotated frame
             cam.last_frame = annotated
 
 @app.on_event("startup")
 async def on_start():
-    loop.create_task(detector_loop())
+    asyncio.create_task(detector_loop())
 
 @app.get("/health")
 async def health():
@@ -183,11 +189,6 @@ async def sse_events():
             yield f"data: {json.dumps(item)}\n\n"
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-from fastapi.responses import JSONResponse
-from fastapi.responses import StreamingResponse
-from starlette.responses import Response
-import base64
-
 @app.post("/detect")
 async def detect_upload(file: UploadFile = File(...)):
     import numpy as np
@@ -213,14 +214,22 @@ async def detect_upload(file: UploadFile = File(...)):
 
         elif hasattr(det, "update"):  # PresenceDetector
             events = det.update([d.dict() for d in detections])
-            detections.extend(events)
+            for ev in events:
+                detections.append(
+                    Detection(kind="presence", bbox=(0,0,0,0), score=1.0, label=ev.get("label", "presence"))
+                )
 
     # Encode annotated image
     jpg_bytes = encode_jpeg(annotated)
     jpg_b64 = base64.b64encode(jpg_bytes).decode("utf-8")
 
     # Return JSON with image + detections
-    return JSONResponse({
+    payload = {
         "detections": [d.dict() if hasattr(d, "dict") else d for d in detections],
         "image": jpg_b64
-    })
+    }
+    # also push to Orion bus
+    if detections:
+        await bus.publish("vision.detect.upload", payload)
+
+    return JSONResponse(payload)

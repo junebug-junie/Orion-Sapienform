@@ -1,0 +1,19 @@
+# Ignore environment files with sensitive data
+.env
+
+# Python cache / build
+__pycache__/
+*.pyc
+*.pyo
+
+# Docker artifacts
+*.log
+*.pid
+*.db
+*.sqlite
+*.tar
+*.tgz
+
+# VS Code / IDE configs
+.vscode/
+.idea/

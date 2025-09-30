@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+spacy
+vaderSentiment
+requests

@@ -1,7 +1,13 @@
+networks:
+  app-net:
+    external: true
+
+volumes:
+  orion-postgres-data:
+
 services:
   orion-sql-db:
     image: postgres:15
-    container_name: orion-sql-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: "${POSTGRES_USER}"
@@ -14,9 +20,15 @@ services:
     ports:
       - "5432:5432"
 
-volumes:
-  orion-postgres-data: {}
-
-networks:
-  app-net:
-    external: true
+  orion-sql-client:
+    image: dpage/pgadmin4:8
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_DEFAULT_EMAIL}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_DEFAULT_PASSWORD}"
+    ports:
+      - "5050:80"
+    depends_on:
+      - orion-sql-db
+    networks:
+      - app-net

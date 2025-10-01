@@ -1,0 +1,26 @@
+services:
+  orion-meta-writer:
+    build:
+      context: ../..
+      dockerfile: services/orion-meta-writer/Dockerfile
+    restart: unless-stopped
+    networks:
+      - app-net
+
+    environment:
+      ORION_BUS_URL: "${ORION_BUS_URL}"
+      ORION_BUS_ENABLED: "${ORION_BUS_ENABLED}"
+
+      POSTGRES_URI: "${POSTGRES_URI}"
+
+      SERVICE_VERSION: "${SERVICE_VERSION}"
+      SUBSCRIBE_CHANNEL: "${SUBSCRIBE_CHANNEL}"
+
+    volumes:
+      - /mnt/storage/collapse-mirrors:/mnt/storage/collapse-mirrors
+    ports:
+      - "8202:8202"
+
+networks:
+  app-net:
+    external: true

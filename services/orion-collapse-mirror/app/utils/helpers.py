@@ -1,16 +1,17 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import socket
 import os
 import platform
 
+
 def get_current_timestamp() -> str:
-    """Returns ISO-formatted current timestamp with timezone offset."""
-    return datetime.now().astimezone().isoformat()
+    """Returns ISO-formatted current timestamp in UTC with offset."""
+    return datetime.now(timezone.utc).isoformat()
+
 
 def get_environment_info() -> str:
-    """Returns a simple description of the current environment."""
+    """Returns a description of the current runtime environment."""
+    uname = platform.uname()
     hostname = socket.gethostname()
     user = os.getenv("USER") or os.getenv("USERNAME") or "unknown"
-    system = platform.system()
-    node = platform.node()
-    return f"{system} host '{hostname}' ({node}) under user '{user}'"
+    return f"{uname.system} {uname.release} on host '{hostname}' ({uname.node}) under user '{user}'"

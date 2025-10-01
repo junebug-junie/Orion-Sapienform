@@ -3,6 +3,7 @@ fastapi==0.115.9
 google-auth==2.40.3
 googleapis-common-protos==1.70.0
 pydantic==2.11.5
+pydantic_settings==2.5.2
 python-dotenv==1.1.0
 requests==2.32.4
 uvicorn[standard]==0.30.6
@@ -10,3 +11,5 @@ SQLAlchemy==2.0.43
 redis[hiredis]==5.0.7
 torch==2.4.1
 sentence-transformers==2.7.0
+psycopg2-binary==2.9.9
+alembic==1.16.5

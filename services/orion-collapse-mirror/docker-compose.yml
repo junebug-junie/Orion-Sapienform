@@ -8,11 +8,8 @@ services:
     networks:
       - app-net
     environment:
-      - POSTGRES_URI=sqlite:////mnt/storage/collapse-mirrors/collapse.db
-      - REDIS_URL=redis://orion-redis:6379/0
-    volumes:
-      - /mnt/storage/collapse-mirrors:/mnt/storage/collapse-mirrors
-      - /mnt/storage/.cache:/root/.cache
+      - ORION_BUS_ENABLED="${ORION_BUS_ENABLED}"
+      - ORION_BUS_URL=${ORION_BUS_URL}
     ports:
       - "8087:8087"
 

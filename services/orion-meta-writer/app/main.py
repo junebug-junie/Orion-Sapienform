@@ -1,4 +1,4 @@
-import os, json, asyncio
+import os, json, asyncio, threading
 from fastapi import FastAPI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -26,10 +26,10 @@ def get_db():
 # --- Worker ---
 def write_enrichment(db: Session, enrichment: dict):
     entry = CollapseEnrichmentSQL(
-        id=f"enrichment_{uuid4().hex}",
-        collapse_id=enrichment["id"],
-        service_name=enrichment["service_name"],
-        service_version=enrichment["service_version"],
+        id=enrichment.get("id") or f"enrichment_{uuid4().hex}",
+        collapse_id=enrichment.get("collapse_id") or enrichment["id"],
+        service_name=enrichment.get("service_name", settings.SERVICE_NAME),
+        service_version=enrichment.get("service_version", settings.SERVICE_VERSION),
         enrichment_type=enrichment.get("enrichment_type", "tagging"),
         tags=json.dumps(enrichment.get("tags", [])),
         entities=json.dumps(enrichment.get("entities", [])),
@@ -40,10 +40,15 @@ def write_enrichment(db: Session, enrichment: dict):
     return entry
 
 def listener_worker():
+    print(f"👂 Listening on Redis channel: {settings.SUBSCRIBE_CHANNEL}")
     sub = bus.subscribe(settings.SUBSCRIBE_CHANNEL)
     for message in sub:
         try:
-            enrichment = json.loads(message)
+            if isinstance(message, (str, bytes, bytearray)):
+                enrichment = json.loads(message)
+            else:
+                enrichment = message
+
             with SessionLocal() as db:
                 row = write_enrichment(db, enrichment)
                 print(f"✅ Enrichment {row.id} saved for collapse {row.collapse_id}")
@@ -51,8 +56,10 @@ def listener_worker():
             print("❌ Listener error:", e)
 
 @app.on_event("startup")
-async def startup_event():
-    asyncio.get_event_loop().run_in_executor(None, listener_worker)
+def startup_event():
+    # Launch in a background thread so FastAPI startup can finish
+    threading.Thread(target=listener_worker, daemon=True).start()
+    print("🚀 Meta-writer listener thread started")
 
 @app.get("/health")
 def health():

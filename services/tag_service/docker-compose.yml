@@ -1,7 +1,0 @@
-version: "3.9"
-services:
-  tag-service:
-    build: ./tag_service
-    container_name: tag-service
-    ports:
-      - "8001:8001"

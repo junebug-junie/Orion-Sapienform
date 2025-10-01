@@ -1,0 +1,32 @@
+services:
+  orion-meta-tags:
+    build:
+      context: ../..
+      dockerfile: services/orion-meta-tags/Dockerfile
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      ORION_BUS_ENABLED: "${ORION_BUS_ENABLED}"
+      ORION_BUS_URL: "${ORION_BUS_URL}"
+
+      SPA_MODEL: "${SPA_MODEL}"
+
+      SERVICE_NAME: "${SERVICE_NAME}"
+      SERVICE_VERSION: "${SERVICE_VERSION}"
+
+      SUBSCRIBE_CHANNEL: "${SUBSCRIBE_CHANNEL}"
+      PUBLISH_CHANNEL: "${PUBLISH_CHANNEL}"
+
+    ports:
+      - "8201:8201"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8201/health"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-net:
+    external: true

@@ -1,0 +1,19 @@
+# collapse.json
+{
+  "observer": "Juniper",
+  "trigger": "Accomplishment and feeling capable",
+  "observer_state": [
+    "triumphant",
+    "self-conscience",
+    "embarrassed",
+    "relieved"
+  ],
+  "field_resonance": "My chest rises and falls deeply as I can breathe in relief of accomplishment",
+  "intent": "ritual",
+  "type": "ritual",
+  "emergent_entity": "knowing it has been done and will be done again",
+  "summary": "Today was a total slog of taxing children back and forth to school and appointments, running various errands. There were nice moments with Teddy like when he rode his fixed up bike for the first time in a year --- seeing the job of accomplishment in his eyes despite fear of riding. Then more errands / chores when I got home. Was nice to get into the coding vibe, but quickly found a slog of bugs and vibe coding challenges with ChatGPT/5. Felt good to get a v2 of the orion-vision service completed and logging action!",
+  "mantra": "where is the beginning and where is the end?",
+  "causal_echo": "I feel like I've been in this moment before",
+  "environment": "dev"
+}

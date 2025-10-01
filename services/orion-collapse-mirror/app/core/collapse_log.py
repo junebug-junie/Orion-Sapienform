@@ -117,8 +117,9 @@ def log_collapse(entry: CollapseMirrorEntry, db: Session = Depends(get_db)):
 
     # Publish event on Redis bus for GraphDB ingestion
     try:
-        payload = {"id": entry_id, **metadata}
-        bus.publish("collapse:new", json.dumps(payload))
+        payload = {"id": entry_id, "service_name": "orion-collapse-mirror", **metadata}
+        bus.publish("collapse.events.raw", json.dumps(payload))
+        #bus.publish("collapse:new", json.dumps(payload))
         print(f"📡 Published collapse {entry_id} to Redis bus")
     except Exception as e:
         print(f"⚠️ Failed to publish collapse to Redis bus: {e}")

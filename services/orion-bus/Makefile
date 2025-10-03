@@ -21,6 +21,9 @@ ps:
 logs:
 	@docker compose logs -f --tail=100
 
+logs-all:
+	@docker exec -it orion-bus-orion-redis-1 redis-cli MONITOR
+
 # Raw MONITOR stream (dev only — can be noisy)
 tail:
 	@docker compose exec -T orion-redis redis-cli MONITOR

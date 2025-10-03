@@ -3,7 +3,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     ORION_BUS_URL: str = "redis://orion-redis:6379/0"
     ORION_BUS_ENABLED: bool = True
+
     SUBSCRIBE_CHANNEL: str = "orion.tags"
+    PUBLISH_CHANNEL: str = "orion.tags.enriched"
+
     SERVICE_NAME: str = "orion-enrichment-writer"
     SERVICE_VERSION: str = "0.1.0"
 

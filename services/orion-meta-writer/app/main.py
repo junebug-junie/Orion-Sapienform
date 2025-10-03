@@ -1,4 +1,4 @@
-import os, json, asyncio, threading
+import os, json, threading
 from fastapi import FastAPI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -6,9 +6,9 @@ from uuid import uuid4
 
 from .models import Base, CollapseEnrichmentSQL
 from .settings import settings
-from orionbus import OrionBus
+from orion.core.bus import OrionBus
 
-app = FastAPI(title="Enrichment Writer")
+app = FastAPI(title=settings.SERVICE_NAME)
 bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
 
 # --- DB setup ---
@@ -27,7 +27,7 @@ def get_db():
 def write_enrichment(db: Session, enrichment: dict):
     entry = CollapseEnrichmentSQL(
         id=enrichment.get("id") or f"enrichment_{uuid4().hex}",
-        collapse_id=enrichment.get("collapse_id") or enrichment["id"],
+        collapse_id=enrichment.get("collapse_id") or enrichment.get("id"),
         service_name=enrichment.get("service_name", settings.SERVICE_NAME),
         service_version=enrichment.get("service_version", settings.SERVICE_VERSION),
         enrichment_type=enrichment.get("enrichment_type", "tagging"),
@@ -44,14 +44,22 @@ def listener_worker():
     sub = bus.subscribe(settings.SUBSCRIBE_CHANNEL)
     for message in sub:
         try:
+            # Ensure we have a dict
             if isinstance(message, (str, bytes, bytearray)):
                 enrichment = json.loads(message)
             else:
                 enrichment = message
 
+            # Write to DB
             with SessionLocal() as db:
                 row = write_enrichment(db, enrichment)
                 print(f"✅ Enrichment {row.id} saved for collapse {row.collapse_id}")
+
+            # Re-publish downstream
+            pub_channel = getattr(settings, "PUBLISH_CHANNEL", "orion.tags.enriched")
+            bus.publish(pub_channel, enrichment)
+            print(f"📡 Published enrichment → {pub_channel}")
+
         except Exception as e:
             print("❌ Listener error:", e)
 
@@ -68,5 +76,5 @@ def health():
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
         "subscribe_channel": settings.SUBSCRIBE_CHANNEL,
+        "publish_channel": getattr(settings, "PUBLISH_CHANNEL", "orion.tags.enriched"),
     }
-

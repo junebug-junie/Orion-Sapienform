@@ -1,11 +1,12 @@
 # Global hydration Makefile
 
 # --- Config (tweak if needed)
-PG_CONTAINER ?= orion-postgres-1
+PG_CONTAINER ?= orion-sql-db-orion-sql-db-1
+
 PG_USER ?= postgres
 PG_DB ?= conjourney
 
-SQL_DIR := services/orion-enrichment-writer/examples
+SQL_DIR := ./examples
 
 .PHONY: hydrate-db
 hydrate-db:

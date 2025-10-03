@@ -1,29 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+import threading
 
 from app import routes
 from app.db import init_db
-from app.chroma_db import embedder  # from your chroma.py
+from app.chroma_db import embedder
 from app.settings import settings
+from orion.core.bus import OrionBus
+from app.services.collapse_service import log_and_persist
 
 load_dotenv()
 
 app = FastAPI(
-    title="Orion Collapse Mirror",
+    title=settings.SERVICE_NAME,
     version=settings.SERVICE_VERSION,
 )
 
-# Optional: CORS setup if SDK/frontend will call this API
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # TODO: restrict in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Mount collapse mirror routes
 app.include_router(routes.router, prefix="/api")
 
 @app.get("/health")
@@ -38,15 +31,39 @@ def health():
 def read_root():
     return {"message": "Conjourney Memory API is alive"}
 
+
+# 👂 Intake listener
+def listen_for_intake(bus: OrionBus):
+    print("📡 Intake listener started, subscribing to collapse.intake ...")
+    for msg in bus.subscribe("collapse.intake"):
+        print("👂 Collapse intake:", msg)
+        try:
+            db = next(get_db())  # SQLAlchemy session
+            entry = CollapseMirrorEntry(**msg)  # ✅ enforce schema
+            log_and_persist(entry=entry, db=db)
+        except Exception as e:
+            print("⚠️ Error processing intake:", e)
+
 # Model warmup
 @app.on_event("startup")
-async def warmup():
+async def startup_event():
+    # Init DB + embedder warmup
     init_db()
     try:
         _ = embedder.encode("warmup").tolist()
         print("✅ Embedding model warmed up")
     except Exception as e:
         print("⚠️ Embedding warmup failed:", e)
+
+    # Start intake listener in background thread
+    bus = OrionBus(url=settings.ORION_BUS_URL)
+    if bus.enabled:
+        thread = threading.Thread(target=listen_for_intake, args=(bus,), daemon=True)
+        thread.start()
+        print("📡 Intake listener thread launched")
+    else:
+        print("⚠️ OrionBus disabled, intake listener not started")
+
 
 # Allow local run without uvicorn cli
 if __name__ == "__main__":

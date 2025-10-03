@@ -352,6 +352,34 @@ function drawOrionState() {
     requestAnimationFrame(drawOrionState);
 }
 
+
+document.getElementById("collapseSubmit").addEventListener("click", async () => {
+  const input = document.getElementById("collapseInput").value;
+  const status = document.getElementById("collapseStatus");
+  try {
+    const res = await fetch("/submit-collapse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: input
+    });
+    if (res.ok) {
+      status.textContent = "✅ Submitted successfully";
+      status.classList.remove("hidden");
+      status.classList.add("text-green-400");
+    } else {
+      status.textContent = "❌ Submission failed";
+      status.classList.remove("hidden");
+      status.classList.add("text-red-400");
+    }
+  } catch (err) {
+    status.textContent = "❌ Error connecting to server";
+    status.classList.remove("hidden");
+    status.classList.add("text-red-400");
+  }
+  setTimeout(() => status.classList.add("hidden"), 3000);
+})
+
+
 // --- Final Setup ---
 recordButton.addEventListener('mousedown', startRecording);
 recordButton.addEventListener('mouseup', stopRecording);

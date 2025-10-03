@@ -10,11 +10,17 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* \
 
 
 # Copy bus client (relative path inside monorepo)
-COPY services/orion-bus/client /tmp/orion-bus-client
-RUN pip3 install /tmp/orion-bus-client
+#COPY services/orion-bus/client /tmp/orion-bus-client
+#RUN pip3 install /tmp/orion-bus-client
 
 # Copy code
 COPY services/orion-meta-tags/app ./app
+
+# Copy shared orion libs (schemas, etc.)
+COPY orion /app/orion
+
+# Add to PYTHONPATH so `from orion.schemas ...` works
+ENV PYTHONPATH="/app:${PYTHONPATH}"
 
 EXPOSE 8201
 

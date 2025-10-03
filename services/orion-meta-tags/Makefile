@@ -1,6 +1,6 @@
 # Orion Makefile
 BUS_CONTAINER ?= orion-bus-orion-redis-1
-MIRROR_SERVICE ?= orion-collapse-mirror
+MIRROR_SERVICE ?= orion-collapse-mirror-orion-collapse-mirror-1
 TAGS_SERVICE ?= orion-meta-tags
 
 .PHONY: up down logs rebuild \

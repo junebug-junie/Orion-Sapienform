@@ -8,7 +8,7 @@ services:
     networks:
       - app-net
     environment:
-      - ORION_BUS_ENABLED="${ORION_BUS_ENABLED}"
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - ORION_BUS_URL=${ORION_BUS_URL}
     ports:
       - "8087:8087"

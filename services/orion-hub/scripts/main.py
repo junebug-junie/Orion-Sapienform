@@ -10,7 +10,8 @@ from fastapi.staticfiles import StaticFiles
 
 from scripts.asr import ASR
 from scripts.tts import TTS
-from orionbus import OrionBus
+from orion.core.bus import OrionBus
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +27,7 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 BRAIN_URL = os.getenv("BRAIN_URL", "http://orion-brain:8088")
 LLM_TIMEOUT_S = int(os.getenv("LLM_TIMEOUT_S", "60"))
 
-bus = OrionBus()
+bus = OrionBus(url="redis://orion-redis:6379/0") # refactor me!
 
 app = FastAPI()
 asr = None
@@ -173,3 +174,16 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
         logger.error(f"run_llm_tts error: {e}", exc_info=True)
         await llm_q.put({"error": "LLM or TTS failed."})
         await llm_q.put({"state": "idle"})
+
+@app.post("/submit-collapse")
+async def submit_collapse(data: dict):
+    if not bus.enabled:
+        return {"success": False, "error": "OrionBus disabled or not connected"}
+
+    try:
+        bus.publish("collapse.intake", data)   # ✅ canonical intake channel
+        print(f"📡 Published collapse event → collapse.intake: {data}")
+        return {"success": True}
+    except Exception as e:
+        print(f"❌ Publish error: {e}")
+        return {"success": False, "error": str(e)}

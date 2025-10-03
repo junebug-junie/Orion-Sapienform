@@ -9,9 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy service code
 COPY services/orion-meta-writer/app ./app
 
-# Install bus client from monorepo and clean up
-COPY services/orion-bus/client /tmp/orion-bus-client
-RUN pip install --no-cache-dir /tmp/orion-bus-client && rm -rf /tmp/orion-bus-client
+# copy schemas into the container
+COPY orion /app/orion
+
+# add orion/ to PYTHONPATH
+ENV PYTHONPATH="/app:${PYTHONPATH}"
 
 EXPOSE 8202
 

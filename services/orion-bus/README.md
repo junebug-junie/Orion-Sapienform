@@ -25,6 +25,7 @@ make status
 
 # follow logs
 make logs
+make logs-all
 
 # stop
 make down

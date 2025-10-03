@@ -19,6 +19,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY services/orion-collapse-mirror/app ./app
 
+# Copy shared orion libs (schemas, etc.)
+COPY orion /app/orion
+
+# Add to PYTHONPATH so `from orion.schemas ...` works
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# (Optional) install schemas as editable if you want pip metadata
+# RUN pip install -e /app/orion/schemas
+
 # Pre-pull embedding model into container (so no runtime downloads)
 ENV SENTENCE_TRANSFORMERS_HOME=/app/models
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"

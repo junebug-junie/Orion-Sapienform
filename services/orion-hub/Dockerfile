@@ -19,12 +19,15 @@ COPY services/orion-hub/requirements.txt ./requirements.txt
 # Install service dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Copy bus client (relative path inside monorepo)
-COPY services/orion-bus/client /tmp/orion-bus-client
-RUN pip3 install /tmp/orion-bus-client
+# copy schemas into the container
+COPY orion /app/orion
+
+# add orion/ to PYTHONPATH
+ENV PYTHONPATH="/app:${PYTHONPATH}"
 
 # Copy rest of hub service code
 COPY services/orion-hub /app
+
 
 EXPOSE 8080
 

@@ -18,6 +18,7 @@ class CollapseMirrorEntry(BaseModel):
     environment: Optional[str] = Field(default=None, description="Environment (dev, prod, etc.)")
 
     def with_defaults(self):
+        """Fill in defaults for timestamp + environment if missing."""
         if not self.timestamp:
             self.timestamp = datetime.now(timezone.utc).isoformat()
         if not self.environment:

@@ -8,6 +8,9 @@ COPY services/orion-brain/requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+# copy shared code
+COPY orion /app/orion
+
 # Copy the service code
 COPY services/orion-brain /app
 

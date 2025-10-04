@@ -17,7 +17,7 @@ services:
       PORT: ${PORT:-8088}
       SERVICE_NAME: ${SERVICE_NAME:-orion-brain}
 
-      # bus / events
+      # connect to shared Orion Bus
       REDIS_URL: ${REDIS_URL:-redis://orion-redis:6379/0}
       EVENTS_ENABLE: ${EVENTS_ENABLE:-"true"}
       EVENTS_STREAM: ${EVENTS_STREAM:-orion:evt:gateway}

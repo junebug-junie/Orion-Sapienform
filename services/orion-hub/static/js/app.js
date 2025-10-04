@@ -20,6 +20,7 @@ const contextValue = document.getElementById('contextValue');
 const instructionsText = document.getElementById('instructions');
 const clearButton = document.getElementById('clearButton');
 const copyButton = document.getElementById('copyButton');
+const API_BASE_URL = `http://${window.location.host}`;
 
 // --- State Management ---
 let socket;
@@ -362,7 +363,7 @@ async function loadCollapseTemplate() {
   if (!collapseInput) return;
 
   try {
-    const res = await fetch("/schema/collapse");
+    const res = await fetch(`${API_BASE_URL}/schema/collapse`);
     const schema = await res.json();
 
     // Pre-fill defaults
@@ -406,7 +407,7 @@ function setupCollapseForm() {
     }
 
     try {
-      const res = await fetch("/submit-collapse", {
+      const res = await fetch(`${API_BASE_URL}/submit-collapse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

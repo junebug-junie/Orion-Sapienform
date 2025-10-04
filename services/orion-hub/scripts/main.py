@@ -5,13 +5,14 @@ import base64
 import json
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 from scripts.asr import ASR
 from scripts.tts import TTS
 from orion.core.bus import OrionBus
-
+from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +34,17 @@ app = FastAPI()
 asr = None
 tts = None
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # REFACTOR ME! 🔒 restrict later
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+print("registered routes")
+for route in app.routes:
+    logging.info(f"Registered route: {route.path}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -175,15 +187,26 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
         await llm_q.put({"error": "LLM or TTS failed."})
         await llm_q.put({"state": "idle"})
 
+@app.get("/schema/collapse")
+def get_collapse_schema():
+    """Expose CollapseMirrorEntry schema for UI templating."""
+    print("getting schema from service")
+    return JSONResponse(CollapseMirrorEntry.schema())
+
 @app.post("/submit-collapse")
 async def submit_collapse(data: dict):
+    print("🔥 /submit-collapse called with:", data)
+
     if not bus.enabled:
+        print("OrioBus is not connected")
         return {"success": False, "error": "OrionBus disabled or not connected"}
 
     try:
-        bus.publish("collapse.intake", data)   # ✅ canonical intake channel
-        print(f"📡 Published collapse event → collapse.intake: {data}")
+        entry = CollapseMirrorEntry(**data).with_defaults()
+        bus.publish("collapse.intake", entry.dict())
+        print(f"📡 Hub published collapse → collapse.intake: {entry.dict()}")
         return {"success": True}
     except Exception as e:
-        print(f"❌ Publish error: {e}")
+        print(f"❌ Hub publish error: {e}")
         return {"success": False, "error": str(e)}
+

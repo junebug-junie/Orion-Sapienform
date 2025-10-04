@@ -4,11 +4,12 @@ from dotenv import load_dotenv
 import threading
 
 from app import routes
-from app.db import init_db
+from app.db import init_db, get_db
 from app.chroma_db import embedder
 from app.settings import settings
 from orion.core.bus import OrionBus
 from app.services.collapse_service import log_and_persist
+from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
 load_dotenv()
 
@@ -38,10 +39,20 @@ def listen_for_intake(bus: OrionBus):
     for msg in bus.subscribe("collapse.intake"):
         print("👂 Collapse intake:", msg)
         try:
-            db = next(get_db())  # SQLAlchemy session
-            entry = CollapseMirrorEntry(**msg)  # ✅ enforce schema
-            log_and_persist(entry=entry, db=db)
+            entry = CollapseMirrorEntry(**msg).with_defaults()  # ✅ enforce schema
+
+            db = next(get_db())
+
+            try:
+                log_and_persist(entry=entry, db=db)
+                print(f"Collapse persisted: {entry.summary[:10]}...")
+            finally:
+                db.close()
+
         except Exception as e:
+            import traceback
+            print(f"❌ Intake error: {e}")
+            traceback.print_exc()
             print("⚠️ Error processing intake:", e)
 
 # Model warmup

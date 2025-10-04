@@ -38,6 +38,10 @@ let liveMicSource;
 let particles = [];
 let baseParticleCount = 200;
 
+window.addEventListener("error", (e) => {
+  console.error("💥 Uncaught error:", e.message, e.filename + ":" + e.lineno);
+});
+
 // --- Event Listeners ---
 tempControl.addEventListener('input', () => {
     tempValue.textContent = parseFloat(tempControl.value).toFixed(1);
@@ -353,31 +357,88 @@ function drawOrionState() {
 }
 
 
-document.getElementById("collapseSubmit").addEventListener("click", async () => {
-  const input = document.getElementById("collapseInput").value;
-  const status = document.getElementById("collapseStatus");
+async function loadCollapseTemplate() {
+  const collapseInput = document.getElementById("collapseInput");
+  if (!collapseInput) return;
+
   try {
-    const res = await fetch("/submit-collapse", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: input
-    });
-    if (res.ok) {
-      status.textContent = "✅ Submitted successfully";
-      status.classList.remove("hidden");
-      status.classList.add("text-green-400");
-    } else {
-      status.textContent = "❌ Submission failed";
-      status.classList.remove("hidden");
+    const res = await fetch("/schema/collapse");
+    const schema = await res.json();
+
+    // Pre-fill defaults
+    const defaults = {
+      observer: "DEMO",
+      trigger: "UI test submission",
+      observer_state: ["neutral"],
+      field_resonance: "baseline",
+      type: "test",
+      emergent_entity: "demo_entity",
+      summary: "This is a test collapse entry to validate the pipeline.",
+      mantra: "hold the mirror",
+      causal_echo: "none",
+      environment: "dev"
+    };
+
+    collapseInput.value = JSON.stringify(defaults, null, 2);
+    console.log("✅ Collapse schema loaded", schema);
+  } catch (err) {
+    console.error("❌ Failed to load collapse schema", err);
+    collapseInput.value = '{"observer":"DEMO","trigger":"fallback"}';
+  }
+}
+
+function setupCollapseForm() {
+  const submitBtn = document.getElementById("collapseSubmit");
+  const input = document.getElementById("collapseInput");
+  const status = document.getElementById("collapseStatus");
+
+  if (!submitBtn) return;
+
+  submitBtn.addEventListener("click", async () => {
+    let payload;
+    try {
+      payload = JSON.parse(input.value);
+    } catch (err) {
+      status.textContent = "❌ Invalid JSON";
+      status.classList.remove("hidden", "text-green-400");
+      status.classList.add("text-red-400");
+      return;
+    }
+
+    try {
+      const res = await fetch("/submit-collapse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success) {
+        status.textContent = "✅ Submitted successfully";
+        status.classList.remove("hidden", "text-red-400");
+        status.classList.add("text-green-400");
+      } else {
+        status.textContent = "❌ Submission failed";
+        if (data.error) status.textContent += `: ${data.error}`;
+        status.classList.remove("hidden", "text-green-400");
+        status.classList.add("text-red-400");
+      }
+    } catch (err) {
+      status.textContent = `❌ Error: ${err.message}`;
+      status.classList.remove("hidden", "text-green-400");
       status.classList.add("text-red-400");
     }
-  } catch (err) {
-    status.textContent = "❌ Error connecting to server";
-    status.classList.remove("hidden");
-    status.classList.add("text-red-400");
-  }
-  setTimeout(() => status.classList.add("hidden"), 3000);
-})
+
+    setTimeout(() => status.classList.add("hidden"), 3000);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadCollapseTemplate();
+  setupCollapseForm();
+});
+
 
 
 // --- Final Setup ---

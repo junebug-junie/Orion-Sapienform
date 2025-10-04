@@ -1,3 +1,26 @@
+#:80 {
+#    handle /submit-collapse* {
+#        reverse_proxy voice-app:8080
+#    }
+#
+#    handle {
+#        reverse_proxy voice-app:8080
+#    }
+#}
+
 :80 {
-    reverse_proxy http://voice-app:8080
+    # Collapse submissions → voice-app
+    handle /submit-collapse* {
+        reverse_proxy voice-app:8080
+    }
+
+    # Collapse schema
+    handle /schema/collapse* {
+        reverse_proxy voice-app:8080
+    }
+
+    # Everything else → voice-app (serves index.html, static/js, etc.)
+    handle {
+        reverse_proxy voice-app:8080
+    }
 }

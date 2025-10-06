@@ -1,0 +1,16 @@
+services:
+  orion-rdf-writer:
+    build:
+      context: ../..
+      dockerfile: services/orion-rdf-writer/Dockerfile
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "8020:8020"
+    env_file: .env
+    volumes:
+      - /mnt/storage/rdf_logs:/app/logs
+networks:
+  app-net:
+    external: true

@@ -1,0 +1,7 @@
+fastapi==0.115.9
+uvicorn[standard]==0.30.6
+rdflib==7.0.0
+httpx==0.28.1
+pydantic==2.11.5
+pydantic-settings==2.5.2
+redis[hiredis]==5.0.7

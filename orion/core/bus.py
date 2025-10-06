@@ -43,6 +43,18 @@ class OrionBus:
         pubsub = self.client.pubsub()
         pubsub.subscribe(channel)
         logger.info(f"Subscribed to channel: {channel}")
+
+        print(f"[BUS] Entering blocking listen() loop for channel: {channel}", flush=True)
+
         for message in pubsub.listen():
-            if message["type"] == "message":
-                yield json.loads(message["data"])
+
+            #print(f"!!! [BUS] RAW MESSAGE RECEIVED on {channel}: {message}", flush=True)
+
+            if message["type"] != "message":
+                continue
+            try:
+                data = json.loads(message["data"])
+            except Exception as e:
+                logger.error(f"[BUS] JSON parse failed on {channel}: {e} — raw={message['data']!r}")
+                continue
+            yield data

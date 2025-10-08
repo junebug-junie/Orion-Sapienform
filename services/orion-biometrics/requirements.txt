@@ -1,0 +1,6 @@
+fastapi==0.115.9
+uvicorn[standard]==0.30.6
+pydantic==2.11.5
+pydantic-settings==2.5.2
+redis[hiredis]==5.0.7
+psycopg2-binary==2.9.9

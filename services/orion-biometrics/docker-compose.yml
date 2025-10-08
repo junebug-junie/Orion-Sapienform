@@ -1,0 +1,17 @@
+services:
+  orion-metadata:
+    build:
+      context: ../..
+      dockerfile: services/orion-rdf-writer/Dockerfile
+    restart: unless-stopped
+    networks:
+      - app-net
+    env_file:
+      - .env
+    ports:
+      - "8100:8100"
+    volumes:
+      - /mnt/storage/logs/orion-biometrics/logs:/app/logs
+networks:
+  app-net:
+    external: true

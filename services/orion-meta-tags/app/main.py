@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import List, Dict
 import spacy
 
-from orion.core.bus import OrionBus
+from orion.core.bus.service import OrionBus
 from .settings import settings
 from .models import EventIn, Enrichment
 

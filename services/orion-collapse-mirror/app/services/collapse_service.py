@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.settings import settings
 from app.models import CollapseMirrorEntrySQL
 from app.chroma_db import collection, embedder
-from orion.core.bus import OrionBus
+from orion.core.bus.service import OrionBus
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
 bus = OrionBus(url=settings.ORION_BUS_URL)

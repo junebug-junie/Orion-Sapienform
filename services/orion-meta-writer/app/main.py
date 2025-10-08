@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from .models import Base, CollapseEnrichmentSQL
 from .settings import settings
-from orion.core.bus import OrionBus
+from orion.core.bus.service import OrionBus
 
 app = FastAPI(title=settings.SERVICE_NAME)
 bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)

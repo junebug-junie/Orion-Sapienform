@@ -1,5 +1,5 @@
 from typing import Dict
-from orion.core.bus import OrionBus
+from orion.core.bus.service import OrionBus
 from app.config import REDIS_URL, EVENTS_ENABLE, BUS_OUT_ENABLE
 
 # Global bus instance

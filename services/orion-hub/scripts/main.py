@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from scripts.asr import ASR
 from scripts.tts import TTS
-from orion.core.bus import OrionBus
+from orion.core.bus.service import OrionBus
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
 logging.basicConfig(

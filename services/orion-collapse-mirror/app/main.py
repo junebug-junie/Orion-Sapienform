@@ -7,7 +7,7 @@ from app import routes
 from app.db import init_db, get_db
 from app.chroma_db import embedder
 from app.settings import settings
-from orion.core.bus import OrionBus
+from orion.core.bus.service import OrionBus
 from app.services.collapse_service import log_and_persist
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 

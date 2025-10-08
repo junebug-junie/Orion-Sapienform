@@ -2,9 +2,15 @@ from pydantic_settings import BaseSettings
 from pydantic import field_validator
 
 class Settings(BaseSettings):
+
     POSTGRES_URI: str
+    TABLE_NAME: str
+
     ORION_BUS_URL: str = "redis://orion-redis:6379/0"
     ORION_BUS_ENABLED: bool = True
+
+    SUBSCRIBE_CHANNEL: str = "orion.biometrics"
+    PUBLISH_CHANNEL: str | None = None  # Optional downstream channel
 
     SERVICE_NAME: str = "orion-biometrics"
     SERVICE_VERSION: str = "0.1.0"

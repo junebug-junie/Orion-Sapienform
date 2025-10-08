@@ -1,46 +1,64 @@
+# orion_biometrics/main.py
+import threading
+
 from fastapi import FastAPI
-import uvicorn
-import redis
 
+from orion.core.sql_router.db import init_models
+from orion.core.sql_router.worker import start_worker_thread
+from orion.core.sql_router.router import build_writer_router
+
+from app.models import BiometricsSQL
+from orion.core.bus.telemetry import start_telemetry_loop
+from app.metrics import collect_biometrics
 from app.settings import settings
-from orion.core.bus import OrionBus
 
-from datetime import datetime
-import subprocess
-import json
+app = FastAPI(title=settings.SERVICE_NAME)
 
-app = FastAPI(settings.SERVICE_NAME, settings.SERVICE_VERSION)
-bus = OrionBus(url=settings.ORION_BUS_URL)
+# optional API write route
+app.include_router(
+    build_writer_router(BiometricsSQL, db_writer_func=lambda cls, d, db: cls(**d)),
+    prefix="/api"
+)
 
-def collect_biometrics():
-    # GPU metrics
-    gpu_info = subprocess.check_output(["nvidia-smi", "--query-gpu=utilization.gpu,power.draw", "--format=csv"])
+@app.get("/collect")
+def collect():
+    return collect_biometrics()
 
-    # Sensors for CPU temperature
-    cpu_info = subprocess.check_output(["sensors", "-j"])
-
-    # Parse and structure data
-    gpu_data = gpu_info.decode('utf-8').strip()
-    cpu_data = json.loads(cpu_info)
-
-    # Combine into a single dict
-    biometrics = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "gpu": gpu_data,
-        "cpu": cpu_data
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "service": settings.SERVICE_NAME,
+        "version": settings.SERVICE_VERSION,
+        "subscribe_channel": settings.SUBSCRIBE_CHANNEL,
+        "publish_channel": settings.PUBLISH_CHANNEL,
     }
 
-    return biometrics
+@app.on_event("startup")
+def startup():
+    init_models([BiometricsSQL])
 
-@app.get("/latest-biometrics")
-def get_latest_biometrics():
+    # 🛰️ Publish telemetry (GPU/CPU) every 30s
+    if settings.PUBLISH_CHANNEL:
+        threading.Thread(
+            target=start_telemetry_loop,
+            args=(settings.PUBLISH_CHANNEL, collect_biometrics, settings.ORION_BUS_URL),
+            kwargs={"interval": 30, "label": "orion-biometrics"},
+            daemon=True
+        ).start()
 
-    # Collect the current biometrics
-    biometrics = collect_biometrics()
-    return biometrics
+    # 📥 Worker for external metrics (e.g. piped-in crash dumps)
+    if settings.SUBSCRIBE_CHANNEL:
+        start_worker_thread(
+            bus_url=settings.ORION_BUS_URL,
+            channel=settings.SUBSCRIBE_CHANNEL,
+            model_class=BiometricsSQL
+        )
 
-def publish_biometrics_to_db(biometrics):
-    # Use Orion SQL writer client to write to PostgreSQL
-    # Placeholder for actual client code
-    pass  # Implement your DB writing logic here
-    bus = OrionBus(url=settings.ORION_BUS_URL)
+    # 📥 Worker to persist *our own* telemetry channel
+    if settings.PUBLISH_CHANNEL:
+        start_worker_thread(
+            bus_url=settings.ORION_BUS_URL,
+            channel=settings.PUBLISH_CHANNEL,
+            model_class=BiometricsSQL
+        )

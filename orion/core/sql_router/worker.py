@@ -1,7 +1,7 @@
 import json, threading, traceback
 from sqlalchemy.orm import Session
 from orion.core.sql_router.db import SessionLocal
-from orion.core.bus import OrionBus
+from orion.core.bus.service import OrionBus
 
 def default_writer(model_class, payload: dict, db: Session):
     obj = model_class(**payload)

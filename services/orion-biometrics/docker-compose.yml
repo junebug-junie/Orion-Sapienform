@@ -1,8 +1,8 @@
 services:
-  orion-metadata:
+  orion-biometrics:
     build:
       context: ../..
-      dockerfile: services/orion-rdf-writer/Dockerfile
+      dockerfile: services/orion-biometrics/Dockerfile
     restart: unless-stopped
     networks:
       - app-net
@@ -10,8 +10,17 @@ services:
       - .env
     ports:
       - "8100:8100"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    runtime: nvidia
+
     volumes:
-      - /mnt/storage/logs/orion-biometrics/logs:/app/logs
+      - /mnt/services/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
+      - /mnt/storage/logs/biometrics/logs:/app/logs
+      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro # access to low level host
 networks:
   app-net:
     external: true

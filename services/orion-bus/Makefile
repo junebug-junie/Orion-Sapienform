@@ -1,38 +1,49 @@
+# ───────────────────────────────────────────────
+# 🧠 Orion Bus Makefile — Generic Message Bus Layer
+# ───────────────────────────────────────────────
+
+PROJECT ?= $(shell grep ^PROJECT= /mnt/services/Orion-Sapienform/.env | cut -d= -f2)
 NET ?= app-net
+CORE ?= $(PROJECT)-bus-core
+EXPORTER ?= $(PROJECT)-bus-exporter
 
-.PHONY: up down status ps logs tail cli tail.stream
+.PHONY: up down ps status logs cli tail stream.metrics
 
+# Start or rebuild the bus stack
 up:
 	@docker network inspect $(NET) >/dev/null 2>&1 || docker network create $(NET)
-	@docker compose up -d
-	@echo "✔ Redis: tcp://localhost:6379"
-	@echo "✔ Redis Commander: http://localhost:8085"
-	@echo "✔ Redis Exporter (Prometheus): http://localhost:9121/metrics"
+	@docker compose up -d --build
+	@echo "✔ Bus Core: tcp://localhost:6379"
+	@echo "✔ Metrics:  http://localhost:9121/metrics"
 
+# Stop and remove containers
 down:
 	@docker compose down --remove-orphans
 
-status: ps
-ps:
+# Show running containers
+ps status:
 	@docker compose ps
+	@echo
 	@docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' \
-	  | awk 'NR==1||/orion-redis|redis-commander|redis_exporter/'
+	  | awk 'NR==1 || /bus-core|bus-exporter/'
 
+# Follow logs from all services
 logs:
 	@docker compose logs -f --tail=100
 
-logs-all:
-	@docker exec -it orion-bus-orion-redis-1 redis-cli MONITOR
-
-# Raw MONITOR stream (dev only — can be noisy)
-tail:
-	@docker compose exec -T orion-redis redis-cli MONITOR
-
-# Tail any stream (default = events)
-STREAM ?= orion:evt:gateway
-tail.stream:
-	@docker compose exec -T orion-redis redis-cli XREVRANGE $(STREAM) + - COUNT 20
-
-# Shortcut to drop into redis-cli
+# Drop into bus-core CLI (temporary redis backend)
 cli:
-	@docker compose exec -it orion-redis redis-cli
+	@docker exec -it $(CORE) redis-cli
+
+# Stream raw event data (use carefully — very noisy)
+tail:
+	@docker exec -it $(CORE) redis-cli MONITOR
+
+# Inspect any stream key (default = orion:evt:gateway)
+STREAM ?= orion:evt:gateway
+stream:
+	@docker exec -it $(CORE) redis-cli XREVRANGE $(STREAM) + - COUNT 20
+
+# Quick metric peek
+metrics:
+	@curl -s http://localhost:9121/metrics | head -n 25

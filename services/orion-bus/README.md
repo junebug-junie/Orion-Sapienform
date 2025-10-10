@@ -1,115 +1,121 @@
-# Orion Bus (Redis)
+# 🧠 Orion Bus — Mesh Message Backbone
 
-Shared Redis stack for the Orion mesh. Provides:
-- **Redis** on `6379` (AOF enabled)
-- **Redis Commander** UI on `http://localhost:8085`
-- **Redis Exporter** for Prometheus on `http://localhost:9121/metrics`
-- Attached to Docker network `app-net` with DNS alias `orion-redis`
+The **Orion Bus** is the shared message-broker layer that connects every service in the Orion-Sapienform mesh.
+It functions like the **nervous system** of the network — propagating events, state changes, and telemetry across all nodes.
 
-## Prereqs
+---
 
-- Docker / Docker Compose v2
-- A shared Docker network (created once):
-  ```bash
-  docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
-  ```
+## 🌐 Overview
 
-## Bring Up / Down
+| Component        | Purpose                                          | Port   |
+| ---------------- | ------------------------------------------------ | ------ |
+| **Bus Core**     | Primary message broker (temporary Redis backend) | `6379` |
+| **Bus Exporter** | Prometheus metrics endpoint                      | `9121` |
+
+All services in the mesh communicate through this bus for:
+
+* Event emission (`orion:evt:*`)
+* Internal messaging (`orion:bus:*`)
+* Shared state and coordination
+* Real-time introspection and health signals
+
+---
+
+## ⚙️ Prerequisites
+
+* Docker / Docker Compose v2
+* Shared Docker network (usually created once per node):
 
 ```bash
-# start
+docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
+```
+
+---
+
+## 🚀 Bring Up / Down
+
+```bash
+# Start the bus stack
 make up
 
-# status + ports
-make status
+# Show running containers
+make ps
 
-# follow logs
+# Tail logs
 make logs
-make logs-all
 
-# stop
+# Stop the stack
 make down
 ```
 
-## Ports
+---
 
-- Redis: `localhost:6379`
-- Redis Commander: `http://localhost:8085`
-- Redis Exporter: `http://localhost:9121/metrics`
+## 🔍 Monitoring
 
-## Streams convention (used by Orion services)
+Prometheus metrics are exposed at:
 
-- Internal events: `orion:evt:gateway`
-- Outbound bus: `orion:bus:out`
+```
+http://localhost:9121/metrics
+```
 
-Tail them (latest 20):
+To quickly view the top of the metrics stream:
 
 ```bash
-make tail.events
-make tail.out
+make metrics
 ```
 
-or raw monitor (noisy; dev only):
+---
+
+## 🧩 Interacting with the Bus
+
+### CLI Access
 
 ```bash
-make tail
+make cli
 ```
 
-## Using from other services
+Opens a shell into the broker for issuing commands or inspecting streams.
 
-Point services to this Redis via Docker DNS:
+### Stream Inspection
 
-```
-REDIS_URL=redis://orion-redis:6379/0
-```
+Each Orion service publishes events to canonical stream keys:
 
-Ensure the service is attached to the same network:
+| Stream              | Purpose                    |
+| ------------------- | -------------------------- |
+| `orion:evt:gateway` | internal mesh event stream |
+| `orion:bus:out`     | outbound message bus       |
 
-```yaml
-services:
-  my-service:
-    # ...
-    networks:
-      - app-net
+To preview messages:
 
-networks:
-  app-net:
-    external: true
-    name: app-net
+```bash
+make stream            # defaults to orion:evt:gateway
+make stream STREAM=orion:bus:out
 ```
 
-### Example: Orion Brain Service
+---
 
-In `orion-brain-service/compose.yaml`:
+## 🧠 How It Fits the Mesh
 
-```yaml
-environment:
-  REDIS_URL: ${REDIS_URL:-redis://orion-redis:6379/0}
-  EVENTS_ENABLE: ${EVENTS_ENABLE:-"true"}
-  EVENTS_STREAM: ${EVENTS_STREAM:-orion:evt:gateway}
-  BUS_OUT_ENABLE: ${BUS_OUT_ENABLE:-"true"}
-  BUS_OUT_STREAM: ${BUS_OUT_STREAM:-orion:bus:out}
-networks:
-  app-net:
-    aliases: ["brain-service"]
-```
+* The **Bus** carries messages between higher-order services such as:
 
-## Managed Redis (Prod)
+  * **Brain** (reasoning)
+  * **RAG** (retrieval / context)
+  * **Mirror** (memory / collapse logging)
+  * **Meta** (tagging / semantic linking)
+* Each node in the Orion mesh attaches to the same network and uses the same topic conventions.
+* Replacing the current Redis backend with another protocol (e.g., NATS, Kafka) will not affect higher services—the Bus interface remains stable.
 
-If you use a hosted/managed Redis, skip this stack and set:
+---
 
-```
-REDIS_URL=rediss://<user>:<password>@<host>:<port>/<db>
-```
+## 🛠️ Future Roadmap
 
-Your Orion services will publish/consume the same streams without changes.
+* Transition from Redis Streams to a custom event-bus abstraction.
+* Introduce schema validation for inter-service messages.
+* Enable persistent stream snapshots for replay and debugging.
+* Integrate distributed tracing hooks for Mesh Observability.
 
-## Troubleshooting
+---
 
-- **Commander 404 / empty UI**: confirm `make up` succeeded and Redis is healthy:
-  ```bash
-  docker compose ps
-  docker compose exec -T orion-redis redis-cli PING
-  ```
-- **Other services can’t connect**: verify they’re on `app-net` and use `redis://orion-redis:6379/0`.
-- **High CPU / MONITOR spam**: stop `make tail` (CTRL-C). Prefer `XREVRANGE` in `tail.events` / `tail.out`.
+### TL;DR
+
+> The Orion Bus is not just storage—it’s the **connective tissue** that gives the Mesh a collective nervous system.

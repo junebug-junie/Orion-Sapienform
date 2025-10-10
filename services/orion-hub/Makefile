@@ -1,48 +1,67 @@
-# Orion Hub Makefile
-# ==================
-# Convenience targets for local dev and prod deployments of orion-hub
+# ───────────────────────────────────────────────────────────────
+# 🎧 Orion Hub Makefile
+# Voice + Web Gateway | Node-aware | Mesh-integrated
+# ───────────────────────────────────────────────────────────────
 
-NET  ?= app-net
-MODE ?= dev
+ROOT_ENV = /mnt/services/Orion-Sapienform/.env
+NET      ?= app-net
+MODE     ?= dev
 LOG_TAIL ?= 200
+PROJECT  ?= $(shell grep -E '^PROJECT=' $(ROOT_ENV) | cut -d= -f2)
+
+SVC ?= hub-app
 
 .PHONY: up down restart build status logs log shell env
 
-## Start Orion Hub in the selected MODE (dev|prod)
-up:
-	@MODE=$(MODE) docker compose up -d --build
-	@echo "✔ Orion Hub started in $(MODE) mode"
+# ───────────────────────────────────────────────────────────────
+# Lifecycle
+# ───────────────────────────────────────────────────────────────
 
-## Stop Orion Hub and remove orphan containers
+## 🟢 Start Orion Hub (dev|prod)
+up:
+	@echo "→ Starting Orion Hub ($(PROJECT)) on $(NET) network..."
+	@MODE=$(MODE) docker compose up -d --build
+	@echo "✔ Orion Hub ($(PROJECT)) started in $(MODE) mode"
+
+## 🔴 Stop and clean up
 down:
 	@docker compose down --remove-orphans
 
-## Restart Orion Hub
+## ♻️ Restart cleanly
 restart: down up
 
-## Build images without starting containers
+## 🧱 Build images only
 build:
 	@docker compose build
 
-## Show running containers for this service
+# ───────────────────────────────────────────────────────────────
+# Monitoring
+# ───────────────────────────────────────────────────────────────
+
+## 📋 Container status
 status:
 	@docker compose ps
 
-## Follow logs from all services
+## 🧾 Follow all logs
 logs:
 	@docker compose logs -f --tail=$(LOG_TAIL)
 
-## Follow logs from a specific service: make log SVC=voice-app
-SVC ?= voice-app
+## 🔍 Follow logs for a specific service: make log SVC=hub-app
 log:
 	@docker compose logs -f --tail=$(LOG_TAIL) $(SVC)
 
-## Open a shell inside the main voice-app container
-shell:
-	@docker compose exec -it voice-app /bin/bash || docker compose exec -it voice-app /bin/sh
+# ───────────────────────────────────────────────────────────────
+# Debugging
+# ───────────────────────────────────────────────────────────────
 
-## Show effective env values
+## 🐚 Shell into main container
+shell:
+	@docker compose exec -it $(SVC) /bin/bash || docker compose exec -it $(SVC) /bin/sh
+
+## 🌎 Show effective environment context
 env:
+	@echo "PROJECT=$(PROJECT)"
 	@echo "MODE=$(MODE)"
 	@echo "NET=$(NET)"
 	@echo "LOG_TAIL=$(LOG_TAIL)"
+	@echo "Loaded from $(ROOT_ENV) + .env"

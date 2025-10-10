@@ -1,117 +1,155 @@
-# Orion Hub
+Orion Hub
 
-Orion Hub is the **central interaction gateway** for the Orion Mesh. It provides voice input/output, chat history, and future text + vision input, routing all interactions to Orion's Brain service and publishing telemetry to the shared Orion Bus.
+Orion Hub is the central interaction gateway for the Orion Mesh — the bridge between humans and Orion’s cognition layer.It handles voice input/output, chat visualization, and telemetry publishing to the shared Orion Bus.All cognition is delegated to Orion’s Brain service.
 
----
+🧠 Core Architecture
 
-## Core Architecture
+Service
 
-**Services (Docker Compose):**
+Role
 
-* **voice-app** — FastAPI app (UI + WebSocket audio). Uses **Faster-Whisper** on GPU for STT.
-* **coqui-tts** — **Coqui TTS** service for high-quality speech synthesis.
-* **caddy** — **Caddy** reverse proxy for dev/prod routing and HTTPS in production.
+hub-app
 
-> The LLM service is no longer bundled; Orion Hub connects to an external `ai-brain-service`.
+FastAPI + WebSocket gateway (real-time voice I/O, ASR via Faster-Whisper).
 
----
+coqui-tts
 
-## Features
+Coqui TTS container for natural speech output.
 
-* Push-to-talk **real-time voice** interaction
-* **External Brain Service** integration (Mistral/Mixtral/etc.)
-* **Telemetry publishing** to Orion Bus (transcripts, LLM tokens, TTS events)
-* **Natural TTS** via Coqui
-* **Dynamic UI** with speech visualizer
-* **Conversation controls**: copy transcript, clear history
-* Future: typed input, vision integration, context persistence
+caddy
 
----
+Reverse proxy / HTTPS gateway for local and public exposure.
 
-## Prerequisites
+⚠️ The LLM itself (Mistral, Mixtral, etc.) now lives in the Orion Brain container.Orion Hub must connect to a running Brain instance before startup succeeds.
 
-* Linux host with an **NVIDIA GPU** (driver installed)
-* **Docker** + **Docker Compose v2**
-* **NVIDIA Container Toolkit** (GPU passthrough to containers)
-* **Dev (headless)**: SSH access from your laptop to the server
-* **Prod**: public domain, DNS A record to your server’s public IP, router/NAT forwards for **80/443**, firewall open for **80/443**
+✨ Features
 
----
+🎤 Real-time push-to-talk voice interaction
 
-## Project Layout
+🧩 External Brain integration (Mistral / Mixtral / others)
 
-```
+📡 Telemetry publishing to the Orion Bus (via Redis)
+
+👤 Coqui TTS for expressive voice output
+
+🩶 Dynamic web UI with speech visualization
+
+🔄 Built-in Caddy proxy for both local dev and production HTTPS
+
+⚙️ Prerequisites
+
+Linux host with NVIDIA GPU (CUDA + drivers installed)
+
+Docker + Docker Compose v2
+
+NVIDIA Container Toolkit for GPU passthrough
+
+Orion Bus running (see ../orion-bus)
+
+Orion Brain running (see ../orion-brain)
+
+Mesh-wide root .env defined at /mnt/services/Orion-Sapienform/.env
+
+📁 Project Layout
+
 caddy/
   Caddyfile.dev
   Caddyfile.prod
 docker-compose.yml
 Dockerfile
 Makefile
+.env
 README.md
-requirements.txt
-scripts/           # app logic (ASR, TTS, routing)
-static/
 templates/
-```
+static/
 
----
+🚀 Quickstart
 
-## Quickstart
+1. Run the “bullshit pre-step” (once per terminal session)
 
-### Development
+Docker Compose does not automatically read environment files from parent directories.You must manually export the mesh-wide .env before Compose runs:
 
-```bash
-MODE=dev docker compose up --build
-```
+set -a
+. /mnt/services/Orion-Sapienform/.env
+set +a
 
-Create a tunnel from your laptop:
+This makes variables like PROJECT, NET, and TELEMETRY_ROOT visible to all service stacks.
 
-```bash
+(Yes, this is the “bullshit” step — but it ensures node-aware naming like orion-janus-hub and proper networking.)
+
+2. Bring up the Hub
+
+🧑‍💻 Development
+
+make up
+
+Then tunnel from your laptop:
+
 ssh -N -L 18080:127.0.0.1:80 user@<server-ip>
-```
 
-Open: [http://localhost:18080](http://localhost:18080)
+Open → http://localhost:18080
 
-### Production
+🌐 Production
 
-Configure DNS + firewall, then:
+make up MODE=prod
 
-```bash
-MODE=prod docker compose up -d --build
-```
+Then open → https://yourdomain.com
 
-Open: `https://yourdomain.com`
+🧰 Makefile Targets
 
----
+Command
 
-## Makefile Targets
+Description
 
-* `make start` — start services (`MODE=dev` by default)
-* `make start MODE=prod` — start in production mode
-* `make logs` — follow logs for all services
-* `make log-voice` — follow logs for voice-app only
-* `make shell` — open a bash shell inside the voice-app container
-* `make down` — stop services and remove volumes/orphans
-* `make nuke` — stop, remove volumes, prune network
+make up
 
----
+Start Orion Hub (defaults to dev mode)
 
-## Telemetry & Bus
+make down
 
-All transcripts, LLM responses, and TTS events are published to the shared **Orion Bus** (Redis). This allows Orion’s memory and analytics systems to evolve without modifying the user-facing interface.
+Stop services and remove orphans
 
----
+make restart
 
-## Roadmap
+Restart cleanly
 
-* [ ] Add typed input to the UI
-* [ ] Integrate vision events
-* [ ] Conversation persistence across sessions
-* [ ] Streaming token output from brain service
+make logs
 
----
+Follow logs from all services
 
-## License
+make log SVC=hub-app
 
-MIT — see [LICENSE](LICENSE).
+Follow logs for a specific service
+
+make shell
+
+Enter the main hub container
+
+make env
+
+Print resolved environment context
+
+🧩 Telemetry & Bus
+
+All voice transcripts, LLM responses, and TTS events are published to the shared Orion Bus,forming the event substrate for Orion’s memory and reflection systems.No data is stored locally — the Bus acts as the ephemeral nervous system.
+
+ORION_BUS_URL=redis://${PROJECT}-bus-core:6379/0
+
+🔁 Service Dependencies
+
+Orion Hub requires the following services to be running first:
+
+orion-brain (LLM + inference API)
+
+orion-bus (event routing and pub/sub)
+
+app-net Docker network (created once globally)
+
+Startup order (in your rebuild script):
+
+bus → brain → hub → mirror → others
+
+🦯 Roadmap
+
+
 

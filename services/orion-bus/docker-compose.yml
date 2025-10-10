@@ -1,0 +1,46 @@
+# ───────────────────────────────────────────────
+# 🧠 Orion Bus Service — Generic Message Bus Layer
+# Backend: Redis (temporary)
+# ───────────────────────────────────────────────
+
+services:
+  bus-core:
+    image: redis:7-alpine                          # temporary backend
+    container_name: ${PROJECT}-bus-core
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "${BUS_PORT:-6379}:6379"
+    volumes:
+      - ${TELEMETRY_ROOT}/${PROJECT}/bus/data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    env_file:
+      - /mnt/services/Orion-Sapienform/.env
+      - .env
+    networks:
+      - app-net
+
+  bus-exporter:
+    image: oliver006/redis_exporter:latest         # temporary metrics exporter
+    container_name: ${PROJECT}-bus-exporter
+    environment:
+      - BUS_BACKEND_URI=redis://${PROJECT}-bus-core:6379
+    ports:
+      - "${BUS_EXPORTER_PORT:-9121}:9121"
+    depends_on:
+      bus-core:
+        condition: service_healthy
+    restart: unless-stopped
+    env_file:
+      - /mnt/services/Orion-Sapienform/.env
+      - .env
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

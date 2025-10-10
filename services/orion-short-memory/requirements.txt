@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+langchain
+langchain-community
+langchain-chroma
+chromadb
+psycopg2-binary
+sqlalchemy
+requests
+rdflib
+sentence-transformers

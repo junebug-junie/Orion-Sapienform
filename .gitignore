@@ -1,41 +1,109 @@
+# ───────────────────────────────────────────────
+# 🧠 Orion-Sapienform .gitignore
+# Keeps repo clean of transient, local, or secret files
+# ───────────────────────────────────────────────
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+*.log
+*.sqlite3
+*.db
+*.rdb
+*.aof
+*.bak
+*.tmp
+*.swp
+*.swo
+.mypy_cache/
+.pytest_cache/
+.cache/
+.tox/
+.coverage
+htmlcov/
+
+# === Environment / Config ===
 .env
-**/*.env
-**/*.env/
-conjourney-api/notes.txt
-conjourney-api/notes.py
-conjourney-api/.ipynb_checkpoints
-conjourney-api/.env
+.env.*
+*.env
+*.secret
+secrets.json
+credentials.json
+config.local.yml
+config.dev.yml
+config.prod.yml
 
-conjourney-memory~
+# === Docker / Compose ===
+docker-compose.override.yml
+*.pid
+*.pid.lock
+*.sock
+.docker/
+.dockerignore
+logs/
+tmp/
+volumes/
+data/
+**/telemetry/
+**/storage/
 
-# SQLite
-**/*.sqlite3
+# === Build / Virtual Env ===
+dist/
+build/
+wheels/
+*.whl
+*.egg
+*.manifest
+*.spec
+venv/
+venv*/ 
+env/
+env*/
+poetry.lock
+poetry.toml
+Pipfile
+Pipfile.lock
 
-# Blazegraph journal directories
-**/blazegraph.jnl
-**/blazegraph/
+# === IDE / OS ===
+.vscode/
+.idea/
+*.iml
+*.code-workspace
+*.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
 
-# ChromaDB persistent storage
-**/chroma/
-**/chroma.db
-**/*.bin
+# === Orion Mesh Specific ===
+# Mounts or runtime state
+/mnt/telemetry/
+/mnt/storage/
+/mnt/services/*/orion-bus/data/
+/mnt/services/*/graphdb/
+/mnt/services/*/tmp/
+/mnt/services/*/__pycache__/
+/mnt/services/*/*.sqlite
+/mnt/services/*/*.db
+/mnt/services/*/*.aof
+/mnt/services/*/node_modules/
 
-# GraphDB (Ontotext) work dirs
-**/graphdb-work/
-**/repositories/
-**/graphdb/  # if you mount to this folder
+# === Logs / Backups ===
+*.out
+*.err
+*.log
+*.bak
+*.old
+*.tar
+*.tar.gz
+*.zip
 
-# Postgres (if any dump or data dirs are checked in)
-**/*.psql
-**/pgdata/
-**/postgres/
-
-# UUID-named folders (like Chroma persistent clients)
-**/[0-9a-fA-F]*-*-*-*-*/*
-
-# General binary blobs from vector DBs or memory
-**/*.bin
-**/headers.bin
-**/length.bin
-**/link_lists.bin
-**/data_level*
+# === Optional Local Dev Tools ===
+.DS_Store
+*.local
+*.bak
+*.orig

@@ -1,13 +1,3 @@
-#:80 {
-#    handle /submit-collapse* {
-#        reverse_proxy voice-app:8080
-#    }
-#
-#    handle {
-#        reverse_proxy voice-app:8080
-#    }
-#}
-
 :80 {
     # Add CORS headers to all responses. This allows your frontend JS to call the API.
     header {
@@ -22,6 +12,6 @@
         Access-Control-Allow-Headers "Content-Type, Authorization"
     }
 
-    # Reverse proxy ALL requests to the voice-app service.
-    reverse_proxy voice-app:8080
+    # Reverse proxy ALL requests to the correct hub-app service.
+    reverse_proxy hub-app:8080
 }

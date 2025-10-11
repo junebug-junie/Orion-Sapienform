@@ -21,14 +21,16 @@ logging.basicConfig(
 logger = logging.getLogger("voice-app")
 
 # Pull from env (docker-compose should define these)
+PROJECT = os.getenv("PROJECT", "orion")
+REDIS_URL = os.getenv("REDIS_URL", f"redis://{PROJECT}-bus-core:6379/0")
+bus = OrionBus(url=REDIS_URL)
+
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base.en")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 
 BRAIN_URL = os.getenv("BRAIN_URL", "http://orion-brain:8088")
 LLM_TIMEOUT_S = int(os.getenv("LLM_TIMEOUT_S", "60"))
-
-bus = OrionBus(url="redis://orion-redis:6379/0") # refactor me!
 
 app = FastAPI()
 asr = None

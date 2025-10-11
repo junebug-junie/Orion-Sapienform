@@ -56,6 +56,9 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     volumes:
       - ollama_data:/root/.ollama
     ports:

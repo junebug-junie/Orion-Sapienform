@@ -146,8 +146,11 @@ _models:
 
 _pull_model:
 	@echo "→ ensuring model $(MODEL) is available in llm-brain"
-	@if docker ps --format '{{.Names}}' | grep -qx $(PROJECT)-brain-llm; then \
-		docker exec -it $(PROJECT)-brain-llm ollama pull $(MODEL) || true; \
+	@if docker ps --format '{{.Names}}' | grep -qx orion-brain-llm-brain-1; then \
+		echo "→ refreshing Ollama model manifest"; \
+		docker exec -it orion-brain-llm-brain-1 ollama pull --manifest $(MODEL) 2>/dev/null || true; \
+		docker exec -it orion-brain-llm-brain-1 ollama list | grep -q "$(MODEL)" || \
+		(docker exec -it orion-brain-llm-brain-1 ollama pull $(MODEL) || true); \
 	else \
 		echo "⚠ llm-brain container not running, skipping model pull"; \
 	fi

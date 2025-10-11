@@ -1,7 +1,3 @@
-#orion.conjourney.net {
-#    reverse_proxy http://voice-app:8080
-#}
-
 orion.conjourney.net {
     # Caddy will automatically provision and renew a TLS certificate for this domain.
     # It will also handle HTTP to HTTPS redirection.
@@ -10,10 +6,10 @@ orion.conjourney.net {
     header {
         # This tells the browser that your website is allowed to make requests.
         Access-Control-Allow-Origin *
-        
+
         # Specifies the methods allowed when accessing resources.
         Access-Control-Allow-Methods "GET, POST, OPTIONS"
-        
+
         # Specifies the headers allowed in the actual request.
         Access-Control-Allow-Headers "Content-Type, Authorization"
     }
@@ -21,6 +17,6 @@ orion.conjourney.net {
     # Compress responses to speed up load times for your users.
     encode gzip zstd
 
-    # Forward all incoming traffic to your voice-app service.
-    reverse_proxy voice-app:8080
+    # Forward all incoming traffic to your hub-app service.
+    reverse_proxy hub-app:8080
 }

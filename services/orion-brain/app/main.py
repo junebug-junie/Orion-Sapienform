@@ -41,20 +41,66 @@ async def health_summary():
 
 @app.post("/chat")
 async def chat(body: ChatBody, request: Request):
-    """Route chat request to a healthy LLM backend."""
+    """
+    Route chat request to a healthy Ollama backend.
+    Handles both chat-style (messages[]) and generate-style (prompt) payloads.
+    Emits telemetry via Orion Bus.
+    """
     payload = body.model_dump()
     trace_id = payload.get("trace_id") or str(uuid.uuid4())
 
     backend = router.pick()
     if not backend:
-        raise HTTPException(503, "No healthy backends")
+        raise HTTPException(status_code=503, detail="No healthy backends")
 
     await emit_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
-        r = await client.post(f"{backend.url}/api/chat", json=payload)
-        r.raise_for_status()
-        data = r.json()
+    # Pick the correct endpoint based on payload structure
+    endpoint = "chat" if "messages" in payload else "generate"
+    url = f"{backend.url.rstrip('/')}/api/{endpoint}"
 
-    await emit_bus("llm.response", {"trace_id": trace_id, "text": data.get("response")})
-    return data
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
+            r = await client.post(url, json=payload)
+            if r.status_code != 200:
+                # Log exact backend response for debugging
+                raw_text = await r.aread()
+                err_preview = raw_text[:400].decode(errors="ignore")
+                print(f"⚠️  Ollama backend error {r.status_code} from {url}\n{err_preview}")
+                raise HTTPException(status_code=500, detail=f"Ollama backend error {r.status_code}")
+
+            # Parse JSON safely
+            try:
+                data = r.json()
+            except Exception as e:
+                print(f"⚠️  Failed to parse JSON from Ollama: {e}")
+                raise HTTPException(status_code=500, detail="Invalid response from backend")
+
+    except httpx.RequestError as e:
+        print(f"❌  Network error contacting {url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Network error contacting backend: {str(e)}")
+
+    except httpx.TimeoutException:
+        print(f"⏱️  Timeout contacting {url}")
+        raise HTTPException(status_code=504, detail="Backend timeout")
+
+    # Emit LLM response telemetry
+    text = (
+        data.get("response")
+        or data.get("text")
+        or (data.get("message", {}).get("content"))
+        or ""
+    ).strip()
+
+    await emit_bus("llm.response", {"trace_id": trace_id, "text": text or "(empty response)"})
+
+    return {
+        "trace_id": trace_id,
+        "backend": backend.url,
+        "response": text,
+        "meta": {
+            "model": data.get("model"),
+            "latency_ms": backend.last_latency_ms,
+            "done_reason": data.get("done_reason", "n/a"),
+        },
+    }

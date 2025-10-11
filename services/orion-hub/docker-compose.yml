@@ -5,8 +5,8 @@
 
 x-env-context: &env
   env_file:
-    - /mnt/services/Orion-Sapienform/.env   # global mesh env (PROJECT, NET, etc.)
-    - .env                                  # local hub overrides
+    - /mnt/services/Orion-Sapienform/.env      # global mesh env (PROJECT, NET, etc.)
+    - .env                                    # local hub overrides
 
 services:
 
@@ -18,6 +18,8 @@ services:
     container_name: ${PROJECT:-orion}-hub
     volumes:
       - ./templates:/app/templates
+      # MODIFIED: Mount the pre-downloaded Whisper model into the default cache path
+      - /mnt/telemetry/models/whisper/distil-medium.en:/root/.cache/huggingface/hub/models--distil-whisper--distil-medium.en
     ports:
       - "${HUB_PORT:-8080}:8080"
     depends_on:
@@ -25,7 +27,7 @@ services:
         condition: service_started
     restart: unless-stopped
     environment:
-      # Whisper model settings
+      # Whisper model settings - The app will find the model in the cache
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
       - WHISPER_DEVICE=${WHISPER_DEVICE}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
@@ -40,6 +42,7 @@ services:
 
       # Optional GPU access
       - NVIDIA_VISIBLE_DEVICES=all
+    # REMOVED: The hardcoded DNS is no longer needed
     runtime: nvidia
     networks:
       - ${NET:-app-net}
@@ -50,9 +53,12 @@ services:
     container_name: ${PROJECT:-orion}-hub-tts
     ports:
       - "5002:5002"
+    volumes:
+      - /mnt/telemetry/models/coqui/tts:/root/.local/share/tts
     environment:
       - TTS_MODEL_NAME=tts_models/en/ljspeech/vits
     restart: unless-stopped
+    # This command ensures the container runs the web server process.
     entrypoint: tts-server
     networks:
       - ${NET:-app-net}

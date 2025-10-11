@@ -1,21 +1,15 @@
 # ───────────────────────────────────────────────────────────────
-# 🧠 Orion Bus — Mesh Message Broker (Redis core + metrics)
+# 🚌 Orion Bus — Mesh Message Broker (Redis core + metrics)
 # Node-aware | Ephemeral | Telemetry-mounted
 # ───────────────────────────────────────────────────────────────
 
-x-env-context: &env
-  env_file:
-    - /mnt/services/Orion-Sapienform/.env   # mesh root
-    - .env                                  # local overrides
-
 services:
   bus-core:
-    <<: *env
     image: redis:7-alpine
     container_name: ${PROJECT:-orion}-bus-core
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
     ports:
-      - "${BUS_PORT:-6379}:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - ${TELEMETRY_ROOT}/${PROJECT}/bus/data:/data
     restart: unless-stopped
@@ -28,16 +22,15 @@ services:
       app-net:
         aliases:
           - bus-core
-          - orion-bus
+          - ${PROJECT:-orion}-bus-core
 
   bus-exporter:
-    <<: *env
     image: oliver006/redis_exporter:latest
     container_name: ${PROJECT:-orion}-bus-exporter
     environment:
       - REDIS_ADDR=redis://bus-core:6379
     ports:
-      - "${BUS_EXPORTER_PORT:-9121}:9121"
+      - "${REDIS_EXPORTER_PORT:-9121}:9121"
     depends_on:
       bus-core:
         condition: service_healthy
@@ -51,3 +44,4 @@ services:
 networks:
   app-net:
     external: true
+

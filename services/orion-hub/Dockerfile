@@ -20,9 +20,6 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # copy schemas into the container
 COPY orion /app/orion
 
-# add orion/ to PYTHONPATH
-ENV PYTHONPATH="/app:${PYTHONPATH}"
-
 # Copy rest of hub service code
 COPY services/orion-hub /app
 

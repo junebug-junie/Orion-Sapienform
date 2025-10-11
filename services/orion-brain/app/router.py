@@ -2,7 +2,7 @@ import asyncio, itertools, time, httpx
 from typing import Dict, List, Optional
 from fastapi import HTTPException
 from fastapi import APIRouter
-from app.health import check_gpu_runtime, check_ollama_backend
+from app.health import check_gpu_runtime, check_ollama_backend, wait_for_redis
 from app.config import SELECTION_POLICY, CONNECT_TIMEOUT, READ_TIMEOUT, HEALTH_INTERVAL
 
 router = APIRouter()
@@ -79,6 +79,7 @@ async def health_loop(router: BrainRouter):
 
 @router.get("/health/gpu")
 async def health_gpu():
+    await wait_for_redis()
     gpu_status = await check_gpu_runtime()
     ollama_status = await check_ollama_backend()
     return {"gpu": gpu_status, "ollama": ollama_status}

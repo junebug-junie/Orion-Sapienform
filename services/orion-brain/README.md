@@ -1,89 +1,77 @@
-# Orion Brain Service (Gateway/Router for Ollama)
-A lightweight **gateway** that fronts one or many **Ollama** backends and exposes a stable API for your apps.
+Orion Brain Service (Cognitive Router for Ollama)
 
-- **Why**: decouple apps from individual GPU nodes; scale by adding/removing Ollama backends.
-- **Routes**: `/health`, `/models`, `/generate`, `/chat`, `/backends/*`, `/stats`
-- **Balancing**: `least_conn` by default (also supports `round_robin`)
-- **Health checks**: periodic probe of `/api/tags` on each backend
-- **Streaming**: pass-through NDJSON streaming from Ollama
+A lightweight gateway + event‑aware router that fronts one or more Ollama backends and integrates with the Orion Bus for message emission.
 
-> This service is CPU-light; GPUs live in your Ollama nodes.
+Purpose: decouple applications from GPU node topology while streaming telemetry into the Orion Mesh.
 
----
+Routes: /health, /chat
 
-## Quick Start (Docker Compose)
+Balancing: least_conn (default) or round_robin
 
-```bash
+Health Checks: probes each backend’s /api/tags
+
+Bus Integration: publishes model‑response and telemetry events to Redis Streams (orion:evt:gateway, orion:bus:out)
+
+The Brain performs orchestration and routing; GPUs live in the Ollama backends.
+
+## Quick Start (Compose)
+
 cp .env.example .env
-# Edit BACKENDS in .env to list your Ollama nodes or the router you already run
-docker compose up -d --build
-docker compose logs -f brain-service
-```
+# Adjust BACKENDS and PROJECT if needed
+docker compose up ‑d ‑‑build
 
-### Smoke tests
-```bash
-# Health
-curl -s http://localhost:8088/health
+### Smoke Tests
 
-# List models (aggregated from all backends)
-curl -s http://localhost:8088/models | jq
+# Health
+curl -s http://localhost:8088/health | jq
 
-# Generate (non-streaming)
-curl -s http://localhost:8088/generate -H 'content-type: application/json' -d '{
+
+# Chat (test request)
+curl -s http://localhost:8088/chat \
+  -H 'content-type: application/json' \
+  -d '{
+   "model":"mistral:instruct",
+   "messages":[{"role":"user","content":"Say hi then stop."}],
+   "user_id":"u1","session_id":"s1"
+  }' | jq
+
+## API Overview
+
+ Route 	 Method 	 Description 
+ /health 	 GET 	 Mesh + backend status 
+ /chat 	 POST 	 Send conversation‑style LLM request 
+
+### /chat Body Schema
+
+{
   "model": "mistral:instruct",
-  "prompt": "Write a haiku about Orion.",
-  "options": {"temperature": 0.7, "num_predict": 64}
-}' | jq
-
-# Chat (non-streaming)
-curl -s http://localhost:8088/chat -H 'content-type: application/json' -d '{
-  "model": "mistral:instruct",
-  "messages": [{"role":"system","content":"You are concise."},{"role":"user","content":"Two lines on RAG?"}],
+  "messages": [
+    {"role": "user", "content": "Say hi then stop."}
+  ],
+  "user_id": "u1",
+  "session_id": "s1",
   "options": {"temperature": 0.2, "num_predict": 64}
-}' | jq
+}
 
-# Streaming generate (NDJSON)
-curl -N http://localhost:8088/generate -H 'content-type: application/json' -d '{
-  "model":"mistral:instruct",
-  "prompt":"Stream one sentence about stars.",
-  "stream": true
-}'
-```
+### Response
 
----
+{
+  "response": "Hello there!"
+}
 
-## API
-- `GET /health` → `{ok:true, backends:[...]}`
-- `GET /models` → aggregate of `/api/tags` across backends
-- `POST /generate` → forwards to `/api/generate` (supports `"stream": true`)
-- `POST /chat` → forwards to `/api/chat` (supports `"stream": true`)
-- `GET /stats` → router stats (latency, inflight)
-- `GET /backends` / `POST /backends/register` / `POST /backends/deregister`
+## Environment (.env)
 
-### Request shapes (mirrors Ollama)
-- `/generate`: `{ "model": "...", "prompt": "...", "options": {...}, "stream": false }`
-- `/chat`: `{ "model": "...", "messages": [...], "options": {...}, "stream": false }`
-
----
-
-## Environment (.env)
-```
-BACKENDS=http://10.0.1.11:11434,http://10.0.1.12:11434
-SELECTION_POLICY=least_conn   # or round_robin
+PROJECT=orion-janus
+BACKENDS=http://llm-brain:11434
+SELECTION_POLICY=least_conn
 HEALTH_INTERVAL_SEC=5
 CONNECT_TIMEOUT_SEC=10
 READ_TIMEOUT_SEC=600
 PORT=8088
-```
+REDIS_URL=redis://orion-janus-bus-core:6379/0
+EVENTS_ENABLE=true
+BUS_OUT_ENABLE=true
 
----
-
-## Compose
-By default, runs the gateway only. Your Ollama nodes run on other machines (or locally).
-
-If your stack uses a shared network like `app-net`, uncomment the external network block in `compose.yaml`.
-
----
-
-## Notes
-- This gateway is intentionally thin. If you later want autoscaling and GPU-aware scheduling, consider migrating to Kubernetes with vLLM or Triton, keeping this service as a stable edge.
+## Notes - Use make start-prod to start Brain with the bus and Ollama auto‑checks.
+- When you later re‑enable /models or /generate, this README can revert to the original gateway shape.
+- Health and chat are now fully event‑integrated with Orion Bus.

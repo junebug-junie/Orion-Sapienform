@@ -9,6 +9,21 @@ router = APIRouter()
 DEFAULT_BACKEND = BACKENDS[0] if BACKENDS else "http://llm-brain:11434"
 
 
+async def wait_for_redis(max_attempts=10, delay=2):
+    """Wait until Redis (Orion Bus) becomes reachable to avoid DNS startup errors."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = redis.from_url(REDIS_URL)
+            r.ping()
+            print(f"✅ Redis available on attempt {attempt}")
+            return True
+        except Exception as e:
+            print(f"⏳ Waiting for Redis ({attempt}/{max_attempts}): {e}")
+            await asyncio.sleep(delay)
+    print("❌ Redis did not become available in time")
+    return False
+
+
 async def check_gpu_runtime(backend_url: str = DEFAULT_BACKEND):
     """
     Return GPU availability — preferring backend (Ollama) GPUs over local nvidia-smi.
@@ -83,6 +98,7 @@ async def health_gpu():
 
 async def startup_checks():
     """Run initial health checks at startup."""
+    await wait_for_redis()
     gpu = await check_gpu_runtime()
     ollama = await check_ollama_backend()
     print(f"✅ Startup GPU check: {json.dumps(gpu, indent=2)}")

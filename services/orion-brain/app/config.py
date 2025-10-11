@@ -9,13 +9,17 @@ SERVICE_NAME = os.getenv("SERVICE_NAME", "orion-brain")
 PORT = int(os.getenv("PORT", "8088"))
 
 # 🧩 Redis + Bus
-REDIS_URL = os.getenv("REDIS_URL", "redis://orion-redis:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://orion-bus-core:6379/0")
 EVENTS_ENABLE = _b("EVENTS_ENABLE", "true")
 BUS_OUT_ENABLE = _b("BUS_OUT_ENABLE", "true")
 
 # 🛰️ Bus stream names (logical channels)
 EVENTS_STREAM = os.getenv("EVENTS_STREAM", "orion:evt:gateway")
 BUS_OUT_STREAM = os.getenv("BUS_OUT_STREAM", "orion:bus:out")
+
+# 🕐 Redis connection wait parameters (for startup health)
+REDIS_WAIT_ATTEMPTS = int(os.getenv("REDIS_WAIT_ATTEMPTS", "10"))
+REDIS_WAIT_DELAY = int(os.getenv("REDIS_WAIT_DELAY", "2"))
 
 # 🤖 LLM Backend routing
 BACKENDS = [b.strip() for b in os.getenv("BACKENDS", "").split(",") if b.strip()]

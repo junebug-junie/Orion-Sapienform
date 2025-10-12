@@ -2,11 +2,20 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Dependencies
 COPY services/orion-gdb-client/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy code
-COPY services/orion-gdb-client/main.py .
+# App code
+COPY services/orion-gdb-client/app ./app
 
-CMD ["python", "main.py"]
+# Shared Orion schemas
+COPY orion /app/orion
+
+# Env setup
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# Service port — must match .env PORT
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

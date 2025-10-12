@@ -3,44 +3,70 @@ networks:
     external: true
 
 services:
+
   graphdb:
     build:
       context: ../..
       dockerfile: services/graphdb/Dockerfile
       args:
-        version: "11.0.0"
+        version: "${GRAPHDB_VERSION:-11.0.0}"
+    container_name: ${PROJECT}-graphdb
+    image: ${PROJECT}-graphdb:${GRAPHDB_VERSION:-latest}
     restart: unless-stopped
     networks:
       - app-net
     ports:
-      - "7200:7200"
-      - "7300:7300"
+      - "${GRAPHDB_PORT_HTTP:-7200}:7200"
+      - "${GRAPHDB_PORT_HTTPS:-7300}:7300"
     environment:
-      GDB_JAVA_OPTS: "-Xmx8g -Dgraphdb.workbench.importDirectory=/var/graphdb/import"
+      GDB_JAVA_OPTS: "${GDB_JAVA_OPTS:-'-Xmx8g -Dgraphdb.workbench.importDirectory=/var/graphdb/import'}"
     volumes:
-      - /mnt/storage/collapse-mirrors:/opt/graphdb/home
-      - /mnt/storage/collapse-mirrors/import:/root/graphdb-import
+      - ${GRAPHDB_HOME:-/mnt/storage/collapse-mirrors}:/opt/graphdb/home
+      - ${GRAPHDB_IMPORT:-/mnt/storage/collapse-mirrors/import}:/root/graphdb-import
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7200/rest/repositories"]
+      test: ["CMD", "curl", "-fs", "http://localhost:7200/rest/repositories"]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  orion-gdb-client:
+  gdb-client:
     build:
       context: ../..
       dockerfile: services/orion-gdb-client/Dockerfile
-    image: orion-gdb-client
+    container_name: ${PROJECT}-gdb-client
+    image: ${PROJECT}-gdb-client:${SERVICE_VERSION:-latest}
     restart: unless-stopped
     networks:
       - app-net
     environment:
-      REDIS_URL: redis://orion-redis:6379/0
-      GRAPHDB_URL: http://graphdb:7200
-      SERVICE_NAME: orion-gdb-client
-      GRAPHDB_REPO: collapse
-      BUS_CHANNEL: collapse:new
+      PROJECT: ${PROJECT}
+      SERVICE_NAME: ${SERVICE_NAME}
+      SERVICE_VERSION: ${SERVICE_VERSION}
+
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      SUBSCRIBE_CHANNEL: ${SUBSCRIBE_CHANNEL}
+
+      GRAPHDB_URL: ${GRAPHDB_URL}
+      GRAPHDB_REPO: ${GRAPHDB_REPO}
+      LOG_LEVEL: ${LOG_LEVEL}
+      PORT: ${PORT}
     depends_on:
       graphdb:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:${PORT:-8000}/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

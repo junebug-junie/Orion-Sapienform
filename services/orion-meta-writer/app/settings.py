@@ -1,19 +1,17 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    ORION_BUS_URL: str = "redis://orion-redis:6379/0"
+    # --- Orion Bus Configuration ---
+    ORION_BUS_URL: str = "redis://orion-janus-bus-core:6379/0"
     ORION_BUS_ENABLED: bool = True
-
     SUBSCRIBE_CHANNEL: str = "orion.tags"
     PUBLISH_CHANNEL: str = "orion.tags.enriched"
 
-    SERVICE_NAME: str = "orion-enrichment-writer"
+    # --- Service Identity ---
+    SERVICE_NAME: str = "orion-meta-writer"
     SERVICE_VERSION: str = "0.1.0"
 
-    POSTGRES_URI: str = "postgresql://postgres:postgres@postgres:5432/conjourney"
-    CHROMA_PATH: str = "/mnt/storage/collapse-mirrors/chroma"
-
     class Config:
-        env_file = ".env"
+       env_file = ".env"
 
 settings = Settings()

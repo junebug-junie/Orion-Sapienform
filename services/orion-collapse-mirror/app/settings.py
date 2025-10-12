@@ -2,8 +2,8 @@ from pydantic_settings import BaseSettings
 from pydantic import field_validator
 
 class Settings(BaseSettings):
-    POSTGRES_URI: str = "postgresql://postgres:postgres@orion-sql-db:5432/conjourney"
-    ORION_BUS_URL: str = "redis://orion-redis:6379/0"
+    POSTGRES_URI: str
+    ORION_BUS_URL: str = "redis://orion-janus-bus-core:6379/0"
     ORION_BUS_ENABLED: bool = True
 
     SERVICE_NAME: str = "orion-collapse-mirror"

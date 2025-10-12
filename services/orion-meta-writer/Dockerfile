@@ -15,6 +15,6 @@ COPY orion /app/orion
 # add orion/ to PYTHONPATH
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
-EXPOSE 8202
+EXPOSE 8210
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8202"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8210"]

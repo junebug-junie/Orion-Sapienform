@@ -1,47 +1,73 @@
-from pydantic import BaseModel
-from typing import List, Dict, Optional
-from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey
-from sqlalchemy.orm import declarative_base, relationship
-from datetime import datetime, timezone
-
-Base = declarative_base()
-
-class CollapseMirrorEntrySQL(Base):
-    __tablename__ = "collapse_mirror"
-
-    id = Column(String, primary_key=True, index=True)
-    observer = Column(String)
-    trigger = Column(Text)
-    observer_state = Column(String)
-    field_resonance = Column(Text)
-    type = Column(String)
-    emergent_entity = Column(Text)
-    summary = Column(Text)
-    mantra = Column(Text)
-    causal_echo = Column(Text, nullable=True)
-    timestamp = Column(String, nullable=True)
-    environment = Column(String, nullable=True)
-
-    # 🚩 Link to enrichments
-    enrichments = relationship("CollapseEnrichmentSQL", back_populates="collapse")
+from __future__ import annotations
+from typing import Any, List, Dict, Optional
+from datetime import datetime
+from pydantic import BaseModel, Field, model_validator, ValidationError
 
 
-class CollapseEnrichmentSQL(Base):
-    __tablename__ = "collapse_enrichment"
+class EnrichmentInput(BaseModel):
+    """
+    Incoming message schema (Pydantic v2-compatible).
+    - collapse_id is optional and will be derived from `id` if missing and id starts with "collapse_".
+    - tags/entities use default_factory to avoid shared mutable defaults.
+    - ts supports ISO string and will be parsed to datetime if possible.
+    """
+    id: str
+    collapse_id: Optional[str] = None
+    service_name: str
+    service_version: str
+    enrichment_type: str
+    tags: List[str] = Field(default_factory=list)
+    entities: List[Dict[str, Any]] = Field(default_factory=list)
+    salience: Optional[float] = None
+    ts: Optional[datetime] = None
 
-    id = Column(String, primary_key=True, index=True)
-    collapse_id = Column(String, ForeignKey("collapse_mirror.id"), nullable=False)
+    @model_validator(mode="before")
+    def _prepare(cls, values: Any) -> Any:
+        """
+        Pre-validator: derive collapse_id from id when missing and try to parse ts string.
+        This runs before field validation.
+        """
+        if not isinstance(values, dict):
+            return values
 
-    service_name = Column(String, nullable=False)
-    service_version = Column(String, nullable=False)
-    enrichment_type = Column(String, nullable=False)
+        # derive collapse_id from id if missing and id looks like 'collapse_...'
+        if not values.get("collapse_id"):
+            idv = values.get("id")
+            if isinstance(idv, str) and idv.startswith("collapse_"):
+                values["collapse_id"] = idv
 
-    tags = Column(Text, nullable=True)      # JSON string of list[str]
-    entities = Column(Text, nullable=True)  # JSON string of list[dict]
-    salience = Column(Float, nullable=True)
+        # try parse ts if provided as string
+        ts_val = values.get("ts")
+        if isinstance(ts_val, str):
+            try:
+                values["ts"] = datetime.fromisoformat(ts_val)
+            except Exception:
+                # leave as-is; model validation will accept or reject later
+                pass
 
-    ts = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+        return values
 
-    # 🚩 Link back
-    collapse = relationship("CollapseMirrorEntrySQL", back_populates="enrichments")
+    class Config:
+        arbitrary_types_allowed = True
 
+
+class EnrichmentOutput(EnrichmentInput):
+    """
+    Outgoing schema: inherits input, adds processing metadata.
+    processed_at defaults to current UTC time.
+    """
+    processed_by: str
+    processed_version: str
+    processed_at: datetime = Field(default_factory=lambda: datetime.utcnow())
+
+
+def translate_payload(payload: Any) -> EnrichmentInput:
+    """
+    Translate & validate a raw incoming payload into an EnrichmentInput instance.
+    Raises pydantic.ValidationError on invalid payloads.
+
+    Usage:
+        validated = translate_payload(raw_payload)
+    """
+    # This uses pydantic v2 BaseModel validation entrypoint.
+    return EnrichmentInput.model_validate(payload)

@@ -1,32 +1,38 @@
+# ───────────────────────────────────────────────────────────────
+# 🏷️  Orion Meta Tags — spaCy NLP Tagging Service
+# ───────────────────────────────────────────────────────────────
+
 services:
   orion-meta-tags:
     build:
       context: ../..
       dockerfile: services/orion-meta-tags/Dockerfile
+    container_name: ${PROJECT}-meta-tags
     restart: unless-stopped
     networks:
       - app-net
     environment:
-      ORION_BUS_ENABLED: "${ORION_BUS_ENABLED}"
-      ORION_BUS_URL: "${ORION_BUS_URL}"
-
-      SPA_MODEL: "${SPA_MODEL}"
-
-      SERVICE_NAME: "${SERVICE_NAME}"
-      SERVICE_VERSION: "${SERVICE_VERSION}"
-
-      SUBSCRIBE_CHANNEL: "${SUBSCRIBE_CHANNEL}"
-      PUBLISH_CHANNEL: "${PUBLISH_CHANNEL}"
-
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - SPA_MODEL=${SPA_MODEL}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - SUBSCRIBE_CHANNEL=${SUBSCRIBE_CHANNEL}
+      - PUBLISH_CHANNEL=${PUBLISH_CHANNEL}
+      - PORT=${PORT}
     ports:
-      - "8201:8201"
+      - "${PORT}:${PORT}"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8201/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/health"]
       start_period: 10s
       interval: 30s
       timeout: 10s
       retries: 3
 
+    command: ["/bin/sh", "-c", "sleep ${STARTUP_DELAY} && uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+
 networks:
   app-net:
+    # This service connects to an existing, external network.
+    name: ${NET}
     external: true

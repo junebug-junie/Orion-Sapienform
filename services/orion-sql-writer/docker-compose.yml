@@ -1,0 +1,25 @@
+services:
+  sql-writer:
+    build:
+      context: ../..
+      dockerfile: services/orion-sql-writer/Dockerfile
+    container_name: ${PROJECT}-sql-writer
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - PROJECT=${PROJECT}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - POSTGRES_TABLE=${POSTGRES_TABLE}
+      - SUBSCRIBE_CHANNELS=${SUBSCRIBE_CHANNELS}
+      - POLL_TIMEOUT=${POLL_TIMEOUT}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+    ports:
+      - "8220:8220"
+
+networks:
+  app-net:
+    external: true

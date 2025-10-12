@@ -14,23 +14,38 @@ from scripts.tts import TTS
 from orion.core.bus.service import OrionBus
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
+# --- Basic Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("voice-app")
 
-# Pull from env (docker-compose should define these)
-PROJECT = os.getenv("PROJECT", "orion")
-REDIS_URL = os.getenv("REDIS_URL", f"redis://{PROJECT}-bus-core:6379/0")
-bus = OrionBus(url=REDIS_URL)
 
+# ───────────────────────────────────────────────────────────────
+# ⚙️ Configuration Loading
+# All environment variables are loaded here at startup.
+# ───────────────────────────────────────────────────────────────
+
+# --- Core Service Identity & Bus Connection ---
+PROJECT = os.getenv("PROJECT", "orion")
+# ⭐️ MODIFICATION: Look for ORION_BUS_URL to match your .env files.
+ORION_BUS_URL = os.getenv("ORION_BUS_URL", f"redis://{PROJECT}-bus-core:6379/0")
+bus = OrionBus(url=ORION_BUS_URL)
+
+# --- Whisper Model Configuration ---
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base.en")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 
+# --- Cognitive Backend (Brain) Configuration ---
 BRAIN_URL = os.getenv("BRAIN_URL", "http://orion-brain:8088")
 LLM_TIMEOUT_S = int(os.getenv("LLM_TIMEOUT_S", "60"))
+
+
+# ───────────────────────────────────────────────────────────────
+# 🚀 FastAPI Application Setup
+# ───────────────────────────────────────────────────────────────
 
 app = FastAPI()
 asr = None
@@ -38,22 +53,21 @@ tts = None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # REFACTOR ME! 🔒 restrict later
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-print("registered routes")
-for route in app.routes:
-    logging.info(f"Registered route: {route.path}")
-
 @app.on_event("startup")
 async def startup_event():
     global asr, tts
+    logger.info(f"Loading Whisper model '{WHISPER_MODEL_SIZE}' on {WHISPER_DEVICE}/{WHISPER_COMPUTE_TYPE}")
     asr = ASR(WHISPER_MODEL_SIZE, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE)
     tts = TTS()
+    logger.info("Startup complete.")
 
+# ... (The rest of your file remains the same) ...
 
 templates_dir = "templates"
 html_content = "<html><body><h1>Error: templates/index.html not found</h1></body></html>"
@@ -200,7 +214,7 @@ async def submit_collapse(data: dict):
     print("🔥 /submit-collapse called with:", data)
 
     if not bus.enabled:
-        print("OrioBus is not connected")
+        print("OrionBus is not connected")
         return {"success": False, "error": "OrionBus disabled or not connected"}
 
     try:
@@ -211,4 +225,3 @@ async def submit_collapse(data: dict):
     except Exception as e:
         print(f"❌ Hub publish error: {e}")
         return {"success": False, "error": str(e)}
-

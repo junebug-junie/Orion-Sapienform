@@ -1,21 +1,30 @@
+# ───────────────────────────────────────────────────────────────
+# 🪞 Orion Collapse Mirror — Data Intake & Processing Service
+# ───────────────────────────────────────────────────
+
 services:
   orion-collapse-mirror:
     build:
       context: ../..
       dockerfile: services/orion-collapse-mirror/Dockerfile
-    image: orion-collapse-mirror:latest
+    image: ${PROJECT:-orion}-collapse-mirror:latest
+    container_name: ${PROJECT:-orion}-collapse-mirror
     restart: unless-stopped
     networks:
       - app-net
     environment:
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - POSTGRES_URI=${POSTGRES_URI}
       - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - CHRONICLE_ENVIRONMENT=${CHRONICLE_ENVIRONMENT}
+      - CHRONICLE_MODE=${CHRONICLE_MODE}
+      - DEV_MODE=${DEV_MODE}
     ports:
-      - "8087:8087"
-
-volumes:
-  collapse_data:
+      - "${PORT:-8087}:8087"
 
 networks:
   app-net:
     external: true
+

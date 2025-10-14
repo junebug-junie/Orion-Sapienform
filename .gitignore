@@ -3,6 +3,8 @@
 # Keeps repo clean of transient, local, or secret files
 # ───────────────────────────────────────────────
 
+MONITOR
+
 # === Python ===
 __pycache__/
 *.py[cod]

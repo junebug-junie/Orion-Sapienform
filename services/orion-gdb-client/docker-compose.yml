@@ -29,11 +29,6 @@ services:
       timeout: 5s
       retries: 6
       start_period: 20s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   gdb-client:
     build:
@@ -49,8 +44,11 @@ services:
       SERVICE_NAME: ${SERVICE_NAME}
       SERVICE_VERSION: ${SERVICE_VERSION}
 
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
       ORION_BUS_URL: ${ORION_BUS_URL}
       SUBSCRIBE_CHANNEL: ${SUBSCRIBE_CHANNEL}
+      CHANNEL_RDF_CONFIRM: ${CHANNEL_RDF_CONFIRM}
+      CHANNEL_RDF_ERROR: ${CHANNEL_RDF_ERROR}
 
       GRAPHDB_URL: ${GRAPHDB_URL}
       GRAPHDB_REPO: ${GRAPHDB_REPO}
@@ -65,8 +63,3 @@ services:
       timeout: 5s
       retries: 6
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"

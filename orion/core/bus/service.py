@@ -48,7 +48,7 @@ class OrionBus:
 
         for message in pubsub.listen():
 
-            #print(f"!!! [BUS] RAW MESSAGE RECEIVED on {channel}: {message}", flush=True)
+            print(f"!!! [BUS] RAW MESSAGE RECEIVED on {channel}: {message}", flush=True)
 
             if message["type"] != "message":
                 continue

@@ -1,7 +1,9 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import threading
+import asyncio
+import traceback
+import json
+import redis.asyncio as redis
 
 from app import routes
 from app.db import init_db, get_db
@@ -33,29 +35,51 @@ def read_root():
     return {"message": "Conjourney Memory API is alive"}
 
 
-# 👂 Intake listener
-def listen_for_intake(bus: OrionBus):
-    print("📡 Intake listener started, subscribing to collapse.intake ...")
-    for msg in bus.subscribe("collapse.intake"):
-        print("👂 Collapse intake:", msg)
-        try:
-            entry = CollapseMirrorEntry(**msg).with_defaults()  # ✅ enforce schema
+# 👂 Intake listener (Refactored to be fully asynchronous)
+async def listen_for_intake():
+    """
+    Creates an async connection to the bus and listens for intake messages.
+    """
+    listen_channel = settings.CHANNEL_COLLAPSE_INTAKE
+    print(f"📡 Async intake listener connecting to {settings.ORION_BUS_URL}...")
 
-            db = next(get_db())
+    try:
+        # Use the async Redis client for subscribing
+        client = redis.from_url(settings.ORION_BUS_URL, decode_responses=True)
+        async with client.pubsub() as pubsub:
+            await pubsub.subscribe(listen_channel)
+            print(f"✅ Subscribed to {listen_channel}. Waiting for messages...")
 
-            try:
-                log_and_persist(entry=entry, db=db)
-                print(f"Collapse persisted: {entry.summary[:10]}...")
-            finally:
-                db.close()
+            # This non-blocking loop correctly processes messages with asyncio
+            async for message in pubsub.listen():
+                if message['type'] != 'message':
+                    continue
 
-        except Exception as e:
-            import traceback
-            print(f"❌ Intake error: {e}")
-            traceback.print_exc()
-            print("⚠️ Error processing intake:", e)
+                print("👂 Collapse intake message received:", message['data'])
+                try:
+                    data = json.loads(message['data'])
+                    entry = CollapseMirrorEntry.model_validate(data)
 
-# Model warmup
+                    # Database operations are synchronous, so we handle them carefully.
+                    db = next(get_db())
+                    try:
+                        # Since log_and_persist is sync, we call it directly.
+                        # For high-load apps, this would be run in an executor.
+                        log_and_persist(entry=entry, db=db)
+                        print(f"✅ Collapse persisted: {entry.summary[:20]}...")
+                    finally:
+                        db.close()
+
+                except Exception as e:
+                    print(f"❌ Intake processing error: {e}")
+                    traceback.print_exc()
+
+    except Exception as e:
+        print(f"💥 Intake listener fatal error: {e}")
+        traceback.print_exc()
+
+
+# Model warmup and listener startup
 @app.on_event("startup")
 async def startup_event():
     # Init DB + embedder warmup
@@ -66,12 +90,10 @@ async def startup_event():
     except Exception as e:
         print("⚠️ Embedding warmup failed:", e)
 
-    # Start intake listener in background thread
-    bus = OrionBus(url=settings.ORION_BUS_URL)
-    if bus.enabled:
-        thread = threading.Thread(target=listen_for_intake, args=(bus,), daemon=True)
-        thread.start()
-        print("📡 Intake listener thread launched")
+    # Start the async intake listener as a background task
+    if settings.ORION_BUS_ENABLED:
+        print("📡 Launching async intake listener task...")
+        asyncio.create_task(listen_for_intake())
     else:
         print("⚠️ OrionBus disabled, intake listener not started")
 
@@ -80,3 +102,4 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=8087, reload=True)
+

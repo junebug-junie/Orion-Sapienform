@@ -80,7 +80,12 @@ def startup_event():
 
     # Create a single OrionBus instance and spawn a thread per channel.
     bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
-    channels = [c.strip() for c in settings.SUBSCRIBE_CHANNELS.split(",") if c.strip()]
+
+    channels = [
+        settings.CHANNEL_TAGS_RAW,
+        settings.CHANNEL_TAGS_ENRICHED,
+        settings.CHANNEL_COLLAPSE_INTAKE,
+    ]
     print(f"🚀 {settings.SERVICE_NAME} starting; channels={channels}")
 
     for ch in channels:

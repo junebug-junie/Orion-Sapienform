@@ -9,16 +9,20 @@ class Settings(BaseSettings):
     GRAPHDB_USER: str | None = None
     GRAPHDB_PASS: str | None = None
 
-    # Core bus (shared)
-    ORION_BUS_URL: str = Field(default="redis://orion-redis:6379/0")
-    ORION_BUS_CHANNEL: str = Field(default="orion:events:tagged")
+    # === ORION BUS (Shared Core) ===
+    ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
+    ORION_BUS_CHANNEL: str = Field(default="orion:events:tagged", env="ORION_BUS_CHANNEL")
+    ORION_CORE_EVENTS: str = Field(default="orion:core:events", env="ORION_CORE_EVENTS")
+    ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
 
-    # Bus channels (multi-domain)
-    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:events:tagged")
-    CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf:enqueue")
-    CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events")
-    CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm")
-    CHANNEL_RDF_ERROR: str = Field(default="orion:rdf:error")
+    # === PUBLISH CHANNELS ===
+    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:events:tagged", env="CHANNEL_EVENTS_TAGGED")
+    CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf-collapse:enqueue", env="CHANNEL_RDF_ENQUEUE")
+    CHANNEL_EVENTS_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_EVENTS_TRIAGE")
+
+    # === LISTENER CHANNELS ===
+    CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
+    CHANNEL_RDF_ERROR: str = Field(default="orion:rdf:error", env="CHANNEL_RDF_ERROR")
 
     # Service configuration
     SERVICE_NAME: str = Field(default="orion-rdf-writer")

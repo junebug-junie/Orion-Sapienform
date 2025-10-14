@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Install Python deps first (layer cache friendly)
 COPY services/orion-meta-writer/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

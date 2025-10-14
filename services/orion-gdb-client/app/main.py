@@ -6,21 +6,16 @@ from app.listener import listener_worker
 from orion.core.bus.service import OrionBus
 from app.utils import logger
 
-app = FastAPI(title=settings.service_name, version=settings.service_version)
+app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
-# Keep a reference here (not imported from listener)
 bus: OrionBus | None = None
 
 
 @app.on_event("startup")
 def startup_event():
-    """
-    Initialize GraphDB and OrionBus, then start the listener thread.
-    """
     global bus
-    logger.info("🚀 Starting %s (%s)", settings.service_name, settings.service_version)
+    logger.info("🚀 Starting %s (%s)", settings.SERVICE_NAME, settings.SERVICE_VERSION)
 
-    # Wait until GraphDB is reachable
     wait_for_graphdb()
     ensure_repo_exists()
 
@@ -31,14 +26,12 @@ def startup_event():
         if bus:
             t = threading.Thread(
                 target=listener_worker,
-                args=(bus,),                # ✅ Pass the initialized bus
+                args=(bus,),
                 daemon=True,
-                #name="gdb-client-listener",
+                name="gdb-client-listener",
             )
             t.start()
-            logger.info(
-                "Listener thread started (channel: %s)", settings.SUBSCRIBE_CHANNEL
-            )
+            logger.info("Listener thread started (channel: %s)", settings.SUBSCRIBE_CHANNEL)
         else:
             logger.error("❌ Failed to initialize OrionBus. Listener not started.")
     else:
@@ -47,9 +40,6 @@ def startup_event():
 
 @app.on_event("shutdown")
 def shutdown_event():
-    """
-    Gracefully disconnect the OrionBus on service shutdown.
-    """
     global bus
     if bus:
         logger.info("🛑 Shutting down OrionBus connection.")
@@ -61,13 +51,10 @@ def shutdown_event():
 
 @app.get("/health")
 def health():
-    """
-    Basic liveness probe for Compose/Kubernetes.
-    """
     return {
-        "service": settings.service_name,
-        "version": settings.service_version,
-        "graphdb_repo": settings.graphdb_repo,
+        "service": settings.SERVICE_NAME,
+        "version": settings.SERVICE_VERSION,
+        "graphdb_repo": settings.GRAPHDB_REPO,
         "bus_enabled": settings.ORION_BUS_ENABLED,
         "bus_channel": settings.SUBSCRIBE_CHANNEL,
         "status": "ok",

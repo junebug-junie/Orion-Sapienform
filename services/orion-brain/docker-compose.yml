@@ -14,23 +14,41 @@ services:
       - "${PORT:-8088}:8088"
     restart: unless-stopped
     environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - PORT=${PORT}
+
+      # --- Bus ---
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+
+      # --- LLM Backend Routing ---
       - BACKENDS=${BACKENDS}
       - SELECTION_POLICY=${SELECTION_POLICY}
       - HEALTH_INTERVAL_SEC=${HEALTH_INTERVAL_SEC}
       - CONNECT_TIMEOUT_SEC=${CONNECT_TIMEOUT_SEC}
       - READ_TIMEOUT_SEC=${READ_TIMEOUT_SEC}
-      - PORT=${PORT}
-      - SERVICE_NAME=${SERVICE_NAME}
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-      - REDIS_URL=${REDIS_URL}
-      - EVENTS_ENABLE=${EVENTS_ENABLE}
-      - EVENTS_STREAM=${EVENTS_STREAM}
-      - BUS_OUT_ENABLE=${BUS_OUT_ENABLE}
-      - BUS_OUT_STREAM=${BUS_OUT_STREAM}
+      - REDIS_WAIT_ATTEMPTS=${REDIS_WAIT_ATTEMPTS}
+      - REDIS_WAIT_DELAY=${REDIS_WAIT_DELAY}
+
+      # --- Brain Channels ---
+      - CHANNEL_BRAIN_INTAKE=${CHANNEL_BRAIN_INTAKE}
+      - CHANNEL_BRAIN_OUT=${CHANNEL_BRAIN_OUT}
+      - CHANNEL_BRAIN_STATUS=${CHANNEL_BRAIN_STATUS}
+      - CHANNEL_BRAIN_STREAM=${CHANNEL_BRAIN_STREAM}
+
+      # --- Voice / Collapse Hooks ---
+      - CHANNEL_VOICE_TRANSCRIPT=${CHANNEL_VOICE_TRANSCRIPT}
+      - CHANNEL_VOICE_LLM=${CHANNEL_VOICE_LLM}
+      - CHANNEL_VOICE_TTS=${CHANNEL_VOICE_TTS}
+      - CHANNEL_COLLAPSE_INTAKE=${CHANNEL_COLLAPSE_INTAKE}
+
+      # --- GPU ---
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
 
-    # The shell inside the container will resolve these variables from the environment.
-    command: ["/bin/sh", "-c", "sleep ${STARTUP_DELAY:-5} && python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8088}"]
+    command: >
+      /bin/sh -c "sleep ${STARTUP_DELAY:-5} &&
+      python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8088}"
 
     networks:
       app-net:
@@ -64,4 +82,3 @@ volumes:
 networks:
   app-net:
     external: true
-

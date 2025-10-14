@@ -6,35 +6,60 @@ from orion.core.bus import OrionBus
 
 logger = logging.getLogger(settings.SERVICE_NAME)
 
+import httpx, json, logging, threading, time, os
+from typing import List
+from datetime import datetime
+from app.settings import settings
+from app.rdf_builder import build_triples
+from orion.core.bus.service import OrionBus
+
+logger = logging.getLogger(settings.SERVICE_NAME)
+
+
 class OrionRDFWriterService:
+    """
+    Orion RDF Writer:
+    Listens to tagged, triaged, and RDF enqueue events,
+    builds RDF triples, and pushes them into GraphDB.
+    """
+
     def __init__(self):
         self.bus = OrionBus(settings.ORION_BUS_URL)
         self.queue: List[dict] = []
         self.running = True
 
     def start(self):
-        logger.info(f"🟢 start() → bus {settings.ORION_BUS_URL}")
-        channels = [
-            settings.CHANNEL_EVENTS_TAGGED,
-            settings.CHANNEL_RDF_ENQUEUE,
-            settings.CHANNEL_CORE_EVENTS,
-        ]
-        logger.info(f"🟢 subscribing on: {', '.join(channels)}")
+        logger.info(f"🟢 Starting RDF Writer → bus {settings.ORION_BUS_URL}")
 
+        # Define all inbound channels this service listens to
+        channels = [
+            settings.CHANNEL_EVENTS_TRIAGE,     # from collapse-mirror
+            settings.CHANNEL_EVENTS_TAGGED,     # from tag-service
+            settings.CHANNEL_RDF_ENQUEUE,       # from enrichment pipelines
+            settings.ORION_CORE_EVENTS,         # system-level events
+        ]
+
+        logger.info(f"👂 Subscribing to channels: {', '.join(channels)}")
+
+        # Spin up listener threads per channel
         for ch in channels:
             t = threading.Thread(target=self._subscribe_loop, args=(ch,), daemon=True)
             t.start()
 
+        # Start batch flusher
         threading.Thread(target=self._batch_flush_loop, daemon=True).start()
-        logger.info(f"🚀 [{settings.SERVICE_NAME}] ready")
+        logger.info(f"🚀 [{settings.SERVICE_NAME}] ready and listening")
 
     def _subscribe_loop(self, channel: str):
         logger.info(f"👂 Subscribing to {channel}")
         for event in self.bus.subscribe(channel):
             logger.debug(f"📥 {channel}: {event}")
-            if channel == settings.CHANNEL_CORE_EVENTS:
+
+            # Optional routing filter: only keep RDF-targeted events from core bus
+            if channel == settings.ORION_CORE_EVENTS:
                 if "targets" in event and "rdf" not in event["targets"]:
                     continue
+
             self.queue.append(event)
 
     def _batch_flush_loop(self):
@@ -45,8 +70,7 @@ class OrionRDFWriterService:
             time.sleep(1)
 
     def _process_batch(self, batch):
-
-        print(f"!!! PROCESSING BATCH of {len(batch)} items: {batch}", flush=True)
+        logger.info(f"📦 Processing batch of {len(batch)} RDF events")
 
         for event in batch:
             try:
@@ -80,29 +104,22 @@ class OrionRDFWriterService:
             "graph": graph_name,
             "status": "success",
         })
+
     def _publish_error(self, event: dict, error_msg: str):
-
-        LOG_FILE_PATH = "/app/logs/errors.txt"
+        log_file = "/app/logs/errors.txt"
         try:
-            # Ensure the directory exists
-            os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
-
-            # Create a detailed log entry
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
             log_entry = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "service": settings.SERVICE_NAME,
                 "error": error_msg,
-                "failed_event": event
+                "failed_event": event,
             }
-
-            # Append the entry as a JSON line to the log file
-            with open(LOG_FILE_PATH, "a") as f:
+            with open(log_file, "a") as f:
                 f.write(json.dumps(log_entry) + "\n")
-
         except Exception as e:
             logger.error(f"Failed to write to error log file: {e}")
 
-        # The original Redis publishing logic remains the same
         self.bus.publish(settings.CHANNEL_RDF_ERROR, {
             "event_id": event.get("id"),
             "status": "error",

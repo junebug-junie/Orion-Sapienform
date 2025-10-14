@@ -3,7 +3,7 @@
 # ───────────────────────────────────────────────────────────────
 
 services:
-  orion-meta-tags:
+  meta-tags:
     build:
       context: ../..
       dockerfile: services/orion-meta-tags/Dockerfile
@@ -17,8 +17,10 @@ services:
       - SPA_MODEL=${SPA_MODEL}
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
-      - SUBSCRIBE_CHANNEL=${SUBSCRIBE_CHANNEL}
-      - PUBLISH_CHANNEL=${PUBLISH_CHANNEL}
+
+      - CHANNEL_EVENTS_TRIAGE=${CHANNEL_EVENTS_TRIAGE}
+      - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
+
       - PORT=${PORT}
     ports:
       - "${PORT}:${PORT}"

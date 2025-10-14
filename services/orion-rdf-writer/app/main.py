@@ -2,7 +2,7 @@ import threading, logging, sys
 from fastapi import FastAPI
 from app.service import OrionRDFWriterService
 from app.settings import settings
-
+from app.router import router as rdf_router
 
 # --- ADD THIS DEBUG BLOCK ---
 print("--- VERIFYING RUNTIME SETTINGS ---", flush=True)
@@ -19,6 +19,7 @@ logging.basicConfig(
 )
 
 app = FastAPI(title=settings.SERVICE_NAME, version="1.0.0")
+app.include_router(rdf_router)
 rdf_service = OrionRDFWriterService()
 
 @app.on_event("startup")

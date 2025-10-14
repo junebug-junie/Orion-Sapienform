@@ -1,42 +1,49 @@
-# ───────────────────────────────────────────────────────────────
-# Orion Hub — Voice + Web Gateway
-# ───────────────────────────────────────────────────────────────
-
-# Environment files are now loaded via the command line for reliability.
-# See the project's root README for the correct commands.
-
 services:
   hub-app:
     build:
       context: ../..
       dockerfile: services/orion-hub/Dockerfile
     container_name: ${PROJECT:-orion}-hub
-    volumes:
-      - ./templates:/app/templates
-      - /mnt/telemetry/models/whisper/distil-medium.en:/root/.cache/huggingface/hub/models--distil-whisper--distil-medium.en
     ports:
-      - "${HUB_PORT:-8080}:8080"
+      - "${HUB_PORT:-8080}:${HUB_PORT:-8080}"
+    restart: unless-stopped
     depends_on:
       coqui-tts:
         condition: service_started
-    restart: unless-stopped
+    volumes:
+      - ./templates:/app/templates
+      - /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
     environment:
-      # These variables are now explicitly substituted by the docker compose command.
+      # Core service identity
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+
+      # Whisper + Brain
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
       - WHISPER_DEVICE=${WHISPER_DEVICE}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
       - BRAIN_URL=${BRAIN_URL}
+      - LLM_MODEL=${LLM_MODEL}
+
+      # Orion Bus
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
 
-      # This is a static value, pointing to the coqui service on the docker network.
-      - TTS_URL=http://coqui-tts:5002/api/tts
+      # Channels
+      - CHANNEL_VOICE_TRANSCRIPT=${CHANNEL_VOICE_TRANSCRIPT}
+      - CHANNEL_VOICE_LLM=${CHANNEL_VOICE_LLM}
+      - CHANNEL_VOICE_TTS=${CHANNEL_VOICE_TTS}
+      - CHANNEL_COLLAPSE_INTAKE=${CHANNEL_COLLAPSE_INTAKE}
+      - CHANNEL_COLLAPSE_TRIAGE=${CHANNEL_COLLAPSE_TRIAGE}
 
-      # Optional GPU access
+      # Static / optional GPU and TTS service
+      - TTS_URL=http://coqui-tts:5002/api/tts
       - NVIDIA_VISIBLE_DEVICES=all
+
     runtime: nvidia
     networks:
       - ${NET:-app-net}
+    command: ["/bin/sh", "-c", "sleep 3 && uvicorn scripts.main:app --host 0.0.0.0 --port ${HUB_PORT:-8080}"]
 
   coqui-tts:
     image: ghcr.io/coqui-ai/tts-cpu
@@ -46,7 +53,6 @@ services:
     volumes:
       - /mnt/telemetry/models/coqui/tts:/root/.local/share/tts
     environment:
-      # This is a static value required by the tts-server.
       - TTS_MODEL_NAME=tts_models/en/ljspeech/vits
     restart: unless-stopped
     entrypoint: tts-server
@@ -76,4 +82,3 @@ volumes:
 networks:
   app-net:
     external: true
-

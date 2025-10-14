@@ -1,17 +1,26 @@
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 class Settings(BaseSettings):
-    # --- Orion Bus Configuration ---
-    ORION_BUS_URL: str = "redis://orion-janus-bus-core:6379/0"
-    ORION_BUS_ENABLED: bool = True
-    SUBSCRIBE_CHANNEL: str = "orion.tags"
-    PUBLISH_CHANNEL: str = "orion.tags.enriched"
+    PROJECT: str = Field(default="orion", env="PROJECT")
 
-    # --- Service Identity ---
-    SERVICE_NAME: str = "orion-meta-writer"
-    SERVICE_VERSION: str = "0.1.0"
+    SERVICE_NAME: str = Field(default="orion-meta-writer", env="SERVICE_NAME")
+    SERVICE_VERSION: str = Field(default="0.1.0", env="SERVICE_VERSION")
+    PORT: int = Field(default=8210, env="PORT")
+
+    ORION_BUS_URL: str
+    ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
+
+    # bus channels
+    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:raw", env="CHANNEL_EVENTS_TAGGED")
+    CHANNEL_EVENTS_ENRICHED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_ENRICHED")
+    CHANNEL_EVENTS_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_EVENTS_TRIAGE")
+    CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf-collapse:enqueue", env="CHANNEL_RDF_ENQUEUE")
+
+    STARTUP_DELAY: int = Field(default=5, env="STARTUP_DELAY")
 
     class Config:
-       env_file = ".env"
+        env_file = ".env"
+        env_file_encoding = "utf-8"
 
 settings = Settings()

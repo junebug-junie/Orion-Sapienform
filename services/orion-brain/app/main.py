@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from app.config import BACKENDS, PORT, READ_TIMEOUT, CONNECT_TIMEOUT
 from app.router import BrainRouter, health_loop, probe_backend
-from app.bus_helpers import emit_event, emit_bus
+from app.bus_helpers import emit_brain_event, emit_brain_output
 from app.models import GenerateBody, ChatBody
 from app import health
 from app.health import wait_for_redis
@@ -39,6 +39,7 @@ async def health_summary():
     """Return router health summary."""
     return {"ok": True, "backends": router.list()}
 
+
 @app.post("/chat")
 async def chat(body: ChatBody, request: Request):
     """
@@ -53,7 +54,8 @@ async def chat(body: ChatBody, request: Request):
     if not backend:
         raise HTTPException(status_code=503, detail="No healthy backends")
 
-    await emit_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
+    # 🧭 Publish routing decision
+    await emit_brain_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
 
     # Pick the correct endpoint based on payload structure
     endpoint = "chat" if "messages" in payload else "generate"
@@ -92,7 +94,15 @@ async def chat(body: ChatBody, request: Request):
         or ""
     ).strip()
 
-    await emit_bus("llm.response", {"trace_id": trace_id, "text": text or "(empty response)"})
+    # 🧠 Publish structured LLM output event
+    await emit_brain_output({
+        "trace_id": trace_id,
+        "text": text or "(empty response)",
+        "service": "orion-brain",
+        "model": data.get("model"),
+        "done_reason": data.get("done_reason", "n/a"),
+        "latency_ms": backend.last_latency_ms,
+    })
 
     return {
         "trace_id": trace_id,

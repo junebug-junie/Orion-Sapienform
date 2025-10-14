@@ -9,8 +9,8 @@ from app.utils import logger
 CM = Namespace("http://orion.ai/collapse#")
 
 # Derived endpoints
-REST_REPOS = f"{settings.graphdb_url}/rest/repositories"
-STATEMENTS_URL = f"{settings.graphdb_url}/repositories/{settings.graphdb_repo}/statements"
+REST_REPOS = f"{settings.GRAPHDB_URL}/rest/repositories"
+STATEMENTS_URL = f"{settings.GRAPHDB_URL}/repositories/{settings.GRAPHDB_REPO}/statements"
 
 
 def wait_for_graphdb(max_wait_sec: int = 120, interval: int = 3):
@@ -39,8 +39,8 @@ def ensure_repo_exists():
         r = requests.get(REST_REPOS, timeout=10)
         r.raise_for_status()
         repos = r.json()
-        if any(x.get("id") == settings.graphdb_repo for x in repos):
-            logger.info("✅ Repository '%s' present", settings.graphdb_repo)
+        if any(x.get("id") == settings.GRAPHDB_REPO for x in repos):
+            logger.info("✅ Repository '%s' present", settings.GRAPHDB_REPO)
             return
     except Exception as e:
         logger.warning("⚠️ Failed to list repositories: %s", e)
@@ -72,7 +72,7 @@ def ensure_repo_exists():
     )
     if r.status_code >= 400:
         raise RuntimeError(f"❌ Repo creation failed: {r.status_code} {r.text[:300]}")
-    logger.info("✅ Created repository '%s'", settings.graphdb_repo)
+    logger.info("✅ Created repository '%s'", settings.GRAPHDB_REPO)
 
 
 def build_graph(entry_id: str, payload: dict) -> Graph:

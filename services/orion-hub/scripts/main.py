@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import aiohttp
+import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +15,10 @@ from scripts.tts import TTS
 from orion.core.bus.service import OrionBus
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
-# --- Basic Logging Setup ---
+
+# ───────────────────────────────────────────────────────────────
+# 🪵 Logging
+# ───────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -23,30 +27,38 @@ logger = logging.getLogger("voice-app")
 
 
 # ───────────────────────────────────────────────────────────────
-# ⚙️ Configuration Loading
-# All environment variables are loaded here at startup.
+# ⚙️  Configuration (env-based)
 # ───────────────────────────────────────────────────────────────
-
-# --- Core Service Identity & Bus Connection ---
-PROJECT = os.getenv("PROJECT", "orion")
-# ⭐️ MODIFICATION: Look for ORION_BUS_URL to match your .env files.
+PROJECT = os.getenv("PROJECT", "orion-janus")
 ORION_BUS_URL = os.getenv("ORION_BUS_URL", f"redis://{PROJECT}-bus-core:6379/0")
 bus = OrionBus(url=ORION_BUS_URL)
+
+# --- Voice / LLM Channels ---
+CHANNEL_VOICE_TRANSCRIPT = os.getenv("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
+CHANNEL_VOICE_LLM = os.getenv("CHANNEL_VOICE_LLM", "orion:voice:llm")
+CHANNEL_VOICE_TTS = os.getenv("CHANNEL_VOICE_TTS", "orion:voice:tts")
+
+# --- Collapse Event Channels ---
+CHANNEL_COLLAPSE_INTAKE = os.getenv("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
+CHANNEL_COLLAPSE_TRIAGE = os.getenv("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
+
+# --- Brain Channels ---
+CHANNEL_BRAIN_INTAKE = os.getenv("CHANNEL_BRAIN_INTAKE", "orion:brain:intake")
+CHANNEL_BRAIN_OUT = os.getenv("CHANNEL_BRAIN_OUT", "orion:brain:out")
 
 # --- Whisper Model Configuration ---
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base.en")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 
-# --- Cognitive Backend (Brain) Configuration ---
+# --- Cognitive Backend (Brain) ---
 BRAIN_URL = os.getenv("BRAIN_URL", "http://orion-brain:8088")
 LLM_TIMEOUT_S = int(os.getenv("LLM_TIMEOUT_S", "60"))
 
 
 # ───────────────────────────────────────────────────────────────
-# 🚀 FastAPI Application Setup
+# 🚀 FastAPI setup
 # ───────────────────────────────────────────────────────────────
-
 app = FastAPI()
 asr = None
 tts = None
@@ -59,6 +71,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.on_event("startup")
 async def startup_event():
     global asr, tts
@@ -67,8 +80,10 @@ async def startup_event():
     tts = TTS()
     logger.info("Startup complete.")
 
-# ... (The rest of your file remains the same) ...
 
+# ───────────────────────────────────────────────────────────────
+# 📄 Static Files + UI
+# ───────────────────────────────────────────────────────────────
 templates_dir = "templates"
 html_content = "<html><body><h1>Error: templates/index.html not found</h1></body></html>"
 try:
@@ -85,6 +100,9 @@ async def root():
     return HTMLResponse(content=html_content, status_code=200)
 
 
+# ───────────────────────────────────────────────────────────────
+# 🧠 WebSocket Logic (Voice → Brain → Speech)
+# ───────────────────────────────────────────────────────────────
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
     try:
         while True:
@@ -135,8 +153,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
             logger.info(f"Transcript: {transcript!r}")
             await websocket.send_json({"transcript": transcript})
-            bus.publish("orion.voice.transcript", {"type": "transcript", "content": transcript})
 
+            # 🧠 Publish voice + brain intake events
+            bus.publish(CHANNEL_VOICE_TRANSCRIPT, {"type": "transcript", "content": transcript})
+            bus.publish(CHANNEL_BRAIN_INTAKE, {
+                "source": PROJECT,
+                "type": "intake",
+                "content": transcript,
+            })
+
+            # Manage rolling context
             if not history and instructions:
                 history.append({"role": "system", "content": instructions})
             history.append({"role": "user", "content": transcript})
@@ -156,6 +182,9 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info("WebSocket closed.")
 
 
+# ───────────────────────────────────────────────────────────────
+# 🧩 Brain + TTS Handling
+# ───────────────────────────────────────────────────────────────
 async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio.Queue):
     try:
         url = BRAIN_URL.rstrip("/") + "/chat"
@@ -171,7 +200,6 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
                 data = await r.json()
                 logger.info(f"Brain raw response: {data}")
 
-        # 🔑 Handle Brain schema properly
         text = (
             data.get("response")
             or data.get("text")
@@ -186,7 +214,8 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
         )
 
         await llm_q.put({"llm_response": text, "tokens": tokens})
-        bus.publish("orion.voice.llm", {"type": "llm_response", "content": text, "tokens": tokens})
+        bus.publish(CHANNEL_VOICE_LLM, {"type": "llm_response", "content": text, "tokens": tokens})
+        bus.publish(CHANNEL_BRAIN_OUT, {"type": "brain_response", "content": text, "tokens": tokens})
 
         if not text:
             await llm_q.put({"state": "idle"})
@@ -195,7 +224,7 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
         await llm_q.put({"state": "speaking"})
         for chunk in tts.synthesize_chunks(text):
             await tts_q.put({"audio_response": chunk})
-            bus.publish("orion.voice.tts", {"type": "audio_response", "size": len(chunk)})
+            bus.publish(CHANNEL_VOICE_TTS, {"type": "audio_response", "size": len(chunk)})
         await llm_q.put({"state": "idle"})
 
     except Exception as e:
@@ -203,25 +232,37 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
         await llm_q.put({"error": "LLM or TTS failed."})
         await llm_q.put({"state": "idle"})
 
+
+# ───────────────────────────────────────────────────────────────
+# 📜 Collapse Mirror Integration
+# ───────────────────────────────────────────────────────────────
 @app.get("/schema/collapse")
 def get_collapse_schema():
     """Expose CollapseMirrorEntry schema for UI templating."""
-    print("getting schema from service")
+    logger.info("Fetching CollapseMirrorEntry schema")
     return JSONResponse(CollapseMirrorEntry.schema())
+
 
 @app.post("/submit-collapse")
 async def submit_collapse(data: dict):
-    print("🔥 /submit-collapse called with:", data)
+    logger.info(f"🔥 /submit-collapse called with: {data}")
 
     if not bus.enabled:
-        print("OrionBus is not connected")
+        logger.error("OrionBus is not connected")
         return {"success": False, "error": "OrionBus disabled or not connected"}
+
+    # ⚠️ Validate channel mapping at runtime
+    channel_name = os.getenv("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
+    if not channel_name.startswith("orion:"):
+        logger.warning(f"⚠️ CHANNEL_COLLAPSE_INTAKE not namespaced correctly → {channel_name}")
+    else:
+        logger.info(f"✅ Using bus channel: {channel_name}")
 
     try:
         entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish("collapse.intake", entry.dict())
-        print(f"📡 Hub published collapse → collapse.intake: {entry.dict()}")
+        bus.publish(channel_name, entry.dict())
+        logger.info(f"📡 Hub published collapse → {channel_name}: {entry.dict()}")
         return {"success": True}
     except Exception as e:
-        print(f"❌ Hub publish error: {e}")
+        logger.error(f"❌ Hub publish error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}

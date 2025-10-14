@@ -1,51 +1,88 @@
-# services/orion-meta-writer/app/models.py
-from pydantic import BaseModel, Field, root_validator
-from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import List, Dict, Optional, Any
 from datetime import datetime
-import re
 
-class EnrichmentInput(BaseModel):
+class EventIn(BaseModel):
     """
-    Expected incoming message schema. This model is forgiving:
-    - collapse_id is optional and derived from `id` when possible
-    - tags/entities use default_factory to avoid shared mutable defaults
-    - ts (ISO string) is accepted and parsed when provided
+    Incoming event structure. This model now intelligently adapts to different
+    possible text fields from upstream publishers.
     """
     id: str
-    collapse_id: Optional[str] = Field(None, description="Collapse id; may be derived from `id`")
-    service_name: str
-    service_version: str
-    enrichment_type: str
-    tags: List[str] = Field(default_factory=list)
-    entities: List[Dict[str, Any]] = Field(default_factory=list)
-    salience: Optional[float] = None
+    text: str  # This will be populated by the validator below.
+    collapse_id: Optional[str] = None
     ts: Optional[datetime] = None
+    # Keep the rest of the payload for potential future use
+    extra_data: Dict[str, Any] = Field(default_factory=dict)
 
-    @root_validator(pre=True)
-    def derive_collapse_id_and_parse_ts(cls, values):
-        # Derive collapse_id from id if it's missing and id looks like 'collapse_...'
+    @model_validator(mode='before')
+    @classmethod
+    def prepare_and_hydrate_text(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        This is the core of the adapter. It finds a suitable text field from
+        the incoming message and assigns it to the `text` field.
+        """
+        # Prioritized list of fields to use for the main text content.
+        text_source_fields = ["summary", "trigger", "text", "text_content"]
+
+        found_text = ""
+        for field in text_source_fields:
+            if values.get(field):
+                found_text = values[field]
+                break # Stop at the first field we find
+
+        if not found_text:
+            # If no suitable field is found, the original validation error will occur
+            # because 'text' is a required field in the model itself.
+            pass
+
+        values['text'] = found_text
+
+        # Move all other fields into 'extra_data' for preservation.
+        cls.model_fields.keys()
+        known_fields = {'id', 'text', 'collapse_id', 'ts'}
+        values['extra_data'] = {k: v for k, v in values.items() if k not in known_fields}
+
+        # Normalize collapse_id
         if not values.get("collapse_id"):
             id_val = values.get("id")
             if isinstance(id_val, str) and id_val.startswith("collapse_"):
                 values["collapse_id"] = id_val
 
-        # Parse ts if it's a string (ISO timestamp)
+        # Normalize timestamp
         ts_val = values.get("ts")
         if isinstance(ts_val, str):
             try:
-                # Use fromisoformat or dateutil if necessary
-                # This will accept RFC3339 / ISO formats like "2025-10-12T04:31:09.802298"
                 values["ts"] = datetime.fromisoformat(ts_val)
             except Exception:
-                # Last-resort: leave it as-is and let the app handle it downstream
-                pass
+                pass # Let Pydantic handle validation if it fails
+
         return values
 
-class EnrichmentOutput(EnrichmentInput):
+
+class Enrichment(BaseModel):
     """
-    Outgoing schema: inherits input, adds processing metadata.
-    processed_at defaults to current UTC time if caller doesn't set it.
+    Outgoing enrichment message published to downstream meta-writer.
     """
-    processed_by: str
-    processed_version: str
-    processed_at: datetime = Field(default_factory=lambda: datetime.utcnow())
+    id: str
+    collapse_id: Optional[str] = None
+    service_name: str
+    service_version: str
+    enrichment_type: str = "tagging"
+    tags: List[str] = Field(default_factory=list)
+    entities: List[Dict[str, str]] = Field(default_factory=list)
+    salience: float = 0.0
+    ts: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    @model_validator(mode='before')
+    @classmethod
+    def ensure_ts_and_collapse(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensures critical fields are present before final validation."""
+        # Default collapse_id if missing
+        if not values.get("collapse_id") and "id" in values:
+            id_val = values["id"]
+            if isinstance(id_val, str) and id_val.startswith("collapse_"):
+                values["collapse_id"] = id_val
+        # Ensure timestamp always present as ISO string
+        if not values.get("ts"):
+            values["ts"] = datetime.utcnow().isoformat()
+        return values

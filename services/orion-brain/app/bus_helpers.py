@@ -1,39 +1,36 @@
 from typing import Dict, Optional
 from orion.core.bus.service import OrionBus
-from app.config import REDIS_URL, EVENTS_ENABLE, BUS_OUT_ENABLE
+from app.config import (
+    ORION_BUS_URL, ORION_BUS_ENABLED,
+    CHANNEL_BRAIN_OUT, CHANNEL_BRAIN_STATUS, CHANNEL_BRAIN_STREAM,
+)
 
 _bus: Optional[OrionBus] = None
 
 def get_bus() -> OrionBus:
-    """
-    Lazy-load OrionBus instance. Ensures we use the current REDIS_URL
-    from environment (after all .env overlays are loaded).
-    """
+    """Lazy-load OrionBus instance using current config."""
     global _bus
     if _bus is None:
-        _bus = OrionBus(url=REDIS_URL)
+        _bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
     return _bus
 
-async def emit_event(kind: str, fields: Dict):
-    """Publish telemetry event to the Orion event bus."""
-    if not EVENTS_ENABLE:
-        return
+async def emit_brain_event(event_type: str, data: Dict):
+    """Publish a Brain status or internal event."""
     bus = get_bus()
     if not bus.enabled:
         return
     try:
-        bus.publish(f"events.{kind}", fields)
+        topic = CHANNEL_BRAIN_STATUS if event_type == "status" else CHANNEL_BRAIN_STREAM
+        bus.publish(topic, data)
     except Exception as e:
-        print(f"[bus] emit_event failed: {e}")
+        print(f"[bus] emit_brain_event failed: {e}")
 
-async def emit_bus(topic: str, content: Dict):
-    """Publish structured model response or message to the bus output stream."""
-    if not BUS_OUT_ENABLE:
-        return
+async def emit_brain_output(data: Dict):
+    """Publish a completed LLM inference result."""
     bus = get_bus()
     if not bus.enabled:
         return
     try:
-        bus.publish(topic, content)
+        bus.publish(CHANNEL_BRAIN_OUT, data)
     except Exception as e:
-        print(f"[bus] emit_bus failed: {e}")
+        print(f"[bus] emit_brain_output failed: {e}")

@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+import aiohttp 
 
 from scripts.asr import ASR
 from scripts.tts import TTS
@@ -52,7 +53,7 @@ WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 # --- Cognitive Backend (Brain) ---
 BRAIN_URL = os.getenv("BRAIN_URL", "http://orion-brain:8088")
 LLM_TIMEOUT_S = int(os.getenv("LLM_TIMEOUT_S", "60"))
-
+HUB_PORT = os.getenv("HUB_PORT", "8080")
 
 # ───────────────────────────────────────────────────────────────
 # 🚀 FastAPI setup
@@ -233,10 +234,11 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
             return
 
         await llm_q.put({"state": "speaking"})
-        for chunk in tts.synthesize_chunks(text):
-            await tts_q.put({"audio_response": chunk})
-            if bus and bus.enabled:
-                bus.publish(CHANNEL_VOICE_TTS, {"type": "audio_response", "size": len(chunk)})
+        if tts:
+            for chunk in tts.synthesize_chunks(text):
+                await tts_q.put({"audio_response": chunk})
+                if bus and bus.enabled:
+                    bus.publish(CHANNEL_VOICE_TTS, {"type": "audio_response", "size": len(chunk)})
         await llm_q.put({"state": "idle"})
 
     except Exception as e:
@@ -267,9 +269,11 @@ async def submit_collapse(data: dict):
 
     try:
         entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish(CHANNEL_COLLAPSE_INTAKE, entry.dict())
-        logger.info(f"📡 Hub published collapse → {CHANNEL_COLLAPSE_INTAKE}: {entry.dict()}")
+        if bus and bus.enabled:
+            bus.publish(CHANNEL_COLLAPSE_INTAKE, entry.dict())
+            logger.info(f"📡 Hub published collapse → {CHANNEL_COLLAPSE_INTAKE}: {entry.dict()}")
         return {"success": True}
     except Exception as e:
         logger.error(f"❌ Hub publish error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+

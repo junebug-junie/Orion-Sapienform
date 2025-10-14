@@ -3,8 +3,24 @@ FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 WORKDIR /app
 
 # Install Python + tools
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip curl \
+    \
+    # 1. Compiler and build tools (fixes 'gcc' not found)
+    build-essential \
+    \
+    # 2. Python development headers (fixes 'Python.h' not found)
+    python3-dev \
+    \
+    # 3. FFmpeg dependencies for building PyAV (fixes 'pkg-config' and libavresample-dev error)
+    pkg-config \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip

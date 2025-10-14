@@ -1,15 +1,11 @@
-import threading, logging, sys
+import threading
+import logging
+import sys
 from fastapi import FastAPI
-from app.service import OrionRDFWriterService
 from app.settings import settings
 from app.router import router as rdf_router
-
-# --- ADD THIS DEBUG BLOCK ---
-print("--- VERIFYING RUNTIME SETTINGS ---", flush=True)
-print(f"Loaded BATCH_SIZE: {settings.BATCH_SIZE}", flush=True)
-print(f"Loaded LOG_LEVEL: {settings.LOG_LEVEL}", flush=True)
-print("----------------------------------", flush=True)
-# --- END DEBUG BLOCK ---
+# Import the new listener_worker function from service.py
+from app.service import listener_worker
 
 # Ensure root logger is configured
 logging.basicConfig(
@@ -20,19 +16,25 @@ logging.basicConfig(
 
 app = FastAPI(title=settings.SERVICE_NAME, version="1.0.0")
 app.include_router(rdf_router)
-rdf_service = OrionRDFWriterService()
 
 @app.on_event("startup")
 def on_startup():
-    print(">>> FastAPI startup hook executing...", file=sys.stderr)
-    threading.Thread(target=rdf_service.start, daemon=True).start()
+    """
+    Starts the single, unified listener worker in a background thread.
+    """
+    if settings.ORION_BUS_ENABLED:
+        print("🚀 Starting RDF-Writer listener thread...", file=sys.stderr)
+        threading.Thread(target=listener_worker, daemon=True).start()
+    else:
+        print("⚠️ Bus is disabled; RDF-Writer will be idle.", file=sys.stderr)
+
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "queue_len": len(rdf_service.queue),
         "service": settings.SERVICE_NAME,
+        "listening_on": settings.get_all_subscribe_channels(),
         "graphdb_url": settings.GRAPHDB_URL,
         "bus_url": settings.ORION_BUS_URL,
     }

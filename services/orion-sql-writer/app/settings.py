@@ -32,13 +32,25 @@ class Settings(BaseSettings):
         extra = "ignore"
 
     def get_table_for_channel(self, channel: str) -> str:
+        """Parses the BUS_TABLE_MAP to find the target table for a given channel."""
         mapping = {}
         for pair in (self.BUS_TABLE_MAP or "").split(","):
             if ":" in pair:
                 parts = pair.split(":")
                 if len(parts) >= 2:
-                    mapping[":".join(parts[:-1])] = parts[-1]
+                    # Handle channel names that might contain colons
+                    channel_name = ":".join(parts[:-1])
+                    table_name = parts[-1]
+                    mapping[channel_name] = table_name
         return mapping.get(channel, self.POSTGRES_TABLE)
+
+    def get_all_subscribe_channels(self) -> list[str]:
+        """Returns a list of all channels this service should subscribe to."""
+        return [
+            self.CHANNEL_TAGS_RAW,
+            self.CHANNEL_TAGS_ENRICHED,
+            self.CHANNEL_COLLAPSE_INTAKE,
+        ]
 
 
 settings = Settings()

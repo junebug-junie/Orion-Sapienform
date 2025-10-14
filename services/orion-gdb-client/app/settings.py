@@ -16,7 +16,12 @@ class Settings(BaseSettings):
     # === Orion Bus ===
     ORION_BUS_URL: str = Field(default="redis://orion-janus-bus-core:6379/0", env="ORION_BUS_URL")
     ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
-    SUBSCRIBE_CHANNEL: str = Field(default="orion:rdf-collapse:enqueue", env="SUBSCRIBE_CHANNEL")
+
+    # This service now listens on two channels to handle both raw and enriched data.
+    CHANNEL_COLLAPSE_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_COLLAPSE_TRIAGE")
+    CHANNEL_TAGS_ENRICHED: str = Field(default="orion:tags:enriched", env="CHANNEL_TAGS_ENRICHED")
+    
+    # Channels for publishing confirmations/errors
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
     CHANNEL_RDF_ERROR: str = Field(default="orion:rdf:error", env="CHANNEL_RDF_ERROR")
 
@@ -42,3 +47,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

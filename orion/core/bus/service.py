@@ -35,26 +35,33 @@ class OrionBus:
         except Exception as e:
             logger.error(f"Publish error on {channel}: {e}")
 
-    def subscribe(self, channel: str):
-        """Blocking subscribe generator."""
+    def subscribe(self, *channels):
+        """
+        Blocking subscribe generator that now handles multiple channels and yields
+        the full message dictionary (including the source channel).
+        """
         if not self.enabled or not self.client:
             yield from ()
             return
+        
         pubsub = self.client.pubsub()
-        pubsub.subscribe(channel)
-        logger.info(f"Subscribed to channel: {channel}")
+        pubsub.subscribe(*channels)
+        logger.info(f"Subscribed to channels: {channels}")
 
-        print(f"[BUS] Entering blocking listen() loop for channel: {channel}", flush=True)
+        print(f"[BUS] Entering blocking listen() loop for channels: {channels}", flush=True)
 
         for message in pubsub.listen():
-
-            print(f"!!! [BUS] RAW MESSAGE RECEIVED on {channel}: {message}", flush=True)
-
+            # The 'channel' key in the message will tell us where it came from.
+            # We also now parse the data here, but yield the full message.
             if message["type"] != "message":
                 continue
+            
             try:
-                data = json.loads(message["data"])
+                # We replace the raw string data with the parsed dictionary
+                message["data"] = json.loads(message["data"])
             except Exception as e:
-                logger.error(f"[BUS] JSON parse failed on {channel}: {e} — raw={message['data']!r}")
+                logger.error(f"[BUS] JSON parse failed on {message['channel']}: {e} — raw={message['data']!r}")
                 continue
-            yield data
+            
+            # Yield the entire message object so the listener knows the source channel
+            yield message

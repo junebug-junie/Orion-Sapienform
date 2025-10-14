@@ -79,10 +79,8 @@ def health():
 # ───────────────────────────────────────────────────────────────
 def listener_worker():
     """
-    Creates its own thread-local bus connection and enters a blocking
-    listen loop. This is a thread-safe pattern.
+    Creates its own thread-local bus connection and processes messages.
     """
-    # Create the OrionBus instance INSIDE the thread.
     bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
     if not bus.enabled:
         print("❌ Listener could not connect to bus. Thread exiting.")
@@ -95,8 +93,13 @@ def listener_worker():
     print(f"📨 Publishing tagged events → {publish_channel}")
 
     try:
-        # Iterate directly over the generator from bus.subscribe()
-        for data in bus.subscribe(listen_channel):
+        # The new OrionBus yields the full message object.
+        for message in bus.subscribe(listen_channel):
+            # We must now extract the 'data' payload from the message.
+            data = message.get("data")
+            if not data:
+                continue
+
             print(f"Received message on {listen_channel}")
             try:
                 ev = EventIn.model_validate(data)

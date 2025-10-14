@@ -8,13 +8,12 @@ from app.models import EnrichmentInput, MirrorInput
 from app.db_utils import upsert_record
 from orion.core.bus.service import OrionBus
 
-
 app = FastAPI(title=settings.SERVICE_NAME)
 
 
 def _normalize_message(raw_msg):
     """
-    Ensure messages are dicts (Redis can deliver already-encoded JSON strings).
+    Ensure messages are consistently represented as dictionaries.
     """
     if isinstance(raw_msg, (bytes, bytearray)):
         raw_msg = raw_msg.decode("utf-8", errors="replace")
@@ -26,16 +25,19 @@ def _normalize_message(raw_msg):
             return None
     if isinstance(raw_msg, dict):
         return raw_msg
-    # Anything else (lists, numbers) — skip
     print(f"⚠️  Skipping non-object payload type: {type(raw_msg)}")
     return None
 
 
 def _process_one(channel: str, msg: dict):
     """
-    Route by channel → table; validate; normalize; upsert.
+    Routes a message to the correct Pydantic model and table based on its
+    source channel, then validates and upserts it.
     """
     table = settings.get_table_for_channel(channel)
+    if not table:
+        print(f"⚠️  No table mapping for channel '{channel}', skipping")
+        return
 
     try:
         if table == "collapse_enrichment":
@@ -43,31 +45,47 @@ def _process_one(channel: str, msg: dict):
         elif table == "collapse_mirror":
             payload = MirrorInput.model_validate(msg).normalize()
         else:
-            # If you add new tables, register them in MODEL_MAP + add a branch here
             print(f"⚠️  No model branch for table '{table}', skipping")
             return
 
         upsert_record(table, payload.model_dump())
+        print(f"✅ Upserted id={payload.id} from '{channel}' → {table}")
 
     except Exception as e:
         print(f"❌ Listener error on '{channel}' → table '{table}': {e}")
 
 
-def _channel_worker(channel: str, bus: OrionBus):
+def _channel_worker(channel: str):
     """
-    Dedicated worker per channel because bus.subscribe() is a blocking generator.
+    Dedicated worker per channel. It creates its own thread-local bus connection.
+    This is a robust and thread-safe pattern.
     """
+    # Create the OrionBus instance INSIDE the thread.
+    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
+    if not bus.enabled:
+        print(f"❌ Bus connection failed for channel '{channel}'. Thread exiting.")
+        return
+
     print(f"👂 Subscribed (worker) for channel: {channel}")
-    for msg in bus.subscribe(channel):
-        data = _normalize_message(msg)
-        if data is None:
+    # The new OrionBus yields the full message object.
+    for message in bus.subscribe(channel):
+        # Extract the data payload from the message dictionary.
+        data = message.get("data")
+        if not data:
             continue
-        _process_one(channel, data)
+        
+        normalized_data = _normalize_message(data)
+        if normalized_data is None:
+            continue
+            
+        _process_one(channel, normalized_data)
 
 
 @app.on_event("startup")
 def startup_event():
-    # Optional: auto-create tables if not present (safe idempotent)
+    """
+    Ensures the DB schema is present and starts a listener thread for each channel.
+    """
     try:
         Base.metadata.create_all(bind=engine)
         print("🛠️  Ensured DB schema is present")
@@ -75,21 +93,15 @@ def startup_event():
         print(f"⚠️  Schema init warning: {e}")
 
     if not settings.ORION_BUS_ENABLED:
-        print("⚠️  Bus disabled; writer idle")
+        print("⚠️  Bus disabled; writer will be idle.")
         return
 
-    # Create a single OrionBus instance and spawn a thread per channel.
-    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
-
-    channels = [
-        settings.CHANNEL_TAGS_RAW,
-        settings.CHANNEL_TAGS_ENRICHED,
-        settings.CHANNEL_COLLAPSE_INTAKE,
-    ]
-    print(f"🚀 {settings.SERVICE_NAME} starting; channels={channels}")
+    channels = settings.get_all_subscribe_channels()
+    print(f"🚀 {settings.SERVICE_NAME} starting listeners for channels: {channels}")
 
     for ch in channels:
-        t = threading.Thread(target=_channel_worker, args=(ch, bus), daemon=True)
+        # Pass only the channel name to the worker. The worker will create its own bus.
+        t = threading.Thread(target=_channel_worker, args=(ch,), daemon=True)
         t.start()
 
 
@@ -99,6 +111,7 @@ def health():
         "ok": True,
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
-        "channels": [c.strip() for c in settings.SUBSCRIBE_CHANNELS.split(",") if c.strip()],
+        "channels": settings.get_all_subscribe_channels(),
         "bus_url": settings.ORION_BUS_URL,
     }
+

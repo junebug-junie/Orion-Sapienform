@@ -53,7 +53,7 @@ def ensure_repo_exists():
 @prefix graphdb: <http://www.ontotext.com/trree/graphdb#> .
 
 [] a rep:Repository ;
-   rep:repositoryID "{settings.graphdb_repo}" ;
+   rep:repositoryID "{settings.GRAPHDB_REPO}" ;
    rdfs:label "Orion GDB Client Repository" ;
    rep:repositoryImpl [
      rep:repositoryType "graphdb:SailRepository" ;
@@ -75,37 +75,57 @@ def ensure_repo_exists():
     logger.info("✅ Created repository '%s'", settings.GRAPHDB_REPO)
 
 
-def build_graph(entry_id: str, payload: dict) -> Graph:
+def process_raw_collapse(entry_id: str, payload: dict) -> int:
     """
-    Convert a JSON message into RDF triples.
+    Converts a raw collapse event into the base RDF triples for that event.
     """
     g = Graph()
     g.bind("cm", CM)
-
-    s = URIRef(f"{CM}{entry_id}")
-    g.add((s, RDF.type, CM.Collapse))
-    g.add((s, CM.id, Literal(entry_id, datatype=XSD.string)))
+    subject = URIRef(f"{CM}{entry_id}")
+    g.add((subject, RDF.type, CM.Collapse))
+    g.add((subject, CM.id, Literal(entry_id, datatype=XSD.string)))
 
     for key, val in payload.items():
-        if val is None:
+        if val is None or key in ["id", "service_name", "text"]:
             continue
         if isinstance(val, list):
             val = ", ".join(map(str, val))
-        g.add((s, URIRef(str(CM) + key), Literal(val, datatype=XSD.string)))
+        g.add((subject, URIRef(str(CM) + key), Literal(val, datatype=XSD.string)))
+    push_graph(g)
+    return len(g)
 
-    return g
+
+def process_enrichment(entry_id: str, payload: dict) -> int:
+    """
+    Adds enrichment data (tags, entities) as new triples to an existing node.
+    """
+    collapse_id = payload.get("collapse_id", entry_id)
+    g = Graph()
+    g.bind("cm", CM)
+    subject = URIRef(f"{CM}{collapse_id}")
+
+    for tag in payload.get("tags", []):
+        g.add((subject, CM.hasTag, Literal(tag, datatype=XSD.string)))
+    for entity in payload.get("entities", []):
+        if entity.get("value") and entity.get("type"):
+            g.add((subject, CM.hasEntity, Literal(f"{entity['value']} ({entity['type']})", datatype=XSD.string)))
+    if g:
+        push_graph(g)
+    return len(g)
 
 
 def push_graph(g: Graph):
     """
     Push the RDF graph into GraphDB.
     """
+    if not g:
+        return
     ttl = g.serialize(format="turtle")
     r = requests.post(
         STATEMENTS_URL,
         headers={"Content-Type": "text/turtle"},
-        data=ttl,
+        data=ttl.encode("utf-8"),
         timeout=15,
     )
-    if r.status_code not in (200, 204):
-        raise RuntimeError(f"❌ RDF push failed: {r.status_code} {r.text[:200]}")
+    r.raise_for_status()
+

@@ -8,15 +8,6 @@ from orion.core.bus.service import OrionBus
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
 bus = OrionBus(url=settings.ORION_BUS_URL)
-from uuid import uuid4
-from sqlalchemy.orm import Session
-from app.settings import settings
-from app.models import CollapseMirrorEntrySQL
-from app.chroma_db import collection, embedder
-from orion.core.bus.service import OrionBus
-from orion.schemas.collapse_mirror import CollapseMirrorEntry
-
-bus = OrionBus(url=settings.ORION_BUS_URL)
 
 def log_and_persist(entry: CollapseMirrorEntry, db: Session):
     """
@@ -43,6 +34,7 @@ def log_and_persist(entry: CollapseMirrorEntry, db: Session):
     # Write to Chroma
     collection.add(
         documents=[entry.summary],
+        # Corrected the typo from 'metatadatas' to 'metadatas'
         metadatas=[metadata],
         embeddings=[embedding_list],
         ids=[entry_id],
@@ -53,10 +45,11 @@ def log_and_persist(entry: CollapseMirrorEntry, db: Session):
     db.add(sql_entry)
     db.commit()
 
-    # Publish to triage channel (new unified bus structure)
+    # Publish to triage channel
     payload = {
         "id": entry_id,
         "service_name": settings.SERVICE_NAME,
+        "text": metadata.get("summary", ""),
         **metadata,
     }
 
@@ -64,3 +57,4 @@ def log_and_persist(entry: CollapseMirrorEntry, db: Session):
     print(f"📡 Published collapse {entry_id} → {settings.CHANNEL_COLLAPSE_TRIAGE}")
 
     return {"id": entry_id, "status": "logged", "entry": metadata}
+

@@ -21,10 +21,9 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 
 # -----------------------
-# App + globals
+# App
 # -----------------------
 app = FastAPI(title=settings.SERVICE_NAME)
-bus: OrionBus | None = None
 
 BAD_PAYLOAD_LOG = "/tmp/meta_writer_bad_messages.log"
 
@@ -45,10 +44,12 @@ def _persist_bad_payload(payload, reason: str) -> None:
 
 def listener_worker():
     """
-    Listens for tagged/triage messages, translates them, enriches, and republishes.
+    Creates its own thread-local bus connection, listens for tagged/triage
+    messages, translates them, enriches, and republishes.
     """
-    if not bus:
-        logger.error("Bus is not initialized. Listener cannot start.")
+    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
+    if not bus.enabled:
+        logger.error("Bus is not initialized or is disabled. Listener cannot start.")
         return
 
     listen_channel = settings.CHANNEL_EVENTS_TAGGED
@@ -61,16 +62,9 @@ def listener_worker():
 
     for message in sub:
         try:
-            # normalize incoming message to dict
-            if isinstance(message, (str, bytes, bytearray)):
-                try:
-                    data = json.loads(message)
-                except Exception as e:
-                    logger.error("Invalid JSON payload received: %s", e)
-                    _persist_bad_payload({"raw": str(message)}, f"invalid_json: {e}")
-                    continue
-            else:
-                data = message
+            data = message.get("data")
+            if not data:
+                continue
 
             # --- 1. Translate & Validate ---
             try:
@@ -96,11 +90,13 @@ def listener_worker():
 
             # --- 3. Publish Downstream ---
             try:
-                bus.publish(publish_channel, enriched.model_dump_json())
+                # CORRECTED: Use mode='json' to ensure all fields are JSON-serializable
+                # before passing the dictionary to the bus for final encoding.
+                bus.publish(publish_channel, enriched.model_dump(mode='json'))
                 logger.info("📤 Published enriched id=%s → %s", getattr(validated_input, "id", "<no-id>"), publish_channel)
             except Exception as e:
                 logger.exception("Failed to publish enriched id=%s: %s", getattr(validated_input, "id", "<no-id>"), e)
-                _persist_bad_payload(enriched.model_dump(), f"publish_error: {e}")
+                _persist_bad_payload(enriched.model_dump(mode='json'), f"publish_error: {e}")
                 continue
 
         except Exception:
@@ -111,10 +107,8 @@ def listener_worker():
 @app.on_event("startup")
 def startup_event():
     """Initialize OrionBus and start listener thread."""
-    global bus
     if settings.ORION_BUS_ENABLED:
-        logger.info("🚀 Initializing OrionBus → %s", settings.ORION_BUS_URL)
-        bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
+        logger.info("🚀 Starting listener thread...")
         threading.Thread(target=listener_worker, daemon=True, name="meta-writer-listener").start()
         logger.info("🧠 Meta-writer listener thread started")
     else:
@@ -132,3 +126,4 @@ def health():
         "listen_channel": settings.CHANNEL_EVENTS_TAGGED,
         "publish_channel": settings.CHANNEL_EVENTS_ENRICHED,
     }
+

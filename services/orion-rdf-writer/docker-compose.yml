@@ -1,16 +1,55 @@
+# ───────────────────────────────────────────────────────────────
+# ✍️  Orion RDF Writer — Persistence Layer for GraphDB
+# ───────────────────────────────────────────────────────────────
+
 services:
-  orion-rdf-writer:
+  rdf-writer:
     build:
       context: ../..
       dockerfile: services/orion-rdf-writer/Dockerfile
+    container_name: ${PROJECT}-rdf-writer
     restart: unless-stopped
     networks:
       - app-net
     ports:
-      - "8020:8020"
-    env_file: .env
+      # Use the configurable port from the .env file
+      - "${PORT}:${PORT}"
     volumes:
       - /mnt/storage/rdf_logs:/app/logs
+    environment:
+      # --- Service Identity ---
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - PORT=${PORT}
+
+      # --- Orion Bus Integration ---
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+
+      # --- Bus Listener Channels ---
+      - CHANNEL_EVENTS_TRIAGE=${CHANNEL_EVENTS_TRIAGE}
+      - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
+      - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE}
+      - ORION_CORE_EVENTS=${ORION_CORE_EVENTS}
+
+      # --- Bus Publish Channels ---
+      - CHANNEL_RDF_CONFIRM=${CHANNEL_RDF_CONFIRM}
+      - CHANNEL_RDF_ERROR=${CHANNEL_RDF_ERROR}
+
+      # --- GraphDB Configuration ---
+      - GRAPHDB_URL=${GRAPHDB_URL}
+      - GRAPHDB_REPO=${GRAPHDB_REPO}
+      - GRAPHDB_USER=${GRAPHDB_USER}
+      - GRAPHDB_PASS=${GRAPHDB_PASS}
+
+      # --- Runtime ---
+      - LOG_LEVEL=${LOG_LEVEL}
+      - BATCH_SIZE=${BATCH_SIZE}
+      - RETRY_LIMIT=${RETRY_LIMIT}
+      - RETRY_INTERVAL=${RETRY_INTERVAL}
+
 networks:
   app-net:
+    # This service connects to an existing, external network.
+    name: ${NET}
     external: true

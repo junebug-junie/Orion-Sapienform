@@ -1,5 +1,6 @@
 networks:
   app-net:
+    name: ${NET}
     external: true
 
 services:
@@ -9,57 +10,61 @@ services:
       context: ../..
       dockerfile: services/graphdb/Dockerfile
       args:
-        version: "${GRAPHDB_VERSION:-11.0.0}"
+        version: "${GRAPHDB_VERSION}"
     container_name: ${PROJECT}-graphdb
-    image: ${PROJECT}-graphdb:${GRAPHDB_VERSION:-latest}
+    image: ${PROJECT}-graphdb:${GRAPHDB_VERSION}
     restart: unless-stopped
     networks:
       - app-net
     ports:
-      - "${GRAPHDB_PORT_HTTP:-7200}:7200"
-      - "${GRAPHDB_PORT_HTTPS:-7300}:7300"
+      - "${GRAPHDB_PORT_HTTP}:7200"
+      - "${GRAPHDB_PORT_HTTPS}:7300"
     environment:
-      GDB_JAVA_OPTS: "${GDB_JAVA_OPTS:-'-Xmx8g -Dgraphdb.workbench.importDirectory=/var/graphdb/import'}"
+      - GDB_JAVA_OPTS=${GDB_JAVA_OPTS}
     volumes:
-      - ${GRAPHDB_HOME:-/mnt/storage/collapse-mirrors}:/opt/graphdb/home
-      - ${GRAPHDB_IMPORT:-/mnt/storage/collapse-mirrors/import}:/root/graphdb-import
+      - ${GRAPHDB_HOME}:/opt/graphdb/home
+      - ${GRAPHDB_IMPORT}:/root/graphdb-import
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:7200/rest/repositories"]
-      interval: 10s
+      interval: 15s
       timeout: 5s
-      retries: 6
-      start_period: 20s
+      retries: 10
+      # Give the Java application plenty of time to start up before
+      # the health checks are considered failures.
+      start_period: 90s
 
   gdb-client:
     build:
       context: ../..
       dockerfile: services/orion-gdb-client/Dockerfile
     container_name: ${PROJECT}-gdb-client
-    image: ${PROJECT}-gdb-client:${SERVICE_VERSION:-latest}
+    image: ${PROJECT}-gdb-client:${SERVICE_VERSION}
     restart: unless-stopped
     networks:
       - app-net
+    ports:
+      - "${PORT}:8000"
     environment:
-      PROJECT: ${PROJECT}
-      SERVICE_NAME: ${SERVICE_NAME}
-      SERVICE_VERSION: ${SERVICE_VERSION}
-
-      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
-      ORION_BUS_URL: ${ORION_BUS_URL}
-      SUBSCRIBE_CHANNEL: ${SUBSCRIBE_CHANNEL}
-      CHANNEL_RDF_CONFIRM: ${CHANNEL_RDF_CONFIRM}
-      CHANNEL_RDF_ERROR: ${CHANNEL_RDF_ERROR}
-
-      GRAPHDB_URL: ${GRAPHDB_URL}
-      GRAPHDB_REPO: ${GRAPHDB_REPO}
-      LOG_LEVEL: ${LOG_LEVEL}
-      PORT: ${PORT}
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - CHANNEL_COLLAPSE_TRIAGE=${CHANNEL_COLLAPSE_TRIAGE}
+      - CHANNEL_TAGS_ENRICHED=${CHANNEL_TAGS_ENRICHED}
+      - CHANNEL_RDF_CONFIRM=${CHANNEL_RDF_CONFIRM}
+      - CHANNEL_RDF_ERROR=${CHANNEL_RDF_ERROR}
+      - GRAPHDB_URL=${GRAPHDB_URL}
+      - GRAPHDB_REPO=${GRAPHDB_REPO}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - PORT=${PORT}
     depends_on:
       graphdb:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:${PORT:-8000}/health"]
+      test: ["CMD", "curl", "-fs", "http://localhost:${PORT}/health"]
       interval: 15s
       timeout: 5s
       retries: 6
       start_period: 30s
+

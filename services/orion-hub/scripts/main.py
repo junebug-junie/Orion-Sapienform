@@ -3,7 +3,6 @@ import logging
 import asyncio
 import base64
 import json
-import aiohttp
 import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -31,7 +30,7 @@ logger = logging.getLogger("voice-app")
 # ───────────────────────────────────────────────────────────────
 PROJECT = os.getenv("PROJECT", "orion-janus")
 ORION_BUS_URL = os.getenv("ORION_BUS_URL", f"redis://{PROJECT}-bus-core:6379/0")
-bus = OrionBus(url=ORION_BUS_URL)
+ORION_BUS_ENABLED = os.getenv("ORION_BUS_ENABLED", "true").lower() in ("true", "1", "t")
 
 # --- Voice / LLM Channels ---
 CHANNEL_VOICE_TRANSCRIPT = os.getenv("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
@@ -40,7 +39,6 @@ CHANNEL_VOICE_TTS = os.getenv("CHANNEL_VOICE_TTS", "orion:voice:tts")
 
 # --- Collapse Event Channels ---
 CHANNEL_COLLAPSE_INTAKE = os.getenv("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
-CHANNEL_COLLAPSE_TRIAGE = os.getenv("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 
 # --- Brain Channels ---
 CHANNEL_BRAIN_INTAKE = os.getenv("CHANNEL_BRAIN_INTAKE", "orion:brain:intake")
@@ -60,8 +58,11 @@ LLM_TIMEOUT_S = int(os.getenv("LLM_TIMEOUT_S", "60"))
 # 🚀 FastAPI setup
 # ───────────────────────────────────────────────────────────────
 app = FastAPI()
-asr = None
-tts = None
+
+# Service objects are declared here but initialized on startup
+asr: ASR | None = None
+tts: TTS | None = None
+bus: OrionBus | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,10 +75,21 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    global asr, tts
+    """
+    Safely initializes all services after the application starts,
+    preventing race conditions.
+    """
+    global asr, tts, bus
     logger.info(f"Loading Whisper model '{WHISPER_MODEL_SIZE}' on {WHISPER_DEVICE}/{WHISPER_COMPUTE_TYPE}")
     asr = ASR(WHISPER_MODEL_SIZE, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE)
     tts = TTS()
+
+    if ORION_BUS_ENABLED:
+        logger.info(f"Initializing OrionBus connection to {ORION_BUS_URL}")
+        bus = OrionBus(url=ORION_BUS_URL)
+    else:
+        logger.warning("OrionBus is disabled. No messages will be published.")
+
     logger.info("Startup complete.")
 
 
@@ -118,7 +130,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket accepted.")
     if asr is None:
-        await websocket.send_json({"error": "Whisper not loaded"})
+        await websocket.send_json({"error": "ASR model not loaded"})
         await websocket.close()
         return
 
@@ -154,13 +166,14 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"Transcript: {transcript!r}")
             await websocket.send_json({"transcript": transcript})
 
-            # 🧠 Publish voice + brain intake events
-            bus.publish(CHANNEL_VOICE_TRANSCRIPT, {"type": "transcript", "content": transcript})
-            bus.publish(CHANNEL_BRAIN_INTAKE, {
-                "source": PROJECT,
-                "type": "intake",
-                "content": transcript,
-            })
+            # Publish voice + brain intake events if bus is active
+            if bus and bus.enabled:
+                bus.publish(CHANNEL_VOICE_TRANSCRIPT, {"type": "transcript", "content": transcript})
+                bus.publish(CHANNEL_BRAIN_INTAKE, {
+                    "source": PROJECT,
+                    "type": "intake",
+                    "content": transcript,
+                })
 
             # Manage rolling context
             if not history and instructions:
@@ -207,15 +220,13 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
             or ""
         ).strip()
 
-        tokens = (
-            data.get("tokens")
-            or data.get("eval_count")
-            or len(text.split())
-        )
+        tokens = data.get("tokens") or data.get("eval_count") or len(text.split())
 
         await llm_q.put({"llm_response": text, "tokens": tokens})
-        bus.publish(CHANNEL_VOICE_LLM, {"type": "llm_response", "content": text, "tokens": tokens})
-        bus.publish(CHANNEL_BRAIN_OUT, {"type": "brain_response", "content": text, "tokens": tokens})
+        
+        if bus and bus.enabled:
+            bus.publish(CHANNEL_VOICE_LLM, {"type": "llm_response", "content": text, "tokens": tokens})
+            bus.publish(CHANNEL_BRAIN_OUT, {"type": "brain_response", "content": text, "tokens": tokens})
 
         if not text:
             await llm_q.put({"state": "idle"})
@@ -224,7 +235,8 @@ async def run_llm_tts(history, temperature, llm_q: asyncio.Queue, tts_q: asyncio
         await llm_q.put({"state": "speaking"})
         for chunk in tts.synthesize_chunks(text):
             await tts_q.put({"audio_response": chunk})
-            bus.publish(CHANNEL_VOICE_TTS, {"type": "audio_response", "size": len(chunk)})
+            if bus and bus.enabled:
+                bus.publish(CHANNEL_VOICE_TTS, {"type": "audio_response", "size": len(chunk)})
         await llm_q.put({"state": "idle"})
 
     except Exception as e:
@@ -247,21 +259,16 @@ def get_collapse_schema():
 async def submit_collapse(data: dict):
     logger.info(f"🔥 /submit-collapse called with: {data}")
 
-    if not bus.enabled:
-        logger.error("OrionBus is not connected")
+    if not bus or not bus.enabled:
+        logger.error("Submission failed: OrionBus is disabled or not connected.")
         return {"success": False, "error": "OrionBus disabled or not connected"}
 
-    # ⚠️ Validate channel mapping at runtime
-    channel_name = os.getenv("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
-    if not channel_name.startswith("orion:"):
-        logger.warning(f"⚠️ CHANNEL_COLLAPSE_INTAKE not namespaced correctly → {channel_name}")
-    else:
-        logger.info(f"✅ Using bus channel: {channel_name}")
+    logger.info(f"✅ Using bus channel: {CHANNEL_COLLAPSE_INTAKE}")
 
     try:
         entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish(channel_name, entry.dict())
-        logger.info(f"📡 Hub published collapse → {channel_name}: {entry.dict()}")
+        bus.publish(CHANNEL_COLLAPSE_INTAKE, entry.dict())
+        logger.info(f"📡 Hub published collapse → {CHANNEL_COLLAPSE_INTAKE}: {entry.dict()}")
         return {"success": True}
     except Exception as e:
         logger.error(f"❌ Hub publish error: {e}", exc_info=True)

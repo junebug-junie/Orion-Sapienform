@@ -1,127 +1,68 @@
-import httpx, json, logging, threading, time
-from typing import List
-from app.settings import settings
-from app.rdf_builder import build_triples
-from orion.core.bus import OrionBus
-
-logger = logging.getLogger(settings.SERVICE_NAME)
-
-import httpx, json, logging, threading, time, os
-from typing import List
-from datetime import datetime
+import httpx
+import json
+import logging
+import time
 from app.settings import settings
 from app.rdf_builder import build_triples
 from orion.core.bus.service import OrionBus
 
 logger = logging.getLogger(settings.SERVICE_NAME)
 
-
-class OrionRDFWriterService:
+def _push_to_graphdb(nt_data: str, graph_name: str, event: dict):
     """
-    Orion RDF Writer:
-    Listens to tagged, triaged, and RDF enqueue events,
-    builds RDF triples, and pushes them into GraphDB.
+    Pushes N-Triples data to GraphDB with a retry mechanism.
     """
+    if not nt_data or not graph_name:
+        logger.warning(f"Skipping push for event {event.get('id')} due to empty RDF data.")
+        return
 
-    def __init__(self):
-        self.bus = OrionBus(settings.ORION_BUS_URL)
-        self.queue: List[dict] = []
-        self.running = True
-
-    def start(self):
-        logger.info(f"🟢 Starting RDF Writer → bus {settings.ORION_BUS_URL}")
-
-        # Define all inbound channels this service listens to
-        channels = [
-            settings.CHANNEL_EVENTS_TRIAGE,     # from collapse-mirror
-            settings.CHANNEL_EVENTS_TAGGED,     # from tag-service
-            settings.CHANNEL_RDF_ENQUEUE,       # from enrichment pipelines
-            settings.ORION_CORE_EVENTS,         # system-level events
-        ]
-
-        logger.info(f"👂 Subscribing to channels: {', '.join(channels)}")
-
-        # Spin up listener threads per channel
-        for ch in channels:
-            t = threading.Thread(target=self._subscribe_loop, args=(ch,), daemon=True)
-            t.start()
-
-        # Start batch flusher
-        threading.Thread(target=self._batch_flush_loop, daemon=True).start()
-        logger.info(f"🚀 [{settings.SERVICE_NAME}] ready and listening")
-
-    def _subscribe_loop(self, channel: str):
-        logger.info(f"👂 Subscribing to {channel}")
-        for event in self.bus.subscribe(channel):
-            logger.debug(f"📥 {channel}: {event}")
-
-            # Optional routing filter: only keep RDF-targeted events from core bus
-            if channel == settings.ORION_CORE_EVENTS:
-                if "targets" in event and "rdf" not in event["targets"]:
-                    continue
-
-            self.queue.append(event)
-
-    def _batch_flush_loop(self):
-        while self.running:
-            if len(self.queue) >= settings.BATCH_SIZE:
-                batch = [self.queue.pop(0) for _ in range(min(len(self.queue), settings.BATCH_SIZE))]
-                self._process_batch(batch)
-            time.sleep(1)
-
-    def _process_batch(self, batch):
-        logger.info(f"📦 Processing batch of {len(batch)} RDF events")
-
-        for event in batch:
-            try:
-                nt_data, graph_name = build_triples(event)
-                self._push_to_graphdb(nt_data, graph_name, event)
-            except Exception as e:
-                logger.exception("process_batch failed")
-                self._publish_error(event, str(e))
-
-    def _push_to_graphdb(self, nt_data: str, graph_name: str, event: dict):
-        url = f"{settings.GRAPHDB_URL}/repositories/{settings.GRAPHDB_REPO}/statements?context=<{graph_name}>"
-        headers = {"Content-Type": "application/n-triples"}
-        for attempt in range(settings.RETRY_LIMIT):
-            try:
-                with httpx.Client(timeout=10) as client:
-                    res = client.post(url, content=nt_data, headers=headers)
-                if res.status_code in (200, 204):
-                    logger.info(f"✅ RDF inserted ({event.get('id')}) → {graph_name}")
-                    self._publish_confirm(event, graph_name)
-                    return
-                else:
-                    logger.warning(f"⚠️ Insert failed ({res.status_code}): {res.text}")
-            except Exception as e:
-                logger.error(f"❌ GraphDB connection error: {e}")
-            time.sleep(settings.RETRY_INTERVAL)
-        self._publish_error(event, f"Failed after {settings.RETRY_LIMIT} attempts")
-
-    def _publish_confirm(self, event: dict, graph_name: str):
-        self.bus.publish(settings.CHANNEL_RDF_CONFIRM, {
-            "event_id": event.get("id"),
-            "graph": graph_name,
-            "status": "success",
-        })
-
-    def _publish_error(self, event: dict, error_msg: str):
-        log_file = "/app/logs/errors.txt"
+    url = f"{settings.GRAPHDB_URL}/repositories/{settings.GRAPHDB_REPO}/statements?context=<{graph_name}>"
+    headers = {"Content-Type": "application/n-triples"}
+    
+    for attempt in range(settings.RETRY_LIMIT):
         try:
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
-            log_entry = {
-                "timestamp": datetime.utcnow().isoformat(),
-                "service": settings.SERVICE_NAME,
-                "error": error_msg,
-                "failed_event": event,
-            }
-            with open(log_file, "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
+            with httpx.Client(timeout=10) as client:
+                res = client.post(url, content=nt_data, headers=headers)
+                res.raise_for_status() # Raise exception for non-2xx responses
+                logger.info(f"✅ RDF inserted ({event.get('id')}) → {graph_name}")
+                return # Success
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"⚠️ Insert failed (attempt {attempt + 1}/{settings.RETRY_LIMIT}): {e.response.status_code} {e.response.text}")
         except Exception as e:
-            logger.error(f"Failed to write to error log file: {e}")
+            logger.error(f"❌ GraphDB connection error (attempt {attempt + 1}/{settings.RETRY_LIMIT}): {e}")
+        time.sleep(settings.RETRY_INTERVAL)
+    
+    logger.error(f"🚨 Failed to push event {event.get('id')} after {settings.RETRY_LIMIT} attempts.")
+    # Here you might want to publish an error to the bus or save to a dead-letter queue.
 
-        self.bus.publish(settings.CHANNEL_RDF_ERROR, {
-            "event_id": event.get("id"),
-            "status": "error",
-            "error": error_msg,
-        })
+
+def listener_worker():
+    """
+    A single, efficient worker that creates its own bus connection and subscribes
+    to all relevant channels at once. This is a robust and thread-safe pattern.
+    """
+    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
+    if not bus.enabled:
+        logger.error("Bus connection failed. RDF-Writer listener thread exiting.")
+        return
+
+    channels_to_subscribe = settings.get_all_subscribe_channels()
+    logger.info(f"👂 Subscribing to channels: {channels_to_subscribe}")
+
+    # The new OrionBus can subscribe to a list of channels and will yield
+    # a message object that includes the source channel.
+    for message in bus.subscribe(*channels_to_subscribe):
+        source_channel = message.get("channel")
+        data = message.get("data")
+
+        if not source_channel or not data:
+            continue
+        
+        logger.debug(f"📥 Received event from {source_channel}: {data.get('id')}")
+
+        try:
+            nt_data, graph_name = build_triples(data)
+            _push_to_graphdb(nt_data, graph_name, data)
+        except Exception as e:
+            logger.exception(f"❌ Unhandled error processing event {data.get('id')} from {source_channel}: {e}")
+

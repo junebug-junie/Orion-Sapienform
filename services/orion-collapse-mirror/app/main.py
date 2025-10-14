@@ -22,6 +22,10 @@ app = FastAPI(
 
 app.include_router(routes.router, prefix="/api")
 
+# The synchronous bus is now only used for publishing.
+# It's created on-demand to ensure thread-safety.
+bus: OrionBus | None = None
+
 @app.get("/health")
 def health():
     return {
@@ -35,12 +39,15 @@ def read_root():
     return {"message": "Conjourney Memory API is alive"}
 
 
-# 👂 Intake listener (Refactored to be fully asynchronous)
+# 👂 Intake listener (Refactored to handle publishing)
 async def listen_for_intake():
     """
-    Creates an async connection to the bus and listens for intake messages.
+    Creates an async connection to listen for intake messages, persists them,
+    and then publishes the result to the downstream triage channel.
     """
     listen_channel = settings.CHANNEL_COLLAPSE_INTAKE
+    publish_channel = settings.CHANNEL_COLLAPSE_TRIAGE
+    
     print(f"📡 Async intake listener connecting to {settings.ORION_BUS_URL}...")
 
     try:
@@ -50,7 +57,6 @@ async def listen_for_intake():
             await pubsub.subscribe(listen_channel)
             print(f"✅ Subscribed to {listen_channel}. Waiting for messages...")
 
-            # This non-blocking loop correctly processes messages with asyncio
             async for message in pubsub.listen():
                 if message['type'] != 'message':
                     continue
@@ -60,12 +66,16 @@ async def listen_for_intake():
                     data = json.loads(message['data'])
                     entry = CollapseMirrorEntry.model_validate(data)
 
-                    # Database operations are synchronous, so we handle them carefully.
                     db = next(get_db())
                     try:
-                        # Since log_and_persist is sync, we call it directly.
-                        # For high-load apps, this would be run in an executor.
-                        log_and_persist(entry=entry, db=db)
+                        # The service function now returns the payload to be published
+                        result = log_and_persist(entry=entry, db=db)
+                        payload_to_publish = result.get("payload")
+                        
+                        if payload_to_publish and bus:
+                            bus.publish(publish_channel, payload_to_publish)
+                            print(f"📡 Published collapse {result['id']} → {publish_channel}")
+                        
                         print(f"✅ Collapse persisted: {entry.summary[:20]}...")
                     finally:
                         db.close()
@@ -79,10 +89,9 @@ async def listen_for_intake():
         traceback.print_exc()
 
 
-# Model warmup and listener startup
 @app.on_event("startup")
 async def startup_event():
-    # Init DB + embedder warmup
+    global bus
     init_db()
     try:
         _ = embedder.encode("warmup").tolist()
@@ -90,15 +99,15 @@ async def startup_event():
     except Exception as e:
         print("⚠️ Embedding warmup failed:", e)
 
-    # Start the async intake listener as a background task
+    # Initialize the synchronous bus for publishing
     if settings.ORION_BUS_ENABLED:
+        bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
         print("📡 Launching async intake listener task...")
         asyncio.create_task(listen_for_intake())
     else:
         print("⚠️ OrionBus disabled, intake listener not started")
 
 
-# Allow local run without uvicorn cli
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=8087, reload=True)

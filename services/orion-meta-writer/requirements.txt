@@ -1,8 +1,0 @@
-fastapi==0.115.9
-uvicorn[standard]==0.30.6
-sqlalchemy==2.0.43
-psycopg2-binary==2.9.10
-chromadb==1.0.12
-pydantic==2.11.5
-pydantic-settings==2.5.2
-redis[hiredis]==5.0.7

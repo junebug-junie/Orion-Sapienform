@@ -12,27 +12,38 @@ services:
         condition: service_started
     volumes:
       - ./templates:/app/templates
-      # This volume mount is now dynamic based on your .env file.
       - /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
     environment:
-      # Pass the project name for the entrypoint script to use.
+      # Core service identity
       - PROJECT=${PROJECT}
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
+      - HUB_PORT=${HUB_PORT}
+
+      # Whisper + Brain
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
       - WHISPER_DEVICE=${WHISPER_DEVICE}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
       - BRAIN_URL=${BRAIN_URL}
       - LLM_MODEL=${LLM_MODEL}
+
+      # Orion Bus
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      # Channels
       - CHANNEL_VOICE_TRANSCRIPT=${CHANNEL_VOICE_TRANSCRIPT}
       - CHANNEL_VOICE_LLM=${CHANNEL_VOICE_LLM}
       - CHANNEL_VOICE_TTS=${CHANNEL_VOICE_TTS}
       - CHANNEL_COLLAPSE_INTAKE=${CHANNEL_COLLAPSE_INTAKE}
+      # Correctly pass all brain channels now
+      - CHANNEL_BRAIN_INTAKE=${CHANNEL_BRAIN_INTAKE}
+      - CHANNEL_BRAIN_OUT=${CHANNEL_BRAIN_OUT}
+
+      # Static / optional GPU and TTS service
       - TTS_URL=http://coqui-tts:5002/api/tts
       - NVIDIA_VISIBLE_DEVICES=all
-      - HUB_PORT=${HUB_PORT}
+
     runtime: nvidia
     networks:
       - ${NET}

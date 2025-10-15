@@ -20,6 +20,8 @@ const contextValue = document.getElementById('contextValue');
 const instructionsText = document.getElementById('instructions');
 const clearButton = document.getElementById('clearButton');
 const copyButton = document.getElementById('copyButton');
+// These are declared here but assigned inside DOMContentLoaded
+let chatInput, sendButton, textToSpeechToggle;
 const API_BASE_URL = `http://${window.location.host}`;
 
 // --- State Management ---
@@ -33,33 +35,22 @@ let animationFrameId;
 let audioQueue = [];
 let isPlayingAudio = false;
 let orionState = 'idle';
-let liveMicAnalyser; 
+let liveMicAnalyser;
 let liveMicSource;
-
 let particles = [];
 let baseParticleCount = 200;
 
-window.addEventListener("error", (e) => {
-  console.error("💥 Uncaught error:", e.message, e.filename + ":" + e.lineno);
-});
-
-// --- Event Listeners ---
-tempControl.addEventListener('input', () => {
-    tempValue.textContent = parseFloat(tempControl.value).toFixed(1);
-});
-contextControl.addEventListener('input', () => {
-    contextValue.textContent = contextControl.value;
-});
+// --- Event Listeners (for elements that exist on page load) ---
+tempControl.addEventListener('input', () => tempValue.textContent = parseFloat(tempControl.value).toFixed(1));
+contextControl.addEventListener('input', () => contextValue.textContent = contextControl.value);
 speedControl.addEventListener('input', () => {
     const actualSpeed = parseFloat(speedControl.value);
-    const minSpeed = 0.97; const maxSpeed = 1.2;
+    const minSpeed = 0.97, maxSpeed = 1.2;
     const normalizedValue = (actualSpeed - minSpeed) / (maxSpeed - minSpeed);
     speedValue.textContent = normalizedValue.toFixed(2);
     if (currentAudioSource) currentAudioSource.playbackRate.value = actualSpeed;
 });
-clearButton.addEventListener('click', () => {
-    conversationDiv.innerHTML = '';
-});
+clearButton.addEventListener('click', () => conversationDiv.innerHTML = '');
 copyButton.addEventListener('click', () => {
     const conversationText = conversationDiv.innerText;
     const textArea = document.createElement("textarea");
@@ -75,17 +66,16 @@ interruptButton.addEventListener('click', () => {
     if (currentAudioSource) currentAudioSource.stop();
     audioQueue = [];
     isPlayingAudio = false;
-    updateStatus('Ready. Press the button to speak.');
+    updateStatusBasedOnState();
     interruptButton.classList.add('hidden');
 });
 
 // --- Core Functions ---
-function updateStatus(newStatus) {
-    statusDiv.textContent = newStatus;
-}
+function updateStatus(newStatus) { statusDiv.textContent = newStatus; }
 function updateStatusBasedOnState() {
-    if (orionState === 'idle') updateStatus('Ready. Press the button to speak.');
+    if (orionState === 'idle') updateStatus('Ready. Press the button to speak or type a message.');
     else if (orionState === 'speaking') updateStatus('Playing response...');
+    else if (orionState === 'processing') updateStatus('Processing...');
 }
 
 function setupWebSocket() {
@@ -93,44 +83,31 @@ function setupWebSocket() {
     const wsUrl = `${protocol}//${window.location.host}/ws`;
     socket = new WebSocket(wsUrl);
 
-    socket.onopen = () => {
-        updateStatus('Connection established. Hold button to speak.');
-    };
+    socket.onopen = () => updateStatus('Connection established. Ready to interact.');
+    socket.onclose = () => updateStatus('Connection lost. Please refresh.');
 
     socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
-
         if (data.transcript) {
-            appendMessage('You', data.transcript);
-        }
-        else if (data.llm_response) {
+            if (!data.is_text_input) appendMessage('You', data.transcript);
+        } else if (data.llm_response) {
             appendMessage('Assistant', data.llm_response);
-
-            // 🔥 Adjust density based on token count
             if (data.tokens) {
-                baseParticleCount = 200 + Math.min(data.tokens, 200); // cap at +200
+                baseParticleCount = 200 + Math.min(data.tokens, 200);
                 createParticles();
             }
-        }
-        else if (data.audio_response) {
+        } else if (data.audio_response) {
             audioQueue.push(data.audio_response);
             processAudioQueue();
-        }
-        else if (data.state) {
-            // 🔥 Update Orion state (processing/speaking/idle)
+        } else if (data.state) {
             orionState = data.state;
-            updateStatus(`State: ${orionState}`);
-        }
-        else if (data.error) {
+            updateStatusBasedOnState();
+        } else if (data.error) {
             const errorMessage = `Error: ${data.error}`;
             updateStatus(errorMessage);
             appendMessage('System', errorMessage, 'text-red-400');
-            setTimeout(() => updateStatus('Ready. Press the button to speak.'), 3000);
+            setTimeout(() => updateStatusBasedOnState(), 3000);
         }
-    };
-
-    socket.onclose = () => {
-        updateStatus('Connection lost. Please refresh.');
     };
 }
 
@@ -165,11 +142,11 @@ async function playAudio(base64String) {
         source.onended = () => {
             currentAudioSource = null;
             cancelAnimationFrame(animationFrameId);
-            canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+            if(visualizerCanvas) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
             isPlayingAudio = false;
             processAudioQueue();
             if (audioQueue.length === 0) {
-                updateStatus('Ready. Press the button to speak.');
+                updateStatusBasedOnState();
                 interruptButton.classList.add('hidden');
             }
         };
@@ -181,6 +158,7 @@ async function playAudio(base64String) {
 }
 
 function drawVisualizer() {
+    if (!analyser) return;
     animationFrameId = requestAnimationFrame(drawVisualizer);
     const selectedStyle = styleControl.value;
     const bufferLength = analyser.frequencyBinCount;
@@ -203,8 +181,8 @@ function drawBars(dataArray, bufferLength) {
     for (let i = 0; i < bufferLength; i++) {
         const barHeight = dataArray[i] / 2;
         let r, g, b;
-        if (colorScheme === 'orion') { r = barHeight + 50 * (i/bufferLength); g = 100 * (i/bufferLength); b = 150; } 
-        else if (colorScheme === 'retro') { r = 50; g = barHeight + 100 * (i/bufferLength); b = 50; } 
+        if (colorScheme === 'orion') { r = barHeight + 50 * (i/bufferLength); g = 100 * (i/bufferLength); b = 150; }
+        else if (colorScheme === 'retro') { r = 50; g = barHeight + 100 * (i/bufferLength); b = 50; }
         else { r = 150 * (i/bufferLength); g = barHeight; b = 200; }
         canvasCtx.fillStyle = `rgb(${r},${g},${b})`;
         canvasCtx.fillRect(x, visualizerCanvas.height - barHeight, barWidth, barHeight);
@@ -217,7 +195,7 @@ function drawWaveform(dataArray, bufferLength) {
     const colorScheme = colorControl.value;
     if (colorScheme === 'orion') canvasCtx.strokeStyle = 'rgb(147, 197, 253)';
     else if (colorScheme === 'retro') canvasCtx.strokeStyle = 'rgb(74, 222, 128)';
-    else canvasCtx.strokeStyle = 'rgb(244, 114, 182)';
+    else if (colorScheme === 'vaporwave') canvasCtx.strokeStyle = 'rgb(244, 114, 182)';
     canvasCtx.beginPath();
     const currentPlaybackRate = currentAudioSource ? currentAudioSource.playbackRate.value : 1.0;
     const sliceWidth = (visualizerCanvas.width * 1.0 / bufferLength) * currentPlaybackRate;
@@ -233,12 +211,31 @@ function drawWaveform(dataArray, bufferLength) {
     canvasCtx.stroke();
 }
 
-function appendMessage(sender, text) {
+function appendMessage(sender, text, extraClass = 'text-white') {
     const senderClass = sender === 'You' ? 'font-semibold text-blue-300' : 'font-semibold text-green-300';
     const messageElement = document.createElement('div');
-    messageElement.innerHTML = `<p class="${senderClass}">${sender}</p><p class="text-white">${text}</p>`;
+    messageElement.innerHTML = `<p class="${senderClass}">${sender}</p><p class="${extraClass}">${text}</p>`;
     conversationDiv.appendChild(messageElement);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
+}
+
+function sendTextMessage() {
+    const text = chatInput.value.trim();
+    if (!text || !socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    interruptButton.click();
+    appendMessage('You', text);
+    updateStatus('Processing...');
+    const payload = {
+        text_input: text,
+        disable_tts: !textToSpeechToggle.checked,
+        temperature: parseFloat(tempControl.value),
+        context_length: parseInt(contextControl.value),
+        instructions: instructionsText.value
+    };
+    socket.send(JSON.stringify(payload));
+    chatInput.value = '';
 }
 
 async function startRecording() {
@@ -249,22 +246,20 @@ async function startRecording() {
         liveMicAnalyser = audioContext.createAnalyser();
         liveMicAnalyser.fftSize = 256;
         liveMicSource.connect(liveMicAnalyser);
-
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) audioChunks.push(event.data);
-        };
+        mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunks.push(event.data); };
         mediaRecorder.onstop = async () => {
             if (socket && socket.readyState === WebSocket.OPEN && audioChunks.length > 0) {
                 const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
                 const reader = new FileReader();
-                reader.readAsDataURL(audioBlob); 
+                reader.readAsDataURL(audioBlob);
                 reader.onloadend = () => {
                     const payload = {
                         audio: reader.result.split(',')[1],
                         temperature: parseFloat(tempControl.value),
                         context_length: parseInt(contextControl.value),
-                        instructions: instructionsText.value
+                        instructions: instructionsText.value,
+                        disable_tts: false
                     };
                     socket.send(JSON.stringify(payload));
                 }
@@ -292,13 +287,18 @@ function stopRecording() {
 }
 
 function setAllCanvasSizes() {
-    visualizerCanvas.width = visualizerContainer.clientWidth;
-    visualizerCanvas.height = visualizerContainer.clientHeight;
-    stateVisualizerCanvas.width = stateVisualizerContainer.clientWidth;
-    stateVisualizerCanvas.height = stateVisualizerContainer.clientHeight;
+    if (visualizerContainer) {
+        visualizerCanvas.width = visualizerContainer.clientWidth;
+        visualizerCanvas.height = visualizerContainer.clientHeight;
+    }
+    if (stateVisualizerContainer) {
+        stateVisualizerCanvas.width = stateVisualizerContainer.clientWidth;
+        stateVisualizerCanvas.height = stateVisualizerContainer.clientHeight;
+    }
 }
 
 function createParticles(extra = 0) {
+    if (!stateVisualizerCanvas) return;
     particles = [];
     const total = baseParticleCount + extra;
     for (let i = 0; i < total; i++) {
@@ -308,39 +308,29 @@ function createParticles(extra = 0) {
             radius: Math.random() * 2 + 1,
             baseVx: (Math.random() - 0.5) * 3.5,
             baseVy: (Math.random() - 0.5) * 4.5,
-            vx: 0,
-            vy: 0,
+            vx: 0, vy: 0,
             color: `rgba(147, 197, 253, ${Math.random() * 0.5 + 0.3})`
         });
     }
 }
 
 function drawOrionState() {
+    if (!stateCtx) return;
     stateCtx.clearRect(0, 0, stateVisualizerCanvas.width, stateVisualizerCanvas.height);
-
     let speedBoost = 1.0;
     if (orionState === 'processing') speedBoost = 6.5;
     else if (orionState === 'speaking') speedBoost = 3.5;
-
     particles.forEach((p, index) => {
-        p.vx = p.baseVx * speedBoost;
-        p.vy = p.baseVy * speedBoost;
-
-        p.x += p.vx;
-        p.y += p.vy;
-
+        p.vx = p.baseVx * speedBoost; p.vy = p.baseVy * speedBoost;
+        p.x += p.vx; p.y += p.vy;
         if (p.x < 0) p.x = stateVisualizerCanvas.width;
         if (p.x > stateVisualizerCanvas.width) p.x = 0;
         if (p.y < 0) p.y = stateVisualizerCanvas.height;
         if (p.y > stateVisualizerCanvas.height) p.y = 0;
-
-        // draw neuron
         stateCtx.beginPath();
         stateCtx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
         stateCtx.fillStyle = p.color;
         stateCtx.fill();
-
-        // draw connections
         for (let j = index + 1; j < particles.length; j++) {
             const other = particles[j];
             const dist = Math.hypot(p.x - other.x, p.y - other.y);
@@ -353,35 +343,17 @@ function drawOrionState() {
             }
         }
     });
-
     requestAnimationFrame(drawOrionState);
 }
-
 
 async function loadCollapseTemplate() {
   const collapseInput = document.getElementById("collapseInput");
   if (!collapseInput) return;
-
   try {
     const res = await fetch(`${API_BASE_URL}/schema/collapse`);
-    const schema = await res.json();
-
-    // Pre-fill defaults
-    const defaults = {
-      observer: "DEMO",
-      trigger: "UI test submission",
-      observer_state: ["neutral"],
-      field_resonance: "baseline",
-      type: "test",
-      emergent_entity: "demo_entity",
-      summary: "This is a test collapse entry to validate the pipeline.",
-      mantra: "hold the mirror",
-      causal_echo: "none",
-      environment: "dev"
-    };
-
+    await res.json();
+    const defaults = { observer: "DEMO", trigger: "UI test submission", observer_state: ["neutral"], field_resonance: "baseline", type: "test", emergent_entity: "demo_entity", summary: "This is a test collapse entry to validate the pipeline.", mantra: "hold the mirror", causal_echo: "none", environment: "dev" };
     collapseInput.value = JSON.stringify(defaults, null, 2);
-    console.log("✅ Collapse schema loaded", schema);
   } catch (err) {
     console.error("❌ Failed to load collapse schema", err);
     collapseInput.value = '{"observer":"DEMO","trigger":"fallback"}';
@@ -392,29 +364,18 @@ function setupCollapseForm() {
   const submitBtn = document.getElementById("collapseSubmit");
   const input = document.getElementById("collapseInput");
   const status = document.getElementById("collapseStatus");
-
   if (!submitBtn) return;
-
   submitBtn.addEventListener("click", async () => {
     let payload;
-    try {
-      payload = JSON.parse(input.value);
-    } catch (err) {
+    try { payload = JSON.parse(input.value); } catch (err) {
       status.textContent = "❌ Invalid JSON";
       status.classList.remove("hidden", "text-green-400");
       status.classList.add("text-red-400");
       return;
     }
-
     try {
-      const res = await fetch(`${API_BASE_URL}/submit-collapse`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
+      const res = await fetch(`${API_BASE_URL}/submit-collapse`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), });
       const data = await res.json().catch(() => ({}));
-
       if (res.ok && data.success) {
         status.textContent = "✅ Submitted successfully";
         status.classList.remove("hidden", "text-red-400");
@@ -430,7 +391,6 @@ function setupCollapseForm() {
       status.classList.remove("hidden", "text-green-400");
       status.classList.add("text-red-400");
     }
-
     setTimeout(() => status.classList.add("hidden"), 3000);
   });
 }
@@ -438,8 +398,23 @@ function setupCollapseForm() {
 document.addEventListener("DOMContentLoaded", () => {
   loadCollapseTemplate();
   setupCollapseForm();
-});
 
+  chatInput = document.getElementById('chatInput');
+  sendButton = document.getElementById('sendButton');
+  textToSpeechToggle = document.getElementById('textToSpeechToggle');
+
+  if (sendButton) {
+    sendButton.addEventListener('click', sendTextMessage);
+  }
+  if (chatInput) {
+    chatInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendTextMessage();
+        }
+    });
+  }
+});
 
 
 // --- Final Setup ---
@@ -450,9 +425,10 @@ recordButton.addEventListener('touchend', stopRecording);
 window.addEventListener('load', () => {
     setupWebSocket();
     setAllCanvasSizes();
-    if (stateVisualizerCanvas.width > 0) {
+    if (stateVisualizerCanvas && stateVisualizerCanvas.width > 0) {
         createParticles();
         drawOrionState();
     }
 });
 window.addEventListener('resize', setAllCanvasSizes);
+

@@ -3,9 +3,9 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 # Refactored to import handlers and settings
-from .settings import settings
-from .api_routes import router as api_router
-from .websocket_handler import websocket_endpoint
+from scripts.settings import settings
+from scripts.api_routes import router as api_router
+from scripts.websocket_handler import websocket_endpoint
 from scripts.asr import ASR
 from scripts.tts import TTS
 from orion.core.bus.service import OrionBus

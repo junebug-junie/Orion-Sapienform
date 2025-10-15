@@ -12,26 +12,17 @@ services:
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
       - PORT=${PORT}
-
-      # Bus
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - ORION_BUS_URL=${ORION_BUS_URL}
-
-      # Channels - This was the missing variable.
       - CHANNEL_COLLAPSE_INTAKE=${CHANNEL_COLLAPSE_INTAKE}
       - CHANNEL_COLLAPSE_TRIAGE=${CHANNEL_COLLAPSE_TRIAGE}
-
-      # Database + Env
-      - POSTGRES_URI=${POSTGRES_URI}
       - CHRONICLE_ENVIRONMENT=${CHRONICLE_ENVIRONMENT}
       - CHRONICLE_MODE=${CHRONICLE_MODE}
       - DEV_MODE=${DEV_MODE}
       - PROJECT=${PROJECT}
-
     ports:
       - "${PORT:-8087}:8087"
 
 networks:
   app-net:
     external: true
-

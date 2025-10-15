@@ -56,29 +56,37 @@ def _process_one(channel: str, msg: dict):
 
 
 def _channel_worker(channel: str):
-    """
-    Dedicated worker per channel. It creates its own thread-local bus connection.
-    This is a robust and thread-safe pattern.
-    """
-    # Create the OrionBus instance INSIDE the thread.
+    """Dedicated worker per channel."""
     bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
     if not bus.enabled:
-        print(f"❌ Bus connection failed for channel '{channel}'. Thread exiting.")
+        print(f"❌ Bus connection failed for {channel}", flush=True)
         return
 
-    print(f"👂 Subscribed (worker) for channel: {channel}")
-    # The new OrionBus yields the full message object.
+    print(f"👂 Subscribed (worker) for channel: {channel}", flush=True)
     for message in bus.subscribe(channel):
-        # Extract the data payload from the message dictionary.
-        data = message.get("data")
-        if not data:
-            continue
-        
-        normalized_data = _normalize_message(data)
-        if normalized_data is None:
-            continue
-            
-        _process_one(channel, normalized_data)
+        try:
+            print(f"🧠 RAW bus message on {channel}: {message}", flush=True)
+            data = message.get("data")
+            if not data:
+                print(f"⚠️ Empty data on {channel}", flush=True)
+                continue
+            if isinstance(data, dict):
+                normalized = data
+            elif isinstance(data, str):
+                try:
+                    normalized = json.loads(data)
+                except Exception as e:
+                    print(f"⚠️ JSON parse error: {e}", flush=True)
+                    continue
+            else:
+                print(f"⚠️ Unknown payload type: {type(data)}", flush=True)
+                continue
+
+            print(f"📥 Normalized payload on {channel}: {normalized}", flush=True)
+            _process_one(channel, normalized)
+
+        except Exception as e:
+            print(f"❌ Worker error on {channel}: {e}", flush=True)
 
 
 @app.on_event("startup")

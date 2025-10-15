@@ -1,18 +1,19 @@
 # ───────────────────────────────────────────────────────────────
-# 🧬 Orion Biometrics Service — Docker Compose Configuration
+# ✍️ Orion Vector Writer — Ingestion Service for Vector DB
 # ───────────────────────────────────────────────────────────────
 
 services:
-  biometrics:
+  vector-writer:
     build:
       context: ../..
-      dockerfile: services/orion-biometrics/Dockerfile
-    container_name: ${PROJECT}-biometrics
+      dockerfile: services/orion-vector-writer/Dockerfile
+    container_name: ${PROJECT}-vector-writer
     restart: unless-stopped
     networks:
       - app-net
     ports:
       - "${PORT}:${PORT}"
+
     environment:
       # --- Service Identity & Runtime ---
       - SERVICE_NAME=${SERVICE_NAME}
@@ -21,15 +22,19 @@ services:
       - STARTUP_DELAY=${STARTUP_DELAY}
       - LOG_LEVEL=${LOG_LEVEL}
 
-      # --- Orion Bus & Database ---
-      - TABLE_NAME=${TABLE_NAME}
+      # --- Orion Bus Integration ---
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - ORION_BUS_URL=${ORION_BUS_URL}
-      - PUBLISH_CHANNEL_BIOMETRICS_NEW=${PUBLISH_CHANNEL_BIOMETRICS_NEW}
-      - POSTGRES_URI=${POSTGRES_URI}
+      - CHANNEL_COLLAPSE_TRIAGE=${CHANNEL_COLLAPSE_TRIAGE}
+      - CHANNEL_TAGS_ENRICHED=${CHANNEL_TAGS_ENRICHED}
+
+      # --- Vector Store Configuration ---
+      - VECTOR_DB_URL=${VECTOR_DB_URL}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - VECTOR_DB_COLLECTION=${VECTOR_DB_COLLECTION}
 
 networks:
   app-net:
+    # This service connects to an existing, external network.
     name: ${NET}
     external: true
-

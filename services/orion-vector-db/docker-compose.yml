@@ -1,0 +1,33 @@
+# ───────────────────────────────────────────────────────────────
+# 🧠 Orion Vector DB — Standalone ChromaDB Server + UI Viewer
+# ───────────────────────────────────────────────────────────────
+
+services:
+  vector-db:
+    image: chromadb/chroma:0.4.24
+    container_name: ${PROJECT}-vector-db
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      # Maps the host port to the container's internal port (8000).
+      - "${PORT}:8000"
+    volumes:
+      - ${CHROMA_DATA_PATH}:/chroma/.chroma
+
+    environment:
+      - ANONYMIZED_TELEMETRY=False
+      - ALLOW_RESET=true
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import requests; import sys; sys.exit(0 if requests.get(\"http://localhost:8000/api/v1/heartbeat\").ok else 1)' || exit 1"]      
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true
+

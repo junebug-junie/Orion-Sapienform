@@ -1,13 +1,13 @@
 # ───────────────────────────────────────────────────────────────
-# 🧬 Orion Biometrics Service — Docker Compose Configuration
+# ✍️  Orion Vector Writer — Ingestion service for ChromaDB
 # ───────────────────────────────────────────────────────────────
 
 services:
-  biometrics:
+  vector-writer:
     build:
       context: ../..
-      dockerfile: services/orion-biometrics/Dockerfile
-    container_name: ${PROJECT}-biometrics
+      dockerfile: services/orion-vector-writer/Dockerfile
+    container_name: ${PROJECT}-vector-writer
     restart: unless-stopped
     networks:
       - app-net
@@ -18,15 +18,23 @@ services:
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
       - PORT=${PORT}
-      - STARTUP_DELAY=${STARTUP_DELAY}
       - LOG_LEVEL=${LOG_LEVEL}
+      - BATCH_SIZE=${BATCH_SIZE}
 
-      # --- Orion Bus & Database ---
-      - TABLE_NAME=${TABLE_NAME}
+      # --- Orion Bus ---
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - ORION_BUS_URL=${ORION_BUS_URL}
-      - PUBLISH_CHANNEL_BIOMETRICS_NEW=${PUBLISH_CHANNEL_BIOMETRICS_NEW}
-      - POSTGRES_URI=${POSTGRES_URI}
+      - SUBSCRIBE_CHANNEL_COLLAPSE=${SUBSCRIBE_CHANNEL_COLLAPSE}
+      - SUBSCRIBE_CHANNEL_CHAT=${SUBSCRIBE_CHANNEL_CHAT}
+      - SUBSCRIBE_CHANNEL_RAG_DOC=${SUBSCRIBE_CHANNEL_RAG_DOC}
+      - PUBLISH_CHANNEL_VECTOR_CONFIRM=${PUBLISH_CHANNEL_VECTOR_CONFIRM}
+
+      # --- Vector Store ---
+      # Corrected to use the explicit host and port variables.
+      - VECTOR_DB_HOST=${VECTOR_DB_HOST}
+      - VECTOR_DB_PORT=${VECTOR_DB_PORT}
+      - VECTOR_DB_COLLECTION=${VECTOR_DB_COLLECTION}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
 
 networks:
   app-net:

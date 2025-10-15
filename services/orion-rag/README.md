@@ -1,153 +1,37 @@
-# RAG Voice (Text-first) — Local LLM Starter
+🧠 Orion RAG Service
 
-Tiny, non‑Docker starter that adds Retrieval‑Augmented Generation (RAG) to a local LLM.
-Designed to be simple: ingest a doc, ask questions over it via a FastAPI server.
+Version: 1.0.0 (Refactored)
+Primary Responsibility: Provides a retrieval-augmented generation (RAG) backend, combining vector search with language model intelligence supplied by the orion-brain service.
+1. Architectural Overview
 
-## What you get
+The Orion RAG service acts as a specialized "long-term memory" module for the Orion mesh. It is a pure, backend worker service that does not serve a UI. Its primary function is to listen for requests on the Orion Bus, perform a vector search to find relevant context, and then delegate the final text generation to the orion-brain service.
 
-* **Local LLM** via `llama-cpp-python` (point to any `.gguf` model)
-* **Embeddings** with `sentence-transformers` (`all-MiniLM-L6-v2`)
-* **Plain NumPy retrieval** (no FAISS) for small docs
-* **FastAPI** endpoints: `/ingest` (path or raw text) and `/ask`
+This refactor decouples the RAG service from direct LLM access, centralizing all language model inference within the orion-brain. This makes the entire system more modular, scalable, and easier to manage.
+Data Flow
 
-> This is text-first; you can bolt it onto your voice service by hitting `/ask` from your pipeline.
-> GPU is optional—`llama-cpp-python` runs on CPU by default.
+    Request: An upstream service (like orion-hub or a new "dream model" service) publishes a rag:query:request event to the Orion Bus. The payload contains the user's query and a response_channel.
 
----
+    Vector Search: The RAG service receives this message, extracts the query, and performs a similarity search against its internal ChromaDB vector store to find relevant document chunks.
 
-## Quickstart
+    Delegate to Brain: The RAG service constructs a new payload containing the original query and the retrieved context. It publishes this to the orion:brain:intake channel, specifying a unique channel for the brain to send its final answer back to.
 
-### 1) Create venv and install deps
+    Receive from Brain: The RAG service listens on the unique response channel for the brain's synthesized answer.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+    Final Response: The RAG service takes the final answer from the brain and publishes it to the response_channel that was specified in the original request, completing the loop.
 
-### 2) Put a local `.gguf` model somewhere and set the path
+2. Folder and File Structure
 
-```bash
-export MODEL_PATH=/absolute/path/to/your-model.gguf
-```
+To align with the established conventions of the Orion mesh, the service will be organized as follows:
 
-(Any chat-tuned or instruct-tuned small model works for a toy demo.)
+/services/orion-rag/
+├── app/
+│   ├── __init__.py
+│   ├── main.py           # FastAPI entry point, listener startup
+│   ├── settings.py       # Pydantic settings management
+│   ├── models.py         # Pydantic schemas for bus messages
+│   └── vector_store.py   # Logic for interacting with ChromaDB
+├── .env                  # Service-specific environment variables
+├── docker-compose.yml    # Docker Compose configuration
+├── Dockerfile            # Container build instructions
+└── README.md             # This file
 
-### 3) Ingest a sample doc (included)
-
-```bash
-# Option A: via endpoint with a file path
-uvicorn app.server:app --reload
-# in another terminal:
-curl -s localhost:8000/ingest -H 'content-type: application/json'   -d '{"path":"data/sources/sample.txt"}' | jq
-
-# Option B: send raw text
-curl -s localhost:8000/ingest -H 'content-type: application/json'   -d '{"text":"RAG lets an LLM use retrieved context from documents."}' | jq
-```
-
-### 4) Ask a question
-
-```bash
-curl -s localhost:8000/ask -H 'content-type: application/json'   -d '{"question":"What is RAG in one sentence?"}' | jq -r '.answer'
-```
-
----
-
-## Endpoints
-
-### `POST /ingest`
-
-Body:
-
-```json
-{ "path": "path/to/file.txt" }
-```
-
-or
-
-```json
-{ "text": "raw text to index" }
-```
-
-* Splits into overlapping chunks, embeds, and saves a small index at `data/index.pkl`
-
-### `POST /ask`
-
-Body:
-
-```json
-{ "question": "Your question", "k": 4 }
-```
-
-* Retrieves top-k chunks and asks the local LLM with a simple RAG prompt
-
----
-
-## Notes
-
-* For PDFs, install `pypdf` and point `/ingest` to the file path (basic parsing).
-* For larger corpora, swap the simple NumPy search for FAISS/Annoy and persist multiple files.
-* To integrate with your voice pipeline, POST the transcript to `/ask` and speak back the `.answer`.
-
----
-
-## Mesh Service Deployment
-
-When running as part of the **Orion mesh** (with Docker Compose):
-
-* **RAG service** is exposed on port `8001` (by default)
-* **Data mounting**: `./data` on the host is mounted into the container at `/app/data`
-* **Paths for ingest**: when calling `/ingest`, use container-visible paths such as:
-
-  ```json
-  { "path": "/app/data/sources/library_of_babel.txt" }
-  ```
-* **Other services** (voice-app, collapse-mirror, brain) connect over the internal Docker network `app-net`
-* **Environment** variables like ports and model paths are managed via `.env` files per service
-
-### Running inside the mesh
-
-From the `services/orion-rag/` folder:
-
-```bash
-docker compose up -d --build
-```
-
-Service will be live at:
-
-```bash
-http://localhost:8001
-```
-
-### Mesh smoke tests
-
-Check health:
-
-```bash
-curl -s localhost:8001/health | jq
-```
-
-Ingest a document:
-
-```bash
-curl -s localhost:8001/ingest \
-  -H 'content-type: application/json' \
-  -d '{"path":"/app/data/sources/sample.txt"}' | jq
-```
-
-Ask a question:
-
-```bash
-curl -s localhost:8001/ask \
-  -H 'content-type: application/json' \
-  -d '{"question":"Summarize the sample."}' | jq -r '.answer'
-```
-
----
-
-## Dev tips
-
-* If `llama-cpp-python` wheel fails, try: `pip install --upgrade pip setuptools wheel` first.
-* Tune `n_ctx`, `n_threads`, and `n_batch` in `app/llm.py` for your machine.
-* If your model is not chat-tuned, adjust the prompt template in `app/rag.py` accordingly.

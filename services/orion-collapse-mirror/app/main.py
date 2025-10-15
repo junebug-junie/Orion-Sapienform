@@ -4,14 +4,17 @@ import asyncio
 import traceback
 import json
 import redis.asyncio as redis
+from uuid import uuid4
+from datetime import datetime
 
 from app import routes
-from app.db import init_db, get_db
-from app.chroma_db import embedder
 from app.settings import settings
 from orion.core.bus.service import OrionBus
-from app.services.collapse_service import log_and_persist
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
+
+# ───────────────────────────────────────────────
+# 🪞 Orion Collapse Mirror — Event Transformer
+# ───────────────────────────────────────────────
 
 load_dotenv()
 
@@ -20,95 +23,109 @@ app = FastAPI(
     version=settings.SERVICE_VERSION,
 )
 
+# Register routes (e.g. /api/log/collapse)
 app.include_router(routes.router, prefix="/api")
 
-# The synchronous bus is now only used for publishing.
-# It's created on-demand to ensure thread-safety.
+# Global synchronous bus (used only for publishing)
 bus: OrionBus | None = None
+
+
+# ───────────────────────────────────────────────
+# Health Endpoints
+# ───────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "service": settings.SERVICE_NAME,
-        "version": settings.SERVICE_VERSION,
-    }
+    """Quick healthcheck endpoint."""
+    return {"ok": True, "service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}
+
 
 @app.get("/")
 def read_root():
-    return {"message": "Conjourney Memory API is alive"}
+    return {"message": f"{settings.SERVICE_NAME} is alive"}
 
 
-# 👂 Intake listener (Refactored to handle publishing)
+# ───────────────────────────────────────────────
+# Async Intake Listener
+# ───────────────────────────────────────────────
+
 async def listen_for_intake():
     """
-    Creates an async connection to listen for intake messages, persists them,
-    and then publishes the result to the downstream triage channel.
+    Listens to raw collapse intake messages,
+    enriches with ID, timestamp, and provenance,
+    then republishes to the triage channel.
     """
     listen_channel = settings.CHANNEL_COLLAPSE_INTAKE
     publish_channel = settings.CHANNEL_COLLAPSE_TRIAGE
-    
-    print(f"📡 Async intake listener connecting to {settings.ORION_BUS_URL}...")
+    print(f"📡 Connecting to Redis bus → {settings.ORION_BUS_URL}")
+    print(f"👂 Listening on {listen_channel} → publishing to {publish_channel}")
 
     try:
-        # Use the async Redis client for subscribing
         client = redis.from_url(settings.ORION_BUS_URL, decode_responses=True)
         async with client.pubsub() as pubsub:
             await pubsub.subscribe(listen_channel)
-            print(f"✅ Subscribed to {listen_channel}. Waiting for messages...")
+            print(f"✅ Subscribed to {listen_channel}. Awaiting messages...")
 
             async for message in pubsub.listen():
-                if message['type'] != 'message':
+                if message.get("type") != "message":
                     continue
 
-                print("👂 Collapse intake message received:", message['data'])
                 try:
-                    data = json.loads(message['data'])
+                    raw = message["data"]
+                    print(f"👂 Received intake payload: {raw}")
+                    data = json.loads(raw)
                     entry = CollapseMirrorEntry.model_validate(data)
 
-                    db = next(get_db())
-                    try:
-                        # The service function now returns the payload to be published
-                        result = log_and_persist(entry=entry, db=db)
-                        payload_to_publish = result.get("payload")
-                        
-                        if payload_to_publish and bus:
-                            bus.publish(publish_channel, payload_to_publish)
-                            print(f"📡 Published collapse {result['id']} → {publish_channel}")
-                        
-                        print(f"✅ Collapse persisted: {entry.summary[:20]}...")
-                    finally:
-                        db.close()
+                    # Enrich event with ID, timestamp, provenance
+                    collapse_id = f"collapse_{uuid4().hex}"
+                    enriched = {
+                        "id": collapse_id,
+                        "service_name": settings.SERVICE_NAME,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        **entry.model_dump(),
+                    }
+
+                    if bus:
+                        bus.publish(publish_channel, enriched)
+                        print(f"📤 Published enriched collapse {collapse_id} → {publish_channel}")
+                    else:
+                        print("⚠️ Bus not initialized; skipping publish.")
 
                 except Exception as e:
-                    print(f"❌ Intake processing error: {e}")
+                    print(f"❌ Error processing intake message: {e}")
                     traceback.print_exc()
 
+    except asyncio.CancelledError:
+        print("🛑 Intake listener task cancelled. Shutting down gracefully.")
     except Exception as e:
-        print(f"💥 Intake listener fatal error: {e}")
+        print(f"💥 Fatal intake listener error: {e}")
         traceback.print_exc()
 
+
+# ───────────────────────────────────────────────
+# Lifecycle Events
+# ───────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup_event():
     global bus
-    init_db()
-    try:
-        _ = embedder.encode("warmup").tolist()
-        print("✅ Embedding model warmed up")
-    except Exception as e:
-        print("⚠️ Embedding warmup failed:", e)
-
-    # Initialize the synchronous bus for publishing
     if settings.ORION_BUS_ENABLED:
         bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
-        print("📡 Launching async intake listener task...")
+        print(f"🚀 {settings.SERVICE_NAME} starting up (v{settings.SERVICE_VERSION})")
         asyncio.create_task(listen_for_intake())
     else:
-        print("⚠️ OrionBus disabled, intake listener not started")
+        print("⚠️ OrionBus disabled — intake listener not started.")
 
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    print(f"👋 {settings.SERVICE_NAME} shutting down.")
+
+
+# ───────────────────────────────────────────────
+# Local Run (development only)
+# ───────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8087, reload=True)
-
+    uvicorn.run("app.main:app", host="0.0.0.0", port=settings.PORT, reload=True)

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, String, Float, DateTime
+from sqlalchemy import Column, String, Text, Float, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from app.db import Base
 
@@ -35,17 +35,23 @@ class EnrichmentInput(BaseModel):
 
 
 class MirrorInput(BaseModel):
-    """
-    Raw collapse mirror intake (schema kept intentionally loose).
-    You can extend this as your mirror contract firms up.
-    """
     id: str
-    payload: Dict[str, Any] = Field(default_factory=dict)
-    ts: Optional[datetime] = None
+    observer: Optional[str] = None
+    trigger: Optional[str] = None
+    observer_state: Optional[List[str]] = None
+    field_resonance: Optional[str] = None
+    type: Optional[str] = None
+    emergent_entity: Optional[str] = None
+    summary: Optional[str] = None
+    mantra: Optional[str] = None
+    causal_echo: Optional[str] = None
+    timestamp: Optional[str] = None
+    environment: Optional[str] = None
 
     def normalize(self):
-        if not self.ts:
-            self.ts = datetime.utcnow()
+        """Flatten list fields and ensure strings are clean."""
+        if isinstance(self.observer_state, list):
+            self.observer_state = ", ".join(self.observer_state)
         return self
 
 
@@ -65,9 +71,19 @@ class CollapseEnrichment(Base):
     ts = Column(DateTime, default=datetime.utcnow)
 
 
+# === ORM (Postgres table) ===
 class CollapseMirror(Base):
     __tablename__ = "collapse_mirror"
 
-    id = Column(String, primary_key=True, nullable=False)        # mirror record id
-    payload = Column(JSONB)                                      # raw document/event
-    ts = Column(DateTime, default=datetime.utcnow)
+    id = Column(String, primary_key=True, index=True)
+    observer = Column(String)
+    trigger = Column(Text)
+    observer_state = Column(String)
+    field_resonance = Column(Text)
+    type = Column(String)
+    emergent_entity = Column(Text)
+    summary = Column(Text)
+    mantra = Column(Text)
+    causal_echo = Column(Text, nullable=True)
+    timestamp = Column(String, nullable=True)
+    environment = Column(String, nullable=True)

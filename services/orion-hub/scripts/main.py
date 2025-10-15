@@ -45,7 +45,7 @@ async def startup_event():
         bus = OrionBus(url=settings.ORION_BUS_URL)
     else:
         logger.warning("OrionBus is disabled. No messages will be published.")
-    
+
     # Load HTML content at startup
     try:
         with open("templates/index.html", "r") as f:

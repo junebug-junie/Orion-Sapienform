@@ -25,7 +25,7 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
 async def websocket_endpoint(websocket: WebSocket):
     """Handles the main voice and text WebSocket lifecycle."""
     from scripts.main import asr, bus
-    
+
     await websocket.accept()
     logger.info("WebSocket accepted.")
     if asr is None:
@@ -45,7 +45,7 @@ async def websocket_endpoint(websocket: WebSocket):
             transcript = None
             is_text_input = False
             disable_tts = data.get("disable_tts", False)
-            
+
             text_input = data.get("text_input")
             if text_input:
                 transcript = text_input
@@ -55,7 +55,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not audio_b64:
                     logger.warning("No audio or text_input in message.")
                     continue
-                
+
                 await websocket.send_json({"state": "processing"})
                 audio_bytes = base64.b64decode(audio_b64)
                 transcript = asr.transcribe_bytes(audio_bytes)
@@ -78,7 +78,7 @@ async def websocket_endpoint(websocket: WebSocket):
             instructions = data.get("instructions", "")
             if not history and instructions:
                 history.append({"role": "system", "content": instructions})
-            
+
             history.append({"role": "user", "content": transcript})
 
             context_len = data.get("context_length", 10)
@@ -89,14 +89,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     history = history[-context_len:]
 
             temperature = data.get("temperature", 0.7)
-            
+
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY BEFORE LLM CALL: {history}")
-            
+
             assistant_response_text, tokens = await run_llm_tts(history[:], temperature, tts_q, disable_tts)
-            
+
             await websocket.send_json({"llm_response": assistant_response_text, "tokens": tokens})
-            
+
             if assistant_response_text:
                 history.append({"role": "assistant", "content": assistant_response_text})
 

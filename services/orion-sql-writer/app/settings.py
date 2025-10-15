@@ -9,9 +9,12 @@ class Settings(BaseSettings):
     # --- Bus ---
     ORION_BUS_ENABLED: bool = True
     ORION_BUS_URL: str = "redis://orion-janus-bus-core:6379/0"
+
     CHANNEL_TAGS_RAW: str = "orion:tags"
     CHANNEL_TAGS_ENRICHED: str = "orion:tags:enriched"
-    CHANNEL_COLLAPSE_INTAKE: str = "orion:collapse:intake"
+
+    CHANNEL_COLLAPSE_TRIAGE: str = "orion:collapse:triage"
+    CHANNEL_COLLAPSE_PUBLISH: str = "orion:collapse:sql-write"
 
     # --- DB ---
     POSTGRES_URI: str = "postgresql://postgres:postgres@orion-janus-sql-db:5432/conjourney"
@@ -19,9 +22,11 @@ class Settings(BaseSettings):
 
     # --- Channel → Table map ---
     BUS_TABLE_MAP: str = (
-        "orion:tags:enriched:collapse_enrichment,"
-        "orion:tags:collapse_enrichment,"
-        "orion:collapse:intake:collapse_mirror"
+       "orion:collapse:triage:collapse_mirror",
+       "orion:tags:raw:collapse_tags_raw",
+       "orion:tags:enriched:collapse_enrichment",
+       "orion:chat:history:log:chat_history",
+       "orion:rag:document:add:rag_documents"
     )
 
     POLL_TIMEOUT: float = 1.0
@@ -49,7 +54,8 @@ class Settings(BaseSettings):
         return [
             self.CHANNEL_TAGS_RAW,
             self.CHANNEL_TAGS_ENRICHED,
-            self.CHANNEL_COLLAPSE_INTAKE,
+            self.CHANNEL_COLLAPSE_TRIAGE,
+            self.CHANNEL_COLLAPSE_PUBLISH
         ]
 
 

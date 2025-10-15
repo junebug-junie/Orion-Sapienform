@@ -23,8 +23,7 @@ class Settings(BaseSettings):
     # --- Channel → Table map ---
     BUS_TABLE_MAP: str = (
        "orion:collapse:triage:collapse_mirror",
-       "orion:tags:raw:collapse_tags_raw",
-       "orion:tags:enriched:collapse_enrichment",
+       "orion:tags:raw:collapse_enrichment",
        "orion:chat:history:log:chat_history",
        "orion:rag:document:add:rag_documents"
     )

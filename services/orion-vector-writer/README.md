@@ -151,6 +151,10 @@ print(coll.count())
 print(coll.peek())
 ```
 
+From container:
+```docker exec -it orion-janus-vector-writer python /app/app/collection_browse.py```
+
+```docker exec -it orion-janus-vector-writer python /app/app/query_similiarity.py```
 ---
 
 ## 🧭 Debugging & Tips

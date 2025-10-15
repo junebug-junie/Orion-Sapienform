@@ -38,18 +38,13 @@ def _flatten_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return flat_meta
 
 
-def batch_upsert_worker(
-    chroma_client: chromadb.HttpClient,
-    embedding_function: ef.SentenceTransformerEmbeddingFunction,
-    bus: OrionBus
-):
+def batch_upsert_worker(chroma_client, embedding_function, bus):
     """
     Periodically checks the queue and upserts a batch of documents to ChromaDB.
-    This worker now receives its dependencies as arguments to prevent race conditions.
     """
     logger.info("⚙️ Batch upsert worker started. Batch size: %d", settings.BATCH_SIZE)
 
-    # --- Initialize collection with .env-driven resilience ---
+    # Initialize collection
     collection = None
     for attempt in range(10):
         try:
@@ -60,9 +55,7 @@ def batch_upsert_worker(
                 )
                 logger.info(f"🧠 Connected to Chroma → collection '{settings.VECTOR_DB_COLLECTION}' (created if missing).")
             else:
-                collection = chroma_client.get_collection(
-                    name=settings.VECTOR_DB_COLLECTION
-                )
+                collection = chroma_client.get_collection(name=settings.VECTOR_DB_COLLECTION)
                 logger.info(f"🧠 Connected to existing Chroma collection '{settings.VECTOR_DB_COLLECTION}'.")
             break
         except Exception as e:
@@ -71,6 +64,30 @@ def batch_upsert_worker(
     else:
         logger.critical("🚨 Failed to connect to ChromaDB after multiple attempts.")
         return
+
+    # --- Upsert loop ---
+    while True:
+        time.sleep(2)
+        with _queue_lock:
+            if not _doc_queue:
+                continue
+            batch = _doc_queue[:settings.BATCH_SIZE]
+            del _doc_queue[:settings.BATCH_SIZE]
+
+        try:
+            ids = [doc["id"] for doc in batch]
+            texts = [doc["text"] for doc in batch]
+            metadatas = [ _flatten_metadata(doc["metadata"]) for doc in batch ]
+
+            collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
+            logger.info(f"✅ Upserted {len(batch)} documents into Chroma collection '{settings.VECTOR_DB_COLLECTION}'")
+
+            # Publish confirmation
+            for d in batch:
+                bus.publish(settings.PUBLISH_CHANNEL_VECTOR_CONFIRM, {"id": d["id"], "status": "stored"})
+
+        except Exception as e:
+            logger.error(f"❌ Failed to upsert batch to ChromaDB: {e}", exc_info=True)
 
 def listener_worker(bus: OrionBus):
     """

@@ -1,8 +1,0 @@
-version: "3.9"
-services:
-  orion-salience:
-    build: .
-    container_name: orion-salience
-    ports:
-      - "8091:8091"
-    restart: unless-stopped

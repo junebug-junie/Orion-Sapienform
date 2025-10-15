@@ -1,31 +1,31 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
+from typing import Optional
+
 class Settings(BaseSettings):
     """
-    Configuration for the Orion Biometrics service.
+    Loads and validates configuration from environment variables.
     """
     # --- Service Identity ---
     SERVICE_NAME: str = Field(..., env="SERVICE_NAME")
     SERVICE_VERSION: str = Field(..., env="SERVICE_VERSION")
-    PORT: int = Field(..., env="PORT")
 
     # --- Database & Bus ---
     POSTGRES_URI: str = Field(..., env="POSTGRES_URI")
+    TABLE_NAME: str = Field(..., env="TABLE_NAME")
     ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
-    ORION_BUS_ENABLED: bool = Field(..., env="ORION_BUS_ENABLED")
-    PUBLISH_CHANNEL_BIOMETRICS_NEW: str = Field(..., env="PUBLISH_CHANNEL_BIOMETRICS_NEW")
-
-    # --- Database Table Name ---
-    TABLE_NAME: str = Field(default="biometric_records", env="TABLE_NAME")
+    TELEMETRY_PUBLISH_CHANNEL: str = Field(..., env="TELEMETRY_PUBLISH_CHANNEL")
+    EXTERNAL_SUBSCRIBE_CHANNEL: Optional[str] = Field(default=None, env="EXTERNAL_SUBSCRIBE_CHANNEL")
 
     # --- Runtime ---
-    STARTUP_DELAY: int = Field(default=5, env="STARTUP_DELAY")
+    TELEMETRY_INTERVAL: int = Field(..., env="TELEMETRY_INTERVAL")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
 
     class Config:
+        # This allows pydantic to read from .env files if needed,
+        # but docker-compose will inject them directly.
         env_file = ".env"
         extra = "ignore"
 
 settings = Settings()
-

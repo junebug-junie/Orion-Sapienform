@@ -1,13 +1,15 @@
+import threading
 import logging
-import uuid
-from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
+import json
+from fastapi import FastAPI
 
+from orion.core.sql_router.db import init_models
+from orion.core.sql_router.worker import start_worker_thread
+from orion.core.bus.telemetry import start_telemetry_loop
+
+from app.models import BiometricsSQL
+from app.metrics import collect_biometrics
 from app.settings import settings
-from app.db import Base, engine, get_db
-from app.models import BiometricRecord
-from orion.core.bus.service import OrionBus
 
 # --- Logging Setup ---
 logging.basicConfig(level=settings.LOG_LEVEL.upper(), format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -15,83 +17,71 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
-# Global bus object, initialized on startup
-bus: OrionBus | None = None
-
-@app.on_event("startup")
-def startup_event():
+# ✅ 1. DEFINE THE CUSTOM WRITER FUNCTION
+def biometrics_db_writer(model_class, raw_message: dict, db):
     """
-    Initializes database schema and connects to the Orion Bus.
+    Custom writer that correctly parses the raw Redis message before creating a model instance.
+    This function intercepts the raw message dictionary from the worker.
     """
-    global bus
-    logger.info(f"🚀 Starting {settings.SERVICE_NAME} v{settings.SERVICE_VERSION}")
+    # Only process messages of type 'message'
+    if raw_message.get('type') != 'message':
+        return None
 
     try:
-        # This will create the table defined in models.py if it doesn't exist
-        Base.metadata.create_all(bind=engine)
-        logger.info("✅ Database schema verified.")
-    except Exception as e:
-        logger.critical(f"🚨 Failed to connect to or initialize database: {e}", exc_info=True)
-    
-    if settings.ORION_BUS_ENABLED:
-        logger.info(f"Connecting to OrionBus at {settings.ORION_BUS_URL}")
-        bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
-    else:
-        logger.warning("OrionBus is disabled.")
+        # Extract, decode, and parse the actual data payload
+        payload_bytes = raw_message['data']
+        data = json.loads(payload_bytes)
+        
+        # Create the SQLAlchemy object with the clean data
+        obj = model_class(**data)
+        db.add(obj)
+        db.commit()
+        return obj
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Failed to parse or process telemetry message: {e}", exc_info=True)
+        db.rollback()
+        return None
 
 
 @app.get("/health")
 def health():
-    """Provides a simple health check endpoint."""
     return {
         "status": "ok",
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
-        "bus_enabled": settings.ORION_BUS_ENABLED,
+        "telemetry_publish_channel": settings.TELEMETRY_PUBLISH_CHANNEL,
+        "external_subscribe_channel": settings.EXTERNAL_SUBSCRIBE_CHANNEL,
     }
 
-# Pydantic model for creating new records via the API
-class BiometricRecordCreate(BaseModel):
-    user_id: str
-    record_type: str
-    data_hash: str
+@app.on_event("startup")
+def startup():
+    logger.info(f"🚀 Starting {settings.SERVICE_NAME} v{settings.SERVICE_VERSION}")
+    init_models([BiometricsSQL])
 
-# --- API Endpoints ---
+    # 🛰️ THREAD 1: Publish this service's telemetry (GPU/CPU) to the bus.
+    logger.info(f"Starting telemetry publisher to channel '{settings.TELEMETRY_PUBLISH_CHANNEL}'")
+    threading.Thread(
+        target=start_telemetry_loop,
+        args=(settings.TELEMETRY_PUBLISH_CHANNEL, collect_biometrics, settings.ORION_BUS_URL),
+        kwargs={"interval": settings.TELEMETRY_INTERVAL, "label": settings.SERVICE_NAME},
+        daemon=True
+    ).start()
 
-@app.post("/records", status_code=201)
-def create_biometric_record(record: BiometricRecordCreate, db: Session = Depends(get_db)):
-    """
-    Creates a new biometric record, saves it to the database, and publishes
-    a telemetry event to the Orion Bus.
-    """
-    record_id = f"bio_{uuid.uuid4().hex}"
-    db_record = BiometricRecord(
-        id=record_id,
-        **record.model_dump()
+    # 📥 THREAD 2: Start a worker to persist this service's OWN telemetry.
+    logger.info(f"Starting DB writer for self-telemetry on channel '{settings.TELEMETRY_PUBLISH_CHANNEL}'")
+    start_worker_thread(
+        bus_url=settings.ORION_BUS_URL,
+        channel=settings.TELEMETRY_PUBLISH_CHANNEL,
+        model_class=BiometricsSQL,
+        writer_func=biometrics_db_writer  # ✅ 2. PASS THE CUSTOM FUNCTION HERE
     )
-    db.add(db_record)
-    db.commit()
-    db.refresh(db_record)
-    
-    logger.info(f"✅ Created biometric record {record_id} for user {record.user_id}")
-    
-    # Publish telemetry event to the bus
-    if bus and bus.enabled:
-        payload = {
-            "id": record_id,
-            "user_id": record.user_id,
-            "record_type": record.record_type,
-            "status": "created"
-        }
-        bus.publish(settings.PUBLISH_CHANNEL_BIOMETRICS_NEW, payload)
-        logger.info(f"📡 Published event to {settings.PUBLISH_CHANNEL_BIOMETRICS_NEW}")
-        
-    return db_record
 
-@app.get("/records/{user_id}")
-def get_user_records(user_id: str, db: Session = Depends(get_db)):
-    """
-    Fetches all biometric records for a given user ID.
-    """
-    records = db.query(BiometricRecord).filter(BiometricRecord.user_id == user_id).all()
-    return records
+    # 📥 THREAD 3 (OPTIONAL): Start a worker for an EXTERNAL data channel.
+    if settings.EXTERNAL_SUBSCRIBE_CHANNEL:
+        logger.info(f"Starting DB writer for external data on channel '{settings.EXTERNAL_SUBSCRIBE_CHANNEL}'")
+        start_worker_thread(
+            bus_url=settings.ORION_BUS_URL,
+            channel=settings.EXTERNAL_SUBSCRIBE_CHANNEL,
+            model_class=BiometricsSQL,
+            writer_func=biometrics_db_writer  # ✅ 3. PASS IT HERE, TOO
+        )

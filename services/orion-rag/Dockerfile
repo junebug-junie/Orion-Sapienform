@@ -22,6 +22,8 @@ COPY orion /app/orion
 # Copy the RAG service's specific application code
 COPY services/orion-rag/app ./app
 
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+
 # Expose the port the service will run on (value is passed via env)
 EXPOSE 8300
 

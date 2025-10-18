@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 from fastapi import HTTPException
 from fastapi import APIRouter
 from app.health import check_gpu_runtime, check_ollama_backend, wait_for_redis
-from app.config import SELECTION_POLICY, CONNECT_TIMEOUT, READ_TIMEOUT, HEALTH_INTERVAL
+from app.config import SELECTION_POLICY, CONNECT_TIMEOUT, READ_TIMEOUT, HEALTH_INTERVAL, BACKENDS
 
 router = APIRouter()
 
@@ -76,6 +76,10 @@ async def health_loop(router: BrainRouter):
     while True:
         await asyncio.gather(*(probe_backend(b) for b in router.backends.values()))
         await asyncio.sleep(HEALTH_INTERVAL)
+
+
+router_instance = BrainRouter(BACKENDS)
+
 
 @router.get("/health/gpu")
 async def health_gpu():

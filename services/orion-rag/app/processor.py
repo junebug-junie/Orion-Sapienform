@@ -1,12 +1,15 @@
 import logging
 import uuid
+import json
 from orion.core.bus.service import OrionBus
 from .settings import settings
 from .vector_store import vector_store
 
 logger = logging.getLogger(settings.SERVICE_NAME)
 
-def process_rag_request(bus: OrionBus, original_message: dict):
+# --- FIX: Remove 'bus: OrionBus' from arguments ---
+def process_rag_request(original_message: dict):
+# --- END FIX ---
     """
     Handles a single RAG request: retrieves context, delegates to the brain,
     and publishes the final response.
@@ -19,45 +22,59 @@ def process_rag_request(bus: OrionBus, original_message: dict):
         logger.warning("RAG request is missing 'query' or 'response_channel'. Skipping.")
         return
 
-    # 1. Retrieve context from the vector store
+    # ... (Vector search, prompt building, etc. is all fine) ...
     context_docs = vector_store.search(query, n_results=n_results)
-    if not context_docs:
-        logger.warning(f"No documents found for query: '{query[:50]}...'")
-        context_str = "No specific context found."
-    else:
-        context_str = "\n\n---\n\n".join(context_docs)
-
-    # 2. Construct a new prompt for the brain
+    context_str = "\n\n---\n\n".join(context_docs) if context_docs else "No specific context found."
     prompt_for_brain = (
         "Based on the following context, please answer the user's question.\n\n"
         f"CONTEXT:\n{context_str}\n\n"
         f"USER QUESTION:\n{query}"
     )
-    
-    # 3. Create a unique, temporary channel for the brain's response
     brain_response_channel = f"orion:rag:brain-response:{uuid.uuid4().hex}"
-    
-    # 4. Publish the request to the brain
     brain_payload = {
         "prompt": prompt_for_brain,
         "response_channel": brain_response_channel
     }
-    bus.publish(settings.PUBLISH_CHANNEL_BRAIN_INTAKE, brain_payload)
+
+    # --- FIX: Create a new, local bus for publishing ---
+    try:
+        pub_bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
+        pub_bus.publish(settings.PUBLISH_CHANNEL_BRAIN_INTAKE, brain_payload)
+    except Exception as e:
+        logger.error(f"Failed to publish request to brain: {e}", exc_info=True)
+        return
+    # --- END FIX ---
+
     logger.info(f"Delegated query to brain. Waiting for response on {brain_response_channel}")
     
-    # 5. Wait for the brain's response on the unique channel
-    # This is a blocking call within this worker thread. A temporary bus instance
-    # is used for the reply to ensure thread safety.
+    # This part was already correct (it creates its own reply_bus)
     reply_bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
     for brain_message in reply_bus.subscribe(brain_response_channel):
-        final_answer = brain_message.get("data", {}).get("text", "The brain did not provide a response.")
         
-        # 6. Publish the final answer back to the original requester
-        final_payload = {
-            "query": query,
-            "answer": final_answer,
-            "retrieved_context": context_docs
-        }
-        bus.publish(response_channel, final_payload)
-        logger.info(f"Sent final RAG answer to {response_channel}")
-        break # Exit the loop after receiving one message
+        if not isinstance(brain_message, dict) or brain_message.get('type') != 'message':
+            continue
+
+        try:
+            brain_data = brain_message['data']
+            if not isinstance(brain_data, dict):
+                logger.warning("Received non-dict data from brain. Skipping.")
+                break 
+
+            final_answer = brain_data.get("text", "The brain did not provide a valid response.")
+            
+            final_payload = {
+                "query": query,
+                "answer": final_answer,
+                "retrieved_context": context_docs
+            }
+            
+            # --- FIX: Use the 'pub_bus' to send the final reply ---
+            pub_bus.publish(response_channel, final_payload)
+            # --- END FIX ---
+            
+            logger.info(f"Sent final RAG answer to {response_channel}")
+            break 
+            
+        except Exception as e:
+            logger.error(f"Error processing brain response: {e}", exc_info=True)
+            break

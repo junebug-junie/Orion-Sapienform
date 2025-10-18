@@ -35,6 +35,10 @@ services:
       - VECTOR_DB_PORT=${VECTOR_DB_PORT}
       - VECTOR_DB_COLLECTION=${VECTOR_DB_COLLECTION}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - HOST_RAG_FILES_DIR=${HOST_RAG_FILES_DIR}
+
+    volumes:
+      - ${HOST_RAG_FILES_DIR}:/data
 
 networks:
   app-net:

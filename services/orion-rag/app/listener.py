@@ -1,5 +1,6 @@
 import logging
 import threading
+import json
 from orion.core.bus.service import OrionBus
 from .settings import settings
 from .processor import process_rag_request
@@ -7,10 +8,6 @@ from .processor import process_rag_request
 logger = logging.getLogger(settings.SERVICE_NAME)
 
 def listener_worker():
-    """
-    Creates a thread-local bus connection, listens for incoming RAG requests,
-    and spawns a new thread to handle each one concurrently.
-    """
     bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
     if not bus.enabled:
         logger.error("Bus connection failed. RAG listener thread exiting.")
@@ -20,11 +17,22 @@ def listener_worker():
     logger.info(f"👂 Subscribing to RAG request channel: {listen_channel}")
 
     for message in bus.subscribe(listen_channel):
-        data = message.get("data")
-        if not data:
+        if not isinstance(message, dict) or message.get('type') != 'message':
             continue
-        
-        logger.info(f"Received RAG request: {data.get('query')}")
-        # Process each request in its own thread to not block the main listener.
-        # The main bus instance is passed for the initial publish call.
-        threading.Thread(target=process_rag_request, args=(bus, data), daemon=True).start()
+
+        try:
+            data = message['data']
+            
+            if not isinstance(data, dict):
+                logger.warning(f"Received non-dict data on {listen_channel}. Skipping.")
+                continue
+            
+            logger.info(f"Received RAG request for query: \"{data.get('query')[:50]}...\"")
+            
+            # --- FIX: Do NOT pass the 'bus' object. ---
+            # The processor thread will create its own.
+            threading.Thread(target=process_rag_request, args=(data,), daemon=True).start()
+            # --- END FIX ---
+
+        except Exception as e:
+            logger.error(f"Error processing message in listener: {e}", exc_info=True)

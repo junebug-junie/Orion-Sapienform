@@ -3,7 +3,7 @@
 # ───────────────────────────────────────────────────────────────
 
 services:
-  orion-rag:
+  rag:
     build:
       context: ../..
       dockerfile: services/orion-rag/Dockerfile

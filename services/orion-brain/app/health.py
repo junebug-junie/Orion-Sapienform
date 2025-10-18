@@ -1,7 +1,8 @@
 # app/health.py
 from fastapi import APIRouter
+import redis
 import subprocess, shutil, asyncio, json, httpx
-from app.config import BACKENDS, CONNECT_TIMEOUT, READ_TIMEOUT
+from app.config import BACKENDS, CONNECT_TIMEOUT, READ_TIMEOUT, ORION_BUS_URL
 
 router = APIRouter()
 
@@ -13,7 +14,8 @@ async def wait_for_redis(max_attempts=10, delay=2):
     """Wait until Redis (Orion Bus) becomes reachable to avoid DNS startup errors."""
     for attempt in range(1, max_attempts + 1):
         try:
-            r = redis.from_url(REDIS_URL)
+            # FIX: Use the correct ORION_BUS_URL
+            r = redis.from_url(ORION_BUS_URL) 
             r.ping()
             print(f"✅ Redis available on attempt {attempt}")
             return True
@@ -22,7 +24,6 @@ async def wait_for_redis(max_attempts=10, delay=2):
             await asyncio.sleep(delay)
     print("❌ Redis did not become available in time")
     return False
-
 
 async def check_gpu_runtime(backend_url: str = DEFAULT_BACKEND):
     """

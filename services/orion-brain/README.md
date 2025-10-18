@@ -1,77 +1,122 @@
-Orion Brain Service (Cognitive Router for Ollama)
+# 🧠 Orion Brain Service
 
-A lightweight gateway + event‑aware router that fronts one or more Ollama backends and integrates with the Orion Bus for message emission.
+A lightweight, event-aware gateway that fronts one or more Ollama backends and integrates with the Orion Bus for message emission and telemetry.
 
-Purpose: decouple applications from GPU node topology while streaming telemetry into the Orion Mesh.
+> **Core Purpose:** To decouple applications from the underlying GPU node topology while providing a centralized point for LLM orchestration, routing, and monitoring within the Orion Mesh. The Brain service itself does not run models; it intelligently routes requests to dedicated Ollama backends.
 
-Routes: /health, /chat
+---
 
-Balancing: least_conn (default) or round_robin
+## ⚙️ Key Features
 
-Health Checks: probes each backend’s /api/tags
+- **Dynamic Backend Routing:** Automatically routes requests to healthy Ollama backends based on the configured balancing policy (`least_conn` or `round_robin`).
+- **Automatic Health Checks:** Continuously probes each backend's `/api/tags` endpoint to ensure it only sends requests to responsive nodes.
+- **Orion Bus Integration:** Publishes detailed model-response and telemetry events to Redis, allowing other services in the mesh to observe and react to cognitive tasks.
 
-Bus Integration: publishes model‑response and telemetry events to Redis Streams (orion:evt:gateway, orion:bus:out)
+---
 
-The Brain performs orchestration and routing; GPUs live in the Ollama backends.
+## 🚀 Quick Start
 
-## Quick Start (Compose)
+### 1. Configure the Service
 
-cp .env.example .env
-# Adjust BACKENDS and PROJECT if needed
-docker compose up ‑d ‑‑build
+Create a `.env` file in this directory (`services/orion-brain/`) or use the provided `.env.example`. The most important variables to check are:
 
-### Smoke Tests
+- **PROJECT:** The project name, used for naming containers and networks.
+- **BACKENDS:** A comma-separated list of the Ollama backend URLs (e.g., `http://orion-janus-brain-llm:11434`).
+- **ORION_BUS_URL:** The connection URL for your Redis instance.
 
-# Health
-curl -s http://localhost:8088/health | jq
+### 2. Launch the Service
 
+From the project root (`Orion-Sapienform/`), run the following command:
 
-# Chat (test request)
-curl -s http://localhost:8088/chat \
-  -H 'content-type: application/json' \
-  -d '{
-   "model":"mistral:instruct",
-   "messages":[{"role":"user","content":"Say hi then stop."}],
-   "user_id":"u1","session_id":"s1"
-  }' | jq
+```bash
+docker compose \
+  --env-file .env \
+  --env-file services/orion-brain/.env \
+  -f services/orion-brain/docker-compose.yml \
+  up -d --build
+```
 
-## API Overview
+---
 
- Route 	 Method 	 Description 
- /health 	 GET 	 Mesh + backend status 
- /chat 	 POST 	 Send conversation‑style LLM request 
+## 🖥️ Usage & API
 
-### /chat Body Schema
+### Health Check
 
+Check the status of the Brain service and its connection to backend LLMs.
+
+**Endpoint:** `GET /health`
+
+```bash
+curl -s http://localhost:8088/health | jq
+```
+
+### Chat Inference
+
+Send a standard Ollama-compatible chat request. The Brain service will select a healthy backend, forward the request, and return the response.
+
+**Endpoint:** `POST /api/chat`
+
+#### Example Request
+
+```bash
+curl -s http://localhost:8088/api/chat \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "mistral:instruct",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Explain the significance of the Library of Babel."
+      }
+    ],
+    "stream": false
+  }' | jq
+```
+
+#### Example Response
+
+```json
 {
-  "model": "mistral:instruct",
-  "messages": [
-    {"role": "user", "content": "Say hi then stop."}
-  ],
-  "user_id": "u1",
-  "session_id": "s1",
-  "options": {"temperature": 0.2, "num_predict": 64}
+  "trace_id": "a1b2c3d4-...",
+  "backend": "http://orion-janus-brain-llm:11434",
+  "response": "The Library of Babel is a short story by Jorge Luis Borges, exploring concepts of infinity, reality, and the universe as a vast, exhaustive library containing all possible books...",
+  "meta": {
+    "model": "mistral:instruct",
+    "latency_ms": 1234.56,
+    "done_reason": "stop"
+  }
 }
+```
 
-### Response
+---
 
-{
-  "response": "Hello there!"
-}
+## ⚙️ Environment Configuration
 
-## Environment (.env)
+The service is configured via environment variables defined in `.env`.
 
-PROJECT=orion-janus
-BACKENDS=http://llm-brain:11434
-SELECTION_POLICY=least_conn
-HEALTH_INTERVAL_SEC=5
-CONNECT_TIMEOUT_SEC=10
-READ_TIMEOUT_SEC=600
-PORT=8088
-REDIS_URL=redis://orion-janus-bus-core:6379/0
-EVENTS_ENABLE=true
-BUS_OUT_ENABLE=true
+| Variable | Description | Default |
+|-----------|-------------|----------|
+| `SERVICE_NAME` | The logical name for this service. | `brain` |
+| `PORT` | The port the FastAPI server will listen on. | `8088` |
+| `BACKENDS` | Comma-separated URLs of the backend Ollama servers. | `http://${PROJECT}-brain-llm:11434` |
+| `SELECTION_POLICY` | Backend routing policy (`least_conn` or `round_robin`). | `least_conn` |
+| `HEALTH_INTERVAL_SEC` | How often (in seconds) to probe backends. | `5` |
+| `ORION_BUS_URL` | The connection URL for the Orion Bus (Redis). | `redis://${PROJECT}-bus-core:6379/0` |
+| `CHANNEL_BRAIN_INTAKE` | The Redis channel this service listens on for requests. | `orion:brain:intake` |
+| `CHANNEL_BRAIN_OUT` | The Redis channel for publishing final LLM results. | `orion:brain:out` |
 
-## Notes - Use make start-prod to start Brain with the bus and Ollama auto‑checks.
-- When you later re‑enable /models or /generate, this README can revert to the original gateway shape.
-- Health and chat are now fully event‑integrated with Orion Bus.
+---
+
+## 🛠️ Developer Guide (Makefile)
+
+The included `Makefile` provides convenient shortcuts for common development tasks.
+
+| Command | Description |
+|----------|-------------|
+| `make start-prod` | Builds and starts the Brain service and its dependencies. |
+| `make stop-prod` | Stops all containers associated with the Brain service. |
+| `make restart` | Rebuilds the Docker image and restarts the service. |
+| `make status` | Runs a health check and lists available models. |
+| `make env.print` | Prints the effective environment variables being used. |
+
+For more advanced targets, please see the `Makefile` itself.

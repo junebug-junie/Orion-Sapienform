@@ -62,41 +62,14 @@ BATCH_SIZE=1
 
 ---
 
-## 🧩 Docker Compose
+## 🧩 File ingest
 
-```yaml
-services:
-  vector-writer:
-    build:
-      context: ../..
-      dockerfile: services/orion-vector-writer/Dockerfile
-    container_name: ${PROJECT}-vector-writer
-    restart: unless-stopped
-    networks:
-      - app-net
-    ports:
-      - "${PORT}:${PORT}"
-    environment:
-      - SERVICE_NAME=${SERVICE_NAME}
-      - SERVICE_VERSION=${SERVICE_VERSION}
-      - PORT=${PORT}
-      - LOG_LEVEL=${LOG_LEVEL}
-      - BATCH_SIZE=${BATCH_SIZE}
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-      - ORION_BUS_URL=${ORION_BUS_URL}
-      - SUBSCRIBE_CHANNEL_COLLAPSE=${SUBSCRIBE_CHANNEL_COLLAPSE}
-      - SUBSCRIBE_CHANNEL_CHAT=${SUBSCRIBE_CHANNEL_CHAT}
-      - SUBSCRIBE_CHANNEL_RAG_DOC=${SUBSCRIBE_CHANNEL_RAG_DOC}
-      - PUBLISH_CHANNEL_VECTOR_CONFIRM=${PUBLISH_CHANNEL_VECTOR_CONFIRM}
-      - VECTOR_DB_HOST=${VECTOR_DB_HOST}
-      - VECTOR_DB_PORT=${VECTOR_DB_PORT}
-      - VECTOR_DB_COLLECTION=${VECTOR_DB_COLLECTION}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-
-networks:
-  app-net:
-    name: ${NET}
-    external: true
+```docker compose \
+  --env-file .env \
+  --env-file services/orion-vector-writer/.env \
+  -f services/orion-vector-writer/docker-compose.yml \
+  exec vector-writer \
+  python -m orion.tier_semantic.ingest "/data/library_of_babel.txt"
 ```
 
 ---

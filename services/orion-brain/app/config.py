@@ -20,6 +20,8 @@ CHANNEL_BRAIN_OUT = os.getenv("CHANNEL_BRAIN_OUT", "orion:brain:out")
 CHANNEL_BRAIN_STATUS = os.getenv("CHANNEL_BRAIN_STATUS", "orion:brain:status")
 CHANNEL_BRAIN_STREAM = os.getenv("CHANNEL_BRAIN_STREAM", "orion:brain:stream")
 
+CHANNEL_CHAT_HISTORY_LOG = os.getenv("SUBSCRIBE_CHANNEL_CHAT", "orion:chat:history:log")
+
 # Optional: cross-domain routing hooks
 CHANNEL_VOICE_TRANSCRIPT = os.getenv("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 CHANNEL_VOICE_LLM = os.getenv("CHANNEL_VOICE_LLM", "orion:voice:llm")

@@ -7,7 +7,7 @@ from app.config import (
     CONNECT_TIMEOUT, READ_TIMEOUT, ORION_BUS_URL, ORION_BUS_ENABLED
 )
 from app.router import router_instance
-from app.bus_helpers import emit_brain_event, emit_brain_output
+from app.bus_helpers import emit_brain_event, emit_brain_output, emit_chat_history_log
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +32,18 @@ def process_brain_request(payload: dict):
 
     emit_brain_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
 
-    # --- FIX IS HERE ---
-    # We will format the prompt for the /api/chat endpoint
     ollama_payload = {
-        "model": "mistral:instruct", # <-- USE THIS MODEL
+        "model": "mistral:instruct", # <-- UPDATE ME
         "messages": [
             {"role": "user", "content": payload.get("prompt")}
         ],
         "stream": False
     }
-    # And we call the /api/chat URL
+
     url = f"{backend.url.rstrip('/')}/api/chat"
-    # --- END FIX ---
-    
+
     data = {}
-    
+
     try:
         with httpx.Client(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
             r = client.post(url, json=ollama_payload)
@@ -62,6 +59,14 @@ def process_brain_request(payload: dict):
     text = ""
     if "message" in data and "content" in data["message"]:
         text = data["message"]["content"].strip()
+
+        emit_chat_history_log({
+            "trace_id": trace_id,
+            "source": "bus",
+            "prompt": payload.get("prompt"),
+            "response": text
+        })
+
     else:
         logger.warning(f"[{trace_id}] No 'message.content' in response: {data}")
 

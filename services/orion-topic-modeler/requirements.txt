@@ -1,0 +1,14 @@
+Core topic modeling library
+
+bertopic[visualization]==0.16.0
+Required for data handling and clustering
+
+scikit-learn==1.4.2
+pandas==2.2.1
+numpy<2.0
+For reading YAML configuration files
+
+PyYAML==6.0.1
+SentenceTransformer is used for the embedding model
+
+sentence-transformers==3.0.1

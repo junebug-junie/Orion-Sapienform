@@ -1,11 +1,12 @@
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from app.db import get_session
-from app.models import CollapseEnrichment, CollapseMirror
+from app.models import CollapseEnrichment, CollapseMirror, ChatHistoryLogSQL
 
 MODEL_MAP = {
     "collapse_enrichment": CollapseEnrichment,
     "collapse_mirror": CollapseMirror,
+    "chat_history_log": ChatHistoryLogSQL
 }
 
 def get_model_for_table(table_name: str):

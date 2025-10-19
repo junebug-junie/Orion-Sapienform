@@ -3,6 +3,7 @@ from orion.core.bus.service import OrionBus
 from app.config import (
     ORION_BUS_URL, ORION_BUS_ENABLED,
     CHANNEL_BRAIN_OUT, CHANNEL_BRAIN_STATUS, CHANNEL_BRAIN_STREAM,
+    CHANNEL_CHAT_HISTORY_LOG
 )
 
 # NOTE: No global _bus variable. We create it on-demand for thread-safety.
@@ -27,3 +28,15 @@ def emit_brain_output(data: Dict):
         bus.publish(CHANNEL_BRAIN_OUT, data)
     except Exception as e:
         print(f"[bus] emit_brain_output failed: {e}")
+
+
+def emit_chat_history_log(data: Dict):
+    """Publishes a record of a prompt and its response to the history log."""
+    bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
+    if not bus.enabled:
+        return
+    try:
+        bus.publish(CHANNEL_CHAT_HISTORY_LOG, data)
+        print(f"[bus] Published to chat history log: {data.get('prompt', '')[:30]}...")
+    except Exception as e:
+        print(f"[bus] emit_chat_history_log failed: {e}")

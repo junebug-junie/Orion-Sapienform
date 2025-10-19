@@ -1,0 +1,45 @@
+services:
+  dream:
+    build:
+      context: ../..
+      dockerfile: services/orion-dream/Dockerfile
+    container_name: ${PROJECT}-dream
+    restart: unless-stopped
+    networks:
+      - app-net
+    volumes:
+      - ./sql:/app/sql
+    ports:
+      - "${PORT}:${PORT}"
+    volumes:
+      - /mnt/storage/rdf_logs:/app/logs
+    environment:
+      # --- Service Identity ---
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - PORT=${PORT}
+
+      # --- Orion Bus Integration ---
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+
+      # --- Bus Listener Channels ---
+      - CHANNEL_EVENTS_TRIAGE=${CHANNEL_EVENTS_TRIAGE}
+      - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
+      - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE}
+      - ORION_CORE_EVENTS=${ORION_CORE_EVENTS}
+
+      # --- Bus Publish Channels ---
+      - CHANNEL_RDF_CONFIRM=${CHANNEL_RDF_CONFIRM}
+      - CHANNEL_RDF_ERROR=${CHANNEL_RDF_ERROR}
+
+      # --- GraphDB Configuration ---
+      - GRAPHDB_URL=${GRAPHDB_URL}
+      - GRAPHDB_REPO=${GRAPHDB_REPO}
+      - GRAPHDB_USER=${GRAPHDB_USER}
+      - GRAPHDB_PASS=${GRAPHDB_PASS}
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

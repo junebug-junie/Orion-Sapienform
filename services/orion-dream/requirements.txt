@@ -1,0 +1,11 @@
+pydantic
+redis
+psycopg2-binary
+chromadb
+numpy
+scikit-learn
+httpx
+fastapi
+uvicorn
+orjson
+python-dotenv

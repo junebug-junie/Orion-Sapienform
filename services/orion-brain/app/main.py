@@ -6,7 +6,7 @@ import threading
 
 from app.config import BACKENDS, PORT, READ_TIMEOUT, CONNECT_TIMEOUT
 from app.router import router_instance, health_loop, probe_backend, router as health_api_router
-from app.bus_helpers import emit_brain_event, emit_brain_output
+from app.bus_helpers import emit_brain_event, emit_brain_output, emit_chat_history_log
 from app.models import GenerateBody, ChatBody
 from app import health
 from app.health import wait_for_redis
@@ -98,6 +98,15 @@ async def chat(body: ChatBody, request: Request):
         or (data.get("message", {}).get("content"))
         or ""
     ).strip()
+
+    emit_chat_history_log({
+        "trace_id": trace_id,
+        "source": "http",
+        "prompt": body.messages[-1].get("content") if body.messages else body.prompt,
+        "response": text,
+        "user_id": body.user_id,
+        "session_id": body.session_id
+    })
 
     # 🧠 Publish structured LLM output event
     emit_brain_output({

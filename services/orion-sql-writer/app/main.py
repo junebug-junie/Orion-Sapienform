@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from app.settings import settings
 from app.db import Base, engine
-from app.models import EnrichmentInput, MirrorInput
+from app.models import EnrichmentInput, MirrorInput, ChatHistoryInput
 from app.db_utils import upsert_record
 from orion.core.bus.service import OrionBus
 
@@ -44,6 +44,8 @@ def _process_one(channel: str, msg: dict):
             payload = EnrichmentInput.model_validate(msg).normalize()
         elif table == "collapse_mirror":
             payload = MirrorInput.model_validate(msg).normalize()
+        elif table == "chat_history_log":
+            payload = ChatHistoryInput.model_validate(msg).normalize() 
         else:
             print(f"⚠️  No model branch for table '{table}', skipping")
             return

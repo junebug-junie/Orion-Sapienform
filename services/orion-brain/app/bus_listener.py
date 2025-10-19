@@ -30,7 +30,7 @@ def listener_worker():
             if not isinstance(data, dict):
                 logger.warning(f"Received non-dict message: {data}")
                 continue
-            
+
             # Process each request in its own thread
             threading.Thread(target=process_brain_request, args=(data,), daemon=True).start()
 

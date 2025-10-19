@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, String, Text, Float, DateTime
+from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import JSONB
 from app.db import Base
 
@@ -55,6 +56,26 @@ class MirrorInput(BaseModel):
         return self
 
 
+class ChatHistoryInput(BaseModel):
+    """Pydantic model for validating incoming chat history log messages."""
+    id: Optional[str] = None # Will be populated from trace_id
+    trace_id: str
+    source: str
+    prompt: Optional[str] = None
+    response: Optional[str] = None
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    def normalize(self) -> "ChatHistoryInput":
+        """
+        Populates the primary key and timestamp before database insertion.
+        This follows the pattern in your main.py.
+        """
+        self.id = self.trace_id
+        self.created_at = datetime.utcnow()
+        return self
+
 # ---------- SQLAlchemy persistence models ----------
 
 class CollapseEnrichment(Base):
@@ -87,3 +108,24 @@ class CollapseMirror(Base):
     causal_echo = Column(Text, nullable=True)
     timestamp = Column(String, nullable=True)
     environment = Column(String, nullable=True)
+
+def generate_chat_log_model():
+    """Dynamically creates the SQLAlchemy model with the configured table name."""
+    return type(
+        "ChatHistoryLogSQL",
+        (Base,),
+        {
+            "__tablename__": "chat_history_log",
+            "id": Column(String, primary_key=True),
+            "trace_id": Column(String, index=True),
+            "source": Column(String),
+            "prompt": Column(Text),
+            "response": Column(Text),
+            "user_id": Column(String, nullable=True),
+            "session_id": Column(String, nullable=True),
+            "created_at": Column(DateTime, server_default=func.now()),
+        },
+    )
+
+
+ChatHistoryLogSQL = generate_chat_log_model()

@@ -1,0 +1,22 @@
+# Configuration for the KMeans hyperparameter tuning pipeline
+
+# --- Input Data ---
+# Path to the input CSV file INSIDE the container
+data_path: "/app/data/sample_documents.csv"
+text_column: "document_text"
+
+# --- Model Components ---
+# The sentence transformer model to use for generating document embeddings
+embedding_model: "all-MiniLM-L6-v2"
+
+# Parameters for the CountVectorizer, which creates the document-term matrix
+vectorizer_params:
+  stop_words: "english"
+  ngram_range: [1, 2] # Consider both unigrams and bigrams
+
+# --- Tuning Parameters ---
+# Define the range of 'k' (number of clusters) to test for KMeans
+kmeans_tuning:
+  k_min: 5
+  k_max: 20
+  k_step: 1 # Test every integer k from 5 to 20

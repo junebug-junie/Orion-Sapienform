@@ -1,0 +1,20 @@
+services:
+  topic-modeler:
+    build: .
+    container_name: ${PROJECT}-${SERVICE_NAME}
+    restart: "no" # This service runs tasks on-demand, it doesn't need to run continuously
+    networks:
+      - app-net
+    volumes:
+      # Mount the host data directory (defined in .env) into the container
+      # This is where the service will look for input CSV files.
+      - ${HOST_DATA_DIR}:/app/data
+      # Mount the host models directory to persist trained models
+      # This ensures your trained models are not lost when the container stops.
+      - ${HOST_MODELS_DIR}:/app/models
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true
+

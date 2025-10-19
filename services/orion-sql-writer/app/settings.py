@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     CHANNEL_COLLAPSE_TRIAGE: str = "orion:collapse:triage"
     CHANNEL_COLLAPSE_PUBLISH: str = "orion:collapse:sql-write"
 
+    CHANNEL_CHAT_LOG: str = "orion:chat:history:log"
+
     # --- DB ---
     POSTGRES_URI: str = "postgresql://postgres:postgres@orion-janus-sql-db:5432/conjourney"
     POSTGRES_TABLE: str = "collapse_enrichment"
@@ -25,7 +27,8 @@ class Settings(BaseSettings):
        "orion:collapse:triage:collapse_mirror",
        "orion:tags:raw:collapse_enrichment",
        "orion:chat:history:log:chat_history",
-       "orion:rag:document:add:rag_documents"
+       "orion:rag:document:add:rag_documents",
+       "orion:chat:history:log:chat_history_log"
     )
 
     POLL_TIMEOUT: float = 1.0
@@ -54,7 +57,8 @@ class Settings(BaseSettings):
             self.CHANNEL_TAGS_RAW,
             self.CHANNEL_TAGS_ENRICHED,
             self.CHANNEL_COLLAPSE_TRIAGE,
-            self.CHANNEL_COLLAPSE_PUBLISH
+            self.CHANNEL_COLLAPSE_PUBLISH,
+            self.CHANNEL_CHAT_LOG
         ]
 
 

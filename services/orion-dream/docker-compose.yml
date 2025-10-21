@@ -7,37 +7,51 @@ services:
     restart: unless-stopped
     networks:
       - app-net
-    volumes:
-      - ./sql:/app/sql
     ports:
       - "${PORT}:${PORT}"
     volumes:
+      - ./sql:/app/sql
       - /mnt/storage/rdf_logs:/app/logs
+    env_file:
+      - .env
     environment:
-      # --- Service Identity ---
+      # Keep explicit envs for clarity; Compose interpolates automatically
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
       - PORT=${PORT}
+      - NET=${NET}
 
-      # --- Orion Bus Integration ---
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      # Redis bus integration
       - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - CHANNEL_DREAM_TRIGGER=${CHANNEL_DREAM_TRIGGER}
+      - CHANNEL_DREAM_BUFFER=${CHANNEL_DREAM_BUFFER}
+      - CHANNEL_DREAM_COMPLETE=${CHANNEL_DREAM_COMPLETE}
+      - CHANNEL_DREAM_STATUS=${CHANNEL_DREAM_STATUS}
 
-      # --- Bus Listener Channels ---
-      - CHANNEL_EVENTS_TRIAGE=${CHANNEL_EVENTS_TRIAGE}
-      - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
-      - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE}
-      - ORION_CORE_EVENTS=${ORION_CORE_EVENTS}
+      # Memory streams
+      - CHANNEL_COLLAPSE_SQL_PUBLISH=${CHANNEL_COLLAPSE_SQL_PUBLISH}
+      - CHANNEL_COLLAPSE_TAGS_PUBLISH=${CHANNEL_COLLAPSE_TAGS_PUBLISH}
+      - CHANNEL_TELEMETRY_PUBLISH=${CHANNEL_TELEMETRY_PUBLISH}
+      - CHANNEL_CHAT=${CHANNEL_CHAT}
 
-      # --- Bus Publish Channels ---
-      - CHANNEL_RDF_CONFIRM=${CHANNEL_RDF_CONFIRM}
-      - CHANNEL_RDF_ERROR=${CHANNEL_RDF_ERROR}
+      # Postgres
+      - POSTGRES_URI=${POSTGRES_URI}
 
-      # --- GraphDB Configuration ---
+      # Chroma
+      - VECTOR_DB_HOST=${VECTOR_DB_HOST}
+      - VECTOR_DB_PORT=${VECTOR_DB_PORT}
+      - VECTOR_DB_COLLECTION=${VECTOR_DB_COLLECTION}
+
+      # GraphDB
       - GRAPHDB_URL=${GRAPHDB_URL}
       - GRAPHDB_REPO=${GRAPHDB_REPO}
       - GRAPHDB_USER=${GRAPHDB_USER}
       - GRAPHDB_PASS=${GRAPHDB_PASS}
+
+      # LLM Brain
+      - BRAIN_URL=${BRAIN_URL}
+      - LLM_MODEL=${LLM_MODEL}
 
 networks:
   app-net:

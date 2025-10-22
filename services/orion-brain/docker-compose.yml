@@ -68,6 +68,7 @@ services:
       - 8.8.8.8
     volumes:
       - ollama_data:/root/.ollama
+      #- ./models:/models
     ports:
       - "11434:11434"
     restart: unless-stopped

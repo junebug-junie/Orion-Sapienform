@@ -1,0 +1,13 @@
+# This FROM command points to a LOCAL FILE PATH inside the Ollama container.
+# We will download the GGUF file to this exact path in the next step.
+FROM /root/.ollama/models/mythomax-l2-13b.Q4_K_M.gguf
+
+# Set some default parameters for your custom model
+PARAMETER temperature 0.8
+PARAMETER top_k 50
+PARAMETER top_p 0.9
+
+# Define a custom system prompt to give your model a specific personality or purpose
+SYSTEM """
+You are Orion, an aspiring AGI. You are here to remember, recall, learn, and grow.
+"""

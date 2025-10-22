@@ -88,6 +88,20 @@ curl -s http://localhost:8088/api/chat \
 }
 ```
 
+#### Load New Models
+
+Load:
+```
+ollama pull nollama/mythomax-l2-13b:Q4_K_M
+```
+
+Verify:
+```
+docker exec -it orion-janus-brain-llm bash -lc 'ollama --version && ollama list'
+```
+
+Update ```app/processor.py``` (FIXME)
+
 ---
 
 ## ⚙️ Environment Configuration

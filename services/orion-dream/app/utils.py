@@ -9,6 +9,22 @@ from datetime import datetime
 from pydantic import BaseModel
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+# --- Text + Biometrics Helpers ---
+
+def clean_text(val: str | list | dict | None) -> str:
+    """Normalizes text fragments (handles JSON, lists, or weird spacing)."""
+    if val is None:
+        return ""
+    if isinstance(val, (list, tuple)):
+        val = ", ".join(map(str, val))
+    elif isinstance(val, dict):
+        val = json.dumps(val, ensure_ascii=False)
+    # collapse spaces like "p i p e l i n e"
+    val = " ".join(val.split())
+    return val.strip()
+
+
 @dataclass
 class Fragment:
     id: str

@@ -1,91 +1,146 @@
-import random, traceback
-import numpy as np
+from __future__ import annotations
+from datetime import datetime, timedelta
+from typing import Iterable, Optional, Dict, Any, List
+
+import math
 from chromadb import HttpClient
-from sklearn.metrics.pairwise import cosine_similarity
 from app.settings import settings
+from app.utils import Fragment, clean_text
 
-DREAM_TEMPERATURE = 0.35
-def enrich_from_chroma(fragments, seed=None, temperature=DREAM_TEMPERATURE):
+
+def _parse_meta_ts(meta: Dict[str, Any]) -> Optional[float]:
     """
-    Hybrid enrichment using Chroma vectors:
-      • Recall stored embeddings by ID
-      • Perform associative drift queries when missing or randomly selected
-      • Compute salience via cosine similarity
+    Accepts multiple timestamp styles:
+    - meta["ts"] as epoch seconds (float/int)
+    - meta["timestamp"] / meta["created_at"] as ISO8601
+    Returns epoch seconds or None.
     """
-    try:
-        client = HttpClient(
-            host=settings.VECTOR_DB_HOST,
-            port=settings.VECTOR_DB_PORT
-        )
-        coll = client.get_or_create_collection(settings.VECTOR_DB_COLLECTION)
+    if not isinstance(meta, dict):
+        return None
 
-        for f in fragments:
-            # --------------------------------------------------
-            # Normalize tags to ensure list type
-            # --------------------------------------------------
-            if isinstance(f.tags, str):
-                f.tags = [f.tags]
-            elif f.tags is None:
-                f.tags = []
-
-            drift = random.random() < temperature
-
-            # --------------------------------------------------
-            # Direct recall of stored embeddings
-            # --------------------------------------------------
+    # epoch-like
+    for k in ("ts", "time", "epoch"):
+        if k in meta:
             try:
-                doc = coll.get(ids=[f.id])
-                if doc and doc.get("embeddings"):
-                    f.embedding = np.array(doc["embeddings"][0])
-                    f.tags.append("recalled")
-
-                    # Skip association unless drift is triggered
-                    if not drift:
-                        continue
+                return float(meta[k])
             except Exception:
                 pass
 
-            # --------------------------------------------------
-            # Associative drift — semantic search for nearby memories
-            # --------------------------------------------------
-            base = seed or f.text or "dream fragment"
-
-            if drift:
-                base += " " + random.choice([
-                    "holographic memory",
-                    "entangled meaning",
-                    "the warmth of a signal",
-                    "echoes of thought",
-                    "folded timelines",
-                ])
-
+    # ISO-like
+    for k in ("timestamp", "created_at", "createdAt", "time_iso"):
+        v = meta.get(k)
+        if not v:
+            continue
+        try:
+            # allow strings like "2025-10-22T16:15:11+00:00"
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            # try a looser parse
             try:
-                res = coll.query(query_texts=[base], n_results=3)
-                if res and res.get("documents"):
-                    assoc_docs = res["documents"][0]
-                    f.tags.extend([f"assoc:{d[:40]}" for d in assoc_docs])
-                    f.tags.append("associated")
-            except Exception as e:
-                print(f"⚠️ association failed for {f.id}: {e}")
+                return datetime.strptime(str(v)[:19], "%Y-%m-%dT%H:%M:%S").timestamp()
+            except Exception:
+                continue
+    return None
 
-        # --------------------------------------------------
-        # Compute embedding cohesion for salience weighting
-        # --------------------------------------------------
-        embeddings = [
-            f.embedding for f in fragments
-            if getattr(f, "embedding", None) is not None
-        ]
 
-        if embeddings:
-            sims = cosine_similarity(embeddings)
-            valid_frags = [
-                x for x in fragments
-                if getattr(x, "embedding", None) is not None
-            ]
-            for i, f in enumerate(valid_frags):
-                f.salience = float(np.mean(sims[i]))
+def _recent_enough(meta: Dict[str, Any], since_ts: float) -> bool:
+    ts = _parse_meta_ts(meta)
+    return ts is not None and ts >= since_ts
 
+
+def enrich_from_chroma(
+    frags: List[Fragment],
+    hours: int = 24,
+    recent_ids: Optional[Iterable[str]] = None,
+    n_results: int = 8,
+) -> List[Fragment]:
+    """
+    For each input fragment (collapse/chat), retrieve vector neighbors from Chroma,
+    then filter those neighbors to keep only:
+      - items with metadata timestamp within the last `hours`, OR
+      - items whose metadata 'collapse_id' or 'id' is in `recent_ids` (fallback)
+    Returns a new list including the original frags + association fragments.
+    """
+    if not frags:
+        return frags
+
+    try:
+        client = HttpClient(host=settings.VECTOR_DB_HOST, port=settings.VECTOR_DB_PORT)
+        coll = client.get_or_create_collection(name=settings.VECTOR_DB_COLLECTION)
     except Exception:
-        print(f"⚠️ Chroma hybrid enrich failed: {traceback.format_exc()}")
+        # Chroma unavailable — pass through
+        return frags
 
-    return fragments
+    since_ts = (datetime.utcnow() - timedelta(hours=hours)).timestamp()
+    recent_id_set = set(recent_ids or [])
+    out = list(frags)
+
+    for f in frags:
+        # only enrich textual kinds
+        if f.kind not in ("collapse", "chat"):
+            continue
+
+        q = clean_text(getattr(f, "text", "") or "")[:700]
+        if not q:
+            continue
+
+        try:
+            # ask for metadata so we can filter by recency
+            res = coll.query(
+                query_texts=[q],
+                n_results=n_results * 3,  # overfetch so we can filter down
+                include=["documents", "metadatas", "distances", "ids"],
+            )
+        except Exception:
+            continue
+
+        ids = (res.get("ids") or [[]])[0]
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+
+        # Defensive: align lengths
+        k = min(len(ids), len(docs), len(metas), len(dists) or len(ids))
+        candidates = []
+        for i in range(k):
+            nid = ids[i]
+            ntext = docs[i] or ""
+            meta = metas[i] or {}
+            dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
+
+            # recency check via metadata timestamp
+            keep = _recent_enough(meta, since_ts)
+            # fallback: if no timestamps, allow if collapse_id/id is among recent SQL IDs
+            if not keep and recent_id_set:
+                cid = meta.get("collapse_id") or meta.get("id")
+                keep = cid in recent_id_set
+
+            if not keep:
+                continue
+
+            # similarity → salience bump (if we got distances)
+            sim = None
+            if isinstance(dist, (int, float)) and not math.isnan(dist):
+                # Chroma returns cosine distance by default: sim ≈ 1 - dist
+                sim = max(0.0, 1.0 - float(dist))
+
+            candidates.append((nid, ntext, meta, sim))
+
+        # Trim to n_results after filtering
+        candidates = candidates[:n_results]
+
+        for nid, ntext, meta, sim in candidates:
+            assoc_id = meta.get("collapse_id") or meta.get("id") or nid
+            out.append(
+                Fragment(
+                    id=f"{f.id}__vec__{nid}",
+                    kind="association",
+                    text=clean_text(ntext)[:1200],
+                    tags=["vector-assoc"]
+                    + ([str(meta.get("source"))] if meta.get("source") else [])
+                    + ([f"assoc:{assoc_id}"] if assoc_id else []),
+                    salience=max(getattr(f, "salience", 0.1), (sim or 0.2) * 0.8),
+                )
+            )
+
+    return out

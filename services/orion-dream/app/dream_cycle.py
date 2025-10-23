@@ -3,26 +3,51 @@
 # ==================================================
 import json
 import httpx
+from collections import Counter
+
 from app.aggregators_sql import fetch_recent_sql_fragments
 from app.aggregators_rdf import enrich_from_graphdb_ids
 from app.aggregators_vector import enrich_from_chroma
 from app.settings import settings
 
 
+def _counts_by_kind(frags):
+    return dict(Counter(getattr(f, "kind", "unknown") for f in frags))
+
+
 async def run_dream():
-    """Grounded dream pass: read memories → synthesize reflection via LLM."""
     print("🌙 Starting dream cycle (direct memory mode)…")
 
-    # 1️⃣ Gather memories
-    frags = fetch_recent_sql_fragments()
-    frags = enrich_from_graphdb_ids(frags)
-    frags = enrich_from_chroma(frags)
-    print(f"🧩 Retrieved {len(frags)} fragments from memory")
+    # --- SQL fragments (raw memories)
+    sql_frags = fetch_recent_sql_fragments(hours=24, chat_sample_n=15)
+    print(f"🧩 SQL fragments: total={len(sql_frags)} kinds={_counts_by_kind(sql_frags)}")
 
-    # 2️⃣ Sort by salience
-    frags = sorted(frags, key=lambda f: getattr(f, "salience", 0.0), reverse=True)[:20]
+    # --- RDF enrichment (collapse + enrichment only)
+    rdf_input = [f for f in sql_frags if f.kind in ("collapse", "enrichment")]
+    rdf_frags = enrich_from_graphdb_ids(rdf_input)
+    print(f"🔗 RDF-enriched fragments: total={len(rdf_frags)} kinds={_counts_by_kind(rdf_frags)}")
 
-    # 3️⃣ Build prompt from real memories
+    # --- Vector enrichment (collapse + chat)
+    vec_input = [f for f in sql_frags if f.kind in {"rag", "collapse", "enrichment"}]
+    vector_frags = enrich_from_chroma(vec_input, hours=24)
+    print(f"🧠 Vector-enriched fragments: total={len(vector_frags)} kinds={_counts_by_kind(vector_frags)}")
+
+    # --- Merge unique fragments
+    seen = set()
+    all_frags = []
+    for f in sql_frags + rdf_frags + vector_frags:
+        if f.id not in seen:
+            seen.add(f.id)
+            all_frags.append(f)
+    print(f"🧮 Total unique fragments: {len(all_frags)}")
+
+    # ✅ assign unified fragments list
+    frags = all_frags
+
+    # --- Sort by salience and cap
+    frags = sorted(frags, key=lambda f: getattr(f, "salience", 0.0), reverse=True)[:25]
+
+    # --- Build memory summary
     memory_summary = "\n\n".join(
         f"{f.kind.upper()} — {', '.join(f.tags)}:\n{f.text}"
         for f in frags if getattr(f, "text", None)
@@ -39,7 +64,6 @@ async def run_dream():
         "Compose a cohesive narrative about what you learned or noticed."
     )
 
-    # 4️⃣ Payload (matches /chat endpoint spec)
     payload = {
         "model": settings.LLM_MODEL,
         "messages": [
@@ -50,38 +74,32 @@ async def run_dream():
         "stream": False,
     }
 
-    # 5️⃣ Debug and send
     print("🛰️  LLM payload preview:")
     print(json.dumps(payload, indent=2)[:2000])
 
     dream_text = ""
     async with httpx.AsyncClient() as client:
         try:
-            # note the /chat, not /api/chat
             resp = await client.post(
                 f"{settings.BRAIN_URL.rstrip('/')}/chat",
                 json=payload,
                 timeout=120,
             )
             print(f"🧩 Brain status: {resp.status_code}")
-            #print(f"🧩 Brain raw response: {resp.text[:500]}")
             print("🧩 Brain raw response (full):")
             for line in resp.text.splitlines():
                 print(line)
 
             if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                    dream_text = (
-                        data.get("response")
-                        or data.get("text")
-                        or data.get("message", {}).get("content")
-                        or ""
-                    ).strip()
-                    if not dream_text:
-                        dream_text = "(empty dream text)"
-                except Exception as e:
-                    dream_text = f"(parse error: {e})"
+                data = resp.json()
+                dream_text = (
+                    data.get("response")
+                    or data.get("text")
+                    or data.get("message", {}).get("content")
+                    or ""
+                ).strip()
+                if not dream_text:
+                    dream_text = "(empty dream text)"
             else:
                 dream_text = f"Dream incomplete (status={resp.status_code})"
         except Exception as e:

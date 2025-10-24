@@ -95,6 +95,9 @@ Load:
 ollama pull nollama/mythomax-l2-13b:Q4_K_M
 ```
 
+Push into container:
+```docker exec -it orion-janus-brain-llm ollama pull nollama/mythomax-l2-13b:Q4_K_M```
+
 Verify:
 ```
 docker exec -it orion-janus-brain-llm bash -lc 'ollama --version && ollama list'

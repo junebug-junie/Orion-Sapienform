@@ -42,4 +42,10 @@ class Settings(BaseSettings):
     BRAIN_URL: str = Field(default="http://brain:8088")
     LLM_MODEL: str = Field(default="mistral:instruct")
 
+
+    DREAM_LOG_DIR: str = Field(default="/app/logs/dreams")
+
 settings = Settings()
+
+if settings.DREAM_LOG_DIR:
+     os.makedirs(settings.DREAM_LOG_DIR, exist_ok=True)

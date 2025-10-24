@@ -4,6 +4,7 @@ from typing import Iterable, Optional, Dict, Any, List
 
 import math
 from chromadb import HttpClient
+from chromadb.config import Settings as ChromaSettings
 from app.settings import settings
 from app.utils import Fragment, clean_text
 
@@ -65,7 +66,7 @@ def enrich_from_chroma(
         return frags
 
     try:
-        client = HttpClient(host=settings.VECTOR_DB_HOST, port=settings.VECTOR_DB_PORT)
+        client = HttpClient(host=settings.VECTOR_DB_HOST, port=settings.VECTOR_DB_PORT, settings=ChromaSettings(anonymized_telemetry=False))
         coll = client.get_or_create_collection(name=settings.VECTOR_DB_COLLECTION)
     except Exception:
         # Chroma unavailable — pass through

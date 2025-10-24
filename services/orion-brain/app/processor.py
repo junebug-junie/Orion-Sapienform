@@ -33,7 +33,7 @@ def process_brain_request(payload: dict):
     emit_brain_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
 
     ollama_payload = {
-        "model": "nollama/mythomax-l2-13b:Q4_K_M", #"mistral:instruct", # <-- UPDATE ME
+        "model": "llama3.1:8b-instruct-q8_0", #"mistral:instruct", # <-- UPDATE ME
         "messages": [
             {"role": "user", "content": payload.get("prompt")}
         ],

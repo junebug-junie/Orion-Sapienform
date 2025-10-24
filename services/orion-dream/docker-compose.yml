@@ -11,7 +11,7 @@ services:
       - "${PORT}:${PORT}"
     volumes:
       - ./sql:/app/sql
-      - /mnt/storage/rdf_logs:/app/logs
+      - /mnt/storage/logs/dream/logs:/app/logs
     env_file:
       - .env
     environment:
@@ -52,6 +52,9 @@ services:
       # LLM Brain
       - BRAIN_URL=${BRAIN_URL}
       - LLM_MODEL=${LLM_MODEL}
+
+      # Logs
+      - DREAM_LOG_DIR=${DREAM_LOG_DIR}
 
 networks:
   app-net:

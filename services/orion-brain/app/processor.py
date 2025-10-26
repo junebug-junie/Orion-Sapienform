@@ -2,9 +2,12 @@ import httpx
 import uuid
 import json
 import logging
+import os
+from datetime import date
+
 from orion.core.bus.service import OrionBus
 from app.config import (
-    CONNECT_TIMEOUT, READ_TIMEOUT, ORION_BUS_URL, ORION_BUS_ENABLED
+    CONNECT_TIMEOUT, READ_TIMEOUT, ORION_BUS_URL, ORION_BUS_ENABLED, CHANNEL_DREAM_TRIGGER
 )
 from app.router import router_instance
 from app.bus_helpers import emit_brain_event, emit_brain_output, emit_chat_history_log
@@ -14,15 +17,21 @@ logger = logging.getLogger(__name__)
 def process_brain_request(payload: dict):
     """
     Handles a single request from the bus.
-    Converts the prompt to the /api/chat format.
+    Routes between "dream_synthesis" (fire-and-forget)
+    and standard "chat" (request/reply).
     """
     trace_id = payload.get("trace_id") or str(uuid.uuid4())
-    prompt_text = payload.get("prompt", "No prompt provided.")
-    logger.info(f"[{trace_id}] Processing bus request: {prompt_text[:50]}...")
-
+    source = payload.get("source")
     response_channel = payload.get("response_channel")
-    if not response_channel:
-        logger.warning(f"[{trace_id}] Bus request missing 'response_channel'. Discarding.")
+
+    fragments_data = payload.get("fragments", [])
+    metrics_data = payload.get("metrics", {})
+
+    # --- 1. ROUTING LOGIC ---
+    is_dream_task = (source == "dream_synthesis")
+
+    if not is_dream_task and not response_channel:
+        logger.warning(f"[{trace_id}] Bus request (source: {source}) missing 'response_channel'. Discarding.")
         return
 
     backend = router_instance.pick()
@@ -32,60 +41,97 @@ def process_brain_request(payload: dict):
 
     emit_brain_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
 
-    ollama_payload = {
-        "model": "llama3.1:8b-instruct-q8_0", #"mistral:instruct", # <-- UPDATE ME
-        "messages": [
-            {"role": "user", "content": payload.get("prompt")}
-        ],
-        "stream": False
-    }
+    # --- 2. PAYLOAD LOGIC ---
+    ollama_payload = {}
+
+    if is_dream_task:
+        logger.info(f"[{trace_id}] Processing DREAM SYNTHESIS request...")
+        ollama_payload = payload.get("content")
+        if not ollama_payload:
+            logger.error(f"[{trace_id}] Dream task missing 'content' payload. Discarding.")
+            return
+    else:
+        prompt_text = payload.get("prompt", "No prompt provided.")
+        logger.info(f"[{trace_id}] Processing CHAT request: {prompt_text[:50]}...")
+        ollama_payload = {
+            "model": "llama3.1:8b-instruct-q8_0", # <-- Or from config
+            "messages": [
+                {"role": "user", "content": prompt_text}
+            ],
+            "stream": False
+        }
 
     url = f"{backend.url.rstrip('/')}/api/chat"
-
     data = {}
 
+    # --- 3. EXECUTION ---
     try:
         with httpx.Client(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
             r = client.post(url, json=ollama_payload)
-            if r.status_code != 200:
-                logger.error(f"[{trace_id}] Ollama backend error {r.status_code} from {url}. Response: {r.text}")
-                return # Give up
+            r.raise_for_status() 
             data = r.json()
     except Exception as e:
         logger.error(f"[{trace_id}] Failed to contact backend {url}: {e}")
-        return # Give up
+        return
 
-    # --- Parse response (Chat format is different) ---
+    # --- 4. RESPONSE PARSING ---
     text = ""
     if "message" in data and "content" in data["message"]:
         text = data["message"]["content"].strip()
+    else:
+        logger.warning(f"[{trace_id}] No 'message.content' in response: {data}")
 
+    # --- 5. RESPONSE ROUTING ---
+    if is_dream_task:
+        logger.info(f"[{trace_id}] Dream synthesis complete. Publishing to SQL writer channel...")
+
+        try:
+            # 1. Parse the LLM's JSON response
+            dream_obj = json.loads(text) if text.startswith('{') else {"narrative": text, "tldr": "Partial dream"}
+
+            # 2. Define 'final_payload'
+            final_payload = {
+                **dream_obj,
+                "trace_id": trace_id,
+                "source": "dream_synthesis",
+                "fragments": fragments_data,
+                "metrics": metrics_data
+            }
+
+            # 3. Publish 'final_payload'
+            bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
+            bus.publish(CHANNEL_DREAM_TRIGGER, final_payload) 
+            logger.info(f"[{trace_id}] 🚀 Published dream to {CHANNEL_DREAM_TRIGGER} for SQL writer.")
+
+        except Exception as e:
+            # 4. Correct error log
+            logger.error(f"[{trace_id}] 🔴 FAILED to parse or publish dream JSON: {e}", exc_info=True)
+
+    else:
+        # This is a chat. Publish to history and send the reply.
         emit_chat_history_log({
             "trace_id": trace_id,
-            "source": "bus",
+            "source": source or "bus",
             "prompt": payload.get("prompt"),
             "response": text
         })
 
-    else:
-        logger.warning(f"[{trace_id}] No 'message.content' in response: {data}")
-
-    emit_brain_output({
-        "trace_id": trace_id,
-        "text": text or "(empty response)",
-        "service": "orion-brain",
-        "model": data.get("model"),
-    })
-
-    # --- Send the final reply back to the RAG service ---
-    try:
-        reply_bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
-        reply_payload = {
+        emit_brain_output({
             "trace_id": trace_id,
-            "text": text,
-            "meta": data
-        }
-        reply_bus.publish(response_channel, reply_payload)
-        logger.info(f"[{trace_id}] Sent final reply to {response_channel}")
-    except Exception as e:
-        logger.error(f"[{trace_id}] Failed to publish reply to {response_channel}: {e}")
+            "text": text or "(empty response)",
+            "service": "orion-brain",
+            "model": data.get("model"),
+        })
+
+        # --- Send the final reply back ---
+        try:
+            reply_bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
+            reply_payload = {
+                "trace_id": trace_id,
+                "text": text,
+                "meta": data
+            }
+            reply_bus.publish(response_channel, reply_payload)
+            logger.info(f"[{trace_id}] Sent final reply to {response_channel}")
+        except Exception as e:
+            logger.error(f"[{trace_id}] Failed to publish reply to {response_channel}: {e}")

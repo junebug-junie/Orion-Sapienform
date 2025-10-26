@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     CHANNEL_COLLAPSE_PUBLISH: str = "orion:collapse:sql-write"
 
     CHANNEL_CHAT_LOG: str = "orion:chat:history:log"
+    CHANNEL_DREAM_TRIGGER: str = "orion:dream:trigger"
 
     # --- DB ---
     POSTGRES_URI: str = "postgresql://postgres:postgres@orion-janus-sql-db:5432/conjourney"
@@ -24,11 +25,11 @@ class Settings(BaseSettings):
 
     # --- Channel → Table map ---
     BUS_TABLE_MAP: str = (
-       "orion:collapse:triage:collapse_mirror",
-       "orion:tags:raw:collapse_enrichment",
-       "orion:chat:history:log:chat_history",
-       "orion:rag:document:add:rag_documents",
-       "orion:chat:history:log:chat_history_log"
+       "orion:collapse:triage:collapse_mirror,"
+       "orion:tags:raw:collapse_enrichment,"
+       "orion:chat:history:log:chat_history_log,"
+       "orion:rag:document:add:rag_documents,"
+       "orion:dream:trigger:dreams"
     )
 
     POLL_TIMEOUT: float = 1.0
@@ -58,7 +59,8 @@ class Settings(BaseSettings):
             self.CHANNEL_TAGS_ENRICHED,
             self.CHANNEL_COLLAPSE_TRIAGE,
             self.CHANNEL_COLLAPSE_PUBLISH,
-            self.CHANNEL_CHAT_LOG
+            self.CHANNEL_CHAT_LOG,
+            self.CHANNEL_DREAM_TRIGGER
         ]
 
 

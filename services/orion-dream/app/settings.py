@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     CHANNEL_DREAM_COMPLETE: str = Field(default="orion:dream:complete")
     CHANNEL_DREAM_STATUS: str = Field(default="orion:dream:status")
 
+    CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake")
+
     # --- Memory streams ---
     CHANNEL_COLLAPSE_SQL_PUBLISH: str = Field(default="orion:collapse:sql-write")
     CHANNEL_COLLAPSE_TAGS_PUBLISH: str = Field(default="orion:tags:enriched")

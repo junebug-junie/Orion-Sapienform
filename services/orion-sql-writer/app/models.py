@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Dict, Any, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, String, Text, Float, DateTime
+from sqlalchemy import Column, String, Text, Float, DateTime, Date, Integer
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import JSONB
 from app.db import Base
@@ -76,6 +76,43 @@ class ChatHistoryInput(BaseModel):
         self.created_at = datetime.utcnow()
         return self
 
+class DreamFragmentMeta(BaseModel):
+    """Represents the metadata for a fragment used in a dream."""
+    id: str
+    kind: str
+    salience: float
+    tags: List[str] = []
+
+class DreamMetrics(BaseModel):
+    """Represents the metrics associated with a dream."""
+    gpu_w: Optional[float] = None
+    util: Optional[float] = None
+    mem_mb: Optional[float] = None
+    cpu_c: Optional[float] = None
+
+class DreamInput(BaseModel):
+    """Pydantic model for validating the dream output JSON."""
+    # Core dream fields
+    tldr: Optional[str] = None
+    themes: Optional[List[str]] = []
+    symbols: Optional[Dict[str, str]] = {}
+    narrative: Optional[str] = None
+
+    # Provenance and debugging fields
+    fragments: Optional[List[DreamFragmentMeta]] = []
+    metrics: Optional[DreamMetrics] = Field(default=None)
+    dream_date: Optional[date] = None
+    created_at: Optional[datetime] = None
+
+    def normalize(self) -> "DreamInput":
+        """Sets timestamps and default date if missing."""
+        if not self.dream_date:
+            self.dream_date = date.today()
+        if not self.created_at:
+            self.created_at = datetime.utcnow()
+        return self
+
+
 # ---------- SQLAlchemy persistence models ----------
 
 class CollapseEnrichment(Base):
@@ -127,5 +164,25 @@ def generate_chat_log_model():
         },
     )
 
+class Dream(Base):
+    """SQLAlchemy model for storing dream results."""
+    __tablename__ = "dreams"
+
+    # Use an auto-incrementing integer as the primary key for simplicity
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dream_date = Column(Date, nullable=False, index=True, unique=True) # Ensure only one dream per date
+
+    # Core dream fields
+    tldr = Column(Text, nullable=True)
+    themes = Column(JSONB, nullable=True) # Stores List[str]
+    symbols = Column(JSONB, nullable=True) # Stores Dict[str, str]
+    narrative = Column(Text, nullable=True)
+
+    # Provenance and debugging fields stored as JSON blobs
+    fragments = Column(JSONB, nullable=True) # Stores List[DreamFragmentMeta]
+    metrics = Column(JSONB, nullable=True) # Stores DreamMetrics
+
+    # Standard timestamp
+    created_at = Column(DateTime, server_default=func.now())
 
 ChatHistoryLogSQL = generate_chat_log_model()

@@ -31,7 +31,7 @@ class Fragment:
 
 
 # ---------------------------
-# Text utils (Unchanged)
+# Text utils
 # ---------------------------
 def clean_text(val: str | list | dict | None) -> str:
     if val is None: return ""
@@ -75,7 +75,7 @@ def rewrite_chat_roles(text: str, style: str = "arrow") -> str:
 
 
 # ---------------------------
-# JSON repair / parsing (FIXED)
+# JSON repair / parsing
 # ---------------------------
 _COMMENT_RE = re.compile(r'\s*//.*')
 
@@ -91,7 +91,7 @@ def coerce_json(s: str) -> dict:
 
     t = s.strip()
 
-    # 1. Strip code fences (Still good practice)
+    # 1. Strip code fences
     if t.startswith("```json"): t = t[7:].strip()
     elif t.startswith("```"): t = t[3:].strip()
     if t.endswith("```"): t = t[:-3].strip()
@@ -100,11 +100,9 @@ def coerce_json(s: str) -> dict:
     t = _COMMENT_RE.sub('', t)
 
     try:
-        # --- Debug Print (See what repair_json gets) ---
         print("\n" + "="*30 + " TEXT BEFORE json_repair " + "="*30)
         print(repr(t))
         print("="*80 + "\n")
-        # ---
 
         # 3. Use repair_json to fix the string
         # It handles missing commas, quotes, brackets, control chars, etc.
@@ -114,7 +112,6 @@ def coerce_json(s: str) -> dict:
         print("\n" + "="*30 + " TEXT AFTER json_repair " + "="*30)
         print(repr(repaired_t))
         print("="*80 + "\n")
-        # ---
 
         # 4. Parse the repaired string using standard json.loads
         obj = json.loads(repaired_t)
@@ -124,17 +121,17 @@ def coerce_json(s: str) -> dict:
             obj = {"parsed_result": obj}
         return obj
 
-    except Exception as e: # Catch potential errors from repair_json or json.loads
+    except Exception as e:
         print("\n" + "="*30 + " FAILING TEXT (json_repair) " + "="*30)
-        print(repr(t)) # Print original text given to repair_json
+        print(repr(t))
         print("="*80 + "\n")
-        # Re-raise with a clear message
+
         raise ValueError(
             f"Failed to repair and parse JSON string. Original error: {e}. Text was: {t}"
         )
 
 # ---------------------------
-# Biometrics parsing (Unchanged)
+# Biometrics parsing
 # ---------------------------
 _METRIC_RE = re.compile(
     r"GPU\s*power\s*=\s*(?P<gpu_w>[0-9]+(?:\.[0-9]+)?)W.*?"
@@ -145,18 +142,16 @@ _METRIC_RE = re.compile(
     re.I | re.S,
 )
 
-# --- CORRECTED VERSION ---
 def extract_metrics(text: str) -> Dict[str, float]:
     """Pull GPU power/util/mem and CPU °C from the summary block."""
     m = _METRIC_RE.search(text or "")
     if not m:
         return {}
     try:
-        # Use .group() to access the named capture groups
         return {
             "gpu_w": float(m.group("gpu_w")),
             "util": float(m.group("util")),
-            "mem_mb": float(m.group("mem_mb")), # <-- Fixed this line
+            "mem_mb": float(m.group("mem_mb")),
             "cpu_c": float(m.group("cpu_c")),
         }
     except (ValueError, IndexError):
@@ -165,7 +160,7 @@ def extract_metrics(text: str) -> Dict[str, float]:
         return {}
 
 # ---------------------------
-# Anchor helpers (Unchanged)
+# Anchor helper
 # ---------------------------
 def collect_anchors(frags: List[Fragment], max_tags: int = 6, max_chat: int = 3) -> Tuple[List[str], List[str]]:
     tags: List[str] = []
@@ -193,7 +188,7 @@ def collect_anchors(frags: List[Fragment], max_tags: int = 6, max_chat: int = 3)
 
 
 # ---------------------------
-# Salience & timestamp (Unchanged)
+# Salience & timestamp
 # ---------------------------
 def compute_salience(f: Fragment) -> float:
     v = abs(getattr(f, "valence", 0.0) or 0.0)

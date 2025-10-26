@@ -1,5 +1,5 @@
 # ==================================================
-# app/dream_cycle.py — Orion Dream (aligned with Hub Brain API)
+# app/dream_cycle.py — Orion Dream
 # ==================================================
 
 from __future__ import annotations
@@ -8,17 +8,21 @@ import os
 import json
 import re
 import asyncio
-from asyncio import Semaphore  # <-- Added
+import uuid 
+from asyncio import Semaphore
 from collections import Counter
 from datetime import date
 from types import SimpleNamespace
 
 import httpx
 
+from app import context
+from app.settings import settings
+
 from app.aggregators_sql import fetch_recent_sql_fragments
 from app.aggregators_rdf import enrich_from_graphdb_ids
 from app.aggregators_vector import enrich_from_chroma
-from app.settings import settings
+
 from app.utils import (
     clean_text,
     sanitize_text_for_prompt,
@@ -29,25 +33,17 @@ from app.utils import (
     coerce_json,
 )
 
-# ---------------------------
-# Config
-# ---------------------------
 LOG_DIR = settings.DREAM_LOG_DIR
 
 TOP_K = 25
 CHAT_MAX_RATIO = 0.40
 CHAT_ROLE_STYLE = "arrow"
 
-# --- New settings for robust preprocessing ---
-PREPROCESSOR_CONCURRENCY = 2  # Max 2 requests at a time
-PREPROCESSOR_RETRIES = 4      # Try each fragment 3 times
-PREPROCESSOR_WAIT_SEC = 5   # Wait 2 seconds between retries
-# ---
+PREPROCESSOR_CONCURRENCY = 2
+PREPROCESSOR_RETRIES = 4
+PREPROCESSOR_WAIT_SEC = 5
 
 
-# ---------------------------
-# Helpers
-# ---------------------------
 def _clip(s: str, n: int = 600) -> str:
     s = (s or "").strip()
     return s if len(s) <= n else s[:n] + "…"
@@ -56,10 +52,6 @@ def _clip(s: str, n: int = 600) -> str:
 def _counts_by_kind(frags):
     return dict(Counter(getattr(f, "kind", "unknown") for f in frags))
 
-
-# ---
-# NEW: Function to clean a SINGLE fragment, now with retries
-# ---
 async def _clean_one_chat_fragment(
     semaphore: Semaphore,
     client: httpx.AsyncClient,
@@ -97,18 +89,17 @@ async def _clean_one_chat_fragment(
             "stop": ["User:", "Assistant:", "Orion:"],
         },
         "stream": False,
+        "source": "dream_preprocessor"
     }
 
-    # ---
-    # NEW: This block now controls concurrency, retries, and waits
-    # ---
-    async with semaphore:  # 1. Wait for our turn (limits concurrency)
+
+    async with semaphore:
         for attempt in range(max_retries):
             try:
                 resp = await client.post(
                     f"{settings.BRAIN_URL.rstrip('/')}/chat", json=payload, timeout=240
                 )
-                
+
                 if resp.status_code == 200:
                     data = resp.json()
                     cleaned_text = (
@@ -117,23 +108,20 @@ async def _clean_one_chat_fragment(
                         or data.get("message", {}).get("content")
                         or ""
                     ).strip()
-                    
+
                     if cleaned_text.startswith('"') and cleaned_text.endswith('"'):
                         cleaned_text = cleaned_text[1:-1].strip()
-                        
-                    return cleaned_text  # Success! Exit the function.
+
+                    return cleaned_text
                 else:
                     print(f"⚠️ Preprocessor sub-call failed (status {resp.status_code}). Retrying...")
 
             except Exception as e:
-                # This catches httpx.ReadTimeout, httpx.ConnectError, etc.
                 print(f"⚠️ Preprocessor sub-call transport failed: {e}. Retrying...")
-            
-            # 3. Wait before retrying (if this wasn't the last attempt)
+
             if attempt < max_retries - 1:
                 await asyncio.sleep(PREPROCESSOR_WAIT_SEC)
-    
-    # If all retries fail, return the original text
+
     print(f"🔴 Preprocessor failed after {max_retries} attempts. Returning original text.")
     return fragment_text
 
@@ -142,57 +130,49 @@ async def _clean_one_chat_fragment(
 # Dream
 # ---------------------------
 async def run_dream():
-    print("🌙 Starting dream cycle (direct memory mode)…")
+    print("🌙 Starting dream cycle (bus-publishing mode)…")
 
     # 1) Base memories
     sql_frags = fetch_recent_sql_fragments(hours=24, chat_sample_n=25)
     print(f"🧩 SQL fragments ({len(sql_frags)}): {[f.kind for f in sql_frags[:10]]}")
     print(f"🧩 SQL kinds: {_counts_by_kind(sql_frags)}")
 
-    # 1b) Parallel LLM Preprocessing
+    # 1b) Parallel LLM Preprocessing (Uses direct HTTPX)
     print("🧼 Starting robust LLM preprocessing for chat fragments...")
-    
+
     chat_frags = [f for f in sql_frags if f.kind == "chat"]
     non_chat_frags = [f for f in sql_frags if f.kind != "chat"]
-    
+
     cleaned_chat_frags = []
-    
-    # ---
-    # NEW: Create the semaphore here
-    # ---
+
     semaphore = Semaphore(PREPROCESSOR_CONCURRENCY)
     print(f"🧼 Concurrency limited to {PREPROCESSOR_CONCURRENCY}, retries={PREPROCESSOR_RETRIES}.")
-    
+
     async with httpx.AsyncClient() as client:
         tasks = []
         for f in chat_frags:
             original_text = getattr(f, "text", "")
             if original_text:
-                # ---
-                # NEW: Pass semaphore and retry count
-                # ---
                 tasks.append(
                     _clean_one_chat_fragment(
                         semaphore, client, original_text, PREPROCESSOR_RETRIES
                     )
                 )
-            
+
         print(f"💬 Sending {len(tasks)} chat fragments to the preprocessor...")
         cleaned_texts = await asyncio.gather(*tasks)
-        
-        # Re-associate cleaned texts with their original fragments
+
         for i, f in enumerate(chat_frags):
             if i < len(cleaned_texts):
                 cleaned_text = cleaned_texts[i]
                 if cleaned_text:
                     f.text = cleaned_text
                     cleaned_chat_frags.append(f)
-                    
+
     print(f"🧼 Preprocessing complete. Kept {len(cleaned_chat_frags)} cleaned chat fragments.")
-    
-    # Combine the cleaned chats with the non-chat fragments
+
     all_cleaned_frags = non_chat_frags + cleaned_chat_frags
-    
+
     # 2) RDF
     rdf_input = [f for f in all_cleaned_frags if f.kind in ("collapse", "enrichment")]
     rdf_frags = enrich_from_graphdb_ids(rdf_input)
@@ -236,19 +216,33 @@ async def run_dream():
         if f.kind == "chat":
             txt = rewrite_chat_roles(txt, style=CHAT_ROLE_STYLE)
         return txt
+
     memory_summary = "\n\n".join(
         f"{f.kind.upper()} — {', '.join(getattr(f, 'tags', []) or [])}:\n{_prep_text(f)[:600]}"
         for f in frags
         if getattr(f, "text", None)
     ) or "No memories captured in the last 24h."
+
+    metrics = extract_metrics(memory_summary)
+    fragments_meta = [
+        {
+            "id": f.id,
+            "kind": f.kind,
+            "salience": round(getattr(f, "salience", 0.0), 3),
+            "tags": list(getattr(f, "tags", []) or [])[:8],
+        }
+        for f in frags
+    ]
+
     anchors_block = ""
+
     if tag_anchors or chat_anchors:
         anchors_lines = []
         if tag_anchors: anchors_lines.append("tags: " + ", ".join(tag_anchors))
         if chat_anchors: anchors_lines.append("chat: " + " | ".join(f"“{c}”" for c in chat_anchors))
         anchors_block = "\n\nANCHORS:\n" + "\n".join(anchors_lines)
 
-    # 7) Call Brain (/chat on Hub Brain)
+    # 7) Build Brain Payload
     system_prompt = (
         "Your task is to take the input memories and synthesize them into a dream narrative."
         "Output the response ONLY in the JSON format, which is as follows:"
@@ -261,7 +255,7 @@ async def run_dream():
     user_prompt = "Memories:\n" + memory_summary + anchors_block
 
     system_prompt = str(system_prompt or "")
-    user_prompt = str(user_prompt or "") 
+    user_prompt = str(user_prompt or "")
 
     payload = {
         "model": settings.LLM_MODEL,
@@ -282,97 +276,43 @@ async def run_dream():
         },
         "format": "json",
         "stream": False,
+        "source": "dream_synthesis"
     }
 
-    # --- Full Tracing ---
+    # --- Full Tracing (for logging before publish) ---
     print("\n" + "="*70)
     print(">> TRACE: FINAL DREAM LLM INPUT (User Prompt)")
     print(user_prompt)
     print("="*70 + "\n")
     print("🛰️  LLM payload (system prompt + options):")
 
-    # --- Ensure this block matches exactly ---
-    preview_msgs = []
+    # =================================================================
+    # --- 8) Publish to Bus
+    # =================================================================
+
+    if not (context.bus and context.bus.enabled):
+        print("🔴 Bus is disabled or not initialized. Dream synthesis will not be published.")
+        return "Error: Bus is disabled. Task not published."
+
     try:
-        preview_msgs = [
-            {
-                "role": m.get("role", "unknown"), # Use .get
-                # Use .get and str() to ensure content is a string
-                "content": (str(m.get("content", ""))[:200] + "...") if len(str(m.get("content", ""))) > 200 else str(m.get("content", ""))
-            }
-            # Iterate safely over payload['messages']
-            for m in payload.get("messages", [])
-        ]
-    except Exception as e:
-        print(f"🔴 ERROR creating preview_msgs: {e}")
-        # Provide a safe fallback if list comprehension fails
-        preview_msgs = [{"role": "error", "content": "Failed to generate preview"}]
-
-    # --- End Check ---
-
-    print(json.dumps({
-        "model": payload.get("model"),
-        "messages": preview_msgs,
-        "options": payload.get("options", {})
-    }, indent=2))
-    # ---
-
-    dream_obj = {}
-    metrics = extract_metrics(memory_summary)
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(f"{settings.BRAIN_URL.rstrip('/')}/chat", json=payload, timeout=180)
-            print(f"🧩 Brain status: {resp.status_code}")
-            resp.raise_for_status() 
-            data = resp.json()
-            raw_text = (
-                data.get("response")
-                or data.get("text")
-                or data.get("message", {}).get("content")
-                or ""
-            )
-            print("🧩 Brain raw preview:", (raw_text[:300] + "…") if len(raw_text) > 300 else raw_text)
-
-            if raw_text.startswith('{tldr'):
-                print("🔧 Applying pre-fix for unquoted 'tldr' key...")
-                raw_text = raw_text.replace('{tldr', '{"tldr"', 1)
-
-            dream_obj = coerce_json(raw_text) # This will call the fixed utils.py
-            print("✅ JSON parsed successfully.")
-
-        except Exception as e:
-            print(f"🔴 DREAM FAILED: {type(e).__name__}: {e}")
-            dream_obj = {
-                "tldr": "Dream generation failed.",
-                "themes": ["error", "failure"],
-                "symbols": {"error": str(e)},
-                "narrative": f"Dream cycle failed to produce a valid JSON object. Error: {e}",
-            }
-
-    # 9) Persist JSON
-    try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        out_path = os.path.join(LOG_DIR, f"{date.today().isoformat()}.json")
-        fragments_meta = [
-            {
-                "id": f.id,
-                "kind": f.kind,
-                "salience": round(getattr(f, "salience", 0.0), 3),
-                "tags": list(getattr(f, "tags", []) or [])[:8],
-            }
-            for f in frags
-        ]
-        final_output = {
-            **dream_obj, 
+        # Create the bus-formatted payload
+        bus_payload = {
+            "source": "dream_synthesis",
+            "type": "intake",
+            "content": payload,
+            "trace_id": str(uuid.uuid4()),
             "fragments": fragments_meta,
-            "_metrics": metrics
+            "metrics": metrics
         }
-        with open(out_path, "w", encoding="utf-8") as fp:
-            json.dump(final_output, fp, ensure_ascii=False)
-        print(f"📝 Wrote dream JSON → {out_path}")
-    except Exception as e:
-        print(f"⚠️ Failed to write dream JSON: {e}")
 
-    narrative = (dream_obj.get("narrative") or "").strip()
-    print(f"✨ Dream complete — {len(narrative)} chars")
-    return narrative or "(empty dream narrative)"
+        # Publish to the brain's intake channel
+        context.bus.publish(settings.CHANNEL_BRAIN_INTAKE, bus_payload)
+        print(f"✅ Dream synthesis task published to bus: {settings.CHANNEL_BRAIN_INTAKE}")
+
+        narrative = f"Dream task published to {settings.CHANNEL_BRAIN_INTAKE}."
+        print(f"✨ Dream cycle triggered — {narrative}")
+        return narrative
+
+    except Exception as e:
+        print(f"🔴 FAILED TO PUBLISH DREAM TASK: {e}")
+        return f"Error: Failed to publish task to bus: {e}"

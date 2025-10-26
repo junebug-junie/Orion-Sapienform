@@ -1,3 +1,4 @@
+# In services/orion-brain/app/models.py
 from typing import List, Dict, Optional
 from pydantic import BaseModel
 
@@ -10,6 +11,8 @@ class GenerateBody(BaseModel):
     trace_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
+    # --- ADD THIS LINE ---
+    source: Optional[str] = None
 
 class ChatBody(BaseModel):
     model: str
@@ -20,3 +23,5 @@ class ChatBody(BaseModel):
     trace_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
+    # --- ADD THIS LINE ---
+    source: Optional[str] = None

@@ -3,43 +3,45 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 
 class EventIn(BaseModel):
-    """
-    Incoming event structure. This model now intelligently adapts to different
-    possible text fields from upstream publishers.
-    """
+    # ... (Model fields are unchanged) ...
     id: str
-    text: str  # This will be populated by the validator below.
+    text: str 
     collapse_id: Optional[str] = None
     ts: Optional[datetime] = None
-    # Keep the rest of the payload for potential future use
     extra_data: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode='before')
     @classmethod
     def prepare_and_hydrate_text(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """
-        This is the core of the adapter. It finds a suitable text field from
-        the incoming message and assigns it to the `text` field.
+        Core adapter: Finds a suitable text field, prioritizing chat dialogues.
         """
-        # Prioritized list of fields to use for the main text content.
+        # Note: 'messages' often requires processing, so we check explicit text fields first.
         text_source_fields = ["summary", "trigger", "text", "text_content"]
 
         found_text = ""
-        for field in text_source_fields:
-            if values.get(field):
-                found_text = values[field]
-                break # Stop at the first field we find
 
+        # --- 1. Check Chat Dialogue Structure ---
+        if 'prompt' in values and 'response' in values:
+            # Combine user prompt and assistant response into a single context block
+            prompt = str(values.get('prompt', '')).strip()
+            response = str(values.get('response', '')).strip()
+            if prompt or response:
+                # Use a clear dialogue separator for later processing/tagging
+                found_text = f"User: {prompt}\nOrion: {response}"
+
+        # --- 2. Fallback to Simple Text Fields (Only runs if no chat dialogue was found) ---
         if not found_text:
-            # If no suitable field is found, the original validation error will occur
-            # because 'text' is a required field in the model itself.
-            pass
+            for field in text_source_fields:
+                if values.get(field):
+                    found_text = values[field]
+                    break
 
+        # --- 3. Final Assignments and Normalization ---
         values['text'] = found_text
 
         # Move all other fields into 'extra_data' for preservation.
-        cls.model_fields.keys()
-        known_fields = {'id', 'text', 'collapse_id', 'ts'}
+        known_fields = {'id', 'text', 'collapse_id', 'ts', 'prompt', 'response'}
         values['extra_data'] = {k: v for k, v in values.items() if k not in known_fields}
 
         # Normalize collapse_id

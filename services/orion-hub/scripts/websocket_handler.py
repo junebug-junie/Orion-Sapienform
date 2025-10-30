@@ -2,6 +2,9 @@ import logging
 import asyncio
 import base64
 import json
+import uuid
+from datetime import datetime
+
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
@@ -73,6 +76,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 bus.publish(settings.CHANNEL_VOICE_TRANSCRIPT, {"type": "transcript", "content": transcript})
                 bus.publish(settings.CHANNEL_BRAIN_INTAKE, {
                     "source": settings.PROJECT, "type": "intake", "content": transcript
+                })
+
+                bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, {
+                    "id": str(uuid.uuid4()),
+                    "text": transcript,
+                    "source": settings.SERVICE_NAME,
+                    "ts": datetime.utcnow().isoformat()
                 })
 
             instructions = data.get("instructions", "")

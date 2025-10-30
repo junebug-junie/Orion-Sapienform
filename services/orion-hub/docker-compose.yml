@@ -36,7 +36,8 @@ services:
       - CHANNEL_VOICE_LLM=${CHANNEL_VOICE_LLM}
       - CHANNEL_VOICE_TTS=${CHANNEL_VOICE_TTS}
       - CHANNEL_COLLAPSE_INTAKE=${CHANNEL_COLLAPSE_INTAKE}
-      # Correctly pass all brain channels now
+      - CHANNEL_COLLAPSE_TRIAGE=${CHANNEL_COLLAPSE_TRIAGE}
+      # Brain channels
       - CHANNEL_BRAIN_INTAKE=${CHANNEL_BRAIN_INTAKE}
       - CHANNEL_BRAIN_OUT=${CHANNEL_BRAIN_OUT}
 
@@ -47,7 +48,6 @@ services:
     runtime: nvidia
     networks:
       - ${NET}
-    # The 'command' is removed to allow the Dockerfile's ENTRYPOINT to take precedence.
 
   coqui-tts:
     image: ghcr.io/coqui-ai/tts-cpu

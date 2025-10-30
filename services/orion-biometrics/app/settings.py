@@ -8,8 +8,10 @@ class Settings(BaseSettings):
     Loads and validates configuration from environment variables.
     """
     # --- Service Identity ---
+    PROJECT: str = Field(..., env="PROJECT")
     SERVICE_NAME: str = Field(..., env="SERVICE_NAME")
     SERVICE_VERSION: str = Field(..., env="SERVICE_VERSION")
+    NET: str = Field(..., env="NET")
 
     # --- Database & Bus ---
     POSTGRES_URI: str = Field(..., env="POSTGRES_URI")

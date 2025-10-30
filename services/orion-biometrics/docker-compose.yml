@@ -15,6 +15,8 @@ services:
       - "${PORT}:8100"
     environment:
       # --- Service Identity & Runtime ---
+      - PROJECT=${PROJECT}
+      - NET=${NET}
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
       - TELEMETRY_INTERVAL=${TELEMETRY_INTERVAL}
@@ -26,11 +28,14 @@ services:
       - TELEMETRY_PUBLISH_CHANNEL=${TELEMETRY_PUBLISH_CHANNEL}
       - EXTERNAL_SUBSCRIBE_CHANNEL=${EXTERNAL_SUBSCRIBE_CHANNEL}
       - POSTGRES_URI=${POSTGRES_URI}
+    cap_add:
+      - ALL # Grant all capabilities to stabilize driver access
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
+              count: all
               capabilities: [gpu]
 
     volumes:

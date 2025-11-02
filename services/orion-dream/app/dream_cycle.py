@@ -8,7 +8,7 @@ import os
 import json
 import re
 import asyncio
-import uuid 
+import uuid
 from asyncio import Semaphore
 from collections import Counter
 from datetime import date
@@ -43,6 +43,52 @@ PREPROCESSOR_CONCURRENCY = 2
 PREPROCESSOR_RETRIES = 4
 PREPROCESSOR_WAIT_SEC = 5
 
+def _safe_parse_tags(tags_data) -> list:
+    """
+    Safely parses tags, whether they are a list
+    or a JSON-encoded string of a list.
+    """
+    if isinstance(tags_data, list):
+        return tags_data  # Already a clean list
+
+    if isinstance(tags_data, str):
+        try:
+            # Data is a string, try to parse it as JSON
+            parsed_list = json.loads(tags_data)
+            if isinstance(parsed_list, list):
+                return parsed_list  # Parsed list
+        except json.JSONDecodeError:
+            # It's not JSON, just a plain string.
+            # Return it as a single-item list.
+            if tags_data:
+                return [tags_data]
+
+    return []  # Default for None or other types
+
+def _safe_join_tags(tags_data) -> str:
+    """
+    Safely joins tags, whether they are a list
+    or a JSON-encoded string of a list.
+    """
+    if isinstance(tags_data, list):
+        # Data is already a clean list
+        return ", ".join(tags_data)
+
+    if isinstance(tags_data, str):
+        try:
+            # Data is a string, try to parse it as JSON
+            parsed_list = json.loads(tags_data)
+            if isinstance(parsed_list, list):
+                # Success! Join the parsed list.
+                return ", ".join(parsed_list)
+        except json.JSONDecodeError:
+            # It's not JSON, just a plain string.
+            # This is a fallback, but it's not what's
+            # causing your current "character salad" bug.
+            return tags_data
+
+    # Default for other types (like None)
+    return ""
 
 def _clip(s: str, n: int = 600) -> str:
     s = (s or "").strip()
@@ -190,6 +236,9 @@ async def run_dream():
     for f in all_cleaned_frags + rdf_frags + vector_frags:
         if f.id in seen: continue
         seen.add(f.id)
+
+        f.tags = _safe_parse_tags(getattr(f, "tags", None))
+
         if not getattr(f, "salience", None) or f.salience == 0.0:
             try: f.salience = compute_salience(f)
             except Exception: f.salience = 0.1
@@ -212,13 +261,16 @@ async def run_dream():
 
     # 6) Build memory pack
     def _prep_text(f):
+        if f.kind == "enrichment":
+            return ""
+
         txt = sanitize_text_for_prompt(getattr(f, "text", "") or "")
         if f.kind == "chat":
             txt = rewrite_chat_roles(txt, style=CHAT_ROLE_STYLE)
         return txt
 
     memory_summary = "\n\n".join(
-        f"{f.kind.upper()} — {', '.join(getattr(f, 'tags', []) or [])}:\n{_prep_text(f)[:600]}"
+        f"{f.kind.upper()} — {_safe_join_tags(getattr(f, 'tags', []))}:\n{_prep_text(f)[:600]}"
         for f in frags
         if getattr(f, "text", None)
     ) or "No memories captured in the last 24h."

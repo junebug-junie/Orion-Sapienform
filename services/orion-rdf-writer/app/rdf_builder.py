@@ -7,7 +7,7 @@ from app.provenance import attach_provenance
 from app.settings import settings
 
 ORION = Namespace("http://conjourney.net/orion#")
-CM = Namespace("http://orion.ai/collapse#") # For collapse-specific terms
+CM = Namespace("http://orion.ai/collapse#")
 
 def build_triples(event: dict) -> tuple[str | None, str | None]:
     """
@@ -17,7 +17,7 @@ def build_triples(event: dict) -> tuple[str | None, str | None]:
     g = Graph()
     g.bind("cm", CM)
     g.bind("orion", ORION)
-    
+
     event_id = event.get("id")
     if not event_id:
         logging.warning("Event is missing an 'id', cannot generate triples.")
@@ -25,7 +25,6 @@ def build_triples(event: dict) -> tuple[str | None, str | None]:
 
     # ================================================================
     # --- 1. DEFINE THE ONE, TRUE SUBJECT URI ---
-    # This URI matches the "event" subject in your screenshot (rows 4-14)
     # ================================================================
     subject_uri = URIRef(f"http://conjourney.net/event/{event_id}")
 
@@ -47,7 +46,7 @@ def build_triples(event: dict) -> tuple[str | None, str | None]:
         logging.warning(f"No triples were generated for event {event_id}. Check event structure and builder logic.")
         return None, None
 
-    # Attach provenance to the final graph (this was already using the correct URI)
+    # Attach provenance to the final graph
     observer = event.get("observer", "system")
     graph_name = attach_provenance(g, subject_uri, observer)
 
@@ -55,14 +54,14 @@ def build_triples(event: dict) -> tuple[str | None, str | None]:
 
 
 # ================================================================
-# --- 4. UPDATE FUNCTION TO ACCEPT THE SUBJECT_URI ---
+# --- 4. FUNCTION TO ACCEPT THE SUBJECT_URI ---
 # ================================================================
 def _build_raw_collapse_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
     """Builds triples for a base collapse event."""
-    
+
     # --- 5. REMOVED OLD, INCORRECT SUBJECT DEFINITION ---
-    # subject = URIRef(f"{CM}{event.get('id')}") 
-    
+    # subject = URIRef(f"{CM}{event.get('id')}")
+
     g.add((subject, RDF.type, CM.Collapse))
     g.add((subject, CM.id, Literal(event.get('id'), datatype=XSD.string)))
 
@@ -73,19 +72,15 @@ def _build_raw_collapse_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
         if isinstance(val, list):
             val = ", ".join(map(str, val))
         g.add((subject, URIRef(str(CM) + key), Literal(str(val), datatype=XSD.string)))
-    
+
     return g
 
 
 # ================================================================
-# --- 6. UPDATE FUNCTION TO ACCEPT THE SUBJECT_URI ---
+# --- 6. FUNCTION TO ACCEPT THE SUBJECT_URI ---
 # ================================================================
 def _build_enrichment_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
     """Builds triples for an enrichment event, linking them to the original collapse."""
-    
-    # --- 7. REMOVED OLD, INCORRECT SUBJECT DEFINITION ---
-    # collapse_id = event.get("collapse_id") or event.get("id")
-    # subject = URIRef(f"{CM}{collapse_id}")
 
     # Add tags
     for tag in event.get("tags", []):
@@ -95,16 +90,15 @@ def _build_enrichment_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
     for entity in event.get("entities", []):
         if entity.get("value") and entity.get("type"):
             g.add((subject, CM.hasEntity, Literal(f"{entity['value']} ({entity['type']})", datatype=XSD.string)))
-            
+
     # This part was correct, it creates the separate Enrichment node
     enrichment_id = URIRef(f"http://conjourney.net/enrichment/{uuid.uuid4().hex}")
     g.add((enrichment_id, RDF.type, ORION.Enrichment))
-    
-    # --- 8. THIS LINK IS NOW CORRECT ---
-    # It links the new enrichment node (enrichment_id) to the
+
+    # --- 8. links the new enrichment node (enrichment_id) to the
     # one, true event node (subject)
-    g.add((enrichment_id, ORION.enriches, subject)) 
-    
+    g.add((enrichment_id, ORION.enriches, subject))
+
     g.add((enrichment_id, ORION.processedBy, Literal(event.get("processed_by"))))
-            
+
     return g

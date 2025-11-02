@@ -23,29 +23,46 @@ def build_triples(event: dict) -> tuple[str | None, str | None]:
         logging.warning("Event is missing an 'id', cannot generate triples.")
         return None, None
 
+    # ================================================================
+    # --- 1. DEFINE THE ONE, TRUE SUBJECT URI ---
+    # This URI matches the "event" subject in your screenshot (rows 4-14)
+    # ================================================================
+    subject_uri = URIRef(f"http://conjourney.net/event/{event_id}")
+
+
     # --- Routing Logic ---
     # Check if this is an enrichment event from the meta-writer/meta-tags
     if "enrichment_type" in event or "processed_by" in event:
-        g = _build_enrichment_graph(g, event)
-    # Otherwise, assume it's a raw collapse event
+        # ================================================================
+        # --- 2. PASS THE SUBJECT_URI TO THE HELPER ---
+        # ================================================================
+        g = _build_enrichment_graph(g, event, subject_uri)
     else:
-        g = _build_raw_collapse_graph(g, event)
+        # ================================================================
+        # --- 3. PASS THE SUBJECT_URI TO THE HELPER ---
+        # ================================================================
+        g = _build_raw_collapse_graph(g, event, subject_uri)
 
     if not len(g):
         logging.warning(f"No triples were generated for event {event_id}. Check event structure and builder logic.")
         return None, None
 
-    # Attach provenance to the final graph
-    subject_uri = URIRef(f"http://conjourney.net/event/{event_id}")
+    # Attach provenance to the final graph (this was already using the correct URI)
     observer = event.get("observer", "system")
     graph_name = attach_provenance(g, subject_uri, observer)
 
     return g.serialize(format="nt"), graph_name
 
 
-def _build_raw_collapse_graph(g: Graph, event: dict) -> Graph:
+# ================================================================
+# --- 4. UPDATE FUNCTION TO ACCEPT THE SUBJECT_URI ---
+# ================================================================
+def _build_raw_collapse_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
     """Builds triples for a base collapse event."""
-    subject = URIRef(f"{CM}{event.get('id')}")
+    
+    # --- 5. REMOVED OLD, INCORRECT SUBJECT DEFINITION ---
+    # subject = URIRef(f"{CM}{event.get('id')}") 
+    
     g.add((subject, RDF.type, CM.Collapse))
     g.add((subject, CM.id, Literal(event.get('id'), datatype=XSD.string)))
 
@@ -60,10 +77,15 @@ def _build_raw_collapse_graph(g: Graph, event: dict) -> Graph:
     return g
 
 
-def _build_enrichment_graph(g: Graph, event: dict) -> Graph:
+# ================================================================
+# --- 6. UPDATE FUNCTION TO ACCEPT THE SUBJECT_URI ---
+# ================================================================
+def _build_enrichment_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
     """Builds triples for an enrichment event, linking them to the original collapse."""
-    collapse_id = event.get("collapse_id") or event.get("id")
-    subject = URIRef(f"{CM}{collapse_id}")
+    
+    # --- 7. REMOVED OLD, INCORRECT SUBJECT DEFINITION ---
+    # collapse_id = event.get("collapse_id") or event.get("id")
+    # subject = URIRef(f"{CM}{collapse_id}")
 
     # Add tags
     for tag in event.get("tags", []):
@@ -74,10 +96,15 @@ def _build_enrichment_graph(g: Graph, event: dict) -> Graph:
         if entity.get("value") and entity.get("type"):
             g.add((subject, CM.hasEntity, Literal(f"{entity['value']} ({entity['type']})", datatype=XSD.string)))
             
-    # You could also add provenance about the enrichment service itself
+    # This part was correct, it creates the separate Enrichment node
     enrichment_id = URIRef(f"http://conjourney.net/enrichment/{uuid.uuid4().hex}")
     g.add((enrichment_id, RDF.type, ORION.Enrichment))
-    g.add((enrichment_id, ORION.enriches, subject))
+    
+    # --- 8. THIS LINK IS NOW CORRECT ---
+    # It links the new enrichment node (enrichment_id) to the
+    # one, true event node (subject)
+    g.add((enrichment_id, ORION.enriches, subject)) 
+    
     g.add((enrichment_id, ORION.processedBy, Literal(event.get("processed_by"))))
             
     return g

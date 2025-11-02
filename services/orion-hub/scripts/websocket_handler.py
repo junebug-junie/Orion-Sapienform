@@ -78,13 +78,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     "source": settings.PROJECT, "type": "intake", "content": transcript
                 })
 
-                bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, {
-                    "id": str(uuid.uuid4()),
-                    "text": transcript,
-                    "source": settings.SERVICE_NAME,
-                    "ts": datetime.utcnow().isoformat()
-                })
-
             instructions = data.get("instructions", "")
             if not history and instructions:
                 history.append({"role": "system", "content": instructions})
@@ -110,6 +103,31 @@ async def websocket_endpoint(websocket: WebSocket):
             if assistant_response_text:
                 history.append({"role": "assistant", "content": assistant_response_text})
 
+                if bus and bus.enabled:
+                    latest_user_prompt = transcript # The user input from this turn
+
+                    # Grab metadata from the original websocket message
+                    user_id = data.get("user_id")
+                    session_id = data.get("session_id")
+
+                    # Create the full payload for the tagging/triage service
+                    full_dialogue_payload = {
+                        "id": str(uuid.uuid4()),
+                        "text": f"User: {latest_user_prompt}\nOrion: {assistant_response_text}",
+                        "source": settings.SERVICE_NAME,
+                        "ts": datetime.utcnow().isoformat(),
+
+                        # Add prompt/response to help the EventIn validator
+                        "prompt": latest_user_prompt,
+                        "response": assistant_response_text,
+
+                        # Add the metadata
+                        "user_id": user_id,
+                        "session_id": session_id
+                    }
+
+                    bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, full_dialogue_payload)
+                    logger.info(f"Published full dialogue to triage: {full_dialogue_payload['id']}")
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY AFTER LLM CALL: {history}")
 

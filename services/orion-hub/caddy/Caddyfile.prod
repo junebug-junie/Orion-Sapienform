@@ -18,5 +18,6 @@ orion.conjourney.net {
     encode gzip zstd
 
     # Forward all incoming traffic to your hub-app service.
-    reverse_proxy hub-app:8080
+        reverse_proxy 127.0.0.1:8080
+        #reverse_proxy hub-app:8080
 }

@@ -13,5 +13,6 @@
     }
 
     # Reverse proxy ALL requests to the correct hub-app service.
-    reverse_proxy hub-app:8080
+    reverse_proxy 127.0.0.1:8080
+    #reverse_proxy hub-app:8080
 }

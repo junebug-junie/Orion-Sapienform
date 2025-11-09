@@ -1,22 +1,41 @@
 #!/bin/sh
-# This script ensures that internal Docker DNS resolution is working before
-# starting the main application. This prevents crashes when the container
-# starts faster than the network initializes.
-
 set -e
 
-echo "Waiting for internal DNS..."
+if [ -z "$ORION_BUS_URL" ]; then
+  echo "❌ ORION_BUS_URL is not set. Set it to something like: redis://100.92.216.81:6379/0"
+  exit 1
+fi
 
-# Loop until 'getent hosts' can successfully resolve the bus service.
-# This confirms the Docker network is ready for inter-service communication.
-# The ${PROJECT} variable is passed in from the docker-compose.yml environment.
-while ! getent hosts ${PROJECT}-bus-core > /dev/null; do
-  echo "Internal DNS not ready for ${PROJECT}-bus-core, retrying in 2 seconds..."
+BUS_HOST="$(echo "$ORION_BUS_URL" | sed -E 's#redis://([^:/]+).*#\1#')"
+BUS_PORT="$(echo "$ORION_BUS_URL" | sed -E 's#redis://[^:/]+:([0-9]+).*#\1#')"
+[ -z "$BUS_PORT" ] && BUS_PORT=6379
+
+echo "🕓 Waiting for Redis at $BUS_HOST:$BUS_PORT ..."
+
+while :; do
+  if command -v redis-cli >/dev/null 2>&1; then
+    # Fastest + most reliable: actual PING to the URL
+    if redis-cli -u "$ORION_BUS_URL" ping 2>/dev/null | grep -q PONG; then
+      echo "✅ Redis responded to PING at $ORION_BUS_URL"
+      break
+    fi
+  elif command -v nc >/dev/null 2>&1; then
+    # Fallback: TCP port check
+    if nc -z "$BUS_HOST" "$BUS_PORT" >/dev/null 2>&1; then
+      echo "✅ TCP port open at $BUS_HOST:$BUS_PORT"
+      break
+    fi
+  else
+    # Last resort: ping host only
+    if ping -c1 -W1 "$BUS_HOST" >/dev/null 2>&1; then
+      echo "✅ Host reachable at $BUS_HOST (port not verified)"
+      break
+    fi
+  fi
+
+  echo "⏳ Still waiting for $BUS_HOST:$BUS_PORT ... retrying in 2s"
   sleep 2
 done
 
-echo "Internal DNS is ready. Starting application."
-
-# Execute the command passed into this script (the CMD from the Dockerfile).
+echo "🚀 Starting Hub..."
 exec "$@"
-

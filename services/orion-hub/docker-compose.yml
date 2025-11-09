@@ -4,8 +4,9 @@ services:
       context: ../..
       dockerfile: services/orion-hub/Dockerfile
     container_name: ${PROJECT}-hub
-    ports:
-      - "${HUB_PORT}:${HUB_PORT}"
+    network_mode: "host"
+    #ports:
+      #- "${HUB_PORT}:${HUB_PORT}" # if running brain and hub on single node
     restart: unless-stopped
     depends_on:
       coqui-tts:
@@ -28,7 +29,7 @@ services:
       - LLM_MODEL=${LLM_MODEL}
 
       # Orion Bus
-      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_URL=${ORION_BUS_URL:-${REDIS_URL}}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
 
       # Channels
@@ -46,8 +47,8 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
 
     runtime: nvidia
-    networks:
-      - ${NET}
+    #networks:
+    #  - ${NET}
 
   coqui-tts:
     image: ghcr.io/coqui-ai/tts-cpu
@@ -67,8 +68,9 @@ services:
     image: caddy:2-alpine
     container_name: ${PROJECT}-hub-caddy
     restart: unless-stopped
+    network_mode: "host"
     ports:
-      - "80:80"
+    #  - "80:80"
       - "443:443"
     volumes:
       - ./caddy/Caddyfile.${MODE}:/etc/caddy/Caddyfile:ro
@@ -76,8 +78,8 @@ services:
       - caddy_config:/config
     depends_on:
       - hub-app
-    networks:
-      - ${NET}
+    #networks:
+    #  - ${NET}
 
 volumes:
   caddy_data:

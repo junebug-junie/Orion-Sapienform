@@ -2,7 +2,7 @@ FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 WORKDIR /app
 
-# Install Python + tools
+# Install Python + tools + network utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip curl \
     \
@@ -20,6 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libavutil-dev \
     libswscale-dev \
     libswresample-dev \
+    \
+    # 4. Add Redis + connectivity tools for entrypoint checks
+    redis-tools \
+    netcat-traditional \
+    iputils-ping \
     \
     && rm -rf /var/lib/apt/lists/*
 

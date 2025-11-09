@@ -70,7 +70,7 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     volumes:
-      - ollama_data:/root/.ollama
+      - /mnt/telemetry/models/ollama:/root/.ollama
       #- ./models:/models
     ports:
       - "11434:11434"

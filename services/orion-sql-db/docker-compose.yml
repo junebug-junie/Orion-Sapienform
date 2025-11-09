@@ -16,7 +16,7 @@ services:
     networks:
       - app-net
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-55432}:5432"
 
   orion-sql-client:
     image: dpage/pgadmin4:8

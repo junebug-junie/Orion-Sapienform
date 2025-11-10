@@ -15,7 +15,7 @@ services:
       # Use the configurable port from the .env file
       - "${PORT}:${PORT}"
     volumes:
-      - /mnt/storage/rdf_logs:/app/logs
+      - /mnt/storage-lukewarm/rdf_logs:/app/logs
     environment:
       # --- Service Identity ---
       - SERVICE_NAME=${SERVICE_NAME}

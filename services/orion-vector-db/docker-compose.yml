@@ -13,11 +13,13 @@ services:
       # Maps the host port to the container's internal port (8000).
       - "${PORT}:8000"
     volumes:
-      - ${CHROMA_DATA_PATH}:/chroma/.chroma
+      - ${CHROMA_DATA_PATH}:/chroma/chroma
 
     environment:
       - ANONYMIZED_TELEMETRY=False
       - ALLOW_RESET=true
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import requests; import sys; sys.exit(0 if requests.get(\"http://localhost:8000/api/v1/heartbeat\").ok else 1)' || exit 1"]      
       interval: 10s

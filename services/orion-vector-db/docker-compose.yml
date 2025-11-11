@@ -16,10 +16,18 @@ services:
       - ${CHROMA_DATA_PATH}:/chroma/chroma
 
     environment:
-      - ANONYMIZED_TELEMETRY=False
-      - ALLOW_RESET=true
-      - IS_PERSISTENT=TRUE
+      - CHROMA_SERVER_HOST=0.0.0.0
+      #- ANONYMIZED_TELEMETRY=False
+      - CHROMA_MULTI_TENANT=true
+      #- ALLOW_RESET=true
+      #- IS_PERSISTENT=TRUE
       - PERSIST_DIRECTORY=/chroma/chroma
+
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - CHROMA_ALLOW_RESET=true
+      - CHROMA_NO_TELEMETRY=true
+      - CHROMA_LOG_LEVEL=DEBUG
+
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import requests; import sys; sys.exit(0 if requests.get(\"http://localhost:8000/api/v1/heartbeat\").ok else 1)' || exit 1"]      
       interval: 10s

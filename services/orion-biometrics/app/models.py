@@ -13,6 +13,7 @@ def generate_biometrics_model():
         {
             "__tablename__": settings.TABLE_NAME,
             "id": Column(String, primary_key=True, default=lambda: str(uuid4())),
+            "node": Column(String),
             "timestamp": Column(String),
             "gpu": Column(JSON),
             "cpu": Column(JSON),

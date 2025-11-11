@@ -17,7 +17,6 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
-# ✅ 1. DEFINE THE CUSTOM WRITER FUNCTION
 def biometrics_db_writer(model_class, raw_message: dict, db):
     """
     Custom writer that correctly parses the raw Redis message before creating a model instance.
@@ -31,7 +30,7 @@ def biometrics_db_writer(model_class, raw_message: dict, db):
         # Extract, decode, and parse the actual data payload
         payload_bytes = raw_message['data']
         data = json.loads(payload_bytes)
-        
+
         # Create the SQLAlchemy object with the clean data
         obj = model_class(**data)
         db.add(obj)
@@ -73,7 +72,7 @@ def startup():
         bus_url=settings.ORION_BUS_URL,
         channel=settings.TELEMETRY_PUBLISH_CHANNEL,
         model_class=BiometricsSQL,
-        writer_func=biometrics_db_writer  # ✅ 2. PASS THE CUSTOM FUNCTION HERE
+        writer_func=biometrics_db_writer
     )
 
     # 📥 THREAD 3 (OPTIONAL): Start a worker for an EXTERNAL data channel.
@@ -83,5 +82,5 @@ def startup():
             bus_url=settings.ORION_BUS_URL,
             channel=settings.EXTERNAL_SUBSCRIBE_CHANNEL,
             model_class=BiometricsSQL,
-            writer_func=biometrics_db_writer  # ✅ 3. PASS IT HERE, TOO
+            writer_func=biometrics_db_writer
         )

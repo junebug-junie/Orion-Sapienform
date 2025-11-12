@@ -4,7 +4,7 @@ from app.db import Base
 from uuid import uuid4
 
 class BiometricsTelemetry(Base):
-    __tablename__ = "biometrics_telemetry"
+    __tablename__ = "orion_biometrics"
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     timestamp = Column(String, nullable=False)
     node = Column(String, nullable=True)

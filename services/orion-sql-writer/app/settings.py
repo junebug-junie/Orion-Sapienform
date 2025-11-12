@@ -31,7 +31,7 @@ class Settings(BaseSettings):
        "orion:chat:history:log:chat_history_log,"
        "orion:rag:document:add:rag_documents,"
        "orion:dream:trigger:dreams,"
-       "orion:telemetry:biometrics:biometrics_telemetry,"
+       "orion:telemetry:biometrics:orion_biometrics,"
     )
 
     POLL_TIMEOUT: float = 1.0

@@ -37,7 +37,7 @@ services:
               capabilities: [gpu]
 
     volumes:
-      - /mnt/services/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
+      - /mnt/scripts/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
       - /mnt/storage-lukewarm/logs/biometrics/logs:/app/logs
 
 networks:

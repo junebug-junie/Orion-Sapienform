@@ -27,7 +27,7 @@ def health():
 
 @app.on_event("startup")
 def startup():
-    logger.info(f"🚀 Starting {settings.SERVICE_NAME} v{settings.SERVICE_VERSION} (node={settings.NODE})")
+    logger.info(f"🚀 Starting {settings.SERVICE_NAME} v{settings.SERVICE_VERSION} (node={settings.NODE_NAME})")
     logger.info(f"Publishing telemetry to '{settings.TELEMETRY_PUBLISH_CHANNEL}'")
 
     threading.Thread(

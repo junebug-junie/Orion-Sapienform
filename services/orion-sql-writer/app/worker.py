@@ -72,7 +72,7 @@ def _process_one(session, channel: str, msg: dict) -> Optional[str]:
             logger.info(f"Inserting new {table} for date: {log_id}")
             session.add(Dream(**db_data))
 
-    elif table == "biometrics_telemetry":
+    elif table == "orion_biometrics":
         payload = BiometricsInput.model_validate(msg)
         db_data = payload.model_dump()
         session.add(BiometricsTelemetry(**db_data))

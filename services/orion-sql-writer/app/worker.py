@@ -56,20 +56,30 @@ def _process_one(session, channel: str, msg: dict) -> Optional[str]:
         session.merge(ChatHistoryLogSQL(**db_data))
 
     elif table == "dreams":
-        payload = DreamInput.model_validate(msg).normalize()
-        db_data = payload.model_dump(mode="json", exclude_unset=True)
-        log_id = str(db_data.get("dream_date"))
+        # 1. (NEW) Filter msg to only include fields known by DreamInput
+        known_fields = DreamInput.model_fields.keys()
+        filtered_msg = {k: v for k, v in msg.items() if k in known_fields}
+
+        # 2. Validate the CLEANED message
+        payload = DreamInput.model_validate(filtered_msg).normalize()
+
+        # 3. Get log_id and query using the PAYLOAD OBJECT (Fixes KeyError)
+        log_id = str(payload.dream_date)
 
         existing = session.query(Dream).filter(
-            Dream.dream_date == db_data["dream_date"]
+            Dream.dream_date == payload.dream_date
         ).first()
 
         if existing:
             logger.info(f"Updating {table} for date: {log_id}")
+            # For updates, exclude_unset=True is correct
+            db_data = payload.model_dump(mode="json", exclude_unset=True)
             for k, v in db_data.items():
                 setattr(existing, k, v)
         else:
             logger.info(f"Inserting new {table} for date: {log_id}")
+            # For inserts, use the full model (no exclude_unset)
+            db_data = payload.model_dump(mode="json")
             session.add(Dream(**db_data))
 
     elif table == "orion_biometrics":

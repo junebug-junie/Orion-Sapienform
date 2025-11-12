@@ -15,8 +15,6 @@ class Settings(BaseSettings):
     NET: str = Field(..., env="NET")
 
     # --- Database & Bus ---
-    POSTGRES_URI: str = Field(..., env="POSTGRES_URI")
-    TABLE_NAME: str = Field(..., env="TABLE_NAME")
     ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
     TELEMETRY_PUBLISH_CHANNEL: str = Field(..., env="TELEMETRY_PUBLISH_CHANNEL")
     EXTERNAL_SUBSCRIBE_CHANNEL: Optional[str] = Field(default=None, env="EXTERNAL_SUBSCRIBE_CHANNEL")

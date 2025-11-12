@@ -28,7 +28,7 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - TELEMETRY_PUBLISH_CHANNEL=${TELEMETRY_PUBLISH_CHANNEL}
       - EXTERNAL_SUBSCRIBE_CHANNEL=${EXTERNAL_SUBSCRIBE_CHANNEL}
-      - POSTGRES_URI=${POSTGRES_URI}
+
     deploy:
       resources:
         reservations:
@@ -38,8 +38,7 @@ services:
 
     volumes:
       - /mnt/services/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
-      - /mnt/storage/logs/biometrics/logs:/app/logs
-      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro # access to low level host
+      - /mnt/storage-lukewarm/logs/biometrics/logs:/app/logs
 
 networks:
   app-net:

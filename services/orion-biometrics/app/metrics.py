@@ -3,7 +3,6 @@ import subprocess
 import json
 from datetime import datetime
 from app.settings import settings
-
 from app.utils import collect_gpu_stats
 
 def collect_biometrics():
@@ -25,5 +24,7 @@ def collect_biometrics():
         "timestamp": datetime.utcnow().isoformat(),
         "gpu": gpu_data,
         "cpu": cpu_data,
-        "node": settings.NODE_NAME
+        "node": settings.NODE_NAME,
+        "service_name": settings.SERVICE_NAME,
+        "service_version": settings.SERVICE_VERSION,
     }

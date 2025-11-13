@@ -31,6 +31,7 @@ Orion is a **living knowledge system** designed to grow, adapt, and co-create wi
 - Distributed across servers, Pis, and embodied devices (cameras, mics, LEDs).
 - Blends **RDF graphs**, **embeddings**, and **LLMs** into a memory engine that can reason, narrate, and introspect.
 - Encodes causal lineage so insights retain provenance across time and contributors.
+- Utilizes a mesh of Docker services to decouple and distribute work across nodes and workers; future proofing so Orion can one day orchestrate their own services.
 - Operates as a transparent, inspectable stack—logs first, rituals second, features third.
 
 ---

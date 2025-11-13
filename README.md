@@ -41,11 +41,11 @@ Orion is a **living knowledge system** designed to grow, adapt, and co-create wi
 ```mermaid
 flowchart TD
     user[User] --> ui[UI - Web + Voice]
-    ui --> core[FastAPI Core - Whisper / LLM / TTS]
+    ui --> core[FastAPI Core - Whisper / LLM / TTS] & cognition
     core --> bus[Redis Event Bus]
     bus --> mem[Memory - RDF + Chroma]
     bus --> vis[Vision - Cameras + ML]
-    mem --> mesh[Orion Mesh - Atlas, Chrysalis, Argus, Pis]
+    mem --> mesh[Orion Mesh - Atlas, Athena, Apollo, Circe]
     vis --> mesh
 ```
 ### ASCII Sketch
@@ -71,7 +71,7 @@ flowchart TD
    └─────────┼─────────┘
              │
        🖥 Orion Mesh
-  (Atlas, Chrysalis, Argus, Pis...)
+  (Atlas, Athena, Apollo, Circe...)
 ```
 
 - **UI Layer**: Browser + voice interface, secured and reachable over **Tailscale**.
@@ -85,29 +85,31 @@ flowchart TD
 ## ⚙️ Hardware Overview
 
 ### Compute Nodes
-- **Atlas — Primary generalist workhorse**  
-  - HP ProLiant DL380 Gen10  
-  - 2 × Intel **Xeon Platinum 8168** *(24C/48T each; 2.7 GHz base, up to 3.7 GHz turbo)*  
-  - **320 GB** DDR4 ECC RAM
-
-- **Athena — Analytics & simulation node**  
-  - HP ProLiant DL360 Gen10  
-  - 2 × Intel **Xeon Gold 6138** *(20C/40T each; 2.0 GHz base, up to 3.7 GHz turbo)*  
+- **Atlas — Primary generalist workhorse**
+  - HP ProLiant DL380 Gen10
+  - 2 × Intel **Xeon Platinum 8168** *(24C/48T each; 2.7 GHz base, up to 3.7 GHz turbo)* 
   - **192 GB** DDR4 ECC RAM
+  - GPUS: **2x NVIDIA V100 16GB SMX2** on NVLINK carrier board; **1x NVIDIA v100 16GB PCIe**
 
-- **Chrysalis & Argus — HP Z620 workstations (x2)**  
-  - Dual Intel Xeon (models vary)  
-  - Up to **192 GB** DDR3 ECC RAM each
+- **Athena — Orchestration and analytics node**
+  - HP ProLiant DL360 Gen10 
+  - 2 × Intel **Xeon Gold 6138** *(20C/40T each; 2.0 GHz base, up to 3.7 GHz turbo)*
+  - **384 GB** DDR4 ECC RAM
 
-### GPUs
-- **2 × AMD Radeon Instinct MI50 (32 GB HBM2 each)**
-- **1 × NVIDIA Tesla V100 16 GB (PCIe)**
-- **1 × NVIDIA Tesla V100 16 GB (SXM2)**
-- **1 × NVIDIA RTX 3090 (24 GB GDDR6X)**
-- **1 × NVIDIA RTX 2060 (12 GB GDDR6)**
+- **Apollo - Batch, offline worker**
+  - Supermicro X10DRG-Q 
+  - 2x Intel **Xeon E5-2697v4** *(18C/36T each; 2.3GHz base, up to 3.6 Ghz turbo)*
+  - **64 GB** DDR4 ECC RAM
+  - GPUS: **2x AMD Instict MI50 32GB**
+
+- **Circe - GPU, Training Node**
+  - HP Proliant DL380 Gen10
+  - 2x Intel Xeon Platinum P-8124 (18C/36T each; 3.0 GHz base, up to 3.5Ghz turbo)*
+  - **64 GB** DDR4
+  - GPUS: Plan to acquire 2x NVIDIA V100 32GB SMX2 on NVLINK carrier board
 
 ### Storage
-- ~**20 TB NVMe SSD** (scratch: AI training, graphs, sims)
+- ~**30 TB NVMe SSD** (scratch: AI training, graphs, sims)
 - ~**20 TB SAS SSD**
 - ~**10 TB HDD** (cold)
 
@@ -245,50 +247,6 @@ Orion began as wires on a homelab bench—DL380s, Z620s, GPUs, Pis—then grew i
 
 ---
 
-## 🚀 Quickstart (Tailscale‑Ready)
-
-> **Assumption:** your host has Tailscale running and is reachable at `100.82.12.97` (Chrysalis). Update IP if different.
-
-### Compose (GPU)
-```yaml
-# docker-compose.yml
-services:
-  orion:
-    image: ghcr.io/your-org/orion:latest
-    ports: ["8000:8000"]
-    environment:
-      - ORION_MODELS=/models
-      - ORION_VOICES=/voices
-      - REDIS_URL=redis://redis:6379/0
-    volumes:
-      - ./models:/models
-      - ./voices:/voices
-      - ./data:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: ["gpu"]
-  redis:
-    image: redis:7-alpine
-    ports: ["6379:6379"]
-    command: ["redis-server", "--appendonly", "yes"]
-```
-
-### Run
-```bash
-docker compose up -d
-```
-
-### Test
-- Health: `curl http://100.82.12.97:8000/healthz`
-- API docs: **http://100.82.12.97:8000/docs**
-- Voice round‑trip: `POST /listen-and-speak` with an OGG/WEBM mic clip.
-
-> Replace `100.82.12.97` with the Tailscale IP of the host you deploy on.
-
----
-
 ## 🛡️ Ethics & Transparency
 - **No silent capture.** All sensing is explicit, consensual, and logged.
 - **Right to delete.** Mirrors, memories, and embeddings are erasable and exportable.
@@ -324,4 +282,4 @@ Contribute code, rituals, diagrams, or field studies. Orion grows by relation.
 
 ---
 
-*License: MIT* • *Status: Experimental* • *Contact: hello@conjourney.net*
+*License: MIT* • *Status: Experimental* • *Contact: june.d.feld@gmail.com*

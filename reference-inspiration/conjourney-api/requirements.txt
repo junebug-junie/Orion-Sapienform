@@ -1,8 +1,0 @@
-chromadb==1.0.12
-fastapi==0.115.9
-google-auth==2.40.3
-googleapis-common-protos==1.70.0
-pydantic==2.11.5
-python-dotenv==1.1.0
-requests==2.32.4
-uvicorn[standard]==0.34.3

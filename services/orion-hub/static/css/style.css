@@ -27,12 +27,19 @@ input[type=range]::-moz-range-thumb {
   cursor: pointer; border-radius: 50%;
 }
 
+/* Conversation layout: normal top-to-bottom */
 #conversation {
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
 }
 
-/* Fix Orion's State panel width */
+/* Preserve paragraph breaks and wrap nicely */
+.message-text {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* (Unused but left in case you want fixed width later) */
 #statePanel {
   flex-shrink: 0;
   width: 280px;

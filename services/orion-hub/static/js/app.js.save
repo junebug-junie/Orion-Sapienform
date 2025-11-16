@@ -41,7 +41,7 @@ const collapseStatus = document.getElementById('collapseStatus');
 
 // These are declared here but assigned inside DOMContentLoaded
 let chatInput, sendButton, textToSpeechToggle;
-const API_BASE_URL = window.location.origin;
+const API_BASE_URL = `http://${window.location.host}`;
 
 // --- State Management ---
 let socket;
@@ -620,22 +620,36 @@ document.addEventListener("DOMContentLoaded", () => {
     sendButton.addEventListener('click', sendTextMessage);
   }
 
-  if (chatInput) {
-    chatInput.addEventListener('keydown', (event) => {
-      // Shift+Enter → newline (do nothing special)
-      if (event.key === 'Enter' && event.shiftKey) {
-        return; // let the browser insert a line break
-      }
+if (chatInput) {
+  chatInput.addEventListener('keydown', (event) => {
+    // Shift+Enter → newline (do nothing special)
+    if (event.key === 'Enter' && event.shiftKey) {
+      return; // let the browser insert a line break
+    }
 
-      // Enter (without Shift) → send
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendTextMessage();
-  }
+    // Enter (without Shift) → send
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendTextMessage();
+    }
   });
 }
 
 
+
+
+
+
+  if (chatInput) {
+    chatInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        // Enter = send
+        event.preventDefault();
+        sendTextMessage();
+      }
+      // Shift+Enter falls through, creating a newline
+    });
+  }
 });
 
 // --- Final Setup ---

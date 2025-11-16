@@ -1,18 +1,14 @@
-:80 {
-    # Add CORS headers to all responses. This allows your frontend JS to call the API.
+http://hub.conjourney.net {
+    encode gzip zstd
+
     header {
-        # Allows requests from any origin. For production, you might restrict this 
-        # to your actual domain, e.g., "Access-Control-Allow-Origin https://your-domain.com".
         Access-Control-Allow-Origin *
-        
-        # Specifies the methods allowed when accessing the resource.
         Access-Control-Allow-Methods "GET, POST, OPTIONS"
-        
-        # Specifies the headers allowed in the actual request.
         Access-Control-Allow-Headers "Content-Type, Authorization"
     }
 
-    # Reverse proxy ALL requests to the correct hub-app service.
+    # If hub UI is on the host:
     reverse_proxy 127.0.0.1:8080
-    #reverse_proxy hub-app:8080
+    # If it’s another container on the same docker network, use its service name instead:
+    # reverse_proxy orion-atlas-hub-ui:8080
 }

@@ -1,64 +1,92 @@
+# scripts/llm_tts_handler.py
 import logging
 import asyncio
-import aiohttp
+import time
+from typing import Any, Dict, List, Optional
+
 from scripts.settings import settings
 
 logger = logging.getLogger("voice-app.llm")
 
-async def run_llm_tts(history, temperature, tts_q: asyncio.Queue, disable_tts: bool = False):
+
+async def run_tts_only(
+    text: str,
+    tts_q: asyncio.Queue,
+    bus: Optional[Any] = None,
+    tts: Optional[Any] = None,
+    disable_tts: bool = False,
+) -> None:
     """
-    Calls the brain, gets a response, conditionally synthesizes TTS, and returns
-    the response text and token count.
+    Run TTS for the given text and stream audio chunks into tts_q.
+
+    Bus-first pattern:
+      - Publish a tts_request to CHANNEL_VOICE_TTS
+      - For each audio chunk, publish an audio_response metadata event.
+
+    Designed as fire-and-forget (asyncio.create_task).
     """
-    from scripts.main import bus, tts
-    
-    text = ""
-    tokens = 0
-    
+
+    if disable_tts or not tts or not text:
+        await tts_q.put({"state": "idle"})
+        return
+
     try:
-        url = settings.BRAIN_URL.rstrip("/") + "/chat"
-        payload = {
-            "model": settings.LLM_MODEL, "messages": history,
-            "temperature": temperature, "stream": False
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=settings.LLM_TIMEOUT_S) as r:
-                r.raise_for_status()
-                data = await r.json()
-                logger.info(f"Brain raw response: {data}")
+        await tts_q.put({"state": "speaking"})
 
-        text = (
-            data.get("response") or data.get("text") or
-            (data.get("message", {}).get("content")) or ""
-        ).strip()
-        tokens = data.get("tokens") or data.get("eval_count") or len(text.split())
-        
-        if bus and bus.enabled:
-            bus.publish(settings.CHANNEL_VOICE_LLM, {"type": "llm_response", "content": text, "tokens": tokens})
-            bus.publish(settings.CHANNEL_BRAIN_OUT, {"type": "brain_response", "content": text, "tokens": tokens})
+        # Telemetry: TTS request
+        if bus is not None and getattr(bus, "enabled", False):
+            try:
+                bus.publish(
+                    settings.CHANNEL_VOICE_TTS,
+                    {
+                        "type": "tts_request",
+                        "source": settings.SERVICE_NAME,
+                        "text_preview": text[:256],
+                    },
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to publish tts_request to bus: {e}",
+                    exc_info=True,
+                )
 
-        if not text:
-            # Return a default response if the brain gives nothing back
-            return "I'm not sure how to respond to that.", 0
+        # Synthesize on local Piper (for now)
+        tts_start = time.perf_counter()
+        chunks = tts.synthesize_chunks(text)
+        tts_end = time.perf_counter()
+        logger.info(
+            f"TTS generated {len(chunks)} chunk(s) in {tts_end - tts_start:.2f}s"
+        )
 
-        # Conditionally run TTS
-        if not disable_tts and tts:
-            await tts_q.put({"state": "speaking"}) # Signal TTS is starting
-            for chunk in tts.synthesize_chunks(text):
-                await tts_q.put({"audio_response": chunk})
-                if bus and bus.enabled:
-                    bus.publish(settings.CHANNEL_VOICE_TTS, {"type": "audio_response", "size": len(chunk)})
-        
-        return text, tokens
+        # Stream chunks to websocket
+        for chunk in chunks:
+            await tts_q.put({"audio_response": chunk})
+
+            if bus is not None and getattr(bus, "enabled", False):
+                try:
+                    bus.publish(
+                        settings.CHANNEL_VOICE_TTS,
+                        {
+                            "type": "audio_response",
+                            "size": len(chunk),
+                            "source": settings.SERVICE_NAME,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to publish TTS audio_response to bus: {e}",
+                        exc_info=True,
+                    )
 
     except Exception as e:
-        logger.error(f"run_llm_tts error: {e}", exc_info=True)
+        logger.error(f"run_tts_only error: {e}", exc_info=True)
         error_message = "I seem to have encountered an error."
-        # Still try to send the error message to the TTS queue if not disabled
-        if not disable_tts and tts:
-             await tts_q.put({"state": "speaking"})
-             for chunk in tts.synthesize_chunks(error_message):
+        try:
+            await tts_q.put({"state": "speaking"})
+            err_chunks = tts.synthesize_chunks(error_message) if tts else []
+            for chunk in err_chunks:
                 await tts_q.put({"audio_response": chunk})
-
-        return error_message, 0
-
+        except Exception:
+            pass
+    finally:
+        await tts_q.put({"state": "idle"})

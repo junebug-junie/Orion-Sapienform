@@ -1,21 +1,25 @@
+# scripts/websocket_handler.py
 import logging
 import asyncio
 import base64
 import json
 import uuid
 from datetime import datetime
+from typing import Any, Dict
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
-from scripts.llm_tts_handler import run_llm_tts
+from scripts.llm_tts_handler import run_tts_only
+from scripts.llm_rpc import BrainRPC
 
 logger = logging.getLogger("voice-app.ws")
+
 
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
     """Drains a queue and sends messages to the WebSocket client."""
     try:
-        while websocket.client_state.name == 'CONNECTED':
+        while websocket.client_state.name == "CONNECTED":
             msg = await queue.get()
             await websocket.send_json(msg)
             queue.task_done()
@@ -25,9 +29,11 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
     except Exception as e:
         logger.error(f"drain_queue error: {e}", exc_info=True)
 
+
 async def websocket_endpoint(websocket: WebSocket):
     """Handles the main voice and text WebSocket lifecycle."""
-    from scripts.main import asr, bus
+    # Pull shared objects from main once per connection
+    from scripts.main import asr, bus, tts
 
     await websocket.accept()
     logger.info("WebSocket accepted.")
@@ -37,13 +43,13 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     history = []
-    tts_q = asyncio.Queue()
+    tts_q: asyncio.Queue = asyncio.Queue()
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q))
 
     try:
         while True:
             raw = await websocket.receive_text()
-            data = json.loads(raw)
+            data: Dict[str, Any] = json.loads(raw)
 
             transcript = None
             is_text_input = False
@@ -70,13 +76,32 @@ async def websocket_endpoint(websocket: WebSocket):
 
             logger.info(f"Transcript: {transcript!r}")
             if not is_text_input:
-                await websocket.send_json({"transcript": transcript, "is_text_input": is_text_input})
+                await websocket.send_json(
+                    {"transcript": transcript, "is_text_input": is_text_input}
+                )
 
-            if bus and bus.enabled:
-                bus.publish(settings.CHANNEL_VOICE_TRANSCRIPT, {"type": "transcript", "content": transcript})
-                bus.publish(settings.CHANNEL_BRAIN_INTAKE, {
-                    "source": settings.PROJECT, "type": "intake", "content": transcript
-                })
+            # ─────────────────────────────────────────────────────
+            # 📡 Bus: publish transcript + intake
+            # ─────────────────────────────────────────────────────
+            if bus is not None and getattr(bus, "enabled", False):
+                try:
+                    bus.publish(
+                        settings.CHANNEL_VOICE_TRANSCRIPT,
+                        {"type": "transcript", "content": transcript},
+                    )
+                    bus.publish(
+                        settings.CHANNEL_BRAIN_INTAKE,
+                        {
+                            "source": settings.SERVICE_NAME,
+                            "type": "intake",
+                            "content": transcript,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to publish transcript/intake to bus: {e}",
+                        exc_info=True,
+                    )
 
             instructions = data.get("instructions", "")
             if not history and instructions:
@@ -96,15 +121,35 @@ async def websocket_endpoint(websocket: WebSocket):
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY BEFORE LLM CALL: {history}")
 
-            orion_response_text, tokens = await run_llm_tts(history[:], temperature, tts_q, disable_tts)
+            # 1) LLM first (fast), purely text – bus-aware now
+            rpc = BrainRPC(bus)
+            reply = await rpc.call_llm(transcript, history[:], temperature)
 
-            await websocket.send_json({"llm_response": orion_response_text, "tokens": tokens})
+            orion_response_text = reply.get("text") or ""
+            tokens = len(orion_response_text.split())
+
+            # 2) Immediately show the text + tokens to the client
+            await websocket.send_json(
+                {"llm_response": orion_response_text, "tokens": tokens}
+            )
+
+            # 3) Kick off TTS in the background so the UI isn't blocked
+            if orion_response_text and not disable_tts:
+                asyncio.create_task(
+                    run_tts_only(
+                        orion_response_text,
+                        tts_q,
+                        bus=bus,
+                        tts=tts,
+                        disable_tts=False,
+                    )
+                )
 
             if orion_response_text:
                 history.append({"role": "orion", "content": orion_response_text})
 
-                if bus and bus.enabled:
-                    latest_user_prompt = transcript # The user input from this turn
+                if bus is not None and getattr(bus, "enabled", False):
+                    latest_user_prompt = transcript  # The user input from this turn
 
                     # Grab metadata from the original websocket message
                     user_id = data.get("user_id")
@@ -113,24 +158,38 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Create the full payload for the tagging/triage service
                     full_dialogue_payload = {
                         "id": str(uuid.uuid4()),
-                        "text": f"User: {latest_user_prompt}\nOrion: {orion_response_text}",
+                        "text": (
+                            f"User: {latest_user_prompt}\n"
+                            f"Orion: {orion_response_text}"
+                        ),
                         "source": settings.SERVICE_NAME,
                         "ts": datetime.utcnow().isoformat(),
-
-                        # Add prompt/response to help the EventIn validator
                         "prompt": latest_user_prompt,
                         "response": orion_response_text,
-
-                        # Add the metadata
                         "user_id": user_id,
-                        "session_id": session_id
+                        "session_id": session_id,
                     }
 
-                    bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, full_dialogue_payload)
-                    logger.info(f"Published full dialogue to triage: {full_dialogue_payload['id']}")
+                    try:
+                        bus.publish(
+                            settings.CHANNEL_COLLAPSE_TRIAGE,
+                            full_dialogue_payload,
+                        )
+                        logger.info(
+                            f"Published full dialogue to triage: "
+                            f"{full_dialogue_payload['id']}"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to publish dialogue to triage: {e}",
+                            exc_info=True,
+                        )
+
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY AFTER LLM CALL: {history}")
 
+            # Mark the end of this turn's processing phase.
+            # TTS will independently flip state to "speaking" and then back to "idle".
             await websocket.send_json({"state": "idle"})
 
     except WebSocketDisconnect:
@@ -140,4 +199,3 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         drain_task.cancel()
         logger.info("WebSocket closed.")
-

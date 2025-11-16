@@ -43,7 +43,7 @@ class OrionBus:
         if not self.enabled or not self.client:
             yield from ()
             return
-        
+
         pubsub = self.client.pubsub()
         pubsub.subscribe(*channels)
         logger.info(f"Subscribed to channels: {channels}")
@@ -55,13 +55,43 @@ class OrionBus:
             # We also now parse the data here, but yield the full message.
             if message["type"] != "message":
                 continue
-            
+
             try:
                 # We replace the raw string data with the parsed dictionary
                 message["data"] = json.loads(message["data"])
             except Exception as e:
                 logger.error(f"[BUS] JSON parse failed on {message['channel']}: {e} — raw={message['data']!r}")
                 continue
-            
+
             # Yield the entire message object so the listener knows the source channel
             yield message
+
+    def raw_subscribe(self, channel: str):
+        """
+        Creates a PubSub object subscribed to ONE channel and returns
+        a generator over its messages.
+
+        This does NOT block the entire process:
+        The caller is responsible for consuming messages and for closing the PubSub.
+        """
+        if not self.enabled or not self.client:
+            raise RuntimeError("OrionBus is disabled or not connected")
+
+        pubsub = self.client.pubsub()
+        pubsub.subscribe(channel)
+
+        logger.info(f"[BUS] raw_subscribe -> {channel}")
+
+        try:
+            for msg in pubsub.listen():
+                if msg.get("type") != "message":
+                    continue
+                try:
+                    msg["data"] = json.loads(msg["data"])
+                except Exception as e:
+                    logger.error(f"[BUS] JSON parse failed: {e}")
+                    continue
+                yield msg
+        finally:
+            pubsub.close()
+            logger.info(f"[BUS] raw_subscribe closed for {channel}")

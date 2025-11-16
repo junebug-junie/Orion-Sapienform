@@ -62,6 +62,11 @@ services:
     environment:
       - TTS_MODEL_NAME=tts_models/en/ljspeech/vits
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
     entrypoint: tts-server
     networks:
       - ${NET}

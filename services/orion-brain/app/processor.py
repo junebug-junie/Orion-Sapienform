@@ -51,14 +51,32 @@ def process_brain_request(payload: dict):
             logger.error(f"[{trace_id}] Dream task missing 'content' payload. Discarding.")
             return
     else:
-        prompt_text = payload.get("prompt", "No prompt provided.")
-        logger.info(f"[{trace_id}] Processing CHAT request: {prompt_text[:50]}...")
+        # Standard chat request via RPC
+        prompt_text = payload.get("prompt") or "No prompt provided."
+        history = payload.get("history") or []
+        temperature = payload.get("temperature", 0.7)
+        model = payload.get("model", "llama3.1:8b-instruct-q8_0")
+
+        logger.info(f"[{trace_id}] Processing CHAT request: {prompt_text[:80]}")
+
+        # Convert conversation history into Ollama `messages[]`
+        messages = []
+        for h in history:
+            role = h.get("role", "user")
+            content = h.get("content", "")
+            messages.append({"role": role, "content": content})
+
+        # Append the new user prompt
+        messages.append({"role": "user", "content": prompt_text})
+
+        # Build final Ollama inference payload
         ollama_payload = {
-            "model": "llama3.1:8b-instruct-q8_0", # <-- Or from config
-            "messages": [
-                {"role": "user", "content": prompt_text}
-            ],
-            "stream": False
+            "model": model,
+            "messages": messages,
+            "options": {
+                "temperature": temperature,
+            },
+            "stream": False,
         }
 
     url = f"{backend.url.rstrip('/')}/api/chat"

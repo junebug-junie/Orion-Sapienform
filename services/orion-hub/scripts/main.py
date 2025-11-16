@@ -7,7 +7,6 @@ from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
 from scripts.asr import ASR
-from scripts.tts import TTS
 from orion.core.bus.service import OrionBus
 
 # ───────────────────────────────────────────────────────────────
@@ -26,7 +25,6 @@ app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
 # Shared objects, imported by other modules (websocket, routes, etc.)
 asr: ASR | None = None
-tts: TTS | None = None
 bus: OrionBus | None = None
 html_content: str = "<html><body><h1>Error: templates/index.html not found</h1></body></html>"
 
@@ -45,7 +43,7 @@ async def startup_event():
         settings.WHISPER_DEVICE,
         settings.WHISPER_COMPUTE_TYPE,
     )
-    tts = TTS()
+
 
     if settings.ORION_BUS_ENABLED:
         logger.info(f"Initializing OrionBus connection to {settings.ORION_BUS_URL}")

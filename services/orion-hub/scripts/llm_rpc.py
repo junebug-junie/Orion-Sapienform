@@ -67,3 +67,33 @@ class BrainRPC:
 
         logger.info(f"[{trace_id}] Brain RPC reply received.")
         return reply
+
+
+    async def call_tts(self, text: str, tts_q: asyncio.Queue):
+        """
+        Publishes a TTS RPC request and streams the Brain's GPU TTS reply.
+        """
+        rpc_id = str(uuid.uuid4())
+        reply_channel = f"orion:tts:rpc:{rpc_id}"
+
+        # Publish request
+        self.bus.publish(
+            settings.CHANNEL_TTS_INTAKE,
+            {
+                "rpc_id": rpc_id,
+                "text": text,
+                "source": settings.SERVICE_NAME,
+            }
+        )
+
+        # Wait for reply
+        sub = self.bus.raw_subscribe(reply_channel)
+        try:
+            async for msg in sub:
+                payload = msg.get("data", {})
+                if payload.get("type") == "tts_chunk":
+                    await tts_q.put({"audio_response": payload["chunk"]})
+                if payload.get("type") == "tts_done":
+                    break
+        finally:
+            sub.close()

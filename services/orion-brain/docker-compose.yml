@@ -13,6 +13,8 @@ services:
     ports:
       - "${PORT:-8088}:8088"
     restart: unless-stopped
+    volumes:
+      - /mnt/telemetry/models/coqui/tts:/root/.local/share/tts
     environment:
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
@@ -50,9 +52,15 @@ services:
       # --- GPU ---
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
 
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
     command: >
-      /bin/sh -c "sleep ${STARTUP_DELAY:-5} &&
-      python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8088}"
+      uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8088} --log-level info
 
     networks:
       app-net:

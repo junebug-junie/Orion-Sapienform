@@ -33,7 +33,7 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
 async def websocket_endpoint(websocket: WebSocket):
     """Handles the main voice and text WebSocket lifecycle."""
     # Pull shared objects from main once per connection
-    from scripts.main import asr, bus, tts
+    from scripts.main import asr, bus
 
     await websocket.accept()
     logger.info("WebSocket accepted.")
@@ -140,7 +140,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         orion_response_text,
                         tts_q,
                         bus=bus,
-                        tts=tts,
                         disable_tts=False,
                     )
                 )

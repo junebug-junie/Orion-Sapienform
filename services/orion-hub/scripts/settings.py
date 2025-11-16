@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     CHANNEL_VOICE_TRANSCRIPT: str = Field(..., env="CHANNEL_VOICE_TRANSCRIPT")
     CHANNEL_VOICE_LLM: str = Field(..., env="CHANNEL_VOICE_LLM")
     CHANNEL_VOICE_TTS: str = Field(..., env="CHANNEL_VOICE_TTS")
+    CHANNEL_TTS_INTAKE: str = os.getenv("CHANNEL_TTS_INTAKE", "orion:tts:intake")
     CHANNEL_COLLAPSE_INTAKE: str = Field(..., env="CHANNEL_COLLAPSE_INTAKE")
     CHANNEL_COLLAPSE_TRIAGE: str = Field(..., env="CHANNEL_COLLAPSE_TRIAGE")
 

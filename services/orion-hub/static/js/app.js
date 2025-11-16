@@ -237,7 +237,7 @@ function setupWebSocket() {
     if (data.transcript) {
       if (!data.is_text_input) appendMessage('You', data.transcript);
     } else if (data.llm_response) {
-      appendMessage('Assistant', data.llm_response);
+      appendMessage('Orion', data.llm_response);
       if (data.tokens) {
         baseParticleCount = 200 + Math.min(data.tokens, 200);
         createParticles();
@@ -378,7 +378,7 @@ function appendMessage(sender, text, extraClass = 'text-white') {
   const senderClass =
     sender === 'You'
       ? 'font-semibold text-blue-300'
-      : sender === 'Assistant'
+      : sender === 'Orion'
         ? 'font-semibold text-green-300'
         : 'font-semibold text-gray-300';
 

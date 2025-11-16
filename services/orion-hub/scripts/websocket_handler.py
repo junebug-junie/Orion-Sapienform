@@ -96,12 +96,12 @@ async def websocket_endpoint(websocket: WebSocket):
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY BEFORE LLM CALL: {history}")
 
-            assistant_response_text, tokens = await run_llm_tts(history[:], temperature, tts_q, disable_tts)
+            orion_response_text, tokens = await run_llm_tts(history[:], temperature, tts_q, disable_tts)
 
-            await websocket.send_json({"llm_response": assistant_response_text, "tokens": tokens})
+            await websocket.send_json({"llm_response": orion_response_text, "tokens": tokens})
 
-            if assistant_response_text:
-                history.append({"role": "assistant", "content": assistant_response_text})
+            if orion_response_text:
+                history.append({"role": "orion", "content": orion_response_text})
 
                 if bus and bus.enabled:
                     latest_user_prompt = transcript # The user input from this turn
@@ -113,13 +113,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Create the full payload for the tagging/triage service
                     full_dialogue_payload = {
                         "id": str(uuid.uuid4()),
-                        "text": f"User: {latest_user_prompt}\nOrion: {assistant_response_text}",
+                        "text": f"User: {latest_user_prompt}\nOrion: {orion_response_text}",
                         "source": settings.SERVICE_NAME,
                         "ts": datetime.utcnow().isoformat(),
 
                         # Add prompt/response to help the EventIn validator
                         "prompt": latest_user_prompt,
-                        "response": assistant_response_text,
+                        "response": orion_response_text,
 
                         # Add the metadata
                         "user_id": user_id,

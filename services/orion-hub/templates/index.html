@@ -160,125 +160,245 @@
       </div>
     </div>
 
-    <!-- Third row: Collapse Mirror card -->
-    <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
-      <div class="flex items-center justify-between">
-        <h2 class="text-xl font-bold text-white">Collapse Mirror</h2>
-        <div class="inline-flex rounded-lg bg-gray-800/80 p-1 text-xs">
-          <button
-            id="collapseModeGuided"
-            class="px-3 py-1 rounded-md bg-gray-700 text-gray-100"
-          >
-            Guided Form
-          </button>
-          <button
-            id="collapseModeRaw"
-            class="px-3 py-1 rounded-md text-gray-300 hover:text-white"
-          >
-            Raw JSON
-          </button>
-        </div>
-      </div>
 
-      <!-- Guided Collapse Form -->
-      <div id="collapseGuidedSection" class="space-y-3">
-        <p class="text-xs text-gray-400">
-          Use this form to submit a Collapse entry without hand-writing JSON. The raw JSON editor
-          is still available in the "Raw JSON" tab.
-        </p>
-        <div class="grid md:grid-cols-2 gap-3 text-sm">
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseObserverInput">Observer</label>
-            <input id="collapseObserverInput" type="text"
-                   class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                   value="DEMO">
-          </div>
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseTriggerInput">Trigger</label>
-            <input id="collapseTriggerInput" type="text"
-                   class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                   value="UI test submission">
-          </div>
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseObserverStateInput">Observer State (comma-separated)</label>
-            <input id="collapseObserverStateInput" type="text"
-                   class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                   value="neutral">
-          </div>
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseFieldResonanceInput">Field Resonance</label>
-            <input id="collapseFieldResonanceInput" type="text"
-                   class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                   value="baseline">
-          </div>
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseTypeInput">Type</label>
-            <input id="collapseTypeInput" type="text"
-                   class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                   value="test">
-          </div>
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseEntityInput">Emergent Entity</label>
-            <input id="collapseEntityInput" type="text"
-                   class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                   value="demo_entity">
-          </div>
-        </div>
+<!-- Third row: Collapse Mirror card -->
+<div class="w-full bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
 
-        <div class="space-y-2 text-sm">
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseSummaryInput">Summary</label>
-            <textarea id="collapseSummaryInput" rows="2"
-                      class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">This is a test collapse entry to validate the pipeline.</textarea>
-          </div>
-          <div>
-            <label class="block text-gray-400 mb-1" for="collapseMantraInput">Mantra</label>
-            <input id="collapseMantraInput" type="text"
-                   class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                   value="hold the mirror">
-          </div>
-          <div class="grid md:grid-cols-2 gap-3">
-            <div>
-              <label class="block text-gray-400 mb-1" for="collapseCausalEchoInput">Causal Echo</label>
-              <input id="collapseCausalEchoInput" type="text"
-                     class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                     value="none">
-            </div>
-            <div>
-              <label class="block text-gray-400 mb-1" for="collapseEnvironmentInput">Environment</label>
-              <input id="collapseEnvironmentInput" type="text"
-                     class="w-full bg-gray-800 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500"
-                     value="dev">
-            </div>
-          </div>
-        </div>
+  <!-- Header row -->
+  <div class="flex items-center justify-between">
+    <!-- Title + tooltip trigger -->
+    <div class="flex items-center gap-2">
+      <h2 class="text-xl font-bold text-white">Collapse Mirror</h2>
+      <button
+        id="collapseTooltipToggle"
+        type="button"
+        class="flex items-center justify-center w-5 h-5 rounded-full border border-gray-500 text-[10px] text-gray-300 hover:text-white hover:border-gray-300 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+        aria-label="Show Collapse Mirror field descriptions"
+      >
+        ?
+      </button>
+    </div>
 
-        <button
-          id="collapseGuidedSubmit"
-          class="mt-2 w-full bg-red-600 hover:bg-red-700 text-white rounded-lg p-2 text-sm"
-        >
-          Submit Guided Collapse
-        </button>
-      </div>
-
-      <!-- Raw JSON Collapse section (kept intact for future Orion endpoint) -->
-      <div id="collapseRawSection" class="space-y-2 hidden">
-        <p class="text-xs text-gray-400">
-          Advanced mode: edit the raw Collapse JSON directly. This will later be exposed for Orion's
-          own collapse writing endpoint.
-        </p>
-        <label for="collapseInput" class="text-xs text-gray-400">Collapse JSON</label>
-        <textarea id="collapseInput" rows="8"
-                  class="w-full bg-gray-800 text-white rounded-lg p-2 text-sm font-mono"></textarea>
-        <button id="collapseSubmit"
-                class="mt-2 w-full bg-red-600 hover:bg-red-700 text-white rounded-lg p-2 text-sm">
-          Submit Raw Collapse
-        </button>
-      </div>
-
-      <p id="collapseStatus" class="text-xs text-gray-400 hidden"></p>
+    <!-- Guided / Raw toggle -->
+    <div class="inline-flex rounded-lg bg-gray-800/80 p-1 text-xs">
+      <button
+        id="collapseModeGuided"
+        class="px-3 py-1 rounded-md bg-gray-700 text-gray-100"
+      >
+        Guided Form
+      </button>
+      <button
+        id="collapseModeRaw"
+        class="px-3 py-1 rounded-md text-gray-300 hover:text-white"
+      >
+        Raw JSON
+      </button>
     </div>
   </div>
+
+  <!-- Tooltip panel (click-to-toggle) -->
+  <div
+    id="collapseTooltip"
+    class="mt-1 text-[11px] leading-snug text-gray-300 bg-gray-900/80 border border-gray-700 rounded-lg px-3 py-2 hidden"
+  >
+    <p class="mb-2 font-semibold text-xs text-red-300">
+      Collapse Mirror fields
+    </p>
+
+    <div class="space-y-1.5">
+      <div>
+        <span class="font-semibold text-gray-100">observer</span>
+        <span> — The agent (human or AI) who is perceiving or logging the event.</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">trigger</span>
+        <span> — The stimulus or situation that initiated the collapse.</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">observer_state</span>
+        <span> — Emotional, cognitive, or physical state of the observer.</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">field_resonance</span>
+        <span> — The energetic or symbolic signature of the moment (images, tones, moods).</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">intent</span>
+        <span> — Purpose of logging (reflection, ritual, experiment).</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">type</span>
+        <span> — Category of event (dream-reflection, ritual, shared-collapse, etc.).</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">emergent_entity</span>
+        <span> — Entity or persona that arose in the moment (e.g., Orion, an archetype, symbolic form).</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">summary</span>
+        <span> — Narrative summary of the collapse moment.</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">mantra</span>
+        <span> — Phrase or symbolic anchor tied to the collapse.</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">causal_echo</span>
+        <span> — Optional cause/effect linkage.</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">timestamp</span>
+        <span> — Auto-generated ISO 8601 UTC timestamp (unless provided).</span>
+      </div>
+      <div>
+        <span class="font-semibold text-gray-100">environment</span>
+        <span>
+          — Auto-detected from
+          <span class="font-mono text-xs">CHRONICLE_ENVIRONMENT</span>
+          or defaults to
+          <span class="font-mono text-xs">"dev"</span>.
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Guided Collapse Form -->
+  <div id="collapseGuidedSection" class="space-y-3">
+    <p class="text-xs text-gray-400">
+      Use this form to submit a Collapse entry without hand-writing JSON. The raw JSON editor
+      is still available in the "Raw JSON" tab.
+    </p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseObserverInput">Observer</label>
+        <input
+          id="collapseObserverInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="DEMO"
+        >
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseTriggerInput">Trigger</label>
+        <input
+          id="collapseTriggerInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="UI test submission"
+        >
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseObserverStateInput">
+          Observer State (comma-separated)
+        </label>
+        <input
+          id="collapseObserverStateInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="neutral"
+        >
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseFieldResonanceInput">
+          Field Resonance
+        </label>
+        <input
+          id="collapseFieldResonanceInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="baseline"
+        >
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseTypeInput">Type</label>
+        <input
+          id="collapseTypeInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="test"
+        >
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseEntityInput">Emergent Entity</label>
+        <input
+          id="collapseEntityInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="demo_entity"
+        >
+      </div>
+
+      <div class="space-y-2 md:col-span-2">
+        <label class="text-xs text-gray-400" for="collapseSummaryInput">Summary</label>
+        <textarea
+          id="collapseSummaryInput"
+          rows="2"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+        >This is a test collapse entry to validate the pipeline.</textarea>
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseMantraInput">Mantra</label>
+        <input
+          id="collapseMantraInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="hold the mirror"
+        >
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseCausalEchoInput">Causal Echo</label>
+        <input
+          id="collapseCausalEchoInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="none"
+        >
+      </div>
+
+      <div class="space-y-2">
+        <label class="text-xs text-gray-400" for="collapseEnvironmentInput">Environment</label>
+        <input
+          id="collapseEnvironmentInput"
+          class="w-full bg-gray-800 text-gray-100 rounded-lg px-3 py-2 text-sm"
+          value="dev"
+        >
+      </div>
+    </div>
+
+    <button
+      id="collapseGuidedSubmit"
+      class="mt-2 w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm"
+    >
+      Submit Guided Collapse
+    </button>
+  </div>
+
+  <!-- Raw JSON Collapse section (kept intact for future Orion endpoint) -->
+  <div id="collapseRawSection" class="space-y-2 hidden">
+    <p class="text-xs text-gray-400">
+      Advanced mode: edit the raw Collapse JSON directly. This will later be exposed for Orion's
+      own collapse writing endpoint.
+    </p>
+    <label for="collapseInput" class="text-xs text-gray-400">Collapse JSON</label>
+    <textarea
+      id="collapseInput"
+      rows="8"
+      class="w-full bg-gray-800 text-white rounded-lg p-2 text-sm font-mono"
+    ></textarea>
+    <button
+      id="collapseSubmit"
+      class="mt-2 w-full bg-red-600 hover:bg-red-700 text-white rounded-lg p-2 text-sm"
+    >
+      Submit Raw Collapse
+    </button>
+  </div>
+
+  <!-- Shared status line -->
+  <p id="collapseStatus" class="text-xs text-gray-400 hidden"></p>
+</div>
+
+
+
 
   <!-- Settings Slide-out Panel -->
   <div
@@ -363,6 +483,6 @@
   </div>
 
   <!-- The "?v=1.0.1" is a cache-busting parameter. -->
-  <script src="/static/js/app.js?v=1.0.3" defer></script>
+  <script src="/static/js/app.js?v=1.0.4" defer></script>
 </body>
 </html>

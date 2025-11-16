@@ -27,6 +27,7 @@ CHANNEL_DREAM_TRIGGER = os.getenv("CHANNEL_DREAM_TRIGGER", "orion:dream:trigger"
 CHANNEL_VOICE_TRANSCRIPT = os.getenv("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 CHANNEL_VOICE_LLM = os.getenv("CHANNEL_VOICE_LLM", "orion:voice:llm")
 CHANNEL_COLLAPSE_INTAKE = os.getenv("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
+CHANNEL_TTS_INTAKE = os.getenv("CHANNEL_TTS_INTAKE", "orion:tts:intake")
 
 # 🕐 Redis connection wait parameters
 REDIS_WAIT_ATTEMPTS = int(os.getenv("REDIS_WAIT_ATTEMPTS", "10"))

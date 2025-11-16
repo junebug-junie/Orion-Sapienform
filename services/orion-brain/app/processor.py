@@ -1,3 +1,5 @@
+import base64
+from uuid import uuid4
 import httpx
 import uuid
 import json
@@ -11,8 +13,11 @@ from app.config import (
 )
 from app.router import router_instance
 from app.bus_helpers import emit_brain_event, emit_brain_output, emit_chat_history_log
+from app.tts_gpu import TTSEngine
 
 logger = logging.getLogger(__name__)
+
+_tts_engine = None
 
 def process_brain_request(payload: dict):
     """
@@ -153,3 +158,53 @@ def process_brain_request(payload: dict):
             logger.info(f"[{trace_id}] Sent final reply to {response_channel}")
         except Exception as e:
             logger.error(f"[{trace_id}] Failed to publish reply to {response_channel}: {e}")
+
+def get_tts_engine() -> TTSEngine:
+    global _tts_engine
+    if _tts_engine is None:
+        _tts_engine = TTSEngine()  # or pass model name from config
+    return _tts_engine
+
+
+def process_tts_request(payload: dict):
+    """
+    Handles a single TTS request from the bus.
+
+    Expected payload:
+      {
+        "trace_id": "...",
+        "text": "hello world",
+        "response_channel": "orion:tts:rpc:<uuid>",
+        "source": "hub"
+      }
+    """
+    trace_id = payload.get("trace_id") or str(uuid4())
+    text = payload.get("text") or ""
+    response_channel = payload.get("response_channel")
+
+    if not text:
+        logger.warning(f"[{trace_id}] TTS request missing 'text'. Discarding.")
+        return
+
+    if not response_channel:
+        logger.warning(f"[{trace_id}] TTS request missing 'response_channel'. Discarding.")
+        return
+
+    logger.info(f"[{trace_id}] Processing TTS request (len={len(text)})")
+
+    try:
+        engine = get_tts_engine()
+        audio_b64 = engine.synthesize_to_b64(text)
+
+        reply_bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
+        reply_payload = {
+            "trace_id": trace_id,
+            "audio_b64": audio_b64,
+            "mime_type": "audio/wav",
+        }
+        reply_bus.publish(response_channel, reply_payload)
+        logger.info(f"[{trace_id}] Sent TTS reply to {response_channel}")
+
+    except Exception as e:
+        logger.error(f"[{trace_id}] FAILED to synthesize TTS: {e}", exc_info=True)
+

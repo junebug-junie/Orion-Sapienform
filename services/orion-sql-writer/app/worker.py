@@ -50,13 +50,19 @@ def _process_one(session, channel: str, msg: dict) -> Optional[str]:
         session.merge(CollapseMirror(**db_data))
 
     elif table == "chat_history_log":
+
+        kind = msg.get("kind")
+        if kind == "warm_start":
+            logger.info("Skipping warm_start event for chat_history_log")
+            return None
+
         payload = ChatHistoryInput.model_validate(msg).normalize()
         db_data = payload.model_dump()
         log_id = payload.id
         session.merge(ChatHistoryLogSQL(**db_data))
 
     elif table == "dreams":
-        # 1. (NEW) Filter msg to only include fields known by DreamInput
+        # 1. Filter msg to only include fields known by DreamInput
         known_fields = DreamInput.model_fields.keys()
         filtered_msg = {k: v for k, v in msg.items() if k in known_fields}
 

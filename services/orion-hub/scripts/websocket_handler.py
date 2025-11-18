@@ -134,8 +134,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # 1) LLM via Bus RPC
             rpc = BrainRPC(bus)
+            user_prompt = transcript.strip()
+
             reply = await rpc.call_llm(
-                prompt="",           # we rely fully on history messages
+                prompt=user_prompt,
                 history=history[:],
                 temperature=temperature,
             )

@@ -98,11 +98,12 @@ async def api_chat(
     rpc = BrainRPC(bus)
 
     # Inject Phase-1 mini identity stub
+    user_prompt = user_messages[-1].get("content", "")
     system_stub = {"role": "system", "content": mini_personality_summary()}
     full_history = [system_stub] + user_messages
 
     reply = await rpc.call_llm(
-        prompt="",              # brain uses full_history
+        prompt=user_prompt,
         history=full_history,
         temperature=temperature,
     )

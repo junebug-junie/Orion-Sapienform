@@ -27,6 +27,7 @@ def process_brain_request(payload: dict):
     """
     trace_id = payload.get("trace_id") or str(uuid.uuid4())
     source = payload.get("source")
+    kind = payload.get("kind") or "chat"   # e.g. "warm_start" or "chat"
     response_channel = payload.get("response_channel")
 
     fragments_data = payload.get("fragments", [])
@@ -132,12 +133,17 @@ def process_brain_request(payload: dict):
 
     else:
         # This is a chat. Publish to history and send the reply.
-        emit_chat_history_log({
-            "trace_id": trace_id,
-            "source": source or "bus",
-            "prompt": payload.get("prompt"),
-            "response": text
-        })
+
+        if kind == "warm_start":
+            logger.info(f"[{trace_id}] Warm-start request; skipping chat history log.")
+        else:
+
+            emit_chat_history_log({
+                "trace_id": trace_id,
+                "source": source or "bus",
+                "prompt": payload.get("prompt"),
+                "response": text
+            })
 
         emit_brain_output({
             "trace_id": trace_id,

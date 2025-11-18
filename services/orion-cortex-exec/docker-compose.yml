@@ -1,0 +1,28 @@
+services:
+  cortex-exec:
+    build:
+      context: ../..
+      dockerfile: services/orion-cortex-exec/Dockerfile
+    container_name: ${PROJECT}-cortex-exec
+    restart: unless-stopped
+    env_file:
+      - .env
+
+    environment:
+      # Cortex-specific settings from .env
+      NODE_NAME: ${NODE_NAME}
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
+
+      EXEC_REQUEST_PREFIX: ${EXEC_REQUEST_PREFIX}
+      EXEC_RESULT_PREFIX: ${EXEC_RESULT_PREFIX}
+      ORION_CORTEX_STEP_TIMEOUT_MS: ${ORION_CORTEX_STEP_TIMEOUT_MS}
+
+    ports:
+      - "8070:8070"
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

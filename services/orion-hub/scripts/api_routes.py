@@ -1,35 +1,140 @@
+# scripts/api_routes.py
+
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 from fastapi.responses import HTMLResponse, JSONResponse
+from typing import Optional
 
 from .settings import settings
+from .warm_start import mini_personality_summary, warm_start_session
+from .llm_rpc import BrainRPC
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
-logger = logging.getLogger("voice-app.api")
+logger = logging.getLogger("orion-hub.api")
+
 router = APIRouter()
 
+
+# ======================================================================
+# 🏠 ROOT + STATIC HTML
+# ======================================================================
 @router.get("/")
 async def root():
-    """Serves the main HTML page."""
-
+    """Serves the main Hub UI (index.html)."""
     from .main import html_content
     return HTMLResponse(content=html_content, status_code=200)
 
+
 @router.get("/health")
 def health():
-    """Provides a simple health check endpoint."""
+    """Simple health check endpoint."""
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
+
+# ======================================================================
+# 🧠 SESSION MANAGEMENT
+# ======================================================================
+async def ensure_session(session_id: Optional[str], bus) -> str:
+    """
+    Ensures the session_id exists and is warm-started.
+    If missing or not initialized, warm_start_session() handles it.
+    """
+    if session_id is None:
+        return await warm_start_session(None, bus)
+
+    key = f"orion:hub:session:{session_id}:state"
+    state = bus.redis.hgetall(key)
+
+    if not state or state.get("warm_started") != "1":
+        # Session exists but not warm-started — fix it
+        return await warm_start_session(session_id, bus)
+
+    return session_id
+
+
+@router.get("/api/session")
+async def api_session(x_orion_session_id: Optional[str] = Header(None)):
+    """
+    Called by Hub UI on load.
+    Always returns a warm-started session_id.
+    """
+    from .main import bus
+    if not bus:
+        raise RuntimeError("OrionBus not initialized.")
+
+    session_id = await ensure_session(x_orion_session_id, bus)
+    return {"session_id": session_id}
+
+
+# ======================================================================
+# 💬 CHAT ENDPOINT (BUS-based Brain RPC)
+# ======================================================================
+@router.post("/api/chat")
+async def api_chat(
+    payload: dict,
+    x_orion_session_id: Optional[str] = Header(None)
+):
+    """
+    Main LLM chat endpoint.
+    Uses BrainRPC (bus-RPC) to talk to Brain GPU.
+    """
+    from .main import bus
+    if not bus:
+        raise RuntimeError("OrionBus not initialized.")
+
+    # Ensure warm-started session
+    session_id = await ensure_session(x_orion_session_id, bus)
+
+    user_messages = payload.get("messages", [])
+    temperature = payload.get("temperature", 0.7)
+
+    if not isinstance(user_messages, list) or len(user_messages) == 0:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid payload: missing messages[]"}
+        )
+
+    # Brain RPC
+    rpc = BrainRPC(bus)
+
+    # Inject Phase-1 mini identity stub
+    system_stub = {"role": "system", "content": mini_personality_summary()}
+    full_history = [system_stub] + user_messages
+
+    reply = await rpc.call_llm(
+        prompt="",              # brain uses full_history
+        history=full_history,
+        temperature=temperature,
+    )
+
+    # Store chat tail in Redis (last 20 entries)
+    history_key = f"orion:hub:session:{session_id}:history"
+    bus.redis.lpush(history_key, str(user_messages[-1])[:4000])
+    bus.redis.ltrim(history_key, 0, 19)
+
+    logger.info(f"💬 Chat completed for session {session_id}")
+
+    return {
+        "session_id": session_id,
+        "response": reply,
+    }
+
+
+# ======================================================================
+# 📿 COLLAPSE MIRROR ENDPOINTS
+# ======================================================================
 @router.get("/schema/collapse")
 def get_collapse_schema():
     """Exposes the CollapseMirrorEntry schema for UI templating."""
     logger.info("Fetching CollapseMirrorEntry schema")
     return JSONResponse(CollapseMirrorEntry.schema())
 
+
 @router.post("/submit-collapse")
 async def submit_collapse(data: dict):
-    """Receives Collapse Mirror data and publishes it to the bus."""
-
+    """
+    Receives Collapse Mirror data and publishes it to the bus.
+    """
     from .main import bus
     logger.info(f"🔥 /submit-collapse called with: {data}")
 
@@ -37,20 +142,19 @@ async def submit_collapse(data: dict):
         logger.error("Submission failed: OrionBus is disabled or not connected.")
         return JSONResponse(
             status_code=503,
-            content={"success": False, "error": "OrionBus disabled or not connected"}
+            content={"success": False, "error": "OrionBus disabled or unavailable"}
         )
 
-    logger.info(f"✅ Using bus channel: {settings.CHANNEL_COLLAPSE_INTAKE}")
     try:
         entry = CollapseMirrorEntry(**data).with_defaults()
         bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode='json'))
-        logger.info(f"📡 Hub published collapse → {settings.CHANNEL_COLLAPSE_INTAKE}")
+        logger.info(f"📡 Published Collapse Mirror → {settings.CHANNEL_COLLAPSE_INTAKE}")
 
         return {"success": True}
+
     except Exception as e:
         logger.error(f"❌ Hub publish error: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
         )
-

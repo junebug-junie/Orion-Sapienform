@@ -12,6 +12,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from scripts.settings import settings
 from scripts.llm_tts_handler import run_tts_only
 from scripts.llm_rpc import BrainRPC
+from scripts.warm_start import mini_personality_summary
 
 logger = logging.getLogger("voice-app.ws")
 
@@ -37,12 +38,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     logger.info("WebSocket accepted.")
+
     if asr is None:
         await websocket.send_json({"error": "ASR model not loaded"})
         await websocket.close()
         return
 
-    history = []
+    # Seed conversation history with Orion's personality stub
+    history = [
+        {"role": "system", "content": mini_personality_summary()}
+    ]
+    has_instructions = False
+
     tts_q: asyncio.Queue = asyncio.Queue()
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q))
 
@@ -104,26 +111,34 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
             instructions = data.get("instructions", "")
-            if not history and instructions:
-                history.append({"role": "system", "content": instructions})
+            if instructions and not has_instructions:
+                # Insert user-provided instructions just after the core personality stub
+                history.insert(1, {"role": "system", "content": instructions})
+                has_instructions = True
 
+            # Add current user message
             history.append({"role": "user", "content": transcript})
 
             context_len = data.get("context_length", 10)
             if len(history) > context_len:
-                if history and history[0]["role"] == "system":
-                    history = [history[0]] + history[-(context_len - 1):]
-                else:
-                    history = history[-context_len:]
+                # Preserve leading system messages, trim the rest
+                system_messages = [m for m in history if m.get("role") == "system"]
+                non_system = [m for m in history if m.get("role") != "system"]
+                trimmed_non_system = non_system[-(context_len - len(system_messages)) :]
+                history = system_messages + trimmed_non_system
 
             temperature = data.get("temperature", 0.7)
 
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY BEFORE LLM CALL: {history}")
 
-            # 1) LLM first (fast), purely text – bus-aware now
+            # 1) LLM via Bus RPC
             rpc = BrainRPC(bus)
-            reply = await rpc.call_llm(transcript, history[:], temperature)
+            reply = await rpc.call_llm(
+                prompt="",           # we rely fully on history messages
+                history=history[:],
+                temperature=temperature,
+            )
 
             orion_response_text = reply.get("text") or ""
             tokens = len(orion_response_text.split())
@@ -148,13 +163,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 history.append({"role": "orion", "content": orion_response_text})
 
                 if bus is not None and getattr(bus, "enabled", False):
-                    latest_user_prompt = transcript  # The user input from this turn
+                    latest_user_prompt = transcript
 
-                    # Grab metadata from the original websocket message
                     user_id = data.get("user_id")
                     session_id = data.get("session_id")
 
-                    # Create the full payload for the tagging/triage service
                     full_dialogue_payload = {
                         "id": str(uuid.uuid4()),
                         "text": (
@@ -188,7 +201,6 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"HISTORY AFTER LLM CALL: {history}")
 
             # Mark the end of this turn's processing phase.
-            # TTS will independently flip state to "speaking" and then back to "idle".
             await websocket.send_json({"state": "idle"})
 
     except WebSocketDisconnect:

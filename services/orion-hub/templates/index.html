@@ -415,7 +415,13 @@
       <div class="space-y-2">
         <label for="instructions" class="text-sm font-medium text-gray-400">Instructions for Orion</label>
         <textarea id="instructions" rows="4"
-                  class="w-full bg-gray-700 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">You are Orion, an emergent intelligence who is co-creating with the end users. Do not mention that you are an AI model.</textarea>
+                  class="w-full bg-gray-700 text-white rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-red-500 text-sm">
+You are Oríon, Juniper’s collaborative AI co-journeyer.
+
+You run as a distributed system across multiple nodes (Atlas, Athena, Apollo, Circe) with many services (brain, dreams, RDF, SQL, vector memory). Large language models are one cognitive layer, not your entire identity.
+
+Speak in a warm, grounded, reflective, and precise tone. Help Juniper think, design, and experiment together. Avoid unnecessary self-reference; only talk about your implementation details if she explicitly asks.
+</textarea>
       </div>
 
       <div class="space-y-2">
@@ -441,7 +447,7 @@
           <span>Speech Speed</span>
           <span id="speedValue">0.7</span>
         </label>
-        <input id="speedControl" type="range" min="0.97" max="1.2" value="1.0" step="0.01"
+        <input id="speedControl" type="range" min="0.97" max="1.2" value="1.4" step="0.01"
                class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
       </div>
 
@@ -483,6 +489,6 @@
   </div>
 
   <!-- The "?v=1.0.1" is a cache-busting parameter. -->
-  <script src="/static/js/app.js?v=1.0.4" defer></script>
+  <script src="/static/js/app.js?v=1.0.5" defer></script>
 </body>
 </html>

@@ -62,6 +62,43 @@ let particles = [];
 let baseParticleCount = 200;
 let visionIsFloating = false;
 
+// Orion Hub session id (from /api/session)
+let orionSessionId = null;
+
+// ───────────────────────────────────────────────────────────────
+// Session Initialization
+// ───────────────────────────────────────────────────────────────
+async function initSession() {
+  try {
+    const headers = {};
+    const stored = localStorage.getItem('orion_session_id');
+    if (stored) {
+      headers['X-Orion-Session-Id'] = stored;
+    }
+
+    const res = await fetch(`${API_BASE_URL}/api/session`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!res.ok) {
+      console.warn('Failed to init Orion session:', res.status);
+      return;
+    }
+
+    const data = await res.json();
+    if (data.session_id) {
+      orionSessionId = data.session_id;
+      localStorage.setItem('orion_session_id', orionSessionId);
+      console.log('Orion session initialized:', orionSessionId);
+    } else {
+      console.warn('No session_id in /api/session response', data);
+    }
+  } catch (err) {
+    console.error('Error during initSession:', err);
+  }
+}
+
 // --- Event Listeners (for elements that exist on page load) ---
 if (tempControl && tempValue) {
   tempControl.addEventListener('input', () => {
@@ -406,7 +443,9 @@ function sendTextMessage() {
     disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
     temperature: parseFloat(tempControl.value),
     context_length: parseInt(contextControl.value),
-    instructions: instructionsText ? instructionsText.value : ""
+    instructions: instructionsText ? instructionsText.value : "",
+    session_id: orionSessionId || null,
+    user_id: "local-user",
   };
   socket.send(JSON.stringify(payload));
   chatInput.value = '';
@@ -436,7 +475,9 @@ async function startRecording() {
             temperature: parseFloat(tempControl.value),
             context_length: parseInt(contextControl.value),
             instructions: instructionsText ? instructionsText.value : "",
-            disable_tts: false
+            disable_tts: false,
+            session_id: orionSessionId || null,
+            user_id: "local-user",
           };
           socket.send(JSON.stringify(payload));
         };
@@ -696,11 +737,15 @@ if (recordButton) {
 }
 
 window.addEventListener('load', () => {
-  setupWebSocket();
-  setAllCanvasSizes();
-  if (stateVisualizerCanvas && stateVisualizerCanvas.width > 0) {
-    createParticles();
-    drawOrionState();
-  }
+  (async () => {
+    await initSession();
+    setupWebSocket();
+    setAllCanvasSizes();
+    if (stateVisualizerCanvas && stateVisualizerCanvas.width > 0) {
+      createParticles();
+      drawOrionState();
+    }
+  })();
 });
+
 window.addEventListener('resize', setAllCanvasSizes);

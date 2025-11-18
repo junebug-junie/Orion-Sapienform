@@ -71,14 +71,26 @@ async def startup_event():
     if settings.ORION_BUS_ENABLED:
         try:
             logger.info(f"Connecting OrionBus → {settings.ORION_BUS_URL}")
-            bus = OrionBus(url=settings.ORION_BUS_URL)
-            # OrionBus itself will log its connection status.
-            logger.info("OrionBus initialized.")
+            # Use the new OrionBus API (client instead of redis)
+            bus = OrionBus(
+                url=settings.ORION_BUS_URL,
+                enabled=settings.ORION_BUS_ENABLED,
+            )
+
+            # Verify connection using the underlying Redis client
+            if bus.enabled and getattr(bus, "client", None) is not None:
+                bus.client.ping()
+                logger.info("OrionBus connection established successfully.")
+            else:
+                logger.error("OrionBus is enabled but Redis client is not available.")
+                bus = None
+
         except Exception as e:
-            logger.error(f"Failed to initialize OrionBus: {e}", exc_info=True)
+            logger.error(f"Failed to initialize OrionBus: {e}")
             bus = None
     else:
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")
+
 
     # ------------------------------------------------------------
     # Load UI HTML Template

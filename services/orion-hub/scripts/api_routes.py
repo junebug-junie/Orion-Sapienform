@@ -37,22 +37,37 @@ def health():
 async def ensure_session(session_id: Optional[str], bus) -> str:
     """
     Ensures the session_id exists and is warm-started.
-    If the underlying OrionBus does not expose a raw Redis client,
-    we simply warm-start on demand without Redis-backed state.
+
+    - If no session_id: create + warm-start.
+    - If session_id exists: check Redis via bus.client (if available)
+      for `warm_started`. If missing, warm-start and mark it.
     """
+    # If bus is missing/disabled, just delegate to warm_start_session without Redis bookkeeping
+    if not bus or not getattr(bus, "enabled", False):
+        logger.warning("ensure_session called but OrionBus is disabled; returning bare session_id.")
+        if session_id is None:
+            return await warm_start_session(None, bus=None)
+        return session_id
+
+    # No session id → new + warm start
     if session_id is None:
         return await warm_start_session(None, bus)
 
-    # If OrionBus does not expose a Redis client, skip the Redis lookup
-    redis_client = getattr(bus, "redis", None)
-    if redis_client is None:
+    client = getattr(bus, "client", None)
+    if client is None:
         logger.info(
-            f"OrionBus has no 'redis' attribute; warm-starting session {session_id} without Redis state."
+            f"OrionBus has no 'client' attribute; "
+            f"treating session {session_id} as already warm-started."
         )
-        return await warm_start_session(session_id, bus)
+        return session_id
 
     key = f"orion:hub:session:{session_id}:state"
-    state = redis_client.hgetall(key)
+
+    try:
+        state = client.hgetall(key)
+    except Exception as e:
+        logger.warning(f"Failed to read warm-start state from Redis for {session_id}: {e}")
+        return session_id
 
     if not state or state.get("warm_started") != "1":
         # Session exists but not warm-started — fix it
@@ -118,17 +133,14 @@ async def api_chat(
     )
 
     # Store chat tail in Redis (last 20 entries)
-    history_key = f"orion:hub:session:{session_id}:history"
-    bus.redis.lpush(history_key, str(user_messages[-1])[:4000])
-    bus.redis.ltrim(history_key, 0, 19)
-
-    logger.info(f"💬 Chat completed for session {session_id}")
-
-    return {
-        "session_id": session_id,
-        "response": reply,
-    }
-
+    client = getattr(bus, "client", None)
+    if client is not None:
+        try:
+            history_key = f"orion:hub:session:{session_id}:history"
+            client.lpush(history_key, str(user_messages[-1])[:4000])
+            client.ltrim(history_key, 0, 19)
+        except Exception as e:
+            logger.warning(f"Failed to store chat tail in Redis for {session_id}: {e}")
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS

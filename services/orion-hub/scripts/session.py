@@ -13,7 +13,16 @@ async def ensure_session(session_id: Optional[str], bus) -> str:
         return await warm_start_session(None, bus)
 
     key = f"orion:hub:session:{session_id}:state"
-    state = bus.redis.hgetall(key)
+
+    client = getattr(bus, "client", None)
+    if client is None:
+        logger.info(
+            "OrionBus has no 'client' attribute in session.py; "
+            "treating state as empty."
+        )
+        return {}
+
+    state = client.hgetall(key)
 
     if not state or state.get("warm_started") != "1":
         return await warm_start_session(session_id, bus)

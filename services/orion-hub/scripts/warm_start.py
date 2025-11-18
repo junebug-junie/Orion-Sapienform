@@ -111,7 +111,7 @@ async def warm_start_session(
     - Loads identity + narrative YAMLs
     - Builds a one-shot warm-start system prompt
     - Sends it to Brain via BrainRPC (Bus RPC)
-    - Stores confirmation + warm_started flag in Redis via bus.redis
+    - Stores confirmation + warm_started flag in Redis via bus.client
     """
     if session_id is None:
         session_id = str(uuid.uuid4())
@@ -140,24 +140,29 @@ async def warm_start_session(
         logger.error(f"Warm-start BrainRPC error for session {session_id}: {e}", exc_info=True)
         confirmation = f"error: {e}"
 
-    # Persist warm-start state in Redis (if exposed by OrionBus)
-    redis_client = getattr(bus, "redis", None)
-    if redis_client is None:
+    # ───────────────────────────────────────────────────────────
+    # Redis persistence (optional, via bus.client)
+    # ───────────────────────────────────────────────────────────
+    client = getattr(bus, "client", None)
+    if client is None:
         logger.info(
-            f"OrionBus has no 'redis' attribute; skipping Redis persistence for session {session_id}."
+            f"OrionBus has no 'client' attribute; skipping Redis persistence "
+            f"for warm-start state of session {session_id}."
         )
         return session_id
 
     try:
-        redis_client.hset(
-            f"orion:hub:session:{session_id}:state",
+        key = f"orion:hub:session:{session_id}:state"
+        client.hset(
+            key,
             mapping={
                 "warm_started": "1",
                 "warm_confirmation": confirmation,
             },
         )
-        logger.info(f"✅ Warm-start state stored for session {session_id}")
+        logger.info(f"✅ Warm-start state stored in Redis for session {session_id}")
     except Exception as e:
         logger.error(f"Failed to persist warm-start state for {session_id}: {e}", exc_info=True)
 
     return session_id
+

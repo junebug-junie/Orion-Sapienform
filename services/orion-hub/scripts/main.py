@@ -58,10 +58,11 @@ async def startup_event():
         f"on {settings.WHISPER_DEVICE}/{settings.WHISPER_COMPUTE_TYPE}"
     )
 
+    # ASR(size, device, compute_type)
     asr = ASR(
-        model_size=settings.WHISPER_MODEL_SIZE,
-        device=settings.WHISPER_DEVICE,
-        compute_type=settings.WHISPER_COMPUTE_TYPE,
+        settings.WHISPER_MODEL_SIZE,
+        settings.WHISPER_DEVICE,
+        settings.WHISPER_COMPUTE_TYPE,
     )
 
     # ------------------------------------------------------------
@@ -71,12 +72,10 @@ async def startup_event():
         try:
             logger.info(f"Connecting OrionBus → {settings.ORION_BUS_URL}")
             bus = OrionBus(url=settings.ORION_BUS_URL)
-
-            # Verify connection
-            if bus.redis.ping():
-                logger.info("OrionBus connection established successfully.")
+            # OrionBus itself will log its connection status.
+            logger.info("OrionBus initialized.")
         except Exception as e:
-            logger.error(f"Failed to initialize OrionBus: {e}")
+            logger.error(f"Failed to initialize OrionBus: {e}", exc_info=True)
             bus = None
     else:
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")

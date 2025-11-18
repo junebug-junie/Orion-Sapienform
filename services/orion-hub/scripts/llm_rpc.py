@@ -26,8 +26,7 @@ class BrainRPC:
         """
         trace_id = str(uuid.uuid4())
         reply_channel = f"orion:brain:rpc:{trace_id}"
-        print('I added prompt:')
-        print(prompt)
+
         payload = {
             "trace_id": trace_id,
             "source": settings.SERVICE_NAME,
@@ -47,13 +46,11 @@ class BrainRPC:
             raise RuntimeError("BrainRPC used while OrionBus is disabled")
 
         # DEBUG: log full outbound RPC payload
-        try:
-            debug_out = json.dumps(payload, indent=2)[:2000]
-            logger.warning(f"[DEBUG][HUB → BrainRPC publish] Payload:\n{debug_out}")
-        except Exception as e:
-            logger.error(f"[DEBUG] Failed to serialize outbound payload: {e}")
-
-
+        #try:
+        #    debug_out = json.dumps(payload, indent=2)[:2000]
+        #    logger.warning(f"[DEBUG][HUB → BrainRPC publish] Payload:\n{debug_out}")
+        #except Exception as e:
+        #    logger.error(f"[DEBUG] Failed to serialize outbound payload: {e}")
 
         self.bus.publish(settings.CHANNEL_BRAIN_INTAKE, payload)
         logger.info(f"[{trace_id}] Published Brain RPC request to {settings.CHANNEL_BRAIN_INTAKE}")
@@ -74,7 +71,7 @@ class BrainRPC:
         msg = await queue.get()
         reply = msg.get("data", {})
 
-        logger.warning(f"[DEBUG][BrainRPC ← Brain reply] Raw reply:\n{reply}")
+        #logger.warning(f"[DEBUG][BrainRPC ← Brain reply] Raw reply:\n{reply}")
         logger.info(f"[{trace_id}] Brain RPC reply received.")
         return reply
 

@@ -140,9 +140,16 @@ async def warm_start_session(
         logger.error(f"Warm-start BrainRPC error for session {session_id}: {e}", exc_info=True)
         confirmation = f"error: {e}"
 
-    # Persist warm-start state in Redis
+    # Persist warm-start state in Redis (if exposed by OrionBus)
+    redis_client = getattr(bus, "redis", None)
+    if redis_client is None:
+        logger.info(
+            f"OrionBus has no 'redis' attribute; skipping Redis persistence for session {session_id}."
+        )
+        return session_id
+
     try:
-        bus.redis.hset(
+        redis_client.hset(
             f"orion:hub:session:{session_id}:state",
             mapping={
                 "warm_started": "1",

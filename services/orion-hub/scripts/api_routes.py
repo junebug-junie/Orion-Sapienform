@@ -37,13 +37,22 @@ def health():
 async def ensure_session(session_id: Optional[str], bus) -> str:
     """
     Ensures the session_id exists and is warm-started.
-    If missing or not initialized, warm_start_session() handles it.
+    If the underlying OrionBus does not expose a raw Redis client,
+    we simply warm-start on demand without Redis-backed state.
     """
     if session_id is None:
         return await warm_start_session(None, bus)
 
+    # If OrionBus does not expose a Redis client, skip the Redis lookup
+    redis_client = getattr(bus, "redis", None)
+    if redis_client is None:
+        logger.info(
+            f"OrionBus has no 'redis' attribute; warm-starting session {session_id} without Redis state."
+        )
+        return await warm_start_session(session_id, bus)
+
     key = f"orion:hub:session:{session_id}:state"
-    state = bus.redis.hgetall(key)
+    state = redis_client.hgetall(key)
 
     if not state or state.get("warm_started") != "1":
         # Session exists but not warm-started — fix it

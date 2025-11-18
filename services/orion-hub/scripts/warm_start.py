@@ -126,7 +126,7 @@ async def warm_start_session(
     narrative = load_narrative()
     system_prompt = build_warm_start_system_prompt(identity, narrative)
 
-    rpc = BrainRPC(bus)
+    rpc = BrainRPC(bus, kind="warm_start")
 
     logger.info(f"🚀 Warm-starting session {session_id}")
     try:

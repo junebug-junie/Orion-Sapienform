@@ -1,0 +1,50 @@
+name: tag_enrich
+label: Tag Enrichment
+description: >
+  Analyze a memory fragment and generate symbolic tags that increase semantic richness
+  and cross-linkability in memory systems.
+
+category: Transform
+priority: low
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: false
+requires_memory: true
+
+timeout_ms: 2500
+max_recursion_depth: 1
+
+services:
+  - MetaTagService
+  - VectorMemoryService
+
+prompt_template: tag_enrich_prompt.j2
+
+plan:
+  - name: vector_similarity_pull
+    description: Identify nearest neighbors to derive tag context.
+    order: 0
+    services:
+      - VectorMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: generate_tags
+    description: Use MetaTagService to enrich fragment tags.
+    order: 1
+    services:
+      - MetaTagService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: store_tags
+    description: Write tags back to RDF or SQL store.
+    order: 2
+    services:
+      - MetaTagService
+    requires_gpu: false
+    requires_memory: true
+
+safety_rules: []

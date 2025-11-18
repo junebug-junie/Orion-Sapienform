@@ -1,0 +1,52 @@
+name: story_weave
+label: Story Weave
+description: >
+  Integrate memory fragments, tags, and context into a narrative.
+
+category: Generative
+priority: low
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+timeout_ms: 4500
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+  - VectorMemoryService
+  - RDFMemoryService
+
+prompt_template: story_weave_prompt.j2
+
+plan:
+  - name: gather_memory_fragments
+    description: Pull memory components for narrative fusion.
+    order: 0
+    services:
+      - VectorMemoryService
+      - RDFMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: compose_narrative_prompt
+    description: Build narrative weaving prompt.
+    order: 1
+    prompt_template: story_weave_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_generate_story
+    description: Generate story-like narrative.
+    order: 2
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

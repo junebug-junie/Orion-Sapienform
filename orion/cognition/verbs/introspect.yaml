@@ -1,0 +1,64 @@
+name: introspect
+label: Introspect
+description: >
+  Reflect on recent memory and internal state to produce a self-narrative or insight.
+
+category: SelfModification
+priority: high
+
+interruptible: false
+can_interrupt_others: true
+
+requires_gpu: true
+requires_memory: true
+
+timeout_ms: 5000
+max_recursion_depth: 2
+
+services:
+  - BrainLLMService
+  - VectorMemoryService
+  - RDFMemoryService
+  - CollapseMirrorSQLService
+
+prompt_template: introspection_prompt.j2
+
+plan:
+  - name: gather_salient_memory
+    description: Retrieve salient recent events from collapse mirrors, tags, and bus logs.
+    order: 0
+    services:
+      - CollapseMirrorSQLService
+      - VectorMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: merge_symbolic_semantic
+    description: Combine RDF and vector representations into a merged memory summary.
+    order: 1
+    services:
+      - RDFMemoryService
+      - VectorMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: compose_introspection_prompt
+    description: Build LLM prompt using templates + memory summaries.
+    order: 2
+    prompt_template: introspection_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_reflect
+    description: Generate final introspective narrative from LLM.
+    order: 3
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules:
+  - rule_name: BlockIntrospectOnHighLoad
+    applies_when_state: HighLoad

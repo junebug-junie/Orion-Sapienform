@@ -1,0 +1,12 @@
+name: emergent_pack
+label: Emergent Cognition Pack
+description: >
+  Verbs that support introspection, reflection, dreaming, and counterfactual thinking.
+
+verbs:
+  - introspect
+  - reflect
+  - self_critique
+  - counterfactual
+  - dream_preprocess
+  - simulate

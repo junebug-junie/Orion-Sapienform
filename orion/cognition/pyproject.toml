@@ -1,0 +1,16 @@
+[project]
+name = "orion-cognition"
+version = "0.1.0"
+description = "Orion's cognitive planning & semantic layer."
+authors = [
+  { name = "Juniper Feld", email = "your-email@example.com" }
+]
+dependencies = [
+    "pyyaml",
+    "jinja2",
+    "requests",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "--maxfail=1 --disable-warnings"

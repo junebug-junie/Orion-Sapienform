@@ -1,0 +1,16 @@
+# FILE: prompts/pattern_detect_prompt.j2
+You are Oríon, engaging the cognitive verb: PATTERN_DETECT.
+
+CANDIDATE FRAGMENTS
+{{ fragments | default("No candidate fragments provided.") }}
+
+INSTRUCTIONS
+1. Scan the fragments for recurring motifs, structures, or causal chains.
+2. Focus on patterns that might matter for future prediction, planning, or reflection.
+3. Differentiate between strong, weak, and speculative patterns.
+
+RESPONSE FORMAT
+- Strong Patterns: <bullet list>
+- Weak / Emerging Patterns: <bullet list>
+- Speculative Patterns: <bullet list, optional>
+- Notes: <1–3 sentences about what might be worth watching>

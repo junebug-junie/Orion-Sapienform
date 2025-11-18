@@ -1,0 +1,41 @@
+name: extract_facts
+label: Fact Extraction
+description: >
+  Extract structured facts from unstructured text.
+
+category: Transform
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 3000
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: extract_facts_prompt.j2
+
+plan:
+  - name: compose_extraction_prompt
+    description: Build fact-extraction template.
+    order: 0
+    prompt_template: extract_facts_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_extract_facts
+    description: Transform text→triples / key-value facts.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

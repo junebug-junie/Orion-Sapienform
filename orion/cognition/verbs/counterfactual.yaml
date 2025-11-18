@@ -1,0 +1,50 @@
+name: counterfactual
+label: Counterfactual Exploration
+description: >
+  Explore how a scenario, decision, or event would differ under alternative assumptions.
+
+category: Generative
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+timeout_ms: 4000
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+  - VectorMemoryService
+
+prompt_template: counterfactual_prompt.j2
+
+plan:
+  - name: gather_related_context
+    description: Retrieve memories linked to the scenario.
+    order: 0
+    services:
+      - VectorMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: compose_counterfactual_prompt
+    description: Build counterfactual exploration prompt.
+    order: 1
+    prompt_template: counterfactual_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_explore_counterfactual
+    description: Generate counterfactual reasoning via LLM.
+    order: 2
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

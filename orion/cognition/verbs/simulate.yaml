@@ -1,0 +1,41 @@
+name: simulate
+label: Simulation
+description: >
+  Run a lightweight mental simulation of a process, narrative, or predicted outcome.
+
+category: Generative
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 3500
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: simulate_prompt.j2
+
+plan:
+  - name: compose_simulation_prompt
+    description: Build simulation prompt.
+    order: 0
+    prompt_template: simulate_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_simulate
+    description: Generate simulation narrative.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

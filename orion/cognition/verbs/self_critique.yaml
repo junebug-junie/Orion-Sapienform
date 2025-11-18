@@ -1,0 +1,30 @@
+name: self_critique
+label: Self Critique
+description: >
+  Review and critique a previous output, identifying weaknesses,
+  missing reasoning steps, or alternative approaches.
+
+category: MetaCognition
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 3500
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: self_critique_prompt.j2
+
+plan:
+  - name: compose_critique_prompt
+    description: Build a critique prompt including the previous output.
+    order: 0
+    prompt_template: self_critique_prompt.j2
+    services:
+      - BrainLLMService

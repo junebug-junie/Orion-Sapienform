@@ -1,0 +1,41 @@
+name: evaluate
+label: Evaluate
+description: >
+  Evaluate the correctness, coherence, or completeness of a given output.
+
+category: MetaCognition
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 2500
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: evaluate_prompt.j2
+
+plan:
+  - name: compose_evaluation_prompt
+    description: Build evaluation prompt.
+    order: 0
+    prompt_template: evaluate_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_evaluate_output
+    description: Evaluate the input.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

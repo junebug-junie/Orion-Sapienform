@@ -1,0 +1,41 @@
+name: assess_risk
+label: Risk Assessment
+description: >
+  Evaluate the risks, tradeoffs, and potential failure modes of a situation.
+
+category: ExecutiveControl
+priority: high
+
+interruptible: false
+can_interrupt_others: true
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 5000
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: assess_risk_prompt.j2
+
+plan:
+  - name: compose_risk_prompt
+    description: Build analytic risk assessment prompt.
+    order: 0
+    prompt_template: assess_risk_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_assess_risks
+    description: Generate risk analysis.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

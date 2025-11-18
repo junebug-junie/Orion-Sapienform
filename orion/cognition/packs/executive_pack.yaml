@@ -1,0 +1,11 @@
+name: executive_pack
+label: Executive Control Pack
+description: >
+  Verbs that help Oríon classify, plan, prioritize, and evaluate actions.
+
+verbs:
+  - triage
+  - plan_action
+  - assess_risk
+  - goal_formulate
+  - evaluate

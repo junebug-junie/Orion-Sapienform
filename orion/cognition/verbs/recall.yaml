@@ -1,0 +1,53 @@
+name: recall
+label: Recall Memory
+description: >
+  Retrieve relevant memory fragments from vector, RDF, and SQL stores.
+
+category: MemoryAccess
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: false
+requires_memory: true
+
+timeout_ms: 3000
+max_recursion_depth: 1
+
+services:
+  - VectorMemoryService
+  - RDFMemoryService
+  - CollapseMirrorSQLService
+
+prompt_template: none
+
+plan:
+  - name: vector_search
+    description: >
+      Perform vector similarity search for relevant memories.
+    order: 0
+    services:
+      - VectorMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: rdf_query
+    description: >
+      Query RDF graph for symbolic memories related to the topic.
+    order: 1
+    services:
+      - RDFMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: sql_retrieve_collapse_mirrors
+    description: >
+      Retrieve recent collapse-mirror events related to the query.
+    order: 2
+    services:
+      - CollapseMirrorSQLService
+    requires_gpu: false
+    requires_memory: true
+
+safety_rules: []

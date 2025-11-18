@@ -1,0 +1,43 @@
+name: pattern_detect
+label: Pattern Detection
+description: >
+  Identify patterns in memory fragments or sensor events.
+
+category: Perception
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: false
+requires_memory: true
+
+timeout_ms: 3000
+max_recursion_depth: 1
+
+services:
+  - VectorMemoryService
+  - RDFMemoryService
+
+prompt_template: pattern_detect_prompt.j2
+
+plan:
+  - name: pull_candidate_fragments
+    description: Retrieve vector + RDF candidates.
+    order: 0
+    services:
+      - VectorMemoryService
+      - RDFMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: detect_pattern
+    description: Symbolic pattern detection.
+    order: 1
+    prompt_template: pattern_detect_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

@@ -1,0 +1,52 @@
+name: dream_preprocess
+label: Dream Preprocess
+description: >
+  Prepare recent memories, state signals, and symbolic anchors for a dream cycle.
+
+category: MetaCognition
+priority: low
+
+interruptible: false
+can_interrupt_others: false
+
+requires_gpu: false
+requires_memory: true
+
+timeout_ms: 5000
+max_recursion_depth: 1
+
+services:
+  - VectorMemoryService
+  - RDFMemoryService
+  - CollapseMirrorSQLService
+
+prompt_template: dream_preprocess_prompt.j2
+
+plan:
+  - name: collect_recent_salience
+    description: Collect recent high-salience events.
+    order: 0
+    services:
+      - CollapseMirrorSQLService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: merge_symbolic_semantic
+    description: Merge vector + RDF state for dream grounding.
+    order: 1
+    services:
+      - VectorMemoryService
+      - RDFMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: compose_dream_prompt
+    description: Compose initial dream prompt.
+    order: 2
+    prompt_template: dream_preprocess_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

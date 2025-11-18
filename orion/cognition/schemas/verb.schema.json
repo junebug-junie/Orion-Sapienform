@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "http://orion.ai/schema/verb",
+  "title": "Orion Verb Definition",
+  "description": "Operational definition of a cognitive verb aligned to the Orion Cognition RDF Ontology.",
+  "type": "object",
+  "required": [
+    "name",
+    "category",
+    "description",
+    "priority",
+    "interruptible",
+    "can_interrupt_others",
+    "requires_gpu",
+    "requires_memory",
+    "timeout_ms",
+    "max_recursion_depth",
+    "services",
+    "prompt_template",
+    "plan"
+  ],
+
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The canonical machine-readable verb name (e.g. 'introspect')."
+    },
+
+    "label": {
+      "type": "string",
+      "description": "Human-readable label; defaults to name if omitted."
+    },
+
+    "description": {
+      "type": "string",
+      "description": "Textual description of what this verb does."
+    },
+
+    "category": {
+      "type": "string",
+      "enum": [
+        "SelfModification",
+        "MemoryAccess",
+        "ExecutiveControl",
+        "Generative",
+        "Transform",
+        "Perception",
+        "MetaCognition"
+      ]
+    },
+
+    "priority": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+
+    "interruptible": {
+      "type": "boolean",
+      "description": "Whether this verb can be interrupted by others."
+    },
+
+    "can_interrupt_others": {
+      "type": "boolean",
+      "description": "Whether this verb can preempt/interrupt running verbs."
+    },
+
+    "requires_gpu": {
+      "type": "boolean",
+      "description": "Does this verb need GPU resources?"
+    },
+
+    "requires_memory": {
+      "type": "boolean",
+      "description": "Does this verb require memory access (vector, RDF, SQL)?"
+    },
+
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Soft recommended timeout for execution."
+    },
+
+    "max_recursion_depth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Max recursion depth allowed for this verb."
+    },
+
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Names of required services (e.g. 'BrainLLMService')."
+      },
+      "minItems": 0
+    },
+
+    "prompt_template": {
+      "type": "string",
+      "description": "Name of the prompt template used for this verb."
+    },
+
+    "plan": {
+      "type": "array",
+      "description": "A list of plan steps in execution order.",
+      "minItems": 1,
+
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "order", "services", "requires_gpu", "requires_memory"],
+
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Machine-readable step name."
+          },
+
+          "description": {
+            "type": "string",
+            "description": "Human-readable step description."
+          },
+
+          "order": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "0-based execution order index."
+          },
+
+          "prompt_template": {
+            "type": "string",
+            "description": "Optional prompt template for this step (overrides verb-level template)."
+          },
+
+          "services": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Services required for this step."
+          },
+
+          "requires_gpu": {
+            "type": "boolean"
+          },
+
+          "requires_memory": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+
+    "safety_rules": {
+      "type": "array",
+      "description": "Optional safety rules affecting this verb.",
+      "items": {
+        "type": "object",
+        "required": ["rule_name"],
+
+        "properties": {
+          "rule_name": {
+            "type": "string",
+            "description": "Name of the safety rule (e.g. 'BlockOnHighLoad')."
+          },
+
+          "applies_when_state": {
+            "type": "string",
+            "description": "System state in which rule applies (e.g. 'HighLoad')."
+          }
+        }
+      }
+    }
+  }
+}

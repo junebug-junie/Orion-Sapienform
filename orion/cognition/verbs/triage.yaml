@@ -1,0 +1,40 @@
+name: triage
+label: Triage
+description: >
+  Evaluate the incoming request, classify its type, and assign the next cognitive action.
+
+category: ExecutiveControl
+priority: high
+
+interruptible: false
+can_interrupt_others: true
+
+requires_gpu: false
+requires_memory: false
+
+timeout_ms: 1500
+max_recursion_depth: 0
+
+services: []
+
+prompt_template: triage_prompt.j2
+
+plan:
+  - name: compose_triage_prompt
+    description: Build a triage prompt based on the query.
+    order: 0
+    prompt_template: triage_prompt.j2
+    services: []
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_decide_path
+    description: >
+      Use LLM to determine which cognitive verb should run next.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

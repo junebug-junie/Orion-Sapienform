@@ -1,0 +1,12 @@
+name: memory_pack
+label: Memory & Context Pack
+description: >
+  Core verbs for memory retrieval, contextualization, and narrative integration.
+
+verbs:
+  - recall
+  - summarize_context
+  - extract_facts
+  - tag_enrich
+  - pattern_detect
+  - story_weave

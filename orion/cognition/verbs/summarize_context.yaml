@@ -1,0 +1,41 @@
+name: summarize_context
+label: Summarize Context
+description: >
+  Summarize recent inputs, memory pulls, and conversation into a structured digest.
+
+category: Transform
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+timeout_ms: 3500
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: summarize_context_prompt.j2
+
+plan:
+  - name: compose_summarization_prompt
+    description: Construct a structured summarization prompt.
+    order: 0
+    prompt_template: summarize_context_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_summarize
+    description: Generate a structured context summary via LLM.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

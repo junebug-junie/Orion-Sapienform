@@ -1,0 +1,41 @@
+name: goal_formulate
+label: Goal Formulation
+description: >
+  Translate a loose intention or fuzzy request into a clear, action-ready goal.
+
+category: ExecutiveControl
+priority: high
+
+interruptible: false
+can_interrupt_others: true
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 3000
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: goal_formulate_prompt.j2
+
+plan:
+  - name: compose_goal_prompt
+    description: Construct structured goal formulation prompt.
+    order: 0
+    prompt_template: goal_formulate_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_formulate_goal
+    description: Generate a clear, actionable goal.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

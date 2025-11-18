@@ -1,0 +1,57 @@
+name: reflect
+label: Reflect
+description: >
+  Generate a narrative reflection over a specific fragment or thought,
+  incorporating current state and relevant memory.
+
+category: SelfModification
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+timeout_ms: 4000
+max_recursion_depth: 2
+
+services:
+  - BrainLLMService
+  - VectorMemoryService
+  - RDFMemoryService
+
+prompt_template: reflection_prompt.j2
+
+plan:
+  - name: gather_related_memory
+    description: >
+      Retrieve RDF and vector-based memories related to the fragment or query.
+    order: 0
+    services:
+      - VectorMemoryService
+      - RDFMemoryService
+    requires_gpu: false
+    requires_memory: true
+
+  - name: compose_reflection_prompt
+    description: >
+      Build a reflection prompt using templates + retrieved memory.
+    order: 1
+    prompt_template: reflection_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_reflect_fragment
+    description: >
+      Generate the final reflective narrative via LLM.
+    order: 2
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []
+

@@ -1,0 +1,41 @@
+name: plan_action
+label: Action Planning
+description: >
+  Given a goal or scenario, generate a sequence of actionable steps.
+
+category: ExecutiveControl
+priority: high
+
+interruptible: false
+can_interrupt_others: true
+
+requires_gpu: true
+requires_memory: false
+
+timeout_ms: 4000
+max_recursion_depth: 1
+
+services:
+  - BrainLLMService
+
+prompt_template: plan_action_prompt.j2
+
+plan:
+  - name: compose_action_plan_prompt
+    description: Build prompt for planning next steps.
+    order: 0
+    prompt_template: plan_action_prompt.j2
+    services:
+      - BrainLLMService
+    requires_gpu: false
+    requires_memory: false
+
+  - name: llm_generate_action_plan
+    description: Use LLM to generate step-by-step plan.
+    order: 1
+    services:
+      - BrainLLMService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

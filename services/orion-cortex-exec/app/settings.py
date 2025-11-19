@@ -1,8 +1,7 @@
  # orion-cortex-exec/app/settings.py
 
 import os
-from pydantic import BaseSettings
-
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     NODE_NAME: str = "orion-athena"

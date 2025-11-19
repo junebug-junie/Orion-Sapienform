@@ -15,7 +15,7 @@ logger = logging.getLogger("orion-cortex.executor")
 
 class StepExecutor:
     def __init__(self, node_name: Optional[str] = None):
-        self.node_name = node_name or settings.ORION_NODE_NAME
+        self.node_name = node_name or settings.NODE_NAME
 
     async def execute_step(
         self,

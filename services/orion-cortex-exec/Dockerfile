@@ -32,7 +32,7 @@ RUN pip3 install --no-cache-dir --upgrade pip
 
 # Copy requirements early for layer caching
 # (explicit path since build context = repo root)
-COPY services/orion-cortex-exec/app/requirements.txt ./requirements.txt
+COPY services/orion-cortex-exec/requirements.txt ./requirements.txt
 
 # Install service dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
@@ -46,4 +46,4 @@ COPY services/orion-cortex-exec /app
 EXPOSE 8070
 
 # This CMD is now passed as an argument to the ENTRYPOINT script
-CMD ["uvicorn", "scripts.main:app", "--host", "0.0.0.0", "--port", "8070"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8070"]

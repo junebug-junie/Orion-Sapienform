@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .models import PlanExecutionRequest, PlanExecutionResult
 from .router import PlanRouter
-from .config import settings
+from .settings import settings
 
 logger = logging.getLogger("orion-cortex")
 logging.basicConfig(level=logging.INFO)

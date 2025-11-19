@@ -255,7 +255,7 @@ def call_brain_llm(prompt: str) -> str:
 
     url = f"{backend.url.rstrip('/')}/api/chat"
     payload = {
-        "model": "mistral-7b-instruct-v0.1.Q4_K_M",  # TODO: make configurable
+        "model": "llama3.1:8b-instruct-q8_0",  # TODO: make configurable
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
     }

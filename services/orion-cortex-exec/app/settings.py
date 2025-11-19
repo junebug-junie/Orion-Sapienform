@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     ORION_BUS_ENABLED: bool = True
 
     # channels
-    EXEC_REQUEST_PREFIX: str = "orion.exec.request"
-    EXEC_RESULT_PREFIX: str = "orion.exec.result"
+    EXEC_REQUEST_PREFIX: str = "orion-exec:request"
+    EXEC_RESULT_PREFIX: str = "orion-exec:result"
 
     # timeouts
     STEP_TIMEOUT_MS: int = 8000

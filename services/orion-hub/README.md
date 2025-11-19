@@ -1,155 +1,287 @@
-Orion Hub
+# Orion Hub Voice & TTS Pipeline
 
-Orion Hub is the central interaction gateway for the Orion Mesh — the bridge between humans and Orion’s cognition layer.It handles voice input/output, chat visualization, and telemetry publishing to the shared Orion Bus.All cognition is delegated to Orion’s Brain service.
+This document describes how the Orion Hub voice loop works after the bus-first refactor, and how Brain and TTS services interact through Redis instead of direct HTTP calls.
 
-🧠 Core Architecture
+## Overview
 
-Service
+The Orion Hub provides a browser interface that lets you:
 
-Role
+- Speak via microphone (WebRTC / getUserMedia)
+- Type text messages
+- Receive Orion's LLM response as text
+- Optionally receive spoken audio via TTS
 
-hub-app
+All cognitive work (LLM, TTS, tagging, triage) is offloaded to backend workers that communicate exclusively through the Orion bus (Redis), not via direct HTTP calls from the Hub.
 
-FastAPI + WebSocket gateway (real-time voice I/O, ASR via Faster-Whisper).
+High level flow:
 
-coqui-tts
+1. Browser → Hub (WebSocket)
+2. Hub → Bus: publish `brain:intake` with transcript + context
+3. Brain Worker (GPU node) → Bus: consume `brain:intake`, call LLM, publish `brain:response`
+4. Hub → WebSocket: streams LLM text back to browser
+5. Hub → Bus: publish `tts:intake` with full LLM response (optional, if TTS enabled)
+6. TTS Worker (CPU or GPU node) → Bus: consume `tts:intake`, synthesize audio in chunks, publish `tts:response`
+7. Hub → WebSocket: pushes base64 audio chunks as they arrive and plays them in the UI
 
-Coqui TTS container for natural speech output.
+The Hub itself stays thin: it manages WebSockets, the visualizers, and the Collapse Mirror UI, and delegates cognition to workers.
 
-caddy
+---
 
-Reverse proxy / HTTPS gateway for local and public exposure.
+## Components
 
-⚠️ The LLM itself (Mistral, Mixtral, etc.) now lives in the Orion Brain container.Orion Hub must connect to a running Brain instance before startup succeeds.
+### 1. Browser (UI)
 
-✨ Features
+Key pieces in `static/app.js`:
 
-🎤 Real-time push-to-talk voice interaction
+- `setupWebSocket()` connects to `ws://<hub>/ws`
+- When the user speaks, audio is captured, encoded to base64, and sent as `{ audio: <base64>, ... }`
+- When the user types, text is sent as `{ text_input: "...", disable_tts: <bool>, temperature, context_length, instructions }`
+- The client listens for messages from the server:
+  - `{ transcript }` — recognized text from ASR
+  - `{ llm_response, tokens }` — Orion's text answer
+  - `{ audio_response }` — base64-encoded WAV/OGG chunks to play
+  - `{ state }` — `idle | processing | speaking` for UI status/particles
 
-🧩 External Brain integration (Mistral / Mixtral / others)
+### 2. Hub WebSocket Handler
 
-📡 Telemetry publishing to the Orion Bus (via Redis)
+Located in `scripts/websocket_handler.py`.
 
-👤 Coqui TTS for expressive voice output
+Responsibilities:
 
-🩶 Dynamic web UI with speech visualization
+- Accept browser WebSocket connections
+- Receive audio or text_input from the client
+- Use ASR (Whisper) for audio → transcript
+- Maintain a short in-memory `history` list of messages
+- Publish jobs to the brain worker via the bus
+- Wait for brain responses using a correlation ID
+- Send LLM response text back to the browser
+- Optionally trigger TTS via the bus and stream back audio chunks
+- Push state updates: `processing`, `speaking`, `idle`
 
-🔄 Built-in Caddy proxy for both local dev and production HTTPS
+This module **does not** call the LLM HTTP endpoint directly. Instead it calls `run_llm_tts`, which is now bus-first.
 
-⚙️ Prerequisites
+### 3. Orion Bus
 
-Linux host with NVIDIA GPU (CUDA + drivers installed)
+Wrapper around Redis (in `scripts/bus.py` or similar). It provides:
 
-Docker + Docker Compose v2
+- `bus.publish(channel, payload)` — JSON-encodes and publishes messages
+- `bus.subscribe(channel)` — subscribes to one or more channels
+- Optional helper for request/response correlations
 
-NVIDIA Container Toolkit for GPU passthrough
+Environment variables:
 
-Orion Bus running (see ../orion-bus)
+- `ORION_BUS_URL=redis://orion-redis:6379/0`
+- `ORION_BUS_ENABLED=true`
 
-Orion Brain running (see ../orion-brain)
+Channels used in the voice loop:
 
-Mesh-wide root .env defined at /mnt/services/Orion-Sapienform/.env
+- `CHANNEL_VOICE_TRANSCRIPT` — raw transcripts from ASR
+- `CHANNEL_BRAIN_INTAKE` — LLM jobs
+- `CHANNEL_BRAIN_OUT` — LLM responses
+- `CHANNEL_VOICE_LLM` — voice-oriented LLM telemetry
+- `CHANNEL_VOICE_TTS` — TTS telemetry (chunk sizes)
+- `CHANNEL_COLLAPSE_TRIAGE` — full dialog payloads for downstream tagging / RAG
 
-📁 Project Layout
+> The bus is the spine. Hub, Brain, TTS, and triage are all leaves on that spine.
 
-caddy/
-  Caddyfile.dev
-  Caddyfile.prod
-docker-compose.yml
-Dockerfile
-Makefile
-.env
-README.md
-templates/
-static/
+### 4. Brain Worker (LLM, GPU)
 
-🚀 Quickstart
+A dedicated service (usually running on a GPU node like Atlas or Chrysalis) that:
 
-1. Run the “bullshit pre-step” (once per terminal session)
+1. Subscribes to `CHANNEL_BRAIN_INTAKE` (e.g. `orion:brain:intake`).
+2. For each message, calls the configured LLM backend (e.g. `ollama`, `vLLM`, or another container).
+3. Publishes the result to `CHANNEL_BRAIN_OUT` (e.g. `orion:brain:response`) with the same `correlation_id` so the hub can match it back to the original request.
 
-Docker Compose does not automatically read environment files from parent directories.You must manually export the mesh-wide .env before Compose runs:
+This worker replaces the old `/chat` HTTP endpoint model. There is no longer any `BRAIN_URL` in the hub’s critical path.
 
-set -a
-. /mnt/services/Orion-Sapienform/.env
-set +a
+### 5. TTS Worker
 
-This makes variables like PROJECT, NET, and TELEMETRY_ROOT visible to all service stacks.
+Instead of having the hub call a TTS HTTP endpoint directly, a TTS worker listens on bus:
 
-(Yes, this is the “bullshit” step — but it ensures node-aware naming like orion-janus-hub and proper networking.)
+1. Subscribes to `orion:tts:intake`.
+2. For each message, uses Coqui TTS or another TTS backend to synthesize audio.
+3. Splits the audio response into chunks (e.g., by sentence or fixed duration) and publishes each as `tts:response` messages containing base64 audio and the original `correlation_id`.
 
-2. Bring up the Hub
+The hub listens for matching `tts:response` messages and pushes the chunks over WebSocket to the browser.
 
-🧑‍💻 Development
+This allows TTS workers to run on CPU or GPU nodes without changing the hub.
 
-make up
+---
 
-Then tunnel from your laptop:
+## Key Python Modules
 
-ssh -N -L 18080:127.0.0.1:80 user@<server-ip>
+### `scripts/llm_tts_handler.py`
 
-Open → http://localhost:18080
+This module orchestrates LLM + TTS from the hub’s perspective.
 
-🌐 Production
+Responsibilities after refactor:
 
-make up MODE=prod
+- Build a job payload: `{ id, history, temperature, instructions, user_id, session_id }`.
+- Publish that payload to `CHANNEL_BRAIN_INTAKE`.
+- Block/wait (with timeout) for a corresponding `CHANNEL_BRAIN_OUT` message with matching `id`.
+- Extract the LLM text and token count.
+- Optionally publish a TTS job to `orion:tts:intake`.
+- Do **not** call `requests.post` or `aiohttp` directly to the brain.
 
-Then open → https://yourdomain.com
+Old HTTP-based fields like `settings.BRAIN_URL` are no longer required by the hub.
 
-🧰 Makefile Targets
+### `scripts/tts.py`
 
-Command
+This used to:
 
-Description
+- Read `TTS_URL` from env.
+- Make HTTP `GET` calls to `/api/tts?text=...`.
 
-make up
+After the refactor, there are two options:
 
-Start Orion Hub (defaults to dev mode)
+1. **Move this logic into the TTS worker** (preferred):
+   - The worker uses Coqui/Piper locally, never over HTTP.
+   - The hub no longer imports `TTS` or knows about `TTS_URL`.
 
-make down
+2. **Keep it as a helper but only inside a worker service**:
+   - The worker can still call an HTTP TTS server if needed.
 
-Stop services and remove orphans
+Either way, the hub talks only to the bus.
 
-make restart
+### `scripts/websocket_handler.py`
 
-Restart cleanly
+- Chains:
+  - ASR → transcript
+  - `run_llm_tts` for LLM+TTS orchestration via bus
+  - History maintenance for short-term conversational memory
+  - Publishing full dialog payloads to `CHANNEL_COLLAPSE_TRIAGE`
 
-make logs
+The WebSocket handler is the bridge between human-facing state (browser) and mesh-facing state (bus).
 
-Follow logs from all services
+---
 
-make log SVC=hub-app
+## Environment Variables
 
-Follow logs for a specific service
+Typical `.env` for the hub service:
 
-make shell
+```env
+# Core
+PROJECT=orion
+SERVICE_NAME=orion-hub
 
-Enter the main hub container
+# Bus
+ORION_BUS_URL=redis://orion-redis:6379/0
+ORION_BUS_ENABLED=true
 
-make env
+# Voice / LLM
+LLM_MODEL=llama3.1:8b-instruct-q8_0
+LLM_TIMEOUT_S=30
+CHANNEL_VOICE_TRANSCRIPT=orion:voice:transcript
+CHANNEL_BRAIN_INTAKE=orion:brain:intake
+CHANNEL_BRAIN_OUT=orion:brain:response
+CHANNEL_VOICE_LLM=orion:voice:llm
+CHANNEL_VOICE_TTS=orion:voice:tts
+CHANNEL_COLLAPSE_TRIAGE=orion:collapse:triage
 
-Print resolved environment context
+# ASR
+WHISPER_MODEL=distil-medium.en
+WHISPER_DEVICE=cuda
+WHISPER_COMPUTE_TYPE=float16
 
-🧩 Telemetry & Bus
+# Misc
+CHRONICLE_ENVIRONMENT=dev
+```
 
-All voice transcripts, LLM responses, and TTS events are published to the shared Orion Bus,forming the event substrate for Orion’s memory and reflection systems.No data is stored locally — the Bus acts as the ephemeral nervous system.
+Brain worker and TTS worker will have their own `.env` files pointing to the same `ORION_BUS_URL` and defining their intake/output channels.
 
-ORION_BUS_URL=redis://${PROJECT}-bus-core:6379/0
+---
 
-🔁 Service Dependencies
+## Running the Stack
 
-Orion Hub requires the following services to be running first:
+A simplified `docker-compose.yml` for the hub side might look like:
 
-orion-brain (LLM + inference API)
+```yaml
+version: "3.9"
 
-orion-bus (event routing and pub/sub)
+services:
+  orion-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
 
-app-net Docker network (created once globally)
+  orion-atlas-hub:
+    build:
+      context: ../..
+      dockerfile: services/orion-hub/Dockerfile
+    env_file:
+      - .env
+      - services/orion-hub/.env
+    depends_on:
+      - orion-redis
+    ports:
+      - "8080:8080"
 
-Startup order (in your rebuild script):
+  # Brain worker(s) and TTS workers are defined in their own compose files
+  # or in the same file if you prefer, as long as they share ORION_BUS_URL.
+```
 
-bus → brain → hub → mirror → others
+Brain and TTS workers can run on entirely different nodes, as long as they can reach the same Redis instance via Tailscale, VPN, or LAN.
 
-🦯 Roadmap
+---
 
+## UX Details
 
+### Text Input
 
+- Enter sends the message.
+- Shift+Enter inserts a newline.
+- After sending, the hub appends the `You` message to the conversation and waits for the LLM response.
+
+### Voice Input
+
+- Press and hold the microphone button to record.
+- Release to stop; audio is sent to the hub.
+- Hub streams back:
+  - Recognized text transcript
+  - LLM response
+  - Audio chunks for TTS (if enabled)
+
+### Collapse Mirror
+
+The Collapse card lets you send structured or raw JSON entries into the Collapse pipeline.
+
+- **Guided Form** mode provides fields for `observer`, `trigger`, `observer_state`, `field_resonance`, `type`, `emergent_entity`, `summary`, `mantra`, `causal_echo`, and `environment`.
+- **Raw JSON** mode lets you paste/edit a full collapse JSON payload directly.
+- `submit-collapse` endpoint forwards entries into the Collapse ingestion service (via HTTP or bus, depending on your backend wiring).
+
+There is also a tooltip describing each field:
+
+| Field            | Meaning                                                                 |
+|------------------|-------------------------------------------------------------------------|
+| observer         | The agent (human or AI) who is perceiving or logging the event.        |
+| trigger          | The stimulus or situation that initiated the collapse.                 |
+| observer_state   | Emotional, cognitive, or physical state of the observer.               |
+| field_resonance  | The energetic or symbolic signature of the moment.                     |
+| intent           | Purpose of logging (reflection, ritual, experiment).                   |
+| type             | Category of event (dream-reflection, ritual, shared-collapse, etc.).   |
+| emergent_entity  | Entity/persona that arose in the moment (e.g., Orion, an archetype).   |
+| summary          | Narrative summary of the collapse moment.                              |
+| mantra           | Phrase or symbolic anchor tied to the collapse.                        |
+| causal_echo      | Optional cause/effect linkage.                                         |
+| timestamp        | Auto-generated ISO 8601 UTC timestamp (unless provided).               |
+| environment      | Auto-detected from `CHRONICLE_ENVIRONMENT` or defaults to `dev`.       |
+
+---
+
+## Future Enhancements
+
+- **Streaming LLM tokens** via bus to allow partial text to show live.
+- **Interruptible TTS** at the worker level (stop generating new chunks when user presses interrupt).
+- **Multi-brain routing**: different models or personas listening on different intake channels.
+- **Semantic introspection verbs** using the same bus pattern (e.g., `introspect`, `simulate`, `reflect`).
+
+---
+
+If you’re reading this in Atlas’s `/mnt/scripts/Orion-Sapienform/services/orion-hub`, this README is your contract:
+
+> Hub talks to bus.
+> Brain and TTS live as workers.
+> GPU lives with workers, not with hub.
+
+Everything else is an implementation detail.

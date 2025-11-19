@@ -55,6 +55,7 @@ data/
 **/storage/
 
 # === Build / Virtual Env ===
+orion_dev/
 dist/
 build/
 wheels/

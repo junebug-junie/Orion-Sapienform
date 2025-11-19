@@ -6,13 +6,14 @@ import uuid
 import logging
 from typing import Dict, Any, List, Optional
 
-from .bus import bus
+from orion.core.bus.service import OrionBus
 from .settings import settings
 from .models import ExecutionStep, StepExecutionResult
-from .service_registry import resolve_service  # <-- new, see below
+from .service_registry import resolve_service
 
 logger = logging.getLogger("orion-cortex.executor")
 
+bus = OrionBus()
 
 class StepExecutor:
     def __init__(self, node_name: Optional[str] = None):

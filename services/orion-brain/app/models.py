@@ -1,5 +1,5 @@
 # In services/orion-brain/app/models.py
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from pydantic import BaseModel
 
 class GenerateBody(BaseModel):
@@ -25,3 +25,18 @@ class ChatBody(BaseModel):
     session_id: Optional[str] = None
     # --- ADD THIS LINE ---
     source: Optional[str] = None
+
+class CortexExecRequest(BaseModel):
+    event: str
+    verb: str
+    step: str
+    order: int
+    requires_gpu: bool
+    requires_memory: bool
+    prompt_template: Optional[str]
+    args: Dict[str, Any]
+    context: Dict[str, Any]
+    correlation_id: str
+    reply_channel: str
+    origin_node: str
+    service: str

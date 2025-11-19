@@ -3,7 +3,7 @@ import json
 import logging
 from orion.core.bus.service import OrionBus
 from app.config import ORION_BUS_URL, ORION_BUS_ENABLED, CHANNEL_BRAIN_INTAKE, CHANNEL_TTS_INTAKE
-from app.processor import process_brain_request, process_tts_request
+from app.processor import process_brain_or_cortex, process_tts_request
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def listener_worker():
 
             if channel == CHANNEL_BRAIN_INTAKE:
                 threading.Thread(
-                    target=process_brain_request,
+                    target=process_brain_or_cortex,
                     args=(data,),
                     daemon=True
                 ).start()

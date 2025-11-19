@@ -165,6 +165,110 @@ def process_brain_request(payload: dict):
         except Exception as e:
             logger.error(f"[{trace_id}] Failed to publish reply to {response_channel}: {e}")
 
+
+def process_cortex_exec_request(payload: dict):
+    """
+    Handles a Cortex execution step for BrainLLMService.
+    This is the new semantic-layer-aware execution router.
+    """
+    try:
+        req = CortexExecRequest(**payload)
+    except Exception as e:
+        logger.error(f"[CORTEX] Invalid CortexExecRequest payload: {payload} :: {e}")
+        return
+
+    trace_id = req.correlation_id
+    logger.info(f"[CORTEX] Received execution step '{req.step}' for verb '{req.verb}'")
+
+    #
+    # 1. --- Build prompt ---
+    #
+    prompt = build_cortex_prompt(req)
+
+    #
+    # 2. --- Call the LLM ---
+    #
+    llm_text = call_brain_llm(prompt)
+
+    #
+    # 3. --- Build execution result ---
+    #
+    result_payload = {
+        "event": "exec_step_result",
+        "status": "success",
+        "service": req.service,
+        "correlation_id": req.correlation_id,
+        "result": {
+            "prompt": prompt,
+            "llm_output": llm_text,
+        },
+        "artifacts": {},
+    }
+
+    #
+    # 4. --- Publish result to Cortex reply_channel ---
+    #
+    try:
+        bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
+        bus.publish(req.reply_channel, result_payload)
+        logger.info(f"[CORTEX] Published execution result to {req.reply_channel}")
+    except Exception as e:
+        logger.error(f"[CORTEX] Failed to publish exec_step_result: {e}", exc_info=True)
+
+
+def build_cortex_prompt(req: CortexExecRequest) -> str:
+    """
+    Assemble a semantic-layer-aware prompt for the brain.
+    """
+    lines = []
+    lines.append(f"# Orion Cognitive Step: {req.step}")
+    lines.append(f"# Verb: {req.verb}")
+    lines.append(f"# Origin Node: {req.origin_node}")
+    lines.append("")
+
+    if req.prompt_template:
+        lines.append(f"Template: {req.prompt_template}")
+        lines.append("")
+
+    if req.args:
+        lines.append("Args:")
+        lines.append(json.dumps(req.args, indent=2))
+        lines.append("")
+
+    if req.context:
+        lines.append("Context:")
+        lines.append(json.dumps(req.context, indent=2))
+        lines.append("")
+
+    lines.append("Generate your introspective continuation.")
+    return "\n".join(lines)
+
+def call_brain_llm(prompt: str) -> str:
+    """
+    Calls your existing brain LLM endpoint for Cortex.
+    """
+    backend = router_instance.pick()
+    if not backend:
+        return "[BrainLLMService Error] no healthy backend available"
+
+    url = f"{backend.url.rstrip('/')}/api/chat"
+    payload = {
+        "model": "mistral-7b-instruct-v0.1.Q4_K_M",
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+    }
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
+            r = client.post(url, json=payload)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("message", {}).get("content", "")
+    except Exception as e:
+        logger.error(f"[CORTEX] LLM call failed: {e}")
+        return f"[BrainLLMService Error] {e}"
+
+
 def get_tts_engine() -> TTSEngine:
     global _tts_engine
     if _tts_engine is None:

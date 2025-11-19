@@ -9,21 +9,59 @@ from datetime import date
 
 from orion.core.bus.service import OrionBus
 from app.config import (
-    CONNECT_TIMEOUT, READ_TIMEOUT, ORION_BUS_URL, ORION_BUS_ENABLED, CHANNEL_DREAM_TRIGGER
+    CONNECT_TIMEOUT,
+    READ_TIMEOUT,
+    ORION_BUS_URL,
+    ORION_BUS_ENABLED,
+    CHANNEL_DREAM_TRIGGER,
 )
 from app.router import router_instance
-from app.bus_helpers import emit_brain_event, emit_brain_output, emit_chat_history_log
+from app.bus_helpers import (
+    emit_brain_event,
+    emit_brain_output,
+    emit_chat_history_log,
+    # assumes you've added this; if not, you can temporarily inline a publish
+    emit_cortex_step_result,
+)
 from app.tts_gpu import TTSEngine
 
 logger = logging.getLogger(__name__)
 
 _tts_engine = None
 
+
+# ─────────────────────────────────────────────
+# Legacy brain request handler (chat + dreams)
+# ─────────────────────────────────────────────
+
 def process_brain_request(payload: dict):
     """
     Handles a single request from the bus.
     Routes between "dream_synthesis" (fire-and-forget)
     and standard "chat" (request/reply).
+
+    Expected payload (chat path, example):
+      {
+        "event": "chat",
+        "source": "hub",
+        "kind": "chat" | "warm_start",
+        "prompt": "...",
+        "history": [...],
+        "temperature": 0.7,
+        "model": "llama3.1:8b-instruct-q8_0",
+        "response_channel": "orion:brain:rpc:<uuid>",
+        "fragments": [...],
+        "metrics": {...}
+      }
+
+    Expected payload (dream_synthesis path, example):
+      {
+        "event": "dream_synthesis",
+        "source": "dream_synthesis",
+        "content": { ...ollama-style payload... },
+        "fragments": [...],
+        "metrics": {...}
+      }
     """
     trace_id = payload.get("trace_id") or str(uuid.uuid4())
     source = payload.get("source")
@@ -92,7 +130,7 @@ def process_brain_request(payload: dict):
     try:
         with httpx.Client(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
             r = client.post(url, json=ollama_payload)
-            r.raise_for_status() 
+            r.raise_for_status()
             data = r.json()
     except Exception as e:
         logger.error(f"[{trace_id}] Failed to contact backend {url}: {e}")
@@ -111,7 +149,10 @@ def process_brain_request(payload: dict):
 
         try:
             # 1. Parse the LLM's JSON response
-            dream_obj = json.loads(text) if text.startswith('{') else {"narrative": text, "tldr": "Partial dream"}
+            dream_obj = json.loads(text) if text.startswith("{") else {
+                "narrative": text,
+                "tldr": "Partial dream",
+            }
 
             # 2. Define 'final_payload'
             final_payload = {
@@ -119,16 +160,15 @@ def process_brain_request(payload: dict):
                 "trace_id": trace_id,
                 "source": "dream_synthesis",
                 "fragments": fragments_data,
-                "metrics": metrics_data
+                "metrics": metrics_data,
             }
 
             # 3. Publish 'final_payload'
             bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
-            bus.publish(CHANNEL_DREAM_TRIGGER, final_payload) 
+            bus.publish(CHANNEL_DREAM_TRIGGER, final_payload)
             logger.info(f"[{trace_id}] 🚀 Published dream to {CHANNEL_DREAM_TRIGGER} for SQL writer.")
 
         except Exception as e:
-            # 4. Correct error log
             logger.error(f"[{trace_id}] 🔴 FAILED to parse or publish dream JSON: {e}", exc_info=True)
 
     else:
@@ -137,12 +177,11 @@ def process_brain_request(payload: dict):
         if kind == "warm_start":
             logger.info(f"[{trace_id}] Warm-start request; skipping chat history log.")
         else:
-
             emit_chat_history_log({
                 "trace_id": trace_id,
                 "source": source or "bus",
                 "prompt": payload.get("prompt"),
-                "response": text
+                "response": text,
             })
 
         emit_brain_output({
@@ -158,7 +197,7 @@ def process_brain_request(payload: dict):
             reply_payload = {
                 "trace_id": trace_id,
                 "text": text,
-                "meta": data
+                "meta": data,
             }
             reply_bus.publish(response_channel, reply_payload)
             logger.info(f"[{trace_id}] Sent final reply to {response_channel}")
@@ -166,86 +205,49 @@ def process_brain_request(payload: dict):
             logger.error(f"[{trace_id}] Failed to publish reply to {response_channel}: {e}")
 
 
-def process_cortex_exec_request(payload: dict):
-    """
-    Handles a Cortex execution step for BrainLLMService.
-    This is the new semantic-layer-aware execution router.
-    """
-    try:
-        req = CortexExecRequest(**payload)
-    except Exception as e:
-        logger.error(f"[CORTEX] Invalid CortexExecRequest payload: {payload} :: {e}")
-        return
+# ─────────────────────────────────────────────
+# Cortex execution path (semantic layer)
+# ─────────────────────────────────────────────
 
-    trace_id = req.correlation_id
-    logger.info(f"[CORTEX] Received execution step '{req.step}' for verb '{req.verb}'")
-
-    #
-    # 1. --- Build prompt ---
-    #
-    prompt = build_cortex_prompt(req)
-
-    #
-    # 2. --- Call the LLM ---
-    #
-    llm_text = call_brain_llm(prompt)
-
-    #
-    # 3. --- Build execution result ---
-    #
-    result_payload = {
-        "event": "exec_step_result",
-        "status": "success",
-        "service": req.service,
-        "correlation_id": req.correlation_id,
-        "result": {
-            "prompt": prompt,
-            "llm_output": llm_text,
-        },
-        "artifacts": {},
-    }
-
-    #
-    # 4. --- Publish result to Cortex reply_channel ---
-    #
-    try:
-        bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
-        bus.publish(req.reply_channel, result_payload)
-        logger.info(f"[CORTEX] Published execution result to {req.reply_channel}")
-    except Exception as e:
-        logger.error(f"[CORTEX] Failed to publish exec_step_result: {e}", exc_info=True)
-
-
-def build_cortex_prompt(req: CortexExecRequest) -> str:
+def build_cortex_prompt(req: dict) -> str:
     """
     Assemble a semantic-layer-aware prompt for the brain.
+
+    `req` is a plain dict with keys like:
+      verb, step, origin_node, prompt_template, args, context, ...
     """
-    lines = []
-    lines.append(f"# Orion Cognitive Step: {req.step}")
-    lines.append(f"# Verb: {req.verb}")
-    lines.append(f"# Origin Node: {req.origin_node}")
+    lines: list[str] = []
+
+    lines.append(f"# Orion Cognitive Step: {req.get('step')}")
+    lines.append(f"# Verb: {req.get('verb')}")
+    lines.append(f"# Origin Node: {req.get('origin_node')}")
     lines.append("")
 
-    if req.prompt_template:
-        lines.append(f"Template: {req.prompt_template}")
+    tmpl = req.get("prompt_template")
+    if tmpl:
+        lines.append(f"Template: {tmpl}")
         lines.append("")
 
-    if req.args:
+    args = req.get("args") or {}
+    if args:
         lines.append("Args:")
-        lines.append(json.dumps(req.args, indent=2))
+        lines.append(json.dumps(args, indent=2))
         lines.append("")
 
-    if req.context:
+    context = req.get("context") or {}
+    if context:
         lines.append("Context:")
-        lines.append(json.dumps(req.context, indent=2))
+        lines.append(json.dumps(context, indent=2))
         lines.append("")
 
     lines.append("Generate your introspective continuation.")
     return "\n".join(lines)
 
+
 def call_brain_llm(prompt: str) -> str:
     """
     Calls your existing brain LLM endpoint for Cortex.
+    Uses the same backend router as legacy chat.
     """
     backend = router_instance.pick()
     if not backend:
@@ -253,7 +255,7 @@ def call_brain_llm(prompt: str) -> str:
 
     url = f"{backend.url.rstrip('/')}/api/chat"
     payload = {
-        "model": "mistral-7b-instruct-v0.1.Q4_K_M",
+        "model": "mistral-7b-instruct-v0.1.Q4_K_M",  # TODO: make configurable
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
     }
@@ -268,6 +270,72 @@ def call_brain_llm(prompt: str) -> str:
         logger.error(f"[CORTEX] LLM call failed: {e}")
         return f"[BrainLLMService Error] {e}"
 
+
+def process_cortex_exec_request(payload: dict):
+    """
+    Handles a Cortex execution step for BrainLLMService.
+
+    Expected payload (dict), example shape:
+
+      {
+        "event": "exec_step",
+        "service": "BrainLLMService",
+        "verb": "introspect",
+        "step": "llm_reflect",
+        "order": 0,
+        "requires_gpu": false,
+        "requires_memory": false,
+        "prompt_template": "IntrospectionPromptTemplate",
+        "args": {...},
+        "context": {...},
+        "correlation_id": "...",
+        "reply_channel": "orion-exec:result:<uuid>",
+        "origin_node": "athena-cortex"
+      }
+    """
+    if payload.get("event") != "exec_step":
+        logger.warning(f"[CORTEX] Ignoring non-exec_step payload: {payload}")
+        return
+
+    service = payload.get("service", "BrainLLMService")
+    correlation_id = payload.get("correlation_id") or str(uuid.uuid4())
+    reply_channel = payload.get("reply_channel")
+
+    if not reply_channel:
+        logger.error(f"[CORTEX] Missing reply_channel in payload: {payload}")
+        return
+
+    logger.info(
+        f"[CORTEX] Received execution step '{payload.get('step')}' "
+        f"for verb '{payload.get('verb')}' (service={service}, cid={correlation_id})"
+    )
+
+    # 1. Build prompt
+    prompt = build_cortex_prompt(payload)
+
+    # 2. Call the LLM
+    llm_text = call_brain_llm(prompt)
+
+    # 3. Build result for Cortex
+    result = {
+        "prompt": prompt,
+        "llm_output": llm_text,
+    }
+
+    # 4. Emit standardized exec_step_result back to Cortex
+    emit_cortex_step_result(
+        service=service,
+        correlation_id=correlation_id,
+        reply_channel=reply_channel,
+        result=result,
+        artifacts={},
+        status="success",
+    )
+
+
+# ─────────────────────────────────────────────
+# TTS path
+# ─────────────────────────────────────────────
 
 def get_tts_engine() -> TTSEngine:
     global _tts_engine
@@ -318,3 +386,18 @@ def process_tts_request(payload: dict):
     except Exception as e:
         logger.error(f"[{trace_id}] FAILED to synthesize TTS: {e}", exc_info=True)
 
+
+# ─────────────────────────────────────────────
+# Unified router for brain intake + cortex exec
+# ─────────────────────────────────────────────
+
+def process_brain_or_cortex(payload: dict):
+    """
+    Route between:
+      - legacy brain RPC (chat / dream_synthesis)
+      - Cortex semantic exec_step messages (BrainLLMService)
+    """
+    if payload.get("event") == "exec_step" and payload.get("service") == "BrainLLMService":
+        return process_cortex_exec_request(payload)
+
+    return process_brain_request(payload)

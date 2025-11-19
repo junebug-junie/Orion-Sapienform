@@ -40,3 +40,17 @@ class CortexExecRequest(BaseModel):
     reply_channel: str
     origin_node: str
     service: str
+
+
+# ============================================================
+# Execution Envelope (Cortex ↔ Brain standard message shape)
+# ============================================================
+from pydantic import BaseModel
+from typing import Dict, Any, Optional
+
+class ExecutionEnvelope(BaseModel):
+    event: str                       # e.g. "exec_step", "chat", "tts"
+    service: str                     # e.g. "BrainLLMService"
+    correlation_id: str
+    reply_channel: str
+    payload: Dict[str, Any]          # the verb/step/args/history/etc

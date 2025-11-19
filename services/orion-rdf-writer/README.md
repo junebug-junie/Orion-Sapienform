@@ -1,245 +1,182 @@
-Orion RDF Writer Service
-1. Overview
-
-The orion-rdf-writer is a microservice designed to act as a bridge between the Orion message bus (Redis) and an Ontotext GraphDB repository. Its primary responsibility is to:
-
-    Listen for JSON-formatted events on specific Redis Pub/Sub channels.
-
-    Transform these events into RDF N-Triples format based on a predefined structure.
-
-    Persist the generated triples into a specified GraphDB repository.
-
-It is built to be resilient, featuring batch processing, connection retries, and robust error handling.
-2. Architecture & Data Flow
-
-The service operates on a simple, event-driven data flow:
-
-    Subscription: On startup, the service subscribes to one or more Redis channels defined in its configuration.
-
-    Queueing: As messages are received, they are placed into an in-memory queue.
-
-    Batch Processing: A background thread periodically processes messages from the queue. A batch is processed when either the BATCH_SIZE is reached or a 5-second timeout occurs, ensuring low-volume messages are not indefinitely stranded.
-
-    Transformation: Each event in the batch is passed to a builder function (build_triples) which generates RDF triples if the event contains the required keys (mentions, relatesTo).
-
-    Persistence: The resulting N-Triples data is sent via an HTTP POST request to the configured GraphDB instance.
-
-    Error Handling: If an event cannot be processed (due to invalid structure or a database error), a detailed error report is published to a dedicated Redis error channel and logged to a persistent file.
-
-+----------------+      +----------------------+      +------------------+
-| Redis Pub/Sub  |----->| orion-rdf-writer     |----->| GraphDB          |
-| (Message Bus)  |      | (Consumer/Processor) |      | (RDF Repository) |
-+----------------+      +----------------------+      +------------------+
-        |                                                    ^
-        | (on failure)                                       |
-        v                                                    |
-+----------------+                                           |
-| Redis Error    | <-----------------------------------------+
-| Channel & Log  |
-+----------------+
-
-3. Configuration
-
-The service is configured entirely through environment variables, which are loaded from a .env file at the root of the service directory.
-
-Variable
-	
-
-Default Value
-	
-
-Description
-
-GraphDB Settings
-	
-
-
-	
-
-
-GRAPHDB_URL
-	
-
-http://graphdb:7200
-	
-
-The base URL for the GraphDB instance.
-
-GRAPHDB_REPO
-	
-
-collapse
-	
-
-The name of the target repository within GraphDB.
-
-GRAPHDB_USER
-	
-
-None
-	
-
-The username for GraphDB authentication (if required).
-
-GRAPHDB_PASS
-	
-
-None
-	
-
-The password for GraphDB authentication (if required).
-
-Redis Bus Settings
-	
-
-
-	
-
-
-ORION_BUS_URL
-	
-
-redis://orion-redis:6379/0
-	
-
-The connection URL for the Redis instance.
-
-CHANNEL_EVENTS_TAGGED
-	
-
-orion:events:tagged
-	
-
-A channel the service listens to for events.
-
-CHANNEL_RDF_ENQUEUE
-	
-
-orion:rdf:enqueue
-	
-
-The primary channel for direct RDF ingestion requests.
-
-CHANNEL_CORE_EVENTS
-	
-
-orion:core:events
-	
-
-A channel for core system events that may contain RDF targets.
-
-CHANNEL_RDF_CONFIRM
-	
-
-orion:rdf:confirm
-	
-
-Channel where success confirmations are published.
-
-CHANNEL_RDF_ERROR
-	
-
-orion:rdf:error
-	
-
-Channel where processing failures are published.
-
-Service Behavior
-	
-
-
-	
-
-
-SERVICE_NAME
-	
-
-orion-rdf-writer
-	
-
-The identifier for this service.
-
-LOG_LEVEL
-	
-
-INFO
-	
-
-The logging verbosity. Can be DEBUG, INFO, WARNING, ERROR.
-
-BATCH_SIZE
-	
-
-10
-	
-
-The number of messages to accumulate before processing a batch.
-
-RETRY_LIMIT
-	
-
-3
-	
-
-The number of times to retry pushing to GraphDB on a connection failure.
-
-RETRY_INTERVAL
-	
-
-2
-	
-
-The number of seconds to wait between retries.
-4. Running the Service
-
-This service is designed to be run with Docker and Docker Compose.
-
-Build the Image:
-To incorporate any code changes, rebuild the service's Docker image.
-
+# 🧩 Orion RDF Writer Service
+
+**orion-rdf-writer** is a microservice that bridges the **Orion Bus** (Redis Pub/Sub) and an **Ontotext GraphDB** repository. It listens for JSON events, transforms them into RDF **N-Triples**, and persists them to a target repository. It’s built for resilience: in‑memory queueing, batch processing, retries, and structured error reporting.
+
+---
+
+## 🧠 TL;DR
+- Subscribe to Redis channels → enqueue events → batch → transform with `build_triples()` → POST N‑Triples to GraphDB.
+- On failure: publish a structured error to `orion:rdf:error` **and** append a durable JSON line to `errors.txt`.
+
+---
+
+## 🏗 Architecture & Data Flow
+Event-driven pipeline with batching and backoff.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Publishers (Services)
+    participant R as Orion Bus (Redis)
+    participant W as orion-rdf-writer
+    participant G as GraphDB
+    participant E as Errors: orion:rdf:error + errors.txt
+
+    C->>R: PUBLISH JSON event (enqueue/tagged/core)
+    R-->>W: Deliver message(s)
+    W->>W: Enqueue in memory
+    W->>W: Batch on size/time (BATCH_SIZE / 5s)
+    W->>W: build_triples(event) → N‑Triples
+    W->>G: HTTP POST /repositories/<repo>/statements (N‑Triples)
+    alt success
+      G-->>W: 204/2xx
+      W-->>R: PUBLISH { ok, id } → orion:rdf:confirm
+    else failure
+      W-->>R: PUBLISH { error, id, reason } → orion:rdf:error
+      W->>E: Append JSON line to errors.txt
+    end
+```
+
+> **Transformation rule**: An event is eligible if it contains **`mentions`** or **`relatesTo`** lists (strings). The `build_triples()` function maps these into N‑Triples. Invalid events produce no triples and are reported.
+
+---
+
+## ⚙️ Configuration
+Environment-driven (commonly via `.env`).
+
+### GraphDB
+| Variable        | Default              | Description                                     |
+|-----------------|----------------------|-------------------------------------------------|
+| `GRAPHDB_URL`   | `http://graphdb:7200`| Base URL for GraphDB                            |
+| `GRAPHDB_REPO`  | `collapse`           | Target repository name                          |
+| `GRAPHDB_USER`  | _(none)_             | Username (optional)                             |
+| `GRAPHDB_PASS`  | _(none)_             | Password (optional)                             |
+
+### Redis (Orion Bus)
+| Variable                 | Default                 | Description                                        |
+|--------------------------|-------------------------|----------------------------------------------------|
+| `ORION_BUS_URL`          | `redis://orion-redis:6379/0` | Redis connection URL                           |
+| `CHANNEL_EVENTS_TAGGED`  | `orion:events:tagged`   | Source of tagged events                            |
+| `CHANNEL_RDF_ENQUEUE`    | `orion:rdf:enqueue`     | Primary channel for direct RDF enqueue requests     |
+| `CHANNEL_CORE_EVENTS`    | `orion:core:events`     | Core system events that may include RDF targets     |
+| `CHANNEL_RDF_CONFIRM`    | `orion:rdf:confirm`     | Success confirmations                              |
+| `CHANNEL_RDF_ERROR`      | `orion:rdf:error`       | Processing failures                                 |
+
+### Service Behavior
+| Variable       | Default            | Description                                                     |
+|----------------|--------------------|-----------------------------------------------------------------|
+| `SERVICE_NAME` | `orion-rdf-writer` | Service identifier                                              |
+| `LOG_LEVEL`    | `INFO`             | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`                     |
+| `BATCH_SIZE`   | `10`               | Items per batch before flush (also flushes every **5s**)        |
+| `RETRY_LIMIT`  | `3`                | Max retry attempts to POST to GraphDB                           |
+| `RETRY_INTERVAL` | `2`             | Seconds between retries                                         |
+
+---
+
+## 🚀 Running
+Designed for Docker / Docker Compose.
+
+**Build**
+```bash
 docker-compose build orion-rdf-writer
+```
 
-Run the Service:
-To start the service in detached mode:
-
+**Run (detached)**
+```bash
 docker-compose up -d orion-rdf-writer
+```
 
-View Logs:
-To view the real-time logs of the running service:
-
+**Follow logs**
+```bash
 docker-compose logs -f orion-rdf-writer
+```
 
-5. Usage & Testing
+---
 
-To have the service process data, you must publish a message to one of its subscribed Redis channels. The easiest way to do this is with redis-cli inside the Redis container.
-Example Valid Message
+## 🧪 Usage & Testing
+Publish test events to a subscribed channel using `redis-cli` from the Redis container.
 
-A valid message must contain either a mentions or relatesTo key with a list of strings.
+**Valid message** (contains `mentions` and/or `relatesTo`):
+```bash
+# Replace container name with your Redis service/container
+docker exec orion-bus-orion-redis-1 \
+  redis-cli PUBLISH orion:rdf:enqueue \
+  '{"id":"event-xyz-789","mentions":["entity-A","entity-B"],"relatesTo":["topic-X"]}'
+```
+**Expected**: Service logs a ✅ insertion and publishes a confirmation to `orion:rdf:confirm`. Triples appear in GraphDB.
 
-# Replace 'orion-bus-orion-redis-1' with your actual Redis container name
-docker exec orion-bus-orion-redis-1 redis-cli PUBLISH orion:rdf:enqueue '{"id": "event-xyz-789", "mentions": ["entity-A", "entity-B"], "relatesTo": ["topic-X"]}'
+**Invalid message** (missing required keys):
+```bash
+docker exec orion-bus-orion-redis-1 \
+  redis-cli PUBLISH orion:rdf:enqueue \
+  '{"id":"bad-event-123","some_other_data":"value"}'
+```
+**Expected**: Service warns `No triples generated for event`, publishes a structured error to `orion:rdf:error`, and appends to `errors.txt`.
 
-Expected Outcome: You will see a ✅ RDF inserted message in the service logs, and the corresponding triples will be present in GraphDB.
-Example Invalid Message
+---
 
-An invalid message lacks the required keys.
+## 🧯 Error Handling & Observability
+Two durable paths on failure:
 
-docker exec orion-bus-orion-redis-1 redis-cli PUBLISH orion:rdf:enqueue '{"id": "bad-event-123", "some_other_data": "value"}'
+1. **Redis error channel** — `orion:rdf:error`
+   - Emits structured JSON for real-time monitoring by other services.
+2. **Persistent log file** — JSON Lines at `/mnt/storage/rdf_logs/errors.txt`
+   - Mounted via Docker volume; durable across restarts.
 
-Expected Outcome: You will see a No triples generated for event warning in the service logs. An error message will be published to the orion:rdf:error channel and logged to the error file.
-6. Error Handling
-
-The service has two mechanisms for flagging failed events:
-
-    Redis Error Channel (orion:rdf:error): A structured JSON message detailing the failure is published to this channel. This allows other services to monitor failures in real-time.
-
-    Persistent Log File: A detailed JSON record of the error is appended to a file on the host machine, located at /mnt/storage/rdf_logs/errors.txt. This is configured via a Docker volume in the docker-compose.yml file and provides a durable record of all failures.
-
-// Example entry in errors.txt
+**Example error entry**
+```json
 {
-    "timestamp": "2025-10-06T00:30:00.123Z",
-    "service": "orion-rdf-writer",
-    "error": "No triples generated for event bad-event-123. Check event structure.",
-    "failed_event": { "id": "bad-event-123", "some_other_data": "value" }
+  "timestamp": "2025-10-06T00:30:00.123Z",
+  "service": "orion-rdf-writer",
+  "error": "No triples generated for event bad-event-123. Check event structure.",
+  "failed_event": { "id": "bad-event-123", "some_other_data": "value" }
 }
+```
 
+**What to check**
+- GraphDB reachable: `GRAPHDB_URL`, repo exists, credentials valid.
+- Bus connectivity: `ORION_BUS_URL` resolves; channels match producer expectations.
+- Batch flushes: increase `LOG_LEVEL=DEBUG` to see batch timings and sizes.
+- Retries: confirm backoff via logs when GraphDB is temporarily unavailable.
+
+---
+
+## 📂 Key Files
+- `app/main.py` — Service entrypoint / worker loop & subscriptions.
+- `app/build_triples.py` — Transformation rules → N‑Triples.
+- `app/bus.py` — Redis client wrapper and channel definitions.
+- `docker-compose.yml` — Volumes, env, and dependencies.
+
+---
+
+## 📦 Example `.env`
+```ini
+SERVICE_NAME=orion-rdf-writer
+LOG_LEVEL=INFO
+
+# Redis / Bus
+ORION_BUS_URL=redis://orion-redis:6379/0
+CHANNEL_EVENTS_TAGGED=orion:events:tagged
+CHANNEL_RDF_ENQUEUE=orion:rdf:enqueue
+CHANNEL_CORE_EVENTS=orion:core:events
+CHANNEL_RDF_CONFIRM=orion:rdf:confirm
+CHANNEL_RDF_ERROR=orion:rdf:error
+
+# GraphDB
+GRAPHDB_URL=http://graphdb:7200
+GRAPHDB_REPO=collapse
+# GRAPHDB_USER=
+# GRAPHDB_PASS=
+
+# Behavior
+BATCH_SIZE=10
+RETRY_LIMIT=3
+RETRY_INTERVAL=2
+```
+
+---
+
+## ✅ Tips
+- Keep `BATCH_SIZE` modest in low‑traffic environments to reduce latency; rely on the 5s flush for trickle traffic.
+- Prefer **explicit channels** in producers so the writer can be selectively scaled.
+- Consider enabling **basic health probes** (e.g., a `/health` HTTP endpoint if you add a tiny web server) for Compose/K8s readiness.

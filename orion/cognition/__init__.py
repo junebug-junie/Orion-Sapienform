@@ -1,17 +1,11 @@
 """
-Orion Cognition Layer
+Orion Cognition Layer package.
 
-This module contains:
-- Verb Ontology
-- YAML verb definitions
-- Prompt templates (Jinja2)
-- Semantic Planner
-- RDF Sync
-- Cognition Packs
-- Pack Manager
+This package contains:
+- planner/        : semantic planning, models, rdf sync
+- packs_loader.py : cognition packs management
+- packs/          : pack definitions
+- verbs/          : YAML verb definitions
+- prompts/        : Jinja2 templates
+- ontology/       : RDF/Turtle ontology
 """
-
-__all__ = [
-    "planner",
-    "packs_loader",
-]

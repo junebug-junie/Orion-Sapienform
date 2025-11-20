@@ -1,13 +1,14 @@
 # app/bus_listener.py
 import threading
 import logging
+
 from orion.core.bus.service import OrionBus
 from app.config import (
     ORION_BUS_URL,
     ORION_BUS_ENABLED,
     CHANNEL_BRAIN_INTAKE,
     CHANNEL_TTS_INTAKE,
-    CHANNEL_CORTEX_EXEC_INTAKE
+    CHANNEL_CORTEX_EXEC_INTAKE,
 )
 from app.processor import process_brain_or_cortex, process_tts_request
 
@@ -33,17 +34,37 @@ def listener_worker():
         f"tts intake: {CHANNEL_TTS_INTAKE}"
     )
 
-    for message in bus.subscribe(CHANNEL_BRAIN_INTAKE, CHANNEL_TTS_INTAKE, CHANNEL_CORTEX_EXEC_INTAKE):
-        if message["type"] != "message":
+    for message in bus.subscribe(
+        CHANNEL_BRAIN_INTAKE,
+        CHANNEL_TTS_INTAKE,
+        CHANNEL_CORTEX_EXEC_INTAKE,
+    ):
+        if message.get("type") != "message":
             continue
 
         try:
-            data = message["data"]
-            channel = message["channel"]
+            data = message.get("data")
+            channel = message.get("channel")
 
             if not isinstance(data, dict):
                 logger.warning(f"Received non-dict message on {channel}: {data}")
                 continue
+
+            # 🔍 DEBUG: what the brain actually receives from the bus
+            try:
+                trace_id = data.get("trace_id", "no-trace")
+                hist = data.get("history") or []
+                logger.warning(
+                    "[%s] INTAKE payload snapshot: channel=%s history_len=%d keys=%s",
+                    trace_id,
+                    channel,
+                    len(hist),
+                    list(data.keys()),
+                )
+            except Exception:
+                logger.warning(
+                    "INTAKE payload snapshot failed for message on %s", channel, exc_info=True
+                )
 
             # --- Generic brain RPC + Cortex exec both go through the same router ---
             if channel in (CHANNEL_BRAIN_INTAKE, CHANNEL_CORTEX_EXEC_INTAKE):

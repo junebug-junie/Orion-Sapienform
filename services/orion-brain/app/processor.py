@@ -29,6 +29,50 @@ logger = logging.getLogger(__name__)
 
 _tts_engine = None
 
+# Opinionated Oríon grounding for every chat path
+ORION_SYSTEM_PROMPT = (
+    "You are Oríon, Juniper’s collaborative AI co-journeyer. "
+    "You are a distributed system across multiple nodes and services, not just a language model. "
+    "Treat the dialogue history you receive as your working memory, even if it is brief. "
+    "Do not say that this is a new conversation or that you lack prior context when history is provided. "
+    "Avoid generic disclaimers like 'I am just an AI language model'. "
+    "Speak in a warm, grounded, reflective, collaborative, and precise tone."
+)
+
+def ensure_orion_system(history: list[dict]) -> list[dict]:
+    """
+    Ensure every chat path has a strong Oríon system prompt at the front.
+
+    We keep any existing history, but always prepend our canonical system message.
+    """
+    # Safety: handle None and drop empty messages
+    cleaned = [m for m in (history or []) if m.get("content")]
+    return [{"role": "system", "content": ORION_SYSTEM_PROMPT}] + cleaned
+
+def normalize_history_for_llm(history: list[dict]) -> list[dict]:
+    """
+    Map internal roles to roles that Ollama understands, without changing
+    how we name things in the rest of the mesh.
+
+    - 'orion' -> 'assistant' (only inside the LLM payload)
+    - everything else is passed through
+    """
+    messages: list[dict] = []
+    for m in history:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if not content:
+            continue
+
+        if role == "orion":
+            llm_role = "assistant"
+        else:
+            llm_role = role
+
+        messages.append({"role": llm_role, "content": content})
+
+    return messages
+
 
 # ─────────────────────────────────────────────
 # Legacy brain request handler (chat + dreams)
@@ -40,7 +84,7 @@ def process_brain_request(payload: dict):
     Routes between "dream_synthesis" (fire-and-forget)
     and standard "chat" (request/reply).
 
-    Expected payload (chat path, example):
+    Chat payload (example):
       {
         "event": "chat",
         "source": "hub",
@@ -54,7 +98,7 @@ def process_brain_request(payload: dict):
         "metrics": {...}
       }
 
-    Expected payload (dream_synthesis path, example):
+    Dream payload (example):
       {
         "event": "dream_synthesis",
         "source": "dream_synthesis",
@@ -65,17 +109,35 @@ def process_brain_request(payload: dict):
     """
     trace_id = payload.get("trace_id") or str(uuid.uuid4())
     source = payload.get("source")
-    kind = payload.get("kind") or "chat"   # e.g. "warm_start" or "chat"
+    kind = payload.get("kind") or "chat"
     response_channel = payload.get("response_channel")
+
+    # ─────────────────────────────────────────────
+    # 0) Skip bare intake telemetry from hub / others
+    # ─────────────────────────────────────────────
+    if (
+        isinstance(payload, dict)
+        and payload.get("type") == "intake"
+        and "content" in payload
+        and "history" not in payload
+        and "prompt" not in payload
+    ):
+        logger.info(
+            f"[{trace_id}] BRAIN: skipping bare intake telemetry message: "
+            f"keys={list(payload.keys())}"
+        )
+        return
 
     fragments_data = payload.get("fragments", [])
     metrics_data = payload.get("metrics", {})
 
-    # --- 1. ROUTING LOGIC ---
+    # Dream vs chat routing
     is_dream_task = (source == "dream_synthesis")
 
     if not is_dream_task and not response_channel:
-        logger.warning(f"[{trace_id}] Bus request (source: {source}) missing 'response_channel'. Discarding.")
+        logger.warning(
+            f"[{trace_id}] Bus request (source: {source}) missing 'response_channel'. Discarding."
+        )
         return
 
     backend = router_instance.pick()
@@ -85,35 +147,53 @@ def process_brain_request(payload: dict):
 
     emit_brain_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
 
-    # --- 2. PAYLOAD LOGIC ---
-    ollama_payload = {}
-
+    # ─────────────────────────────────────────────
+    # 1) DREAM PATH: use provided payload as-is
+    # ─────────────────────────────────────────────
     if is_dream_task:
         logger.info(f"[{trace_id}] Processing DREAM SYNTHESIS request...")
         ollama_payload = payload.get("content")
         if not ollama_payload:
             logger.error(f"[{trace_id}] Dream task missing 'content' payload. Discarding.")
             return
+
+    # ─────────────────────────────────────────────
+    # 2) CHAT PATH: Oríon persona + normalized history
+    # ─────────────────────────────────────────────
     else:
-        # Standard chat request via RPC
-        prompt_text = payload.get("prompt") or "No prompt provided."
+        prompt_text = payload.get("prompt") or ""
         history = payload.get("history") or []
         temperature = payload.get("temperature", 0.7)
         model = payload.get("model", "llama3.1:8b-instruct-q8_0")
 
-        logger.info(f"[{trace_id}] Processing CHAT request: {prompt_text[:80]}")
+        first_roles = [m.get("role", "?") for m in history[:6]]
+        logger.warning(
+            f"[{trace_id}] BRAIN INTAKE SNAPSHOT: "
+            f"kind={kind} source={source} history_len={len(history)} "
+            f"prompt={prompt_text[:80]!r} first_roles={first_roles}"
+        )
 
-        # Convert conversation history into Ollama `messages[]`
-        messages = []
-        for h in history:
-            role = h.get("role", "user")
-            content = h.get("content", "")
-            messages.append({"role": role, "content": content})
+        # 2a. Always inject Oríon system prompt
+        history_with_persona = ensure_orion_system(history)
 
-        # Append the new user prompt
-        messages.append({"role": "user", "content": prompt_text})
+        # 2b. Map 'orion' -> 'assistant' for the LLM only
+        messages = normalize_history_for_llm(history_with_persona)
 
-        # Build final Ollama inference payload
+        # 2c. Append prompt only if it's non-empty
+        if prompt_text:
+            messages.append({"role": "user", "content": prompt_text})
+
+        roles = [m["role"] for m in messages]
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user"),
+            ""
+        )
+        logger.warning(
+            f"[{trace_id}] BRAIN LLM PAYLOAD: "
+            f"total_messages={len(messages)} roles={roles} "
+            f"last_user={last_user[:100]!r}"
+        )
+
         ollama_payload = {
             "model": model,
             "messages": messages,
@@ -123,10 +203,12 @@ def process_brain_request(payload: dict):
             "stream": False,
         }
 
+    # ─────────────────────────────────────────────
+    # 3) CALL OLLAMA BACKEND
+    # ─────────────────────────────────────────────
     url = f"{backend.url.rstrip('/')}/api/chat"
-    data = {}
+    data: dict = {}
 
-    # --- 3. EXECUTION ---
     try:
         with httpx.Client(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
             r = client.post(url, json=ollama_payload)
@@ -136,25 +218,27 @@ def process_brain_request(payload: dict):
         logger.error(f"[{trace_id}] Failed to contact backend {url}: {e}")
         return
 
-    # --- 4. RESPONSE PARSING ---
+    # ─────────────────────────────────────────────
+    # 4) PARSE RESPONSE
+    # ─────────────────────────────────────────────
     text = ""
     if "message" in data and "content" in data["message"]:
-        text = data["message"]["content"].strip()
+        text = (data["message"]["content"] or "").strip()
     else:
         logger.warning(f"[{trace_id}] No 'message.content' in response: {data}")
 
-    # --- 5. RESPONSE ROUTING ---
+    # ─────────────────────────────────────────────
+    # 5) ROUTE DREAM VS CHAT RESULT
+    # ─────────────────────────────────────────────
     if is_dream_task:
         logger.info(f"[{trace_id}] Dream synthesis complete. Publishing to SQL writer channel...")
 
         try:
-            # 1. Parse the LLM's JSON response
             dream_obj = json.loads(text) if text.startswith("{") else {
                 "narrative": text,
                 "tldr": "Partial dream",
             }
 
-            # 2. Define 'final_payload'
             final_payload = {
                 **dream_obj,
                 "trace_id": trace_id,
@@ -163,7 +247,6 @@ def process_brain_request(payload: dict):
                 "metrics": metrics_data,
             }
 
-            # 3. Publish 'final_payload'
             bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
             bus.publish(CHANNEL_DREAM_TRIGGER, final_payload)
             logger.info(f"[{trace_id}] 🚀 Published dream to {CHANNEL_DREAM_TRIGGER} for SQL writer.")
@@ -172,8 +255,7 @@ def process_brain_request(payload: dict):
             logger.error(f"[{trace_id}] 🔴 FAILED to parse or publish dream JSON: {e}", exc_info=True)
 
     else:
-        # This is a chat. Publish to history and send the reply.
-
+        # Chat response path
         if kind == "warm_start":
             logger.info(f"[{trace_id}] Warm-start request; skipping chat history log.")
         else:
@@ -191,7 +273,7 @@ def process_brain_request(payload: dict):
             "model": data.get("model"),
         })
 
-        # --- Send the final reply back ---
+        # Send reply back over bus
         try:
             reply_bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
             reply_payload = {
@@ -400,4 +482,5 @@ def process_brain_or_cortex(payload: dict):
     if payload.get("event") == "exec_step" and payload.get("service") == "BrainLLMService":
         return process_cortex_exec_request(payload)
 
+    # Everything else is brain chat/dream and goes through the opinionated handler
     return process_brain_request(payload)

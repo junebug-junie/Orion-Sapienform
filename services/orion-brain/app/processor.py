@@ -98,30 +98,66 @@ def process_brain_request(payload: dict):
         "metrics": {...}
       }
 
-    Dream payload (example):
+    Dream payload (example, bus wire):
       {
-        "event": "dream_synthesis",
-        "source": "dream_synthesis",
+        "source": "dream_preprocessor" | "dream_synthesis",
+        "type": "intake",
         "content": { ...ollama-style payload... },
+        "trace_id": "...",
         "fragments": [...],
         "metrics": {...}
       }
     """
     trace_id = payload.get("trace_id") or str(uuid.uuid4())
+    event = payload.get("event")
     source = payload.get("source")
     kind = payload.get("kind") or "chat"
     response_channel = payload.get("response_channel")
 
     # ─────────────────────────────────────────────
-    # 0) Skip bare intake telemetry from hub / others
+    # 0) Detect DREAM-INTERNAL wire format
+    #    (what your dream_preprocessor is actually sending)
     # ─────────────────────────────────────────────
-    if (
+    is_dream_wire = (
+        isinstance(payload, dict)
+        and payload.get("type") == "intake"
+        and "content" in payload
+        and "fragments" in payload
+        and source in ("dream_preprocessor", "dream_synthesis")
+    )
+
+    # If this is the dream wire, normalize it into canonical dream_synthesis
+    if is_dream_wire:
+        # Make sure we have stable routing signals
+        payload.setdefault("event", "dream_synthesis")
+        payload.setdefault("kind", "dream_synthesis")
+        payload["source"] = "dream_synthesis"
+
+        # Re-bind locals from normalized payload
+        event = payload["event"]
+        kind = payload["kind"]
+        source = payload["source"]
+
+        logger.warning(
+            f"[{trace_id}] BRAIN DREAM WIRE DETECTED: "
+            f"source={source} event={event} kind={kind} "
+            f"keys={list(payload.keys())}"
+        )
+
+    # ─────────────────────────────────────────────
+    # 1) Skip *only* true bare intake telemetry
+    #    (hub / voice transcripts with no history/prompt/fragments)
+    # ─────────────────────────────────────────────
+    is_bare_intake = (
         isinstance(payload, dict)
         and payload.get("type") == "intake"
         and "content" in payload
         and "history" not in payload
         and "prompt" not in payload
-    ):
+        and "fragments" not in payload  # <-- prevents skipping dream wire
+    )
+
+    if is_bare_intake:
         logger.info(
             f"[{trace_id}] BRAIN: skipping bare intake telemetry message: "
             f"keys={list(payload.keys())}"
@@ -131,12 +167,25 @@ def process_brain_request(payload: dict):
     fragments_data = payload.get("fragments", [])
     metrics_data = payload.get("metrics", {})
 
-    # Dream vs chat routing
-    is_dream_task = (source == "dream_synthesis")
+    # ─────────────────────────────────────────────
+    # 2) DREAM vs CHAT routing
+    # ─────────────────────────────────────────────
+    is_dream_task = (
+        (event == "dream_synthesis")
+        or (source == "dream_synthesis")
+        or (kind == "dream_synthesis")
+    )
 
+    logger.warning(
+        f"[{trace_id}] BRAIN ROUTE DECISION: "
+        f"is_dream_task={is_dream_task} kind={kind} event={event} source={source}"
+    )
+
+    # Chat MUST have a response channel; dream is fire-and-forget
     if not is_dream_task and not response_channel:
         logger.warning(
-            f"[{trace_id}] Bus request (source: {source}) missing 'response_channel'. Discarding."
+            f"[{trace_id}] Bus request (source={source}, kind={kind}, event={event}) "
+            f"missing 'response_channel'. Discarding."
         )
         return
 
@@ -148,7 +197,7 @@ def process_brain_request(payload: dict):
     emit_brain_event("route.selected", {"trace_id": trace_id, "backend": backend.url})
 
     # ─────────────────────────────────────────────
-    # 1) DREAM PATH: use provided payload as-is
+    # 3) DREAM PATH: use provided payload as-is
     # ─────────────────────────────────────────────
     if is_dream_task:
         logger.info(f"[{trace_id}] Processing DREAM SYNTHESIS request...")
@@ -158,7 +207,7 @@ def process_brain_request(payload: dict):
             return
 
     # ─────────────────────────────────────────────
-    # 2) CHAT PATH: Oríon persona + normalized history
+    # 4) CHAT PATH: Oríon persona + normalized history
     # ─────────────────────────────────────────────
     else:
         prompt_text = payload.get("prompt") or ""
@@ -173,13 +222,14 @@ def process_brain_request(payload: dict):
             f"prompt={prompt_text[:80]!r} first_roles={first_roles}"
         )
 
-        # 2a. Always inject Oríon system prompt
+        # 4a. Always inject Oríon system prompt (keeps 'orion' in our guts)
+        # use existing helper signature (single history arg)
         history_with_persona = ensure_orion_system(history)
 
-        # 2b. Map 'orion' -> 'assistant' for the LLM only
+        # 4b. Map 'orion' -> 'assistant' for the LLM wire format ONLY
         messages = normalize_history_for_llm(history_with_persona)
 
-        # 2c. Append prompt only if it's non-empty
+        # 4c. Append prompt only if it's non-empty
         if prompt_text:
             messages.append({"role": "user", "content": prompt_text})
 
@@ -204,7 +254,7 @@ def process_brain_request(payload: dict):
         }
 
     # ─────────────────────────────────────────────
-    # 3) CALL OLLAMA BACKEND
+    # 5) CALL OLLAMA BACKEND
     # ─────────────────────────────────────────────
     url = f"{backend.url.rstrip('/')}/api/chat"
     data: dict = {}
@@ -219,7 +269,7 @@ def process_brain_request(payload: dict):
         return
 
     # ─────────────────────────────────────────────
-    # 4) PARSE RESPONSE
+    # 6) PARSE RESPONSE
     # ─────────────────────────────────────────────
     text = ""
     if "message" in data and "content" in data["message"]:
@@ -228,7 +278,7 @@ def process_brain_request(payload: dict):
         logger.warning(f"[{trace_id}] No 'message.content' in response: {data}")
 
     # ─────────────────────────────────────────────
-    # 5) ROUTE DREAM VS CHAT RESULT
+    # 7) ROUTE DREAM VS CHAT RESULT
     # ─────────────────────────────────────────────
     if is_dream_task:
         logger.info(f"[{trace_id}] Dream synthesis complete. Publishing to SQL writer channel...")

@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    PROJECT: str = "orion-athena"
     SERVICE_NAME: str = "sql-writer"
     SERVICE_VERSION: str = "0.3.0"
     PORT: int = 8220

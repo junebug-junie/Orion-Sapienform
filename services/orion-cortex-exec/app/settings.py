@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # channels
     EXEC_REQUEST_PREFIX: str = "orion-exec:request"
     EXEC_RESULT_PREFIX: str = "orion-exec:result"
+    CORTEX_LOG_CHANNEL: str = "orion:cortex:telemetry"
 
     # timeouts
     STEP_TIMEOUT_MS: int = 8000

@@ -156,6 +156,42 @@ class StepExecutor:
 
         logs.append(f"Collected {len(received)}/{len(target_services)} responses in {latency_ms} ms.")
 
+        # emit step-level cognition summary on the bus
+        try:
+            # Trim outputs a bit to avoid spam huge texts
+            result_preview = {}
+            for svc, payload in received.items():
+                svc_result = payload.get("result") or {}
+                llm_out = svc_result.get("llm_output", "")
+                if isinstance(llm_out, str):
+                    llm_out = llm_out[:512]  # keep first 512 chars
+                result_preview[svc] = {
+                    "status": payload.get("status", "success"),
+                    "llm_output": llm_out,
+                }
+
+            summary = {
+                "event": "cortex_step_summary",
+                "layer": "step",
+                "correlation_id": correlation_id,
+                "verb": step.verb_name,
+                "step": step.step_name,
+                "services": list(received.keys()),
+                "status": overall,
+                "latency_ms": latency_ms,
+                "node": self.node_name,
+                "args": args,
+                "context": context,
+                "result_preview": result_preview,
+                "timestamp": time.time(),
+            }
+
+            bus.publish(settings.CORTEX_LOG_CHANNEL, summary)
+        except Exception as e:
+            # Don't fail the step if logging fails; just record the error in logs.
+            logs.append(f"Failed to publish cortex_step_summary: {e}")
+
+
         return StepExecutionResult(
             status=overall,
             verb_name=step.verb_name,

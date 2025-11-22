@@ -1,5 +1,6 @@
 import uuid
 import logging
+import json
 from rdflib import Graph, Namespace, URIRef, Literal
 from rdflib.namespace import RDF, XSD
 
@@ -9,75 +10,50 @@ from app.settings import settings
 ORION = Namespace("http://conjourney.net/orion#")
 CM = Namespace("http://orion.ai/collapse#")
 
+
+def _sanitize_fragment(raw: str) -> str:
+    """
+    Turn things like 'llm.brain' or 'dream.synthesize' into safe local names
+    like 'llm_brain' or 'dream_synthesize' for use in IRIs.
+    """
+    return "".join(c if c.isalnum() else "_" for c in str(raw))
+
+
 def build_triples(event: dict) -> tuple[str | None, str | None]:
-    """
-    Intelligently builds RDF triples based on the structure of the incoming event.
-    It routes to a different builder function depending on the event type.
-    """
     g = Graph()
     g.bind("cm", CM)
     g.bind("orion", ORION)
 
-    event_id = event.get("id")
-    if not event_id:
-        logging.warning("Event is missing an 'id', cannot generate triples.")
-        return None, None
+    event_type = event.get("event")
+    subject_uri = None
 
-    # ================================================================
-    # --- 1. DEFINE THE ONE, TRUE SUBJECT URI ---
-    # ================================================================
-    subject_uri = URIRef(f"http://conjourney.net/event/{event_id}")
-
-
-    # --- Routing Logic ---
-    # Check if this is an enrichment event from the meta-writer/meta-tags
-    if "enrichment_type" in event or "processed_by" in event:
-        # ================================================================
-        # --- 2. PASS THE SUBJECT_URI TO THE HELPER ---
-        # ================================================================
-        g = _build_enrichment_graph(g, event, subject_uri)
+    if event_type == "cortex_step_summary":
+        g, subject_uri = _build_cortex_step_graph(g, event)
     else:
-        # ================================================================
-        # --- 3. PASS THE SUBJECT_URI TO THE HELPER ---
-        # ================================================================
-        g = _build_raw_collapse_graph(g, event, subject_uri)
+        event_id = event.get("id")
+        if not event_id:
+            logging.warning("Event is missing an 'id', cannot generate collapse/enrichment triples.")
+            return None, None
 
-    if not len(g):
-        logging.warning(f"No triples were generated for event {event_id}. Check event structure and builder logic.")
+        subject_uri = URIRef(f"http://conjourney.net/event/{event_id}")
+
+        if "enrichment_type" in event or "processed_by" in event:
+            g = _build_enrichment_graph(g, event, subject_uri)
+        else:
+            g = _build_raw_collapse_graph(g, event, subject_uri)
+
+    if subject_uri is None or not len(g):
+        logging.warning(f"No triples were generated for event type={event_type!r}.")
         return None, None
 
-    # Attach provenance to the final graph
-    observer = event.get("observer", "system")
+    observer = event.get("observer") or event.get("node") or "system"
     graph_name = attach_provenance(g, subject_uri, observer)
 
     return g.serialize(format="nt"), graph_name
 
 
 # ================================================================
-# --- 4. FUNCTION TO ACCEPT THE SUBJECT_URI ---
-# ================================================================
-def _build_raw_collapse_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
-    """Builds triples for a base collapse event."""
-
-    # --- 5. REMOVED OLD, INCORRECT SUBJECT DEFINITION ---
-    # subject = URIRef(f"{CM}{event.get('id')}")
-
-    g.add((subject, RDF.type, CM.Collapse))
-    g.add((subject, CM.id, Literal(event.get('id'), datatype=XSD.string)))
-
-    # Add all key-value pairs from the raw collapse event
-    for key, val in event.items():
-        if val is None or key in ['id', 'service_name']:
-            continue
-        if isinstance(val, list):
-            val = ", ".join(map(str, val))
-        g.add((subject, URIRef(str(CM) + key), Literal(str(val), datatype=XSD.string)))
-
-    return g
-
-
-# ================================================================
-# --- 6. FUNCTION TO ACCEPT THE SUBJECT_URI ---
+# --- 5. ENRICHMENT GRAPH (UNCHANGED) ----------------------------
 # ================================================================
 def _build_enrichment_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
     """Builds triples for an enrichment event, linking them to the original collapse."""
@@ -89,16 +65,86 @@ def _build_enrichment_graph(g: Graph, event: dict, subject: URIRef) -> Graph:
     # Add entities
     for entity in event.get("entities", []):
         if entity.get("value") and entity.get("type"):
-            g.add((subject, CM.hasEntity, Literal(f"{entity['value']} ({entity['type']})", datatype=XSD.string)))
+            g.add(
+                (
+                    subject,
+                    CM.hasEntity,
+                    Literal(f"{entity['value']} ({entity['type']})", datatype=XSD.string),
+                )
+            )
 
-    # This part was correct, it creates the separate Enrichment node
+    # Separate Enrichment node
     enrichment_id = URIRef(f"http://conjourney.net/enrichment/{uuid.uuid4().hex}")
     g.add((enrichment_id, RDF.type, ORION.Enrichment))
 
-    # --- 8. links the new enrichment node (enrichment_id) to the
-    # one, true event node (subject)
+    # Links the new enrichment node (enrichment_id) to the one, true event node (subject)
     g.add((enrichment_id, ORION.enriches, subject))
-
     g.add((enrichment_id, ORION.processedBy, Literal(event.get("processed_by"))))
 
     return g
+
+
+# ================================================================
+# --- 6. CORTEX STEP EXECUTION GRAPH (NEW) -----------------------
+# ================================================================
+def _build_cortex_step_graph(g: Graph, event: dict) -> tuple[Graph, URIRef | None]:
+    cid = event.get("correlation_id")
+    if not cid:
+        logging.warning("Cortex event is missing 'correlation_id'; cannot generate triples.")
+        return g, None
+
+    subject = ORION[f"cortexStep_{_sanitize_fragment(cid)}"]
+
+    g.add((subject, RDF.type, ORION.CognitiveStepExecution))
+    g.add((subject, ORION.correlationId, Literal(cid, datatype=XSD.string)))
+
+    verb = event.get("verb")
+    if verb:
+        vf = _sanitize_fragment(verb)
+        g.add((subject, ORION.verb, ORION[f"verb_{vf}"]))
+        g.add((subject, ORION.verbName, Literal(verb, datatype=XSD.string)))
+
+    step = event.get("step")
+    if step:
+        sf = _sanitize_fragment(step)
+        g.add((subject, ORION.step, ORION[f"step_{sf}"]))
+        g.add((subject, ORION.stepName, Literal(step, datatype=XSD.string)))
+
+    for svc in event.get("services", []):
+        sf = _sanitize_fragment(svc)
+        g.add((subject, ORION.service, ORION[f"service_{sf}"]))
+        g.add((subject, ORION.serviceName, Literal(str(svc), datatype=XSD.string)))
+
+    node = event.get("node")
+    if node:
+        nf = _sanitize_fragment(node)
+        g.add((subject, ORION.originNode, ORION[f"node_{nf}"]))
+        g.add((subject, ORION.originNodeName, Literal(str(node), datatype=XSD.string)))
+
+    status = event.get("status")
+    if status:
+        g.add((subject, ORION.status, Literal(status, datatype=XSD.string)))
+
+    latency = event.get("latency_ms")
+    if latency is not None:
+        try:
+            g.add((subject, ORION.latencyMs, Literal(int(latency), datatype=XSD.int)))
+        except Exception:
+            pass
+
+    ts = event.get("timestamp")
+    if ts is not None:
+        try:
+            g.add((subject, ORION.timestampEpoch, Literal(float(ts), datatype=XSD.double)))
+        except Exception:
+            pass
+
+    args = event.get("args") or {}
+    ctx = event.get("context") or {}
+    preview = event.get("result_preview") or {}
+
+    g.add((subject, ORION.argsJson, Literal(json.dumps(args, separators=(",", ":")), datatype=XSD.string)))
+    g.add((subject, ORION.contextJson, Literal(json.dumps(ctx, separators=(",", ":")), datatype=XSD.string)))
+    g.add((subject, ORION.resultPreviewJson, Literal(json.dumps(preview, separators=(",", ":")), datatype=XSD.string)))
+
+    return g, subject

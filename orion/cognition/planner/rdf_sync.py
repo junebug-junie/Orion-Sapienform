@@ -16,7 +16,7 @@ import yaml
 PREFIXES = """@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-@prefix orion: <http://orion.local/ontology#> .
+@prefix orion: <http://conjourney.net/orion#> .
 
 # Core classes
 orion:Verb a rdfs:Class .
@@ -36,6 +36,70 @@ orion:service a rdf:Property .
 orion:requiresGpu a rdf:Property .
 orion:requiresMemory a rdf:Property .
 orion:promptTemplate a rdf:Property .
+
+# ===============================
+# Cognition Step Execution schema
+# ===============================
+
+orion:CognitiveStepExecution a rdfs:Class ;
+  rdfs:label "Cognitive Step Execution" ;
+  rdfs:comment "A single execution of a semantic verb/step in Orion's cognition cortex." .
+
+orion:verb a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range rdfs:Resource .
+
+orion:step a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range rdfs:Resource .
+
+orion:verbName a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
+
+orion:stepName a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
+
+orion:serviceName a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
+
+orion:service a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range rdfs:Resource .
+
+orion:originNode a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range rdfs:Resource .
+
+orion:originNodeName a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
+
+orion:status a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
+
+orion:latencyMs a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:int .
+
+orion:timestampEpoch a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:double .
+
+orion:argsJson a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
+
+orion:contextJson a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
+
+orion:resultPreviewJson a rdf:Property ;
+  rdfs:domain orion:CognitiveStepExecution ;
+  rdfs:range xsd:string .
 """
 
 

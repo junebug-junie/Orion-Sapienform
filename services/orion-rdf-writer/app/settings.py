@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     CHANNEL_EVENTS_TAGGED: str = Field(..., env="CHANNEL_EVENTS_TAGGED")
     CHANNEL_RDF_ENQUEUE: str = Field(..., env="CHANNEL_RDF_ENQUEUE")
     ORION_CORE_EVENTS: str = Field(..., env="ORION_CORE_EVENTS")
+    CORTEX_LOG_CHANNEL: str = Field(..., env="CORTEX_LOG_CHANNEL")
 
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(..., env="CHANNEL_RDF_CONFIRM")
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
             self.CHANNEL_EVENTS_TAGGED,
             self.CHANNEL_RDF_ENQUEUE,
             self.ORION_CORE_EVENTS,
+            self.CORTEX_LOG_CHANNEL
         ]
 
     class Config:

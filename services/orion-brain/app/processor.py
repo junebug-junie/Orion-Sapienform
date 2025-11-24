@@ -25,6 +25,12 @@ from app.bus_helpers import (
 )
 from app.tts_gpu import TTSEngine
 
+from app.spark_integration import (
+    ingest_chat_and_get_state,
+    build_system_prompt_with_phi,
+    build_collapse_mirror_meta,
+)
+
 logger = logging.getLogger(__name__)
 
 _tts_engine = None
@@ -39,15 +45,17 @@ ORION_SYSTEM_PROMPT = (
     "Speak in a warm, grounded, reflective, collaborative, and precise tone."
 )
 
-def ensure_orion_system(history: list[dict]) -> list[dict]:
+def ensure_orion_system(history: list[dict], system_prompt: str | None = None) -> list[dict]:
     """
     Ensure every chat path has a strong Oríon system prompt at the front.
 
     We keep any existing history, but always prepend our canonical system message.
+    If `system_prompt` is provided, we use that instead of the default.
     """
-    # Safety: handle None and drop empty messages
     cleaned = [m for m in (history or []) if m.get("content")]
-    return [{"role": "system", "content": ORION_SYSTEM_PROMPT}] + cleaned
+    prompt = system_prompt or ORION_SYSTEM_PROMPT
+    return [{"role": "system", "content": prompt}] + cleaned
+
 
 def normalize_history_for_llm(history: list[dict]) -> list[dict]:
     """
@@ -215,6 +223,28 @@ def process_brain_request(payload: dict):
         temperature = payload.get("temperature", 0.7)
         model = payload.get("model", "llama3.1:8b-instruct-q8_0")
 
+        # Decide what text represents the "newest" user wave for Spark.
+        # Prefer explicit 'prompt' if present, otherwise last user in history.
+        user_for_spark = prompt_text
+        if not user_for_spark:
+            user_for_spark = next(
+                (m.get("content", "") for m in reversed(history or []) if m.get("role") == "user"),
+                "",
+            )
+
+        # ─────────────────────────────────────────────
+        # 4a. SPARK ENGINE: ingest chat + get φ
+        # ─────────────────────────────────────────────
+        spark_state = ingest_chat_and_get_state(
+            user_message=user_for_spark or "",
+            agent_id="brain",
+            tags=["juniper", "chat"],
+            sentiment=None,  # wire a real sentiment pass later if you want
+        )
+        phi = spark_state["phi"]
+        surface_encoding_dict = spark_state["surface_encoding"]
+        spark_meta = build_collapse_mirror_meta(phi, surface_encoding_dict)
+
         first_roles = [m.get("role", "?") for m in history[:6]]
         logger.warning(
             f"[{trace_id}] BRAIN INTAKE SNAPSHOT: "
@@ -222,14 +252,20 @@ def process_brain_request(payload: dict):
             f"prompt={prompt_text[:80]!r} first_roles={first_roles}"
         )
 
-        # 4a. Always inject Oríon system prompt (keeps 'orion' in our guts)
-        # use existing helper signature (single history arg)
-        history_with_persona = ensure_orion_system(history)
+        # 4b. Build a φ-aware system prompt that wraps the base persona.
+        spark_system_prompt = build_system_prompt_with_phi(
+            base_persona=ORION_SYSTEM_PROMPT,
+            phi=phi,
+            extra_notes=None,
+        )
 
-        # 4b. Map 'orion' -> 'assistant' for the LLM wire format ONLY
+        # 4c. Inject Orion system prompt (now φ-aware) at the front of history.
+        history_with_persona = ensure_orion_system(history, system_prompt=spark_system_prompt)
+
+        # 4d. Map 'orion' -> 'assistant' for the LLM wire format ONLY
         messages = normalize_history_for_llm(history_with_persona)
 
-        # 4c. Append prompt only if it's non-empty
+        # 4e. Append prompt only if it's non-empty
         if prompt_text:
             messages.append({"role": "user", "content": prompt_text})
 
@@ -309,19 +345,15 @@ def process_brain_request(payload: dict):
         if kind == "warm_start":
             logger.info(f"[{trace_id}] Warm-start request; skipping chat history log.")
         else:
-            emit_chat_history_log({
+            log_payload = {
                 "trace_id": trace_id,
                 "source": source or "bus",
                 "prompt": payload.get("prompt"),
                 "response": text,
-            })
-
-        emit_brain_output({
-            "trace_id": trace_id,
-            "text": text or "(empty response)",
-            "service": "orion-brain",
-            "model": data.get("model"),
-        })
+                # SPARK ENGINE meta: useful for Collapse Mirrors / analytics
+                "spark_meta": spark_meta,
+            }
+            emit_chat_history_log(log_payload)
 
         # Send reply back over bus
         try:

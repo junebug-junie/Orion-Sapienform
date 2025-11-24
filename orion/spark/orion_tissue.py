@@ -12,6 +12,7 @@ from which a low-dimensional self-field φ is derived.
 
 from pathlib import Path
 from typing import Optional, Dict, Any
+import os
 
 import numpy as np
 
@@ -35,11 +36,20 @@ class OrionTissue:
         decay: float = 0.95,
         snapshot_path: Optional[Path] = None,
     ) -> None:
+
+        env_path = os.environ.get("ORION_TISSUE_SNAPSHOT_PATH")
+
+        if snapshot_path is not None:
+            self.snapshot_path = snapshot_path
+        elif env_path:
+            self.snapshot_path = Path(env_path)
+        else:
+            self.snapshot_path = Path("/mnt/storage-warm/orion/spark/tissue-brain.npy")
+
         self.H = H
         self.W = W
         self.C = C
         self.decay = decay
-        self.snapshot_path = snapshot_path or Path("/tmp/orion_tissue.npy")
 
         if self.snapshot_path.exists():
             try:

@@ -15,10 +15,12 @@ services:
     restart: unless-stopped
     volumes:
       - /mnt/telemetry/models/coqui/tts:/root/.local/share/tts
+      - /mnt/storage-warm:/mnt/storage-warm
     environment:
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
       - PORT=${PORT}
+      - ORION_TISSUE_SNAPSHOT_PATH=/mnt/storage-warm/orion/spark/tissue-brain.npy
 
       # --- Bus ---
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}

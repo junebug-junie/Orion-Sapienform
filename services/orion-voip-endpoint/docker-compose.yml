@@ -1,0 +1,48 @@
+services:
+  voip-endpoint:
+    build:
+      context: ../..
+      dockerfile: services/orion-voip-endpoint/Dockerfile
+    container_name: ${SERVICE_NAME}
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${VOIP_DATA_ROOT}/tftpboot:/tftpboot
+      - ${VOIP_DATA_ROOT}/asterisk/etc:/etc/asterisk
+      - ${VOIP_DATA_ROOT}/asterisk/lib:/var/lib/asterisk
+      - ${VOIP_DATA_ROOT}/asterisk/log:/var/log/asterisk
+      - ${VOIP_DATA_ROOT}/asterisk/spool:/var/spool/asterisk
+
+    environment:
+      # Paths / identity
+      VOIP_DATA_ROOT: ${VOIP_DATA_ROOT:-/mnt/docker/orion-voip-endpoint}
+      SERVICE_NAME: ${VOIP_CONTAINER_NAME:-orion-voip-endpoint}
+
+      # IPs
+      VOIP_LAN_HOST_IP: ${VOIP_LAN_HOST_IP}
+      VOIP_TAILSCALE_HOST_IP: ${VOIP_TAILSCALE_HOST_IP}
+
+      # Device identity
+      VOIP_PHONE_MAC: ${VOIP_PHONE_MAC}
+
+      # SIP creds
+      VOIP_SIP_EXT: ${VOIP_SIP_EXT:-1001}
+      VOIP_SIP_SECRET: ${VOIP_SIP_SECRET:-supersecret}
+
+      # Behavior / codecs
+      VOIP_AUTOANSWER: ${VOIP_AUTOANSWER:-true}
+      VOIP_CODECS: ${VOIP_CODECS:-ulaw,alaw,g722}
+
+      # HTTP API
+      VOIP_API_PORT: ${VOIP_API_PORT:-8085}
+
+      # Orion Bus / Redis
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      VOIP_BUS_COMMAND_CHANNEL: ${VOIP_BUS_COMMAND_CHANNEL:-orion:voip:command}
+      VOIP_BUS_STATUS_CHANNEL: ${VOIP_BUS_STATUS_CHANNEL:-orion:voip:status}
+
+networks:
+  app-net:
+    external: true

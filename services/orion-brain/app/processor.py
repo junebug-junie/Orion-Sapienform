@@ -664,31 +664,30 @@ def process_brain_or_cortex(payload: dict):
     service = payload.get("service")
     trace_id = payload.get("trace_id") or payload.get("correlation_id") or str(uuid.uuid4())
 
-    logger.info(
-        "[ROUTER] Incoming payload: event=%s service=%s trace_id=%s keys=%s",
-        event,
-        service,
-        trace_id,
-        list(payload.keys()),
-    )
-
     # 🔁 Cortex semantic exec step
-    if event == "exec_step" and service == "BrainLLMService":
+    # FIX: Prioritize the event type. If it's an exec_step, we MUST handle it here.
+    # We do not strictly enforce 'service' matching to allow for slight misconfigurations
+    # or case discrepancies to be caught by the handler rather than falling through.
+    if event == "exec_step":
+        if service and service != "BrainLLMService":
+            logger.warning(
+                f"[{trace_id}] [ROUTER] Received exec_step for service='{service}' "
+                f"but I am 'BrainLLMService'. Processing anyway."
+            )
+            
         logger.info(
-            "[ROUTER] Dispatching to process_cortex_exec_request "
-            "(verb=%s step=%s trace_id=%s)",
+            "[{trace_id}] [ROUTER] Dispatching to process_cortex_exec_request "
+            "(verb=%s step=%s)",
             payload.get("verb_name") or payload.get("verb"),
             payload.get("step_name") or payload.get("step"),
-            trace_id,
         )
         return process_cortex_exec_request(payload)
 
     # 🧠 Everything else is brain chat/dream and goes through the opinionated handler
     logger.info(
-        "[ROUTER] Dispatching to process_brain_request (event=%s source=%s kind=%s trace_id=%s)",
+        "[{trace_id}] [ROUTER] Dispatching to process_brain_request (event=%s source=%s kind=%s)",
         event,
         payload.get("source"),
         payload.get("kind"),
-        trace_id,
     )
     return process_brain_request(payload)

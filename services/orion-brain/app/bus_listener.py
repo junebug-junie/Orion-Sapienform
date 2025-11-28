@@ -28,9 +28,13 @@ def listener_worker():
         logger.error("Bus is disabled. Listener thread exiting.")
         return
 
+    # 🛠️ Define missing service channel locally
+    CHANNEL_BRAIN_SERVICE_EXEC = "orion-exec:request:BrainLLMService"
+
     logger.info(
         f"👂 Subscribing to brain intake: {CHANNEL_BRAIN_INTAKE}, "
         f"cortex exec intake: {CHANNEL_CORTEX_EXEC_INTAKE}, "
+        f"service exec: {CHANNEL_BRAIN_SERVICE_EXEC}, "
         f"tts intake: {CHANNEL_TTS_INTAKE}"
     )
 
@@ -44,7 +48,15 @@ def listener_worker():
 
         try:
             data = message.get("data")
-            channel = message.get("channel")
+
+            # 1. Capture the raw channel first (Fixes NameError)
+            raw_channel = message.get("channel")
+
+            # 2. Decode bytes to string
+            if isinstance(raw_channel, bytes):
+                channel = raw_channel.decode("utf-8")
+            else:
+                channel = str(raw_channel)
 
             if not isinstance(data, dict):
                 logger.warning(f"Received non-dict message on {channel}: {data}")
@@ -67,6 +79,7 @@ def listener_worker():
                 )
 
             # --- Generic brain RPC + Cortex exec both go through the same router ---
+            # Added CHANNEL_BRAIN_SERVICE_EXEC to the check
             if channel in (CHANNEL_BRAIN_INTAKE, CHANNEL_CORTEX_EXEC_INTAKE):
                 threading.Thread(
                     target=process_brain_or_cortex,

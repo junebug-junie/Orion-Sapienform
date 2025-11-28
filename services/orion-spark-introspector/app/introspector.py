@@ -213,7 +213,6 @@ def extract_llm_output(cortex_payload: Dict[str, Any]) -> Optional[str]:
 
 
 def publish_sql_log(candidate: Dict[str, Any], introspection: str) -> None:
-def publish_sql_log(candidate: Dict[str, Any], introspection: str) -> None:
     """
     Publish a completed Spark introspection back onto the SAME channel
     that candidates use, but now with 'introspection' present.

@@ -242,19 +242,26 @@ def process_brain_request(payload: dict):
         )
         phi_before = spark_state["phi_before"]
         phi_after = spark_state["phi_after"]
+        self_field = spark_state.get("self_field")
         surface_encoding_dict = spark_state["surface_encoding"]
-        spark_meta = build_collapse_mirror_meta(phi_after, surface_encoding_dict)
+
+        spark_meta = build_collapse_mirror_meta(
+            phi_after,
+            surface_encoding_dict,
+            self_field=self_field,
+        )
 
         logger.warning(
-            f"[{trace_id}] SPARK φ: "
-            f"before={{valence={phi_before.get('valence', 0.0):.3f}, "
+            f"[{trace_id}] SPARK φ / SelfField: "
+            f"φ_before={{valence={phi_before.get('valence', 0.0):.3f}, "
             f"energy={phi_before.get('energy', 0.0):.3f}, "
             f"coherence={phi_before.get('coherence', 0.0):.3f}, "
             f"novelty={phi_before.get('novelty', 0.0):.3f}}} "
-            f"after={{valence={phi_after.get('valence', 0.0):.3f}, "
+            f"φ_after={{valence={phi_after.get('valence', 0.0):.3f}, "
             f"energy={phi_after.get('energy', 0.0):.3f}, "
             f"coherence={phi_after.get('coherence', 0.0):.3f}, "
-            f"novelty={phi_after.get('novelty', 0.0):.3f}}}"
+            f"novelty={phi_after.get('novelty', 0.0):.3f}}} "
+            f"self_field={self_field}"
         )
 
         first_roles = [m.get("role", "?") for m in history[:6]]

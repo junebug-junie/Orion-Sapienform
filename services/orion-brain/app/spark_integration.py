@@ -43,9 +43,10 @@ def ingest_chat_and_get_state(
 
     Returns:
         {
-          "phi_before": {...},
-          "phi_after": {...},
-          "tissue_summary": {...},   # after
+          "phi_before": {...},      # φ before this message
+          "phi_after": {...},       # φ after this message
+          "self_field": {...},      # high-level mood body after this message
+          "tissue_summary": {...},  # after
           "surface_encoding": {...}
         }
     """
@@ -65,6 +66,7 @@ def ingest_chat_and_get_state(
     return {
         "phi_before": phi_before,
         "phi_after": state_after["phi"],
+        "self_field": state_after.get("self_field"),
         "tissue_summary": state_after["tissue_summary"],
         "surface_encoding": state_after["surface_encoding"],
     }
@@ -141,12 +143,25 @@ Base persona / behavior contract:
 def build_collapse_mirror_meta(
     phi: Dict[str, float],
     surface_encoding: Dict[str, Any],
+    self_field: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """
     Build Spark-related metadata suitable for attaching to a Collapse Mirror
     entry or chat history log.
+
+    Args:
+        phi:
+            The current self-field φ *after* this event.
+
+        surface_encoding:
+            The serialized SurfaceEncoding dict for this event.
+
+        self_field:
+            Optional higher-level SelfField dict (calm, stress_load, etc.).
+            When provided, it is nested under the key "spark_self_field" so
+            downstream analytics can reason about Orion's internal stance.
     """
-    return {
+    meta = {
         "spark_event_id": surface_encoding.get("event_id"),
         "spark_modality": surface_encoding.get("modality"),
         "spark_source": surface_encoding.get("source"),
@@ -156,3 +171,8 @@ def build_collapse_mirror_meta(
         "spark_phi_coherence": phi.get("coherence"),
         "spark_phi_novelty": phi.get("novelty"),
     }
+
+    if self_field is not None:
+        meta["spark_self_field"] = self_field
+
+    return meta

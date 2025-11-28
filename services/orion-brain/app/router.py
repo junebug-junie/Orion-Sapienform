@@ -94,26 +94,49 @@ async def health_gpu():
     ollama_status = await check_ollama_backend()
     return {"gpu": gpu_status, "ollama": ollama_status}
 
-
 @router.get("/debug/spark/state")
 async def debug_spark_state():
     """
-    Inspect Spark's current φ and (optionally) tissue summary.
+    Inspect Spark's current φ, higher-level SelfField, and a coarse tissue summary.
 
-    This is for internal debugging / introspection, not user-facing UX.
+    This endpoint is for internal debugging / introspection, not user-facing UX.
+
+    Returns:
+        {
+          "phi": {
+            "valence": float,
+            "energy": float,
+            "coherence": float,
+            "novelty": float,
+          },
+          "self_field": {
+            "calm": float,
+            "stress_load": float,
+            "uncertainty": float,
+            "focus": float,
+            "attunement_to_juniper": float,
+            "curiosity": float,
+          } | null,
+          "tissue_summary": { ... } | null
+        }
     """
     engine = get_spark_engine()
+
+    # φ is the low-dimensional "physics" summary of the inner field.
     phi = engine.get_phi()
 
+    # SelfField is the higher-level "mood body" derived from φ + recent events.
+    self_field = engine.get_self_field()
+
+    # For now, use the "(global)" agent as a coarse tissue summary.
     summary = None
-    # Only if your SparkEngine exposes something like this
-    if hasattr(engine, "get_tissue_summary"):
-        try:
-            summary = engine.get_tissue_summary()
-        except Exception:
-            summary = None
+    try:
+        summary = engine.get_summary_for_agent("(global)")
+    except Exception:
+        summary = None
 
     return {
         "phi": phi,
+        "self_field": self_field,
         "tissue_summary": summary,
     }

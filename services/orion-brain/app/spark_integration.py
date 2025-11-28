@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from typing import Any, Dict, List, Optional
+
+from orion.spark.spark_engine import SparkEngine
+
 """
 Spark Engine integration for Orion Brain
 ========================================
@@ -15,29 +20,6 @@ This module wires the Spark Engine into the Brain service so that:
 This is the minimal, working MVP to get the Spark Engine "breathing"
 whenever Juniper talks to Orion.
 """
-
-from dataclasses import asdict
-from typing import Any, Dict, List, Optional
-
-from orion.spark.spark_engine import SparkEngine
-
-
-def get_spark_engine() -> SparkEngine:
-    """
-    Get the process-local SparkEngine singleton.
-
-    Using a singleton here means:
-      - Tissue state T is persistent while the Brain container is up.
-      - φ evolves across interactions instead of being reset per request.
-    """
-    return SparkEngine.singleton()
-
-from __future__ import annotations
-
-from typing import Any, Dict, List, Optional
-
-from orion_core.spark_engine import SparkEngine
-
 
 def get_spark_engine() -> SparkEngine:
     """

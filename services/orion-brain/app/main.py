@@ -13,10 +13,11 @@ import logging
 from app.config import BACKENDS, PORT, READ_TIMEOUT, CONNECT_TIMEOUT
 from app.router import router_instance, health_loop, probe_backend, router as health_api_router
 from app.bus_helpers import emit_brain_event, emit_brain_output, emit_chat_history_log
-from app.models import GenerateBody, ChatBody # Make sure ChatBody is imported
+from app.models import GenerateBody, ChatBody
 from app import health
 from app.health import wait_for_redis
 from app.bus_listener import listener_worker
+from app.spark_integration import ingest_chat_and_get_state, build_collapse_mirror_meta
 
 # Configure logging (This is correct)
 logging.basicConfig(level=logging.INFO, format="[BRAIN_SVC] %(levelname)s - %(name)s - %(message)s")
@@ -110,10 +111,20 @@ async def chat(body: ChatBody, request: Request):
         or ""
     ).strip()
 
-    # ================================================================
-    # --- THIS IS THE PATCH ---
-    # ================================================================
-    
+    # --- Spark integration for HTTP path ---
+    spark_state = ingest_chat_and_get_state(
+        user_message=body.messages[-1].get("content") if body.messages else (body.prompt or ""),
+        agent_id="brain-http",
+        tags=["juniper", "chat", "http"],
+        sentiment=None,
+    )
+    phi_before = spark_state["phi_before"]
+    phi_after = spark_state["phi_after"]
+    surface_encoding_dict = spark_state["surface_encoding"]
+    spark_meta = build_collapse_mirror_meta(phi_after, surface_encoding_dict)
+    # ---------------------------------------
+
+
     # Get the 'source' from the incoming request body.
     # Default to "http" if missing.
     request_source = body.source if hasattr(body, "source") and body.source else "http"
@@ -127,10 +138,14 @@ async def chat(body: ChatBody, request: Request):
             "response": text,
             # Safely access user_id and session_id
             "user_id": body.user_id if hasattr(body, 'user_id') else None,
-            "session_id": body.session_id if hasattr(body, 'session_id') else None
+            "session_id": body.session_id if hasattr(body, 'session_id') else None,
+            "spark_meta": {
+                **spark_meta,
+                "phi_before": phi_before,
+                "phi_after": phi_after,
+            },
         })
     else:
-        # Optional: Log that you skipped it
         logger.info(f"[{trace_id}] Skipping chat history log for source: {request_source}")
     # ================================================================
     # --- END OF PATCH ---

@@ -45,6 +45,7 @@ ORION_SYSTEM_PROMPT = (
     "Speak in a warm, grounded, reflective, collaborative, and precise tone."
 )
 
+
 def ensure_orion_system(history: list[dict], system_prompt: str | None = None) -> list[dict]:
     """
     Ensure every chat path has a strong Oríon system prompt at the front.
@@ -85,6 +86,7 @@ def normalize_history_for_llm(history: list[dict]) -> list[dict]:
 # ─────────────────────────────────────────────
 # Legacy brain request handler (chat + dreams)
 # ─────────────────────────────────────────────
+
 
 def process_brain_request(payload: dict):
     """
@@ -215,7 +217,7 @@ def process_brain_request(payload: dict):
             return
 
     # ─────────────────────────────────────────────
-    # 4) CHAT PATH: Oríon persona + normalized history
+    # 4) CHAT PATH: Oríon persona + normalized history + Spark
     # ─────────────────────────────────────────────
     else:
         prompt_text = payload.get("prompt") or ""
@@ -232,7 +234,7 @@ def process_brain_request(payload: dict):
             )
 
         # ─────────────────────────────────────────────
-        # 4a. SPARK ENGINE: ingest chat + get φ
+        # 4a. SPARK ENGINE: ingest chat + get φ + self_field
         # ─────────────────────────────────────────────
         spark_state = ingest_chat_and_get_state(
             user_message=user_for_spark or "",
@@ -263,50 +265,6 @@ def process_brain_request(payload: dict):
             f"novelty={phi_after.get('novelty', 0.0):.3f}}} "
             f"self_field={self_field}"
         )
-
-        # ─────────────────────────────────────────────
-        # 4a1. Decide if this turn is introspection-worthy
-        # ─────────────────────────────────────────────
-        delta_valence = abs(
-            (phi_after.get("valence") or 0.0) - (phi_before.get("valence") or 0.0)
-        )
-        uncertainty = (self_field or {}).get("uncertainty", 0.0)
-        stress_load = (self_field or {}).get("stress_load", 0.0)
-
-        # Heuristics: tweak these thresholds as you see how it behaves.
-        should_flag = (
-            delta_valence > 0.05    # noticeable emotional tilt
-            or uncertainty > 0.3    # Orion feels quite unsure
-            or stress_load > 0.4    # Orion feels loaded
-        )
-
-        if should_flag:
-            try:
-                bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
-                candidate_payload = {
-                    "event": "spark_introspect_candidate",
-                    "trace_id": trace_id,
-                    "source": source or "brain",
-                    "kind": kind,
-                    "prompt": payload.get("prompt"),
-                    "response": text,
-                    "spark_meta": {
-                        **spark_meta,
-                        "phi_before": phi_before,
-                        "phi_after": phi_after,
-                    },
-                }
-                bus.publish(CHANNEL_SPARK_INTROSPECT_CANDIDATE, candidate_payload)
-                logger.info(
-                    f"[{trace_id}] SPARK: published introspection candidate "
-                    f"to {CHANNEL_SPARK_INTROSPECT_CANDIDATE}"
-                )
-            except Exception as e:
-                logger.error(
-                    f"[{trace_id}] SPARK: failed to publish introspection candidate: {e}",
-                    exc_info=True,
-                )
-
 
         first_roles = [m.get("role", "?") for m in history[:6]]
         logger.warning(
@@ -377,6 +335,65 @@ def process_brain_request(payload: dict):
         logger.warning(f"[{trace_id}] No 'message.content' in response: {data}")
 
     # ─────────────────────────────────────────────
+    # 6.5) Spark INTROSPECTION CANDIDATE (chat-only, after we have `text`)
+    # ─────────────────────────────────────────────
+    if not is_dream_task:
+        try:
+            # Only if Spark actually ran in this path
+            if "phi_before" in locals() and "phi_after" in locals():
+                delta_valence = abs(
+                    (phi_after.get("valence") or 0.0)
+                    - (phi_before.get("valence") or 0.0)
+                )
+                uncertainty = (self_field or {}).get("uncertainty", 0.0)
+                stress_load = (self_field or {}).get("stress_load", 0.0)
+
+                # Heuristics: tweak these thresholds as we observe behavior.
+                should_flag = (
+                    delta_valence > 0.05    # noticeable emotional tilt
+                    or uncertainty > 0.3    # Orion feels quite unsure
+                    or stress_load > 0.4    # Orion feels loaded
+                )
+
+                if should_flag:
+                    try:
+                        bus = OrionBus(
+                            url=ORION_BUS_URL,
+                            enabled=ORION_BUS_ENABLED,
+                        )
+                        candidate_payload = {
+                            "event": "spark_introspect_candidate",
+                            "trace_id": trace_id,
+                            "source": source or "brain",
+                            "kind": kind,
+                            "prompt": payload.get("prompt"),
+                            "response": text,
+                            "spark_meta": {
+                                **spark_meta,
+                                "phi_before": phi_before,
+                                "phi_after": phi_after,
+                            },
+                        }
+                        bus.publish(
+                            CHANNEL_SPARK_INTROSPECT_CANDIDATE,
+                            candidate_payload,
+                        )
+                        logger.info(
+                            f"[{trace_id}] SPARK: published introspection candidate "
+                            f"to {CHANNEL_SPARK_INTROSPECT_CANDIDATE}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"[{trace_id}] SPARK: failed to publish introspection candidate: {e}",
+                            exc_info=True,
+                        )
+        except Exception as e:
+            logger.error(
+                f"[{trace_id}] SPARK: error while evaluating introspection heuristic: {e}",
+                exc_info=True,
+            )
+
+    # ─────────────────────────────────────────────
     # 7) ROUTE DREAM VS CHAT RESULT
     # ─────────────────────────────────────────────
     if is_dream_task:
@@ -438,6 +455,7 @@ def process_brain_request(payload: dict):
 # ─────────────────────────────────────────────
 # Cortex execution path (semantic layer)
 # ─────────────────────────────────────────────
+
 
 def build_cortex_prompt(req: dict) -> str:
     """
@@ -505,43 +523,55 @@ def process_cortex_exec_request(payload: dict):
     """
     Handles a Cortex execution step for BrainLLMService.
 
-    Expected payload (dict), example shape:
+    Expected payload (simplified), coming from the Cortex orchestrator:
 
       {
         "event": "exec_step",
-        "service": "BrainLLMService",
-        "verb": "introspect",
-        "step": "llm_reflect",
+        "kind": "cortex_step",
+        "trace_id": "<step-trace-id>",
+        "correlation_id": "<same-as-trace-or-separate>",
+        "reply_channel": "orion-exec:result:<step-trace-id>",
+        "verb": "spark_introspect",
+        "step": "reflect_on_candidate",
         "order": 0,
-        "requires_gpu": false,
-        "requires_memory": false,
-        "prompt_template": "IntrospectionPromptTemplate",
+        "service": "BrainLLMService",
+        "origin_node": "spark-introspector",
+        "prompt": "...",      # full prompt already built
+        "context": {...},     # candidate + spark_meta
         "args": {...},
-        "context": {...},
-        "correlation_id": "...",
-        "reply_channel": "orion-exec:result:<uuid>",
-        "origin_node": "athena-cortex"
+        "prior_step_results": [...],
+        "requires_gpu": false,
+        "requires_memory": false
       }
     """
+    # Only handle exec_step messages
     if payload.get("event") != "exec_step":
-        logger.warning(f"[CORTEX] Ignoring non-exec_step payload: {payload}")
+        logger.warning(f"[CORTEX] Ignoring non-exec_step payload on cortex exec channel: {payload}")
         return
 
     service = payload.get("service", "BrainLLMService")
-    correlation_id = payload.get("correlation_id") or str(uuid.uuid4())
-    reply_channel = payload.get("reply_channel")
 
+    # Use the step trace_id as our correlation id so the orchestrator's
+    # _wait_for_exec_results() can match on payload['trace_id'].
+    trace_id = payload.get("trace_id") or payload.get("correlation_id") or str(uuid.uuid4())
+
+    # Support both naming conventions: reply_channel (current) and result_channel (future-proof).
+    reply_channel = (
+        payload.get("reply_channel")
+        or payload.get("result_channel")
+        or payload.get("response_channel")
+    )
     if not reply_channel:
-        logger.error(f"[CORTEX] Missing reply_channel in payload: {payload}")
+        logger.error(f"[{trace_id}] [CORTEX] Missing reply/result channel in payload: {payload}")
         return
 
     logger.info(
-        f"[CORTEX] Received execution step '{payload.get('step')}' "
-        f"for verb '{payload.get('verb')}' (service={service}, cid={correlation_id})"
+        f"[{trace_id}] [CORTEX] Received execution step '{payload.get('step')}' "
+        f"for verb '{payload.get('verb')}' (service={service}) -> reply_channel={reply_channel}"
     )
 
-    # 1. Build prompt
-    prompt = build_cortex_prompt(payload)
+    # If orchestrator already built a prompt, use it; otherwise fall back to builder.
+    prompt = payload.get("prompt") or build_cortex_prompt(payload)
 
     # 2. Call the LLM
     llm_text = call_brain_llm(prompt)
@@ -552,10 +582,11 @@ def process_cortex_exec_request(payload: dict):
         "llm_output": llm_text,
     }
 
-    # 4. Emit standardized exec_step_result back to Cortex
+    # 4. Emit standardized exec_step_result back to Cortex.
+    #    We use trace_id so orchestrator's _wait_for_exec_results() sees the match.
     emit_cortex_step_result(
         service=service,
-        correlation_id=correlation_id,
+        correlation_id=trace_id,
         reply_channel=reply_channel,
         result=result,
         artifacts={},
@@ -566,6 +597,7 @@ def process_cortex_exec_request(payload: dict):
 # ─────────────────────────────────────────────
 # TTS path
 # ─────────────────────────────────────────────
+
 
 def get_tts_engine() -> TTSEngine:
     global _tts_engine
@@ -621,14 +653,42 @@ def process_tts_request(payload: dict):
 # Unified router for brain intake + cortex exec
 # ─────────────────────────────────────────────
 
+
 def process_brain_or_cortex(payload: dict):
     """
     Route between:
       - legacy brain RPC (chat / dream_synthesis)
       - Cortex semantic exec_step messages (BrainLLMService)
     """
-    if payload.get("event") == "exec_step" and payload.get("service") == "BrainLLMService":
+    event = payload.get("event")
+    service = payload.get("service")
+    trace_id = payload.get("trace_id") or payload.get("correlation_id") or str(uuid.uuid4())
+
+    logger.info(
+        "[ROUTER] Incoming payload: event=%s service=%s trace_id=%s keys=%s",
+        event,
+        service,
+        trace_id,
+        list(payload.keys()),
+    )
+
+    # 🔁 Cortex semantic exec step
+    if event == "exec_step" and service == "BrainLLMService":
+        logger.info(
+            "[ROUTER] Dispatching to process_cortex_exec_request "
+            "(verb=%s step=%s trace_id=%s)",
+            payload.get("verb_name") or payload.get("verb"),
+            payload.get("step_name") or payload.get("step"),
+            trace_id,
+        )
         return process_cortex_exec_request(payload)
 
-    # Everything else is brain chat/dream and goes through the opinionated handler
+    # 🧠 Everything else is brain chat/dream and goes through the opinionated handler
+    logger.info(
+        "[ROUTER] Dispatching to process_brain_request (event=%s source=%s kind=%s trace_id=%s)",
+        event,
+        payload.get("source"),
+        payload.get("kind"),
+        trace_id,
+    )
     return process_brain_request(payload)

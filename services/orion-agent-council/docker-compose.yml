@@ -1,0 +1,50 @@
+services:
+  agent-council:
+    build:
+      context: ../..
+      dockerfile: services/orion-agent-council/Dockerfile
+    image: ${PROJECT:-orion}-agent-council:latest
+    container_name: ${PROJECT:-orion}-agent-council
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - PROJECT=${PROJECT}
+
+      # Service identity
+      - SERVICE_NAME=${SERVICE_NAME:-agent-council}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+
+      # Bus
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+
+      # Council channels
+      - CHANNEL_COUNCIL_INTAKE=${CHANNEL_COUNCIL_INTAKE}
+      - CHANNEL_COUNCIL_REPLY_PREFIX=${CHANNEL_COUNCIL_REPLY_PREFIX}
+
+      # LLM Gateway routing
+      - CHANNEL_LLM_GATEWAY_INTAKE=${CHANNEL_LLM_GATEWAY_INTAKE}
+      - CHANNEL_LLM_GATEWAY_REPLY_PREFIX=${CHANNEL_LLM_GATEWAY_REPLY_PREFIX}
+      - LLM_GATEWAY_SERVICE_NAME=${LLM_GATEWAY_SERVICE_NAME}
+
+      # LLM defaults
+      - DEFAULT_BACKEND=${DEFAULT_BACKEND}
+      - DEFAULT_MODEL=${DEFAULT_MODEL}
+      - COUNCIL_LLM_TIMEOUT_SEC=${COUNCIL_LLM_TIMEOUT_SEC}
+
+      # Deliberation thresholds
+      - COUNCIL_MAX_ROUNDS=${COUNCIL_MAX_ROUNDS}
+      - COUNCIL_DISAGREEMENT_THRESHOLD=${COUNCIL_DISAGREEMENT_THRESHOLD}
+      - COUNCIL_RISK_THRESHOLD=${COUNCIL_RISK_THRESHOLD}
+      - COUNCIL_MIN_COHERENCE=${COUNCIL_MIN_COHERENCE}
+      - COUNCIL_MIN_FAITHFULNESS=${COUNCIL_MIN_FAITHFULNESS}
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

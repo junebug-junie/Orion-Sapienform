@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any, Dict, Optional
 
-import httpx
-
-from orion.core.bus.service import OrionBus  # <-- your existing class
+from orion.core.bus.service import OrionBus  # your existing bus wrapper
 from app.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -15,10 +14,9 @@ logger = logging.getLogger(__name__)
 
 def build_cortex_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Build a single-step Cortex orchestration payload for a Spark introspection.
+    Build a Cortex orchestrate request payload that matches OrchestrateVerbRequest.
 
-    This calls the 'spark_introspect' verb with a single step 'reflect_on_candidate',
-    targeting BrainLLMService.
+    This is sent over the bus to CORTEX_ORCH_REQUEST_CHANNEL.
     """
     trace_id = candidate.get("trace_id") or str(uuid.uuid4())
     spark_meta = candidate.get("spark_meta") or {}
@@ -27,6 +25,8 @@ def build_cortex_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
     source = candidate.get("source") or "brain"
 
     return {
+        "trace_id": trace_id,
+        # result_channel is added outside this function
         "verb_name": "spark_introspect",
         "origin_node": "spark-introspector",
         "context": {
@@ -48,15 +48,16 @@ def build_cortex_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 "requires_memory": False,
             }
         ],
-        "timeout_ms": 10000,
+        "timeout_ms": int(settings.CORTEX_ORCH_TIMEOUT_S * 1000),
     }
 
 
 def build_llm_prompt(candidate: Dict[str, Any]) -> str:
     """
-    Build the actual prompt that BrainLLMService will see via Cortex.
+    Build the actual prompt that BrainLLMService will see (via Cortex).
 
-    This is Orion talking to itself about how its inner state changed.
+    This is Orion talking to itself about how its internal state shifted
+    across this turn.
     """
     spark_meta = candidate.get("spark_meta") or {}
     phi_before = spark_meta.get("phi_before") or {}
@@ -115,36 +116,100 @@ Write as a short internal note from Orion to itself. Avoid boilerplate.
 """.strip()
 
 
-def call_cortex_orchestrator(payload: Dict[str, Any]) -> Dict[str, Any]:
+def wait_for_cortex_result(
+    trace_id: str,
+    result_channel: str,
+    timeout_s: float,
+) -> Optional[Dict[str, Any]]:
     """
-    Send a single orchestration request to the Cortex orchestrator over HTTP.
+    Wait for a single cortex_orchestrate_result on the given result channel.
+
+    Uses bus.raw_subscribe(...) and filters by trace_id, with a hard timeout.
     """
-    url = settings.CORTEX_ORCH_URL
-    timeout = httpx.Timeout(settings.CONNECT_TIMEOUT, read=settings.READ_TIMEOUT)
+    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
+    started = time.time()
 
-    with httpx.Client(timeout=timeout) as client:
-        r = client.post(url, json=payload)
-        r.raise_for_status()
-        return r.json()
+    for msg in bus.raw_subscribe(result_channel):
+        now = time.time()
+        if now - started > timeout_s:
+            logger.warning(
+                "Timeout waiting for cortex orchestrate result on %s (trace_id=%s)",
+                result_channel,
+                trace_id,
+            )
+            return None
+
+        payload = msg.get("data") or {}
+        if payload.get("trace_id") != trace_id:
+            continue
+
+        # We expect something like:
+        # {
+        #   "trace_id": "...",
+        #   "ok": True/False,
+        #   "kind": "cortex_orchestrate_result",
+        #   "verb_name": "...",
+        #   "step_results": [...],
+        #   ...
+        # }
+        return payload
+
+    return None
 
 
-def extract_llm_output(orch_result: Dict[str, Any]) -> Optional[str]:
+def extract_llm_output(cortex_payload: Dict[str, Any]) -> Optional[str]:
     """
-    Extract the LLM introspection text from the orchestrator result.
+    Extract the LLM introspection text from the cortex-orchestrate bus result.
 
-    Adapt this if your orchestrator uses a slightly different shape.
+    OrchestrateVerbResponse model (on the wire) looks like:
+      {
+        "verb_name": ...,
+        "origin_node": ...,
+        "steps_executed": ...,
+        "step_results": [
+          {
+            "verb_name": ...,
+            "step_name": ...,
+            "order": 0,
+            "services": [
+              {
+                "service": "BrainLLMService",
+                "trace_id": "...",
+                "ok": true,
+                "elapsed_ms": 123,
+                "payload": {
+                  "result": {
+                    "prompt": "...",
+                    "llm_output": "<<< WE WANT THIS >>>",
+                  },
+                  "artifacts": {...},
+                  "status": "success",
+                }
+              }
+            ],
+            "prompt_preview": "..."
+          }
+        ],
+        "context_echo": {...}
+      }
     """
-    steps = orch_result.get("steps") or []
-    if not steps:
+    step_results = cortex_payload.get("step_results") or []
+    if not step_results:
         return None
 
-    first = steps[0]
-    if not isinstance(first, dict):
+    first_step = step_results[0]
+    services = first_step.get("services") or []
+    if not services:
         return None
 
-    result = first.get("result") or {}
+    first_service = services[0]
+    payload = first_service.get("payload") or {}
+    result = payload.get("result") or {}
+
     text = result.get("llm_output") or result.get("text")
-    return text.strip() if isinstance(text, str) else None
+    if isinstance(text, str):
+        return text.strip()
+    return None
 
 
 def publish_sql_log(candidate: Dict[str, Any], introspection: str) -> None:
@@ -173,42 +238,72 @@ def publish_sql_log(candidate: Dict[str, Any], introspection: str) -> None:
 
 def process_candidate(candidate: Dict[str, Any]) -> None:
     """
-    Handle a single Spark introspection candidate:
+    Handle a single Spark introspection candidate.
 
-      1) Build Cortex orchestration payload.
-      2) Call /orchestrate.
-      3) Extract LLM introspection text.
-      4) Publish a spark_introspection_log row to SQL writer.
+      1) Build Cortex orchestrate payload.
+      2) Publish to CORTEX_ORCH_REQUEST_CHANNEL over the bus.
+      3) Wait on CORTEX_ORCH_RESULT_PREFIX:<trace_id> for the orchestrate result.
+      4) Extract the introspection text.
+      5) Publish a spark_introspection_log row to SQL writer.
     """
-    trace_id = candidate.get("trace_id") or "unknown"
-    logger.info(f"[{trace_id}] Processing Spark introspection candidate...")
+    trace_id = candidate.get("trace_id") or str(uuid.uuid4())
+    result_channel = f"{settings.CORTEX_ORCH_RESULT_PREFIX}:{trace_id}"
 
-    # 1. Build orchestrator payload
+    logger.info(
+        "[%s] Processing Spark introspection candidate via bus (result_channel=%s)",
+        trace_id,
+        result_channel,
+    )
+
+    # 1. Build orchestrate request (generic skeleton)
     orch_payload = build_cortex_payload(candidate)
+    orch_payload["trace_id"] = trace_id
+    orch_payload["result_channel"] = result_channel
 
-    # 2. Inject the concrete prompt into step.args so BrainLLMService sees it
+    # 2. Inject the concrete LLM prompt directly into the first step's prompt_template
     llm_prompt = build_llm_prompt(candidate)
-    if orch_payload["steps"]:
-        orch_payload["steps"][0]["args"] = {"llm_prompt": llm_prompt}
+    steps = orch_payload.get("steps") or []
+    if steps:
+        # We only have one step for spark_introspect right now
+        steps[0]["prompt_template"] = llm_prompt
 
-    try:
-        # 3. Call Cortex orchestrator
-        orch_result = call_cortex_orchestrator(orch_payload)
-        logger.info(f"[{trace_id}] Spark introspection completed via Cortex.")
+    # 3. Publish to cortex orchestrator request channel (bus-native)
+    cortex_bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
+    cortex_bus.publish(settings.CORTEX_ORCH_REQUEST_CHANNEL, orch_payload)
 
-        # 4. Extract introspection note
-        llm_text = extract_llm_output(orch_result)
-        if not llm_text:
-            logger.warning(f"[{trace_id}] No llm_output found in Cortex result; skipping SQL log.")
-            return
+    # 4. Wait for the orchestrator's bus result
+    cortex_result = wait_for_cortex_result(
+        trace_id=trace_id,
+        result_channel=result_channel,
+        timeout_s=settings.CORTEX_ORCH_TIMEOUT_S,
+    )
+    if not cortex_result:
+        logger.warning(
+            "[%s] No cortex orchestrate result received; skipping SQL log.",
+            trace_id,
+        )
+        return
 
-        # 5. Publish to SQL writer
-        publish_sql_log(candidate, llm_text)
+    if not cortex_result.get("ok", True):
+        logger.warning(
+            "[%s] Cortex orchestrate reported error: kind=%s message=%s",
+            trace_id,
+            cortex_result.get("kind"),
+            cortex_result.get("message") or cortex_result.get("error_type"),
+        )
+        return
 
-    except Exception as e:
-        logger.error(f"[{trace_id}] Spark introspection failed: {e}", exc_info=True)
+    # 5. Extract introspection note
+    introspection_text = extract_llm_output(cortex_result)
+    if not introspection_text:
+        logger.warning(
+            "[%s] Could not extract llm_output from cortex result; skipping SQL log.",
+            trace_id,
+        )
+        return
 
-
+    # 6. Publish to SQL writer
+    publish_sql_log(candidate, introspection_text)
 def run_loop() -> None:
     """
     Main blocking loop:
@@ -217,18 +312,18 @@ def run_loop() -> None:
       - For each event, hand off to process_candidate().
     """
     logger.info(
-        f"Starting Spark Introspector. "
-        f"Bus={settings.ORION_BUS_URL} "
-        f"channel={settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE} "
-        f"cortex={settings.CORTEX_ORCH_URL}"
+        "Starting Spark Introspector (bus-native). "
+        "Bus=%s candidate_channel=%s cortex_request_channel=%s cortex_result_prefix=%s",
+        settings.ORION_BUS_URL,
+        settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE,
+        settings.CORTEX_ORCH_REQUEST_CHANNEL,
+        settings.CORTEX_ORCH_RESULT_PREFIX,
     )
 
     bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
 
-    # Using your OrionBus.subscribe API
     for msg in bus.subscribe(settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE):
         try:
-            # msg["data"] is already parsed JSON dict
             payload = msg.get("data") or {}
             process_candidate(payload)
         except Exception as e:

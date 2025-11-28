@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     CHANNEL_CHAT_LOG: str = "orion:chat:history:log"
     CHANNEL_DREAM_TRIGGER: str = "orion:dream:trigger"
 
+    SPARK_INTROSPECT_CANDIDATE_CHANNEL: str =  "orion:spark:introspect:candidate"
+
     CHANNEL_BIOMETRICS: str = "orion:telemetry:biometrics"
 
     # --- DB ---
@@ -33,6 +35,7 @@ class Settings(BaseSettings):
        "orion:rag:document:add:rag_documents,"
        "orion:dream:trigger:dreams,"
        "orion:telemetry:biometrics:orion_biometrics,"
+       "orion:spark:introspect:candidate:spark_introspection_log,"
     )
 
     POLL_TIMEOUT: float = 1.0
@@ -65,6 +68,7 @@ class Settings(BaseSettings):
             self.CHANNEL_CHAT_LOG,
             self.CHANNEL_DREAM_TRIGGER,
             self.CHANNEL_BIOMETRICS,
+            self.SPARK_INTROSPECT_CANDIDATE_CHANNEL,
         ]
 
 

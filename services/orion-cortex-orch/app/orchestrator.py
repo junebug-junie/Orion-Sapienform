@@ -207,6 +207,9 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
                 ],
                 "requires_gpu": step.requires_gpu,
                 "requires_memory": step.requires_memory,
+
+                "event": "exec_step",
+                "kind": "cortex_step",
             }
 
             logger.info(

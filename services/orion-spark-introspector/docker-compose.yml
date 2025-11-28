@@ -7,7 +7,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    networks: app-net
+    networks:
+      - app-net
     environment:
       - PROJECT=${PROJECT}
       - ORION_BUS_URL=${ORION_BUS_URL}

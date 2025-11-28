@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,21 +22,20 @@ class Settings(BaseSettings):
     # Channel where SQL writer listens for inserts/updates
     SQL_WRITER_CHANNEL: str = "orion:sql:intake"
 
-    # Cortex orchestrator HTTP endpoint
-    CORTEX_ORCH_URL: str = "http://orion-cortex-orch:8072/orchestrate"
+    # Cortex orchestrator bus wiring
+    # (these mirror ORCH_REQUEST_CHANNEL / ORCH_RESULT_PREFIX in cortex .env)
+    CORTEX_ORCH_REQUEST_CHANNEL: str = "orion-cortex:request"
+    CORTEX_ORCH_RESULT_PREFIX: str = "orion-cortex:result"
 
-    # HTTP timeouts
-    CONNECT_TIMEOUT: float = 5.0
-    READ_TIMEOUT: float = 10.0
+    # How long to wait for a cortex_orch result (seconds)
+    CORTEX_ORCH_TIMEOUT_S: float = 10.0
 
-    # Pydantic v2 settings config
     model_config = SettingsConfigDict(
         env_prefix="",               # use variable names as-is
         env_file=".env",             # optional, only if present
         env_file_encoding="utf-8",
-        extra="ignore",              # <<< avoids the classic 'extra fields' error
+        extra="ignore",              # don't explode on extra env vars
     )
 
 
-# Instantiate once for the process
 settings = Settings()

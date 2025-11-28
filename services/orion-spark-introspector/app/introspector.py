@@ -213,17 +213,21 @@ def extract_llm_output(cortex_payload: Dict[str, Any]) -> Optional[str]:
 
 
 def publish_sql_log(candidate: Dict[str, Any], introspection: str) -> None:
+def publish_sql_log(candidate: Dict[str, Any], introspection: str) -> None:
     """
-    Publish a Spark introspection log row to SQL writer via the bus.
+    Publish a completed Spark introspection back onto the SAME channel
+    that candidates use, but now with 'introspection' present.
+
+    SQL writer is already subscribed to that channel and will only persist
+    messages that include 'introspection'.
     """
     trace_id = candidate.get("trace_id") or str(uuid.uuid4())
     prompt = candidate.get("prompt")
     response = candidate.get("response")
     spark_meta = candidate.get("spark_meta") or {}
 
-    sql_bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
+    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
     payload = {
-        "table": "spark_introspection_log",
         "trace_id": trace_id,
         "source": "spark-introspector",
         "kind": "spark_introspect",
@@ -232,8 +236,13 @@ def publish_sql_log(candidate: Dict[str, Any], introspection: str) -> None:
         "introspection": introspection,
         "spark_meta": spark_meta,
     }
-    sql_bus.publish(settings.SQL_WRITER_CHANNEL, payload)
-    logger.info(f"[{trace_id}] Published Spark introspection to SQL writer.")
+
+    bus.publish(settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE, payload)
+    logger.info(
+        "[%s] Published Spark introspection back to %s for SQL writer.",
+        trace_id,
+        settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE,
+    )
 
 
 def process_candidate(candidate: Dict[str, Any]) -> None:
@@ -304,12 +313,15 @@ def process_candidate(candidate: Dict[str, Any]) -> None:
 
     # 6. Publish to SQL writer
     publish_sql_log(candidate, introspection_text)
+
 def run_loop() -> None:
     """
     Main blocking loop:
 
       - Subscribe to the Spark introspection candidate channel.
-      - For each event, hand off to process_candidate().
+      - For each event WITHOUT 'introspection', hand off to process_candidate().
+      - Ignore messages that already contain 'introspection' (those are final logs
+        meant for SQL writer).
     """
     logger.info(
         "Starting Spark Introspector (bus-native). "
@@ -325,6 +337,18 @@ def run_loop() -> None:
     for msg in bus.subscribe(settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE):
         try:
             payload = msg.get("data") or {}
+
+            # If introspection already exists, this is a final row for SQL writer;
+            # we don't need to re-process it here.
+            if payload.get("introspection"):
+                logger.info(
+                    "[%s] Skipping already-introspected Spark payload.",
+                    payload.get("trace_id", "no-trace"),
+                )
+                continue
+
             process_candidate(payload)
+
         except Exception as e:
             logger.error(f"Failed to process Spark candidate message: {e}", exc_info=True)
+

@@ -19,9 +19,6 @@ class Settings(BaseSettings):
     # Channel where brain publishes "spiky" Spark candidates
     CHANNEL_SPARK_INTROSPECT_CANDIDATE: str = "orion:spark:introspect:candidate"
 
-    # Channel where SQL writer listens for inserts/updates
-    SQL_WRITER_CHANNEL: str = "orion:sql:intake"
-
     # Cortex orchestrator bus wiring
     # (these mirror ORCH_REQUEST_CHANNEL / ORCH_RESULT_PREFIX in cortex .env)
     CORTEX_ORCH_REQUEST_CHANNEL: str = "orion-cortex:request"

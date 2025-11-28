@@ -193,23 +193,39 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
             exec_channel = f"{settings.exec_request_prefix}:{service}"
 
             message = {
+                # Cortex → Brain: tell Brain this is an exec_step
+                "event": "exec_step",
+                "kind": "cortex_step",
+
+                # Correlation & routing
                 "trace_id": trace_id,
-                "result_channel": result_channel,
-                "verb_name": step.verb_name,
-                "step_name": step.step_name,
+                "correlation_id": trace_id,
+                # Where Brain should send exec_step_result
+                "reply_channel": result_channel,
+
+                # Names/keys Brain expects in build_cortex_prompt
+                "verb": step.verb_name or req.verb_name,
+                "step": step.step_name,
                 "order": step.order,
                 "service": service,
                 "origin_node": req.origin_node,
-                "prompt": prompt,
+
+                # Template + context for Brain to assemble its own prompt
+                "prompt_template": step.prompt_template,
                 "context": req.context,
+                "args": {},  # reserved for richer argument passing later
+
+                # For debugging / advanced use
                 "prior_step_results": [
                     r.model_dump(mode="json") for r in prior_step_results
                 ],
+
                 "requires_gpu": step.requires_gpu,
                 "requires_memory": step.requires_memory,
 
-                "event": "exec_step",
-                "kind": "cortex_step",
+                # Optional: also include the fully-built prompt (nice for
+                # human inspection / future services, but Brain won't rely on it)
+                "prompt": prompt,
             }
 
             logger.info(

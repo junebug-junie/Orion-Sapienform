@@ -95,6 +95,24 @@ def _process_one(session, channel: str, msg: dict) -> Optional[str]:
         log_id = db_data.get("timestamp", "unknown")
 
     elif table == "spark_introspection_log":
+        # Some messages on this channel are *candidates* that do NOT yet
+        # contain an 'introspection' field. Those are for the
+        # orion-spark-introspector to consume, not for SQL persistence.
+        #
+        # Only when the introspector publishes a completed payload
+        # (including 'introspection' text) do we store a row.
+        if "introspection" not in msg or not msg.get("introspection"):
+            logger.info(
+                "[SQL_WRITER] Skipping spark_introspection candidate with no introspection text yet: %s",
+                {
+                    "trace_id": msg.get("trace_id"),
+                    "source": msg.get("source"),
+                    "kind": msg.get("kind"),
+                },
+            )
+            return None
+
+        # At this point we *do* have introspection text; treat as a full row.
         payload = SparkIntrospectionInput.model_validate(msg).normalize()
         db_data = payload.model_dump()
 
@@ -106,7 +124,11 @@ def _process_one(session, channel: str, msg: dict) -> Optional[str]:
             db_data["spark_meta"] = None
 
         log_id = payload.id
-        logger.info(f"Upserting Spark introspection log id={log_id} trace_id={payload.trace_id}")
+        logger.info(
+            "[SQL_WRITER] Upserting Spark introspection log id=%s trace_id=%s",
+            log_id,
+            payload.trace_id,
+        )
 
         session.merge(SparkIntrospectionLogSQL(**db_data))
         return log_id

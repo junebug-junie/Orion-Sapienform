@@ -24,6 +24,9 @@ CHANNEL_CORTEX_EXEC_INTAKE = os.getenv("CHANNEL_CORTEX_EXEC_INTAKE", "orion-exec
 CHANNEL_CHAT_HISTORY_LOG = os.getenv("SUBSCRIBE_CHANNEL_CHAT", "orion:chat:history:log")
 CHANNEL_DREAM_TRIGGER = os.getenv("CHANNEL_DREAM_TRIGGER", "orion:dream:trigger")
 
+# Spark / meta-cognition channels
+CHANNEL_SPARK_INTROSPECT_CANDIDATE = os.getenv("CHANNEL_SPARK_INTROSPECT_CANDIDATE", "orion:spark:introspect:candidate")
+
 # Optional: cross-domain routing hooks
 CHANNEL_VOICE_TRANSCRIPT = os.getenv("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 CHANNEL_VOICE_LLM = os.getenv("CHANNEL_VOICE_LLM", "orion:voice:llm")

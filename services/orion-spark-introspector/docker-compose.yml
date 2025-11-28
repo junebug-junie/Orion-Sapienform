@@ -1,0 +1,24 @@
+services:
+  spark-introspector:
+    build:
+      context: ../..
+      dockerfile: services/orion-spark-introspector/Dockerfile
+    container_name: ${PROJECT}-spark-introspector
+    restart: unless-stopped
+    env_file:
+      - .env
+    networks: app-net
+    environment:
+      - PROJECT=${PROJECT}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      # Bus channels      
+      - CHANNEL_SPARK_INTROSPECT_CANDIDATE=orion:spark:introspect:candidate
+      - SQL_WRITER_CHANNEL=orion:sql:intake
+      - CORTEX_ORCH_URL=http://orion-cortex-orch:8072/orchestrate
+      - CONNECT_TIMEOUT=5.0
+      - READ_TIMEOUT=10.0
+networks:
+  app-net:
+    external: true

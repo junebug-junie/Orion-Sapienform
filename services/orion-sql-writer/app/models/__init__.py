@@ -9,5 +9,6 @@ __all__ = [
     "CollapseMirror",
     "ChatHistoryLogSQL",
     "Dream",
-    "BiometricsTelemetry"
+    "BiometricsTelemetry",
+    "SparkIntrospectionLogSQL",
 ]

@@ -11,6 +11,7 @@ __all__ = [
     "DreamInput",
     "DreamFragmentMeta",
     "DreamMetrics",
-    "BiometricsInput"
+    "BiometricsInput",
+    "SparkIntrospectionInput",
 ]
 

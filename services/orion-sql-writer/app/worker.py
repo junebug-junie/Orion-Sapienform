@@ -6,10 +6,10 @@ from typing import Optional
 from app.settings import settings
 from app.db import get_session, remove_session
 from app.models import (
-    CollapseEnrichment, CollapseMirror, ChatHistoryLogSQL, Dream, BiometricsTelemetry
+    CollapseEnrichment, CollapseMirror, ChatHistoryLogSQL, Dream, BiometricsTelemetry, SparkIntrospectionLogSQL
 )
 from app.schemas import (
-    EnrichmentInput, MirrorInput, ChatHistoryInput, DreamInput, BiometricsInput
+    EnrichmentInput, MirrorInput, ChatHistoryInput, DreamInput, BiometricsInput, SparkIntrospectionInput
 )
 from orion.core.bus.service import OrionBus
 
@@ -93,6 +93,23 @@ def _process_one(session, channel: str, msg: dict) -> Optional[str]:
         db_data = payload.model_dump()
         session.add(BiometricsTelemetry(**db_data))
         log_id = db_data.get("timestamp", "unknown")
+
+    elif table == "spark_introspection_log":
+        payload = SparkIntrospectionInput.model_validate(msg).normalize()
+        db_data = payload.model_dump()
+
+        # Ensure spark_meta is stored as a JSON string
+        spark_meta_val = db_data.get("spark_meta")
+        if isinstance(spark_meta_val, (dict, list)):
+            db_data["spark_meta"] = json.dumps(spark_meta_val)
+        elif spark_meta_val is None:
+            db_data["spark_meta"] = None
+
+        log_id = payload.id
+        logger.info(f"Upserting Spark introspection log id={log_id} trace_id={payload.trace_id}")
+
+        session.merge(SparkIntrospectionLogSQL(**db_data))
+        return log_id
 
     return log_id
 

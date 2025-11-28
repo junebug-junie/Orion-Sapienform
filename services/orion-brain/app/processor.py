@@ -14,13 +14,13 @@ from app.config import (
     ORION_BUS_URL,
     ORION_BUS_ENABLED,
     CHANNEL_DREAM_TRIGGER,
+    CHANNEL_SPARK_INTROSPECT_CANDIDATE,
 )
 from app.router import router_instance
 from app.bus_helpers import (
     emit_brain_event,
     emit_brain_output,
     emit_chat_history_log,
-    # assumes you've added this; if not, you can temporarily inline a publish
     emit_cortex_step_result,
 )
 from app.tts_gpu import TTSEngine
@@ -263,6 +263,50 @@ def process_brain_request(payload: dict):
             f"novelty={phi_after.get('novelty', 0.0):.3f}}} "
             f"self_field={self_field}"
         )
+
+        # ─────────────────────────────────────────────
+        # 4a1. Decide if this turn is introspection-worthy
+        # ─────────────────────────────────────────────
+        delta_valence = abs(
+            (phi_after.get("valence") or 0.0) - (phi_before.get("valence") or 0.0)
+        )
+        uncertainty = (self_field or {}).get("uncertainty", 0.0)
+        stress_load = (self_field or {}).get("stress_load", 0.0)
+
+        # Heuristics: tweak these thresholds as you see how it behaves.
+        should_flag = (
+            delta_valence > 0.05    # noticeable emotional tilt
+            or uncertainty > 0.3    # Orion feels quite unsure
+            or stress_load > 0.4    # Orion feels loaded
+        )
+
+        if should_flag:
+            try:
+                bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
+                candidate_payload = {
+                    "event": "spark_introspect_candidate",
+                    "trace_id": trace_id,
+                    "source": source or "brain",
+                    "kind": kind,
+                    "prompt": payload.get("prompt"),
+                    "response": text,
+                    "spark_meta": {
+                        **spark_meta,
+                        "phi_before": phi_before,
+                        "phi_after": phi_after,
+                    },
+                }
+                bus.publish(CHANNEL_SPARK_INTROSPECT_CANDIDATE, candidate_payload)
+                logger.info(
+                    f"[{trace_id}] SPARK: published introspection candidate "
+                    f"to {CHANNEL_SPARK_INTROSPECT_CANDIDATE}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{trace_id}] SPARK: failed to publish introspection candidate: {e}",
+                    exc_info=True,
+                )
+
 
         first_roles = [m.get("role", "?") for m in history[:6]]
         logger.warning(

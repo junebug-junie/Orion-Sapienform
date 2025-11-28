@@ -1,5 +1,6 @@
 from sqlalchemy import Column, String, Text, DateTime
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import JSONB
 from app.db import Base
 
 class ChatHistoryLogSQL(Base):
@@ -12,4 +13,5 @@ class ChatHistoryLogSQL(Base):
     response = Column(Text)
     user_id = Column(String, nullable=True)
     session_id = Column(String, nullable=True)
+    spark_meta = Column(JSONB, nullable=True)
     created_at = Column(DateTime, server_default=func.now())

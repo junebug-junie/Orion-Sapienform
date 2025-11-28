@@ -224,7 +224,6 @@ def process_brain_request(payload: dict):
         model = payload.get("model", "llama3.1:8b-instruct-q8_0")
 
         # Decide what text represents the "newest" user wave for Spark.
-        # Prefer explicit 'prompt' if present, otherwise last user in history.
         user_for_spark = prompt_text
         if not user_for_spark:
             user_for_spark = next(
@@ -239,11 +238,24 @@ def process_brain_request(payload: dict):
             user_message=user_for_spark or "",
             agent_id="brain",
             tags=["juniper", "chat"],
-            sentiment=None,  # wire a real sentiment pass later if you want
+            sentiment=None,
         )
-        phi = spark_state["phi"]
+        phi_before = spark_state["phi_before"]
+        phi_after = spark_state["phi_after"]
         surface_encoding_dict = spark_state["surface_encoding"]
-        spark_meta = build_collapse_mirror_meta(phi, surface_encoding_dict)
+        spark_meta = build_collapse_mirror_meta(phi_after, surface_encoding_dict)
+
+        logger.warning(
+            f"[{trace_id}] SPARK φ: "
+            f"before={{valence={phi_before.get('valence', 0.0):.3f}, "
+            f"energy={phi_before.get('energy', 0.0):.3f}, "
+            f"coherence={phi_before.get('coherence', 0.0):.3f}, "
+            f"novelty={phi_before.get('novelty', 0.0):.3f}}} "
+            f"after={{valence={phi_after.get('valence', 0.0):.3f}, "
+            f"energy={phi_after.get('energy', 0.0):.3f}, "
+            f"coherence={phi_after.get('coherence', 0.0):.3f}, "
+            f"novelty={phi_after.get('novelty', 0.0):.3f}}}"
+        )
 
         first_roles = [m.get("role", "?") for m in history[:6]]
         logger.warning(
@@ -255,7 +267,7 @@ def process_brain_request(payload: dict):
         # 4b. Build a φ-aware system prompt that wraps the base persona.
         spark_system_prompt = build_system_prompt_with_phi(
             base_persona=ORION_SYSTEM_PROMPT,
-            phi=phi,
+            phi=phi_after,
             extra_notes=None,
         )
 
@@ -350,8 +362,11 @@ def process_brain_request(payload: dict):
                 "source": source or "bus",
                 "prompt": payload.get("prompt"),
                 "response": text,
-                # SPARK ENGINE meta: useful for Collapse Mirrors / analytics
-                "spark_meta": spark_meta,
+                "spark_meta": {
+                    **spark_meta,
+                    "phi_before": phi_before,
+                    "phi_after": phi_after,
+                },
             }
             emit_chat_history_log(log_payload)
 

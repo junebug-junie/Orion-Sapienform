@@ -2,10 +2,13 @@ import asyncio, itertools, time, httpx
 from typing import Dict, List, Optional
 from fastapi import HTTPException
 from fastapi import APIRouter
+
 from app.health import check_gpu_runtime, check_ollama_backend, wait_for_redis
 from app.config import SELECTION_POLICY, CONNECT_TIMEOUT, READ_TIMEOUT, HEALTH_INTERVAL, BACKENDS
+from app.spark_integration import get_spark_engine
 
 router = APIRouter()
+
 
 class Backend:
     def __init__(self, url: str):
@@ -14,6 +17,7 @@ class Backend:
         self.last_latency_ms: float = 0.0
         self.inflight: int = 0
         self.last_error: Optional[str] = None
+
 
 class BrainRouter:
     def __init__(self, urls: List[str]):
@@ -59,6 +63,7 @@ class BrainRouter:
             return healthy[0]
         return sorted(healthy, key=lambda b: (b.inflight, b.last_latency_ms))[0]
 
+
 async def probe_backend(b: Backend):
     t0 = time.perf_counter()
     try:
@@ -71,6 +76,7 @@ async def probe_backend(b: Backend):
         b.last_error = str(e)[:200]
     finally:
         b.last_latency_ms = (time.perf_counter() - t0) * 1000.0
+
 
 async def health_loop(router: BrainRouter):
     while True:
@@ -87,3 +93,27 @@ async def health_gpu():
     gpu_status = await check_gpu_runtime()
     ollama_status = await check_ollama_backend()
     return {"gpu": gpu_status, "ollama": ollama_status}
+
+
+@router.get("/debug/spark/state")
+async def debug_spark_state():
+    """
+    Inspect Spark's current φ and (optionally) tissue summary.
+
+    This is for internal debugging / introspection, not user-facing UX.
+    """
+    engine = get_spark_engine()
+    phi = engine.get_phi()
+
+    summary = None
+    # Only if your SparkEngine exposes something like this
+    if hasattr(engine, "get_tissue_summary"):
+        try:
+            summary = engine.get_tissue_summary()
+        except Exception:
+            summary = None
+
+    return {
+        "phi": phi,
+        "tissue_summary": summary,
+    }

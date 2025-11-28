@@ -10,9 +10,13 @@ class ChatHistoryInput(BaseModel):
     response: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
+    spark_meta: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
 
     def normalize(self) -> "ChatHistoryInput":
-        self.id = self.trace_id
-        self.created_at = datetime.utcnow()
+
+        if self.id is None:
+            self.id = self.trace_id
+        if self.created_at is None:
+            self.created_at = datetime.utcnow()
         return self

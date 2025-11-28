@@ -1,0 +1,50 @@
+services:
+  llm-gateway:
+    build:
+      context: ../..
+      dockerfile: services/orion-llm-gateway/Dockerfile
+    container_name: ${PROJECT}-llm-gateway
+    restart: unless-stopped
+    networks:
+      - app-net
+    env_file:
+      - .env
+
+    environment:
+      # Project-wide basics
+      - PROJECT=${PROJECT}
+
+      # Bus wiring (usually from root .env)
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      # Identity
+      - SERVICE_NAME=${SERVICE_NAME_LLM_GATEWAY:-llm-gateway}
+      - SERVICE_VERSION=${SERVICE_VERSION_LLM_GATEWAY:-0.1.0}
+
+      # LLM gateway channels
+      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE}
+      - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX}
+
+      # Backend + model defaults
+      - ORION_DEFAULT_LLM_MODEL=${ORION_DEFAULT_LLM_MODEL}
+      - ORION_LLM_DEFAULT_BACKEND=${ORION_LLM_DEFAULT_BACKEND}
+
+      # Backend endpoints (Ollama is required today; others optional)
+      - ORION_LLM_OLLAMA_URL=${ORION_LLM_OLLAMA_URL}
+      - ORION_LLM_VLLM_URL=${ORION_LLM_VLLM_URL:-}
+      - ORION_LLM_BRAIN_URL=${ORION_LLM_BRAIN_URL:-}
+
+      # Timeouts
+      - CONNECT_TIMEOUT_SEC=${CONNECT_TIMEOUT_SEC}
+      - READ_TIMEOUT_SEC=${READ_TIMEOUT_SEC}
+
+      # Label used in reply payloads
+      - ORION_LLM_SERVICE_NAME=${ORION_LLM_SERVICE_NAME}
+
+    ports:
+      - "8210:8210"   # optional, keep for future HTTP/metrics
+
+networks:
+  app-net:
+    external: true

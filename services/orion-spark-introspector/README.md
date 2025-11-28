@@ -23,8 +23,6 @@ This gives Orion a growing table of its own internal reflections keyed by `trace
 - **Cortex Orchestrator (bus):**
   - `CORTEX_ORCH_REQUEST_CHANNEL = "orion-cortex:request"`
   - `CORTEX_ORCH_RESULT_PREFIX = "orion-cortex:result"`
-- **SQL Writer (bus):**
-  - `SQL_WRITER_CHANNEL = "orion:sql:intake"`
 
 **End-to-end loop:**
 
@@ -104,8 +102,6 @@ This gives Orion a growing table of its own internal reflections keyed by `trace
    }
    ```
 
-   to the channel `orion:sql:intake`.
-
 7. **SQL Writer** recognizes `table="spark_introspection_log"`, validates via `SparkIntrospectionInput`, and upserts the
    row into the `spark_introspection_log` table.
 
@@ -128,10 +124,6 @@ ORION_BUS_ENABLED=true
 # Brain publishes "spiky" turns here
 CHANNEL_SPARK_INTROSPECT_CANDIDATE=orion:spark:introspect:candidate
 
-# --- SQL writer intake channel ---
-# SQL writer listens here for table writes
-SQL_WRITER_CHANNEL=orion:sql:intake
-
 # --- Cortex orchestrator bus wiring ---
 # These mirror ORCH_REQUEST_CHANNEL / ORCH_RESULT_PREFIX in orion-cortex-orch
 CORTEX_ORCH_REQUEST_CHANNEL=orion-cortex:request
@@ -153,7 +145,6 @@ class Settings(BaseSettings):
     ORION_BUS_ENABLED: bool = True
 
     CHANNEL_SPARK_INTROSPECT_CANDIDATE: str = "orion:spark:introspect:candidate"
-    SQL_WRITER_CHANNEL: str = "orion:sql:intake"
 
     CORTEX_ORCH_REQUEST_CHANNEL: str = "orion-cortex:request"
     CORTEX_ORCH_RESULT_PREFIX: str = "orion-cortex:result"
@@ -224,7 +215,6 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - CHANNEL_SPARK_INTROSPECT_CANDIDATE=orion:spark:introspect:candidate
-      - SQL_WRITER_CHANNEL=orion:sql:intake
       - CORTEX_ORCH_URL=http://orion-cortex-orch:8072/orchestrate
       - CONNECT_TIMEOUT=5.0
       - READ_TIMEOUT=10.0
@@ -311,7 +301,7 @@ PUBLISH orion:spark:introspect:candidate '{
 
 - **SQL Writer**:
   - `[SQL_WRITER] Upserting Spark introspection log id=spark-test-005 trace_id=spark-test-005`
-  - `🏁 COMMIT for spark-test-005 on 'orion:sql:intake'` (or similar, depending on worker wiring).
+
 
 ### Verifying in Postgres
 

@@ -43,6 +43,6 @@ COPY orion /app/orion
 # Copy this service code
 COPY services/orion-llm-gateway /app
 
-EXPOSE 8210  # reserved for future HTTP/health if you want it
+EXPOSE 8222
 
 CMD ["python", "-m", "app.main"]

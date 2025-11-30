@@ -6,7 +6,6 @@ import logging
 from typing import List
 
 from .models import AgentOpinion, RoundResult, BlinkJudgement, BlinkScores
-from .pipeline import DeliberationContext
 from .persona_factory import (
     get_agents_for_universe,
     get_chair_agent,
@@ -21,7 +20,7 @@ logger = logging.getLogger("agent-council.stages")
 
 
 class Stage:
-    def run(self, ctx: DeliberationContext) -> None:  # pragma: no cover
+    def run(self, ctx: dict) -> None:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -30,7 +29,7 @@ class Stage:
 # ─────────────────────────────────────────────
 
 class AgentRoundStage(Stage):
-    def run(self, ctx: DeliberationContext) -> None:
+    def run(self, ctx: dict) -> None:
         req = ctx.req
         agents = get_agents_for_universe(req.universe)
         persona_state_map = req.persona_state or {}
@@ -76,7 +75,7 @@ class AgentRoundStage(Stage):
 # ─────────────────────────────────────────────
 
 class ArbiterStage(Stage):
-    def run(self, ctx: DeliberationContext) -> None:
+    def run(self, ctx: dict) -> None:
         req = ctx.req
         round_result = ctx.round_result
         if round_result is None:
@@ -131,7 +130,7 @@ class ArbiterStage(Stage):
 # ─────────────────────────────────────────────
 
 class AuditorStage(Stage):
-    def run(self, ctx: DeliberationContext) -> None:
+    def run(self, ctx: dict) -> None:
         req = ctx.req
         round_result = ctx.round_result
         judgement = ctx.judgement

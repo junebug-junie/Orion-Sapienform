@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .models import AgentConfig, PhiSnapshot, SelfField
+from ..models import AgentConfig, PhiSnapshot, SelfField
 
 
 @dataclass

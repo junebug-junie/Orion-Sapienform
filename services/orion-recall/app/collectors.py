@@ -7,7 +7,7 @@ from .settings import settings
 from .types import Fragment, RecallQuery
 from .storage.sql_adapter import fetch_sql_fragments
 from .storage.vector_adapter import fetch_vector_fragments
-from .storage.rdf_adapater import fetch_rdf_fragments
+from .storage.rdf_adapter import fetch_rdf_fragments
 
 
 def collect_fragments(q: RecallQuery) -> List[Fragment]:

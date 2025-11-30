@@ -5,7 +5,7 @@ from typing import Dict
 
 from orion.core.bus.service import OrionBus
 
-from .deliberation import DeliberationEngine
+from .deliberation import DeliberationRouter
 from .settings import settings
 
 logger = logging.getLogger("agent-council.council")
@@ -21,7 +21,7 @@ class CouncilRouter:
 
     def __init__(self, bus: OrionBus) -> None:
         self.bus = bus
-        self.engine = DeliberationEngine(bus)
+        self.engine = DeliberationRouter(bus)
 
     def handle_message(self, data: Dict) -> None:
         event = data.get("event")

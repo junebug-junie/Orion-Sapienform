@@ -5,7 +5,6 @@ import enum
 import logging
 
 from .settings import settings
-from .pipeline import DeliberationContext
 
 logger = logging.getLogger("agent-council.policy")
 

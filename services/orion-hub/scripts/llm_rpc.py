@@ -1,4 +1,6 @@
 # scripts/llm_rpc.py
+from __future__ import annotations
+
 import uuid
 import asyncio
 import logging
@@ -10,9 +12,32 @@ from scripts.settings import settings
 logger = logging.getLogger("hub.llm-rpc")
 
 
+async def _await_single_reply(bus, reply_channel: str, trace_id: str) -> dict:
+    """
+    Shared helper: subscribe once, read 1 message, close.
+    """
+    sub = bus.raw_subscribe(reply_channel)
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def listener():
+        try:
+            for msg in sub:
+                loop.call_soon_threadsafe(queue.put_nowait, msg)
+                break
+        finally:
+            sub.close()
+
+    asyncio.get_running_loop().run_in_executor(None, listener)
+    msg = await queue.get()
+    reply = msg.get("data", {})
+    logger.info("[%s] RPC reply received on %s.", trace_id, reply_channel)
+    return reply
+
+
 class BrainRPC:
     """
-    A Redis-based request/response RPC client.
+    A Redis-based request/response RPC client for the Brain service.
     Hub publishes LLM requests → waits for Brain replies on a unique channel.
     """
 
@@ -21,9 +46,6 @@ class BrainRPC:
         self.kind = kind  # e.g. "warm_start" or None
 
     async def call_llm(self, prompt: str, history: list, temperature: float):
-        """
-        Publish an LLM request over the Orion bus and wait for the response.
-        """
         trace_id = str(uuid.uuid4())
         reply_channel = f"orion:brain:rpc:{trace_id}"
 
@@ -38,43 +60,22 @@ class BrainRPC:
             "ts": datetime.utcnow().isoformat(),
         }
 
-        # ✅ tag special calls
+        # tag special calls
         if self.kind is not None:
             payload["kind"] = self.kind
 
-        if not self.bus.enabled:
+        if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("BrainRPC used while OrionBus is disabled")
 
-        # DEBUG: log full outbound RPC payload
-        #try:
-        #    debug_out = json.dumps(payload, indent=2)[:2000]
-        #    logger.warning(f"[DEBUG][HUB → BrainRPC publish] Payload:\n{debug_out}")
-        #except Exception as e:
-        #    logger.error(f"[DEBUG] Failed to serialize outbound payload: {e}")
-
         self.bus.publish(settings.CHANNEL_BRAIN_INTAKE, payload)
-        logger.info(f"[{trace_id}] Published Brain RPC request to {settings.CHANNEL_BRAIN_INTAKE}")
+        logger.info(
+            "[%s] Published Brain RPC request → %s",
+            trace_id,
+            settings.CHANNEL_BRAIN_INTAKE,
+        )
 
-        sub = self.bus.raw_subscribe(reply_channel)
-        loop = asyncio.get_event_loop()
-        queue = asyncio.Queue()
-
-        def listener():
-            try:
-                for msg in sub:
-                    loop.call_soon_threadsafe(queue.put_nowait, msg)
-                    break
-            finally:
-                sub.close()
-
-        asyncio.get_running_loop().run_in_executor(None, listener)
-        msg = await queue.get()
-        reply = msg.get("data", {})
-
-        #logger.warning(f"[DEBUG][BrainRPC ← Brain reply] Raw reply:\n{reply}")
-        logger.info(f"[{trace_id}] Brain RPC reply received.")
+        reply = await _await_single_reply(self.bus, reply_channel, trace_id)
         return reply
-
 
     async def call_tts(self, text: str, tts_q: asyncio.Queue):
         """
@@ -93,7 +94,7 @@ class BrainRPC:
             },
         )
 
-        # Wait for reply
+        # Wait for reply (streamed)
         sub = self.bus.raw_subscribe(reply_channel)
         try:
             async for msg in sub:
@@ -104,3 +105,43 @@ class BrainRPC:
                     break
         finally:
             sub.close()
+
+
+class CouncilRPC:
+    """
+    Bus-RPC client for the Agent Council service.
+    Same shape of prompt/history as BrainRPC, but publishes to the
+    council intake channel and waits on a council reply channel.
+    """
+
+    def __init__(self, bus):
+        self.bus = bus
+
+    async def call_llm(self, prompt: str, history: list, temperature: float):
+        trace_id = str(uuid.uuid4())
+        reply_channel = f"{settings.CHANNEL_COUNCIL_REPLY_PREFIX}:{trace_id}"
+
+        payload = {
+            "trace_id": trace_id,
+            "source": settings.SERVICE_NAME,
+            "response_channel": reply_channel,
+            "prompt": prompt,
+            "history": history[-5:],  # same lightweight tail
+            "temperature": temperature,
+            "model": settings.LLM_MODEL,
+            "mode": "council",
+            "ts": datetime.utcnow().isoformat(),
+        }
+
+        if not self.bus or not getattr(self.bus, "enabled", False):
+            raise RuntimeError("CouncilRPC used while OrionBus is disabled")
+
+        self.bus.publish(settings.CHANNEL_COUNCIL_INTAKE, payload)
+        logger.info(
+            "[%s] Published Council RPC request → %s",
+            trace_id,
+            settings.CHANNEL_COUNCIL_INTAKE,
+        )
+
+        reply = await _await_single_reply(self.bus, reply_channel, trace_id)
+        return reply

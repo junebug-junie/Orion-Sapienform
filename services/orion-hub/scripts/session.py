@@ -1,5 +1,4 @@
-# services/orion-hub/app/session.py
-
+# services/orion-hub/scripts/session.py
 from __future__ import annotations
 
 import logging
@@ -12,38 +11,29 @@ logger = logging.getLogger("orion-hub.session")
 
 async def ensure_session(session_id: Optional[str], bus) -> str:
     """
-    Single source of truth for Hub session handling.
+    Ensure a session exists and is warm-started.
 
-    - If no session_id: create + warm-start via warm_start_session().
-    - If session_id exists:
-        - Try to read warm-start state from Redis via bus.client.
-        - If missing or not flagged, warm-start it.
-        - If bus/client missing, just treat as "already warm" and return id.
-
-    Returns the active session_id (always a string).
+    - If no session_id: create + warm-start.
+    - If session_id exists: check Redis via bus.client (if available)
+      for `warm_started`. If missing, warm-start and mark it.
     """
-    # No bus → we can't do actual Redis bookkeeping, but we still allow
-    # warm_start_session to run once so identity is "loaded" logically.
+    # If bus is missing/disabled, just delegate to warm_start_session without Redis bookkeeping
     if not bus or not getattr(bus, "enabled", False):
         logger.warning(
-            "ensure_session called but OrionBus is disabled; "
-            "delegating to warm_start_session without Redis state."
+            "ensure_session called but OrionBus is disabled; returning raw session id."
         )
         if session_id is None:
-            # Let warm_start_session generate the id, but we won't persist.
             return await warm_start_session(None, bus=None)
-        # We already have an id; just return it.
         return session_id
 
     # No session id → new + warm start
     if session_id is None:
         return await warm_start_session(None, bus)
 
-    # Bus exists; see if we can inspect Redis state.
     client = getattr(bus, "client", None)
     if client is None:
         logger.info(
-            "OrionBus has no 'client' attribute; "
+            "OrionBus has no `client` attribute; "
             "treating session %s as already warm-started.",
             session_id,
         )

@@ -9,7 +9,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
 from .warm_start import mini_personality_summary
-from .llm_rpc import BrainRPC
+from .llm_rpc import BrainRPC, CouncilRPC
+from .recall_rpc import RecallRPC
 from .session import ensure_session
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
@@ -52,7 +53,7 @@ async def api_session(x_orion_session_id: Optional[str] = Header(None)):
 
 
 # ======================================================================
-# 💬 CHAT ENDPOINT (BUS-based Brain RPC)
+# 💬 CHAT ENDPOINT (Brain vs Council)
 # ======================================================================
 @router.post("/api/chat")
 async def api_chat(
@@ -61,7 +62,10 @@ async def api_chat(
 ):
     """
     Main LLM chat endpoint.
-    Uses BrainRPC (bus-RPC) to talk to Brain GPU.
+
+    - Preserves warm-started sessions + personality stubs.
+    - Uses BrainRPC by default.
+    - If payload.mode == "council", routes through Agent Council instead.
     """
     from .main import bus
     if not bus:
@@ -72,6 +76,7 @@ async def api_chat(
 
     user_messages = payload.get("messages", [])
     temperature = payload.get("temperature", 0.7)
+    mode = payload.get("mode", "brain")  # "brain" | "council"
 
     if not isinstance(user_messages, list) or len(user_messages) == 0:
         return JSONResponse(
@@ -79,13 +84,17 @@ async def api_chat(
             content={"error": "Invalid payload: missing messages[]"},
         )
 
-    # Brain RPC
-    rpc = BrainRPC(bus)
+    user_prompt = user_messages[-1].get("content", "")
 
     # Inject mini identity stub
-    user_prompt = user_messages[-1].get("content", "")
     system_stub = {"role": "system", "content": mini_personality_summary()}
     full_history = [system_stub] + user_messages
+
+    # Choose backend
+    if mode == "council":
+        rpc = CouncilRPC(bus)
+    else:
+        rpc = BrainRPC(bus)
 
     reply = await rpc.call_llm(
         prompt=user_prompt,
@@ -93,7 +102,7 @@ async def api_chat(
         temperature=temperature,
     )
 
-    # Normalize a bit
+    # Normalize text + token count
     text = reply.get("text") or reply.get("response") or ""
     tokens = len(text.split()) if text else 0
 
@@ -113,9 +122,59 @@ async def api_chat(
 
     return {
         "session_id": session_id,
+        "mode": mode,
         "text": text,
         "tokens": tokens,
         "raw": reply,
+    }
+
+
+# ======================================================================
+# 🔍 RECALL / RAG ENDPOINT
+# ======================================================================
+@router.post("/api/recall")
+async def api_recall(
+    payload: dict,
+    x_orion_session_id: Optional[str] = Header(None),
+):
+    """
+    Thin HTTP façade over the Recall service (via Orion Bus).
+
+    Expects payload like:
+        {
+          "query": "string (optional)",
+          "mode": "hybrid|short_term|deep (optional)",
+          "time_window_days": 30,
+          "max_items": 16,
+          "extras": {...}   # optional hints/filters
+        }
+    """
+    from .main import bus
+    if not bus:
+        raise RuntimeError("OrionBus not initialized.")
+
+    session_id = await ensure_session(x_orion_session_id, bus)
+
+    query = payload.get("query")
+    mode = payload.get("mode") or None
+    time_window_days = payload.get("time_window_days")
+    max_items = payload.get("max_items")
+    extras = payload.get("extras")
+
+    client = RecallRPC(bus)
+    result = await client.call_recall(
+        query=query,
+        session_id=session_id,
+        mode=mode,
+        time_window_days=time_window_days,
+        max_items=max_items,
+        extras=extras,
+    )
+
+    return {
+        "session_id": session_id,
+        "query": query,
+        "result": result,
     }
 
 

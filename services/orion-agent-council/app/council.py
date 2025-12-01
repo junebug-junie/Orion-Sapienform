@@ -1,7 +1,8 @@
+# services/orion-agent-council/app/council.py
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, Any
 
 from orion.core.bus.service import OrionBus
 
@@ -14,22 +15,23 @@ logger = logging.getLogger("agent-council.council")
 class CouncilRouter:
     """
     Very thin wrapper:
-      - owns DeliberationEngine
+      - owns DeliberationRouter
       - decides which events are 'council' events
-      - delegates to engine.run()
+      - delegates to router.handle()
     """
 
     def __init__(self, bus: OrionBus) -> None:
         self.bus = bus
-        self.engine = DeliberationRouter(bus)
+        self.router = DeliberationRouter(bus)
 
-    def handle_message(self, data: Dict) -> None:
+    def handle_message(self, data: Dict[str, Any]) -> None:
         event = data.get("event")
         if event != "council_deliberation":
             logger.warning("Ignoring non-deliberation event on council: %r", event)
             return
 
-        self.engine.run(data)
+        # DeliberationRouter exposes .handle(...)
+        self.router.handle(data)
 
 
 def run_council_loop(bus: OrionBus) -> None:
@@ -42,7 +44,8 @@ def run_council_loop(bus: OrionBus) -> None:
         settings.service_version,
     )
 
-    for msg in bus.subscribe(settings.channel_intake):
+    # Use raw_subscribe for consistency with the rest of Orion
+    for msg in bus.raw_subscribe(settings.channel_intake):
         if msg.get("type") != "message":
             continue
 
@@ -54,4 +57,9 @@ def run_council_loop(bus: OrionBus) -> None:
         try:
             router.handle_message(data)
         except Exception as e:
-            logger.error("Error handling council message: %s data=%r", e, data, exc_info=True)
+            logger.error(
+                "Error handling council message: %s data=%r",
+                e,
+                data,
+                exc_info=True,
+            )

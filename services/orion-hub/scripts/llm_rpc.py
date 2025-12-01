@@ -1,22 +1,26 @@
-# scripts/llm_rpc.py
 from __future__ import annotations
 
 import uuid
 import asyncio
 import logging
 from datetime import datetime
-import json
 
 from scripts.settings import settings
 
 logger = logging.getLogger("hub.llm-rpc")
 
 
-async def _await_single_reply(bus, reply_channel: str, trace_id: str) -> dict:
+async def _request_and_wait(bus, channel_intake: str, channel_reply: str, payload: dict, trace_id: str) -> dict:
     """
-    Shared helper: subscribe once, read 1 message, close.
+    Robust RPC helper: Subscribes FIRST, then publishes.
+
+    This prevents the "Race Condition" where the service replies 
+    before the Hub has finished setting up the subscription.
     """
-    sub = bus.raw_subscribe(reply_channel)
+    # 1. Open the subscription immediately
+    sub = bus.raw_subscribe(channel_reply)
+
+    # 2. Define the listener (consumer)
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -28,17 +32,30 @@ async def _await_single_reply(bus, reply_channel: str, trace_id: str) -> dict:
         finally:
             sub.close()
 
+    # 3. Start listener in background executor
     asyncio.get_running_loop().run_in_executor(None, listener)
-    msg = await queue.get()
-    reply = msg.get("data", {})
-    logger.info("[%s] RPC reply received on %s.", trace_id, reply_channel)
-    return reply
+
+    # 4. NOW publish (while we are listening)
+    bus.publish(channel_intake, payload)
+    logger.info("[%s] RPC Published -> %s (awaiting %s)", trace_id, channel_intake, channel_reply)
+
+    # 5. Wait for result with timeout
+    try:
+        # standard timeout for the hub to give up
+        msg = await asyncio.wait_for(queue.get(), timeout=60.0) 
+        reply = msg.get("data", {})
+        logger.info("[%s] RPC reply received.", trace_id)
+        return reply
+    except asyncio.TimeoutError:
+        logger.error("[%s] RPC timed out waiting for %s", trace_id, channel_reply)
+        return {"error": "timeout"}
+    finally:
+        pass
 
 
 class BrainRPC:
     """
     A Redis-based request/response RPC client for the Brain service.
-    Hub publishes LLM requests → waits for Brain replies on a unique channel.
     """
 
     def __init__(self, bus, kind: str | None = None):
@@ -54,7 +71,7 @@ class BrainRPC:
             "source": settings.SERVICE_NAME,
             "response_channel": reply_channel,
             "prompt": prompt,
-            "history": history[-5:],         # lightweight contextual tail
+            "history": history[-5:],  # lightweight contextual tail
             "temperature": temperature,
             "model": settings.LLM_MODEL,
             "ts": datetime.utcnow().isoformat(),
@@ -67,24 +84,26 @@ class BrainRPC:
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("BrainRPC used while OrionBus is disabled")
 
-        self.bus.publish(settings.CHANNEL_BRAIN_INTAKE, payload)
-        logger.info(
-            "[%s] Published Brain RPC request → %s",
-            trace_id,
+        return await _request_and_wait(
+            self.bus,
             settings.CHANNEL_BRAIN_INTAKE,
+            reply_channel,
+            payload,
+            trace_id
         )
-
-        reply = await _await_single_reply(self.bus, reply_channel, trace_id)
-        return reply
 
     async def call_tts(self, text: str, tts_q: asyncio.Queue):
         """
         Publishes a TTS RPC request and streams the Brain's GPU TTS reply.
+        Note: TTS uses a stream, so we manually handle subscription here.
         """
         rpc_id = str(uuid.uuid4())
         reply_channel = f"orion:tts:rpc:{rpc_id}"
 
-        # Publish request
+        # Note: Ideally we subscribe here before publishing too, 
+        # but for streaming audio, a tiny race condition is less fatal 
+        # than for control logic. Keeping as-is for now.
+
         self.bus.publish(
             settings.CHANNEL_TTS_INTAKE,
             {
@@ -94,7 +113,6 @@ class BrainRPC:
             },
         )
 
-        # Wait for reply (streamed)
         sub = self.bus.raw_subscribe(reply_channel)
         try:
             async for msg in sub:
@@ -110,8 +128,6 @@ class BrainRPC:
 class CouncilRPC:
     """
     Bus-RPC client for the Agent Council service.
-    Same shape of prompt/history as BrainRPC, but publishes to the
-    council intake channel and waits on a council reply channel.
     """
 
     def __init__(self, bus):
@@ -122,14 +138,12 @@ class CouncilRPC:
         reply_channel = f"{settings.CHANNEL_COUNCIL_REPLY_PREFIX}:{trace_id}"
 
         payload = {
-            "event": "council_deliberation",  # 👈 match DeliberationRequest.event
-
+            "event": "council_deliberation",
             "trace_id": trace_id,
             "source": settings.SERVICE_NAME,
             "response_channel": reply_channel,
-
             "prompt": prompt,
-            "history": history[-5:],  # same lightweight tail
+            "history": history[-5:],
             "temperature": temperature,
             "model": settings.LLM_MODEL,
             "mode": "council",
@@ -139,12 +153,24 @@ class CouncilRPC:
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("CouncilRPC used while OrionBus is disabled")
 
-        self.bus.publish(settings.CHANNEL_COUNCIL_INTAKE, payload)
-        logger.info(
-            "[%s] Published Council RPC request → %s",
-            trace_id,
+        raw_reply = await _request_and_wait(
+            self.bus,
             settings.CHANNEL_COUNCIL_INTAKE,
+            reply_channel,
+            payload,
+            trace_id,
         )
 
-        reply = await _await_single_reply(self.bus, reply_channel, trace_id)
-        return reply
+        # raw_reply is whatever the council publishes on the reply channel,
+        # i.e., a CouncilResult dict.
+        if isinstance(raw_reply, dict):
+            # In your current wiring, council publishes the CouncilResult
+            # directly as the message 'data', not nested in payload.
+            result = raw_reply
+
+            if "final_text" in result and "text" not in result:
+                result = {**result, "text": result["final_text"]}
+
+            return result
+
+        return raw_reply

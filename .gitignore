@@ -52,7 +52,6 @@ tmp/
 volumes/
 data/
 **/telemetry/
-**/storage/
 
 # === Build / Virtual Env ===
 orion_dev/

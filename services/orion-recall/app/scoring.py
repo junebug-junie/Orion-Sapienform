@@ -3,157 +3,134 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Dict, Iterable, List, Optional, Set
+from typing import List, Dict, Any
 
-from .types import Fragment, RecallQuery, PhiContext
-
-
-KIND_WEIGHTS: Dict[str, float] = {
-    "collapse": 1.25,
-    "enrichment": 1.15,
-    "chat": 0.9,
-    "association": 0.85,
-    "biometrics": 0.7,
-    "rdf": 1.0,
-}
+from .types import Fragment, RecallQuery, RecallResult
 
 
-def _now_ts() -> float:
-    return time.time()
-
-
-def _norm_tags(tags: Iterable[str]) -> Set[str]:
-    out: Set[str] = set()
-    for t in tags or []:
-        s = str(t).strip().lower()
-        if s:
-            out.add(s)
-    return out
-
-
-def _tokenize(text: str) -> Set[str]:
-    if not text:
-        return set()
-    return {
-        token.strip(".,!?;:()[]{}\"'").lower()
-        for token in text.split()
-        if token.strip()
-    }
-
-
-def _base_salience(f: Fragment) -> float:
-    s = float(f.salience or 0.0)
-    v = abs(float(getattr(f, "valence", 0.0) or 0.0))
-    a = float(getattr(f, "arousal", 0.0) or 0.0)
-
-    s = max(0.0, min(s, 1.0))
-    v = max(0.0, min(v, 1.0))
-    a = max(0.0, min(a, 1.0))
-
-    base = 0.2 + 0.4 * s + 0.2 * v + 0.2 * a
-    return float(max(0.0, min(base, 1.2)))
-
-
-def _recency_weight(f: Fragment, now_ts: float, half_life_days: float) -> float:
-    if not f.ts:
-        return 1.0
-
-    age_sec = max(0.0, now_ts - float(f.ts))
-    age_days = age_sec / 86400.0
-
-    if half_life_days <= 0:
-        return 1.0
-
-    weight = 0.5 ** (age_days / half_life_days)
-    return float(max(0.2, min(1.5, weight * 1.2)))
-
-
-def _kind_weight(f: Fragment) -> float:
-    return float(KIND_WEIGHTS.get(f.kind, 1.0))
-
-
-def _query_alignment_weight(f: Fragment, q: RecallQuery) -> float:
-    q_tokens = _tokenize(q.text)
-    q_tags = _norm_tags(q.tags)
-
-    f_tokens = _tokenize(f.text)
-    f_tags = _norm_tags(f.tags)
-
-    if not q_tokens and not q_tags:
-        return 1.0
-
-    tag_overlap = len(q_tags & f_tags)
-    token_overlap = len(q_tokens & f_tokens)
-
-    tag_boost = 1.0 + 0.18 * tag_overlap
-    tok_boost = 1.0 + 0.08 * min(token_overlap, 10)
-
-    weight = tag_boost * tok_boost
-    return float(max(0.8, min(1.8, weight)))
-
-
-def _phi_alignment_weight(f: Fragment, phi: Optional[PhiContext]) -> float:
-    if phi is None:
-        return 1.0
-
+def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
-        m = f.meta or {}
-        fv = float(m.get("spark_phi_valence", 0.0) or 0.0)
-        fe = float(m.get("spark_phi_energy", 0.0) or 0.0)
-        fn = float(m.get("spark_phi_novelty", 0.0) or 0.0)
-
-        dv = abs(phi.valence - fv)
-        de = abs(phi.energy - fe)
-        dn = abs(phi.novelty - fn)
-
-        avg_d = (dv + de + dn) / 3.0
-
-        if avg_d < 0.05:
-            return 1.35
-        if avg_d < 0.15:
-            return 1.15
-        if avg_d < 0.30:
-            return 1.0
-        if avg_d < 0.50:
-            return 0.9
-        return 0.8
+        if x is None:
+            return default
+        return float(x)
     except Exception:
-        return 1.0
+        return default
 
 
-def score_fragments(
-    fragments: List[Fragment],
-    query: RecallQuery,
-    *,
-    half_life_days_short: float = 3.0,
-    half_life_days_deep: float = 14.0,
-) -> List[Fragment]:
-    if not fragments:
-        return []
+def _compute_recency_factor(ts: float | None, mode: str) -> float:
+    """
+    Recency weight in [0, 1].
 
-    now_ts = _now_ts()
+    - short_term: very sharp decay (days-scale)
+    - hybrid: medium decay (weeks-scale)
+    - deep: slow decay (months-scale)
+    """
+    if not ts:
+        return 0.5  # unknown timestamps get neutral-ish score
 
-    if query.mode == "short_term":
-        half_life = half_life_days_short
-    elif query.mode == "deep":
-        half_life = half_life_days_deep
+    now = time.time()
+    age_days = max(0.0, (now - float(ts)) / 86400.0)
+
+    if mode == "short_term":
+        tau = 3.0   # ~3 day horizon
+    elif mode == "deep":
+        tau = 60.0  # ~2 month horizon
     else:
-        half_life = (half_life_days_short + half_life_days_deep) / 2.0
+        tau = 14.0  # default / hybrid
 
-    scored: List[Fragment] = []
+    # exp(-age / tau) ∈ (0, 1]
+    return math.exp(-age_days / tau)
+
+
+def _compute_semantic_score(f: Fragment) -> float:
+    """
+    Look for semantic similarity coming from vector backends.
+
+    We expect vector_adapter to stash a similarity / score field into meta.
+    If none is present, we fall back to 0.0 and let salience/recency carry.
+    """
+    meta = f.meta or {}
+    # common patterns from vector DBs: similarity, score, distance, etc.
+    sim = meta.get("similarity")
+    if sim is None:
+        sim = meta.get("score")
+
+    val = _safe_float(sim, 0.0)
+    # clamp to [0, 1]
+    return max(0.0, min(1.0, val))
+
+
+def _compute_final_score(
+    semantic: float,
+    salience: float,
+    recency: float,
+) -> float:
+    """
+    Compound score: semantic dominates; salience + recency temper it.
+
+    We can tweak these weights later, but this already moves us well
+    beyond "grab everything from the last N days".
+    """
+    return (
+        0.6 * semantic +
+        0.25 * salience +
+        0.15 * recency
+    )
+
+
+def score_fragments(query: RecallQuery, fragments: List[Fragment]) -> RecallResult:
+    """
+    Central scoring & pruning logic.
+
+    - Build a working set (already done in collectors).
+    - Compute semantic + salience + recency per fragment.
+    - Filter out low-signal noise.
+    - Return top-K, plus debug metadata.
+    """
+    scored: List[Dict[str, Any]] = []
 
     for f in fragments:
-        base = _base_salience(f)
-        rec_w = _recency_weight(f, now_ts, half_life)
-        kind_w = _kind_weight(f)
-        q_w = _query_alignment_weight(f, query)
-        phi_w = _phi_alignment_weight(f, query.phi)
+        semantic = _compute_semantic_score(f)
+        salience = _safe_float(getattr(f, "salience", 0.0), 0.0)
+        recency = _compute_recency_factor(getattr(f, "ts", None), query.mode)
 
-        score = base * rec_w * kind_w * q_w * phi_w
-        score = float(max(0.0, min(score, 5.0)))
+        final_score = _compute_final_score(semantic, salience, recency)
 
-        f.salience = score
-        scored.append(f)
+        scored.append(
+            {
+                "fragment": f,
+                "semantic": semantic,
+                "salience": salience,
+                "recency": recency,
+                "score": final_score,
+            }
+        )
 
-    scored.sort(key=lambda x: x.salience, reverse=True)
-    return scored
+    # Sort best → worst
+    scored.sort(key=lambda x: x["score"], reverse=True)
+
+    # Hard floor: anything below this is basically noise
+    MIN_SCORE = 0.20
+
+    final_fragments: List[Fragment] = []
+    for row in scored:
+        if row["score"] < MIN_SCORE:
+            continue
+        final_fragments.append(row["fragment"])
+        if len(final_fragments) >= query.max_items:
+            break
+
+    debug = {
+        "total_raw": len(fragments),
+        "total_scored": len(scored),
+        "total_final": len(final_fragments),
+        "mode": query.mode,
+        "time_window_days": query.time_window_days,
+        "max_items": query.max_items,
+        "note": "semantic + salience + recency scoring; MIN_SCORE=0.20",
+    }
+
+    return RecallResult(
+        fragments=final_fragments,
+        debug=debug,
+    )

@@ -1,0 +1,32 @@
+services:
+  gpu-cluster-power:
+    build:
+      context: ../..
+      dockerfile: services/orion-gpu-cluster-power/Dockerfile
+    image: ${PROJECT:-orion}-gpu-cluster-power:latest
+    container_name: ${PROJECT:-orion}-gpu-cluster-power
+    restart: unless-stopped
+    network_mode: host
+    #networks:
+    #  - app-net
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - PORT=${PORT}
+
+      # Bus
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      # power routes
+      - PSU_BASE_URL=${PSU_BASE_URL}
+      - PSU_ON_PATH=${PSU_ON_PATH}
+      - PSU_OFF_PATH=${PSU_OFF_PATH}
+      - PSU_CYCLE_PATH=${PSU_CYCLE_PATH}
+    ports:
+      - "8050:8050"
+
+#networks:
+#  app-net:
+#    external: true

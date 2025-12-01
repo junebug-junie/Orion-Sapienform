@@ -45,6 +45,9 @@ services:
     ports:
       - "8210:8210"   # optional, keep for future HTTP/metrics
 
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 networks:
   app-net:
     external: true

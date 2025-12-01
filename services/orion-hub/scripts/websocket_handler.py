@@ -13,8 +13,48 @@ from scripts.settings import settings
 from scripts.llm_tts_handler import run_tts_only
 from scripts.llm_rpc import BrainRPC
 from scripts.warm_start import mini_personality_summary
+from scripts.recall_rpc import RecallRPC
 
 logger = logging.getLogger("voice-app.ws")
+
+def render_history_to_prompt(history: list[dict], latest_user: str) -> str:
+    """
+    Linearize the structured history into a single text prompt.
+
+    This makes sure the LLM always sees:
+      - core system persona
+      - recall memory block
+      - recent dialogue
+      - a strong instruction on how to handle missing memories
+    """
+    lines = []
+
+    for msg in history:
+        role = msg.get("role")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+
+        if role == "system":
+            lines.append(f"[SYSTEM]\n{content}\n")
+        elif role in ("assistant", "orion"):
+            lines.append(f"Oríon: {content}\n")
+        elif role == "user":
+            lines.append(f"Juniper: {content}\n")
+        else:
+            lines.append(f"{role or 'unknown'}: {content}\n")
+
+    lines.append(
+        (
+            "\n[SYSTEM INSTRUCTION]\n"
+            "Use ONLY the information in the SYSTEM blocks and prior dialogue as factual memory.\n"
+            "If Juniper asks about something that does NOT appear in those memories, "
+            "explicitly say you do not recall, instead of guessing or inventing details.\n"
+            "Now respond as Oríon to Juniper's last message above, staying grounded in those memories.\n"
+        )
+    )
+
+    return "\n".join(lines)
 
 
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
@@ -129,18 +169,83 @@ async def websocket_endpoint(websocket: WebSocket):
 
             temperature = data.get("temperature", 0.7)
 
+
+            # ─────────────────────────────────────────────────────
+            # 🔍 Inject Recall memories into history (WS parity with /api/chat)
+            # ─────────────────────────────────────────────────────
+            memory_snippets = []
+
+            if bus is not None and getattr(bus, "enabled", False):
+                try:
+                    recall_client = RecallRPC(bus)
+                    recall_result = await recall_client.call_recall(
+                        query=transcript,
+                        session_id=data.get("session_id"),
+                        mode="hybrid",
+                        time_window_days=14,
+                        max_items=12,
+                        extras=None,
+                    )
+
+                    for frag in (recall_result.get("fragments") or []):
+                        kind = frag.get("kind")
+                        text = (frag.get("text") or "").strip()
+                        if not text:
+                            continue
+                        # Skip tag-cloud style enrichment if you don't want it in context
+                        if kind == "enrichment":
+                            continue
+                        memory_snippets.append(f"[{kind}] {text[:260]}")
+
+                except Exception as e:
+                    logger.warning(
+                        f"RecallRPC lookup failed in WebSocket handler: {e}",
+                        exc_info=True,
+                    )
+
+            if memory_snippets:
+                memory_block = (
+                    "Relevant past memories about Juniper, Orion, and recent context "
+                    "(treat these as ground truth where possible):\n"
+                    + "\n".join(f"- {s}" for s in memory_snippets[:6])
+                )
+
+                # Remove any previous auto-injected memory blocks so we don’t stack them forever
+                history = [
+                    m
+                    for m in history
+                    if not (
+                        m.get("role") == "system"
+                        and isinstance(m.get("content"), str)
+                        and "Relevant past memories about Juniper, Orion, and recent context"
+                        in m["content"]
+                    )
+                ]
+
+                # Insert memory message after:
+                #   0: core personality stub
+                #   1: optional user instructions (if present)
+                insert_idx = 1
+                if has_instructions:
+                    insert_idx += 1
+
+                history.insert(insert_idx, {"role": "system", "content": memory_block})
+
+
+
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY BEFORE LLM CALL: {history}")
 
-            # 1) LLM via Bus RPC
+            # 1) Flatten history + memories into a single prompt
             rpc = BrainRPC(bus)
-            user_prompt = transcript.strip()
+            rendered_prompt = render_history_to_prompt(history, transcript.strip())
 
             reply = await rpc.call_llm(
-                prompt=user_prompt,
-                history=history[:],
+                prompt=rendered_prompt,
+                history=[],          # optional: or just omit this parameter
                 temperature=temperature,
             )
+
 
             orion_response_text = reply.get("text") or ""
             tokens = len(orion_response_text.split())

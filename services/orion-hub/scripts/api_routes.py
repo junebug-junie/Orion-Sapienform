@@ -135,8 +135,11 @@ async def api_chat(
     memory_block = ""
     if memory_snippets:
         memory_block = (
-            "Relevant past memories about Juniper, Orion, and recent context "
-            "(treat these as ground truth where possible):\n"
+            "Relevant past memories about Juniper, Orion, and recent context. "
+            "Use ONLY the events listed below as factual memory. "
+            "If Juniper asks whether you remember something that is not mentioned "
+            "here or in the recent dialogue history, explicitly say that you do not recall "
+            "instead of guessing. Do NOT invent specific cities, people, dates, or events.\n"
             + "\n".join(f"- {s}" for s in memory_snippets[:6])
         )
 
@@ -145,10 +148,22 @@ async def api_chat(
     # ─────────────────────────────────────────────────────────────
     # 🧮 Phase 3: Build full history with memories inline
     # ─────────────────────────────────────────────────────────────
+    # Build full_history = [system_stub] + memory_msg? + user_messages ...
     full_history = [system_stub]
     if memory_msg:
         full_history.append(memory_msg)
     full_history.extend(user_messages)
+
+    rendered_prompt = render_history_to_prompt(
+        full_history,
+        user_prompt.strip(),
+    )
+
+    reply = await rpc.call_llm(
+        prompt=rendered_prompt,
+        history=[],  # or omit
+        temperature=temperature,
+    )
 
     # ─────────────────────────────────────────────────────────────
     # 🧑‍⚖️ Phase 4: Choose backend (Brain vs Council)

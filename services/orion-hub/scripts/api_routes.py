@@ -1,13 +1,16 @@
-# scripts/api_routes.py
+# services/orion-hub/scripts/api_routes.py
+from __future__ import annotations
 
 import logging
-from fastapi import APIRouter, Header
-from fastapi.responses import HTMLResponse, JSONResponse
 from typing import Optional
 
+from fastapi import APIRouter, Header
+from fastapi.responses import HTMLResponse, JSONResponse
+
 from .settings import settings
-from .warm_start import mini_personality_summary, warm_start_session
+from .warm_start import mini_personality_summary
 from .llm_rpc import BrainRPC
+from .session import ensure_session
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
 logger = logging.getLogger("orion-hub.api")
@@ -34,48 +37,6 @@ def health():
 # ======================================================================
 # 🧠 SESSION MANAGEMENT
 # ======================================================================
-async def ensure_session(session_id: Optional[str], bus) -> str:
-    """
-    Ensures the session_id exists and is warm-started.
-
-    - If no session_id: create + warm-start.
-    - If session_id exists: check Redis via bus.client (if available)
-      for `warm_started`. If missing, warm-start and mark it.
-    """
-    # If bus is missing/disabled, just delegate to warm_start_session without Redis bookkeeping
-    if not bus or not getattr(bus, "enabled", False):
-        logger.warning("ensure_session called but OrionBus is disabled; returning bare session_id.")
-        if session_id is None:
-            return await warm_start_session(None, bus=None)
-        return session_id
-
-    # No session id → new + warm start
-    if session_id is None:
-        return await warm_start_session(None, bus)
-
-    client = getattr(bus, "client", None)
-    if client is None:
-        logger.info(
-            f"OrionBus has no 'client' attribute; "
-            f"treating session {session_id} as already warm-started."
-        )
-        return session_id
-
-    key = f"orion:hub:session:{session_id}:state"
-
-    try:
-        state = client.hgetall(key)
-    except Exception as e:
-        logger.warning(f"Failed to read warm-start state from Redis for {session_id}: {e}")
-        return session_id
-
-    if not state or state.get("warm_started") != "1":
-        # Session exists but not warm-started — fix it
-        return await warm_start_session(session_id, bus)
-
-    return session_id
-
-
 @router.get("/api/session")
 async def api_session(x_orion_session_id: Optional[str] = Header(None)):
     """
@@ -96,7 +57,7 @@ async def api_session(x_orion_session_id: Optional[str] = Header(None)):
 @router.post("/api/chat")
 async def api_chat(
     payload: dict,
-    x_orion_session_id: Optional[str] = Header(None)
+    x_orion_session_id: Optional[str] = Header(None),
 ):
     """
     Main LLM chat endpoint.
@@ -115,13 +76,13 @@ async def api_chat(
     if not isinstance(user_messages, list) or len(user_messages) == 0:
         return JSONResponse(
             status_code=400,
-            content={"error": "Invalid payload: missing messages[]"}
+            content={"error": "Invalid payload: missing messages[]"},
         )
 
     # Brain RPC
     rpc = BrainRPC(bus)
 
-    # Inject Phase-1 mini identity stub
+    # Inject mini identity stub
     user_prompt = user_messages[-1].get("content", "")
     system_stub = {"role": "system", "content": mini_personality_summary()}
     full_history = [system_stub] + user_messages
@@ -132,6 +93,10 @@ async def api_chat(
         temperature=temperature,
     )
 
+    # Normalize a bit
+    text = reply.get("text") or reply.get("response") or ""
+    tokens = len(text.split()) if text else 0
+
     # Store chat tail in Redis (last 20 entries)
     client = getattr(bus, "client", None)
     if client is not None:
@@ -140,7 +105,19 @@ async def api_chat(
             client.lpush(history_key, str(user_messages[-1])[:4000])
             client.ltrim(history_key, 0, 19)
         except Exception as e:
-            logger.warning(f"Failed to store chat tail in Redis for {session_id}: {e}")
+            logger.warning(
+                "Failed to store chat tail in Redis for %s: %s",
+                session_id,
+                e,
+            )
+
+    return {
+        "session_id": session_id,
+        "text": text,
+        "tokens": tokens,
+        "raw": reply,
+    }
+
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS
@@ -164,13 +141,16 @@ async def submit_collapse(data: dict):
         logger.error("Submission failed: OrionBus is disabled or not connected.")
         return JSONResponse(
             status_code=503,
-            content={"success": False, "error": "OrionBus disabled or unavailable"}
+            content={"success": False, "error": "OrionBus disabled or unavailable"},
         )
 
     try:
         entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode='json'))
-        logger.info(f"📡 Published Collapse Mirror → {settings.CHANNEL_COLLAPSE_INTAKE}")
+        bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode="json"))
+        logger.info(
+            "📡 Published Collapse Mirror → %s",
+            settings.CHANNEL_COLLAPSE_INTAKE,
+        )
 
         return {"success": True}
 
@@ -178,5 +158,5 @@ async def submit_collapse(data: dict):
         logger.error(f"❌ Hub publish error: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"success": False, "error": str(e)}
+            content={"success": False, "error": str(e)},
         )

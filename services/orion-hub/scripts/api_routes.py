@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import APIRouter, Header
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -86,7 +86,7 @@ async def api_chat(
             content={"error": "Invalid payload: missing messages[]"},
         )
 
-    user_prompt = user_messages[-1].get("content", "")
+    user_prompt = user_messages[-1].get("content", "") or ""
 
     # ─────────────────────────────────────────────────────────────
     # 🧠 Phase 1: Personality stub
@@ -100,16 +100,14 @@ async def api_chat(
     recall_debug: dict[str, Any] | None = None
 
     try:
-        from .recall_rpc import RecallRPC  # local import to avoid cycles
         recall_client = RecallRPC(bus)
 
-        # You can tune these knobs as you like
         recall_result = await recall_client.call_recall(
             query=user_prompt,
             session_id=session_id,
             mode="hybrid",
             time_window_days=14,
-            max_items=12,
+            max_items=50,
             extras=None,
         )
 
@@ -128,7 +126,7 @@ async def api_chat(
             if kind == "enrichment":
                 continue
 
-            memory_snippets.append(f"[{kind}] {text[:260]}")
+            memory_snippets.append(f"[{kind}] {text[:1260]}")
     except Exception as e:
         logger.warning(f"RecallRPC lookup failed in /api/chat: {e}", exc_info=True)
 
@@ -140,7 +138,7 @@ async def api_chat(
             "If Juniper asks whether you remember something that is not mentioned "
             "here or in the recent dialogue history, explicitly say that you do not recall "
             "instead of guessing. Do NOT invent specific cities, people, dates, or events.\n"
-            + "\n".join(f"- {s}" for s in memory_snippets[:6])
+            + "\n".join(f"- {s}" for s in memory_snippets)
         )
 
     memory_msg = {"role": "system", "content": memory_block} if memory_block else None
@@ -148,28 +146,15 @@ async def api_chat(
     # ─────────────────────────────────────────────────────────────
     # 🧮 Phase 3: Build full history with memories inline
     # ─────────────────────────────────────────────────────────────
-    # Build full_history = [system_stub] + memory_msg? + user_messages ...
     full_history = [system_stub]
     if memory_msg:
         full_history.append(memory_msg)
     full_history.extend(user_messages)
 
-    rendered_prompt = render_history_to_prompt(
-        full_history,
-        user_prompt.strip(),
-    )
-
-    reply = await rpc.call_llm(
-        prompt=rendered_prompt,
-        history=[],  # or omit
-        temperature=temperature,
-    )
-
     # ─────────────────────────────────────────────────────────────
     # 🧑‍⚖️ Phase 4: Choose backend (Brain vs Council)
     # ─────────────────────────────────────────────────────────────
     if mode == "council":
-        from .council_rpc import CouncilRPC  # assuming you already have this
         rpc = CouncilRPC(bus)
     else:
         rpc = BrainRPC(bus)
@@ -245,7 +230,6 @@ async def api_recall(
     max_items = payload.get("max_items") or 16
     extras = payload.get("extras") or None
 
-    from .recall_rpc import RecallRPC
     client = RecallRPC(bus)
 
     result = await client.call_recall(
@@ -265,6 +249,7 @@ async def api_recall(
         "max_items": max_items,
         "result": result,
     }
+
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS

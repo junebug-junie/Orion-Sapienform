@@ -51,16 +51,27 @@ def _mix_kinds(fragments: List[Fragment], max_items: int) -> List[Fragment]:
 
     return out[:max_items]
 
-
 def postprocess_fragments(fragments: List[Fragment], q: RecallQuery) -> List[Fragment]:
+    import logging
+    logger = logging.getLogger("recall.postprocess")
+
     if not fragments:
+        logger.info("postprocess_fragments: no fragments in, returning [].")
         return []
 
-    max_items = q.max_items or 16
+    raw_max = q.max_items
+    max_items = raw_max if raw_max is not None else 0
     if max_items <= 0:
-        return []
+        max_items = 16
+
+    logger.info(
+        "postprocess_fragments: in=%d, raw_max=%r, using_max=%d",
+        len(fragments),
+        raw_max,
+        max_items,
+    )
 
     deduped = _dedupe(fragments)
-    # scoring has already sorted by salience desc
     mixed = _mix_kinds(deduped, max_items=max_items)
+    logger.info("postprocess_fragments: out=%d", len(mixed))
     return mixed

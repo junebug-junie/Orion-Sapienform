@@ -107,7 +107,7 @@ async def api_chat(
             session_id=session_id,
             mode="hybrid",
             time_window_days=14,
-            max_items=50,
+            max_items=25,
             extras=None,
         )
 
@@ -126,7 +126,7 @@ async def api_chat(
             if kind == "enrichment":
                 continue
 
-            memory_snippets.append(f"[{kind}] {text[:1260]}")
+            memory_snippets.append(f"[{kind}] {text[:260]}")
     except Exception as e:
         logger.warning(f"RecallRPC lookup failed in /api/chat: {e}", exc_info=True)
 

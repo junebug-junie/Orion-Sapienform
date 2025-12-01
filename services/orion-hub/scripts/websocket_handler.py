@@ -143,7 +143,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         session_id=data.get("session_id"),
                         mode="hybrid",
                         time_window_days=14,
-                        max_items=50,   # respect recall's own max_items
+                        max_items=25,   # respect recall's own max_items
                         extras=None,
                     )
 

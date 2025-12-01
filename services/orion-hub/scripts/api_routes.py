@@ -53,7 +53,7 @@ async def api_session(x_orion_session_id: Optional[str] = Header(None)):
 
 
 # ======================================================================
-# 💬 CHAT ENDPOINT (Brain vs Council)
+# 💬 CHAT ENDPOINT (Brain vs Council + Recall)
 # ======================================================================
 @router.post("/api/chat")
 async def api_chat(
@@ -66,6 +66,8 @@ async def api_chat(
     - Preserves warm-started sessions + personality stubs.
     - Uses BrainRPC by default.
     - If payload.mode == "council", routes through Agent Council instead.
+    - Uses RecallRPC over Orion Bus to fetch recent, relevant memories
+      and injects them as a system message.
     """
     from .main import bus
     if not bus:
@@ -86,12 +88,73 @@ async def api_chat(
 
     user_prompt = user_messages[-1].get("content", "")
 
-    # Inject mini identity stub
+    # ─────────────────────────────────────────────────────────────
+    # 🧠 Phase 1: Personality stub
+    # ─────────────────────────────────────────────────────────────
     system_stub = {"role": "system", "content": mini_personality_summary()}
-    full_history = [system_stub] + user_messages
 
-    # Choose backend
+    # ─────────────────────────────────────────────────────────────
+    # 🔍 Phase 2: Recall over bus (RecallRPC)
+    # ─────────────────────────────────────────────────────────────
+    memory_snippets: list[str] = []
+    recall_debug: dict[str, Any] | None = None
+
+    try:
+        from .recall_rpc import RecallRPC  # local import to avoid cycles
+        recall_client = RecallRPC(bus)
+
+        # You can tune these knobs as you like
+        recall_result = await recall_client.call_recall(
+            query=user_prompt,
+            session_id=session_id,
+            mode="hybrid",
+            time_window_days=14,
+            max_items=12,
+            extras=None,
+        )
+
+        recall_debug = {
+            "total_fragments": len(recall_result.get("fragments", [])),
+            "mode": recall_result.get("debug", {}).get("mode"),
+        }
+
+        for frag in recall_result.get("fragments", []):
+            kind = frag.get("kind")
+            text = (frag.get("text") or "").strip()
+            if not text:
+                continue
+
+            # Optionally skip pure enrichment/tag clouds in the injected block
+            if kind == "enrichment":
+                continue
+
+            memory_snippets.append(f"[{kind}] {text[:260]}")
+    except Exception as e:
+        logger.warning(f"RecallRPC lookup failed in /api/chat: {e}", exc_info=True)
+
+    memory_block = ""
+    if memory_snippets:
+        memory_block = (
+            "Relevant past memories about Juniper, Orion, and recent context "
+            "(treat these as ground truth where possible):\n"
+            + "\n".join(f"- {s}" for s in memory_snippets[:6])
+        )
+
+    memory_msg = {"role": "system", "content": memory_block} if memory_block else None
+
+    # ─────────────────────────────────────────────────────────────
+    # 🧮 Phase 3: Build full history with memories inline
+    # ─────────────────────────────────────────────────────────────
+    full_history = [system_stub]
+    if memory_msg:
+        full_history.append(memory_msg)
+    full_history.extend(user_messages)
+
+    # ─────────────────────────────────────────────────────────────
+    # 🧑‍⚖️ Phase 4: Choose backend (Brain vs Council)
+    # ─────────────────────────────────────────────────────────────
     if mode == "council":
+        from .council_rpc import CouncilRPC  # assuming you already have this
         rpc = CouncilRPC(bus)
     else:
         rpc = BrainRPC(bus)
@@ -106,7 +169,9 @@ async def api_chat(
     text = reply.get("text") or reply.get("response") or ""
     tokens = len(text.split()) if text else 0
 
-    # Store chat tail in Redis (last 20 entries)
+    # ─────────────────────────────────────────────────────────────
+    # 🧾 Phase 5: Store chat tail in Redis (last 20 entries)
+    # ─────────────────────────────────────────────────────────────
     client = getattr(bus, "client", None)
     if client is not None:
         try:
@@ -126,11 +191,12 @@ async def api_chat(
         "text": text,
         "tokens": tokens,
         "raw": reply,
+        "recall_debug": recall_debug,
     }
 
 
 # ======================================================================
-# 🔍 RECALL / RAG ENDPOINT
+# 🔍 RECALL / RAG ENDPOINT (bus façade)
 # ======================================================================
 @router.post("/api/recall")
 async def api_recall(
@@ -148,6 +214,9 @@ async def api_recall(
           "max_items": 16,
           "extras": {...}   # optional hints/filters
         }
+
+    This does NOT call Recall over HTTP – it uses RecallRPC on the bus,
+    same as /api/chat, so all intra-Orion cognition stays on the spine.
     """
     from .main import bus
     if not bus:
@@ -155,13 +224,15 @@ async def api_recall(
 
     session_id = await ensure_session(x_orion_session_id, bus)
 
-    query = payload.get("query")
-    mode = payload.get("mode") or None
-    time_window_days = payload.get("time_window_days")
-    max_items = payload.get("max_items")
-    extras = payload.get("extras")
+    query = payload.get("query") or ""
+    mode = payload.get("mode") or "hybrid"
+    time_window_days = payload.get("time_window_days") or 30
+    max_items = payload.get("max_items") or 16
+    extras = payload.get("extras") or None
 
+    from .recall_rpc import RecallRPC
     client = RecallRPC(bus)
+
     result = await client.call_recall(
         query=query,
         session_id=session_id,
@@ -174,9 +245,11 @@ async def api_recall(
     return {
         "session_id": session_id,
         "query": query,
+        "mode": mode,
+        "time_window_days": time_window_days,
+        "max_items": max_items,
         "result": result,
     }
-
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS

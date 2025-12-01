@@ -122,9 +122,12 @@ class CouncilRPC:
         reply_channel = f"{settings.CHANNEL_COUNCIL_REPLY_PREFIX}:{trace_id}"
 
         payload = {
+            "event": "council_deliberation",  # 👈 match DeliberationRequest.event
+
             "trace_id": trace_id,
             "source": settings.SERVICE_NAME,
             "response_channel": reply_channel,
+
             "prompt": prompt,
             "history": history[-5:],  # same lightweight tail
             "temperature": temperature,

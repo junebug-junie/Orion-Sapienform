@@ -1,25 +1,33 @@
 # services/orion-hub/scripts/websocket_handler.py
-import logging
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
+import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
 from scripts.llm_tts_handler import run_tts_only
-from scripts.llm_rpc import BrainRPC
+from scripts.llm_rpc import BrainRPC, CouncilRPC
 from scripts.warm_start import mini_personality_summary
 from scripts.recall_rpc import RecallRPC
 
 logger = logging.getLogger("voice-app.ws")
 
 
+# ---------------------------------------------------------------------
+# 🔄 Utility: drain a queue to the WebSocket
+# ---------------------------------------------------------------------
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
-    """Drains a queue and sends messages to the WebSocket client."""
+    """
+    Background task that pulls messages from `queue`
+    and forwards them to the WebSocket client.
+    """
     try:
         while websocket.client_state.name == "CONNECTED":
             msg = await queue.get()
@@ -32,10 +40,148 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
         logger.error(f"drain_queue error: {e}", exc_info=True)
 
 
+# ---------------------------------------------------------------------
+# 🧠 Memory helpers (Recall → system block)
+# ---------------------------------------------------------------------
+def _format_fragments_for_ws(fragments: List[Dict[str, Any]], limit: int = 12) -> List[str]:
+    """
+    Turn recall fragments into short lines suitable for a system
+    memory block. We keep it compact but still human-readable if
+    we ever inspect the history.
+    """
+    lines: List[str] = []
+
+    for frag in fragments[:limit]:
+        kind = frag.get("kind", "unknown")
+        text = (frag.get("text") or "").replace("\n", " ").strip()
+        if not text:
+            continue
+
+        meta = frag.get("meta") or {}
+        observer = meta.get("observer")
+        field_resonance = meta.get("field_resonance")
+
+        extras: List[str] = []
+        if observer:
+            extras.append(f"observer={observer}")
+        if field_resonance:
+            extras.append(f"field_resonance={field_resonance}")
+
+        suffix = f" [{' | '.join(extras)}]" if extras else ""
+        lines.append(f"[{kind}] {text[:260]}{suffix}")
+
+    return lines
+
+
+async def _build_memory_block_for_ws(
+    bus,
+    transcript: str,
+    session_id: Optional[str],
+    max_items: int = 25,
+) -> str:
+    """
+    Call Recall via the bus and build a single system message block
+    describing relevant past memories.
+    """
+    if bus is None or not getattr(bus, "enabled", False):
+        return ""
+
+    try:
+        recall_client = RecallRPC(bus)
+        recall_result = await recall_client.call_recall(
+            query=transcript,
+            session_id=session_id,
+            mode="hybrid",
+            time_window_days=14,
+            max_items=max_items,
+            extras=None,
+        )
+
+        fragments = recall_result.get("fragments") or []
+        logger.info(
+            "WS Recall returned %d fragments: %s",
+            len(fragments),
+            [
+                f"{frag.get('kind')}::{(frag.get('text') or '')[:80]}"
+                for frag in fragments[:5]
+            ],
+        )
+
+        snippet_lines = _format_fragments_for_ws(fragments)
+        if not snippet_lines:
+            return ""
+
+        memory_block = (
+            "Relevant past memories about Juniper, Orion, and recent context.\n"
+            "Use ONLY the events listed below as factual memory.\n"
+            "If Juniper asks whether you remember something that is not mentioned\n"
+            "here or in the recent dialogue history, explicitly say that you do not recall\n"
+            "instead of guessing. Do NOT invent specific cities, people, dates, or events.\n"
+            + "\n- "
+            + "\n- ".join(snippet_lines)
+        )
+        return memory_block
+
+    except Exception as e:
+        logger.warning(
+            f"RecallRPC lookup failed in WebSocket handler: {e}",
+            exc_info=True,
+        )
+        return ""
+
+
+def _strip_old_memory_blocks(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Remove any previously auto-injected memory blocks so we don’t stack them
+    each turn. We detect them by a fixed prefix string.
+    """
+    marker = "Relevant past memories about Juniper, Orion, and recent context."
+    cleaned: List[Dict[str, Any]] = []
+
+    for m in history:
+        if (
+            m.get("role") == "system"
+            and isinstance(m.get("content"), str)
+            and marker in m["content"]
+        ):
+            continue
+        cleaned.append(m)
+
+    return cleaned
+
+
+def _inject_memory_block(
+    history: List[Dict[str, Any]],
+    memory_block: str,
+    has_instructions: bool,
+) -> List[Dict[str, Any]]:
+    """
+    Insert the memory system message after:
+      - core persona stub
+      - optional user instructions
+    """
+    if not memory_block:
+        return history
+
+    history = _strip_old_memory_blocks(history)
+
+    insert_idx = 1  # after core persona
+    if has_instructions:
+        insert_idx += 1
+
+    history.insert(
+        insert_idx,
+        {"role": "system", "content": memory_block},
+    )
+    return history
+
+
+# ---------------------------------------------------------------------
+# 🎙️ Main WebSocket endpoint (Brain vs Council + Recall)
+# ---------------------------------------------------------------------
 async def websocket_endpoint(websocket: WebSocket):
     """Handles the main voice and text WebSocket lifecycle."""
-    # Pull shared objects from main once per connection
-    from scripts.main import asr, bus
+    from scripts.main import asr, bus  # lazy import shared objects
 
     await websocket.accept()
     logger.info("WebSocket accepted.")
@@ -46,11 +192,12 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     # Seed conversation history with Orion's personality stub
-    history = [
+    history: List[Dict[str, Any]] = [
         {"role": "system", "content": mini_personality_summary()}
     ]
     has_instructions = False
 
+    # Queue for streaming TTS chunks back to the client
     tts_q: asyncio.Queue = asyncio.Queue()
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q))
 
@@ -59,9 +206,24 @@ async def websocket_endpoint(websocket: WebSocket):
             raw = await websocket.receive_text()
             data: Dict[str, Any] = json.loads(raw)
 
-            transcript = None
-            is_text_input = False
+            # Mode toggle: "brain" (default) | "council"
+            mode = data.get("mode", "brain")
+
+            # Flags
             disable_tts = data.get("disable_tts", False)
+            instructions = data.get("instructions", "")
+            context_len = data.get("context_length", 10)
+            temperature = data.get("temperature", 0.7)
+
+            # Session / user identifiers for logging + Collapse Mirror
+            user_id = data.get("user_id")
+            session_id = data.get("session_id")
+
+            # ---------------------------------------------------------
+            # 🗣️ Step 1: Get transcript (text_input or audio + ASR)
+            # ---------------------------------------------------------
+            transcript: Optional[str] = None
+            is_text_input = False
 
             text_input = data.get("text_input")
             if text_input:
@@ -83,147 +245,87 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             logger.info(f"Transcript: {transcript!r}")
+
             if not is_text_input:
                 await websocket.send_json(
                     {"transcript": transcript, "is_text_input": is_text_input}
                 )
 
-            # ─────────────────────────────────────────────────────
-            # 📡 Bus: publish transcript + intake
-            # ─────────────────────────────────────────────────────
-            if bus is not None and getattr(bus, "enabled", False):
-                try:
-                    bus.publish(
-                        settings.CHANNEL_VOICE_TRANSCRIPT,
-                        {"type": "transcript", "content": transcript},
-                    )
-                    bus.publish(
-                        settings.CHANNEL_BRAIN_INTAKE,
-                        {
-                            "source": settings.SERVICE_NAME,
-                            "type": "intake",
-                            "content": transcript,
-                        },
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to publish transcript/intake to bus: {e}",
-                        exc_info=True,
-                    )
-
-            instructions = data.get("instructions", "")
+            # ---------------------------------------------------------
+            # 🧾 Step 2: Instructions + add user message to history
+            # ---------------------------------------------------------
             if instructions and not has_instructions:
-                # Insert user-provided instructions just after the core personality stub
+                # Insert user-provided instructions just after core personality stub
                 history.insert(1, {"role": "system", "content": instructions})
                 has_instructions = True
 
             # Add current user message
             history.append({"role": "user", "content": transcript})
 
-            context_len = data.get("context_length", 10)
-            if len(history) > context_len:
-                # Preserve leading system messages, trim the rest
+            # Trim non-system messages to context_len
+            if context_len and context_len > 0:
                 system_messages = [m for m in history if m.get("role") == "system"]
                 non_system = [m for m in history if m.get("role") != "system"]
-                trimmed_non_system = non_system[-(context_len - len(system_messages)) :]
+
+                keep_count = max(context_len - len(system_messages), 0)
+                trimmed_non_system = non_system[-keep_count:] if keep_count > 0 else []
                 history = system_messages + trimmed_non_system
 
-            temperature = data.get("temperature", 0.7)
+            # ---------------------------------------------------------
+            # 🔍 Step 3: Recall → memory block (optional)
+            # ---------------------------------------------------------
+            memory_block = await _build_memory_block_for_ws(
+                bus=bus,
+                transcript=transcript,
+                session_id=session_id,
+                max_items=25,
+            )
 
-            # ─────────────────────────────────────────────────────
-            # 🔍 Recall: fetch and inject memory block into history
-            # ─────────────────────────────────────────────────────
-            memory_snippets: list[str] = []
-
-            if bus is not None and getattr(bus, "enabled", False):
-                try:
-                    recall_client = RecallRPC(bus)
-                    recall_result = await recall_client.call_recall(
-                        query=transcript,
-                        session_id=data.get("session_id"),
-                        mode="hybrid",
-                        time_window_days=14,
-                        max_items=25,   # respect recall's own max_items
-                        extras=None,
-                    )
-
-                    fragments = recall_result.get("fragments") or []
-                    logger.info(
-                        "WS Recall returned %d fragments: %s",
-                        len(fragments),
-                        [
-                            f"{frag.get('kind')}::{(frag.get('text') or '')[:80]}"
-                            for frag in fragments[:5]
-                        ],
-                    )
-
-                    for frag in fragments:
-                        kind = frag.get("kind")
-                        text = (frag.get("text") or "").strip()
-                        if not text:
-                            continue
-                        # Optional: skip enrichments if they’re noisy
-                        if kind == "enrichment":
-                            continue
-                        memory_snippets.append(f"[{kind}] {text[:260]}")
-
-                except Exception as e:
-                    logger.warning(
-                        f"RecallRPC lookup failed in WebSocket handler: {e}",
-                        exc_info=True,
-                    )
-
-            if memory_snippets:
-                memory_block = (
-                    "Relevant past memories about Juniper, Orion, and recent context. "
-                    "Use ONLY the events listed below as factual memory. "
-                    "If Juniper asks whether you remember something that is not mentioned "
-                    "here or in the recent dialogue history, explicitly say that you do not recall "
-                    "instead of guessing. Do NOT invent specific cities, people, dates, or events.\n"
-                    + "\n".join(f"- {s}" for s in memory_snippets)
+            if memory_block:
+                history = _inject_memory_block(
+                    history=history,
+                    memory_block=memory_block,
+                    has_instructions=has_instructions,
                 )
 
-                # Remove any previous auto-injected memory block so we don’t stack them
-                history = [
-                    m
-                    for m in history
-                    if not (
-                        m.get("role") == "system"
-                        and isinstance(m.get("content"), str)
-                        and "Relevant past memories about Juniper, Orion, and recent context."
-                        in m["content"]
-                    )
-                ]
-
-                # Insert after core persona (+ optional user instructions)
-                insert_idx = 1
-                if has_instructions:
-                    insert_idx += 1
-
-                history.insert(insert_idx, {"role": "system", "content": memory_block})
-
             # --- DIAGNOSTIC LOGGING ---
-            logger.info(f"HISTORY BEFORE LLM CALL: {history}")
+            logger.info(f"HISTORY BEFORE LLM CALL (mode={mode}): {history}")
 
-            # 1) LLM via Bus RPC (structured history)
-            rpc = BrainRPC(bus)
+            # ---------------------------------------------------------
+            # 🧠 Step 4: LLM via BrainRPC or CouncilRPC (bus-native)
+            # ---------------------------------------------------------
+            if mode == "council":
+                rpc = CouncilRPC(bus)
+            else:
+                rpc = BrainRPC(bus)
+
             user_prompt = transcript.strip()
 
             reply = await rpc.call_llm(
                 prompt=user_prompt,
-                history=history[:],
+                history=history[:],  # shallow copy
                 temperature=temperature,
             )
 
-            orion_response_text = reply.get("text") or ""
-            tokens = len(orion_response_text.split())
+            orion_response_text = (
+                reply.get("text") or reply.get("response") or ""
+            )
+            tokens = len(orion_response_text.split()) if orion_response_text else 0
 
-            # 2) Immediately show the text + tokens to the client
+            # ---------------------------------------------------------
+            # 💬 Step 5: Send text response to client
+            # ---------------------------------------------------------
             await websocket.send_json(
-                {"llm_response": orion_response_text, "tokens": tokens}
+                {
+                    "llm_response": orion_response_text,
+                    "tokens": tokens,
+                    "mode": mode,
+                }
             )
 
-            # 3) Kick off TTS in the background so the UI isn't blocked
+            # ---------------------------------------------------------
+            # 🔊 Step 6: Kick off TTS in the background (if enabled)
+            # ---------------------------------------------------------
             if orion_response_text and not disable_tts:
                 asyncio.create_task(
                     run_tts_only(
@@ -234,14 +336,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                 )
 
+            # ---------------------------------------------------------
+            # 🧠 Step 7: Append to history + publish to Collapse triage
+            # ---------------------------------------------------------
             if orion_response_text:
                 history.append({"role": "orion", "content": orion_response_text})
 
                 if bus is not None and getattr(bus, "enabled", False):
                     latest_user_prompt = transcript
-
-                    user_id = data.get("user_id")
-                    session_id = data.get("session_id")
 
                     full_dialogue_payload = {
                         "id": str(uuid.uuid4()),
@@ -255,6 +357,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "response": orion_response_text,
                         "user_id": user_id,
                         "session_id": session_id,
+                        "mode": mode,
                     }
 
                     try:
@@ -263,8 +366,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             full_dialogue_payload,
                         )
                         logger.info(
-                            f"Published full dialogue to triage: "
-                            f"{full_dialogue_payload['id']}"
+                            "Published full dialogue to triage: %s",
+                            full_dialogue_payload["id"],
                         )
                     except Exception as e:
                         logger.warning(
@@ -273,7 +376,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
 
             # --- DIAGNOSTIC LOGGING ---
-            logger.info(f"HISTORY AFTER LLM CALL: {history}")
+            logger.info(f"HISTORY AFTER LLM CALL (mode={mode}): {history}")
 
             # Mark the end of this turn's processing phase.
             await websocket.send_json({"state": "idle"})

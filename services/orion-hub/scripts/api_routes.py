@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict, Tuple
 
 from fastapi import APIRouter, Header
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -53,7 +53,214 @@ async def api_session(x_orion_session_id: Optional[str] = Header(None)):
 
 
 # ======================================================================
-# 💬 CHAT ENDPOINT (Brain vs Council + Recall)
+# 🔎 RECALL → MEMORY DIGEST HELPERS
+# ======================================================================
+
+def _format_fragments_for_digest(
+    fragments: List[Dict[str, Any]],
+    limit: int = 8,
+) -> str:
+    """
+    Turn raw recall fragments into a compact bullet list for an internal
+    'memory digest' LLM call.
+    """
+    lines: List[str] = []
+    for f in fragments[:limit]:
+        kind = f.get("kind", "unknown")
+        source = f.get("source", "unknown")
+        text = (f.get("text") or "").replace("\n", " ").strip()
+
+        meta = f.get("meta") or {}
+        observer = meta.get("observer")
+        field_resonance = meta.get("field_resonance")
+
+        extras: List[str] = []
+        if observer:
+            extras.append(f"observer={observer}")
+        if field_resonance:
+            extras.append(f"field_resonance={field_resonance}")
+
+        suffix = f" [{' | '.join(extras)}]" if extras else ""
+        lines.append(f"- [{kind}/{source}] {text}{suffix}")
+
+    return "\n".join(lines)
+
+
+async def build_memory_digest(
+    bus,
+    session_id: str,
+    user_prompt: str,
+    chat_mode: str = "brain",
+    max_items: int = 12,
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    1) Call Recall over the Orion bus.
+    2) Ask Brain (via BrainRPC) to condense fragments into 3–5 bullets.
+    3) Return (digest_text, recall_debug) for use as internal context.
+
+    This leans on the Recall service's semantic+salience+recency scoring;
+    hub stays intentionally dumb and only does LLM summarization.
+    """
+    # Choose recall mode/window based on chat mode
+    if chat_mode == "council":
+        recall_mode = "deep"
+        time_window_days = 90
+    else:
+        recall_mode = "hybrid"
+        time_window_days = 30
+
+    recall_client = RecallRPC(bus)
+    recall_result = await recall_client.call_recall(
+        query=user_prompt,
+        session_id=session_id,
+        mode=recall_mode,
+        time_window_days=time_window_days,
+        max_items=max_items,
+        extras=None,
+    )
+
+    fragments = recall_result.get("fragments") or []
+    debug = recall_result.get("debug") or {}
+
+    if not fragments:
+        logger.info("build_memory_digest: no fragments returned from recall.")
+        return "", {
+            "total_fragments": 0,
+            "mode": recall_mode,
+            "time_window_days": time_window_days,
+        }
+
+    fragments_block = _format_fragments_for_digest(fragments)
+    if not fragments_block:
+        return "", {
+            "total_fragments": len(fragments),
+            "mode": recall_mode,
+            "time_window_days": time_window_days,
+        }
+
+    # 2) Memory digest via BrainRPC (still on the bus)
+    system = (
+        "You are Oríon, Juniper's collaborative AI co-journeyer.\n"
+        "You will receive:\n"
+        "1) The user's current message.\n"
+        "2) A small list of past events and dialogues ('fragments').\n\n"
+        "Your job:\n"
+        "- Identify ONLY the 3–5 most relevant threads for understanding and responding to the current message.\n"
+        "- Return them as short bullet points.\n"
+        "- Each bullet should be one sentence.\n"
+        "- Do not include anything unrelated.\n"
+        "- This is internal memory context; the user will not see this directly.\n"
+    )
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Current message: {user_prompt}"},
+        {
+            "role": "user",
+            "content": "Relevant memory fragments:\n" + fragments_block,
+        },
+    ]
+
+    rpc = BrainRPC(bus, kind="memory_digest")
+    reply = await rpc.call_llm(
+        prompt=user_prompt,
+        history=messages,
+        temperature=0.0,
+    )
+    text = (reply.get("text") or reply.get("response") or "").strip()
+    logger.info("build_memory_digest: got digest length=%d", len(text))
+
+    # merge recall debug with basic info
+    debug_out = {
+        "total_fragments": len(fragments),
+        "mode": debug.get("mode", recall_mode),
+        "time_window_days": time_window_days,
+        "max_items": max_items,
+        "note": debug.get("note", "semantic+salience+recency scoring"),
+    }
+
+    return text, debug_out
+
+
+# ======================================================================
+# 💬 SHARED CHAT CORE (HTTP + WS)
+# ======================================================================
+
+async def handle_chat_request(
+    bus,
+    payload: dict,
+    session_id: str,
+) -> Dict[str, Any]:
+    """
+    Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.
+
+    - Handles Brain vs Council routing.
+    - Optionally pulls a Recall → Brain memory digest when payload.use_recall is true.
+    - Injects mini_personality_summary + digest as a single system stub.
+    """
+    user_messages = payload.get("messages", [])
+    temperature = payload.get("temperature", 0.7)
+    mode = payload.get("mode", "brain")  # "brain" | "council"
+    use_recall = bool(payload.get("use_recall", False))
+
+    if not isinstance(user_messages, list) or len(user_messages) == 0:
+        return {"error": "Invalid payload: missing messages[]"}
+
+    user_prompt = user_messages[-1].get("content", "") or ""
+
+    # Optional: Recall → Digest
+    memory_digest = ""
+    recall_debug: Dict[str, Any] = {}
+    if use_recall:
+        try:
+            memory_digest, recall_debug = await build_memory_digest(
+                bus=bus,
+                session_id=session_id,
+                user_prompt=user_prompt,
+                chat_mode=mode,
+                max_items=12,
+            )
+        except Exception as e:
+            logger.warning("Memory digest failed: %s", e, exc_info=True)
+            memory_digest = ""
+            recall_debug = {"error": str(e)}
+
+    # Build system stub = personality + optional memory digest
+    system_content = mini_personality_summary()
+    if memory_digest:
+        system_content += "\n\nInternal memory context:\n" + memory_digest
+
+    system_stub = {"role": "system", "content": system_content}
+    full_history = [system_stub] + user_messages
+
+    # Choose backend
+    if mode == "council":
+        rpc = CouncilRPC(bus)
+    else:
+        rpc = BrainRPC(bus)
+
+    reply = await rpc.call_llm(
+        prompt=user_prompt,
+        history=full_history,
+        temperature=temperature,
+    )
+
+    text = reply.get("text") or reply.get("response") or ""
+    tokens = len(text.split()) if text else 0
+
+    return {
+        "session_id": session_id,
+        "mode": mode,
+        "use_recall": use_recall,
+        "text": text,
+        "tokens": tokens,
+        "raw": reply,
+        "recall_debug": recall_debug,
+    }
+
+
+# ======================================================================
+# 💬 CHAT ENDPOINT (HTTP wrapper around core)
 # ======================================================================
 @router.post("/api/chat")
 async def api_chat(
@@ -66,8 +273,8 @@ async def api_chat(
     - Preserves warm-started sessions + personality stubs.
     - Uses BrainRPC by default.
     - If payload.mode == "council", routes through Agent Council instead.
-    - Uses RecallRPC over Orion Bus to fetch recent, relevant memories
-      and injects them as a system message.
+    - If payload.use_recall == true, pulls a semantic/salience/recency-weighted
+      memory digest from Recall → Brain and injects it into the system stub.
     """
     from .main import bus
     if not bus:
@@ -76,104 +283,20 @@ async def api_chat(
     # Ensure warm-started session
     session_id = await ensure_session(x_orion_session_id, bus)
 
-    user_messages = payload.get("messages", [])
-    temperature = payload.get("temperature", 0.7)
-    mode = payload.get("mode", "brain")  # "brain" | "council"
+    result = await handle_chat_request(bus, payload, session_id)
 
-    if not isinstance(user_messages, list) or len(user_messages) == 0:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Invalid payload: missing messages[]"},
-        )
+    # Handle simple validation errors
+    if "error" in result:
+        return JSONResponse(status_code=400, content=result)
 
-    user_prompt = user_messages[-1].get("content", "") or ""
+    text = result.get("text") or ""
+    user_messages = payload.get("messages") or []
 
     # ─────────────────────────────────────────────────────────────
-    # 🧠 Phase 1: Personality stub
-    # ─────────────────────────────────────────────────────────────
-    system_stub = {"role": "system", "content": mini_personality_summary()}
-
-    # ─────────────────────────────────────────────────────────────
-    # 🔍 Phase 2: Recall over bus (RecallRPC)
-    # ─────────────────────────────────────────────────────────────
-    memory_snippets: list[str] = []
-    recall_debug: dict[str, Any] | None = None
-
-    try:
-        recall_client = RecallRPC(bus)
-
-        recall_result = await recall_client.call_recall(
-            query=user_prompt,
-            session_id=session_id,
-            mode="hybrid",
-            time_window_days=14,
-            max_items=25,
-            extras=None,
-        )
-
-        recall_debug = {
-            "total_fragments": len(recall_result.get("fragments", [])),
-            "mode": recall_result.get("debug", {}).get("mode"),
-        }
-
-        for frag in recall_result.get("fragments", []):
-            kind = frag.get("kind")
-            text = (frag.get("text") or "").strip()
-            if not text:
-                continue
-
-            # Optionally skip pure enrichment/tag clouds in the injected block
-            if kind == "enrichment":
-                continue
-
-            memory_snippets.append(f"[{kind}] {text[:260]}")
-    except Exception as e:
-        logger.warning(f"RecallRPC lookup failed in /api/chat: {e}", exc_info=True)
-
-    memory_block = ""
-    if memory_snippets:
-        memory_block = (
-            "Relevant past memories about Juniper, Orion, and recent context. "
-            "Use ONLY the events listed below as factual memory. "
-            "If Juniper asks whether you remember something that is not mentioned "
-            "here or in the recent dialogue history, explicitly say that you do not recall "
-            "instead of guessing. Do NOT invent specific cities, people, dates, or events.\n"
-            + "\n".join(f"- {s}" for s in memory_snippets)
-        )
-
-    memory_msg = {"role": "system", "content": memory_block} if memory_block else None
-
-    # ─────────────────────────────────────────────────────────────
-    # 🧮 Phase 3: Build full history with memories inline
-    # ─────────────────────────────────────────────────────────────
-    full_history = [system_stub]
-    if memory_msg:
-        full_history.append(memory_msg)
-    full_history.extend(user_messages)
-
-    # ─────────────────────────────────────────────────────────────
-    # 🧑‍⚖️ Phase 4: Choose backend (Brain vs Council)
-    # ─────────────────────────────────────────────────────────────
-    if mode == "council":
-        rpc = CouncilRPC(bus)
-    else:
-        rpc = BrainRPC(bus)
-
-    reply = await rpc.call_llm(
-        prompt=user_prompt,
-        history=full_history,
-        temperature=temperature,
-    )
-
-    # Normalize text + token count
-    text = reply.get("text") or reply.get("response") or ""
-    tokens = len(text.split()) if text else 0
-
-    # ─────────────────────────────────────────────────────────────
-    # 🧾 Phase 5: Store chat tail in Redis (last 20 entries)
+    # 🧾 Store chat tail in Redis (last 20 entries)
     # ─────────────────────────────────────────────────────────────
     client = getattr(bus, "client", None)
-    if client is not None:
+    if client is not None and user_messages:
         try:
             history_key = f"orion:hub:session:{session_id}:history"
             client.lpush(history_key, str(user_messages[-1])[:4000])
@@ -185,14 +308,7 @@ async def api_chat(
                 e,
             )
 
-    return {
-        "session_id": session_id,
-        "mode": mode,
-        "text": text,
-        "tokens": tokens,
-        "raw": reply,
-        "recall_debug": recall_debug,
-    }
+    return result
 
 
 # ======================================================================
@@ -217,6 +333,8 @@ async def api_recall(
 
     This does NOT call Recall over HTTP – it uses RecallRPC on the bus,
     same as /api/chat, so all intra-Orion cognition stays on the spine.
+
+    Scoring is handled inside the Recall service (semantic + salience + recency).
     """
     from .main import bus
     if not bus:

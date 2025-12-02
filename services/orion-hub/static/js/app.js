@@ -42,7 +42,7 @@ const collapseTooltipToggle = document.getElementById('collapseTooltipToggle');
 const collapseTooltip = document.getElementById('collapseTooltip');
 
 // These are declared here but assigned inside DOMContentLoaded
-let chatInput, sendButton, textToSpeechToggle;
+let chatInput, sendButton, textToSpeechToggle, councilButton;
 const API_BASE_URL = window.location.origin;
 
 // --- State Management ---
@@ -417,7 +417,9 @@ function appendMessage(sender, text, extraClass = 'text-white') {
       ? 'font-semibold text-blue-300'
       : sender === 'Orion'
         ? 'font-semibold text-green-300'
-        : 'font-semibold text-gray-300';
+        : sender === 'Council'
+          ? 'font-semibold text-indigo-300'
+          : 'font-semibold text-gray-300';
 
   const messageElement = document.createElement('div');
   messageElement.className = 'space-y-1';
@@ -449,6 +451,70 @@ function sendTextMessage() {
   };
   socket.send(JSON.stringify(payload));
   chatInput.value = '';
+}
+
+// --- Council HTTP path (Option B) ---
+async function sendCouncilMessage() {
+  if (!chatInput) return;
+  const text = chatInput.value.trim();
+  if (!text) {
+    return;
+  }
+
+  // Show user message labeled for council
+  appendMessage('You', text + '  (routed to Council)', 'text-white');
+  updateStatus('Consulting Council...');
+
+  const payload = {
+    mode: 'council',
+    temperature: parseFloat(tempControl.value),
+    use_recall: true,
+    messages: [
+      { role: 'user', content: text }
+    ],
+  };
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (orionSessionId) {
+    headers['X-Orion-Session-Id'] = orionSessionId;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => '');
+      const msg = `Council error (${res.status}) ${errorText}`;
+      appendMessage('System', msg, 'text-red-400');
+      updateStatus('Council error');
+      return;
+    }
+
+    const data = await res.json();
+    const councilText =
+      (data && data.text) ||
+      (data && data.raw && data.raw.text) ||
+      '';
+
+    if (councilText) {
+      appendMessage('Council', councilText, 'text-indigo-200');
+    } else {
+      appendMessage('Council', '(no response)', 'text-gray-400');
+    }
+
+    chatInput.value = '';
+    updateStatusBasedOnState();
+  } catch (err) {
+    const msg = `Council request failed: ${err.message}`;
+    appendMessage('System', msg, 'text-red-400');
+    updateStatus('Council error');
+  }
 }
 
 // Recording helpers
@@ -705,9 +771,14 @@ document.addEventListener("DOMContentLoaded", () => {
   chatInput = document.getElementById('chatInput');
   sendButton = document.getElementById('sendButton');
   textToSpeechToggle = document.getElementById('textToSpeechToggle');
+  councilButton = document.getElementById('councilButton');
 
   if (sendButton) {
     sendButton.addEventListener('click', sendTextMessage);
+  }
+
+  if (councilButton) {
+    councilButton.addEventListener('click', sendCouncilMessage);
   }
 
   if (chatInput) {
@@ -716,7 +787,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (event.key === 'Enter' && event.shiftKey) {
         return;
       }
-      // Enter (without Shift) → send
+      // Enter (without Shift) → send to Brain (WS)
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         sendTextMessage();

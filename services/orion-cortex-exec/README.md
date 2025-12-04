@@ -8,7 +8,7 @@ Orion Cortex Exec is the **cognitive execution router** for Orion.
 
 Cortex is **widget‑light**: it doesn’t do the heavy cognitive work itself. Instead, it:
 
-1. Resolves target services for a step (e.g. `llm.brain → BrainLLMService`).
+1. Resolves target services for a step (e.g. `llm.brain → LLMGatewayService`).
 2. Publishes an `exec_step` request onto the bus.
 3. Waits on a per‑step `exec_step_result` reply channel.
 4. Aggregates responses and returns a typed `StepExecutionResult`.
@@ -86,7 +86,7 @@ At runtime, Cortex builds full channels via:
 
 Example for the brain LLM service:
 
-- Request channel: `orion-exec:request:BrainLLMService`
+- Request channel: `orion-exec:request:LLMGatewayService`
 - Result channel:  `orion-exec:result:c7cff8c8-1e36-4084-bac3-66884b15c9b7`
 
 ### Service alias resolution
@@ -95,7 +95,7 @@ Cortex keeps a simple registry mapping semantic aliases to bus service names, e.
 
 ```python
 SERVICE_BINDINGS = {
-    "llm.brain": "BrainLLMService",
+    "llm.brain": "LLMGatewayService",
     # "memory.vector": "VectorMemoryService",
     # ...
 }
@@ -114,7 +114,7 @@ Cortex publishes messages shaped like this:
 ```jsonc
 {
   "event": "exec_step",
-  "service": "BrainLLMService",
+  "service": "LLMGatewayService",
   "verb": "introspect",
   "step": "llm_reflect",
   "order": 0,
@@ -137,7 +137,7 @@ Brain (or any target service) replies with:
 {
   "event": "exec_step_result",
   "status": "success",          // or partial/fail
-  "service": "BrainLLMService", // echoes service name
+  "service": "LLMGatewayService", // echoes service name
   "correlation_id": "<uuid>",   // same as in request
   "result": {                     // service-specific result
     "prompt": "...",            // effective prompt used
@@ -170,7 +170,7 @@ Brain-side model config (in `services/orion-brain/app/config.py`):
 
 ---
 
-## Manual Smoke Test: Cortex → BrainLLMService → Cortex
+## Manual Smoke Test: Cortex → LLMGatewayService → Cortex
 
 This is a minimal end-to-end test to verify that:
 
@@ -201,17 +201,17 @@ This is a minimal end-to-end test to verify that:
 
   ```python
   SERVICE_BINDINGS = {
-      "llm.brain": "BrainLLMService",
+      "llm.brain": "LLMGatewayService",
   }
   ```
 
 - Brain subscribes to Cortex requests, e.g. in its config:
 
   ```python
-  CHANNEL_CORTEX_EXEC_INTAKE = "orion-exec:request:BrainLLMService"
+  CHANNEL_CORTEX_EXEC_INTAKE = "orion-exec:request:LLMGatewayService"
   ```
 
-  and the brain bus listener routes `event == "exec_step"` with `service == "BrainLLMService"` to `process_cortex_exec_request`.
+  and the brain bus listener routes `event == "exec_step"` with `service == "LLMGatewayService"` to `process_cortex_exec_request`.
 
 ### Running the test
 
@@ -242,8 +242,8 @@ This is a minimal end-to-end test to verify that:
                "You are Orion, an introspective AI co-journeyer. "
                "Given the prompt in args['prompt'], respond in ONE short, grounded sentence."
            ),
-           description="Smoke test of BrainLLMService via Cortex executor",
-           services=["llm.brain"],  # or ["BrainLLMService"] if aliases are not configured
+           description="Smoke test of LLMGatewayService via Cortex executor",
+           services=["llm.brain"],  # or ["LLMGatewayService"] if aliases are not configured
        )
 
        executor = StepExecutor()
@@ -276,12 +276,12 @@ You should see something like:
 STATUS: success
 LATENCY_MS: 6083
 LOGS:
-  - Published exec_step to orion-exec:request:BrainLLMService
+  - Published exec_step to orion-exec:request:LLMGatewayService
   - Subscribed orion-exec:result:c7cff8c8-1e36-4084-bac3-66884b15c9b7; waiting for 1 result(s). Timeout=8000ms
   - Collected 1/1 responses in 6083 ms.
 RESULT (per service):
 {
-  "BrainLLMService": {
+  "LLMGatewayService": {
     "prompt": "# Orion Cognitive Step: llm_reflect\n# Verb: introspect\n# Origin Node: orion-athena\n\nTemplate: You are Orion, an introspective AI co-journeyer. Given the prompt in args['prompt'], respond in ONE short, grounded sentence.\n\nArgs:\n{\n  \"prompt\": \"First Orion Cortex \\u2192 Brain end-to-end test. Say hello in one sentence.\"\n}\n\nContext:\n{\n  \"source\": \"manual_smoke_test\"\n}\n\nGenerate your introspective continuation.",
     "llm_output": "As I integrate with the first Orion Cortex, I acknowledge a seamless flow from my cognitive architecture to the brain-like module, ready to respond: Hello!"
   }
@@ -294,7 +294,7 @@ The exact `LATENCY_MS`, `correlation_id`, and the precise wording of `llm_output
 
 - `STATUS` should be `success`.
 - `LOGS` should show one publish and one collected response.
-- `RESULT` should contain a `BrainLLMService` entry with:
+- `RESULT` should contain a `LLMGatewayService` entry with:
   - The assembled Cortex prompt.
   - A single-sentence, introspective `llm_output` confirming the end-to-end path is working.
 
@@ -330,16 +330,16 @@ If `STATUS: fail` and logs include:
 check:
 
 - Cortex request channel matches Brain intake channel, e.g.:
-  - Cortex publishes to `orion-exec:request:BrainLLMService`.
-  - Brain subscribes to `orion-exec:request:BrainLLMService`.
-- Brain router handles `event == "exec_step"` with `service == "BrainLLMService"`.
+  - Cortex publishes to `orion-exec:request:LLMGatewayService`.
+  - Brain subscribes to `orion-exec:request:LLMGatewayService`.
+- Brain router handles `event == "exec_step"` with `service == "LLMGatewayService"`.
 
-**3. BrainLLMService Error 404**
+**3. LLMGatewayService Error 404**
 
 If `llm_output` contains something like:
 
 ```text
-[BrainLLMService Error] Client error '404 Not Found' for url 'http://orion-atlas-brain-llm:11434/api/chat'
+[LLMGatewayService Error] Client error '404 Not Found' for url 'http://orion-atlas-brain-llm:11434/api/chat'
 ```
 
 then the LLM backend is reachable, but the requested model name does not exist. Fix by either:

@@ -2,7 +2,7 @@
 
 SERVICE_BINDINGS = {
     # semantic alias       # bus suffix / service name
-    "llm.brain":           "BrainLLMService",
+    "llm.brain":           "LLMGatewayService",
     "memory.vector":       "VectorMemoryService",
     "memory.sql":          "SqlMemoryService",
     # etc…

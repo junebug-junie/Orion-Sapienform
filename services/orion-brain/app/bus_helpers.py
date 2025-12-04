@@ -129,7 +129,7 @@ def emit_cortex_step_result(
     started_at: Optional[float] = None,
 ) -> None:
     """
-    Standardized exec_step_result emitter for BrainLLMService.
+    Standardized exec_step_result emitter for LLMGatewayService.
 
     This publishes onto `reply_channel` (e.g. `orion-exec:result:<uuid>`),
     and the Cortex orchestrator's `_wait_for_exec_results()` will:
@@ -142,7 +142,7 @@ def emit_cortex_step_result(
 
       {
         "trace_id": "<correlation_id>",
-        "service": "BrainLLMService",
+        "service": "LLMGatewayService",
         "ok": true,
         "elapsed_ms": 123,
         "result": { ... },      # whatever brain produced

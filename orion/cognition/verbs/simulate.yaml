@@ -16,7 +16,7 @@ timeout_ms: 3500
 max_recursion_depth: 1
 
 services:
-  - BrainLLMService
+  - LLMGatewayService
 
 prompt_template: simulate_prompt.j2
 
@@ -34,7 +34,7 @@ plan:
     description: Generate simulation narrative.
     order: 1
     services:
-      - BrainLLMService
+      - LLMGatewayService
     requires_gpu: true
     requires_memory: false
 

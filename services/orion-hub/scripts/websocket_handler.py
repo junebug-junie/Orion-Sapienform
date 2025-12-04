@@ -1,4 +1,3 @@
-# services/orion-hub/scripts/websocket_handler.py
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +12,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
 from scripts.llm_tts_handler import run_tts_only
-from scripts.llm_rpc import BrainRPC, CouncilRPC
+from scripts.llm_rpc import CouncilRPC, LLMGatewayRPC
 from scripts.warm_start import mini_personality_summary
 from scripts.recall_rpc import RecallRPC
 
@@ -292,20 +291,27 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"HISTORY BEFORE LLM CALL (mode={mode}): {history}")
 
             # ---------------------------------------------------------
-            # 🧠 Step 4: LLM via BrainRPC or CouncilRPC (bus-native)
+            # 🧠 Step 4: LLM via LLM Gateway or Council (bus-native)
             # ---------------------------------------------------------
-            if mode == "council":
-                rpc = CouncilRPC(bus)
-            else:
-                rpc = BrainRPC(bus)
-
             user_prompt = transcript.strip()
 
-            reply = await rpc.call_llm(
-                prompt=user_prompt,
-                history=history[:],  # shallow copy
-                temperature=temperature,
-            )
+            if mode == "council":
+                rpc = CouncilRPC(bus)
+                reply = await rpc.call_llm(
+                    prompt=user_prompt,
+                    history=history[:],  # shallow copy
+                    temperature=temperature,
+                )
+            else:
+                gateway = LLMGatewayRPC(bus)
+                reply = await gateway.call_chat(
+                    prompt=user_prompt,
+                    history=history[:],  # shallow copy
+                    temperature=temperature,
+                    source="hub-ws",
+                    session_id=session_id,
+                    user_id=user_id,
+                )
 
             orion_response_text = (
                 reply.get("text") or reply.get("response") or ""

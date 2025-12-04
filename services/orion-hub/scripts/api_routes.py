@@ -1,4 +1,3 @@
-# services/orion-hub/scripts/api_routes.py
 from __future__ import annotations
 
 import logging
@@ -9,7 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
 from .warm_start import mini_personality_summary
-from .llm_rpc import BrainRPC, CouncilRPC
+from .llm_rpc import CouncilRPC, LLMGatewayRPC
 from .recall_rpc import RecallRPC
 from .session import ensure_session
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
@@ -95,7 +94,7 @@ async def build_memory_digest(
 ) -> Tuple[str, Dict[str, Any]]:
     """
     1) Call Recall over the Orion bus.
-    2) Ask Brain (via BrainRPC) to condense fragments into 3–5 bullets.
+    2) Ask LLM Gateway to condense fragments into 3–5 bullets.
     3) Return (digest_text, recall_debug) for use as internal context.
 
     This leans on the Recall service's semantic+salience+recency scoring;
@@ -138,7 +137,7 @@ async def build_memory_digest(
             "time_window_days": time_window_days,
         }
 
-    # 2) Memory digest via BrainRPC (still on the bus)
+    # 2) Memory digest via LLM Gateway (bus-native)
     system = (
         "You are Oríon, Juniper's collaborative AI co-journeyer.\n"
         "You will receive:\n"
@@ -161,13 +160,16 @@ async def build_memory_digest(
         },
     ]
 
-    rpc = BrainRPC(bus, kind="memory_digest")
-    reply = await rpc.call_llm(
+    gateway = LLMGatewayRPC(bus)
+    result = await gateway.call_chat(
         prompt=user_prompt,
         history=messages,
         temperature=0.0,
+        source="hub-memory-digest",
+        session_id=session_id,
     )
-    text = (reply.get("text") or reply.get("response") or "").strip()
+
+    text = (result.get("text") or "").strip()
     logger.info("build_memory_digest: got digest length=%d", len(text))
 
     # merge recall debug with basic info
@@ -194,8 +196,8 @@ async def handle_chat_request(
     """
     Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.
 
-    - Handles Brain vs Council routing.
-    - Optionally pulls a Recall → Brain memory digest when payload.use_recall is true.
+    - Handles Brain vs Council routing (via LLM Gateway & Council).
+    - Optionally pulls a Recall → memory digest when payload.use_recall is true.
     - Injects mini_personality_summary + digest as a single system stub.
     """
     user_messages = payload.get("messages", [])
@@ -233,17 +235,23 @@ async def handle_chat_request(
     system_stub = {"role": "system", "content": system_content}
     full_history = [system_stub] + user_messages
 
-    # Choose backend
+    # Choose backend: Council vs LLM Gateway
     if mode == "council":
         rpc = CouncilRPC(bus)
+        reply = await rpc.call_llm(
+            prompt=user_prompt,
+            history=full_history,
+            temperature=temperature,
+        )
     else:
-        rpc = BrainRPC(bus)
-
-    reply = await rpc.call_llm(
-        prompt=user_prompt,
-        history=full_history,
-        temperature=temperature,
-    )
+        gateway = LLMGatewayRPC(bus)
+        reply = await gateway.call_chat(
+            prompt=user_prompt,
+            history=full_history,
+            temperature=temperature,
+            source="hub-http",
+            session_id=session_id,
+        )
 
     text = reply.get("text") or reply.get("response") or ""
     tokens = len(text.split()) if text else 0
@@ -271,10 +279,10 @@ async def api_chat(
     Main LLM chat endpoint.
 
     - Preserves warm-started sessions + personality stubs.
-    - Uses BrainRPC by default.
+    - Uses LLMGatewayRPC by default.
     - If payload.mode == "council", routes through Agent Council instead.
     - If payload.use_recall == true, pulls a semantic/salience/recency-weighted
-      memory digest from Recall → Brain and injects it into the system stub.
+      memory digest from Recall → Gateway and injects it into the system stub.
     """
     from .main import bus
     if not bus:
@@ -334,79 +342,4 @@ async def api_recall(
     This does NOT call Recall over HTTP – it uses RecallRPC on the bus,
     same as /api/chat, so all intra-Orion cognition stays on the spine.
 
-    Scoring is handled inside the Recall service (semantic + salience + recency).
-    """
-    from .main import bus
-    if not bus:
-        raise RuntimeError("OrionBus not initialized.")
-
-    session_id = await ensure_session(x_orion_session_id, bus)
-
-    query = payload.get("query") or ""
-    mode = payload.get("mode") or "hybrid"
-    time_window_days = payload.get("time_window_days") or 30
-    max_items = payload.get("max_items") or 16
-    extras = payload.get("extras") or None
-
-    client = RecallRPC(bus)
-
-    result = await client.call_recall(
-        query=query,
-        session_id=session_id,
-        mode=mode,
-        time_window_days=time_window_days,
-        max_items=max_items,
-        extras=extras,
-    )
-
-    return {
-        "session_id": session_id,
-        "query": query,
-        "mode": mode,
-        "time_window_days": time_window_days,
-        "max_items": max_items,
-        "result": result,
-    }
-
-
-# ======================================================================
-# 📿 COLLAPSE MIRROR ENDPOINTS
-# ======================================================================
-@router.get("/schema/collapse")
-def get_collapse_schema():
-    """Exposes the CollapseMirrorEntry schema for UI templating."""
-    logger.info("Fetching CollapseMirrorEntry schema")
-    return JSONResponse(CollapseMirrorEntry.schema())
-
-
-@router.post("/submit-collapse")
-async def submit_collapse(data: dict):
-    """
-    Receives Collapse Mirror data and publishes it to the bus.
-    """
-    from .main import bus
-    logger.info(f"🔥 /submit-collapse called with: {data}")
-
-    if not bus or not bus.enabled:
-        logger.error("Submission failed: OrionBus is disabled or not connected.")
-        return JSONResponse(
-            status_code=503,
-            content={"success": False, "error": "OrionBus disabled or unavailable"},
-        )
-
-    try:
-        entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode="json"))
-        logger.info(
-            "📡 Published Collapse Mirror → %s",
-            settings.CHANNEL_COLLAPSE_INTAKE,
-        )
-
-        return {"success": True}
-
-    except Exception as e:
-        logger.error(f"❌ Hub publish error: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": str(e)},
-        )
+    Scoring is handled inside the Recall service (semantic + salience + recenc

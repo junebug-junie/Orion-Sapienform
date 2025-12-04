@@ -63,11 +63,35 @@ class Settings(BaseSettings):
         env="CHANNEL_COUNCIL_REPLY_PREFIX",
     )
 
+    # Which bus service name the gateway listens on
+    LLM_GATEWAY_SERVICE_NAME = "LLMGatewayService"
+
+    # Where Cortex + Hub send exec_step/chat/generate requests
+    EXEC_REQUEST_PREFIX: str = Field(
+        default="orion-exec:request",
+        env="EXEC_REQUEST_PREFIX",
+    )
+    CHANNEL_LLM_REPLY_PREFIX: str = Field(
+        default="orion:llm:reply",
+        env="CHANNEL_LLM_REPLY_PREFIX
+    )
+
+    # LLM Gateway (Hub → Gateway chat RPC)
+    CHANNEL_LLM_GATEWAY_INTAKE: str = Field(
+        default="orion:llm-gateway:chat:intake",
+        env="CHANNEL_LLM_GATEWAY_INTAKE
+    )
+    CHANNEL_LLM_REPLY_PREFIX: str = Field(
+        default="orion:llm-gateway:chat:reply",
+        env="CHANNEL_LLM_REPLY_PREFIX
+    )
+
     # --- Recall / RAG Integration (new) ---
     CHANNEL_RECALL_REQUEST: str = Field(
         default="orion:recall:request",
         env="CHANNEL_RECALL_REQUEST",
     )
+
     CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = Field(
         default="orion:recall:reply",
         env="CHANNEL_RECALL_DEFAULT_REPLY_PREFIX",

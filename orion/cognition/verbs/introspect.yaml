@@ -16,7 +16,7 @@ timeout_ms: 5000
 max_recursion_depth: 2
 
 services:
-  - BrainLLMService
+  - LLMGatewayService
   - VectorMemoryService
   - RDFMemoryService
   - CollapseMirrorSQLService
@@ -47,7 +47,7 @@ plan:
     order: 2
     prompt_template: introspection_prompt.j2
     services:
-      - BrainLLMService
+      - LLMGatewayService
     requires_gpu: false
     requires_memory: false
 
@@ -55,7 +55,7 @@ plan:
     description: Generate final introspective narrative from LLM.
     order: 3
     services:
-      - BrainLLMService
+      - LLMGatewayService
     requires_gpu: true
     requires_memory: false
 

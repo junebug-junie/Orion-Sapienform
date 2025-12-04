@@ -2,10 +2,11 @@
 
 from typing import Any, Dict
 import logging
+import time
 
 import httpx
 
-from .models import ChatBody, GenerateBody
+from .models import ChatBody, GenerateBody, ExecStepPayload
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway.backend")
@@ -127,9 +128,6 @@ def _chat_via_ollama(body: ChatBody) -> str:
 def _chat_via_vllm(body: ChatBody) -> str:
     """
     vLLM assumed to expose an OpenAI-compatible /v1/chat/completions.
-
-    You may need to tweak this once you actually bring vLLM online,
-    but callers don't have to change.
     """
     if not settings.vllm_url:
         logger.warning("[LLM-GW] vLLM URL not configured; falling back to Ollama")
@@ -137,7 +135,6 @@ def _chat_via_vllm(body: ChatBody) -> str:
 
     url = f"{settings.vllm_url.rstrip('/')}/v1/chat/completions"
 
-    # Only forward a subset of options that vLLM/OpenAI understand
     opts = body.options or {}
     params: Dict[str, Any] = {}
     for key in ("temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty", "stop"):
@@ -169,9 +166,6 @@ def _chat_via_vllm(body: ChatBody) -> str:
 def _chat_via_brain_http(body: ChatBody) -> str:
     """
     Optional path: call Brain's /chat HTTP endpoint directly.
-
-    This keeps its Spark / φ / collapse wiring if you ever want that
-    from the gateway, but it's not the default.
     """
     if not settings.brain_url:
         logger.warning("[LLM-GW] Brain URL not configured; falling back to Ollama")
@@ -195,7 +189,6 @@ def _chat_via_brain_http(body: ChatBody) -> str:
 
 # ─────────────────────────────────────────────
 # Backend-specific generate implementations
-# (generate -> single user message into /api/chat or /v1/chat/completions)
 # ─────────────────────────────────────────────
 
 def _generate_via_ollama(body: GenerateBody) -> str:
@@ -263,7 +256,6 @@ def run_llm_chat(body: ChatBody) -> str:
         return _chat_via_vllm(body)
     elif backend == "brain":
         return _chat_via_brain_http(body)
-    # default
     return _chat_via_ollama(body)
 
 
@@ -273,5 +265,62 @@ def run_llm_generate(body: GenerateBody) -> str:
         return _generate_via_vllm(body)
     elif backend == "brain":
         return _generate_via_brain_http(body)
-    # default
     return _generate_via_ollama(body)
+
+
+def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
+    """
+    Execute a Cortex exec_step via the selected LLM backend.
+
+    Returns a dict suitable for 'result' in emit_cortex_step_result:
+      {
+        "prompt": "<final prompt used>",
+        "llm_output": "<model text>",
+      }
+    """
+    t0 = time.time()
+
+    # Prefer the fully-built prompt if provided; otherwise fall back to template + context.
+    if body.prompt:
+        final_prompt = body.prompt
+    else:
+        # Very simple fallback; Cortex Orchestrator already builds a rich prompt, so
+        # this path is mostly a safety net.
+        header = body.prompt_template or ""
+        ctx = body.context or {}
+        prior = body.prior_step_results or []
+        final_prompt = (
+            f"{header}\n\n"
+            "# Context (JSON)\n"
+            f"{json.dumps(ctx, indent=2, ensure_ascii=False)}\n\n"
+            "# Prior Step Results (JSON)\n"
+            f"{json.dumps(prior, indent=2, ensure_ascii=False)}\n"
+        )
+
+    gen_body = GenerateBody(
+        model=settings.default_model,
+        prompt=final_prompt,
+        options={},  # you can forward richer options if needed
+        stream=False,
+        return_json=False,
+        trace_id=body.origin_node,  # or some other tag; orchestrator uses its own trace_id
+        user_id=None,
+        session_id=None,
+        source=f"cortex:{body.service}",
+    )
+
+    text = run_llm_generate(gen_body)
+    elapsed_ms = int((time.time() - t0) * 1000)
+
+    logger.info(
+        "[LLM-GW] exec_step verb=%s step=%s service=%s elapsed_ms=%d",
+        body.verb,
+        body.step,
+        body.service,
+        elapsed_ms,
+    )
+
+    return {
+        "prompt": final_prompt,
+        "llm_output": text,
+    }

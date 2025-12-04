@@ -1,4 +1,5 @@
-# app/bus_listener.py
+# services/orion-brain/app/bus_listener.py
+
 import threading
 import logging
 
@@ -6,7 +7,6 @@ from orion.core.bus.service import OrionBus
 from app.config import (
     ORION_BUS_URL,
     ORION_BUS_ENABLED,
-    CHANNEL_BRAIN_INTAKE,
     CHANNEL_TTS_INTAKE,
     CHANNEL_CORTEX_EXEC_INTAKE,
 )
@@ -18,28 +18,28 @@ logger = logging.getLogger(__name__)
 def listener_worker():
     """
     Subscribes to:
-      - main brain intake (generic LLM RPC)
       - cortex exec intake (semantic-layer exec_step requests)
       - TTS intake
     and spawns a worker thread per message.
+
+    NOTE:
+    - Generic brain LLM RPC via CHANNEL_BRAIN_INTAKE has been removed.
+      All generic LLM calls should now go through the Orion LLM Gateway
+      (LLMGatewayService) instead of directly through Brain.
     """
     bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
     if not bus.enabled:
         logger.error("Bus is disabled. Listener thread exiting.")
         return
 
-    # 🛠️ Define missing service channel locally
-    CHANNEL_BRAIN_SERVICE_EXEC = "orion-exec:request:BrainLLMService"
-
     logger.info(
-        f"👂 Subscribing to brain intake: {CHANNEL_BRAIN_INTAKE}, "
-        f"cortex exec intake: {CHANNEL_CORTEX_EXEC_INTAKE}, "
-        f"service exec: {CHANNEL_BRAIN_SERVICE_EXEC}, "
-        f"tts intake: {CHANNEL_TTS_INTAKE}"
+        "👂 Subscribing to cortex exec intake: %s, tts intake: %s",
+        CHANNEL_CORTEX_EXEC_INTAKE,
+        CHANNEL_TTS_INTAKE,
     )
 
+    # Cortex exec + TTS only. Generic brain intake is intentionally not subscribed.
     for message in bus.subscribe(
-        CHANNEL_BRAIN_INTAKE,
         CHANNEL_TTS_INTAKE,
         CHANNEL_CORTEX_EXEC_INTAKE,
     ):
@@ -49,7 +49,7 @@ def listener_worker():
         try:
             data = message.get("data")
 
-            # 1. Capture the raw channel first (Fixes NameError)
+            # 1. Capture the raw channel first
             raw_channel = message.get("channel")
 
             # 2. Decode bytes to string
@@ -59,7 +59,7 @@ def listener_worker():
                 channel = str(raw_channel)
 
             if not isinstance(data, dict):
-                logger.warning(f"Received non-dict message on {channel}: {data}")
+                logger.warning("Received non-dict message on %s: %r", channel, data)
                 continue
 
             # 🔍 DEBUG: what the brain actually receives from the bus
@@ -75,12 +75,13 @@ def listener_worker():
                 )
             except Exception:
                 logger.warning(
-                    "INTAKE payload snapshot failed for message on %s", channel, exc_info=True
+                    "INTAKE payload snapshot failed for message on %s",
+                    channel,
+                    exc_info=True,
                 )
 
-            # --- Generic brain RPC + Cortex exec both go through the same router ---
-            # Added CHANNEL_BRAIN_SERVICE_EXEC to the check
-            if channel in (CHANNEL_BRAIN_INTAKE, CHANNEL_CORTEX_EXEC_INTAKE):
+            # --- Cortex exec (BrainLLMService) goes through the unified router ---
+            if channel == CHANNEL_CORTEX_EXEC_INTAKE:
                 threading.Thread(
                     target=process_brain_or_cortex,
                     args=(data,),
@@ -95,5 +96,13 @@ def listener_worker():
                     daemon=True,
                 ).start()
 
+            else:
+                # This should not normally happen; log so we can see misrouted traffic.
+                logger.warning(
+                    "Received message on unexpected channel %s: %r",
+                    channel,
+                    data,
+                )
+
         except Exception as e:
-            logger.error(f"Error processing bus message: {e}", exc_info=True)
+            logger.error("Error processing bus message: %s", e, exc_info=True)

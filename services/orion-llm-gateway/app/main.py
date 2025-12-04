@@ -1,11 +1,12 @@
 # services/orion-llm-gateway/app/main.py
 
 import logging
+import time
 
-from orion.core.bus.service import OrionBus  # same as brain
+from orion.core.bus.service import OrionBus
 from .settings import settings
-from .models import ExecutionEnvelope, ChatBody, GenerateBody
-from .llm_backend import run_llm_chat, run_llm_generate
+from .models import ExecutionEnvelope, ChatBody, GenerateBody, ExecStepPayload
+from .llm_backend import run_llm_chat, run_llm_generate, run_llm_exec_step
 
 logger = logging.getLogger("orion-llm-gateway")
 
@@ -26,8 +27,10 @@ def main():
         return
 
     logger.info(
-        f"Starting {settings.service_name} v{settings.service_version} "
-        f"listening on {settings.channel_llm_intake}"
+        "Starting %s v%s listening on %s",
+        settings.service_name,
+        settings.service_version,
+        settings.channel_llm_intake,
     )
 
     for msg in bus.subscribe(settings.channel_llm_intake):
@@ -39,42 +42,98 @@ def main():
             envelope = ExecutionEnvelope(**data)
 
             logger.info(
-                f"Received event={envelope.event} "
-                f"corr_id={envelope.correlation_id}"
+                "Received event=%s service=%s corr_id=%s",
+                envelope.event,
+                envelope.service,
+                envelope.correlation_id,
             )
 
-            body_dict = envelope.payload.get("body", {})
-
+            # -------------------------
+            # CHAT
+            # -------------------------
             if envelope.event == "chat":
-                body = ChatBody(**body_dict)
+                body = ChatBody(**envelope.payload.get("body", envelope.payload))
                 text = run_llm_chat(body)
 
+                reply = {
+                    "event": "chat_result",
+                    "service": settings.llm_service_name,
+                    "correlation_id": envelope.correlation_id,
+                    "payload": {
+                        "text": text,
+                    },
+                }
+                bus.publish(envelope.reply_channel, reply)
+
+                logger.info(
+                    "Published chat_result corr_id=%s reply_channel=%s",
+                    envelope.correlation_id,
+                    envelope.reply_channel,
+                )
+
+            # -------------------------
+            # GENERATE
+            # -------------------------
             elif envelope.event == "generate":
-                body = GenerateBody(**body_dict)
+                body = GenerateBody(**envelope.payload.get("body", envelope.payload))
                 text = run_llm_generate(body)
 
+                reply = {
+                    "event": "generate_result",
+                    "service": settings.llm_service_name,
+                    "correlation_id": envelope.correlation_id,
+                    "payload": {
+                        "text": text,
+                    },
+                }
+                bus.publish(envelope.reply_channel, reply)
+
+                logger.info(
+                    "Published generate_result corr_id=%s reply_channel=%s",
+                    envelope.correlation_id,
+                    envelope.reply_channel,
+                )
+
+            # -------------------------
+            # CORTEX EXEC STEP
+            # -------------------------
+            elif envelope.event == "exec_step":
+                t0 = time.time()
+                body = ExecStepPayload(**envelope.payload)
+
+                result = run_llm_exec_step(body)
+                elapsed_ms = int((time.time() - t0) * 1000)
+
+                # Shape this to match emit_cortex_step_result so the orchestrator
+                # can keep using the same _wait_for_exec_results logic.
+                reply = {
+                    "trace_id": envelope.correlation_id,
+                    "service": envelope.service,
+                    "ok": True,
+                    "elapsed_ms": elapsed_ms,
+                    "result": result,
+                    "artifacts": {},
+                    "status": "success",
+                }
+
+                bus.publish(envelope.reply_channel, reply)
+
+                logger.info(
+                    "Published exec_step result corr_id=%s reply_channel=%s elapsed_ms=%d",
+                    envelope.correlation_id,
+                    envelope.reply_channel,
+                    elapsed_ms,
+                )
+
             else:
-                logger.warning(f"Unknown event type: {envelope.event}")
-                continue
-
-            reply = {
-                "event": f"{envelope.event}_result",
-                "service": settings.llm_service_name,
-                "correlation_id": envelope.correlation_id,
-                "payload": {
-                    "text": text,
-                },
-            }
-
-            bus.publish(envelope.reply_channel, reply)
-
-            logger.info(
-                f"Published {envelope.event}_result corr_id={envelope.correlation_id} "
-                f"reply_channel={envelope.reply_channel}"
-            )
+                logger.warning("Unknown event type: %s", envelope.event)
 
         except Exception as e:
-            logger.exception(f"Error processing message on {msg.get('channel')}: {e}")
+            logger.exception(
+                "Error processing message on %s: %s",
+                msg.get("channel"),
+                e,
+            )
 
 
 if __name__ == "__main__":

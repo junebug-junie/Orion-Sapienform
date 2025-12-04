@@ -28,14 +28,42 @@ class ChatBody(BaseModel):
     source: Optional[str] = None
 
 
+class ExecStepPayload(BaseModel):
+    """
+    Payload for a Cortex exec_step routed through the LLM Gateway.
+
+    This mirrors what the Cortex Orchestrator sends today, plus the
+    fully-built prompt.
+    """
+    verb: str
+    step: str
+    order: int
+    service: str
+    origin_node: str
+
+    prompt: Optional[str] = None
+    prompt_template: Optional[str] = None
+
+    context: Dict[str, Any] = {}
+    args: Dict[str, Any] = {}
+    prior_step_results: List[Dict[str, Any]] = []
+
+    requires_gpu: bool = False
+    requires_memory: bool = False
+
+
 class ExecutionEnvelope(BaseModel):
     """
     Standard message shape on the bus for LLM gateway.
 
-    This is the same structure Brain uses, just with service="LLMGatewayService".
+    event: "chat" | "generate" | "exec_step" | ...
+    service: "LLMGatewayService"
+    correlation_id: correlation / trace id
+    reply_channel: bus channel to send result to
+    payload: event-specific body (ChatBody / GenerateBody / ExecStepPayload)
     """
-    event: str              # "chat" | "generate" | ...
-    service: str            # "LLMGatewayService"
+    event: str
+    service: str
     correlation_id: str
     reply_channel: str
-    payload: Dict[str, Any]  # expects {"body": {...}}
+    payload: Dict[str, Any]

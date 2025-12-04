@@ -42,7 +42,7 @@ def build_cortex_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
                 "step_name": "reflect_on_candidate",
                 "description": "Reflect on a single Spark introspection candidate.",
                 "order": 0,
-                "services": ["BrainLLMService"],
+                "services": ["LLMGatewayService"],
                 "prompt_template": "SparkIntrospectionPrompt",
                 "requires_gpu": False,
                 "requires_memory": False,
@@ -54,7 +54,7 @@ def build_cortex_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_llm_prompt(candidate: Dict[str, Any]) -> str:
     """
-    Build the actual prompt that BrainLLMService will see (via Cortex).
+    Build the actual prompt that LLMGatewayService will see (via Cortex).
 
     This is Orion talking to itself about how its internal state shifted
     across this turn.
@@ -173,7 +173,7 @@ def extract_llm_output(cortex_payload: Dict[str, Any]) -> Optional[str]:
             "order": 0,
             "services": [
               {
-                "service": "BrainLLMService",
+                "service": "LLMGatewayService",
                 "trace_id": "...",
                 "ok": true,
                 "elapsed_ms": 123,

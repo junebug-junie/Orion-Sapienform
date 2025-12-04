@@ -16,7 +16,7 @@ timeout_ms: 2500
 max_recursion_depth: 1
 
 services:
-  - BrainLLMService
+  - LLMGatewayService
 
 prompt_template: evaluate_prompt.j2
 
@@ -26,7 +26,7 @@ plan:
     order: 0
     prompt_template: evaluate_prompt.j2
     services:
-      - BrainLLMService
+      - LLMGatewayService
     requires_gpu: false
     requires_memory: false
 
@@ -34,7 +34,7 @@ plan:
     description: Evaluate the input.
     order: 1
     services:
-      - BrainLLMService
+      - LLMGatewayService
     requires_gpu: true
     requires_memory: false
 

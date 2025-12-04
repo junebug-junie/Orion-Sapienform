@@ -19,7 +19,7 @@ CHANNEL_BRAIN_INTAKE = os.getenv("CHANNEL_BRAIN_INTAKE", "orion:brain:intake")
 CHANNEL_BRAIN_OUT = os.getenv("CHANNEL_BRAIN_OUT", "orion:brain:out")
 CHANNEL_BRAIN_STATUS = os.getenv("CHANNEL_BRAIN_STATUS", "orion:brain:status")
 CHANNEL_BRAIN_STREAM = os.getenv("CHANNEL_BRAIN_STREAM", "orion:brain:stream")
-CHANNEL_CORTEX_EXEC_INTAKE = os.getenv("CHANNEL_CORTEX_EXEC_INTAKE", "orion-exec:request:BrainLLMService")
+CHANNEL_CORTEX_EXEC_INTAKE = os.getenv("CHANNEL_CORTEX_EXEC_INTAKE", "orion-exec:request:LLMGatewayService")
 
 CHANNEL_CHAT_HISTORY_LOG = os.getenv("SUBSCRIBE_CHANNEL_CHAT", "orion:chat:history:log")
 CHANNEL_DREAM_TRIGGER = os.getenv("CHANNEL_DREAM_TRIGGER", "orion:dream:trigger")

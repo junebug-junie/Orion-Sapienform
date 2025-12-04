@@ -113,7 +113,7 @@ def _cortex_orch_bus_worker() -> None:
           "step_name": "...",
           "description": "...",
           "order": 1,
-          "services": ["BrainLLMService"],
+          "services": ["LLMGatewayService"],
           "prompt_template": "...",
           "requires_gpu": false,
           "requires_memory": false

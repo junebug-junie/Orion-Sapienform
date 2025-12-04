@@ -45,7 +45,7 @@ plan:
     order: 2
     prompt_template: dream_preprocess_prompt.j2
     services:
-      - BrainLLMService
+      - LLMGatewayService
     requires_gpu: true
     requires_memory: false
 

@@ -174,7 +174,7 @@ The orchestrator:
 2. For each step:
    - Builds a contextual prompt (including `context` + prior step results).
    - Publishes an `exec_step` message to the bus for each service in `services`:
-     - Channel: `EXEC_REQUEST_PREFIX:<ServiceName>` (e.g. `orion-exec:request:BrainLLMService`).
+     - Channel: `EXEC_REQUEST_PREFIX:<ServiceName>` (e.g. `orion-exec:request:LLMGatewayService`).
    - Subscribes to `EXEC_RESULT_PREFIX:<trace_id>` and waits for results.
 3. Returns a structured `OrchestrateVerbResponse` containing all step and service results.
 

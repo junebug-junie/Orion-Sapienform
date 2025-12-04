@@ -2,7 +2,7 @@
 Smoke test worker for Orion Cortex Orchestrator.
 
 Listens on EXEC_REQUEST_PREFIX:TestService and publishes results to
-the given result_channel. Used to validate that:
+the given reply/result channel. Used to validate that:
 
 - Cortex Orchestrator publishes exec_step to the bus
 - This worker receives it
@@ -20,6 +20,7 @@ Usage (from repo root):
 import json
 import os
 import time
+import uuid
 
 import redis
 
@@ -49,17 +50,38 @@ def main() -> None:
             print(f"[smoke-worker] Failed to parse JSON: {e} raw={msg['data']!r}")
             continue
 
-        trace_id = data.get("trace_id")
-        result_channel = data.get("result_channel")
-        prompt = data.get("prompt", "")
-
-        if not result_channel:
-            print(f"[smoke-worker] No result_channel in message: {data}")
+        # Orchestrator sends event=exec_step; we’ll just log and handle anything
+        event = data.get("event")
+        if event != "exec_step":
+            print(f"[smoke-worker] Ignoring non-exec_step message: {data}")
             continue
+
+        # Prefer trace_id, fall back to correlation_id, then generate one
+        trace_id = data.get("trace_id") or data.get("correlation_id") or str(uuid.uuid4())
+
+        # Support multiple naming conventions:
+        # - reply_channel (what cortex-orch uses)
+        # - result_channel / response_channel for future-proofing
+        reply_channel = (
+            data.get("reply_channel")
+            or data.get("result_channel")
+            or data.get("response_channel")
+        )
+
+        if not reply_channel:
+            print(f"[smoke-worker] No reply_channel/result_channel in message: {data}")
+            continue
+
+        # Unwrap nested payload if present (as in your current smoke wiring)
+        step_payload = data
+        if isinstance(data.get("payload"), dict):
+            step_payload = data["payload"]
+
+        prompt = step_payload.get("prompt", "")
 
         print(
             f"[smoke-worker] Got exec_step trace_id={trace_id} "
-            f"service={SERVICE_NAME} result_channel={result_channel}"
+            f"service={SERVICE_NAME} reply_channel={reply_channel}"
         )
 
         started = time.time()
@@ -67,6 +89,7 @@ def main() -> None:
         time.sleep(0.1)
         elapsed_ms = int((time.time() - started) * 1000)
 
+        # Standard-ish exec_step_result shape
         payload = {
             "trace_id": trace_id,
             "service": SERVICE_NAME,
@@ -74,12 +97,13 @@ def main() -> None:
             "elapsed_ms": elapsed_ms,
             "note": "smoke test response from TestService",
             "prompt_preview": prompt[:200],
+            "echo": step_payload,  # so you can see the original step contents
         }
 
-        r.publish(result_channel, json.dumps(payload))
+        r.publish(reply_channel, json.dumps(payload))
         print(
             f"[smoke-worker] Published result for trace_id={trace_id} "
-            f"to {result_channel} (elapsed={elapsed_ms} ms)"
+            f"to {reply_channel} (elapsed={elapsed_ms} ms)"
         )
 
 

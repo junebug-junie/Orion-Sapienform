@@ -499,7 +499,7 @@ def call_brain_llm(prompt: str) -> str:
     """
     backend = router_instance.pick()
     if not backend:
-        return "[BrainLLMService Error] no healthy backend available"
+        return "[LLMGatewayService Error] no healthy backend available"
 
     url = f"{backend.url.rstrip('/')}/api/chat"
     payload = {
@@ -516,12 +516,12 @@ def call_brain_llm(prompt: str) -> str:
             return data.get("message", {}).get("content", "")
     except Exception as e:
         logger.error(f"[CORTEX] LLM call failed: {e}")
-        return f"[BrainLLMService Error] {e}"
+        return f"[LLMGatewayService Error] {e}"
 
 
 def process_cortex_exec_request(payload: dict):
     """
-    Handles a Cortex execution step for BrainLLMService.
+    Handles a Cortex execution step for LLMGatewayService.
 
     Expected payload (simplified), coming from the Cortex orchestrator:
 
@@ -534,7 +534,7 @@ def process_cortex_exec_request(payload: dict):
         "verb": "spark_introspect",
         "step": "reflect_on_candidate",
         "order": 0,
-        "service": "BrainLLMService",
+        "service": "LLMGatewayService",
         "origin_node": "spark-introspector",
         "prompt": "...",      # full prompt already built
         "context": {...},     # candidate + spark_meta
@@ -549,7 +549,7 @@ def process_cortex_exec_request(payload: dict):
         logger.warning(f"[CORTEX] Ignoring non-exec_step payload on cortex exec channel: {payload}")
         return
 
-    service = payload.get("service", "BrainLLMService")
+    service = payload.get("service", "LLMGatewayService")
 
     # Use the step trace_id as our correlation id so the orchestrator's
     # _wait_for_exec_results() can match on payload['trace_id'].
@@ -658,7 +658,7 @@ def process_brain_or_cortex(payload: dict):
     """
     Route between:
       - legacy brain RPC (chat / dream_synthesis)
-      - Cortex semantic exec_step messages (BrainLLMService)
+      - Cortex semantic exec_step messages (LLMGatewayService)
     """
     event = payload.get("event")
     service = payload.get("service")
@@ -669,10 +669,10 @@ def process_brain_or_cortex(payload: dict):
     # We do not strictly enforce 'service' matching to allow for slight misconfigurations
     # or case discrepancies to be caught by the handler rather than falling through.
     if event == "exec_step":
-        if service and service != "BrainLLMService":
+        if service and service != "LLMGatewayService":
             logger.warning(
                 f"[{trace_id}] [ROUTER] Received exec_step for service='{service}' "
-                f"but I am 'BrainLLMService'. Processing anyway."
+                f"but I am 'LLMGatewayService'. Processing anyway."
             )
             
         logger.info(

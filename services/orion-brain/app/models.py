@@ -11,7 +11,6 @@ class GenerateBody(BaseModel):
     trace_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
-    # --- ADD THIS LINE ---
     source: Optional[str] = None
 
 class ChatBody(BaseModel):
@@ -23,7 +22,6 @@ class ChatBody(BaseModel):
     trace_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
-    # --- ADD THIS LINE ---
     source: Optional[str] = None
 
 class CortexExecRequest(BaseModel):
@@ -50,7 +48,7 @@ from typing import Dict, Any, Optional
 
 class ExecutionEnvelope(BaseModel):
     event: str                       # e.g. "exec_step", "chat", "tts"
-    service: str                     # e.g. "BrainLLMService"
+    service: str                     # e.g. "LLMGatewayService"
     correlation_id: str
     reply_channel: str
     payload: Dict[str, Any]          # the verb/step/args/history/etc

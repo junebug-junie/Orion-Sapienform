@@ -33,7 +33,7 @@ class StepExecutor:
         # RESULT PREFIX: orion-exec:result:<cid>
         reply_channel = f"{settings.EXEC_RESULT_PREFIX}:{correlation_id}"
 
-        # Resolve semantic service aliases (e.g. "llm.brain") -> concrete bus services (e.g. "BrainLLMService")
+        # Resolve semantic service aliases (e.g. "llm.brain") -> concrete bus services (e.g. "LLMGatewayService")
         target_services: List[str] = []
         for svc_alias in step.services:
             try:

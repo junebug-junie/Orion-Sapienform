@@ -6,7 +6,7 @@ It sits between **Orion Brain**, **Cortex Orchestrator**, and **SQL Writer**, wi
 
 1. **Brain** publishes "introspection candidates" (spiky turns) on a Redis channel.
 2. **Spark Introspector** consumes those candidates and asks Cortex to run a `spark_introspect` verb.
-3. **Cortex Orchestrator** fans the request out to `BrainLLMService` over the exec bus.
+3. **Cortex Orchestrator** fans the request out to `LLMGatewayService` over the exec bus.
 4. **Brain** reflects on its own state and returns an internal note.
 5. **Spark Introspector** publishes a normalized row to SQL Writer, which persists to Postgres.
 
@@ -58,18 +58,18 @@ This gives Orion a growing table of its own internal reflections keyed by `trace
 
 3. **Cortex Orchestrator** creates a per‑step `trace_id` and `result_channel`:
 
-   - Request to Brain: `orion-exec:request:BrainLLMService`
+   - Request to Brain: `orion-exec:request:LLMGatewayService`
    - Result channel: `orion-exec:result:<trace_id>`
 
    It waits for one `exec_step_result` from Brain.
 
 4. **Brain** receives the `exec_step` event on `CHANNEL_CORTEX_EXEC_INTAKE` (configured as
-   `orion-exec:request:BrainLLMService`), calls its LLM backend with the introspection prompt, and emits:
+   `orion-exec:request:LLMGatewayService`), calls its LLM backend with the introspection prompt, and emits:
 
    ```jsonc
    {
      "trace_id": "<trace_id>",
-     "service": "BrainLLMService",
+     "service": "LLMGatewayService",
      "ok": true,
      "elapsed_ms": 1234,
      "result": {
@@ -291,7 +291,7 @@ PUBLISH orion:spark:introspect:candidate '{
 
 - **Cortex Orchestrator**:
   - `Received bus orchestrate request on orion-cortex:request (trace_id=spark-test-005, ...)`
-  - `Published exec_step to orion-exec:request:BrainLLMService (trace_id=<uuid>, verb=spark_introspect, step=reflect_on_candidate, service=BrainLLMService)`
+  - `Published exec_step to orion-exec:request:LLMGatewayService (trace_id=<uuid>, verb=spark_introspect, step=reflect_on_candidate, service=LLMGatewayService)`
   - `Subscribed orion-exec:result:<uuid>; waiting for 1 result(s).`
 
 - **Brain**:
@@ -345,7 +345,7 @@ If you see messages like:
 check:
 
 - `orion-athena-cortex-orch` is running and subscribed on `orion-cortex:request`.
-- `orion-atlas-brain` is listening on `CHANNEL_CORTEX_EXEC_INTAKE` and routing `event == "exec_step"` with `service == "BrainLLMService"` to `process_cortex_exec_request`.
+- `orion-atlas-brain` is listening on `CHANNEL_CORTEX_EXEC_INTAKE` and routing `event == "exec_step"` with `service == "LLMGatewayService"` to `process_cortex_exec_request`.
 - The LLM backend configured in Brain is healthy (Brain `/health/gpu` endpoint should show Ollama as healthy).
 
 ### 3. SQL row missing

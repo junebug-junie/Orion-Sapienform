@@ -9,6 +9,7 @@ PROJECT = os.getenv("PROJECT", "brain")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "orion-brain")
 SERVICE_VERSION = os.getenv("SERVICE_VERSION", "0.2.0")
 PORT = int(os.getenv("PORT", "8088"))
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b-instruct-q8_0")
 
 # 🧩 Redis + Bus
 ORION_BUS_URL = os.getenv("ORION_BUS_URL", f"redis://{PROJECT}-bus-core:6379/0")
@@ -23,6 +24,16 @@ CHANNEL_CORTEX_EXEC_INTAKE = os.getenv("CHANNEL_CORTEX_EXEC_INTAKE", "orion-exec
 
 CHANNEL_CHAT_HISTORY_LOG = os.getenv("SUBSCRIBE_CHANNEL_CHAT", "orion:chat:history:log")
 CHANNEL_DREAM_TRIGGER = os.getenv("CHANNEL_DREAM_TRIGGER", "orion:dream:trigger")
+
+# LLM Gateway bus channels (align these with Hub + llm-gateway service)
+CHANNEL_LLM_GATEWAY_EXEC_INTAKE = os.getenv(
+    "CHANNEL_LLM_GATEWAY_EXEC_INTAKE",
+    "orion-exec:request:LLMGatewayService",
+)
+CHANNEL_LLM_GATEWAY_REPLY_PREFIX = os.getenv(
+    "CHANNEL_LLM_GATEWAY_REPLY_PREFIX",
+    "orion:llm-gateway:chat:reply",
+)
 
 # Spark / meta-cognition channels
 CHANNEL_SPARK_INTROSPECT_CANDIDATE = os.getenv("CHANNEL_SPARK_INTROSPECT_CANDIDATE", "orion:spark:introspect:candidate")

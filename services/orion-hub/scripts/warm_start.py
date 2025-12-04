@@ -8,7 +8,7 @@ from typing import Optional
 import yaml
 
 from scripts.settings import settings
-from scripts.llm_rpc import BrainRPC
+from scripts.llm_rpc import LLMGatewayRPC
 
 logger = logging.getLogger("orion-hub.warm-start")
 
@@ -97,7 +97,7 @@ def mini_personality_summary() -> str:
 
 
 # ───────────────────────────────────────────────────────────────
-# Warm-start session via BrainRPC over Orion Bus
+# Warm-start session via LLM Gateway over Orion Bus
 # ───────────────────────────────────────────────────────────────
 
 async def warm_start_session(
@@ -110,7 +110,7 @@ async def warm_start_session(
     - Generates a session_id if None
     - Loads identity + narrative YAMLs
     - Builds a one-shot warm-start system prompt
-    - Sends it to Brain via BrainRPC (Bus RPC)
+    - Sends it through the LLM Gateway (LLMGatewayService) over the bus
     - Stores confirmation + warm_started flag in Redis via bus.client
     """
     if session_id is None:
@@ -126,43 +126,7 @@ async def warm_start_session(
     narrative = load_narrative()
     system_prompt = build_warm_start_system_prompt(identity, narrative)
 
-    rpc = BrainRPC(bus, kind="warm_start")
-
-    logger.info(f"🚀 Warm-starting session {session_id}")
-    try:
-        reply = await rpc.call_llm(
-            prompt=system_prompt,
-            history=[],          # warm start is just a one-shot system prompt
-            temperature=0.0,
-        )
-        confirmation = str(reply)[:500]
-    except Exception as e:
-        logger.error(f"Warm-start BrainRPC error for session {session_id}: {e}", exc_info=True)
-        confirmation = f"error: {e}"
-
-    # ───────────────────────────────────────────────────────────
-    # Redis persistence (optional, via bus.client)
-    # ───────────────────────────────────────────────────────────
-    client = getattr(bus, "client", None)
-    if client is None:
-        logger.info(
-            f"OrionBus has no 'client' attribute; skipping Redis persistence "
-            f"for warm-start state of session {session_id}."
-        )
-        return session_id
-
-    try:
-        key = f"orion:hub:session:{session_id}:state"
-        client.hset(
-            key,
-            mapping={
-                "warm_started": "1",
-                "warm_confirmation": confirmation,
-            },
-        )
-        logger.info(f"✅ Warm-start state stored in Redis for session {session_id}")
-    except Exception as e:
-        logger.error(f"Failed to persist warm-start state for {session_id}: {e}", exc_info=True)
-
-    return session_id
-
+    # Build a tiny chat-style history:
+    #   - system: full warm-start identity/narrative
+    #   - user: a simple “acknowledge + summarize” nudge
+    m

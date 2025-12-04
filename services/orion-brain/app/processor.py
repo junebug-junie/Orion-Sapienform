@@ -5,6 +5,7 @@ import uuid
 import json
 import logging
 import os
+import time
 from datetime import date
 
 from orion.core.bus.service import OrionBus
@@ -29,6 +30,19 @@ from app.spark_integration import (
     ingest_chat_and_get_state,
     build_system_prompt_with_phi,
     build_collapse_mirror_meta,
+)
+
+# LLM Gateway bus channels (Brain → LLM-GW RPC)
+LLM_GATEWAY_EXEC_INTAKE = os.getenv(
+    "CHANNEL_LLM_GATEWAY_EXEC_INTAKE",
+    "orion-exec:request:LLMGatewayService",
+)
+LLM_GATEWAY_REPLY_PREFIX = os.getenv(
+    "CHANNEL_LLM_GATEWAY_REPLY_PREFIX",
+    "orion:llm-gateway:chat:reply",
+)
+LLM_GATEWAY_RPC_TIMEOUT_S = float(
+    os.getenv("LLM_GATEWAY_RPC_TIMEOUT_S", "90")
 )
 
 logger = logging.getLogger(__name__)
@@ -494,29 +508,87 @@ def build_cortex_prompt(req: dict) -> str:
 
 def call_brain_llm(prompt: str) -> str:
     """
-    Calls your existing brain LLM endpoint for Cortex.
-    Uses the same backend router as legacy chat.
-    """
-    backend = router_instance.pick()
-    if not backend:
-        return "[LLMGatewayService Error] no healthy backend available"
+    For Cortex exec: call LLM Gateway via Orion bus instead of hitting
+    Ollama backends directly.
 
-    url = f"{backend.url.rstrip('/')}/api/chat"
-    payload = {
-        "model": "llama3.1:8b-instruct-q8_0",  # TODO: make configurable
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
+    This keeps all LLM usage flowing through the centralized LLM Gateway.
+    """
+    trace_id = str(uuid.uuid4())
+    reply_channel = f"{LLM_GATEWAY_REPLY_PREFIX}:{trace_id}"
+
+    bus = OrionBus(url=ORION_BUS_URL, enabled=ORION_BUS_ENABLED)
+    model = os.getenv("LLM_MODEL", "llama3.1:8b-instruct-q8_0")
+
+    # This matches the wire format that Hub uses when talking to LLM Gateway.
+    message = {
+        "event": "chat",
+        "service": "LLMGatewayService",
+        "correlation_id": trace_id,
+        "reply_channel": reply_channel,
+        "payload": {
+            "source": "brain-cortex",
+            "prompt": prompt,
+            # Cortex exec is usually one-shot; you can add
+            # richer history later if you want.
+            "history": [],
+            "temperature": 0.0,
+            "model": model,
+            "session_id": None,
+            "user_id": None,
+        },
     }
 
-    try:
-        with httpx.Client(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT)) as client:
-            r = client.post(url, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            return data.get("message", {}).get("content", "")
-    except Exception as e:
-        logger.error(f"[CORTEX] LLM call failed: {e}")
-        return f"[LLMGatewayService Error] {e}"
+    logger.info(
+        "[%s] [CORTEX→LLM-GW] Publishing chat request to %s",
+        trace_id,
+        LLM_GATEWAY_EXEC_INTAKE,
+    )
+    bus.publish(LLM_GATEWAY_EXEC_INTAKE, message)
+
+    started = time.time()
+    for envelope in bus.raw_subscribe(reply_channel):
+        now = time.time()
+        if now - started > LLM_GATEWAY_RPC_TIMEOUT_S:
+            logger.error(
+                "[%s] [CORTEX→LLM-GW] Timeout waiting for reply on %s",
+                trace_id,
+                reply_channel,
+            )
+            return "[LLM-Gateway Error] timeout waiting for reply"
+
+        payload = envelope.get("data") or {}
+        corr = payload.get("correlation_id")
+        if corr and corr != trace_id:
+            # Some other caller using the same prefix; ignore.
+            continue
+
+        # Expected shape from LLM Gateway:
+        # {
+        #   "event": "chat_result",
+        #   "service": "LLMGatewayService",
+        #   "correlation_id": "...",
+        #   "payload": { "text": "..." }
+        # }
+        if "payload" in payload and isinstance(payload["payload"], dict):
+            text = payload["payload"].get("text") or ""
+        else:
+            text = payload.get("text") or ""
+
+        text = text.strip()
+        logger.info(
+            "[%s] [CORTEX→LLM-GW] Received reply (len=%d)",
+            trace_id,
+            len(text),
+        )
+        return text
+
+    # We should basically never get here
+    logger.error(
+        "[%s] [CORTEX→LLM-GW] raw_subscribe ended without a reply on %s",
+        trace_id,
+        reply_channel,
+    )
+    return "[LLM-Gateway Error] no reply received"
 
 
 def process_cortex_exec_request(payload: dict):

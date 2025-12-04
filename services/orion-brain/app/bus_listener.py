@@ -80,7 +80,7 @@ def listener_worker():
                     exc_info=True,
                 )
 
-            # --- Cortex exec (BrainLLMService) goes through the unified router ---
+            # --- Cortex exec (LLMGatewayService) goes through the unified router ---
             if channel == CHANNEL_CORTEX_EXEC_INTAKE:
                 threading.Thread(
                     target=process_brain_or_cortex,

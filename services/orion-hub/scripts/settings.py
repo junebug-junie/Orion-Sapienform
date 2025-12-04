@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     )
     CHANNEL_LLM_REPLY_PREFIX: str = Field(
         default="orion:llm:reply",
-        env="CHANNEL_LLM_REPLY_PREFIX
+        env="CHANNEL_LLM_REPLY_PREFIX"
     )
 
     # LLM Gateway (Hub → Gateway chat RPC)

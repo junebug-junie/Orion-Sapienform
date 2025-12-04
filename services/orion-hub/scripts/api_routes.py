@@ -342,4 +342,79 @@ async def api_recall(
     This does NOT call Recall over HTTP – it uses RecallRPC on the bus,
     same as /api/chat, so all intra-Orion cognition stays on the spine.
 
-    Scoring is handled inside the Recall service (semantic + salience + recenc
+    Scoring is handled inside the Recall service (semantic + salience + recency).
+    """
+    from .main import bus
+    if not bus:
+        raise RuntimeError("OrionBus not initialized.")
+
+    session_id = await ensure_session(x_orion_session_id, bus)
+
+    query = payload.get("query") or ""
+    mode = payload.get("mode") or "hybrid"
+    time_window_days = payload.get("time_window_days") or 30
+    max_items = payload.get("max_items") or 16
+    extras = payload.get("extras") or None
+
+    client = RecallRPC(bus)
+
+    result = await client.call_recall(
+        query=query,
+        session_id=session_id,
+        mode=mode,
+        time_window_days=time_window_days,
+        max_items=max_items,
+        extras=extras,
+    )
+
+    return {
+        "session_id": session_id,
+        "query": query,
+        "mode": mode,
+        "time_window_days": time_window_days,
+        "max_items": max_items,
+        "result": result,
+    }
+
+
+# ======================================================================
+# 📿 COLLAPSE MIRROR ENDPOINTS
+# ======================================================================
+@router.get("/schema/collapse")
+def get_collapse_schema():
+    """Exposes the CollapseMirrorEntry schema for UI templating."""
+    logger.info("Fetching CollapseMirrorEntry schema")
+    return JSONResponse(CollapseMirrorEntry.schema())
+
+
+@router.post("/submit-collapse")
+async def submit_collapse(data: dict):
+    """
+    Receives Collapse Mirror data and publishes it to the bus.
+    """
+    from .main import bus
+    logger.info(f"🔥 /submit-collapse called with: {data}")
+
+    if not bus or not bus.enabled:
+        logger.error("Submission failed: OrionBus is disabled or not connected.")
+        return JSONResponse(
+            status_code=503,
+            content={"success": False, "error": "OrionBus disabled or unavailable"},
+        )
+
+    try:
+        entry = CollapseMirrorEntry(**data).with_defaults()
+        bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode="json"))
+        logger.info(
+            "📡 Published Collapse Mirror → %s",
+            settings.CHANNEL_COLLAPSE_INTAKE,
+        )
+
+        return {"success": True}
+
+    except Exception as e:
+        logger.error(f"❌ Hub publish error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )

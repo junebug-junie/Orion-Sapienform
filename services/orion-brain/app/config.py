@@ -15,6 +15,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b-instruct-q8_0")
 ORION_BUS_URL = os.getenv("ORION_BUS_URL", f"redis://{PROJECT}-bus-core:6379/0")
 ORION_BUS_ENABLED = _b("ORION_BUS_ENABLED", "true")
 
+CHANNEL_CHAT_HISTORY_LOG = os.getenv("CHANNEL_CHAT_HISTORY_LOG", "orion:chat:history:log")
 # 🛰️ Bus stream names (logical channels)
 CHANNEL_BRAIN_INTAKE = os.getenv("CHANNEL_BRAIN_INTAKE", "orion:brain:intake")
 CHANNEL_BRAIN_OUT = os.getenv("CHANNEL_BRAIN_OUT", "orion:brain:out")

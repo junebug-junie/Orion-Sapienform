@@ -343,43 +343,54 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
 
             # ---------------------------------------------------------
-            # 🧠 Step 7: Append to history + publish to Collapse triage
+            # 🧠 Step 7: Append to history + publish chat history log
             # ---------------------------------------------------------
             if orion_response_text:
+                # Keep Orion's side of the turn in local WS history
                 history.append({"role": "orion", "content": orion_response_text})
 
                 if bus is not None and getattr(bus, "enabled", False):
                     latest_user_prompt = transcript
+                    trace_id = str(uuid.uuid4())
 
-                    full_dialogue_payload = {
-                        "id": str(uuid.uuid4()),
-                        "text": (
-                            f"User: {latest_user_prompt}\n"
-                            f"Orion: {orion_response_text}"
-                        ),
+                    chat_log_payload = {
+                        "id": trace_id,
+                        "trace_id": trace_id,
                         "source": settings.SERVICE_NAME,
-                        "ts": datetime.utcnow().isoformat(),
                         "prompt": latest_user_prompt,
                         "response": orion_response_text,
                         "user_id": user_id,
                         "session_id": session_id,
-                        "mode": mode,
+                        "spark_meta": None,
+                        "created_at": datetime.utcnow().isoformat(),
+                        # Extra field for human inspection; pydantic will ignore extras.
+                        "text": (
+                            f"User: {latest_user_prompt}\n"
+                            f"Orion: {orion_response_text}"
+                        ),
+                        "kind": "hub_ws_dialogue",
                     }
 
-                    try:
-                        bus.publish(
-                            settings.CHANNEL_COLLAPSE_TRIAGE,
-                            full_dialogue_payload,
-                        )
-                        logger.info(
-                            "Published full dialogue to triage: %s",
-                            full_dialogue_payload["id"],
-                        )
-                    except Exception as e:
+                    channel = getattr(settings, "CHANNEL_CHAT_HISTORY_LOG", None)
+                    if not channel:
                         logger.warning(
-                            f"Failed to publish dialogue to triage: {e}",
-                            exc_info=True,
+                            "CHANNEL_CHAT_HISTORY_LOG is not configured on settings; "
+                            "skipping chat history publish for WS turn."
                         )
+                    else:
+                        try:
+                            bus.publish(channel, chat_log_payload)
+                            logger.info(
+                                "Published WS dialogue to chat history channel %s id=%s",
+                                channel,
+                                chat_log_payload["id"],
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to publish WS dialogue to chat history channel: %s",
+                                e,
+                                exc_info=True,
+                            )
 
             # --- DIAGNOSTIC LOGGING ---
             logger.info(f"HISTORY AFTER LLM CALL (mode={mode}): {history}")

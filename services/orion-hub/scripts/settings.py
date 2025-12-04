@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     CHANNEL_COLLAPSE_INTAKE: str = Field(..., env="CHANNEL_COLLAPSE_INTAKE")
     CHANNEL_COLLAPSE_TRIAGE: str = Field(..., env="CHANNEL_COLLAPSE_TRIAGE")
 
+    CHANNEL_CHAT_HISTORY_LOG: str = Field(
+        "orion:chat:history:log",
+        env="CHANNEL_CHAT_HISTORY_LOG",
+    )
+
     CHANNEL_BRAIN_INTAKE: str = Field(..., env="CHANNEL_BRAIN_INTAKE")
     CHANNEL_BRAIN_OUT: str = Field(..., env="CHANNEL_BRAIN_OUT")
 

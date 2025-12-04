@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 
 from fastapi import APIRouter, Header
@@ -293,12 +294,42 @@ async def api_chat(
 
     result = await handle_chat_request(bus, payload, session_id)
 
-    # Handle simple validation errors
-    if "error" in result:
-        return JSONResponse(status_code=400, content=result)
+    # ─────────────────────────────────────────────
+    # 📡 Publish HTTP chat → chat history log
+    # (restores legacy Brain→SQL behavior via CHANNEL_CHAT_LOG)
+    # ─────────────────────────────────────────────
+    if text and getattr(bus, "enabled", False):
+        try:
+            latest_user_prompt = ""
+            if isinstance(user_messages, list) and user_messages:
+                latest_user_prompt = user_messages[-1].get("content", "") or ""
 
-    text = result.get("text") or ""
-    user_messages = payload.get("messages") or []
+            chat_log_payload = {
+                "trace_id": str(uuid4()),
+                "source": settings.SERVICE_NAME,
+                "prompt": latest_user_prompt,
+                "response": text,
+                "session_id": session_id,
+                "mode": result.get("mode", payload.get("mode", "brain")),
+                # we don’t have user_id on HTTP; writer can treat it as optional
+                "user_id": None,
+            }
+
+            bus.publish(
+                settings.CHANNEL_CHAT_HISTORY_LOG,
+                chat_log_payload,
+            )
+            logger.info(
+                "Published HTTP chat to chat history log: %s",
+                chat_log_payload["trace_id"],
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to publish HTTP chat to chat history log: %s",
+                e,
+                exc_info=True,
+            )
+
 
     # ─────────────────────────────────────────────────────────────
     # 🧾 Store chat tail in Redis (last 20 entries)

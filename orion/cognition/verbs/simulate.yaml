@@ -26,7 +26,7 @@ plan:
     order: 0
     prompt_template: simulate_prompt.j2
     services:
-      - BrainLLMService
+      - NewServiceName
     requires_gpu: false
     requires_memory: false
 

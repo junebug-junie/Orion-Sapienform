@@ -90,7 +90,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "description": "Names of required services (e.g. 'BrainLLMService')."
+        "description": "Names of required services (e.g. 'NewServiceName')."
       },
       "minItems": 0
     },

@@ -36,7 +36,7 @@ plan:
     order: 1
     prompt_template: pattern_detect_prompt.j2
     services:
-      - BrainLLMService
+      - NewServiceName
     requires_gpu: true
     requires_memory: false
 

@@ -136,4 +136,196 @@ def _wait_for_exec_results(
     Fan-in helper: wait for up to `expected` results on `result_channel`
     matching the given trace_id, or until timeout.
     """
-    timeout
+    timeout_s = timeout_ms / 1000.0
+    started = time.time()
+    collected: List[Dict[str, Any]] = []
+
+    logger.info(
+        "Subscribed %s; waiting for %d result(s). Timeout=%d ms",
+        result_channel,
+        expected,
+        timeout_ms,
+    )
+
+    try:
+        for msg in bus.raw_subscribe(result_channel):
+            now = time.time()
+            if now - started > timeout_s:
+                logger.warning(
+                    "Timeout waiting for results on %s (have %d/%d)",
+                    result_channel,
+                    len(collected),
+                    expected,
+                )
+                break
+
+            payload = msg.get("data") or {}
+            if payload.get("trace_id") != trace_id:
+                logger.debug(
+                    "Ignoring message with mismatched trace_id on %s: %s",
+                    result_channel,
+                    payload,
+                )
+                continue
+
+            collected.append(payload)
+
+            if len(collected) >= expected:
+                break
+    except Exception as e:
+        logger.error("Error while waiting for exec results on %s: %s", result_channel, e)
+
+    return collected
+
+
+def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
+    """
+    Execute a high-level "verb" as a sequence of Cortex steps.
+
+    For each step:
+      - Build a rich prompt (header + JSON context + prior results).
+      - Fan-out to all configured services on the Orion bus.
+      - Fan-in results from each service on a per-step result channel.
+      - Accumulate results into StepExecutionResult objects.
+
+    The services are bus suffixes like "LLMGatewayService", and requests are
+    published on channels:
+
+        {EXEC_REQUEST_PREFIX}:{service}
+
+    with result messages returned on:
+
+        {EXEC_RESULT_PREFIX}:{trace_id}
+
+    using a standard shape compatible with emit_cortex_step_result / LLM Gateway
+    exec_step replies.
+    """
+    # Ensure each step has a verb_name
+    for s in req.steps:
+        if not s.verb_name:
+            s.verb_name = req.verb_name
+
+    ordered_steps = sorted(req.steps, key=lambda s: s.order)
+    timeout_ms = req.timeout_ms or settings.cortex_step_timeout_ms
+
+    prior_step_results: List[StepExecutionResult] = []
+    final_step_results: List[StepExecutionResult] = []
+
+    for step in ordered_steps:
+        trace_id = str(uuid.uuid4())
+        result_channel = f"{settings.exec_result_prefix}:{trace_id}"
+        expected = len(step.services)
+
+        # ─────────────────────────────────────────────
+        # Fan-out: publish ExecutionEnvelope-style messages
+        # ─────────────────────────────────────────────
+        for service in step.services:
+            prompt = _build_prompt(
+                step=step,
+                service=service,
+                origin_node=req.origin_node,
+                context=req.context,
+                prior_results=prior_step_results,
+            )
+
+            exec_channel = f"{settings.exec_request_prefix}:{service}"
+
+            envelope = {
+                "event": "exec_step",
+                "service": service,
+                "correlation_id": trace_id,
+                "reply_channel": result_channel,
+                "payload": {
+                    "verb": step.verb_name or req.verb_name,
+                    "step": step.step_name,
+                    "order": step.order,
+                    "service": service,
+                    "origin_node": req.origin_node,
+                    "prompt_template": step.prompt_template,
+                    "context": req.context,
+                    "args": {},  # reserved for richer argument passing later
+                    "prior_step_results": [
+                        r.model_dump(mode="json") for r in prior_step_results
+                    ],
+                    "requires_gpu": step.requires_gpu,
+                    "requires_memory": step.requires_memory,
+                    # Also include the fully-built prompt (what the LLM will see)
+                    "prompt": prompt,
+                },
+            }
+
+            logger.info(
+                "Published exec_step to %s (trace_id=%s, verb=%s, step=%s, service=%s)",
+                exec_channel,
+                trace_id,
+                step.verb_name,
+                step.step_name,
+                service,
+            )
+            bus.publish(exec_channel, envelope)
+
+        # ─────────────────────────────────────────────
+        # Fan-in: collect results for this step
+        # ─────────────────────────────────────────────
+        raw_results = _wait_for_exec_results(
+            bus=bus,
+            result_channel=result_channel,
+            trace_id=trace_id,
+            expected=expected,
+            timeout_ms=timeout_ms,
+        )
+
+        step_results: List[ServiceStepResult] = []
+        for raw in raw_results:
+            service_name = raw.get("service") or raw.get("service_name") or "unknown"
+            elapsed_ms = int(raw.get("elapsed_ms") or raw.get("elapsed") or 0)
+            ok = bool(raw.get("ok", True))
+
+            payload = {
+                k: v
+                for k, v in raw.items()
+                if k
+                not in {
+                    "trace_id",
+                    "service",
+                    "service_name",
+                    "elapsed_ms",
+                    "elapsed",
+                    "ok",
+                }
+            }
+
+            step_results.append(
+                ServiceStepResult(
+                    service=service_name,
+                    trace_id=trace_id,
+                    ok=ok,
+                    elapsed_ms=elapsed_ms,
+                    payload=payload,
+                )
+            )
+
+        prompt_preview = (
+            step.prompt_template.strip()[:200].replace("\n", " ")
+            if step.prompt_template
+            else ""
+        )
+
+        step_execution = StepExecutionResult(
+            verb_name=step.verb_name,
+            step_name=step.step_name,
+            order=step.order,
+            services=step_results,
+            prompt_preview=prompt_preview,
+        )
+
+        final_step_results.append(step_execution)
+        prior_step_results.append(step_execution)
+
+    return OrchestrateVerbResponse(
+        verb_name=req.verb_name,
+        origin_node=req.origin_node,
+        steps_executed=len(final_step_results),
+        step_results=final_step_results,
+        context_echo=req.context,
+    )

@@ -33,7 +33,7 @@ plan:
       Use LLM to determine which cognitive verb should run next.
     order: 1
     services:
-      - BrainLLMService
+      - LLMGatewayService
     requires_gpu: true
     requires_memory: false
 

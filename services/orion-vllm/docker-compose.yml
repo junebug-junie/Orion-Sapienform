@@ -12,7 +12,6 @@ services:
     env_file:
       - .env
 
-
     environment:
       # Identity
       - SERVICE_NAME=${SERVICE_NAME_VLLM:-orion-vllm}
@@ -45,7 +44,7 @@ services:
 
     ports:
       # Optional external exposure; llm-gateway uses service name on app-net
-      - ${VLLM_PORT:-8000}
+      - "${VLLM_HOST_PORT:-7000}:8000"
 
     runtime: nvidia
     deploy:

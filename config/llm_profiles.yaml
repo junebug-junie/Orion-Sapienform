@@ -1,4 +1,28 @@
 profiles:
+
+  # ___ testing ___ #
+
+  mistral-7b-vllm:
+    display_name: "Mistral 7B – vLLM"
+    task_type: chat
+    backend: vllm
+    model_id: "mistralai/Mistral-7B-Instruct-v0.3"
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 2
+      device_ids: [0, 1] # V100 pair on the second riser
+      max_model_len: 8192
+      max_batch_tokens: 4096
+      max_concurrent_requests: 4
+      gpu_memory_fraction: 0.8
+    preferred_verbs:
+      - generic_chat
+    notes: "Open, non-gated default for stack bring-up."
+
+
   # ─────────────────────────────────────────────
   # 0) Legacy / Ollama brain-ish profile
   # ─────────────────────────────────────────────

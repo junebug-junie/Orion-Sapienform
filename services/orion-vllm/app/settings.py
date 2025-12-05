@@ -39,21 +39,33 @@ class Settings(BaseSettings):
         description="Model identifier passed to vLLM (overrides profile.model_id if set)",
     )
 
-    # Runtime-only knobs (not part of the profile contract)
+    # Runtime-only knobs (env defaults that profiles can override)
     gpu_memory_fraction: float = Field(
         default=0.9,
         alias="VLLM_GPU_MEMORY_FRACTION",
         description="Fraction of GPU memory vLLM is allowed to use (--gpu-memory-utilization)",
     )
+
     download_dir: Optional[Path] = Field(
         default=Path("/models"),
         alias="VLLM_DOWNLOAD_DIR",
         description="Download/cache directory for vLLM models",
     )
+
     enforce_eager: bool = Field(
         default=False,
         alias="VLLM_ENFORCE_EAGER",
         description="Whether to pass --enforce-eager to vLLM",
+    )
+
+    # Optional explicit override for CUDA_VISIBLE_DEVICES
+    cuda_visible_devices: Optional[str] = Field(
+        default=None,
+        alias="VLLM_CUDA_VISIBLE_DEVICES",
+        description=(
+            "Explicit CUDA_VISIBLE_DEVICES override. "
+            "If unset, derived from profile.gpu.device_ids when present."
+        ),
     )
 
     class Config:
@@ -82,17 +94,18 @@ class Settings(BaseSettings):
     def resolve_model_and_gpu(self) -> Tuple[str, Dict[str, Any]]:
         """
         Resolve (model_id, gpu_cfg) using:
-
           1) Explicit env: VLLM_MODEL_ID (optional)
           2) LLM profile referenced by VLLM_PROFILE_NAME
           3) If no profile_name set, first profile in the YAML (if any)
 
-        gpu_cfg comes purely from YAML:
-
-          gpu_cfg keys we care about:
-            - tensor_parallel_size
-            - max_model_len
-            - max_batch_tokens (mapped later to max_num_seqs if you want)
+        gpu_cfg is a normalized dict with keys like:
+          - gpu_memory_fraction
+          - tensor_parallel_size
+          - max_model_len
+          - max_batch_tokens
+          - max_concurrent_requests
+          - device_ids
+          - cuda_visible_devices
         """
         profiles = self._load_profiles()
 
@@ -118,18 +131,41 @@ class Settings(BaseSettings):
         gpu_cfg: Dict[str, Any] = {}
 
         # 2) GPU settings: purely from profile.gpu
+        device_ids = None
         if profile is not None:
             gpu = profile.get("gpu") or {}
-            # These keys match your llm_profiles.yaml schema
+
+            if gpu.get("gpu_memory_fraction") is not None:
+                gpu_cfg["gpu_memory_fraction"] = gpu.get("gpu_memory_fraction")
+
             if gpu.get("tensor_parallel_size") is not None:
                 gpu_cfg["tensor_parallel_size"] = gpu.get("tensor_parallel_size")
+
             if gpu.get("max_model_len") is not None:
                 gpu_cfg["max_model_len"] = gpu.get("max_model_len")
-            # max_batch_tokens can be used later to infer max_num_seqs if needed
+
             if gpu.get("max_batch_tokens") is not None:
                 gpu_cfg["max_batch_tokens"] = gpu.get("max_batch_tokens")
+
             if gpu.get("max_concurrent_requests") is not None:
                 gpu_cfg["max_concurrent_requests"] = gpu.get("max_concurrent_requests")
+
+            # Canonical GPU mapping: device_ids
+            if gpu.get("device_ids") is not None:
+                device_ids = gpu.get("device_ids")
+                gpu_cfg["device_ids"] = device_ids
+
+        # 3) CUDA_VISIBLE_DEVICES: env override wins, otherwise derive from device_ids.
+        cuda_visible = self.cuda_visible_devices
+        if cuda_visible is None and device_ids is not None:
+            # Normalize list/tuple/int → "0,1,2"
+            if isinstance(device_ids, (list, tuple)):
+                cuda_visible = ",".join(str(i) for i in device_ids)
+            else:
+                cuda_visible = str(device_ids)
+
+        if cuda_visible:
+            gpu_cfg["cuda_visible_devices"] = cuda_visible
 
         return model_id, gpu_cfg
 

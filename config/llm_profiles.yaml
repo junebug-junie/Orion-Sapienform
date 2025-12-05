@@ -1,0 +1,145 @@
+profiles:
+  # ─────────────────────────────────────────────
+  # 0) Legacy / Ollama brain-ish profile
+  # ─────────────────────────────────────────────
+  brain-ollama-7b:
+    display_name: "Brain Ollama 7B"
+    task_type: chat
+    backend: ollama
+    model_id: "llama3.1:8b-instruct-q8_0"
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 0              # logical placeholder (CPU / local GPU not managed by vLLM)
+      tensor_parallel_size: 1
+      max_model_len: 8192
+      max_batch_tokens: 4096
+      max_concurrent_requests: 4
+      gpu_memory_fraction: null
+    preferred_verbs: []
+    notes: "Local Ollama-backed brain-style default; bypasses vLLM."
+
+  # ─────────────────────────────────────────────
+  # 1) Llama3 7B on 1× V100 16GB
+  #    - Stable default; low complexity
+  # ─────────────────────────────────────────────
+  llama3-7b-v100-1gpu:
+    display_name: "Llama 3 7B – 1× V100"
+    task_type: chat
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-8B-Instruct"  # <-- adjust to your actual model
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      max_model_len: 8192
+      max_batch_tokens: 4096
+      max_concurrent_requests: 4
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - generic_chat
+      - status_report
+      - short_explain
+    notes: "Default vLLM profile: 1× V100, safe context/throughput."
+
+  # ─────────────────────────────────────────────
+  # 2) Llama3 7B on 2× V100 16GB
+  #    - More throughput; same model
+  # ─────────────────────────────────────────────
+  llama3-7b-v100-2gpu:
+    display_name: "Llama 3 7B – 2× V100"
+    task_type: chat
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-8B-Instruct"
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 2
+      max_model_len: 8192     # bump later if stable
+      max_batch_tokens: 8192
+      max_concurrent_requests: 8
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - analysis
+      - narrate_timeline
+      - summarize_long
+    notes: "Heavier analysis / narrative workloads; more parallelism."
+
+  # ─────────────────────────────────────────────
+  # 3) Llama3 7B on 4× V100 16GB
+  #    - High concurrency / multi-session
+  # ─────────────────────────────────────────────
+  llama3-7b-v100-4gpu:
+    display_name: "Llama 3 7B – 4× V100"
+    task_type: chat
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-8B-Instruct"
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      max_model_len: 8192     # can experiment with 12–16K later
+      max_batch_tokens: 16384
+      max_concurrent_requests: 16
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - multi_session
+      - background_cognition
+      - batch_processing
+    notes: "High throughput profile when node is dedicated to Orion."
+
+  # ─────────────────────────────────────────────
+  # 4) Llama3 70B on 4× V100 16GB
+  #    - Big-brain mode for specific verbs
+  # ─────────────────────────────────────────────
+  llama3-70b-v100-4gpu:
+    display_name: "Llama 3 70B – 4× V100"
+    task_type: chat
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-70B-Instruct"  # <-- adjust if different
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      max_model_len: 4096       # be conservative for 70B
+      max_batch_tokens: 4096
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - deep_reflection
+      - architecture_review
+      - long_horizon_planning
+    notes: "High-cost, high-capacity profile reserved for select verbs."
+
+  # ─────────────────────────────────────────────
+  # 5) Embeddings profile (example)
+  #    - For text embeddings via vLLM (if you enable them)
+  # ─────────────────────────────────────────────
+  llama3-embed-v100-1gpu:
+    display_name: "Llama Embeddings – 1× V100"
+    task_type: embeddings
+    backend: vllm
+    model_id: "text-embedding-model-id"  # <-- your actual embedding model
+    supports_tools: false
+    supports_embeddings: true
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      max_model_len: 2048
+      max_batch_tokens: 8192
+      max_concurrent_requests: 8
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - build_embeddings
+      - refresh_index
+    notes: "Embeddings-only profile for vector stores."

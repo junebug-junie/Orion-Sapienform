@@ -1,0 +1,59 @@
+# services/orion-vllm/docker-compose.yml
+
+services:
+  vllm:
+    build:
+      context: ../..
+      dockerfile: services/orion-vllm/Dockerfile
+    image: ${PROJECT:-orion}-vllm:latest
+    container_name: ${PROJECT:-orion}-vllm
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+
+    environment:
+      # Identity
+      - SERVICE_NAME=${SERVICE_NAME_VLLM:-orion-vllm}
+      - SERVICE_VERSION=${SERVICE_VERSION_VLLM:-0.1.0}
+
+      # HTTP bind
+      - VLLM_HOST=${VLLM_HOST:-0.0.0.0}
+      - VLLM_PORT=${VLLM_PORT:-8000}
+
+      # Profiles config (path *inside* the container)
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+
+      # Which llm_profiles.yaml entry this node should run
+      # e.g. llama3-7b-v100-1gpu, llama3-7b-v100-2gpu, llama3-70b-v100-4gpu
+      - VLLM_PROFILE_NAME=${VLLM_PROFILE_NAME:-llama3-7b-v100-1gpu}
+
+      # Optional model override (if you want to swap model without editing YAML)
+      - VLLM_MODEL_ID=${VLLM_MODEL_ID:-}
+
+      # Runtime-only knobs (NOT part of profile; safe to tune here)
+      - VLLM_GPU_MEMORY_FRACTION=${VLLM_GPU_MEMORY_FRACTION:-0.9}
+      - VLLM_DOWNLOAD_DIR=${VLLM_DOWNLOAD_DIR:-/models}
+      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
+    networks:
+      - app-net
+
+    volumes:
+      # Model cache / downloads
+      - /mnt/storage-warm/models:/models
+
+    ports:
+      # Optional external exposure; llm-gateway uses service name on app-net
+      - ${VLLM_PORT:-8000}
+
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

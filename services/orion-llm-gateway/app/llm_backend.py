@@ -87,8 +87,6 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
 
 def _resolve_model(body_model: str | None, profile: LLMProfile | None) -> str:
     """
-    Decide which model string to send to the backend.
-
     Priority:
       1) body.model if provided
       2) profile.model_id if profile is selected
@@ -416,7 +414,6 @@ def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
         return _embeddings_via_ollama(body, model=model)
     raise RuntimeError(f"Unknown backend for embeddings: {backend}")
 
-
 def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
     """
     Execute a Cortex exec_step via the selected LLM backend.
@@ -426,6 +423,10 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         "prompt": "<final prompt used>",
         "llm_output": "<model text>",
       }
+
+    NOTE: exec_step is profile/verb-driven; it no longer relies on a 'model'
+    field on ExecStepPayload. Model resolution is handled in run_llm_generate()
+    via profiles + defaults.
     """
     t0 = time.time()
 
@@ -445,9 +446,9 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         )
 
     gen_body = GenerateBody(
-        model=body.model,
+        model=None,
         prompt=final_prompt,
-        options={},  # you can forward richer options if needed
+        options={},  # you can later pipe through richer options if ExecStepPayload supports them
         stream=False,
         return_json=False,
         trace_id=body.origin_node,
@@ -455,7 +456,7 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         session_id=None,
         source=f"cortex:{body.service}",
         verb=body.verb,
-        profile_name=body.profile_name,
+        profile_name=getattr(body, "profile_name", None),
     )
 
     text = run_llm_generate(gen_body)

@@ -156,7 +156,7 @@ def main():
                 )
 
             # -------------------------
-            # EMBEDDINGS (NEW)
+            # EMBEDDINGS
             # -------------------------
             elif envelope.event == "embeddings":
                 body = EmbeddingsBody(**envelope.payload.get("body", envelope.payload))

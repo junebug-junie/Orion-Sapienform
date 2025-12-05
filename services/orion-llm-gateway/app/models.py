@@ -1,8 +1,9 @@
 from typing import Any, Dict, Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GenerateBody(BaseModel):
+    # Model can be omitted; we fall back to settings.default_model
     model: Optional[str] = None
     prompt: str
     options: Optional[dict] = None
@@ -13,14 +14,18 @@ class GenerateBody(BaseModel):
     session_id: Optional[str] = None
     source: Optional[str] = None
 
-    # NEW: semantic routing support
+    # Semantic routing support
     verb: Optional[str] = None
     profile_name: Optional[str] = None
 
 
 class ChatBody(BaseModel):
+    # Model can be omitted; we fall back to settings.default_model
     model: Optional[str] = None
-    messages: List[Dict[str, Any]]
+
+    # Messages can start empty; gateway can adapt prompt → messages
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+
     options: Optional[dict] = None
     stream: Optional[bool] = False
     return_json: Optional[bool] = False
@@ -29,6 +34,7 @@ class ChatBody(BaseModel):
     session_id: Optional[str] = None
     source: Optional[str] = None
 
+    # Semantic routing support
     verb: Optional[str] = None
     profile_name: Optional[str] = None
 
@@ -56,18 +62,18 @@ class ExecStepPayload(BaseModel):
     requires_gpu: bool = False
     requires_memory: bool = False
 
-    # Optional override for model/profile
-    model: Optional[str] = None
-    profile_name: Optional[str] = None
-
 
 class EmbeddingsBody(BaseModel):
     """
-    Embeddings request through the LLM gateway.
+    Request body for embeddings generation via LLM Gateway.
     """
     model: Optional[str] = None
-    inputs: List[str]
+    input: List[str]
     options: Optional[dict] = None
+    trace_id: Optional[str] = None
+    source: Optional[str] = None
+
+    # Optional semantic routing (in case we want profile-based embeddings)
     verb: Optional[str] = None
     profile_name: Optional[str] = None
 

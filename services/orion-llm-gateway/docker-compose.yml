@@ -48,17 +48,12 @@ services:
       # Profiles config (new)
       # ─────────────────────────────────────
       # Path inside the container
-      - ./services/orion-llm-gateway/config/llm_profiles.yaml:/app/config/llm_profiles.yaml:ro
-      - "host.docker.internal:host-gateway"      # Default profile name from your YAML
       - LLM_DEFAULT_PROFILE_NAME=${LLM_DEFAULT_PROFILE_NAME:-llama3-7b-v100-1gpu}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH}
 
     # Optional: keep HTTP port for future metrics / health / UI
     ports:
       - "8210:8210"
-
-    # Mount the profiles YAML into the container
-    volumes:
-      - ./config/llm_profiles.yaml:/app/config/llm_profiles.yaml:ro
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

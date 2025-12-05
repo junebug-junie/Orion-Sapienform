@@ -61,7 +61,30 @@ def main():
             # CHAT
             # -------------------------
             if envelope.event == "chat":
-                body = ChatBody(**envelope.payload.get("body", envelope.payload))
+                raw = envelope.payload.get("body", envelope.payload) or {}
+
+                # Backwards-compat: if caller sent a simple prompt instead of messages[],
+                # adapt it into a ChatBody-compatible shape.
+                if "messages" not in raw and "prompt" in raw:
+                    prompt = raw.get("prompt") or ""
+                    raw = {
+                        "model": raw.get("model"),
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": prompt,
+                            }
+                        ],
+                        "options": raw.get("options") or {},
+                        "stream": raw.get("stream", False),
+                        "return_json": raw.get("return_json", False),
+                        "trace_id": raw.get("trace_id", envelope.correlation_id),
+                        "user_id": raw.get("user_id"),
+                        "session_id": raw.get("session_id"),
+                        "source": raw.get("source", "brain-cortex"),
+                    }
+
+                body = ChatBody(**raw)
                 text = run_llm_chat(body)
 
                 reply = {

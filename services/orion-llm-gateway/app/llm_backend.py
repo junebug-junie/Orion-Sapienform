@@ -157,25 +157,64 @@ def _common_http_client() -> httpx.Client:
 # ─────────────────────────────────────────────
 
 def _chat_via_ollama(body: ChatBody, model: str) -> str:
-    url = f"{settings.ollama_url.rstrip('/')}/api/chat"
+    """
+    Call Ollama's chat API if available, otherwise gracefully fall back
+    to /api/generate (older or minimal installs).
+    """
+    base_url = settings.ollama_url.rstrip("/")
 
-    payload = {
-        "model": model,
-        "messages": body.messages,
-        "options": body.options or {},
-        "stream": False,
-    }
+    messages = body.messages or []
+    options = body.options or {}
 
     logger.info(
-        f"[LLM-GW] Ollama chat model={payload['model']} messages={len(payload['messages'])}"
+        "[LLM-GW] Ollama chat model=%s messages=%d",
+        model,
+        len(messages),
     )
 
     try:
         with _common_http_client() as client:
-            r = client.post(url, json=payload)
+            # 1) Try /api/chat first
+            chat_url = f"{base_url}/api/chat"
+            chat_payload = {
+                "model": model,
+                "messages": messages,
+                "options": options,
+                "stream": False,
+            }
+
+            r = client.post(chat_url, json=chat_payload)
+
+            # If this Ollama doesn't support /api/chat, fall back to /api/generate
+            if r.status_code == 404:
+                logger.warning(
+                    "[LLM-GW] Ollama /api/chat returned 404, falling back to /api/generate"
+                )
+
+                # Take the last user message as the prompt, or a generic prompt if none
+                last_user = ""
+                for m in reversed(messages):
+                    if m.get("role") == "user":
+                        last_user = str(m.get("content") or "")
+                        break
+
+                prompt = last_user or "You are Orion's LLM backend."
+
+                gen_url = f"{base_url}/api/generate"
+                gen_payload = {
+                    "model": model,
+                    "prompt": prompt,
+                    "options": options,
+                    "stream": False,
+                }
+
+                r = client.post(gen_url, json=gen_payload)
+
+            # For non-404 errors, or after fallback, enforce status
             r.raise_for_status()
             data = r.json()
             return _extract_text_from_ollama(data)
+
     except Exception as e:
         logger.error(f"[LLM-GW] Ollama chat failed: {e}", exc_info=True)
         return f"[LLM-Gateway Error: ollama] {e}"

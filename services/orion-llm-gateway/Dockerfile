@@ -39,6 +39,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy shared Orion library (schemas/utilities)
 COPY orion /app/orion
+COPY config/llm_profiles.yaml ./config/llm_profiles.yaml
 
 # Copy this service code
 COPY services/orion-llm-gateway /app

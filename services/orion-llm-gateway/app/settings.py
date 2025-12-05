@@ -1,8 +1,11 @@
-# services/orion-llm-gateway/app/settings.py
+from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import Optional
+
+from .profiles import LLMProfileRegistry, LLMProfile
+import yaml
 
 
 class Settings(BaseSettings):
@@ -26,33 +29,68 @@ class Settings(BaseSettings):
     # Polling / timing
     poll_timeout: float = Field(1.0, alias="POLL_TIMEOUT")
 
-    # Default model
-    default_model: str = Field("llama3.1:8b-instruct-q8_0", alias="ORION_DEFAULT_LLM_MODEL")
+    # Default model (for legacy callers without profiles)
+    default_model: str = Field(
+        "llama3.1:8b-instruct-q8_0", alias="ORION_DEFAULT_LLM_MODEL"
+    )
 
     # Default backend name if caller doesn't specify options["backend"]
     # Supported: "ollama", "vllm", "brain"
     default_backend: str = Field("ollama", alias="ORION_LLM_DEFAULT_BACKEND")
 
     # Backend endpoints (can be None if not used yet)
-    # 1) Ollama model server (current brain-llm)
-    ollama_url: str = Field("http://llm-brain:11434", alias="ORION_LLM_OLLAMA_URL")
-
-    # 2) vLLM server (future; usually OpenAI-compatible)
-    vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
-
-    # 3) Brain HTTP /chat endpoint (optional fallback / special path)
-    brain_url: Optional[str] = Field(None, alias="ORION_LLM_BRAIN_URL")
+    ollama_url: str = Field(
+        "http://llm-brain:11434", alias="ORION_LLM_OLLAMA_URL"
+    )  # 1) Ollama model server
+    vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")  # 2) vLLM
+    brain_url: Optional[str] = Field(None, alias="ORION_LLM_BRAIN_URL")  # 3) Brain HTTP /chat
 
     # Timeout knobs (shared across backends)
     connect_timeout_sec: float = Field(10.0, alias="CONNECT_TIMEOUT_SEC")
     read_timeout_sec: float = Field(60.0, alias="READ_TIMEOUT_SEC")
 
     # Service label used in reply messages
-    llm_service_name: str = Field("LLMGatewayService", alias="ORION_LLM_SERVICE_NAME")
+    llm_service_name: str = Field(
+        "LLMGatewayService", alias="ORION_LLM_SERVICE_NAME"
+    )
+
+    # Profiles config
+    llm_profiles_config_path: Optional[Path] = Field(
+        None,
+        alias="LLM_PROFILES_CONFIG_PATH",
+        description="Path to YAML defining LLM profiles (optional)",
+    )
+    llm_default_profile_name: Optional[str] = Field(
+        None,
+        alias="LLM_DEFAULT_PROFILE_NAME",
+        description="Default profile name when profiles are enabled",
+    )
 
     class Config:
         env_file = ".env"
         extra = "ignore"
+
+    def load_profile_registry(self) -> LLMProfileRegistry:
+        """
+        Load profiles from YAML if configured. If not configured,
+        returns an empty registry and the gateway falls back to
+        default_model/default_backend.
+        """
+        if not self.llm_profiles_config_path:
+            return LLMProfileRegistry(profiles={})
+
+        try:
+            with self.llm_profiles_config_path.open("r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            return LLMProfileRegistry(profiles={})
+
+        profiles_dict = raw.get("profiles", {}) or {}
+        parsed = {
+            name: LLMProfile(name=name, **data)
+            for name, data in profiles_dict.items()
+        }
+        return LLMProfileRegistry(profiles=parsed)
 
 
 settings = Settings()

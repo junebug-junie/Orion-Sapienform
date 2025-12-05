@@ -1,0 +1,119 @@
+profiles:
+
+  # 7B on 1x V100 16GB — conservative default
+  llama3-7b-v100-1gpu:
+    name: llama3-7b-v100-1gpu
+    display_name: "LLaMA 3 7B (1x V100 16GB)"
+    task_type: chat
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-7B-Instruct"
+    supports_tools: true
+    supports_embeddings: true
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      max_model_len: 8192
+      max_batch_tokens: 8192
+      max_concurrent_requests: 8
+      gpu_memory_fraction: 0.85
+    preferred_verbs:
+      - generic_chat
+      - council_chat
+      - system_debug
+    notes: |
+      7B on a single V100 16GB. Good general-purpose profile.
+
+  # 7B on 2x V100 16GB — more throughput, longer context
+  llama3-7b-v100-2gpu:
+    name: llama3-7b-v100-2gpu
+    display_name: "LLaMA 3 7B (2x V100 16GB)"
+    task_type: chat
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-7B-Instruct"
+    supports_tools: true
+    supports_embeddings: true
+    supports_vision: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 2
+      max_model_len: 16384
+      max_batch_tokens: 16384
+      max_concurrent_requests: 16
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - heavy_chat
+      - research
+    notes: |
+      7B spread across 2x V100. Use this when you want more concurrent load
+      and/or larger contexts.
+
+  # 7B on 4x V100 16GB — high-throughput profile
+  llama3-7b-v100-4gpu:
+    name: llama3-7b-v100-4gpu
+    display_name: "LLaMA 3 7B (4x V100 16GB)"
+    task_type: chat
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-7B-Instruct"
+    supports_tools: true
+    supports_embeddings: true
+    supports_vision: false
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      max_model_len: 16384
+      max_batch_tokens: 32768
+      max_concurrent_requests: 32
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - broadcast
+      - large_group_council
+    notes: |
+      High-throughput 7B: big batch / high concurrency.
+
+  # 70B on 4x V100 16GB — “big brain”
+  llama3-70b-v100-4gpu:
+    name: llama3-70b-v100-4gpu
+    display_name: "LLaMA 3 70B (4x V100 16GB)"
+    task_type: analysis
+    backend: vllm
+    model_id: "meta-llama/Meta-Llama-3-70B-Instruct"
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      max_model_len: 8192
+      max_batch_tokens: 12288
+      max_concurrent_requests: 8
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - deep_analysis
+      - strategic_planning
+      - high_stakes_decision
+    notes: |
+      70B on 4x V100. Requires aggressive quantization and careful deployment
+      but gives much richer reasoning.
+
+  # Brain / Ollama fallback profile (legacy)
+  brain-ollama-7b:
+    name: brain-ollama-7b
+    display_name: "Brain Ollama 7B (legacy)"
+    task_type: chat
+    backend: ollama
+    model_id: "llama3.1:8b-instruct-q8_0"
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      max_model_len: 4096
+      max_batch_tokens: 4096
+      max_concurrent_requests: 4
+      gpu_memory_fraction: 0.9
+    preferred_verbs:
+      - legacy_chat
+    notes: |
+      Keeps current behavior intact; uses your existing Ollama model.

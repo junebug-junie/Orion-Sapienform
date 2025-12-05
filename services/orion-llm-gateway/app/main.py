@@ -1,12 +1,21 @@
-# services/orion-llm-gateway/app/main.py
-
 import logging
 import time
 
 from orion.core.bus.service import OrionBus
 from .settings import settings
-from .models import ExecutionEnvelope, ChatBody, GenerateBody, ExecStepPayload
-from .llm_backend import run_llm_chat, run_llm_generate, run_llm_exec_step
+from .models import (
+    ExecutionEnvelope,
+    ChatBody,
+    GenerateBody,
+    ExecStepPayload,
+    EmbeddingsBody,
+)
+from .llm_backend import (
+    run_llm_chat,
+    run_llm_generate,
+    run_llm_exec_step,
+    run_llm_embeddings,
+)
 
 logger = logging.getLogger("orion-llm-gateway")
 
@@ -104,8 +113,6 @@ def main():
                 result = run_llm_exec_step(body)
                 elapsed_ms = int((time.time() - t0) * 1000)
 
-                # Shape this to match emit_cortex_step_result so the orchestrator
-                # can keep using the same _wait_for_exec_results logic.
                 reply = {
                     "trace_id": envelope.correlation_id,
                     "service": envelope.service,
@@ -123,6 +130,27 @@ def main():
                     envelope.correlation_id,
                     envelope.reply_channel,
                     elapsed_ms,
+                )
+
+            # -------------------------
+            # EMBEDDINGS (NEW)
+            # -------------------------
+            elif envelope.event == "embeddings":
+                body = EmbeddingsBody(**envelope.payload.get("body", envelope.payload))
+                data = run_llm_embeddings(body)
+
+                reply = {
+                    "event": "embeddings_result",
+                    "service": settings.llm_service_name,
+                    "correlation_id": envelope.correlation_id,
+                    "payload": data,
+                }
+                bus.publish(envelope.reply_channel, reply)
+
+                logger.info(
+                    "Published embeddings_result corr_id=%s reply_channel=%s",
+                    envelope.correlation_id,
+                    envelope.reply_channel,
                 )
 
             else:

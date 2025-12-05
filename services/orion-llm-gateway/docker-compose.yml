@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     networks:
       - app-net
+
+    # Pull in the base .env (bus, model defaults, etc.)
     env_file:
       - .env
 
@@ -26,7 +28,7 @@ services:
       - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE}
       - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX}
 
-      # Backend + model defaults
+      # Backend + model defaults (legacy paths)
       - ORION_DEFAULT_LLM_MODEL=${ORION_DEFAULT_LLM_MODEL}
       - ORION_LLM_DEFAULT_BACKEND=${ORION_LLM_DEFAULT_BACKEND}
 
@@ -42,8 +44,21 @@ services:
       # Label used in reply payloads
       - ORION_LLM_SERVICE_NAME=${ORION_LLM_SERVICE_NAME}
 
+      # ─────────────────────────────────────
+      # Profiles config (new)
+      # ─────────────────────────────────────
+      # Path inside the container
+      - ./services/orion-llm-gateway/config/llm_profiles.yaml:/app/config/llm_profiles.yaml:ro
+      - "host.docker.internal:host-gateway"      # Default profile name from your YAML
+      - LLM_DEFAULT_PROFILE_NAME=${LLM_DEFAULT_PROFILE_NAME:-llama3-7b-v100-1gpu}
+
+    # Optional: keep HTTP port for future metrics / health / UI
     ports:
-      - "8210:8210"   # optional, keep for future HTTP/metrics
+      - "8210:8210"
+
+    # Mount the profiles YAML into the container
+    volumes:
+      - ./config/llm_profiles.yaml:/app/config/llm_profiles.yaml:ro
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

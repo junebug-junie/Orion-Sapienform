@@ -79,11 +79,14 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
     elif profile is not None:
         backend = profile.backend
     else:
-        backend = (settings.default_backend or "ollama").lower()
+        backend = (settings.default_backend or "vllm").lower()
 
-    if backend not in ("vllm"):
-        logger.warning(f"[LLM-GW] Unknown backend '{backend}', falling back to 'vllm'")
+    if backend != "vllm":
+        logger.warning(
+            f"[LLM-GW] Unknown backend '{backend}', falling back to 'vllm'"
+        )
         return "vllm"
+
     return backend
 
 
@@ -220,18 +223,20 @@ def _embeddings_via_vllm(body: EmbeddingsBody, model: str) -> Dict[str, Any]:
 # ─────────────────────────────────────────────
 
 def run_llm_chat(body: ChatBody) -> str:
-    profile = _select_profile(body.verb, body.profile_name)
+    # 🔧 profile is decided purely by explicit profile_name or gateway default
+    profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
 
     if backend == "vllm":
         return _chat_via_vllm(body, model=model)
 
+    # Optional: if you truly never want ollama here, you can raise instead.
     return _chat_via_ollama(body, model=model)
 
 
 def run_llm_generate(body: GenerateBody) -> str:
-    profile = _select_profile(body.verb, body.profile_name)
+    profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
 
@@ -245,7 +250,7 @@ def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
     """
     Embeddings entrypoint — currently vLLM-only.
     """
-    profile = _select_profile(body.verb, body.profile_name)
+    profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
 
@@ -253,6 +258,7 @@ def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
         return _embeddings_via_vllm(body, model=model)
 
     raise RuntimeError(f"Unknown backend for embeddings: {backend}")
+
 
 def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
     """

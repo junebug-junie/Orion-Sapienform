@@ -21,16 +21,6 @@ class Settings(BaseSettings):
     WHISPER_DEVICE: str = Field(default="cuda", env="WHISPER_DEVICE")
     WHISPER_COMPUTE_TYPE: str = Field(default="float16", env="WHISPER_COMPUTE_TYPE")
 
-    # --- LLM Model Selection ---
-    LLM_MODEL: str = Field(default="mistral:instruct", env="LLM_MODEL")
-
-    # --- Cognitive Backends ---
-    BRAIN_URL: str = Field(
-        default=f"http://{os.getenv('PROJECT', 'orion-janus')}-brain:8088",
-        env="BRAIN_URL",
-    )
-    LLM_TIMEOUT_S: int = Field(default=60, env="LLM_TIMEOUT_S")
-
     # --- Orion Bus Integration ---
     ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
     ORION_BUS_URL: str = Field(
@@ -55,9 +45,6 @@ class Settings(BaseSettings):
         env="CHANNEL_CHAT_HISTORY_LOG",
     )
 
-    CHANNEL_BRAIN_INTAKE: str = Field(..., env="CHANNEL_BRAIN_INTAKE")
-    CHANNEL_BRAIN_OUT: str = Field(..., env="CHANNEL_BRAIN_OUT")
-
     # --- Agent Council Integration (new) ---
     CHANNEL_COUNCIL_INTAKE: str = Field(
         default="orion:agent-council:intake",
@@ -78,20 +65,6 @@ class Settings(BaseSettings):
     EXEC_REQUEST_PREFIX: str = Field(
         default="orion-exec:request",
         env="EXEC_REQUEST_PREFIX",
-    )
-    CHANNEL_LLM_REPLY_PREFIX: str = Field(
-        default="orion:llm:reply",
-        env="CHANNEL_LLM_REPLY_PREFIX"
-    )
-
-    # LLM Gateway (Hub → Gateway chat RPC)
-    CHANNEL_LLM_GATEWAY_INTAKE: str = Field(
-        default="orion:llm-gateway:chat:intake",
-        env="CHANNEL_LLM_GATEWAY_INTAKE"
-    )
-    CHANNEL_LLM_REPLY_PREFIX: str = Field(
-        default="orion:llm-gateway:chat:reply",
-        env="CHANNEL_LLM_REPLY_PREFIX"
     )
 
     # --- Recall / RAG Integration (new) ---

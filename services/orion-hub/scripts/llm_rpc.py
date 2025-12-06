@@ -52,7 +52,6 @@ async def _request_and_wait(
 
     # 5. Wait for result with timeout
     try:
-        # standard timeout for the hub to give up
         msg = await asyncio.wait_for(queue.get(), timeout=60.0)
         reply = msg.get("data", {})
         logger.info("[%s] RPC reply received.", trace_id)
@@ -65,88 +64,7 @@ async def _request_and_wait(
 
 
 # ─────────────────────────────────────────────
-# Legacy Brain RPC (bus-based LLM + TTS)
-# ─────────────────────────────────────────────
-
-class BrainRPC:
-    """
-    A Redis-based request/response RPC client for the Brain service.
-
-    NOTE:
-      - `call_llm` is legacy and will be superseded by LLMGatewayRPC.
-      - `call_tts` remains valid for GPU TTS routed through Brain.
-    """
-
-    def __init__(self, bus, kind: str | None = None):
-        self.bus = bus
-        self.kind = kind  # e.g. "warm_start" or None
-
-    async def call_llm(self, prompt: str, history: list, temperature: float):
-        """
-        Legacy path: Hub → Brain LLM on CHANNEL_BRAIN_INTAKE.
-
-        Prefer using LLMGatewayRPC for new call sites.
-        """
-        trace_id = str(uuid.uuid4())
-        reply_channel = f"orion:brain:rpc:{trace_id}"
-
-        payload = {
-            "trace_id": trace_id,
-            "source": settings.SERVICE_NAME,
-            "response_channel": reply_channel,
-            "prompt": prompt,
-            "history": history[-5:],  # lightweight contextual tail
-            "temperature": temperature,
-            "model": settings.LLM_MODEL,
-            "ts": datetime.utcnow().isoformat(),
-        }
-
-        # tag special calls
-        if self.kind is not None:
-            payload["kind"] = self.kind
-
-        if not self.bus or not getattr(self.bus, "enabled", False):
-            raise RuntimeError("BrainRPC used while OrionBus is disabled")
-
-        return await _request_and_wait(
-            self.bus,
-            settings.CHANNEL_BRAIN_INTAKE,
-            reply_channel,
-            payload,
-            trace_id,
-        )
-
-    async def call_tts(self, text: str, tts_q: asyncio.Queue):
-        """
-        Publishes a TTS RPC request and streams the Brain's GPU TTS reply.
-        Note: TTS uses a stream, so we manually handle subscription here.
-        """
-        rpc_id = str(uuid.uuid4())
-        reply_channel = f"orion:tts:rpc:{rpc_id}"
-
-        self.bus.publish(
-            settings.CHANNEL_TTS_INTAKE,
-            {
-                "rpc_id": rpc_id,
-                "text": text,
-                "source": settings.SERVICE_NAME,
-            },
-        )
-
-        sub = self.bus.raw_subscribe(reply_channel)
-        try:
-            async for msg in sub:
-                payload = msg.get("data", {})
-                if payload.get("type") == "tts_chunk":
-                    await tts_q.put({"audio_response": payload["chunk"]})
-                if payload.get("type") == "tts_done":
-                    break
-        finally:
-            sub.close()
-
-
-# ─────────────────────────────────────────────
-# Agent Council RPC (unchanged)
+# Agent Council RPC
 # ─────────────────────────────────────────────
 
 class CouncilRPC:
@@ -158,6 +76,12 @@ class CouncilRPC:
         self.bus = bus
 
     async def call_llm(self, prompt: str, history: list, temperature: float):
+        """
+        Hub → Agent Council over the bus.
+
+        Council is responsible for picking its own LLM backend/model
+        (which can be wired internally to LLM Gateway).
+        """
         trace_id = str(uuid.uuid4())
         reply_channel = f"{settings.CHANNEL_COUNCIL_REPLY_PREFIX}:{trace_id}"
 
@@ -167,9 +91,8 @@ class CouncilRPC:
             "source": settings.SERVICE_NAME,
             "response_channel": reply_channel,
             "prompt": prompt,
-            "history": history[-5:],
+            "history": history[-5:],  # lightweight contextual tail
             "temperature": temperature,
-            "model": settings.LLM_MODEL,
             "mode": "council",
             "ts": datetime.utcnow().isoformat(),
         }
@@ -188,10 +111,9 @@ class CouncilRPC:
         # raw_reply is whatever the council publishes on the reply channel,
         # i.e., a CouncilResult dict.
         if isinstance(raw_reply, dict):
-            # In your current wiring, council publishes the CouncilResult
-            # directly as the message 'data', not nested in payload.
             result = raw_reply
 
+            # Normalize shape for callers: ensure .text exists if only final_text is present.
             if "final_text" in result and "text" not in result:
                 result = {**result, "text": result["final_text"]}
 
@@ -233,6 +155,10 @@ class LLMGatewayRPC:
             "text": "<LLM output>"
           }
         }
+
+    NOTE:
+      - Hub does NOT choose model or backend.
+      - Routing is done entirely inside LLM Gateway via profiles + defaults.
     """
 
     def __init__(self, bus):
@@ -242,10 +168,6 @@ class LLMGatewayRPC:
         self.service_name = getattr(settings, "LLM_GATEWAY_SERVICE_NAME", None) or "LLMGatewayService"
         self.exec_request_prefix = getattr(settings, "EXEC_REQUEST_PREFIX", "orion-exec:request")
         self.reply_prefix = getattr(settings, "CHANNEL_LLM_REPLY_PREFIX", "orion:llm:reply")
-
-        # Legacy defaults (no longer used for new call sites, but kept for compat)
-        self.default_model = getattr(settings, "LLM_MODEL", "llama3.1:8b-instruct-q8_0")
-        self.default_backend = getattr(settings, "LLM_BACKEND", "ollama")
 
         if not self.bus or not getattr(self.bus, "enabled", False):
             logger.warning(
@@ -281,7 +203,7 @@ class LLMGatewayRPC:
           - prompt: newest user wave (will be appended as a final user message)
 
         Hub does NOT choose model or backend anymore.
-        Routing is done inside the LLM Gateway via verbs + profiles.
+        Routing is done inside the LLM Gateway via profiles + defaults.
         """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")
@@ -357,7 +279,7 @@ class LLMGatewayRPC:
         Generate-style call (single prompt into the gateway).
 
         Hub does NOT choose model or backend anymore.
-        Routing is done inside the LLM Gateway via verbs + profiles.
+        Routing is done inside the LLM Gateway via profiles + defaults.
         """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")

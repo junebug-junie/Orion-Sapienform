@@ -30,8 +30,6 @@ class SelfField(BaseModel):
 class AgentConfig(BaseModel):
     name: str
     role_description: str
-    backend: str
-    model: Optional[str] = None
     temperature: float = 0.7
     weight: float = 1.0
     universe: str = "core"
@@ -41,8 +39,6 @@ class AgentConfig(BaseModel):
 
 class AgentOpinion(BaseModel):
     agent_name: str
-    model: Optional[str]
-    backend: str
     text: str
 
 

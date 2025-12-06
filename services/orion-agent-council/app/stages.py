@@ -52,8 +52,6 @@ class AgentRoundStage(Stage):
             opinions.append(
                 AgentOpinion(
                     agent_name=agent.name,
-                    model=agent.model,
-                    backend=agent.backend,
                     text=text,
                 )
             )

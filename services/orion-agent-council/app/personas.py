@@ -22,8 +22,6 @@ def _make_agent(
     return AgentConfig(
         name=name,
         role_description=role_description,
-        backend=settings.default_backend,
-        model=settings.default_model,
         temperature=temperature,
         weight=weight,
         universe=universe,

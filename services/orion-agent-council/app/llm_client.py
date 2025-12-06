@@ -38,12 +38,17 @@ class BusRPCClient:
     def request(self, envelope: Dict, correlation_id: str) -> Optional[Dict]:
         reply_channel = f"{self.reply_prefix}:{correlation_id}"
 
+        # Attach correlation + reply_channel to the envelope
         envelope = {
             **envelope,
             "correlation_id": correlation_id,
             "reply_channel": reply_channel,
         }
 
+        # --- SUBSCRIBE FIRST ---
+        sub = self.bus.raw_subscribe(reply_channel)
+
+        # --- THEN PUBLISH ---
         self.bus.publish(self.intake_channel, envelope)
         logger.info(
             "[%s] BusRPC -> %s (reply=%s)",
@@ -53,7 +58,8 @@ class BusRPCClient:
         )
 
         start = time.monotonic()
-        for msg in self.bus.raw_subscribe(reply_channel):
+
+        for msg in sub:
             if msg.get("type") != "message":
                 continue
 
@@ -64,14 +70,13 @@ class BusRPCClient:
             logger.info("[%s] BusRPC got matching reply", correlation_id)
             return data
 
-            # (Generator exits automatically when function returns)
-
-            # If we ever refactor to not early-return, keep timeout checks here.
-            # if time.monotonic() - start > self.timeout_sec:
-            #     break
-
+        # If the generator exits without us returning, treat as timeout
         if time.monotonic() - start > self.timeout_sec:
-            logger.warning("[%s] BusRPC timed out waiting on %s", correlation_id, reply_channel)
+            logger.warning(
+                "[%s] BusRPC timed out waiting on %s",
+                correlation_id,
+                reply_channel,
+            )
         return None
 
 
@@ -83,6 +88,9 @@ class LLMClient:
       - creates LLM body with PromptFactory
       - wraps it in a gateway envelope
       - retrieves `payload.text` from the reply
+
+    NOTE:
+      - Model/backend are now chosen entirely by LLM Gateway via profiles/defaults.
     """
 
     def __init__(self, bus: OrionBus) -> None:
@@ -115,17 +123,21 @@ class LLMClient:
             persona_state=persona_state,
         )
 
+        messages = PromptFactory.build_messages(agent, ctx)
+
         body = {
-            "model": agent.model or settings.default_model,
-            "messages": PromptFactory.build_messages(agent, ctx),
+            # 🚫 NO model / backend here – let Gateway/profiles decide
+            "messages": messages,
             "options": {
-                "backend": agent.backend or settings.default_backend,
                 "temperature": agent.temperature,
             },
             "stream": False,
             "return_json": False,
             "trace_id": correlation_id,
             "source": source,
+            # Optional hints for Gateway if/when you want them:
+            "verb": "council_chat",
+            "profile_name": None,
         }
 
         envelope = {

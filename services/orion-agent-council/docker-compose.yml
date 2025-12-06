@@ -31,8 +31,6 @@ services:
       - LLM_GATEWAY_SERVICE_NAME=${LLM_GATEWAY_SERVICE_NAME}
 
       # LLM defaults
-      - DEFAULT_BACKEND=${DEFAULT_BACKEND}
-      - DEFAULT_MODEL=${DEFAULT_MODEL}
       - COUNCIL_LLM_TIMEOUT_SEC=${COUNCIL_LLM_TIMEOUT_SEC}
 
       # Deliberation thresholds

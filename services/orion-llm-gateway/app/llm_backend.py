@@ -4,6 +4,7 @@ import time
 import json
 
 import httpx
+from httpx import HTTPStatusError
 
 from .models import ChatBody, GenerateBody, ExecStepPayload, EmbeddingsBody
 from .settings import settings
@@ -16,6 +17,46 @@ logger = logging.getLogger("orion-llm-gateway.backend")
 # ─────────────────────────────────────────────
 
 _profile_registry: LLMProfileRegistry = settings.load_profile_registry()
+
+def _extract_text_from_vllm_completion(data: Dict[str, Any]) -> str:
+    """
+    For /v1/completions-style responses:
+      {
+        "choices": [
+          { "text": "...", ... }
+        ],
+        ...
+      }
+    """
+    try:
+        choices = data.get("choices") or []
+        if choices:
+            txt = choices[0].get("text")
+            if txt:
+                return str(txt).strip()
+    except Exception:
+        pass
+    logger.warning(f"[LLM-GW] vLLM /v1/completions response not understood: {data}")
+    return ""
+
+
+def _flatten_messages_to_prompt(messages: list[Dict[str, Any]]) -> str:
+    """
+    Fallback: turn OpenAI chat-style messages into a single text prompt
+    for /v1/completions-style endpoints.
+    """
+    if not messages:
+        return ""
+
+    lines: list[str] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = str(m.get("content", "")).strip()
+        if not content:
+            continue
+        # simple conversational flattening
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
 
 def _select_profile(
@@ -104,15 +145,31 @@ def _resolve_model(body_model: str | None, profile: LLMProfile | None) -> str:
     return settings.default_model
 
 def _extract_text_from_vllm(data: Dict[str, Any]) -> str:
+    """
+    Handle both OpenAI-style chat completions and plain completions:
+
+      - Chat: choices[0].message.content
+      - Text: choices[0].text
+    """
     try:
         choices = data.get("choices") or []
-        if choices:
-            msg = choices[0].get("message") or {}
-            content = msg.get("content")
-            if content:
-                return str(content).strip()
+        if not choices:
+            raise ValueError("No choices in vLLM response")
+
+        first = choices[0] or {}
+
+        # Chat-style (what /v1/chat/completions returns)
+        msg = first.get("message")
+        if isinstance(msg, dict) and msg.get("content") is not None:
+            return str(msg["content"]).strip()
+
+        # Text-style (what /v1/completions returns)
+        if "text" in first and first["text"] is not None:
+            return str(first["text"]).strip()
+
     except Exception:
         pass
+
     logger.warning(f"[LLM-GW] vLLM response not understood: {data}")
     return ""
 
@@ -140,42 +197,108 @@ def _common_http_client() -> httpx.Client:
 # Backend-specific chat implementations
 # ─────────────────────────────────────────────
 
+from httpx import HTTPStatusError
+
 def _chat_via_vllm(body: ChatBody, model: str) -> str:
     """
-    vLLM assumed to expose an OpenAI-compatible /v1/chat/completions.
+    vLLM assumed to expose OpenAI-compatible endpoints.
+
+    We try, in order:
+      1) /v1/chat/completions  (chat-style: messages[])
+      2) /v1/completions       (text-style: prompt)
+
+    If both fail, we return a readable error string instead of raising.
     """
     if not settings.vllm_url:
         logger.warning("[LLM-GW] vLLM URL not configured; falling back to Ollama")
         return _chat_via_ollama(body, model=model)
 
-    url = f"{settings.vllm_url.rstrip('/')}/v1/chat/completions"
+    base = settings.vllm_url.rstrip("/")
+    candidate_paths = ["/v1/chat/completions", "/v1/completions"]
+    last_error: Exception | None = None
 
     opts = body.options or {}
-    params: Dict[str, Any] = {}
-    for key in ("temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty", "stop"):
+    shared_params: Dict[str, Any] = {}
+    for key in (
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "stop",
+    ):
         if key in opts and opts[key] is not None:
-            params[key] = opts[key]
+            shared_params[key] = opts[key]
 
-    payload: Dict[str, Any] = {
+    # --- Chat payload (for /v1/chat/completions) ---
+    chat_payload: Dict[str, Any] = {
         "model": model,
         "messages": body.messages,
         "stream": False,
-        **params,
+        **shared_params,
     }
 
-    logger.info(
-        f"[LLM-GW] vLLM chat model={payload['model']} messages={len(payload['messages'])}"
-    )
+    # --- Text payload (for /v1/completions) ---
+    # Use last user message as the prompt, or last message if no explicit user role.
+    if body.messages:
+        user_msgs = [m for m in body.messages if m.get("role") == "user"]
+        if user_msgs:
+            last_user = user_msgs[-1].get("content", "")
+        else:
+            last_user = body.messages[-1].get("content", "")
+        prompt = last_user or ""
+    else:
+        prompt = ""
 
-    try:
-        with _common_http_client() as client:
-            r = client.post(url, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            return _extract_text_from_vllm(data)
-    except Exception as e:
-        logger.error(f"[LLM-GW] vLLM chat failed: {e}", exc_info=True)
-        return f"[LLM-Gateway Error: vllm] {e}"
+    text_payload: Dict[str, Any] = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        **shared_params,
+    }
+
+    with _common_http_client() as client:
+        for path in candidate_paths:
+            url = base + path
+            if path.endswith("/chat/completions"):
+                payload = chat_payload
+            else:
+                payload = text_payload
+
+            logger.info("[LLM-GW] Trying vLLM endpoint %s", url)
+
+            try:
+                r = client.post(url, json=payload)
+
+                # If this endpoint simply doesn't exist, try the next one.
+                if r.status_code == 404:
+                    logger.warning(
+                        "[LLM-GW] vLLM endpoint %s returned 404; trying next candidate",
+                        url,
+                    )
+                    continue
+
+                r.raise_for_status()
+                data = r.json()
+                return _extract_text_from_vllm(data)
+
+            except HTTPStatusError as e:
+                last_error = e
+                logger.error("[LLM-GW] vLLM HTTP error on %s: %s", url, e, exc_info=True)
+            except Exception as e:
+                last_error = e
+                logger.error("[LLM-GW] vLLM unknown error on %s: %s", url, e, exc_info=True)
+
+    # If we got here, nothing worked; don't crash the gateway, just surface a readable error.
+    if last_error is not None:
+        logger.error(
+            "[LLM-GW] No working vLLM chat endpoint; last_error=%r", last_error
+        )
+        return f"[LLM-Gateway Error: vllm] No working chat endpoint; last_error={last_error!r}"
+
+    logger.error("[LLM-GW] No working vLLM chat endpoint; unknown cause")
+    return "[LLM-Gateway Error: vllm] No working chat endpoint; unknown cause"
+
 
 def _generate_via_vllm(body: GenerateBody, model: str) -> str:
     chat_body = ChatBody(

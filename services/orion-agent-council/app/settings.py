@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     )
 
     # --- LLM Gateway routing (bus) ---
-    # This is the new LLM client / gateway service, *not* Brain.
     llm_intake_channel: str = Field(
         "orion:llm-gateway:intake",
         alias="CHANNEL_LLM_GATEWAY_INTAKE",
@@ -36,8 +35,6 @@ class Settings(BaseSettings):
         alias="LLM_GATEWAY_SERVICE_NAME",
     )
 
-    default_backend: str = Field("ollama", alias="DEFAULT_BACKEND")
-    default_model: str = Field("llama3.1:8b-instruct-q8_0", alias="DEFAULT_MODEL")
     council_llm_timeout_sec: float = Field(30.0, alias="COUNCIL_LLM_TIMEOUT_SEC")
 
     # --- Deliberation loop config ---

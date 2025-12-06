@@ -16,7 +16,7 @@ from scripts.llm_rpc import CouncilRPC, LLMGatewayRPC
 from scripts.warm_start import mini_personality_summary
 from scripts.recall_rpc import RecallRPC
 
-logger = logging.getLogger("voice-app.ws")
+logger = logging.getLogger("orion-hub.ws")
 
 
 # ---------------------------------------------------------------------
@@ -42,7 +42,10 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
 # ---------------------------------------------------------------------
 # 🧠 Memory helpers (Recall → system block)
 # ---------------------------------------------------------------------
-def _format_fragments_for_ws(fragments: List[Dict[str, Any]], limit: int = 12) -> List[str]:
+def _format_fragments_for_ws(
+    fragments: List[Dict[str, Any]],
+    limit: int = 12,
+) -> List[str]:
     """
     Turn recall fragments into short lines suitable for a system
     memory block. We keep it compact but still human-readable if
@@ -123,7 +126,8 @@ async def _build_memory_block_for_ws(
 
     except Exception as e:
         logger.warning(
-            f"RecallRPC lookup failed in WebSocket handler: {e}",
+            "RecallRPC lookup failed in WebSocket handler: %s",
+            e,
             exc_info=True,
         )
         return ""
@@ -164,7 +168,7 @@ def _inject_memory_block(
 
     history = _strip_old_memory_blocks(history)
 
-    insert_idx = 1  # after core persona
+    insert_idx = 1  # after core personality
     if has_instructions:
         insert_idx += 1
 
@@ -176,10 +180,18 @@ def _inject_memory_block(
 
 
 # ---------------------------------------------------------------------
-# 🎙️ Main WebSocket endpoint (Brain vs Council + Recall)
+# 🎙️ Main WebSocket endpoint (Gateway / Council + Recall)
 # ---------------------------------------------------------------------
 async def websocket_endpoint(websocket: WebSocket):
-    """Handles the main voice and text WebSocket lifecycle."""
+    """
+    Handles the main voice/text WebSocket lifecycle for Hub.
+
+    - ASR (audio → text) via `asr` from scripts.main.
+    - LLM via LLMGatewayRPC by default (vLLM Mistral behind the scenes).
+    - Optional Council mode via CouncilRPC when mode == "council".
+    - Optional Recall → memory block injection.
+    - Optional TTS stream back to the client.
+    """
     from scripts.main import asr, bus  # lazy import shared objects
 
     await websocket.accept()
@@ -205,7 +217,7 @@ async def websocket_endpoint(websocket: WebSocket):
             raw = await websocket.receive_text()
             data: Dict[str, Any] = json.loads(raw)
 
-            # Mode toggle: "brain" (default) | "council"
+            # Mode toggle: "brain" (gateway) | "council"
             mode = data.get("mode", "brain")
 
             # Flags
@@ -243,7 +255,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"state": "idle"})
                 continue
 
-            logger.info(f"Transcript: {transcript!r}")
+            logger.info("Transcript: %r", transcript)
 
             if not is_text_input:
                 await websocket.send_json(
@@ -287,11 +299,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     has_instructions=has_instructions,
                 )
 
-            # --- DIAGNOSTIC LOGGING ---
-            logger.info(f"HISTORY BEFORE LLM CALL (mode={mode}): {history}")
+            logger.info("HISTORY BEFORE LLM CALL (mode=%s): %s", mode, history)
 
             # ---------------------------------------------------------
-            # 🧠 Step 4: LLM via LLM Gateway or Council (bus-native)
+            # 🧠 Step 4: LLM via Gateway or Council (bus-native)
             # ---------------------------------------------------------
             user_prompt = transcript.strip()
 
@@ -392,8 +403,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 exc_info=True,
                             )
 
-            # --- DIAGNOSTIC LOGGING ---
-            logger.info(f"HISTORY AFTER LLM CALL (mode={mode}): {history}")
+            logger.info("HISTORY AFTER LLM CALL (mode=%s): %s", mode, history)
 
             # Mark the end of this turn's processing phase.
             await websocket.send_json({"state": "idle"})

@@ -306,6 +306,8 @@ async def websocket_endpoint(websocket: WebSocket):
             # ---------------------------------------------------------
             user_prompt = transcript.strip()
 
+            spark_meta = None  # <<< NEW
+
             if mode == "council":
                 rpc = CouncilRPC(bus)
                 reply = await rpc.call_llm(
@@ -323,6 +325,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_id=session_id,
                     user_id=user_id,
                 )
+
+                # <<< NEW: unwrap spark_meta from Gateway reply
+                if isinstance(reply, dict):
+                    raw_reply = reply.get("raw")
+                    if isinstance(raw_reply, dict):
+                        payload_obj = raw_reply.get("payload")
+                        if isinstance(payload_obj, dict):
+                            spark_meta = payload_obj.get("spark_meta")
 
             orion_response_text = (
                 reply.get("text") or reply.get("response") or ""
@@ -372,7 +382,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "response": orion_response_text,
                         "user_id": user_id,
                         "session_id": session_id,
-                        "spark_meta": None,
+                        "spark_meta": spark_meta,
                         "created_at": datetime.utcnow().isoformat(),
                         # Extra field for human inspection; pydantic will ignore extras.
                         "text": (

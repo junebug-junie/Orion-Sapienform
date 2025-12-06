@@ -244,6 +244,7 @@ async def handle_chat_request(
             history=full_history,
             temperature=temperature,
         )
+        spark_meta = None  # <<< NEW: council doesn't supply spark yet
     else:
         gateway = LLMGatewayRPC(bus)
         reply = await gateway.call_chat(
@@ -253,6 +254,14 @@ async def handle_chat_request(
             source="hub-http",
             session_id=session_id,
         )
+
+        # <<< NEW: unwrap spark_meta from Gateway bus envelope
+        spark_meta = None
+        raw = reply.get("raw") if isinstance(reply, dict) else None
+        if isinstance(raw, dict):
+            payload_obj = raw.get("payload")
+            if isinstance(payload_obj, dict):
+                spark_meta = payload_obj.get("spark_meta")
 
     text = reply.get("text") or reply.get("response") or ""
     tokens = len(text.split()) if text else 0
@@ -265,6 +274,7 @@ async def handle_chat_request(
         "tokens": tokens,
         "raw": reply,
         "recall_debug": recall_debug,
+        "spark_meta": spark_meta,  # <<< NEW
     }
 
 
@@ -326,6 +336,7 @@ async def api_chat(
                 "mode": mode,
                 # we don’t have user_id on HTTP; writer can treat it as optional
                 "user_id": None,
+                "spark_meta": spark_meta,  # <<< NEW
             }
 
             bus.publish(
@@ -342,7 +353,6 @@ async def api_chat(
                 e,
                 exc_info=True,
             )
-
     # ─────────────────────────────────────────────────────────────
     # 🧾 Store chat tail in Redis (last 20 entries)
     # ─────────────────────────────────────────────────────────────
@@ -461,3 +471,55 @@ async def submit_collapse(data: dict):
             status_code=500,
             content={"success": False, "error": str(e)},
         )
+
+@router.get("/api/debug/spark-last")
+async def api_debug_spark_last(
+    x_orion_session_id: Optional[str] = Header(None),
+):
+    """
+    Return the last Spark metadata seen for this Hub session.
+
+    This is *not* live SparkEngine state, just the last spark_meta
+    that came back from LLM Gateway (HTTP or WS path) and was stored
+    in Redis under:
+        orion:hub:session:{session_id}:spark:last
+    """
+    from .main import bus
+    if not bus:
+        raise RuntimeError("OrionBus not initialized.")
+
+    # Reuse your warm-start session logic so this lines up with chat.
+    session_id = await ensure_session(x_orion_session_id, bus)
+    client = getattr(bus, "client", None)
+
+    if client is None:
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "spark_meta": None,
+                "note": "Redis client not available on bus.",
+            }
+        )
+
+    key = f"orion:hub:session:{session_id}:spark:last"
+    raw = client.get(key)
+    if not raw:
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "spark_meta": None,
+                "note": "No spark_meta recorded yet for this session.",
+            }
+        )
+
+    try:
+        spark_meta = json.loads(raw)
+    except Exception:
+        spark_meta = None
+
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            "spark_meta": spark_meta,
+        }
+    )

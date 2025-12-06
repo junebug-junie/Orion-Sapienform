@@ -205,7 +205,7 @@ class CouncilRPC:
 
 
 # ─────────────────────────────────────────────
-# NEW: LLM Gateway RPC (Hub → LLMGatewayService)
+# LLM Gateway RPC (Hub → LLMGatewayService)
 # ─────────────────────────────────────────────
 
 class LLMGatewayRPC:
@@ -247,6 +247,7 @@ class LLMGatewayRPC:
         self.exec_request_prefix = getattr(settings, "EXEC_REQUEST_PREFIX", "orion-exec:request")
         self.reply_prefix = getattr(settings, "CHANNEL_LLM_REPLY_PREFIX", "orion:llm:reply")
 
+        # Legacy defaults (no longer used for new call sites, but kept for compat)
         self.default_model = getattr(settings, "LLM_MODEL", "llama3.1:8b-instruct-q8_0")
         self.default_backend = getattr(settings, "LLM_BACKEND", "ollama")
 
@@ -270,12 +271,12 @@ class LLMGatewayRPC:
         prompt: str,
         history: list,
         temperature: float,
-        model: str | None = None,
-        backend: str | None = None,
         trace_id: str | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
         source: str = "hub",
+        verb: str | None = None,
+        profile_name: str | None = None,
     ) -> dict:
         """
         High-level chat call:
@@ -283,11 +284,8 @@ class LLMGatewayRPC:
           - history: prior messages, already in {"role", "content"} format
           - prompt: newest user wave (will be appended as a final user message)
 
-        Returns:
-          {
-            "text": "<LLM output>",
-            "raw":  { ...full gateway reply... }
-          }
+        Hub does NOT choose model or backend anymore.
+        Routing is done inside the LLM Gateway via verbs + profiles.
         """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")
@@ -295,19 +293,19 @@ class LLMGatewayRPC:
         trace_id = trace_id or str(uuid.uuid4())
         reply_channel = f"{self.reply_prefix}:{trace_id}"
 
-        # Build chat-style messages for the gateway.
-        # We keep the last few history items and append the new user prompt.
+        # Build messages (history + latest user prompt)
         trimmed_history = history[-5:] if history else []
         messages = list(trimmed_history)
         if prompt:
             messages.append({"role": "user", "content": prompt})
 
         body = {
-            "model": model or self.default_model,
+            # IMPORTANT: let gateway resolve via profile/default_model
+            "model": None,
             "messages": messages,
             "options": {
                 "temperature": temperature,
-                "backend": (backend or self.default_backend),
+                # no backend override here – purely profile/settings-driven
             },
             "stream": False,
             "return_json": False,
@@ -315,6 +313,9 @@ class LLMGatewayRPC:
             "user_id": user_id,
             "session_id": session_id,
             "source": source,
+            # New: semantic routing hints for the gateway
+            "verb": verb,
+            "profile_name": profile_name,
         }
 
         envelope = {
@@ -337,9 +338,6 @@ class LLMGatewayRPC:
             trace_id,
         )
 
-        # Normalize into a Hub-friendly shape.
-        # Expected gateway reply:
-        #   { event, service, correlation_id, payload: { text: "..." } }
         payload = raw_reply.get("payload") if isinstance(raw_reply, dict) else None
         text = ""
         if isinstance(payload, dict):
@@ -355,15 +353,18 @@ class LLMGatewayRPC:
         *,
         prompt: str,
         temperature: float,
-        model: str | None = None,
-        backend: str | None = None,
         trace_id: str | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
         source: str = "hub",
+        verb: str | None = None,
+        profile_name: str | None = None,
     ) -> dict:
         """
         Generate-style call (single prompt into the gateway).
+
+        Hub does NOT choose model or backend anymore.
+        Routing is done inside the LLM Gateway via verbs + profiles.
         """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")
@@ -372,11 +373,12 @@ class LLMGatewayRPC:
         reply_channel = f"{self.reply_prefix}:{trace_id}"
 
         body = {
-            "model": model or self.default_model,
+            # IMPORTANT: let gateway resolve via profile/default_model
+            "model": None,
             "prompt": prompt,
             "options": {
                 "temperature": temperature,
-                "backend": (backend or self.default_backend),
+                # no backend override here – purely profile/settings-driven
             },
             "stream": False,
             "return_json": False,
@@ -384,6 +386,8 @@ class LLMGatewayRPC:
             "user_id": user_id,
             "session_id": session_id,
             "source": source,
+            "verb": verb,
+            "profile_name": profile_name,
         }
 
         envelope = {

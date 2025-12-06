@@ -20,7 +20,7 @@ logger = logging.getLogger("orion-hub.ws")
 
 
 # ---------------------------------------------------------------------
-# 🔄 Utility: drain a queue to the WebSocket
+# 🔄 Utility: Drain a queue to the WebSocket; Spark integration
 # ---------------------------------------------------------------------
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
     """

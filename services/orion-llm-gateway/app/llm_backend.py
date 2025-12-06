@@ -19,40 +19,43 @@ _profile_registry: LLMProfileRegistry = settings.load_profile_registry()
 
 
 def _select_profile(
-    verb: str | None,
     profile_name: str | None,
 ) -> LLMProfile | None:
     """
-    Try to select a profile given verb + explicit profile_name.
+    Select explicit profile_name.
     Returns None if profiles are not configured.
+    """
+   """
+    Simple selection:
+
+      1) Explicit profile_name, if provided.
+      2) Global default profile from settings.
+      3) Otherwise: no profile (use settings.default_model).
     """
     if not _profile_registry.profiles:
         return None
 
-    # Explicit profile beats verb-based
+    # 1) Explicit override
     if profile_name:
         try:
             return _profile_registry.get(profile_name)
         except KeyError:
-            logger.warning(f"[LLM-GW] Unknown profile_name '{profile_name}'")
-            # fall through
+            logger.warning(
+                "[LLM-GW] Unknown profile_name '%s'; falling back to default",
+                profile_name,
+            )
 
-    if verb:
-        default = settings.llm_default_profile_name
-        prof = _profile_registry.for_verb(verb, default=default)
-        if prof:
-            return prof
-
-    # Last resort: default profile name if configured
+    # 2) Default profile for this gateway
     if settings.llm_default_profile_name:
         try:
             return _profile_registry.get(settings.llm_default_profile_name)
         except KeyError:
             logger.warning(
-                "[LLM-GW] Default profile '%s' not found",
+                "[LLM-GW] Default profile '%s' not found in registry",
                 settings.llm_default_profile_name,
             )
 
+    # 3) No profile – gateway will fall back to settings.default_model
     return None
 
 
@@ -79,9 +82,9 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
     else:
         backend = (settings.default_backend or "ollama").lower()
 
-    if backend not in ("ollama", "vllm", "brain"):
-        logger.warning(f"[LLM-GW] Unknown backend '{backend}', falling back to 'ollama'")
-        return "ollama"
+    if backend not in ("vllm"):
+        logger.warning(f"[LLM-GW] Unknown backend '{backend}', falling back to 'vllm'")
+        return "vllm"
     return backend
 
 
@@ -97,25 +100,6 @@ def _resolve_model(body_model: str | None, profile: LLMProfile | None) -> str:
     if profile is not None:
         return profile.model_id
     return settings.default_model
-
-
-def _extract_text_from_ollama(data: Dict[str, Any]) -> str:
-    if isinstance(data, dict):
-        msg = data.get("message") or {}
-        if isinstance(msg, dict):
-            content = msg.get("content")
-            if content:
-                return str(content).strip()
-
-        if data.get("response"):
-            return str(data["response"]).strip()
-
-        if data.get("text"):
-            return str(data["text"]).strip()
-
-    logger.warning(f"[LLM-GW] Ollama response missing 'message.content': {data}")
-    return ""
-
 
 def _extract_text_from_vllm(data: Dict[str, Any]) -> str:
     try:
@@ -154,70 +138,6 @@ def _common_http_client() -> httpx.Client:
 # Backend-specific chat implementations
 # ─────────────────────────────────────────────
 
-def _chat_via_ollama(body: ChatBody, model: str) -> str:
-    """
-    Call Ollama's chat API if available, otherwise gracefully fall back
-    to /api/generate (older or minimal installs).
-    """
-    base_url = settings.ollama_url.rstrip("/")
-
-    messages = body.messages or []
-    options = body.options or {}
-
-    logger.info(
-        "[LLM-GW] Ollama chat model=%s messages=%d",
-        model,
-        len(messages),
-    )
-
-    try:
-        with _common_http_client() as client:
-            # 1) Try /api/chat first
-            chat_url = f"{base_url}/api/chat"
-            chat_payload = {
-                "model": model,
-                "messages": messages,
-                "options": options,
-                "stream": False,
-            }
-
-            r = client.post(chat_url, json=chat_payload)
-
-            # If this Ollama doesn't support /api/chat, fall back to /api/generate
-            if r.status_code == 404:
-                logger.warning(
-                    "[LLM-GW] Ollama /api/chat returned 404, falling back to /api/generate"
-                )
-
-                # Take the last user message as the prompt, or a generic prompt if none
-                last_user = ""
-                for m in reversed(messages):
-                    if m.get("role") == "user":
-                        last_user = str(m.get("content") or "")
-                        break
-
-                prompt = last_user or "You are Orion's LLM backend."
-
-                gen_url = f"{base_url}/api/generate"
-                gen_payload = {
-                    "model": model,
-                    "prompt": prompt,
-                    "options": options,
-                    "stream": False,
-                }
-
-                r = client.post(gen_url, json=gen_payload)
-
-            # For non-404 errors, or after fallback, enforce status
-            r.raise_for_status()
-            data = r.json()
-            return _extract_text_from_ollama(data)
-
-    except Exception as e:
-        logger.error(f"[LLM-GW] Ollama chat failed: {e}", exc_info=True)
-        return f"[LLM-Gateway Error: ollama] {e}"
-
-
 def _chat_via_vllm(body: ChatBody, model: str) -> str:
     """
     vLLM assumed to expose an OpenAI-compatible /v1/chat/completions.
@@ -255,50 +175,6 @@ def _chat_via_vllm(body: ChatBody, model: str) -> str:
         logger.error(f"[LLM-GW] vLLM chat failed: {e}", exc_info=True)
         return f"[LLM-Gateway Error: vllm] {e}"
 
-
-def _chat_via_brain_http(body: ChatBody, model: str) -> str:
-    if not settings.brain_url:
-        logger.warning("[LLM-GW] Brain URL not configured; falling back to Ollama")
-        return _chat_via_ollama(body, model=model)
-
-    url = f"{settings.brain_url.rstrip('/')}/chat"
-    payload = body.model_dump(mode="json")
-    payload["model"] = model
-
-    logger.info("[LLM-GW] Brain /chat proxy")
-
-    try:
-        with _common_http_client() as client:
-            r = client.post(url, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            return _extract_text_from_brain_chat(data)
-    except Exception as e:
-        logger.error(f"[LLM-GW] Brain /chat failed: {e}", exc_info=True)
-        return f"[LLM-Gateway Error: brain] {e}"
-
-
-# ─────────────────────────────────────────────
-# Backend-specific generate implementations
-# ─────────────────────────────────────────────
-
-def _generate_via_ollama(body: GenerateBody, model: str) -> str:
-    chat_body = ChatBody(
-        model=model,
-        messages=[{"role": "user", "content": body.prompt}],
-        options=body.options,
-        stream=body.stream,
-        return_json=body.return_json,
-        trace_id=body.trace_id,
-        user_id=body.user_id,
-        session_id=body.session_id,
-        source=body.source,
-        verb=body.verb,
-        profile_name=body.profile_name,
-    )
-    return _chat_via_ollama(chat_body, model=model)
-
-
 def _generate_via_vllm(body: GenerateBody, model: str) -> str:
     chat_body = ChatBody(
         model=model,
@@ -314,29 +190,6 @@ def _generate_via_vllm(body: GenerateBody, model: str) -> str:
         profile_name=body.profile_name,
     )
     return _chat_via_vllm(chat_body, model=model)
-
-
-def _generate_via_brain_http(body: GenerateBody, model: str) -> str:
-    if not settings.brain_url:
-        logger.warning("[LLM-GW] Brain URL not configured; falling back to Ollama")
-        return _generate_via_ollama(body, model=model)
-
-    url = f"{settings.brain_url.rstrip('/')}/chat"
-    payload = body.model_dump(mode="json")
-    payload["model"] = model
-
-    logger.info("[LLM-GW] Brain /chat generate proxy")
-
-    try:
-        with _common_http_client() as client:
-            r = client.post(url, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            return _extract_text_from_brain_chat(data)
-    except Exception as e:
-        logger.error(f"[LLM-GW] Brain generate failed: {e}", exc_info=True)
-        return f"[LLM-Gateway Error: brain-generate] {e}"
-
 
 # ─────────────────────────────────────────────
 # Embeddings implementations
@@ -363,15 +216,6 @@ def _embeddings_via_vllm(body: EmbeddingsBody, model: str) -> Dict[str, Any]:
         r.raise_for_status()
         return r.json()
 
-
-def _embeddings_via_ollama(body: EmbeddingsBody, model: str) -> Dict[str, Any]:
-    """
-    If you later expose embeddings via Ollama/brain, hook it up here.
-    For now, we raise to make it explicit.
-    """
-    raise NotImplementedError("Embeddings via ollama/brain not implemented")
-
-
 # ─────────────────────────────────────────────
 # Public entrypoints used by main.py
 # ─────────────────────────────────────────────
@@ -383,8 +227,7 @@ def run_llm_chat(body: ChatBody) -> str:
 
     if backend == "vllm":
         return _chat_via_vllm(body, model=model)
-    elif backend == "brain":
-        return _chat_via_brain_http(body, model=model)
+
     return _chat_via_ollama(body, model=model)
 
 
@@ -395,8 +238,7 @@ def run_llm_generate(body: GenerateBody) -> str:
 
     if backend == "vllm":
         return _generate_via_vllm(body, model=model)
-    elif backend == "brain":
-        return _generate_via_brain_http(body, model=model)
+
     return _generate_via_ollama(body, model=model)
 
 
@@ -410,8 +252,7 @@ def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
 
     if backend == "vllm":
         return _embeddings_via_vllm(body, model=model)
-    elif backend in ("ollama", "brain"):
-        return _embeddings_via_ollama(body, model=model)
+
     raise RuntimeError(f"Unknown backend for embeddings: {backend}")
 
 def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
@@ -446,7 +287,6 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         )
 
     gen_body = GenerateBody(
-        model=None,
         prompt=final_prompt,
         options={},  # you can later pipe through richer options if ExecStepPayload supports them
         stream=False,

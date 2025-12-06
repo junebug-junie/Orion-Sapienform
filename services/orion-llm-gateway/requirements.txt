@@ -7,3 +7,4 @@ uvloop==0.20.0
 redis[hiredis]==5.0.7
 typing-extensions==4.12.2
 pyyaml==6.0.2
+numpy==1.26.4

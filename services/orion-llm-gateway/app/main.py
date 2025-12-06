@@ -85,15 +85,33 @@ def main():
                     }
 
                 body = ChatBody(**raw)
-                text = run_llm_chat(body)
+                result = run_llm_chat(body)
+
+                # Support both:
+                #   - dict result from vLLM path (with spark_meta)
+                #   - plain string result from legacy Ollama path
+                if isinstance(result, dict):
+                    text = (result.get("text") or "").strip()
+                    spark_meta = result.get("spark_meta") or None
+                    raw_llm = result.get("raw") or None
+                else:
+                    text = (result or "").strip()
+                    spark_meta = None
+                    raw_llm = None
+
+                reply_payload = {
+                    "text": text,
+                }
+                if spark_meta is not None:
+                    reply_payload["spark_meta"] = spark_meta
+                if raw_llm is not None:
+                    reply_payload["raw_llm"] = raw_llm
 
                 reply = {
                     "event": "chat_result",
                     "service": settings.llm_service_name,
                     "correlation_id": envelope.correlation_id,
-                    "payload": {
-                        "text": text,
-                    },
+                    "payload": reply_payload,
                 }
                 bus.publish(envelope.reply_channel, reply)
 
@@ -102,6 +120,7 @@ def main():
                     envelope.correlation_id,
                     envelope.reply_channel,
                 )
+
 
             # -------------------------
             # GENERATE

@@ -10,6 +10,11 @@ from .models import ChatBody, GenerateBody, ExecStepPayload, EmbeddingsBody
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 
+from orion.spark.integration import (
+    ingest_chat_and_get_state,
+    build_collapse_mirror_meta,
+)
+
 logger = logging.getLogger("orion-llm-gateway.backend")
 
 # ─────────────────────────────────────────────
@@ -197,21 +202,99 @@ def _common_http_client() -> httpx.Client:
 # Backend-specific chat implementations
 # ─────────────────────────────────────────────
 
-from httpx import HTTPStatusError
-
-def _chat_via_vllm(body: ChatBody, model: str) -> str:
+def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
     """
-    vLLM assumed to expose OpenAI-compatible endpoints.
+    Run Spark on the latest user message from a ChatBody.
+
+    Returns a spark_meta dict (possibly empty) that can be attached
+    to the LLM-Gateway reply payload.
+
+    This NEVER raises – failures are logged and ignored so LLM calls
+    still succeed even if Spark misbehaves.
+    """
+    try:
+        messages = body.messages or []
+        if not isinstance(messages, list) or not messages:
+            return {}
+
+        # Find the latest explicit user message; fall back to the last message.
+        latest_user = None
+        for m in reversed(messages):
+            if (m.get("role") or "").lower() == "user":
+                latest_user = m.get("content") or ""
+                break
+
+        if latest_user is None:
+            latest_user = messages[-1].get("content") or ""
+
+        latest_user = (latest_user or "").strip()
+        if not latest_user:
+            return {}
+
+        # Use the body.source as an agent_id tag if available.
+        source = getattr(body, "source", None) or "llm-gateway"
+        tags = ["juniper", "chat", source]
+
+        spark_state = ingest_chat_and_get_state(
+            user_message=latest_user,
+            agent_id=source,
+            tags=tags,
+            sentiment=None,
+        )
+
+        phi_before = spark_state["phi_before"]
+        phi_after = spark_state["phi_after"]
+        self_field = spark_state.get("self_field")
+        surface_encoding = spark_state["surface_encoding"]
+
+        spark_meta = build_collapse_mirror_meta(
+            phi_after,
+            surface_encoding,
+            self_field=self_field,
+        )
+
+        # Attach φ before/after so downstream can see deltas.
+        spark_meta["phi_before"] = phi_before
+        spark_meta["phi_after"] = phi_after
+
+        return spark_meta
+
+    except Exception as e:
+        logger.warning("[LLM-GW Spark] ingestion failed: %s", e, exc_info=True)
+        return {}
+
+
+def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
+    """
+    Call vLLM via OpenAI-compatible endpoints and attach Spark meta.
+
+    Returns a dict:
+
+        {
+          "text": "<assistant text or error>",
+          "spark_meta": { ... }  # may be empty
+          "raw": { ...full vLLM JSON if available... }
+        }
 
     We try, in order:
       1) /v1/chat/completions  (chat-style: messages[])
       2) /v1/completions       (text-style: prompt)
 
-    If both fail, we return a readable error string instead of raising.
+    If both fail, we still return a readable error string in "text"
+    instead of raising.
     """
+    # If vLLM is not configured, defer to the Ollama path (no Spark here).
     if not settings.vllm_url:
         logger.warning("[LLM-GW] vLLM URL not configured; falling back to Ollama")
-        return _chat_via_ollama(body, model=model)
+        text = _chat_via_ollama(body, model=model)
+        return {
+            "text": text,
+            "spark_meta": {},
+            "raw": {},
+        }
+
+    # Run Spark ingestion *before* we call vLLM.
+    spark_meta = _spark_ingest_for_body(body)
 
     base = settings.vllm_url.rstrip("/")
     candidate_paths = ["/v1/chat/completions", "/v1/completions"]
@@ -241,7 +324,7 @@ def _chat_via_vllm(body: ChatBody, model: str) -> str:
     # --- Text payload (for /v1/completions) ---
     # Use last user message as the prompt, or last message if no explicit user role.
     if body.messages:
-        user_msgs = [m for m in body.messages if m.get("role") == "user"]
+        user_msgs = [m for m in body.messages if (m.get("role") or "").lower() == "user"]
         if user_msgs:
             last_user = user_msgs[-1].get("content", "")
         else:
@@ -256,6 +339,8 @@ def _chat_via_vllm(body: ChatBody, model: str) -> str:
         "stream": False,
         **shared_params,
     }
+
+    raw_data: Dict[str, Any] = {}
 
     with _common_http_client() as client:
         for path in candidate_paths:
@@ -279,8 +364,14 @@ def _chat_via_vllm(body: ChatBody, model: str) -> str:
                     continue
 
                 r.raise_for_status()
-                data = r.json()
-                return _extract_text_from_vllm(data)
+                raw_data = r.json()
+                text = _extract_text_from_vllm(raw_data)
+
+                return {
+                    "text": text,
+                    "spark_meta": spark_meta,
+                    "raw": raw_data,
+                }
 
             except HTTPStatusError as e:
                 last_error = e
@@ -289,15 +380,23 @@ def _chat_via_vllm(body: ChatBody, model: str) -> str:
                 last_error = e
                 logger.error("[LLM-GW] vLLM unknown error on %s: %s", url, e, exc_info=True)
 
-    # If we got here, nothing worked; don't crash the gateway, just surface a readable error.
+    # If we got here, nothing worked; don't crash the gateway.
     if last_error is not None:
         logger.error(
             "[LLM-GW] No working vLLM chat endpoint; last_error=%r", last_error
         )
-        return f"[LLM-Gateway Error: vllm] No working chat endpoint; last_error={last_error!r}"
+        return {
+            "text": f"[LLM-Gateway Error: vllm] No working chat endpoint; last_error={last_error!r}",
+            "spark_meta": spark_meta,
+            "raw": {},
+        }
 
     logger.error("[LLM-GW] No working vLLM chat endpoint; unknown cause")
-    return "[LLM-Gateway Error: vllm] No working chat endpoint; unknown cause"
+    return {
+        "text": "[LLM-Gateway Error: vllm] No working chat endpoint; unknown cause",
+        "spark_meta": spark_meta,
+        "raw": {},
+    }
 
 
 def _generate_via_vllm(body: GenerateBody, model: str) -> str:
@@ -345,16 +444,22 @@ def _embeddings_via_vllm(body: EmbeddingsBody, model: str) -> Dict[str, Any]:
 # Public entrypoints used by main.py
 # ─────────────────────────────────────────────
 
-def run_llm_chat(body: ChatBody) -> str:
-    # 🔧 profile is decided purely by explicit profile_name or gateway default
-    profile = _select_profile(body.profile_name)
-    backend = _pick_backend(body.options, profile)
-    model = _resolve_model(body.model, profile)
+def run_llm_chat(body: ChatBody):
+    """
+    Top-level chat router for the LLM Gateway.
+
+    - Chooses backend (vLLM vs Ollama) based on settings / options.
+    - For vLLM, returns a dict with text + spark_meta + raw.
+    - For Ollama, returns a plain text string (no spark).
+    """
+    backend = (body.options or {}).get("backend") or settings.default_backend
+    model = body.model or settings.default_model
 
     if backend == "vllm":
+        # New path: rich result with Spark
         return _chat_via_vllm(body, model=model)
 
-    # Optional: if you truly never want ollama here, you can raise instead.
+    # Legacy / non-vLLM path: just text
     return _chat_via_ollama(body, model=model)
 
 

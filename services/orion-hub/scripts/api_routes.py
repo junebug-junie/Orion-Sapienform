@@ -292,7 +292,20 @@ async def api_chat(
     # Ensure warm-started session
     session_id = await ensure_session(x_orion_session_id, bus)
 
+    # Keep a local copy of user messages for logging/history
+    user_messages = payload.get("messages") or []
+
+    # Core chat handling (Gateway / Council + Recall)
     result = await handle_chat_request(bus, payload, session_id)
+
+    # Pull out text/mode/use_recall from the result
+    text: str = (result.get("text") or "").strip()
+    mode: str = result.get("mode", payload.get("mode", "brain"))
+    use_recall: bool = bool(result.get("use_recall", payload.get("use_recall", False)))
+
+    # Reflect the normalized values back into the response dict
+    result["mode"] = mode
+    result["use_recall"] = use_recall
 
     # ─────────────────────────────────────────────
     # 📡 Publish HTTP chat → chat history log
@@ -310,7 +323,7 @@ async def api_chat(
                 "prompt": latest_user_prompt,
                 "response": text,
                 "session_id": session_id,
-                "mode": result.get("mode", payload.get("mode", "brain")),
+                "mode": mode,
                 # we don’t have user_id on HTTP; writer can treat it as optional
                 "user_id": None,
             }
@@ -330,12 +343,11 @@ async def api_chat(
                 exc_info=True,
             )
 
-
     # ─────────────────────────────────────────────────────────────
     # 🧾 Store chat tail in Redis (last 20 entries)
     # ─────────────────────────────────────────────────────────────
     client = getattr(bus, "client", None)
-    if client is not None and user_messages:
+    if client is not None and isinstance(user_messages, list) and user_messages:
         try:
             history_key = f"orion:hub:session:{session_id}:history"
             client.lpush(history_key, str(user_messages[-1])[:4000])

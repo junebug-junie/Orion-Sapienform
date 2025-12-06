@@ -18,31 +18,8 @@ profiles:
       max_batch_tokens: 4096
       max_concurrent_requests: 4
       gpu_memory_fraction: 0.8
-    preferred_verbs:
-      - generic_chat
     notes: "Open, non-gated default for stack bring-up."
 
-
-  # ─────────────────────────────────────────────
-  # 0) Legacy / Ollama brain-ish profile
-  # ─────────────────────────────────────────────
-  brain-ollama-7b:
-    display_name: "Brain Ollama 7B"
-    task_type: chat
-    backend: ollama
-    model_id: "llama3.1:8b-instruct-q8_0"
-    supports_tools: false
-    supports_embeddings: false
-    supports_vision: false
-    gpu:
-      num_gpus: 0              # logical placeholder (CPU / local GPU not managed by vLLM)
-      tensor_parallel_size: 1
-      max_model_len: 8192
-      max_batch_tokens: 4096
-      max_concurrent_requests: 4
-      gpu_memory_fraction: null
-    preferred_verbs: []
-    notes: "Local Ollama-backed brain-style default; bypasses vLLM."
 
   # ─────────────────────────────────────────────
   # 1) Llama3 7B on 1× V100 16GB

@@ -29,21 +29,11 @@ class Settings(BaseSettings):
     # Polling / timing
     poll_timeout: float = Field(1.0, alias="POLL_TIMEOUT")
 
-    # Default model (for legacy callers without profiles)
-    default_model: str = Field(
-        "llama3.1:8b-instruct-q8_0", alias="ORION_DEFAULT_LLM_MODEL"
-    )
-
     # Default backend name if caller doesn't specify options["backend"]
-    # Supported: "ollama", "vllm", "brain"
-    default_backend: str = Field("ollama", alias="ORION_LLM_DEFAULT_BACKEND")
+    default_backend: str = Field("vllm", alias="ORION_LLM_DEFAULT_BACKEND")
 
     # Backend endpoints (can be None if not used yet)
-    ollama_url: str = Field(
-        "http://llm-brain:11434", alias="ORION_LLM_OLLAMA_URL"
-    )  # 1) Ollama model server
-    vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")  # 2) vLLM
-    brain_url: Optional[str] = Field(None, alias="ORION_LLM_BRAIN_URL")  # 3) Brain HTTP /chat
+    vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
 
     # Timeout knobs (shared across backends)
     connect_timeout_sec: float = Field(10.0, alias="CONNECT_TIMEOUT_SEC")

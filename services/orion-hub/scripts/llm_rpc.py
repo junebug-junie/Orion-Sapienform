@@ -124,10 +124,6 @@ class BrainRPC:
         rpc_id = str(uuid.uuid4())
         reply_channel = f"orion:tts:rpc:{rpc_id}"
 
-        # Note: Ideally we subscribe here before publishing too, 
-        # but for streaming audio, a tiny race condition is less fatal 
-        # than for control logic. Keeping as-is for now.
-
         self.bus.publish(
             settings.CHANNEL_TTS_INTAKE,
             {
@@ -300,8 +296,6 @@ class LLMGatewayRPC:
             messages.append({"role": "user", "content": prompt})
 
         body = {
-            # IMPORTANT: let gateway resolve via profile/default_model
-            "model": None,
             "messages": messages,
             "options": {
                 "temperature": temperature,
@@ -313,7 +307,6 @@ class LLMGatewayRPC:
             "user_id": user_id,
             "session_id": session_id,
             "source": source,
-            # New: semantic routing hints for the gateway
             "verb": verb,
             "profile_name": profile_name,
         }
@@ -373,12 +366,9 @@ class LLMGatewayRPC:
         reply_channel = f"{self.reply_prefix}:{trace_id}"
 
         body = {
-            # IMPORTANT: let gateway resolve via profile/default_model
-            "model": None,
             "prompt": prompt,
             "options": {
                 "temperature": temperature,
-                # no backend override here – purely profile/settings-driven
             },
             "stream": False,
             "return_json": False,

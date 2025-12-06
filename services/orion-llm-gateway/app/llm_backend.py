@@ -24,7 +24,7 @@ def _select_profile(
     """
     Select explicit profile_name.
     Returns None if profiles are not configured.
-    """
+
     Simple selection:
 
       1) Explicit profile_name, if provided.

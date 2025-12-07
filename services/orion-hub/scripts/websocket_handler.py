@@ -20,7 +20,7 @@ logger = logging.getLogger("orion-hub.ws")
 
 
 # ---------------------------------------------------------------------
-# 🔄 Utility: Drain a queue to the WebSocket; Spark integration
+# 🔄 Utility: Drain a queue to the WebSocket
 # ---------------------------------------------------------------------
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
     """
@@ -37,6 +37,53 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
         logger.info("Drain queue task cancelled.")
     except Exception as e:
         logger.error(f"drain_queue error: {e}", exc_info=True)
+
+
+# ---------------------------------------------------------------------
+# 🔁 Shared history normalizer (used in HTTP paths if needed)
+# ---------------------------------------------------------------------
+def build_llm_history(
+    *,
+    raw_history: list[dict],
+    recall_block: str | None = None,
+) -> list[dict]:
+    """
+    Normalize the conversation history for the LLM:
+
+      - Always start with a single persona system stub (mini_personality_summary).
+      - Optionally add one system recall block.
+      - Then append ONLY user/assistant messages from stored history.
+      - Drop ALL stored system messages (old personas, old memory blocks, etc.).
+
+    This prevents persona duplication and weird “reset” behavior
+    from replaying old system prompts each turn.
+    """
+    history: list[dict] = []
+
+    # 1) Canonical persona stub
+    history.append({"role": "system", "content": mini_personality_summary()})
+
+    # 2) Optional recall / memory block
+    if recall_block:
+        history.append(
+            {
+                "role": "system",
+                "content": recall_block,
+            }
+        )
+
+    # 3) Only user / assistant messages from prior turns
+    for msg in raw_history or []:
+        role = (msg.get("role") or "").lower()
+        if role in ("user", "assistant"):
+            history.append(
+                {
+                    "role": role,
+                    "content": msg.get("content", ""),
+                }
+            )
+
+    return history
 
 
 # ---------------------------------------------------------------------
@@ -84,8 +131,42 @@ async def _build_memory_block_for_ws(
     """
     Call Recall via the bus and build a single system message block
     describing relevant past memories.
+
+    NEW BEHAVIOR:
+    - We only pull recall for turns that *look like* they care about
+      prior context / continuity (simple keyword + length heuristic).
+    - The block is explicitly marked as INTERNAL LOGS, not a transcript
+      of “recent conversations”, and we tell the LLM not to talk about
+      it as such or recite it.
     """
     if bus is None or not getattr(bus, "enabled", False):
+        return ""
+
+    if not transcript:
+        return ""
+
+    normalized = transcript.strip().lower()
+
+    # Heuristic: only fetch recall when Juniper is actually hinting
+    # at prior context / memory, OR the query is reasonably long.
+    recall_keywords = (
+        "remember",
+        "recall",
+        "earlier",
+        "last time",
+        "previous conversation",
+        "pick up where",
+        "continue where",
+        "resume where",
+        "we talked about",
+        "we were talking about",
+        "as before",
+    )
+
+    # Short + no memory-ish keywords → skip recall entirely for this turn.
+    # e.g. "cats", "i like cats", "cat names", "hi", etc.
+    if len(normalized.split()) < 5 and not any(k in normalized for k in recall_keywords):
+        logger.info("WS Recall: skipping recall for short/non-memory query=%r", normalized)
         return ""
 
     try:
@@ -116,23 +197,27 @@ async def _build_memory_block_for_ws(
         bullet_block = "- " + "\n- ".join(snippet_lines)
 
         memory_block = (
-            "Relevant past memories about Juniper, Orion, and recent context.\n"
-            "Use ONLY the events listed below as factual memory.\n"
-            "If Juniper asks whether you remember something that is not mentioned\n"
-            "here or in the recent dialogue history, explicitly say that you do not recall\n"
-            "instead of guessing. Do NOT invent specific cities, people, dates, or events.\n"
+            "INTERNAL MEMORY CONTEXT (not visible to Juniper).\n"
             "\n"
-            "STRICT RULES:\n"
-            "- Never claim that you and Juniper have already discussed a topic "
-            "(e.g. cats, a place, a project)\n"
-            "  unless it appears either in the recent dialogue history or in one of the fragments below.\n"
-            "- If you are tempted to say 'as we discussed', 'in our earlier conversations about X', or similar,\n"
-            "  first check whether X is explicitly present here. If it is not, you must say you don't recall\n"
-            "  talking about it together yet.\n"
-            "- Do NOT invent specific shared activities, projects, trips, or past dialogues.\n"
+            "These are machine-generated fragments from Orion's own logs and records. "
+            "They are NOT a transcript of your conversations with Juniper.\n"
             "\n"
-            "If it isn’t in this block or in the visible chat history, treat it as unknown.\n"
+            "HOW TO USE THIS BLOCK:\n"
+            "- Use these lines ONLY to recover factual details when they are directly relevant "
+            "  to Juniper's *current* question.\n"
+            "- Do NOT describe these fragments as 'our recent conversations', 'things we discussed', "
+            "  'as we talked about before', or 'I remember we discussed...'. They are logs, not a chat transcript.\n"
+            "- When Juniper switches to a fresh topic (e.g. cats, while these lines talk about GPUs), "
+            "  treat that as a new topic and ignore unrelated fragments.\n"
+            "- Do NOT quote, paraphrase, or summarize this memory block back to Juniper unless she explicitly "
+            "  asks you to summarize internal logs.\n"
+            "- If you are tempted to say 'in our recent discussions', 'we've been exploring', 'as we discussed earlier', "
+            "  or 'I recall we discussed', you MUST NOT do so unless Juniper explicitly asks for a summary of the "
+            "  *visible* chat history.\n"
+            "- If these fragments do NOT clearly answer Juniper's question, you MUST say explicitly that you only see "
+            "  vague or noisy internal notes, and you must avoid giving a generic, textbook-style answer about the topic.\n"
             "\n"
+            "Relevant internal fragments:\n"
             + bullet_block
         )
 
@@ -152,7 +237,7 @@ def _strip_old_memory_blocks(history: List[Dict[str, Any]]) -> List[Dict[str, An
     Remove any previously auto-injected memory blocks so we don’t stack them
     each turn. We detect them by a fixed prefix string.
     """
-    marker = "Relevant past memories about Juniper, Orion, and recent context."
+    marker = "INTERNAL MEMORY CONTEXT (not visible to Juniper)"
     cleaned: List[Dict[str, Any]] = []
 
     for m in history:
@@ -171,7 +256,7 @@ def _inject_memory_block(
     history: List[Dict[str, Any]],
     memory_block: str,
     has_instructions: bool,
-) -> List[Dict[str, Any]]:
+) -> List[Dict[Dict, Any]]:
     """
     Insert the memory system message after:
       - core persona stub
@@ -320,7 +405,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # ---------------------------------------------------------
             user_prompt = transcript.strip()
 
-            spark_meta = None  # <<< NEW
+            spark_meta = None  # captured from Gateway reply
 
             if mode == "council":
                 rpc = CouncilRPC(bus)
@@ -340,7 +425,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     user_id=user_id,
                 )
 
-                # <<< NEW: unwrap spark_meta from Gateway reply
+                # unwrap spark_meta from Gateway reply if present
                 if isinstance(reply, dict):
                     raw_reply = reply.get("raw")
                     if isinstance(raw_reply, dict):
@@ -349,8 +434,11 @@ async def websocket_endpoint(websocket: WebSocket):
                             spark_meta = payload_obj.get("spark_meta")
 
             orion_response_text = (
-                reply.get("text") or reply.get("response") or ""
-            )
+                reply.get("text") if isinstance(reply, dict) else ""
+            ) or (
+                reply.get("response") if isinstance(reply, dict) else ""
+            ) or ""
+
             tokens = len(orion_response_text.split()) if orion_response_text else 0
 
             # ---------------------------------------------------------
@@ -382,7 +470,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # ---------------------------------------------------------
             if orion_response_text:
                 # Keep Orion's side of the turn in local WS history
-                history.append({"role": "orion", "content": orion_response_text})
+                history.append({"role": "assistant", "content": orion_response_text})
 
                 if bus is not None and getattr(bus, "enabled", False):
                     latest_user_prompt = transcript

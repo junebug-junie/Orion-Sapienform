@@ -126,49 +126,16 @@ class CouncilRPC:
 # LLM Gateway RPC (Hub → LLMGatewayService)
 # ─────────────────────────────────────────────
 
+# scripts/llm_rpc.py (or equivalent)
+
 class LLMGatewayRPC:
     """
     Bus-RPC client for the Orion LLM Gateway (`LLMGatewayService`).
-
-    This is the preferred path for generic Hub LLM calls.
-
-    Wire format (Hub → Gateway):
-
-      ExecutionEnvelope:
-        {
-          "event": "chat" | "generate",
-          "service": "LLMGatewayService",
-          "correlation_id": "<uuid>",
-          "reply_channel": "orion:llm:reply:<uuid>",
-          "payload": {
-            "body": { ...ChatBody or GenerateBody... }
-          }
-        }
-
-    Gateway reply (Gateway → Hub):
-
-        {
-          "event": "chat_result" | "generate_result",
-          "service": "LLMGatewayService",
-          "correlation_id": "<uuid>",
-          "payload": {
-            "text": "<LLM output>",
-            ... possibly spark_meta, raw, etc ...
-          }
-        }
-
-    IMPORTANT DESIGN CHOICE:
-
-      - Hub owns persona, memory, and full message history.
-      - `history` is treated as the complete message list the model should see.
-      - LLM Gateway does NOT inject its own system prompt or extra user turn.
-      - Routing (backend/model/profile) is done entirely inside LLM Gateway.
     """
 
     def __init__(self, bus):
         self.bus = bus
 
-        # These are surfaced from scripts.settings, with sane fallbacks.
         self.service_name = getattr(settings, "LLM_GATEWAY_SERVICE_NAME", None) or "LLMGatewayService"
         self.exec_request_prefix = getattr(settings, "EXEC_REQUEST_PREFIX", "orion-exec:request")
         self.reply_prefix = getattr(settings, "CHANNEL_LLM_REPLY_PREFIX", "orion:llm:reply")
@@ -201,22 +168,14 @@ class LLMGatewayRPC:
         profile_name: str | None = None,
     ) -> dict:
         """
-        High-level chat call.
+        High-level chat call:
 
-        Parameters:
-          - history: the FULL message list to send to the model,
-            already in OpenAI-style {"role", "content"} format.
-            This should already include:
-              * Orion persona system stub
-              * Optional memory / recall system block
-              * Recent user & assistant turns
-              * The latest user turn
+          - `history` is treated as the *full* message list (system + user + assistant)
+            in OpenAI-style format.
+          - `prompt` is the latest user wave, used for logging and *only* appended if
+            history does not already end with that prompt as a user message.
 
-          - prompt: kept for logging / Spark / future use, but NOT
-            used to append another user message here.
-
-        Hub does NOT choose model or backend anymore.
-        Routing is done inside the LLM Gateway via profiles + defaults.
+        Hub owns context length / trimming. Gateway just forwards.
         """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")
@@ -224,10 +183,41 @@ class LLMGatewayRPC:
         trace_id = trace_id or str(uuid.uuid4())
         reply_channel = f"{self.reply_prefix}:{trace_id}"
 
-        # 👉 IMPORTANT:
-        #     - Do NOT trim here (Hub/WS already manages context length).
-        #     - Do NOT append `prompt` as another user message.
+        # 1) Start from the full history as provided by Hub
         messages = list(history or [])
+
+        # 2) Ensure the latest user prompt is present *once* at the end
+        if prompt:
+            prompt = str(prompt)
+            if (
+                not messages
+                or (messages[-1].get("role") or "").lower() != "user"
+                or (messages[-1].get("content") or "") != prompt
+            ):
+                messages.append({"role": "user", "content": prompt})
+
+        # 3) Normalize roles so vLLM never sees weird ones like "orion"
+        cleaned: list[dict] = []
+        for m in messages:
+            role = (m.get("role") or "user").lower()
+            content = m.get("content", "")
+
+            # Map Orion-specific / odd roles to valid OpenAI roles
+            if role not in ("system", "user", "assistant"):
+                if role in ("orion", "bot", "assistant_orion"):
+                    role = "assistant"
+                else:
+                    # Unknown roles become "user" as a safe default
+                    role = "user"
+
+            cleaned.append(
+                {
+                    "role": role,
+                    "content": content,
+                }
+            )
+
+        messages = cleaned
 
         body = {
             "messages": messages,
@@ -243,8 +233,6 @@ class LLMGatewayRPC:
             "source": source,
             "verb": verb,
             "profile_name": profile_name,
-            # NOTE: ChatBody doesn’t need a separate `prompt` field; the
-            #       latest user content is already in `messages`.
         }
 
         envelope = {
@@ -289,12 +277,7 @@ class LLMGatewayRPC:
         verb: str | None = None,
         profile_name: str | None = None,
     ) -> dict:
-        """
-        Generate-style call (single prompt into the gateway).
-
-        Hub does NOT choose model or backend anymore.
-        Routing is done inside the LLM Gateway via profiles + defaults.
-        """
+        # unchanged from your current version
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")
 

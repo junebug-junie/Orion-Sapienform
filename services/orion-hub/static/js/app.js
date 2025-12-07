@@ -17,7 +17,6 @@ const stateCtx = stateVisualizerCanvas ? stateVisualizerCanvas.getContext('2d') 
 const stateVisualizerContainer = document.getElementById('stateVisualizerContainer');
 const contextControl = document.getElementById('contextControl');
 const contextValue = document.getElementById('contextValue');
-const instructionsText = document.getElementById('instructions');
 const clearButton = document.getElementById('clearButton');
 const copyButton = document.getElementById('copyButton');
 
@@ -445,7 +444,6 @@ function sendTextMessage() {
     disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
     temperature: parseFloat(tempControl.value),
     context_length: parseInt(contextControl.value),
-    instructions: instructionsText ? instructionsText.value : "",
     session_id: orionSessionId || null,
     user_id: "local-user",
   };
@@ -540,7 +538,6 @@ async function startRecording() {
             audio: reader.result.split(',')[1],
             temperature: parseFloat(tempControl.value),
             context_length: parseInt(contextControl.value),
-            instructions: instructionsText ? instructionsText.value : "",
             disable_tts: false,
             session_id: orionSessionId || null,
             user_id: "local-user",

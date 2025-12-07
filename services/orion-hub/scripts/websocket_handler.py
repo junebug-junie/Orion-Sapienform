@@ -113,15 +113,29 @@ async def _build_memory_block_for_ws(
         if not snippet_lines:
             return ""
 
+        bullet_block = "- " + "\n- ".join(snippet_lines)
+
         memory_block = (
             "Relevant past memories about Juniper, Orion, and recent context.\n"
             "Use ONLY the events listed below as factual memory.\n"
             "If Juniper asks whether you remember something that is not mentioned\n"
             "here or in the recent dialogue history, explicitly say that you do not recall\n"
             "instead of guessing. Do NOT invent specific cities, people, dates, or events.\n"
-            + "\n- "
-            + "\n- ".join(snippet_lines)
+            "\n"
+            "STRICT RULES:\n"
+            "- Never claim that you and Juniper have already discussed a topic "
+            "(e.g. cats, a place, a project)\n"
+            "  unless it appears either in the recent dialogue history or in one of the fragments below.\n"
+            "- If you are tempted to say 'as we discussed', 'in our earlier conversations about X', or similar,\n"
+            "  first check whether X is explicitly present here. If it is not, you must say you don't recall\n"
+            "  talking about it together yet.\n"
+            "- Do NOT invent specific shared activities, projects, trips, or past dialogues.\n"
+            "\n"
+            "If it isn’t in this block or in the visible chat history, treat it as unknown.\n"
+            "\n"
+            + bullet_block
         )
+
         return memory_block
 
     except Exception as e:

@@ -4,14 +4,31 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
+from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel, Field
 
 from .settings import get_settings
+import orion  # Uses the installed orion package to find cognition/
 
 logger = logging.getLogger("orion-cortex-orchestrator")
 settings = get_settings()
+
+# ─────────────────────────────────────
+# Cognition / prompts / verbs locations
+# ─────────────────────────────────────
+
+COGNITION_ROOT = Path(orion.__file__).resolve().parent / "cognition"
+VERBS_DIR = COGNITION_ROOT / "verbs"
+PROMPTS_DIR = COGNITION_ROOT / "prompts"
+
+_jinja_env = Environment(
+    loader=FileSystemLoader(str(PROMPTS_DIR)),
+    autoescape=False,
+)
 
 
 class CortexStepConfig(BaseModel):
@@ -54,8 +71,10 @@ class OrchestrateVerbRequest(BaseModel):
     verb_name: str
     origin_node: str = Field("unknown-node")
     context: dict = Field(default_factory=dict)
-    steps: list[CortexStepConfig] = Field(
-        ..., description="Ordered list of Cortex steps implementing this verb."
+    # 👇 NEW: steps are optional; if omitted, load from cognition/verbs/<verb>.yaml
+    steps: Optional[List[CortexStepConfig]] = Field(
+        default=None,
+        description="Ordered list of Cortex steps. If omitted, load from verb YAML.",
     )
     timeout_ms: int | None = Field(
         None,
@@ -87,6 +106,118 @@ class OrchestrateVerbResponse(BaseModel):
     context_echo: Dict[str, Any]
 
 
+# ─────────────────────────────────────
+# Verb loader (cognition/verbs/*.yaml)
+# ─────────────────────────────────────
+
+def _load_verb_steps_for_name(verb_name: str) -> List[CortexStepConfig]:
+    """
+    Load a verb definition from cognition/verbs/<verb_name>.yaml and
+    convert its plan[] into CortexStepConfig objects.
+
+    Example (chat_general.yaml):
+
+      name: chat_general
+      services:
+        - LLMGatewayService
+      prompt_template: chat_general.j2
+      plan:
+        - name: llm_chat_general
+          prompt_template: chat_general.j2
+          services:
+            - LLMGatewayService
+          ...
+
+    """
+    path = VERBS_DIR / f"{verb_name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"No verb YAML found for '{verb_name}' at {path}")
+
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    name = data.get("name") or verb_name
+    default_desc = data.get("description") or f"Verb {name}"
+    default_services = data.get("services") or []
+    default_prompt_template = data.get("prompt_template") or ""
+    default_requires_gpu = bool(data.get("requires_gpu", False))
+    default_requires_memory = bool(data.get("requires_memory", False))
+
+    plan = data.get("plan") or []
+    steps: List[CortexStepConfig] = []
+
+    for raw_step in plan:
+        step_name = raw_step.get("name") or raw_step.get("step_name") or "step"
+        step_desc = raw_step.get("description") or default_desc
+        order = int(raw_step.get("order", 0))
+        services = raw_step.get("services") or default_services
+        prompt_template = raw_step.get("prompt_template") or default_prompt_template
+        requires_gpu = bool(raw_step.get("requires_gpu", default_requires_gpu))
+        requires_memory = bool(raw_step.get("requires_memory", default_requires_memory))
+
+        steps.append(
+            CortexStepConfig(
+                verb_name=name,
+                step_name=step_name,
+                description=step_desc,
+                order=order,
+                services=services,
+                prompt_template=prompt_template,
+                requires_gpu=requires_gpu,
+                requires_memory=requires_memory,
+            )
+        )
+
+    if not steps:
+        raise ValueError(f"Verb YAML {path} has no plan[] steps")
+
+    logger.info(
+        "Loaded %d step(s) for verb '%s' from %s",
+        len(steps),
+        verb_name,
+        path,
+    )
+    return steps
+
+
+def _render_prompt_template(
+    template_ref: str,
+    context: Dict[str, Any],
+    prior_results: List[StepExecutionResult],
+) -> str:
+    """
+    Resolve a prompt_template reference.
+
+    - If template_ref looks like a Jinja file name (e.g. 'chat_general.j2'),
+      render it via Jinja2 from cognition/prompts.
+    - Otherwise treat it as literal prompt text.
+    """
+    if not template_ref:
+        return ""
+
+    ref = template_ref.strip()
+
+    # Heuristic: treat as template name if no whitespace and endswith '.j2'
+    if (" " not in ref) and ("\n" not in ref) and ref.endswith(".j2"):
+        try:
+            tmpl = _jinja_env.get_template(ref)
+            return tmpl.render(
+                context=context,
+                prior_step_results=[
+                    r.model_dump(mode="json") for r in prior_results
+                ],
+            ).strip()
+        except Exception as e:
+            logger.error(
+                "Failed to render Jinja prompt template '%s': %s", ref, e, exc_info=True
+            )
+            # Fall back to the raw ref so we don't blow up exec_step
+            return ref
+
+    # Literal inline text
+    return ref
+
+
 def _build_prompt(
     step: CortexStepConfig,
     service: str,
@@ -97,7 +228,8 @@ def _build_prompt(
     """
     Build a rich, debuggable prompt for a Cortex exec_step.
 
-    This is friendly both for humans (inspection) and for LLM backends.
+    - Header from prompt_template (possibly via Jinja)
+    - JSON-encoded context and prior results appended as a footer
     """
     prior_results_json = json.dumps(
         [r.model_dump(mode="json") for r in prior_results],
@@ -106,7 +238,12 @@ def _build_prompt(
     )
     context_json = json.dumps(context, indent=2, ensure_ascii=False)
 
-    header = step.prompt_template.strip()
+    header = _render_prompt_template(
+        step.prompt_template,
+        context=context,
+        prior_results=prior_results,
+    )
+
     suffix = (
         "\n\n"
         "# Orion Cortex Orchestrator Context\n"
@@ -177,7 +314,6 @@ def _wait_for_exec_results(
 
     return collected
 
-
 def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
     """
     Execute a high-level "verb" as a sequence of Cortex steps.
@@ -200,12 +336,18 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
     using a standard shape compatible with emit_cortex_step_result / LLM Gateway
     exec_step replies.
     """
+    # Determine the step config list: either caller-provided or from verb YAML.
+    if req.steps and len(req.steps) > 0:
+        steps: List[CortexStepConfig] = list(req.steps)
+    else:
+        steps = _load_verb_steps_for_name(req.verb_name)
+
     # Ensure each step has a verb_name
-    for s in req.steps:
+    for s in steps:
         if not s.verb_name:
             s.verb_name = req.verb_name
 
-    ordered_steps = sorted(req.steps, key=lambda s: s.order)
+    ordered_steps = sorted(steps, key=lambda s: s.order)
     timeout_ms = req.timeout_ms or settings.cortex_step_timeout_ms
 
     prior_step_results: List[StepExecutionResult] = []

@@ -599,11 +599,12 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
       {
         "prompt": "<final prompt used>",
         "llm_output": "<model text>",
+        "spark_meta": { ... },   # optional Spark metadata
+        "raw_llm": { ... },      # optional raw vLLM response
       }
 
-    NOTE: exec_step is profile/verb-driven; it no longer relies on a 'model'
-    field on ExecStepPayload. Model resolution is handled in run_llm_generate()
-    via profiles + defaults.
+    NOTE: exec_step is profile/verb-driven; it does not require a 'model'
+    on ExecStepPayload. Model resolution is handled via profiles + defaults.
     """
     t0 = time.time()
 
@@ -622,9 +623,22 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
             f"{json.dumps(prior, indent=2, ensure_ascii=False)}\n"
         )
 
-    gen_body = GenerateBody(
-        prompt=final_prompt,
-        options={},  # you can later pipe through richer options if ExecStepPayload supports them
+    # Resolve profile/backend/model (same logic as chat/generate)
+    profile = _select_profile(getattr(body, "profile_name", None))
+    backend = _pick_backend({}, profile)
+    model = _resolve_model(None, profile)
+
+    if backend != "vllm":
+        logger.warning(
+            "[LLM-GW] Backend '%s' not supported for exec_step; falling back to vLLM",
+            backend,
+        )
+
+    # Treat exec_step as a single-turn prompt to vLLM via chat/completions.
+    chat_body = ChatBody(
+        model=model,
+        messages=[{"role": "user", "content": final_prompt}],
+        options={},
         stream=False,
         return_json=False,
         trace_id=body.origin_node,
@@ -635,7 +649,8 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         profile_name=getattr(body, "profile_name", None),
     )
 
-    text = run_llm_generate(gen_body)
+    result = _chat_via_vllm(chat_body, model=model)
+    text = result.get("text") or ""
     elapsed_ms = int((time.time() - t0) * 1000)
 
     logger.info(
@@ -649,4 +664,6 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
     return {
         "prompt": final_prompt,
         "llm_output": text,
+        "spark_meta": result.get("spark_meta"),
+        "raw_llm": result.get("raw"),
     }

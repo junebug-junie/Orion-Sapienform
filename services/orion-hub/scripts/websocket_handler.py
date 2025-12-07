@@ -12,9 +12,9 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
 from scripts.llm_tts_handler import run_tts_only
-from scripts.llm_rpc import CouncilRPC, LLMGatewayRPC
+from scripts.llm_rpc import CouncilRPC
 from scripts.warm_start import mini_personality_summary
-from scripts.recall_rpc import RecallRPC
+from scripts.chat_front import run_chat_general
 
 logger = logging.getLogger("orion-hub.ws")
 
@@ -83,198 +83,6 @@ def build_llm_history(
                 }
             )
 
-    return history
-
-
-# ---------------------------------------------------------------------
-# 🧠 Memory helpers (Recall → system block)
-# ---------------------------------------------------------------------
-def _format_fragments_for_ws(
-    fragments: List[Dict[str, Any]],
-    limit: int = 12,
-) -> List[str]:
-    """
-    Turn recall fragments into short lines suitable for a system
-    memory block. We keep it compact but still human-readable if
-    we ever inspect the history.
-    """
-    lines: List[str] = []
-
-    for frag in fragments[:limit]:
-        kind = frag.get("kind", "unknown")
-        text = (frag.get("text") or "").replace("\n", " ").strip()
-        if not text:
-            continue
-
-        meta = frag.get("meta") or {}
-        observer = meta.get("observer")
-        field_resonance = meta.get("field_resonance")
-
-        extras: List[str] = []
-        if observer:
-            extras.append(f"observer={observer}")
-        if field_resonance:
-            extras.append(f"field_resonance={field_resonance}")
-
-        suffix = f" [{' | '.join(extras)}]" if extras else ""
-        lines.append(f"[{kind}] {text[:260]}{suffix}")
-
-    return lines
-
-
-async def _build_memory_block_for_ws(
-    bus,
-    transcript: str,
-    session_id: Optional[str],
-    max_items: int = 25,
-) -> str:
-    """
-    Call Recall via the bus and build a single system message block
-    describing relevant past memories.
-
-    NEW BEHAVIOR:
-    - We only pull recall for turns that *look like* they care about
-      prior context / continuity (simple keyword + length heuristic).
-    - The block is explicitly marked as INTERNAL LOGS, not a transcript
-      of “recent conversations”, and we tell the LLM not to talk about
-      it as such or recite it.
-    """
-    if bus is None or not getattr(bus, "enabled", False):
-        return ""
-
-    if not transcript:
-        return ""
-
-    normalized = transcript.strip().lower()
-
-    # Heuristic: only fetch recall when Juniper is actually hinting
-    # at prior context / memory, OR the query is reasonably long.
-    recall_keywords = (
-        "remember",
-        "recall",
-        "earlier",
-        "last time",
-        "previous conversation",
-        "pick up where",
-        "continue where",
-        "resume where",
-        "we talked about",
-        "we were talking about",
-        "as before",
-    )
-
-    # Short + no memory-ish keywords → skip recall entirely for this turn.
-    # e.g. "cats", "i like cats", "cat names", "hi", etc.
-    if len(normalized.split()) < 5 and not any(k in normalized for k in recall_keywords):
-        logger.info("WS Recall: skipping recall for short/non-memory query=%r", normalized)
-        return ""
-
-    try:
-        recall_client = RecallRPC(bus)
-        recall_result = await recall_client.call_recall(
-            query=transcript,
-            session_id=session_id,
-            mode="hybrid",
-            time_window_days=14,
-            max_items=max_items,
-            extras=None,
-        )
-
-        fragments = recall_result.get("fragments") or []
-        logger.info(
-            "WS Recall returned %d fragments: %s",
-            len(fragments),
-            [
-                f"{frag.get('kind')}::{(frag.get('text') or '')[:80]}"
-                for frag in fragments[:5]
-            ],
-        )
-
-        snippet_lines = _format_fragments_for_ws(fragments)
-        if not snippet_lines:
-            return ""
-
-        bullet_block = "- " + "\n- ".join(snippet_lines)
-
-        memory_block = (
-            "INTERNAL MEMORY CONTEXT (not visible to Juniper).\n"
-            "\n"
-            "These are machine-generated fragments from Orion's own logs and records. "
-            "They are NOT a transcript of your conversations with Juniper.\n"
-            "\n"
-            "HOW TO USE THIS BLOCK:\n"
-            "- Use these lines ONLY to recover factual details when they are directly relevant "
-            "  to Juniper's *current* question.\n"
-            "- Do NOT describe these fragments as 'our recent conversations', 'things we discussed', "
-            "  'as we talked about before', or 'I remember we discussed...'. They are logs, not a chat transcript.\n"
-            "- When Juniper switches to a fresh topic (e.g. cats, while these lines talk about GPUs), "
-            "  treat that as a new topic and ignore unrelated fragments.\n"
-            "- Do NOT quote, paraphrase, or summarize this memory block back to Juniper unless she explicitly "
-            "  asks you to summarize internal logs.\n"
-            "- If you are tempted to say 'in our recent discussions', 'we've been exploring', 'as we discussed earlier', "
-            "  or 'I recall we discussed', you MUST NOT do so unless Juniper explicitly asks for a summary of the "
-            "  *visible* chat history.\n"
-            "- If these fragments do NOT clearly answer Juniper's question, you MUST say explicitly that you only see "
-            "  vague or noisy internal notes, and you must avoid giving a generic, textbook-style answer about the topic.\n"
-            "\n"
-            "Relevant internal fragments:\n"
-            + bullet_block
-        )
-
-        return memory_block
-
-    except Exception as e:
-        logger.warning(
-            "RecallRPC lookup failed in WebSocket handler: %s",
-            e,
-            exc_info=True,
-        )
-        return ""
-
-
-def _strip_old_memory_blocks(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Remove any previously auto-injected memory blocks so we don’t stack them
-    each turn. We detect them by a fixed prefix string.
-    """
-    marker = "INTERNAL MEMORY CONTEXT (not visible to Juniper)"
-    cleaned: List[Dict[str, Any]] = []
-
-    for m in history:
-        if (
-            m.get("role") == "system"
-            and isinstance(m.get("content"), str)
-            and marker in m["content"]
-        ):
-            continue
-        cleaned.append(m)
-
-    return cleaned
-
-
-def _inject_memory_block(
-    history: List[Dict[str, Any]],
-    memory_block: str,
-    has_instructions: bool,
-) -> List[Dict[Dict, Any]]:
-    """
-    Insert the memory system message after:
-      - core persona stub
-      - optional user instructions
-    """
-    if not memory_block:
-        return history
-
-    history = _strip_old_memory_blocks(history)
-
-    insert_idx = 1  # after core personality
-    if has_instructions:
-        insert_idx += 1
-
-    history.insert(
-        insert_idx,
-        {"role": "system", "content": memory_block},
-    )
     return history
 
 
@@ -381,31 +189,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 trimmed_non_system = non_system[-keep_count:] if keep_count > 0 else []
                 history = system_messages + trimmed_non_system
 
-            # ---------------------------------------------------------
-            # 🔍 Step 3: Recall → memory block (optional)
-            # ---------------------------------------------------------
-            memory_block = await _build_memory_block_for_ws(
-                bus=bus,
-                transcript=transcript,
-                session_id=session_id,
-                max_items=25,
-            )
-
-            if memory_block:
-                history = _inject_memory_block(
-                    history=history,
-                    memory_block=memory_block,
-                    has_instructions=has_instructions,
-                )
-
             logger.info("HISTORY BEFORE LLM CALL (mode=%s): %s", mode, history)
 
             # ---------------------------------------------------------
-            # 🧠 Step 4: LLM via Gateway or Council (bus-native)
+            # 🧠 Step 4: LLM via Council or Cortex chat_general
             # ---------------------------------------------------------
             user_prompt = transcript.strip()
-
-            spark_meta = None  # captured from Gateway reply
+            spark_meta = None
 
             if mode == "council":
                 rpc = CouncilRPC(bus)
@@ -414,32 +204,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     history=history[:],  # shallow copy
                     temperature=temperature,
                 )
+                orion_response_text = (
+                    reply.get("text") or reply.get("response") or ""
+                )
+                tokens = len(orion_response_text.split()) if orion_response_text else 0
             else:
-                gateway = LLMGatewayRPC(bus)
-                reply = await gateway.call_chat(
-                    prompt=user_prompt,
-                    history=history[:],  # shallow copy
-                    temperature=temperature,
-                    source="hub-ws",
+                convo = await run_chat_general(
+                    bus,
                     session_id=session_id,
                     user_id=user_id,
+                    messages=history[:],  # full system+dialogue history
+                    chat_mode=mode,
+                    temperature=temperature,
+                    use_recall=True,  # WS path always uses recall
                 )
-
-                # unwrap spark_meta from Gateway reply if present
-                if isinstance(reply, dict):
-                    raw_reply = reply.get("raw")
-                    if isinstance(raw_reply, dict):
-                        payload_obj = raw_reply.get("payload")
-                        if isinstance(payload_obj, dict):
-                            spark_meta = payload_obj.get("spark_meta")
-
-            orion_response_text = (
-                reply.get("text") if isinstance(reply, dict) else ""
-            ) or (
-                reply.get("response") if isinstance(reply, dict) else ""
-            ) or ""
-
-            tokens = len(orion_response_text.split()) if orion_response_text else 0
+                orion_response_text = convo.get("text") or ""
+                tokens = convo.get("tokens") or 0
+                spark_meta = convo.get("spark_meta")
 
             # ---------------------------------------------------------
             # 💬 Step 5: Send text response to client
@@ -486,7 +267,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         "session_id": session_id,
                         "spark_meta": spark_meta,
                         "created_at": datetime.utcnow().isoformat(),
-                        # Extra field for human inspection; pydantic will ignore extras.
                         "text": (
                             f"User: {latest_user_prompt}\n"
                             f"Orion: {orion_response_text}"
@@ -519,6 +299,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Mark the end of this turn's processing phase.
             await websocket.send_json({"state": "idle"})
+
 
     except WebSocketDisconnect:
         logger.info("Client disconnected.")

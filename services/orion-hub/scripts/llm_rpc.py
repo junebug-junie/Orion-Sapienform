@@ -20,11 +20,31 @@ async def _request_and_wait(
     """
     Robust RPC helper: Subscribes FIRST, then publishes.
 
-    This prevents the "Race Condition" where the service replies 
-    before the Hub has finished setting up the subscription.
+    This prevents the race where the service replies before Hub
+    has finished setting up the subscription.
+
+    NOTE (Hub-only shim):
+    - Hub historically thinks in terms of `orion:cortex:*`
+    - The Cortex-Orchestrator service is actually subscribed to `orion-cortex:*`
+    We normalize that mapping *here* so we don't have to touch other services.
     """
-    # 1. Open the subscription immediately
-    sub = bus.raw_subscribe(channel_reply)
+
+    # --- Normalize Cortex channels to actual bus names ---
+    physical_intake = channel_intake
+    physical_reply = channel_reply
+
+    if channel_intake.startswith("orion:cortex:request"):
+        physical_intake = channel_intake.replace(
+            "orion:cortex:request", "orion-cortex:request", 1
+        )
+
+    if channel_reply.startswith("orion:cortex:result"):
+        physical_reply = channel_reply.replace(
+            "orion:cortex:result", "orion-cortex:result", 1
+        )
+
+    # 1. Open the subscription immediately on the *physical* reply channel
+    sub = bus.raw_subscribe(physical_reply)
 
     # 2. Define the listener (consumer)
     loop = asyncio.get_event_loop()
@@ -41,26 +61,147 @@ async def _request_and_wait(
     # 3. Start listener in background executor
     asyncio.get_running_loop().run_in_executor(None, listener)
 
-    # 4. NOW publish (while we are listening)
-    bus.publish(channel_intake, payload)
+    # 4. NOW publish (while we are listening) on the *physical* intake channel
+    bus.publish(physical_intake, payload)
     logger.info(
         "[%s] RPC Published -> %s (awaiting %s)",
         trace_id,
-        channel_intake,
-        channel_reply,
+        physical_intake,
+        physical_reply,
     )
 
     # 5. Wait for result with timeout
     try:
         msg = await asyncio.wait_for(queue.get(), timeout=60.0)
         reply = msg.get("data", {})
-        logger.info("[%s] RPC reply received.", trace_id)
+        logger.info("[%s] RPC reply received on %s.", trace_id, physical_reply)
         return reply
     except asyncio.TimeoutError:
-        logger.error("[%s] RPC timed out waiting for %s", trace_id, channel_reply)
+        logger.error("[%s] RPC timed out waiting for %s", trace_id, physical_reply)
         return {"error": "timeout"}
     finally:
         pass
+
+
+# ─────────────────────────────────────────────
+# Cortex Orchestrator RPC (Hub → Cortex-Orch)
+# ─────────────────────────────────────────────
+
+class CortexOrchRPC:
+    """
+    Bus-RPC client for the Orion Cortex Orchestrator.
+
+    Hub uses this to run high-level "verbs" like `chat_general`
+    instead of hand-rolling prompts and wiring directly to LLM Gateway.
+    """
+
+    def __init__(self, bus):
+        self.bus = bus
+
+        # Hub thinks in logical cortex channels; _request_and_wait maps to physical.
+        self.request_channel = "orion:cortex:request"
+        self.result_prefix = "orion:cortex:result"
+
+        if not self.bus or not getattr(self.bus, "enabled", False):
+            logger.warning("[CortexOrchRPC] OrionBus is disabled; calls will fail.")
+
+        logger.info(
+            "[CortexOrchRPC] Initialized (request_channel=%s, result_prefix=%s)",
+            self.request_channel,
+            self.result_prefix,
+        )
+
+    async def run_verb(
+        self,
+        *,
+        verb_name: str,
+        context: dict,
+        steps: list[dict],
+        origin_node: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> dict:
+        """
+        Generic entrypoint for any Cortex verb.
+
+        Mirrors the OrchestrateVerbRequest shape used by cortex-orch:
+
+          {
+            "verb_name": str,
+            "origin_node": str,
+            "context": dict,
+            "steps": [CortexStepConfig-like dicts],
+            "timeout_ms": int | None,
+          }
+        """
+        if not self.bus or not getattr(self.bus, "enabled", False):
+            raise RuntimeError("CortexOrchRPC used while OrionBus is disabled")
+
+        trace_id = str(uuid.uuid4())
+        reply_channel = f"{self.result_prefix}:{trace_id}"
+
+        envelope = {
+            "event": "orchestrate_verb",
+            "trace_id": trace_id,
+            "origin_node": origin_node or settings.SERVICE_NAME,
+            "reply_channel": reply_channel,
+            "payload": {
+                "verb_name": verb_name,
+                "origin_node": origin_node or settings.SERVICE_NAME,
+                "context": context or {},
+                "steps": steps or [],
+                "timeout_ms": timeout_ms,
+            },
+        }
+
+        raw_reply = await _request_and_wait(
+            self.bus,
+            self.request_channel,
+            reply_channel,
+            envelope,
+            trace_id,
+        )
+
+        return raw_reply
+
+    async def run_chat_general(
+        self,
+        *,
+        context: dict,
+        origin_node: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> dict:
+        """
+        Convenience wrapper for the `chat_general` verb.
+
+        Hub doesn't need to remember the step wiring; we bake it here:
+
+        - Single step: `llm_chat_general`
+        - Service: `LLMGatewayService`
+        - Prompt template: `chat_general.j2`
+        """
+        steps = [
+            {
+                "verb_name": "chat_general",
+                "step_name": "llm_chat_general",
+                "description": (
+                    "Single-step, generalist chat response that interprets "
+                    "intent/tone and generates a final reply."
+                ),
+                "order": 0,
+                "services": ["LLMGatewayService"],
+                "prompt_template": "chat_general.j2",
+                "requires_gpu": True,
+                "requires_memory": True,
+            }
+        ]
+
+        return await self.run_verb(
+            verb_name="chat_general",
+            context=context,
+            steps=steps,
+            origin_node=origin_node,
+            timeout_ms=timeout_ms,
+        )
 
 
 # ─────────────────────────────────────────────
@@ -126,8 +267,6 @@ class CouncilRPC:
 # LLM Gateway RPC (Hub → LLMGatewayService)
 # ─────────────────────────────────────────────
 
-# scripts/llm_rpc.py (or equivalent)
-
 class LLMGatewayRPC:
     """
     Bus-RPC client for the Orion LLM Gateway (`LLMGatewayService`).
@@ -136,9 +275,15 @@ class LLMGatewayRPC:
     def __init__(self, bus):
         self.bus = bus
 
-        self.service_name = getattr(settings, "LLM_GATEWAY_SERVICE_NAME", None) or "LLMGatewayService"
-        self.exec_request_prefix = getattr(settings, "EXEC_REQUEST_PREFIX", "orion-exec:request")
-        self.reply_prefix = getattr(settings, "CHANNEL_LLM_REPLY_PREFIX", "orion:llm:reply")
+        self.service_name = getattr(
+            settings, "LLM_GATEWAY_SERVICE_NAME", None
+        ) or "LLMGatewayService"
+        self.exec_request_prefix = getattr(
+            settings, "EXEC_REQUEST_PREFIX", "orion-exec:request"
+        )
+        self.reply_prefix = getattr(
+            settings, "CHANNEL_LLM_REPLY_PREFIX", "orion:llm:reply"
+        )
 
         if not self.bus or not getattr(self.bus, "enabled", False):
             logger.warning(

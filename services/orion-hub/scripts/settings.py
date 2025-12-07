@@ -62,9 +62,19 @@ class Settings(BaseSettings):
     )
 
     # Where Cortex + Hub send exec_step/chat/generate requests
-    EXEC_REQUEST_PREFIX: str = Field(
-        default="orion-exec:request",
-        env="EXEC_REQUEST_PREFIX",
+    #EXEC_REQUEST_PREFIX: str = Field(
+    #    default="orion-exec:request",
+    #    env="EXEC_REQUEST_PREFIX",
+    #)
+
+    # --- Cortex Orchestrator Integration
+    CORTEX_ORCH_REQUEST_CHANNEL: str = Field(
+        default="orion-cortex:request",
+        env="CORTEX_REQUEST_CHANNEL",
+    )
+    CORTEX_ORCH_RESULT_PREFIX: str = Field(
+        default="orion-cortex:result",
+        env="CORTEX_RESULT_PREFIX",
     )
 
     # --- Recall / RAG Integration (new) ---

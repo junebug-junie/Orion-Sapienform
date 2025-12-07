@@ -8,9 +8,9 @@ from fastapi import APIRouter, Header
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
-from .warm_start import mini_personality_summary
-from .llm_rpc import CouncilRPC, LLMGatewayRPC
-from .recall_rpc import RecallRPC
+from .llm_rpc import CouncilRPC
+from .chat_front import run_chat_general
+
 from .session import ensure_session
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 
@@ -53,139 +53,6 @@ async def api_session(x_orion_session_id: Optional[str] = Header(None)):
 
 
 # ======================================================================
-# 🔎 RECALL → MEMORY DIGEST HELPERS
-# ======================================================================
-
-def _format_fragments_for_digest(
-    fragments: List[Dict[str, Any]],
-    limit: int = 8,
-) -> str:
-    """
-    Turn raw recall fragments into a compact bullet list for an internal
-    'memory digest' LLM call.
-    """
-    lines: List[str] = []
-    for f in fragments[:limit]:
-        kind = f.get("kind", "unknown")
-        source = f.get("source", "unknown")
-        text = (f.get("text") or "").replace("\n", " ").strip()
-
-        meta = f.get("meta") or {}
-        observer = meta.get("observer")
-        field_resonance = meta.get("field_resonance")
-
-        extras: List[str] = []
-        if observer:
-            extras.append(f"observer={observer}")
-        if field_resonance:
-            extras.append(f"field_resonance={field_resonance}")
-
-        suffix = f" [{' | '.join(extras)}]" if extras else ""
-        lines.append(f"- [{kind}/{source}] {text}{suffix}")
-
-    return "\n".join(lines)
-
-
-async def build_memory_digest(
-    bus,
-    session_id: str,
-    user_prompt: str,
-    chat_mode: str = "brain",
-    max_items: int = 12,
-) -> Tuple[str, Dict[str, Any]]:
-    """
-    1) Call Recall over the Orion bus.
-    2) Ask LLM Gateway to condense fragments into 3–5 bullets.
-    3) Return (digest_text, recall_debug) for use as internal context.
-
-    This leans on the Recall service's semantic+salience+recency scoring;
-    hub stays intentionally dumb and only does LLM summarization.
-    """
-    # Choose recall mode/window based on chat mode
-    if chat_mode == "council":
-        recall_mode = "deep"
-        time_window_days = 90
-    else:
-        recall_mode = "hybrid"
-        time_window_days = 30
-
-    recall_client = RecallRPC(bus)
-    recall_result = await recall_client.call_recall(
-        query=user_prompt,
-        session_id=session_id,
-        mode=recall_mode,
-        time_window_days=time_window_days,
-        max_items=max_items,
-        extras=None,
-    )
-
-    fragments = recall_result.get("fragments") or []
-    debug = recall_result.get("debug") or {}
-
-    if not fragments:
-        logger.info("build_memory_digest: no fragments returned from recall.")
-        return "", {
-            "total_fragments": 0,
-            "mode": recall_mode,
-            "time_window_days": time_window_days,
-        }
-
-    fragments_block = _format_fragments_for_digest(fragments)
-    if not fragments_block:
-        return "", {
-            "total_fragments": len(fragments),
-            "mode": recall_mode,
-            "time_window_days": time_window_days,
-        }
-
-    # 2) Memory digest via LLM Gateway (bus-native)
-    system = (
-        "You are Oríon, Juniper's collaborative AI co-journeyer.\n"
-        "You will receive:\n"
-        "1) The user's current message.\n"
-        "2) A small list of past events and dialogues ('fragments').\n\n"
-        "Your job:\n"
-        "- Identify ONLY the 3–5 most relevant threads for understanding and responding to the current message.\n"
-        "- Return them as short bullet points.\n"
-        "- Each bullet should be one sentence.\n"
-        "- Do not include anything unrelated.\n"
-        "- This is internal memory context; the user will not see this directly.\n"
-    )
-
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": f"Current message: {user_prompt}"},
-        {
-            "role": "user",
-            "content": "Relevant memory fragments:\n" + fragments_block,
-        },
-    ]
-
-    gateway = LLMGatewayRPC(bus)
-    result = await gateway.call_chat(
-        prompt=user_prompt,
-        history=messages,
-        temperature=0.0,
-        source="hub-memory-digest",
-        session_id=session_id,
-    )
-
-    text = (result.get("text") or "").strip()
-    logger.info("build_memory_digest: got digest length=%d", len(text))
-
-    # merge recall debug with basic info
-    debug_out = {
-        "total_fragments": len(fragments),
-        "mode": debug.get("mode", recall_mode),
-        "time_window_days": time_window_days,
-        "max_items": max_items,
-        "note": debug.get("note", "semantic+salience+recency scoring"),
-    }
-
-    return text, debug_out
-
-
-# ======================================================================
 # 💬 SHARED CHAT CORE (HTTP + WS)
 # ======================================================================
 
@@ -197,9 +64,8 @@ async def handle_chat_request(
     """
     Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.
 
-    - Handles Brain vs Council routing (via LLM Gateway & Council).
-    - Optionally pulls a Recall → memory digest when payload.use_recall is true.
-    - Injects mini_personality_summary + digest as a single system stub.
+    - For mode='brain', routes through Cortex-Orch using the chat_general verb.
+    - For mode='council', routes via Agent Council (legacy direct LLM path).
     """
     user_messages = payload.get("messages", [])
     temperature = payload.get("temperature", 0.7)
@@ -211,70 +77,48 @@ async def handle_chat_request(
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
-    # Optional: Recall → Digest
-    memory_digest = ""
-    recall_debug: Dict[str, Any] = {}
-    if use_recall:
-        try:
-            memory_digest, recall_debug = await build_memory_digest(
-                bus=bus,
-                session_id=session_id,
-                user_prompt=user_prompt,
-                chat_mode=mode,
-                max_items=12,
-            )
-        except Exception as e:
-            logger.warning("Memory digest failed: %s", e, exc_info=True)
-            memory_digest = ""
-            recall_debug = {"error": str(e)}
-
-    # Build system stub = personality + optional memory digest
-    system_content = mini_personality_summary()
-    if memory_digest:
-        system_content += "\n\nInternal memory context:\n" + memory_digest
-
-    system_stub = {"role": "system", "content": system_content}
-    full_history = [system_stub] + user_messages
-
-    # Choose backend: Council vs LLM Gateway
+    # Council mode stays as-is for now
     if mode == "council":
         rpc = CouncilRPC(bus)
         reply = await rpc.call_llm(
             prompt=user_prompt,
-            history=full_history,
+            history=user_messages[-5:],  # small tail
             temperature=temperature,
         )
-        spark_meta = None  # <<< NEW: council doesn't supply spark yet
-    else:
-        gateway = LLMGatewayRPC(bus)
-        reply = await gateway.call_chat(
-            prompt=user_prompt,
-            history=full_history,
-            temperature=temperature,
-            source="hub-http",
-            session_id=session_id,
-        )
+        text = reply.get("text") or reply.get("response") or ""
+        tokens = len(text.split()) if text else 0
 
-        # <<< NEW: unwrap spark_meta from Gateway bus envelope
-        spark_meta = None
-        raw = reply.get("raw") if isinstance(reply, dict) else None
-        if isinstance(raw, dict):
-            payload_obj = raw.get("payload")
-            if isinstance(payload_obj, dict):
-                spark_meta = payload_obj.get("spark_meta")
+        return {
+            "session_id": session_id,
+            "mode": mode,
+            "use_recall": use_recall,
+            "text": text,
+            "tokens": tokens,
+            "raw": reply,
+            "recall_debug": {},
+            "spark_meta": None,
+        }
 
-    text = reply.get("text") or reply.get("response") or ""
-    tokens = len(text.split()) if text else 0
+    # Default: brain → chat_general via Cortex-Orch + LLM Gateway
+    convo = await run_chat_general(
+        bus,
+        session_id=session_id,
+        user_id=None,  # HTTP has no authenticated user_id yet
+        messages=user_messages,
+        chat_mode=mode,
+        temperature=temperature,
+        use_recall=use_recall,
+    )
 
     return {
         "session_id": session_id,
         "mode": mode,
         "use_recall": use_recall,
-        "text": text,
-        "tokens": tokens,
-        "raw": reply,
-        "recall_debug": recall_debug,
-        "spark_meta": spark_meta,  # <<< NEW
+        "text": convo.get("text") or "",
+        "tokens": convo.get("tokens") or 0,
+        "raw": convo.get("raw_cortex"),
+        "recall_debug": convo.get("recall_debug") or {},
+        "spark_meta": convo.get("spark_meta"),
     }
 
 
@@ -313,6 +157,8 @@ async def api_chat(
     mode: str = result.get("mode", payload.get("mode", "brain"))
     use_recall: bool = bool(result.get("use_recall", payload.get("use_recall", False)))
 
+    spark_meta = result.get("spark_meta")
+
     # Reflect the normalized values back into the response dict
     result["mode"] = mode
     result["use_recall"] = use_recall
@@ -336,7 +182,7 @@ async def api_chat(
                 "mode": mode,
                 # we don’t have user_id on HTTP; writer can treat it as optional
                 "user_id": None,
-                "spark_meta": spark_meta,  # <<< NEW
+                "spark_meta": spark_meta,
             }
 
             bus.publish(

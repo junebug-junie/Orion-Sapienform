@@ -25,10 +25,6 @@ class Settings(BaseSettings):
     channel_llm_reply_prefix: str = Field(
         "orion:llm:reply", alias="CHANNEL_LLM_REPLY_PREFIX"
     )
-    channel_tts_intake: str = Field(
-        default="orion:tts:intake",
-        env="CHANNEL_TTS_INTAKE",
-    )
     CHANNEL_SPARK_INTROSPECT_CANDIDATE: str = Field(
         "orion:spark:introspect:candidate",
         env="CHANNEL_SPARK_INTROSPECT_CANDIDATE",

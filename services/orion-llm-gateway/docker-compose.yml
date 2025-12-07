@@ -27,7 +27,6 @@ services:
       # LLM gateway channels
       - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE}
       - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX}
-      - CHANNEL_TTS_INTAKE=${CHANNEL_TTS_INTAKE}
       - CHANNEL_INTROSPECT_CANDIDATE=orion:spark:introspect:candidate
 
       # Backend endpoints (Ollama is required today; others optional)

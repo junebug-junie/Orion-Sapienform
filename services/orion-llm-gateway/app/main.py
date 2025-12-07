@@ -18,7 +18,6 @@ from .llm_backend import (
     run_llm_exec_step,
     run_llm_embeddings,
 )
-from .tts_worker import tts_listener_worker
 
 logger = logging.getLogger("orion-llm-gateway")
 
@@ -37,16 +36,6 @@ def main():
     if not bus.enabled:
         logger.error("Orion bus is disabled; exiting.")
         return
-
-    # 🔊 Start TTS listener in the background
-    threading.Thread(target=tts_listener_worker, daemon=True).start()
-
-    logger.info(
-        "Starting %s v%s listening on %s",
-        settings.service_name,
-        settings.service_version,
-        settings.channel_llm_intake,
-    )
 
     # Main LLM loop (chat / generate / exec_step / embeddings)
     for msg in bus.subscribe(settings.channel_llm_intake):

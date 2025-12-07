@@ -35,20 +35,23 @@ services:
       - TTS_USE_GPU=${TTS_USE_GPU:-true}
 
       # GPU visibility
-      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=${GPU_INDEX}
+      - NVIDIA_VISIBLE_DEVICES=${GPU_INDEX}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
     volumes:
       - /mnt/telemetry/models/coqui/tts:/root/.local/share/tts
 
+    gpus: all
     # Compose v3+ syntax for GPUs (Docker 20.10+)
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: ["gpu"]
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
-    # Optional: keep HTTP port for future metrics / health / UI
     ports:
       - "7800:7800"
 

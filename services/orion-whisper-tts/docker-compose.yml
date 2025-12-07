@@ -1,0 +1,60 @@
+services:
+  whisper-tts:
+    build:
+      context: ../..
+      dockerfile: services/orion-whisper-tts/Dockerfile
+    container_name: ${PROJECT}-whisper-tts
+    restart: unless-stopped
+    networks:
+      - app-net
+
+    env_file:
+      - .env
+
+    environment:
+      # Project-wide basics
+      - PROJECT=${PROJECT}
+
+      # Bus wiring (usually from root .env)
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      # Identity
+      - SERVICE_NAME=whisper-tts
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+
+      # Bus Channels
+      - CHANNEL_TTS_INTAKE=${CHANNEL_TTS_INTAKE}
+
+      # Timeouts
+      - CONNECT_TIMEOUT_SEC=${CONNECT_TIMEOUT_SEC}
+      - READ_TIMEOUT_SEC=${READ_TIMEOUT_SEC}
+
+      # TTS config (optional override; or just keep in .env)
+      - TTS_MODEL_NAME=${TTS_MODEL_NAME:-tts_models/en/ljspeech/tacotron2-DDC}
+      - TTS_USE_GPU=${TTS_USE_GPU:-true}
+
+      # GPU visibility
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    volumes:
+      - /mnt/telemetry/models/coqui/tts:/root/.local/share/tts
+
+    # Compose v3+ syntax for GPUs (Docker 20.10+)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+
+    # Optional: keep HTTP port for future metrics / health / UI
+    ports:
+      - "7800:7800"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  app-net:
+    external: true

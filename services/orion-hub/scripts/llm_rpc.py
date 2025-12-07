@@ -152,13 +152,17 @@ class LLMGatewayRPC:
           "service": "LLMGatewayService",
           "correlation_id": "<uuid>",
           "payload": {
-            "text": "<LLM output>"
+            "text": "<LLM output>",
+            ... possibly spark_meta, raw, etc ...
           }
         }
 
-    NOTE:
-      - Hub does NOT choose model or backend.
-      - Routing is done entirely inside LLM Gateway via profiles + defaults.
+    IMPORTANT DESIGN CHOICE:
+
+      - Hub owns persona, memory, and full message history.
+      - `history` is treated as the complete message list the model should see.
+      - LLM Gateway does NOT inject its own system prompt or extra user turn.
+      - Routing (backend/model/profile) is done entirely inside LLM Gateway.
     """
 
     def __init__(self, bus):
@@ -197,10 +201,19 @@ class LLMGatewayRPC:
         profile_name: str | None = None,
     ) -> dict:
         """
-        High-level chat call:
+        High-level chat call.
 
-          - history: prior messages, already in {"role", "content"} format
-          - prompt: newest user wave (will be appended as a final user message)
+        Parameters:
+          - history: the FULL message list to send to the model,
+            already in OpenAI-style {"role", "content"} format.
+            This should already include:
+              * Orion persona system stub
+              * Optional memory / recall system block
+              * Recent user & assistant turns
+              * The latest user turn
+
+          - prompt: kept for logging / Spark / future use, but NOT
+            used to append another user message here.
 
         Hub does NOT choose model or backend anymore.
         Routing is done inside the LLM Gateway via profiles + defaults.
@@ -211,11 +224,10 @@ class LLMGatewayRPC:
         trace_id = trace_id or str(uuid.uuid4())
         reply_channel = f"{self.reply_prefix}:{trace_id}"
 
-        # Build messages (history + latest user prompt)
-        trimmed_history = history[-5:] if history else []
-        messages = list(trimmed_history)
-        if prompt:
-            messages.append({"role": "user", "content": prompt})
+        # 👉 IMPORTANT:
+        #     - Do NOT trim here (Hub/WS already manages context length).
+        #     - Do NOT append `prompt` as another user message.
+        messages = list(history or [])
 
         body = {
             "messages": messages,
@@ -231,6 +243,8 @@ class LLMGatewayRPC:
             "source": source,
             "verb": verb,
             "profile_name": profile_name,
+            # NOTE: ChatBody doesn’t need a separate `prompt` field; the
+            #       latest user content is already in `messages`.
         }
 
         envelope = {

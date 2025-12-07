@@ -4,7 +4,7 @@ from uuid import uuid4
 from orion.core.bus.service import OrionBus
 
 from .settings import settings
-from .tts_gpu import TTSEngine
+from .tts import TTSEngine
 
 logger = logging.getLogger("orion-llm-gateway.tts")
 

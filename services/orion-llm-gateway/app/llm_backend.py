@@ -1,10 +1,12 @@
-from typing import Any, Dict, List
+from typing import Any, Dict
 import logging
 import time
 import json
 
 import httpx
 from httpx import HTTPStatusError
+
+from orion.core.bus.service import OrionBus
 
 from .models import ChatBody, GenerateBody, ExecStepPayload, EmbeddingsBody
 from .settings import settings
@@ -42,11 +44,11 @@ def _extract_text_from_vllm_completion(data: Dict[str, Any]) -> str:
                 return str(txt).strip()
     except Exception:
         pass
-    logger.warning("[LLM-GW] vLLM /v1/completions response not understood: %s", data)
+    logger.warning(f"[LLM-GW] vLLM /v1/completions response not understood: {data}")
     return ""
 
 
-def _flatten_messages_to_prompt(messages: List[Dict[str, Any]]) -> str:
+def _flatten_messages_to_prompt(messages: list[Dict[str, Any]]) -> str:
     """
     Fallback: turn OpenAI chat-style messages into a single text prompt
     for /v1/completions-style endpoints.
@@ -54,12 +56,13 @@ def _flatten_messages_to_prompt(messages: List[Dict[str, Any]]) -> str:
     if not messages:
         return ""
 
-    lines: List[str] = []
+    lines: list[str] = []
     for m in messages:
         role = m.get("role", "user")
         content = str(m.get("content", "")).strip()
         if not content:
             continue
+        # simple conversational flattening
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
@@ -71,7 +74,8 @@ def _select_profile(
     Select explicit profile_name.
     Returns None if profiles are not configured.
 
-    Priority:
+    Simple selection:
+
       1) Explicit profile_name, if provided.
       2) Global default profile from settings.
       3) Otherwise: no profile (use settings.default_model).
@@ -103,6 +107,10 @@ def _select_profile(
     return None
 
 
+# ─────────────────────────────────────────────
+# Backend selection
+# ─────────────────────────────────────────────
+
 def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) -> str:
     """
     Decide which backend to use for this request.
@@ -111,8 +119,6 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
       1) options["backend"] if present
       2) profile.backend (if profile is selected)
       3) settings.default_backend
-
-    Right now, only 'vllm' is supported; everything else is coerced to 'vllm'.
     """
     opts = options or {}
 
@@ -120,14 +126,13 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
     if backend:
         backend = backend.lower()
     elif profile is not None:
-        backend = (profile.backend or "vllm").lower()
+        backend = profile.backend
     else:
         backend = (settings.default_backend or "vllm").lower()
 
     if backend != "vllm":
         logger.warning(
-            "[LLM-GW] Unknown backend '%s', falling back to 'vllm'",
-            backend,
+            f"[LLM-GW] Unknown or unsupported backend '{backend}', falling back to 'vllm'"
         )
         return "vllm"
 
@@ -174,7 +179,7 @@ def _extract_text_from_vllm(data: Dict[str, Any]) -> str:
     except Exception:
         pass
 
-    logger.warning("[LLM-GW] vLLM response not understood: %s", data)
+    logger.warning(f"[LLM-GW] vLLM response not understood: {data}")
     return ""
 
 
@@ -184,7 +189,7 @@ def _extract_text_from_brain_chat(data: Dict[str, Any]) -> str:
             return str(data["response"]).strip()
         if data.get("text"):
             return str(data["text"]).strip()
-    logger.warning("[LLM-GW] Brain /chat response not understood: %s", data)
+    logger.warning(f"[LLM-GW] Brain /chat response not understood: {data}")
     return ""
 
 
@@ -195,7 +200,6 @@ def _common_http_client() -> httpx.Client:
             read=settings.read_timeout_sec,
         )
     )
-
 
 # ─────────────────────────────────────────────
 # Spark integration helpers
@@ -255,6 +259,8 @@ def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
         # Attach φ before/after so downstream can see deltas.
         spark_meta["phi_before"] = phi_before
         spark_meta["phi_after"] = phi_after
+        # Also stash the latest user message for introspection payloads.
+        spark_meta["latest_user_message"] = latest_user
 
         return spark_meta
 
@@ -263,51 +269,86 @@ def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
         return {}
 
 
-# ─────────────────────────────────────────────
-# Message role normalization
-# ─────────────────────────────────────────────
-
-_ALLOWED_ROLES = {"system", "user", "assistant", "tool", "function"}
-
-
-def _normalize_roles_for_llm(
-    messages: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+def _maybe_publish_spark_introspect_candidate(
+    body: ChatBody,
+    spark_meta: Dict[str, Any],
+    response_text: str,
+) -> None:
     """
-    Ensure all roles are valid for OpenAI / vLLM chat:
+    Mirror the old Brain behavior: when φ changes or Orion feels loaded/uncertain,
+    publish a spark_introspect_candidate event on the bus.
 
-      - 'orion' -> 'assistant'
-      - unknown roles -> 'user' (except system/tool/function)
+    Heuristics (same as Brain):
+      - noticeable emotional tilt: delta_valence > 0.05
+      - high uncertainty:          uncertainty > 0.3
+      - high stress load:          stress_load > 0.4
     """
-    out: List[Dict[str, Any]] = []
+    try:
+        if not spark_meta:
+            return
 
-    for m in messages or []:
-        content = m.get("content")
-        if content is None:
-            continue
+        phi_before = spark_meta.get("phi_before") or {}
+        phi_after = spark_meta.get("phi_after") or {}
+        self_field = spark_meta.get("spark_self_field") or {}
 
-        role_raw = m.get("role") or "user"
-        role = str(role_raw).lower()
+        delta_valence = abs(
+            (phi_after.get("valence") or 0.0)
+            - (phi_before.get("valence") or 0.0)
+        )
+        uncertainty = self_field.get("uncertainty", 0.0)
+        stress_load = self_field.get("stress_load", 0.0)
 
-        if role == "orion":
-            role = "assistant"
-        elif role not in _ALLOWED_ROLES:
-            # keep system if it was exactly system; otherwise treat as user
-            if role != "system":
-                role = "user"
-
-        out.append(
-            {
-                "role": role,
-                "content": content,
-            }
+        should_flag = (
+            delta_valence > 0.05   # noticeable emotional tilt
+            or uncertainty > 0.3   # Orion feels quite unsure
+            or stress_load > 0.4   # Orion feels loaded
         )
 
-    return out
+        if not should_flag:
+            return
+
+        bus = OrionBus(
+            url=settings.orion_bus_url,
+            enabled=settings.orion_bus_enabled,
+        )
+        if not bus.enabled:
+            logger.warning("[LLM-GW Spark] bus disabled; skipping introspect candidate")
+            return
+
+        trace_id = body.trace_id or "llm-gateway"
+        source = getattr(body, "source", None) or "llm-gateway"
+        prompt = spark_meta.get("latest_user_message") or ""
+
+        candidate_payload = {
+            "event": "spark_introspect_candidate",
+            "trace_id": trace_id,
+            "source": source,
+            "kind": "chat",
+            "prompt": prompt,
+            "response": response_text,
+            "spark_meta": spark_meta,
+        }
+
+        bus.publish(
+            settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE,
+            candidate_payload,
+        )
+        logger.info(
+            "[%s] [LLM-GW Spark] published introspection candidate to %s",
+            trace_id,
+            settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE,
+        )
+
+    except Exception as e:
+        logger.error(
+            "[LLM-GW Spark] error while publishing introspection candidate: %s",
+            e,
+            exc_info=True,
+        )
 
 
 # ─────────────────────────────────────────────
-# Backend-specific chat implementations (vLLM-only)
+# Backend-specific chat implementations
 # ─────────────────────────────────────────────
 
 def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
@@ -318,7 +359,7 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
 
         {
           "text": "<assistant text or error>",
-          "spark_meta": { ... },  # may be empty
+          "spark_meta": { ... }  # may be empty
           "raw": { ...full vLLM JSON if available... }
         }
 
@@ -329,6 +370,7 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
     If both fail, we still return a readable error string in "text"
     instead of raising.
     """
+    # If vLLM is not configured, just surface a clear error.
     if not settings.vllm_url:
         logger.error("[LLM-GW] vLLM URL not configured")
         return {
@@ -343,9 +385,6 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
     base = settings.vllm_url.rstrip("/")
     candidate_paths = ["/v1/chat/completions", "/v1/completions"]
     last_error: Exception | None = None
-
-    # Normalize roles so vLLM (Mistral) never sees 'orion'.
-    normalized_messages = _normalize_roles_for_llm(body.messages or [])
 
     opts = body.options or {}
     shared_params: Dict[str, Any] = {}
@@ -363,19 +402,20 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
     # --- Chat payload (for /v1/chat/completions) ---
     chat_payload: Dict[str, Any] = {
         "model": model,
-        "messages": normalized_messages,
+        "messages": body.messages,
         "stream": False,
         **shared_params,
     }
 
     # --- Text payload (for /v1/completions) ---
-    if normalized_messages:
-        user_msgs = [m for m in normalized_messages if m["role"] == "user"]
+    # Use last user message as the prompt, or last message if no explicit user role.
+    if body.messages:
+        user_msgs = [m for m in body.messages if (m.get("role") or "").lower() == "user"]
         if user_msgs:
             last_user = user_msgs[-1].get("content", "")
         else:
-            last_user = normalized_messages[-1].get("content", "")
-        prompt = str(last_user or "")
+            last_user = body.messages[-1].get("content", "")
+        prompt = last_user or ""
     else:
         prompt = ""
 
@@ -387,6 +427,7 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
     }
 
     raw_data: Dict[str, Any] = {}
+    text: str = ""
 
     with _common_http_client() as client:
         for path in candidate_paths:
@@ -412,6 +453,13 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
                 r.raise_for_status()
                 raw_data = r.json()
                 text = _extract_text_from_vllm(raw_data)
+
+                # Trigger Spark introspection candidate heuristic after we have text.
+                _maybe_publish_spark_introspect_candidate(
+                    body=body,
+                    spark_meta=spark_meta,
+                    response_text=text,
+                )
 
                 return {
                     "text": text,
@@ -446,10 +494,6 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
 
 
 def _generate_via_vllm(body: GenerateBody, model: str) -> str:
-    """
-    Generate-style call implemented in terms of the chat path
-    so we still get Spark + profiles.
-    """
     chat_body = ChatBody(
         model=model,
         messages=[{"role": "user", "content": body.prompt}],
@@ -463,14 +507,13 @@ def _generate_via_vllm(body: GenerateBody, model: str) -> str:
         verb=body.verb,
         profile_name=body.profile_name,
     )
+    # For generate, we only care about text, not spark_meta/raw.
     result = _chat_via_vllm(chat_body, model=model)
-    if isinstance(result, dict):
-        return (result.get("text") or "").strip()
-    return str(result or "")
+    return result.get("text") or ""
 
 
 # ─────────────────────────────────────────────
-# Embeddings implementations (vLLM-only)
+# Embeddings implementations
 # ─────────────────────────────────────────────
 
 def _embeddings_via_vllm(body: EmbeddingsBody, model: str) -> Dict[str, Any]:
@@ -487,13 +530,12 @@ def _embeddings_via_vllm(body: EmbeddingsBody, model: str) -> Dict[str, Any]:
     opts = body.options or {}
     payload.update({k: v for k, v in opts.items() if v is not None})
 
-    logger.info("[LLM-GW] vLLM embeddings model=%s inputs=%d", model, len(body.inputs))
+    logger.info(f"[LLM-GW] vLLM embeddings model={model} inputs={len(body.inputs)}")
 
     with _common_http_client() as client:
         r = client.post(url, json=payload)
         r.raise_for_status()
         return r.json()
-
 
 # ─────────────────────────────────────────────
 # Public entrypoints used by main.py
@@ -503,18 +545,20 @@ def run_llm_chat(body: ChatBody):
     """
     Top-level chat router for the LLM Gateway.
 
-    - Chooses backend (currently vLLM-only) based on settings / options / profiles.
+    - Chooses profile + backend (currently vLLM-only).
     - Returns a dict with text + spark_meta + raw.
     """
-    profile = _select_profile(getattr(body, "profile_name", None))
+    profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
 
-    if backend == "vllm":
-        return _chat_via_vllm(body, model=model)
+    if backend != "vllm":
+        logger.warning(
+            "[LLM-GW] Backend '%s' not supported for chat; falling back to vLLM",
+            backend,
+        )
 
-    # Should not happen, _pick_backend coerces unknown backends to vLLM.
-    raise RuntimeError(f"Unknown backend: {backend}")
+    return _chat_via_vllm(body, model=model)
 
 
 def run_llm_generate(body: GenerateBody) -> str:
@@ -525,8 +569,12 @@ def run_llm_generate(body: GenerateBody) -> str:
     if backend == "vllm":
         return _generate_via_vllm(body, model=model)
 
-    # Should not happen, _pick_backend coerces unknown backends to vLLM.
-    raise RuntimeError(f"Unknown backend for generate: {backend}")
+    # For now, everything is vLLM; this branch is just future-proofing.
+    logger.warning(
+        "[LLM-GW] Backend '%s' not supported for generate; falling back to vLLM",
+        backend,
+    )
+    return _generate_via_vllm(body, model=model)
 
 
 def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
@@ -576,7 +624,7 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
 
     gen_body = GenerateBody(
         prompt=final_prompt,
-        options={},  # can later pass richer options from ExecStepPayload
+        options={},  # you can later pipe through richer options if ExecStepPayload supports them
         stream=False,
         return_json=False,
         trace_id=body.origin_node,

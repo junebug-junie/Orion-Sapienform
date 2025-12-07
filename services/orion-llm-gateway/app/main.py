@@ -1,5 +1,6 @@
 import logging
 import time
+import threading
 
 from orion.core.bus.service import OrionBus
 
@@ -17,6 +18,7 @@ from .llm_backend import (
     run_llm_exec_step,
     run_llm_embeddings,
 )
+from .tts_worker import tts_listener_worker
 
 logger = logging.getLogger("orion-llm-gateway")
 
@@ -36,6 +38,9 @@ def main():
         logger.error("Orion bus is disabled; exiting.")
         return
 
+    # 🔊 Start TTS listener in the background
+    threading.Thread(target=tts_listener_worker, daemon=True).start()
+
     logger.info(
         "Starting %s v%s listening on %s",
         settings.service_name,
@@ -43,8 +48,8 @@ def main():
         settings.channel_llm_intake,
     )
 
+    # Main LLM loop (chat / generate / exec_step / embeddings)
     for msg in bus.subscribe(settings.channel_llm_intake):
-        # We only care about actual pub/sub messages.
         if msg.get("type") != "message":
             continue
 
@@ -65,7 +70,7 @@ def main():
             if envelope.event == "chat":
                 raw = envelope.payload.get("body", envelope.payload) or {}
 
-                # Backwards compat: allow simple {prompt: "..."} callers.
+                # Backwards-compat: allow simple prompt-only payloads
                 if "messages" not in raw and "prompt" in raw:
                     prompt = raw.get("prompt") or ""
                     raw = {
@@ -82,31 +87,21 @@ def main():
                         "trace_id": raw.get("trace_id", envelope.correlation_id),
                         "user_id": raw.get("user_id"),
                         "session_id": raw.get("session_id"),
-                        "source": raw.get("source", envelope.service or "llm-gateway"),
-                        "verb": raw.get("verb"),
-                        "profile_name": raw.get("profile_name"),
+                        "source": raw.get("source", "brain-cortex"),
                     }
 
                 body = ChatBody(**raw)
-
-                # vLLM + Spark-aware path
                 result = run_llm_chat(body)
 
+                # New vLLM path returns dict; legacy path returns string.
                 if isinstance(result, dict):
-                    text = (result.get("text") or "").strip()
-                    spark_meta = result.get("spark_meta") or {}
-                    raw_llm = result.get("raw") or {}
+                    text = result.get("text") or ""
+                    spark_meta = result.get("spark_meta")
+                    raw_llm = result.get("raw")
                 else:
-                    # Extremely defensive fallback if run_llm_chat ever returns plain text
-                    text = str(result or "").strip()
-                    spark_meta = {}
-                    raw_llm = {}
-
-                if spark_meta:
-                    logger.info(
-                        "[LLM-GW] chat_result has spark_meta keys=%s",
-                        list(spark_meta.keys()),
-                    )
+                    text = str(result)
+                    spark_meta = None
+                    raw_llm = None
 
                 reply = {
                     "event": "chat_result",
@@ -114,28 +109,23 @@ def main():
                     "correlation_id": envelope.correlation_id,
                     "payload": {
                         "text": text,
-                        # Extra context for downstream consumers (optional to use):
                         "spark_meta": spark_meta,
-                        "llm_raw": raw_llm,
+                        "raw": raw_llm,
                     },
                 }
-
                 bus.publish(envelope.reply_channel, reply)
 
                 logger.info(
-                    "Published chat_result corr_id=%s reply_channel=%s (len=%d)",
+                    "Published chat_result corr_id=%s reply_channel=%s",
                     envelope.correlation_id,
                     envelope.reply_channel,
-                    len(text),
                 )
 
             # -------------------------
             # GENERATE
             # -------------------------
             elif envelope.event == "generate":
-                body = GenerateBody(
-                    **(envelope.payload.get("body", envelope.payload) or {})
-                )
+                body = GenerateBody(**envelope.payload.get("body", envelope.payload))
                 text = run_llm_generate(body)
 
                 reply = {
@@ -149,10 +139,9 @@ def main():
                 bus.publish(envelope.reply_channel, reply)
 
                 logger.info(
-                    "Published generate_result corr_id=%s reply_channel=%s (len=%d)",
+                    "Published generate_result corr_id=%s reply_channel=%s",
                     envelope.correlation_id,
                     envelope.reply_channel,
-                    len(text),
                 )
 
             # -------------------------
@@ -160,7 +149,7 @@ def main():
             # -------------------------
             elif envelope.event == "exec_step":
                 t0 = time.time()
-                body = ExecStepPayload(**(envelope.payload or {}))
+                body = ExecStepPayload(**envelope.payload)
 
                 result = run_llm_exec_step(body)
                 elapsed_ms = int((time.time() - t0) * 1000)
@@ -188,9 +177,7 @@ def main():
             # EMBEDDINGS
             # -------------------------
             elif envelope.event == "embeddings":
-                body = EmbeddingsBody(
-                    **(envelope.payload.get("body", envelope.payload) or {})
-                )
+                body = EmbeddingsBody(**envelope.payload.get("body", envelope.payload))
                 data_out = run_llm_embeddings(body)
 
                 reply = {

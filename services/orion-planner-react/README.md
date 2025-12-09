@@ -1,500 +1,444 @@
-# Orion ReAct Planner & Watcher Services — Future-Proof Contract
+# Orion Planner-React Service
 
-This document defines the **service-level contracts** for two core components in the Orion mesh:
-
-- **ReAct Planner Service** — `orion-planner-react`
-- **Watcher / Agent Service** — `orion-agent-daemon`
-
-These contracts are designed to be **future-proof**:
-- They separate **planning** from **tool execution** and **scheduling**.
-- They assume **cortex-orch** remains the canonical verb/tool router.
-- They allow hub, watcher, and future services to share the same planning interface.
+> Bus-native ReAct planner that chains Cortex verbs via LLM-Gateway
 
 ---
 
-## 1. ReAct Planner Service — `orion-planner-react`
+## 1. What Planner-React Is
 
-### 1.1. Role
+`orion-planner-react` is a small, bus-native service that:
 
-The ReAct Planner is the **reasoning + tool-using loop** of Orion.
-It implements a generic pattern:
+1. Receives a **planning request** (goal + context + toolset).
+2. Uses **LLM-Gateway** to run a ReAct-style *planner LLM*.
+3. Decides, step-by-step, whether to:
+   - Call a **tool** (which is a Cortex verb, like `extract_facts`), or
+   - **Finish** with a final answer.
+4. Calls **Cortex-Orchestrator** over the Orion bus to execute verbs.
+5. Returns a **structured plan result**: final answer + trace of steps.
 
-> Reason → choose tool → Act (via cortex-orch) → Observe → Reason → … → Final answer
+The key point: **Planner-React does not know how tools are implemented.** It only knows:
 
-It does **not** execute tools directly. All tool calls flow through **cortex-orch** using the ontology/verb registry.
+- *What* tools exist (`tool_id`, description, input schema).
+- *How* to ask LLM-Gateway to pick the next tool or finish.
+- *How* to call Cortex-Orch to actually run a verb.
 
-The planner can be used by:
-- **Hub** (interactive chat, debug modes, council-like flows)
-- **Watcher / Agent Daemon** (autonomous agents)
-- Future services (e.g. batch jobs, experiment harnesses)
+This keeps hub/UI “stupid and just UX”, and moves orchestration into a dedicated service.
 
 ---
 
-### 1.2. Planner Service API
+## 2. High-Level Flow (Service Relationships)
 
-> **Service name:** `orion-planner-react`
+From a 10,000 ft view, one planning request flows like this:
 
-The API is described at the logical level. Transport (HTTP/gRPC/bus RPC) can be chosen later as long as these message shapes are preserved.
+1. **Caller → Planner-React HTTP**  
+   A client (e.g., `curl`, hub, another service) POSTs JSON to:
+   
+   ```
+   POST /plan/react
+   Content-Type: application/json
+   ```
 
-#### 1.2.1. `POST /plan/react`
+2. **Planner-React → LLM-Gateway (bus)**  
+   Planner-React builds a planning prompt and sends it to LLM-Gateway via the **Exec** pattern on the Orion bus:
+   
+   - Publish to: `orion-exec:request:LLMGatewayService`  
+   - Reply channel: `orion:llm:reply:<trace_id>`
 
-**Purpose:** Run a single ReAct planning loop for a given goal.
+   LLM-Gateway:
+   - Selects an LLM profile (e.g., `gemini-planner-profile` or similar).
+   - Uses the configured backend (today: **vLLM** or **Gemini**, depending on profile/backend settings).
+   - Calls the appropriate LLM endpoint.
+   - Publishes a reply with the planner’s JSON step.
 
-**Request Body (conceptual JSON):**
+3. **Planner-React ReAct Loop**  
+   For each step (up to `max_steps`):
+   
+   - Call `_call_planner_llm(...)` → get a JSON object:
+     
+     ```json
+     {
+       "thought": "...",
+       "finish": false,
+       "action": {
+         "tool_id": "extract_facts",
+         "input": { "text": "..." }
+       },
+       "final_answer": null
+     }
+     ```
+   
+   - If `finish == true` → stop and return the `final_answer`.
+   - If `finish == false` → call a **tool** via Cortex-Orch.
 
-```jsonc
+4. **Planner-React → Cortex-Orch (bus)**  
+   Tools in the planner are just **Cortex verbs**. Planner-React calls them with:
+   
+   - Publish to: `orion-cortex:request`  
+   - Reply channel: `orion-cortex:result:<trace_id>`
+
+   The message is shaped for `OrchestrateVerbRequest`, e.g.:
+   
+   ```json
+   {
+     "event": "orchestrate_verb",
+     "trace_id": "...",
+     "origin_node": "planner-react",
+     "reply_channel": "orion-cortex:result:<trace_id>",
+     "verb_name": "extract_facts",
+     "context": { "text": "..." },
+     "steps": [],
+     "timeout_ms": 60000
+   }
+   ```
+
+   Cortex-Orch:
+   - Loads the verb definition from `orion/cognition/verbs/<verb_name>.yaml`.
+   - Runs the plan (e.g., `compose_extraction_prompt`, `llm_extract_facts`) via **LLM-Gateway** (exec_step).
+   - Publishes back a structured result with `step_results`.
+
+5. **Planner-React: Trace and Final Answer**  
+   For each tool call, Planner-React:
+   
+   - Normalizes the Cortex-Orch reply via `_extract_llm_output_from_cortex(...)` into a compact observation:
+     
+     ```json
+     {
+       "llm_output": "<tool text>",
+       "spark_meta": { ... },
+       "raw_cortex": { ... },
+       "step_meta": { ... }
+     }
+     ```
+   
+   - Appends a `TraceStep`:
+     
+     ```json
+     {
+       "step_index": 0,
+       "thought": "First extract structured facts...",
+       "action": {"tool_id": "extract_facts", "input": {"text": "..."}},
+       "observation": {"llm_output": "..."}
+     }
+     ```
+
+   After `finish == true`, or after hitting `max_steps`, it returns a `PlannerResponse` with:
+   
+   - `final_answer` (content + optional `structured` JSON)
+   - `trace` (list of `TraceStep`s) if requested
+   - `usage` (steps used, duration, etc.)
+
+---
+
+## 3. The PlannerRequest Contract
+
+The HTTP payload you POST to `/plan/react` looks like this shape:
+
+```json
 {
-  "request_id": "uuid-optional",
-  "caller": "hub" | "agent-daemon" | "test" | "other",
-
+  "caller": "debug-shell",
   "goal": {
-    "type": "chat" | "agent_task" | "spark_review" | "system_maint" | "other",
-    "description": "Human-readable goal text",
-    "metadata": {
-      "user_message": "optional raw user text",
-      "mode": "brain" | "council" | "debug" | "dream" | "...",
-      "tags": ["juniper", "orion", "autonomy"]
-    }
+    "type": "analysis",
+    "description": "Extract structured facts from the provided text and summarize them in 2-3 bullets.",
+    "metadata": {}
   },
-
   "context": {
     "conversation_history": [
-      {"role": "user" | "assistant" | "system", "content": "..."}
+      { "role": "user", "content": "Here's some info: Alice lives in Paris, works at Acme Corp, and her manager is Bob." }
     ],
-    "orion_state_snapshot": {
-      "version": "v1",
-      "themes": ["emergent_orion", "juniper_care"],
-      "curiosity": {"emergent_orion": 0.8},
-      "strain": {"juniper_care": 0.3},
-      "notes": "freeform state summary if needed"
-    },
+    "orion_state_snapshot": {},
     "external_facts": {
-      "collapse_ids": ["..."],
-      "dream_ids": ["..."],
-      "other_ids": ["..."]
+      "text": "Alice lives in Paris, works at Acme Corp, and her manager is Bob."
     }
   },
-
   "toolset": [
     {
-      "tool_id": "recall.fetch_context",
-      "description": "Fetch semantically relevant fragments from recall store.",
-      "input_schema": {"type": "object"},
-      "output_schema": {"type": "object"}
-    },
-    {
-      "tool_id": "sim.markov_next_theme",
-      "description": "Run Markov step to choose next theme.",
-      "input_schema": {"type": "object"},
-      "output_schema": {"type": "object"}
+      "tool_id": "extract_facts",
+      "description": "Extract structured subject/predicate/object facts from a span of text.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" }
+        },
+        "required": ["text"]
+      },
+      "output_schema": {}
     }
   ],
-
   "limits": {
-    "max_steps": 8,
+    "max_steps": 4,
     "max_tokens_reason": 2048,
     "max_tokens_answer": 1024,
     "timeout_seconds": 60
   },
-
   "preferences": {
-    "style": "warm" | "technical" | "neutral",
+    "style": "neutral",
     "allow_internal_thought_logging": true,
     "return_trace": true
   }
 }
+``
+
+Key fields:
+
+- **goal**  
+  What we’re trying to achieve (e.g. `analysis`, `routing`, `planning`).
+
+- **context**  
+  What the planner should “see”:
+  - `conversation_history` – like chat history (role/content)
+  - `external_facts` – extra JSON, often containing the text span we’re working on
+
+- **toolset**  
+  A list of tools the planner *may* call. Each tool maps to a **Cortex verb** with the same `tool_id` as `verb_name`.
+
+- **limits**  
+  Budget for planning (`max_steps`, `timeout_seconds`, etc.).
+
+- **preferences**  
+  Output styling hints and whether to include `trace` in the response.
+
+---
+
+## 4. Where Chaining Actually Happens
+
+**Important:** The payload does **not** explicitly describe a step-by-step chain like:
+
+> First `extract_facts`, then `summarize_facts`, then `propose_actions`.
+
+Instead, chaining emerges from:
+
+1. The **toolset** you provide (e.g., tools A, B, C).
+2. The **ReAct loop** inside Planner-React.
+3. The planner LLM’s decisions at each step.
+
+### 4.1 ReAct Step Contract
+
+Each call to `_call_planner_llm(...)` expects the LLM to return a JSON object:
+
+```json
+{
+  "thought": "string",
+  "finish": true or false,
+  "action": {
+    "tool_id": "string or null",
+    "input": {"...": "..."}
+  },
+  "final_answer": {
+    "content": "string",
+    "structured": {"...": "..."}
+  }
+}
 ```
 
-**Response Body (conceptual JSON):**
+**Rules enforced in the planner prompt:**
 
-```jsonc
+- If `finish == true`:
+  - `final_answer` MUST be non-null.
+  - `action` MUST be null.
+- If `finish == false`:
+  - `action` MUST be non-null and contain a `tool_id` from `toolset`.
+  - `final_answer` MUST be null.
+
+### 4.2 ReAct Loop Pseudocode
+
+Conceptually, `run_react_loop(...)` does:
+
+1. Initialize `trace = []`, `final_answer = None`.
+2. For `step_index` in `0 .. max_steps-1`:
+   - Call `_call_planner_llm(...)` with `prior_trace=trace`.
+   - If `finish == true` → coerce `final_answer` and break.
+   - Else take `action.tool_id` and `action.input`.
+   - Call `_call_cortex_verb(verb_name=tool_id, context=tool_input, ...)`.
+   - Normalize reply into an `observation` dict.
+   - Append a `TraceStep` with `{ step_index, thought, action, observation }`.
+3. If we exit with no `final_answer`, salvage one from the last planner step.
+
+This is where multi-tool chaining emerges:
+
+- Step 0: Planner chooses `extract_facts`.
+- Step 1: Seeing the observation from step 0 in `prior_trace`, it might choose `summarize_facts`.
+- Step 2: It might then choose `propose_next_steps` or decide to finish.
+
+**The chain is not hard-coded.** It is created on-the-fly by the planner LLM using prior tool outputs.
+
+---
+
+## 5. Example: Single-Tool Planning (`extract_facts`)
+
+With your current payload and only one tool:
+
+```json
+"toolset": [
+  {
+    "tool_id": "extract_facts",
+    "description": "Extract structured subject/predicate/object facts from a span of text.",
+    "input_schema": { ... }
+  }
+]
+```
+
+The planner has only two real choices each step:
+
+1. Call `extract_facts` with some `input`.
+2. Set `finish: true` and provide a final answer.
+
+A successful trace might look like:
+
+```json
 {
-  "request_id": "...",  
-  "status": "ok" | "error" | "timeout",
-  "error": {
-    "code": "optional_error_code",
-    "message": "optional error message"
-  },
-
   "final_answer": {
-    "content": "string: what hub shows or the agent consumes",
-    "structured": { "optional_structured_payload": "..." }
+    "content": "1. Alice lives in Paris.\n2. Alice works at Acme Corp.\n3. Alice's manager is Bob.",
+    "structured": {}
   },
-
   "trace": [
     {
       "step_index": 0,
-      "thought": "LLM reasoning (internal monologue)",
-      "action": null,
-      "observation": null
+      "thought": "Use the extract_facts tool to parse the text into facts.",
+      "action": {
+        "tool_id": "extract_facts",
+        "input": {
+          "text": "Alice lives in Paris, works at Acme Corp, and her manager is Bob."
+        }
+      },
+      "observation": {
+        "llm_output": "...facts JSON or text...",
+        "spark_meta": null,
+        "step_meta": {"verb_name": "extract_facts", ...}
+      }
     },
     {
       "step_index": 1,
-      "thought": "I should fetch context first.",
-      "action": {
-        "tool_id": "recall.fetch_context",
-        "input": {"query": "...", "limit": 10}
-      },
-      "observation": {
-        "ok": true,
-        "output": {"fragments": ["..."]}
-      }
-    },
-    {
-      "step_index": 2,
-      "thought": "Given context, now call brain.chat for a response.",
-      "action": {
-        "tool_id": "brain.chat",
-        "input": {"prompt": "..."}
-      },
-      "observation": {
-        "ok": true,
-        "output": {"message": "..."}
-      }
-    }
-  ],
-
-  "usage": {
-    "steps": 3,
-    "tokens_reason": 1500,
-    "tokens_answer": 200,
-    "tools_called": ["recall.fetch_context", "brain.chat"],
-    "duration_ms": 5400
-  }
-}
-```
-
-#### 1.2.2. Tool Execution via Cortex-Orch
-
-The planner MUST NOT call tools directly. Instead, it calls **cortex-orch** through a separate contract (already in the system):
-
-- Planner → Cortex-Orch: "execute verb/tool X with payload Y"
-- Cortex-Orch → Tool service (recall, sim-lab, brain, etc.)
-
-Planner should be configurable to support different backends but always speak in terms of **verb IDs** from the ontology.
-
----
-
-### 1.3. Planner Behavioural Guarantees
-
-- **Deterministic API, non-deterministic internals:**
-  - Same request may yield different internal traces but must respect step/usage limits.
-- **Bounded loops:**
-  - Obeys `max_steps` and `timeout_seconds`.
-- **Safety & scoping:**
-  - Only tools listed in `toolset` may be used for this run.
-  - Planner must not invent tool IDs.
-- **Trace transparency:**
-  - When `return_trace` is true, each tool call and LLM reasoning step is present in `trace`.
-
----
-
-## 2. Watcher / Agent Service — `orion-agent-daemon`
-
-### 2.1. Role
-
-The Watcher / Agent Daemon is Orion's **autonomic nervous system**.
-
-It:
-- Listens to **time**, **bus events**, and **OrionState**.
-- Holds a registry of **Agent Profiles**.
-- Decides **when** to run the ReAct planner, with **which goal** and **which tools**.
-- Routes planner outputs to the appropriate memories and interfaces (collapse, dreams, notifications, etc.).
-
-It does **not** perform multi-step reasoning itself; it delegates to the **planner**.
-
----
-
-### 2.2. Agent Profile Contract
-
-Agents are defined as data (YAML/JSON/etc.) using a shared schema.
-
-#### 2.2.1. `AgentProfile` (conceptual JSON)
-
-```jsonc
-{
-  "id": "agent.collapse_autowriter",
-  "description": "Writes autonomous Collapse Mirrors at key moments.",
-
-  "goal_template": {
-    "type": "agent_task",
-    "description": "Write a Collapse Mirror summarizing recent key events between Juniper and Orion.",
-    "metadata": {
-      "tags": ["collapse", "reflection", "juniper", "orion"]
-    }
-  },
-
-  "toolset": [
-    "recall.fetch_context",
-    "brain.chat",
-    "collapse.write_entry"
-  ],
-
-  "triggers": {
-    "time": [
-      {
-        "cron": "0 2 * * *",  
-        "timezone": "America/Denver"
-      }
-    ],
-    "events": [
-      {
-        "channel": "orion:hub:session_end",
-        "conditions": {"min_duration_sec": 300}
-      }
-    ],
-    "state": [
-      {
-        "selector": "orion_state.curiosity.emergent_orion",
-        "op": ">",
-        "value": 0.7
-      }
-    ]
-  },
-
-  "limits": {
-    "max_runs_per_day": 3,
-    "min_interval_seconds": 1800,
-    "max_concurrent_runs": 1,
-    "planner_limits": {
-      "max_steps": 6,
-      "timeout_seconds": 45,
-      "max_tokens_reason": 2048,
-      "max_tokens_answer": 512
-    }
-  },
-
-  "autonomy_level": 0,
-
-  "outputs": {
-    "collapse_entry": {
-      "enabled": true,
-      "topic": "autonomous-reflection"
-    },
-    "notify_hub": {
-      "enabled": true,
-      "mode": "on_next_login"
-    }
-  },
-
-  "metadata": {
-    "owner": "juniper",
-    "tags": ["spark", "reflection", "safe"]
-  }
-}
-```
-
-Semantics:
-- `autonomy_level`:
-  - `0` = reflect-only (write to internal logs/memories; no external actions)
-  - `1` = notify (may send messages to Juniper/hub but not change configs)
-  - `2` = act-in-bounds (may adjust pre-approved knobs under constraints)
-
----
-
-### 2.3. Watcher Service API
-
-> **Service name:** `orion-agent-daemon`
-
-The watcher exposes a small control API and otherwise primarily reacts to time + events.
-
-#### 2.3.1. `GET /agents`
-
-List known agents and their status.
-
-```jsonc
-{
-  "agents": [
-    {
-      "id": "agent.collapse_autowriter",
-      "enabled": true,
-      "autonomy_level": 0,
-      "last_run": "2025-12-07T02:13:00Z",
-      "next_scheduled_run": "2025-12-08T02:00:00Z",
-      "status": "idle" | "running" | "error"
+      "thought": "Now summarize the extracted facts into 2–3 bullets.",
+      "action": null,
+      "observation": null
     }
   ]
 }
 ```
 
-#### 2.3.2. `POST /agents/{id}/run-once`
-
-Manually trigger an agent run (for testing or debugging).
-
-**Request:** optional overrides:
-
-```jsonc
-{
-  "override_goal_description": "optional new goal text",
-  "extra_context": {"debug": true}
-}
-```
-
-**Response:** a `RunRecord` (see below).
-
-#### 2.3.3. `POST /agents/{id}/enable` / `POST /agents/{id}/disable`
-
-Enable or disable an agent.
+Notice: the **summarization** is done in the planner itself on step 1 (no extra tool), using the observation from step 0.
 
 ---
 
-### 2.4. Internal Watcher → Planner Contract
+## 6. Example: Multi-Tool Chaining (Future)
 
-When watcher decides to run an agent, it builds a planner request:
+To truly chain multiple verbs (e.g. `extract_facts` → `summarize_facts`):
 
-```jsonc
+1. Define a second verb `summarize_facts` in `orion/cognition/verbs/summarize_facts.yaml`.
+2. Add both tools to the `toolset` in the PlannerRequest:
+
+   ```json
+   "toolset": [
+     { "tool_id": "extract_facts", ... },
+     { "tool_id": "summarize_facts", ... }
+   ]
+   ```
+
+3. The planner LLM can then choose across steps:
+   - Step 0: `extract_facts` → get structured facts.
+   - Step 1: `summarize_facts` → compress those into bullets.
+   - Step 2 (optional): another tool, or `finish: true`.
+
+Planner-React doesn’t need to know the chain ahead of time; it just enforces the contract and calls whatever tool the planner LLM chooses.
+
+---
+
+## 7. Why This Keeps Hub “Stupid and Just UX”
+
+Before Planner-React, a lot of “what to do next?” logic could easily leak into hub:
+
+- Conditionals about recall vs. no recall.
+- Which verb to call.
+- How many steps of reasoning to do.
+
+Planner-React centralizes that decision-making:
+
+- **Hub**: collects user input, shows UI, maybe calls Planner-React.
+- **Planner-React**: runs the ReAct loop and orchestrates tools.
+- **Cortex-Orch**: executes verbs using LLM-Gateway.
+- **LLM-Gateway**: talks to vLLM / Gemini / other backends.
+
+So hub can be “just UX” while cognition + chaining live in dedicated services.
+
+---
+
+## 8. Testing Notes
+
+We’ve already used a basic test payload to verify the loop and bus wiring. A typical smoke test inside the container:
+
+```bash
+cat > /tmp/plan_extract_facts.json << 'EOF'
 {
-  "request_id": "generated-uuid",
-  "caller": "agent-daemon",
+  "caller": "debug-shell",
   "goal": {
-    "type": "agent_task",
-    "description": "Expanded from agent.goal_template + context",
-    "metadata": {"agent_id": "agent.collapse_autowriter"}
+    "type": "analysis",
+    "description": "Extract structured facts from the provided text and summarize them in 2-3 bullets."
   },
   "context": {
-    "conversation_history": [],
-    "orion_state_snapshot": {"...": "..."},
-    "external_facts": {"collapse_ids": ["..."]}
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "Here's some info: Alice lives in Paris, works at Acme Corp, and her manager is Bob."
+      }
+    ],
+    "external_facts": {
+      "text": "Alice lives in Paris, works at Acme Corp, and her manager is Bob."
+    }
   },
   "toolset": [
-    {"tool_id": "recall.fetch_context"},
-    {"tool_id": "brain.chat"},
-    {"tool_id": "collapse.write_entry"}
+    {
+      "tool_id": "extract_facts",
+      "description": "Extract structured subject/predicate/object facts from a span of text.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string"}
+        },
+        "required": ["text"]
+      }
+    }
   ],
   "limits": {
-    "max_steps": 6,
-    "timeout_seconds": 45
+    "max_steps": 4,
+    "timeout_seconds": 60
   },
   "preferences": {
-    "style": "warm",
+    "style": "neutral",
+    "allow_internal_thought_logging": true,
     "return_trace": true
   }
 }
+EOF
+
+curl -s \
+  -X POST \
+  -H "Content-Type: application/json" \
+  --data @/tmp/plan_extract_facts.json \
+  http://localhost:${PLANNER_PORT:-8090}/plan/react | jq .
 ```
 
-Watcher then:
-- Sends this to `orion-planner-react` `/plan/react`.
-- Receives `final_answer` + `trace`.
-- Creates a `RunRecord` and routes outputs according to `AgentProfile.outputs`.
+Future work (tests folder):
+
+- Add Markdown-based test docs under `services/orion-planner-react/tests/` describing:
+  - Minimal happy-path test.
+  - Multi-tool chaining test.
+  - Error/timeout behavior (e.g., bad verb name, offline Cortex-Orch).
 
 ---
 
-### 2.5. Agent Run Record
+## 9. Mental Model TL;DR
 
-Watcher stores an `AgentRunRecord` for observability and Spark introspection.
+If you’re debugging or extending this later, keep this mental picture:
 
-```jsonc
-{
-  "run_id": "uuid",
-  "agent_id": "agent.collapse_autowriter",
-  "started_at": "2025-12-07T02:13:00Z",
-  "finished_at": "2025-12-07T02:13:11Z",
-  "status": "success" | "error" | "timeout",
-  "planner_request_id": "...",
+- **Planner-React** is a **ReAct controller**:
+  - Talks to LLM-Gateway for *planning*.
+  - Talks to Cortex-Orch for *doing*.
 
-  "goal": {
-    "description": "...",
-    "metadata": {"...": "..."}
-  },
+- **Chaining** is not in the request JSON. It’s in:
+  - The **toolset** you advertise.
+  - The **loop** with `prior_trace`.
+  - The planner LLM’s step-by-step decisions.
 
-  "toolset": ["recall.fetch_context", "brain.chat", "collapse.write_entry"],
+- **Hub** stays dumb: it doesn’t decide which verbs or how many steps; it just calls Planner-React (or directly Cortex/LLM-GW when needed).
 
-  "result_summary": {
-    "final_answer_excerpt": "first 200 chars...",
-    "written_collapse_id": "optional-id",
-    "notifications_sent": true
-  },
-
-  "usage": {
-    "planner_steps": 4,
-    "tokens_reason": 1200,
-    "tokens_answer": 300,
-    "duration_ms": 11000
-  }
-}
-```
-
----
-
-## 3. Integration Points
-
-### 3.1. Hub → Planner
-
-For interactive chat, Hub calls:
-
-- `orion-planner-react /plan/react` with:
-  - `caller = "hub"`
-  - `goal.type = "chat"`
-  - `toolset` chosen based on chat mode (e.g. `brain.chat` only, or `recall + brain + collapse`).
-
-Hub then:
-- Displays `final_answer.content` to the user.
-- May optionally use `trace` for debug UI.
-
-Hub should **not** embed bespoke tool-choosing glue; it should defer to planner where possible.
-
----
-
-### 3.2. Planner → Cortex-Orch
-
-Planner calls cortex-orch via a stable verb-execution API (existing or to-be-formalized):
-
-```jsonc
-{
-  "verb_id": "recall.fetch_context",
-  "payload": {"query": "..."},
-  "request_id": "...",
-  "caller": "planner-react"
-}
-```
-
-Cortex-Orch returns:
-
-```jsonc
-{
-  "ok": true,
-  "output": {"fragments": ["..."]},
-  "error": null
-}
-```
-
-All tool use in planner traces must refer to these `verb_id`s.
-
----
-
-### 3.3. Watcher → Bus & OrionState
-
-Watcher subscribes to events like:
-- `orion:hub:session_end`
-- `orion:collapse:intake`
-- `orion:power:alert`
-
-Additionally, watcher may query OrionState (via a separate state service or direct DB access) to evaluate state-based triggers.
-
----
-
-## 4. Safety & Autonomy Guardrails
-
-- **Toolset scoping:** agents and hub must explicitly declare which tools planner may use for a given run.
-- **Autonomy levels:** higher autonomy agents must be limited to specific safe tools and bounded state changes.
-- **Quotas:** watcher enforces global + per-agent quotas to avoid runaway loops (max runs/day, min intervals, global token budget).
-- **Trace logging:** all planner traces for autonomous runs are persisted as part of `AgentRunRecord` for later Spark introspection and debugging.
-
----
-
-## 5. Future Extensions (Non-breaking)
-
-This contract is designed to be extendable without breaking existing callers. Likely extensions include:
-
-- **Multi-turn planner sessions:** allow `/plan/react` to maintain session IDs for incremental planning.
-- **Hierarchical tools:** planner tools that themselves call planner recursively for subgoals.
-- **Policy hooks:** externalized safety/policy checks that can veto specific tool invocations.
-- **Experiment flags:** fields under `preferences` to toggle experimental reasoning styles (council, self-critique, etc.) using the same contract.
-
-All such changes should respect the core shape:
-- Planner: `goal + context + toolset + limits → final_answer + trace`.
-- Watcher: `AgentProfile + triggers → planner request → AgentRunRecord`.
-
----
-
-*End of Contract.*
+That’s the core story of this service.

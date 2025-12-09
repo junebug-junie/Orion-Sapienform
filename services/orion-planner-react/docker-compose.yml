@@ -1,0 +1,37 @@
+services:
+
+  planner-react:
+    build:
+      context: ../..
+      dockerfile: services/orion-planner-react/Dockerfile
+    container_name: ${PROJECT}-planner-react
+    #network_mode: "host"
+    ports:
+      - "${PLANNER_PORT}:${PLANNER_PORT}"
+    restart: unless-stopped
+
+    environment:
+      # Core service identity
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - PLANNER_PORT=${PLANNER_PORT}
+
+      # Orion Bus
+      - ORION_BUS_URL=${ORION_BUS_URL:-${ORION_BUS_URL}}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      # LLM Gateway & exec (bus-first)
+      - LLM_GATEWAY_SERVICE_NAME=${LLM_GATEWAY_SERVICE_NAME}
+      - EXEC_REQUEST_PREFIX=${EXEC_REQUEST_PREFIX}
+
+      # --- Cortex Orchestrator integration ---
+      - CORTEX_REQUEST_CHANNEL=${CORTEX_REQUEST_CHANNEL}
+      - CORTEX_RESULT_PREFIX=${CORTEX_RESULT_PREFIX}
+
+    networks:
+      - ${NET}
+
+networks:
+  app-net:
+    external: true

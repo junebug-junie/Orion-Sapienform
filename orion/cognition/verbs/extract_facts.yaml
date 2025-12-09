@@ -16,7 +16,7 @@ timeout_ms: 3000
 max_recursion_depth: 1
 
 services:
-  - NewServiceName
+  - LLMGatewayService
 
 prompt_template: extract_facts_prompt.j2
 
@@ -26,7 +26,7 @@ plan:
     order: 0
     prompt_template: extract_facts_prompt.j2
     services:
-      - NewServiceName
+      - LLMGatewayService
     requires_gpu: false
     requires_memory: false
 
@@ -34,8 +34,9 @@ plan:
     description: Transform text→triples / key-value facts.
     order: 1
     services:
-      - NewServiceName
+      - LLMGatewayService
     requires_gpu: true
     requires_memory: false
 
 safety_rules: []
+

@@ -153,6 +153,37 @@ def _resolve_model(body_model: str | None, profile: LLMProfile | None) -> str:
     return settings.default_model
 
 
+def _normalize_model_for_vllm(model: str) -> str:
+    """
+    Ensure vLLM sees a concrete model id (like 'mistralai/Mistral-7B-Instruct-v0.3').
+
+    If `model` looks like a profile key (no slash), try to resolve it via
+    the profile registry and return its `model_id`. Otherwise just pass through.
+    """
+    if not model:
+        return model
+
+    # Already looks like a full HuggingFace / OpenAI id
+    if "/" in model:
+        return model
+
+    try:
+        profile = _profile_registry.get(model)
+        resolved = profile.model_id
+        logger.info(
+            "[LLM-GW] Normalized vLLM model alias '%s' → '%s'",
+            model,
+            resolved,
+        )
+        return resolved
+    except Exception:
+        logger.warning(
+            "[LLM-GW] Could not normalize vLLM model '%s'; using as-is",
+            model,
+        )
+        return model
+
+
 def _extract_text_from_vllm(data: Dict[str, Any]) -> str:
     """
     Handle both OpenAI-style chat completions and plain completions:
@@ -353,7 +384,7 @@ def _maybe_publish_spark_introspect_candidate(
 
 def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
     """
-    Call vLLM via OpenAI-compatible endpoints and attach Spark meta.
+    Call vLLM via OpenAI-compatible /v1/chat/completions and attach Spark meta.
 
     Returns a dict:
 
@@ -363,13 +394,15 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
           "raw": { ...full vLLM JSON if available... }
         }
 
-    We try, in order:
-      1) /v1/chat/completions  (chat-style: messages[])
-      2) /v1/completions       (text-style: prompt)
-
-    If both fail, we still return a readable error string in "text"
-    instead of raising.
+    We only use /v1/chat/completions here; /v1/completions is **not**
+    used because it returns 400s in this deployment.
     """
+    logger.info(
+        "[LLM-GW] vLLM chat request model=%s messages=%d",
+        model,
+        len(body.messages or []),
+    )
+
     # If vLLM is not configured, just surface a clear error.
     if not settings.vllm_url:
         logger.error("[LLM-GW] vLLM URL not configured")
@@ -383,7 +416,7 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
     spark_meta = _spark_ingest_for_body(body)
 
     base = settings.vllm_url.rstrip("/")
-    candidate_paths = ["/v1/chat/completions", "/v1/completions"]
+    url = base + "/v1/chat/completions"
     last_error: Exception | None = None
 
     opts = body.options or {}
@@ -407,74 +440,63 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
         **shared_params,
     }
 
-    # --- Text payload (for /v1/completions) ---
-    # Use last user message as the prompt, or last message if no explicit user role.
-    if body.messages:
-        user_msgs = [m for m in body.messages if (m.get("role") or "").lower() == "user"]
-        if user_msgs:
-            last_user = user_msgs[-1].get("content", "")
-        else:
-            last_user = body.messages[-1].get("content", "")
-        prompt = last_user or ""
-    else:
-        prompt = ""
-
-    text_payload: Dict[str, Any] = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        **shared_params,
-    }
-
     raw_data: Dict[str, Any] = {}
     text: str = ""
 
     with _common_http_client() as client:
-        for path in candidate_paths:
-            url = base + path
-            if path.endswith("/chat/completions"):
-                payload = chat_payload
-            else:
-                payload = text_payload
+        logger.info("[LLM-GW] Trying vLLM endpoint %s", url)
 
-            logger.info("[LLM-GW] Trying vLLM endpoint %s", url)
+        try:
+            r = client.post(url, json=chat_payload)
 
-            try:
-                r = client.post(url, json=payload)
-
-                # If this endpoint simply doesn't exist, try the next one.
-                if r.status_code == 404:
-                    logger.warning(
-                        "[LLM-GW] vLLM endpoint %s returned 404; trying next candidate",
-                        url,
-                    )
-                    continue
-
-                r.raise_for_status()
-                raw_data = r.json()
-                text = _extract_text_from_vllm(raw_data)
-
-                # Trigger Spark introspection candidate heuristic after we have text.
-                _maybe_publish_spark_introspect_candidate(
-                    body=body,
-                    spark_meta=spark_meta,
-                    response_text=text,
+            # If this endpoint simply doesn't exist, surface a clear error.
+            if r.status_code == 404:
+                logger.error(
+                    "[LLM-GW] vLLM endpoint %s returned 404 (chat/completions missing)",
+                    url,
                 )
-
                 return {
-                    "text": text,
+                    "text": "[LLM-Gateway Error: vllm] /v1/chat/completions not available on vLLM server",
                     "spark_meta": spark_meta,
-                    "raw": raw_data,
+                    "raw": {},
                 }
 
-            except HTTPStatusError as e:
-                last_error = e
-                logger.error("[LLM-GW] vLLM HTTP error on %s: %s", url, e, exc_info=True)
-            except Exception as e:
-                last_error = e
-                logger.error("[LLM-GW] vLLM unknown error on %s: %s", url, e, exc_info=True)
+            r.raise_for_status()
+            raw_data = r.json()
+            text = _extract_text_from_vllm(raw_data)
 
-    # If we got here, nothing worked; don't crash the gateway.
+            # Trigger Spark introspection candidate heuristic after we have text.
+            _maybe_publish_spark_introspect_candidate(
+                body=body,
+                spark_meta=spark_meta,
+                response_text=text,
+            )
+
+            return {
+                "text": text,
+                "spark_meta": spark_meta,
+                "raw": raw_data,
+            }
+
+        except HTTPStatusError as e:
+            last_error = e
+            # Log status + response body to see *why* vLLM is unhappy
+            try:
+                body_text = r.text
+            except Exception:
+                body_text = "<no body>"
+            logger.error(
+                "[LLM-GW] vLLM HTTP error on %s: %s | body=%s",
+                url,
+                e,
+                body_text,
+                exc_info=True,
+            )
+        except Exception as e:
+            last_error = e
+            logger.error("[LLM-GW] vLLM unknown error on %s: %s", url, e, exc_info=True)
+
+    # If we got here, chat/completions didn't work; don't crash the gateway.
     if last_error is not None:
         logger.error(
             "[LLM-GW] No working vLLM chat endpoint; last_error=%r", last_error
@@ -491,6 +513,7 @@ def _chat_via_vllm(body: ChatBody, model: str) -> Dict[str, Any]:
         "spark_meta": spark_meta,
         "raw": {},
     }
+
 
 
 def _generate_via_vllm(body: GenerateBody, model: str) -> str:
@@ -551,6 +574,7 @@ def run_llm_chat(body: ChatBody):
     profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
+    model = _normalize_model_for_vllm(model)
 
     if backend != "vllm":
         logger.warning(
@@ -558,6 +582,7 @@ def run_llm_chat(body: ChatBody):
             backend,
         )
 
+    logger.info("[LLM-GW] run_llm_chat backend=%s model=%s", backend, model)
     return _chat_via_vllm(body, model=model)
 
 
@@ -565,8 +590,10 @@ def run_llm_generate(body: GenerateBody) -> str:
     profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
+    model = _normalize_model_for_vllm(model)
 
     if backend == "vllm":
+        logger.info("[LLM-GW] run_llm_generate backend=%s model=%s", backend, model)
         return _generate_via_vllm(body, model=model)
 
     # For now, everything is vLLM; this branch is just future-proofing.
@@ -584,6 +611,7 @@ def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
     profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
+    model = _normalize_model_for_vllm(model)
 
     if backend == "vllm":
         return _embeddings_via_vllm(body, model=model)
@@ -627,6 +655,7 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
     profile = _select_profile(getattr(body, "profile_name", None))
     backend = _pick_backend({}, profile)
     model = _resolve_model(None, profile)
+    model = _normalize_model_for_vllm(model)
 
     if backend != "vllm":
         logger.warning(
@@ -654,11 +683,12 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
     elapsed_ms = int((time.time() - t0) * 1000)
 
     logger.info(
-        "[LLM-GW] exec_step verb=%s step=%s service=%s elapsed_ms=%d",
+        "[LLM-GW] exec_step verb=%s step=%s service=%s elapsed_ms=%d model=%s",
         body.verb,
         body.step,
         body.service,
         elapsed_ms,
+        model,
     )
 
     return {

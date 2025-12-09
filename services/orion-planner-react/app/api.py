@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional
@@ -165,9 +166,6 @@ async def _request_and_wait(
 # ─────────────────────────────────────────────
 # LLM planning step (LLM Gateway via Exec bus)
 # ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
-# LLM planning step (LLM Gateway via Chat bus)
-# ─────────────────────────────────────────────
 
 async def _call_planner_llm(
     bus: OrionBus,
@@ -180,27 +178,7 @@ async def _call_planner_llm(
 ) -> Dict[str, Any]:
     """
     Use LLM Gateway's 'chat' event to do a single ReAct planning step.
-
-    Expects the LLM to return JSON in the body text:
-
-      {
-        "thought": "...",
-        "finish": false,
-        "action": {
-          "tool_id": "extract_facts",
-          "input": { "text": "..." }
-        },
-        "final_answer": null
-      }
-
-    or:
-
-      {
-        "thought": "...",
-        "finish": true,
-        "action": null,
-        "final_answer": { "content": "...", "structured": {...} }
-      }
+    Expects the LLM to return JSON in the body text.
     """
     trace_id = str(uuid.uuid4())
 
@@ -220,20 +198,46 @@ async def _call_planner_llm(
     if prior_trace:
         lines: List[str] = []
         for s in prior_trace[-3:]:
+            # ───────────────────────────────────────────────────────
+            # FIX: Truncate historical observations to prevent bloat
+            # ───────────────────────────────────────────────────────
+            obs_str = str(s.observation)
+            if len(obs_str) > 1000:  # Cap history items tightly
+                obs_str = obs_str[:1000] + "... [TRUNCATED]"
+
             lines.append(
                 f"Step {s.step_index}: thought={s.thought!r}, "
-                f"action={s.action}, observation={s.observation}"
+                f"action={s.action}, observation={obs_str}"
             )
         prior_summary = "\n".join(lines)
+    # ─────────────────────────────────────────────────────────────
+    # CONTEXT PREPARATION & SAFETY TRUNCATION
+    # ─────────────────────────────────────────────────────────────
 
-    # Use last user message + optional text from external_facts as the "current input"
+    # 1. Truncate User Message (History)
     last_user = ""
     if context.conversation_history:
-        last_user = context.conversation_history[-1].content or ""
+        raw_user = context.conversation_history[-1].content or ""
+        MAX_USER_CHARS = 14000
+        if len(raw_user) > MAX_USER_CHARS:
+            logger.warning(f"Truncating last_user from {len(raw_user)} to {MAX_USER_CHARS} chars")
+            last_user = raw_user[:MAX_USER_CHARS] + "\n... [TRUNCATED]"
+        else:
+            last_user = raw_user
+
+    # 2. Truncate External Facts
     ext_text = context.external_facts.get("text") or ""
+    MAX_EXT_CHARS = 10000 
+    if len(ext_text) > MAX_EXT_CHARS:
+        logger.warning(
+            "Truncating external_facts from %d to %d chars to prevent context overflow.", 
+            len(ext_text), 
+            MAX_EXT_CHARS
+        )
+        ext_text = ext_text[:MAX_EXT_CHARS] + "\n... [TRUNCATED DUE TO CONTEXT LIMITS]"
 
     # ─────────────────────────────────────────
-    # System instructions: tell the LLM to behave as a ReAct planner
+    # System instructions
     # ─────────────────────────────────────────
     system_msg = f"""
 You are Orion's internal ReAct planner.
@@ -291,8 +295,8 @@ Now decide the next step according to the JSON schema above.
     ]
 
     body = {
-        # Let profiles / defaults resolve the actual vLLM model
-        "model": None,
+        # Let env var specify model, or fall back to None (Gateway default)
+        "model": os.environ.get("PLANNER_MODEL"),
         "messages": messages,
         "options": {
             "temperature": 0.1,
@@ -336,6 +340,25 @@ Now decide the next step according to the JSON schema above.
     if not text:
         raise RuntimeError("LLM Gateway returned empty text for planner-react")
 
+    # ─────────────────────────────────────────────────────────────
+    # FIX: Sanitize LLM Output
+    # ─────────────────────────────────────────────────────────────
+    # 1. Strip Markdown Code Blocks (e.g. ```json ... ```)
+    if text.startswith("```"):
+        # split on newline, take everything after first line
+        parts = text.split("\n", 1)
+        if len(parts) > 1:
+            text = parts[1]
+        # strip trailing ```
+        text = text.strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+
+    # 2. Fix Invalid Escapes (The "Alice\'s" bug)
+    # JSON standard does NOT allow escaping single quotes, but LLMs often do it.
+    text = text.replace(r"\'", "'")
+    # ─────────────────────────────────────────────────────────────
+
     try:
         step = json.loads(text)
     except Exception as exc:
@@ -348,50 +371,6 @@ Now decide the next step according to the JSON schema above.
 def _extract_llm_output_from_cortex(raw_cortex: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalize a Cortex-Orch reply into a compact observation bundle.
-
-    Expected success shape (mirrors cortex-orch + LLM Gateway exec_step):
-
-      {
-        "ok": true,
-        "verb_name": "...",
-        "origin_node": "...",
-        "steps_executed": 1,
-        "step_results": [
-          {
-            "verb_name": "...",
-            "step_name": "...",
-            "order": 0,
-            "services": [
-              {
-                "service": "LLMGatewayService",
-                "trace_id": "...",
-                "ok": true,
-                "elapsed_ms": 1234,
-                "payload": {
-                  "result": {
-                    "llm_output": "...",
-                    "spark_meta": { ... },
-                    "raw_llm": { ... }
-                  }
-                }
-              }
-            ],
-            "prompt_preview": "..."
-          }
-        ],
-        "context_echo": { ... }
-      }
-
-    On success we return:
-
-      {
-        "llm_output": "<text>",
-        "spark_meta": { ... } | None,
-        "raw_cortex": <full dict>,
-        "step_meta": { ...small metadata... }
-      }
-
-    On error we raise RuntimeError so the caller can wrap it into an observation.
     """
     if not isinstance(raw_cortex, dict):
         raise RuntimeError(f"Cortex-Orch reply is not a dict: {type(raw_cortex)}")
@@ -456,18 +435,14 @@ async def _call_cortex_verb(
 ) -> Dict[str, Any]:
     """
     Bus RPC helper: planner-react → cortex-orch.
-
-    We put OrchestrateVerbRequest fields at the TOP LEVEL (for the current
-    handler that does OrchestrateVerbRequest(**data)), and also under `payload`
-    in case the handler later switches to OrchestrateVerbRequest(**data["payload"]).
     """
     if not bus or not getattr(bus, "enabled", False):
         raise RuntimeError("OrionBus is disabled; cannot call cortex-orch.")
 
     trace_id = str(uuid.uuid4())
 
-    request_channel = settings.cortex_request_channel      # e.g. "orion-cortex:request"
-    result_prefix = settings.cortex_result_prefix          # e.g. "orion-cortex:result"
+    request_channel = settings.cortex_request_channel       # e.g. "orion-cortex:request"
+    result_prefix = settings.cortex_result_prefix           # e.g. "orion-cortex:result"
     reply_channel = f"{result_prefix}:{trace_id}"
 
     core_payload: Dict[str, Any] = {

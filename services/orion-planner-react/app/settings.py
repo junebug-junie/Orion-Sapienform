@@ -47,6 +47,16 @@ class Settings(BaseSettings):
         description="Result prefix for Cortex-Orch RPC replies",
     )
 
+    # Service Request Channels
+    planner_request_channel: str = Field(
+        "orion-planner:request",
+        alias="PLANNER_REQUEST_CHANNEL",
+    )
+    planner_result_prefix: str = Field(
+        "orion-planner:result",
+        alias="PLANNER_RESULT_PREFIX",
+    )
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

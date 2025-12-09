@@ -1,0 +1,20 @@
+services:
+  agent-chain:
+    container_name: ${PROJECT}-agent-chain
+    build:
+      context: ../..
+      dockerfile: services/orion-agent-chain/Dockerfile
+    env_file:
+       - .env
+    restart: unless-stopped
+    networks:
+      - ${NET}
+    ports:
+      - "${AGENT_CHAIN_PORT:-8092}:8092"
+    environment:
+      - PLANNER_REQUEST_CHANNEL=${PLANNER_REQUEST_CHANNEL}
+      - PLANNER_RESULT_PREFIX=${PLANNER_RESULT_PREFIX}
+
+networks:
+  app-net:
+    external: true

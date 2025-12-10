@@ -14,7 +14,7 @@ from scripts.settings import settings
 from scripts.llm_tts_handler import run_tts_only
 from scripts.llm_rpc import CouncilRPC
 from scripts.warm_start import mini_personality_summary
-from scripts.chat_front import run_chat_general
+from scripts.chat_front import run_chat_general, run_chat_agentic
 
 logger = logging.getLogger("orion-hub.ws")
 
@@ -208,6 +208,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     reply.get("text") or reply.get("response") or ""
                 )
                 tokens = len(orion_response_text.split()) if orion_response_text else 0
+
+            elif mode == "agentic":
+                convo = await run_chat_agentic(
+                    bus,
+                    session_id=session_id,
+                    user_id=user_id,
+                    messages=history[:],  # full system+dialogue history
+                    chat_mode=mode,
+                    temperature=temperature,
+                    use_recall=True,  # WS path always uses recall
+                )
+                orion_response_text = convo.get("text") or ""
+                tokens = convo.get("tokens") or 0
+                # if Agent Chain ever emits spark_meta via planner_raw, you can plumb it here later
+
             else:
                 convo = await run_chat_general(
                     bus,

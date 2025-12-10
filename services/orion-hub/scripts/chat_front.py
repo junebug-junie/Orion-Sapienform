@@ -322,6 +322,9 @@ async def run_chat_general(
 #-------------------------------------------------
 
 
+from scripts.agent_chain_rpc import AgentChainRPC  # make sure this import exists at top
+
+
 async def run_chat_agentic(
     bus,
     *,
@@ -329,8 +332,16 @@ async def run_chat_agentic(
     user_id: Optional[str],
     messages: List[Dict[str, Any]],
     chat_mode: str = "agentic",
+    temperature: float = 0.7,
     use_recall: bool = True,
 ) -> Dict[str, Any]:
+    """
+    Agentic chat front:
+
+    - Optionally runs Recall → memory digest (same pattern as run_chat_general).
+    - Sends full message history (plus optional digest) to Agent Chain via bus.
+    - Returns a normalized convo dict similar to run_chat_general.
+    """
     if not isinstance(messages, list) or not messages:
         raise ValueError("run_chat_agentic requires a non-empty messages list")
 
@@ -348,35 +359,69 @@ async def run_chat_agentic(
                 max_items=12,
             )
         except Exception as e:
-            logger.warning("build_memory_digest failed in chat_front (agentic): %s", e, exc_info=True)
+            logger.warning(
+                "build_memory_digest failed in run_chat_agentic: %s",
+                e,
+                exc_info=True,
+            )
+            memory_digest = ""
             recall_debug = {"error": str(e)}
 
-    context = {
-        "user_message": user_message,
-        "message_history": messages,
-        "personality_summary": mini_personality_summary(),
-        "memory_digest": memory_digest,
-        "chat_mode": chat_mode,
-        "session_id": session_id,
-        "user_id": user_id,
-    }
+    # Clone history so we can optionally tack on the digest as an internal system msg
+    messages_for_chain: List[Dict[str, Any]] = list(messages)
+
+    if memory_digest:
+        messages_for_chain.append(
+            {
+                "role": "system",
+                "content": (
+                    "Internal memory digest (for you only, not to be quoted directly):\n"
+                    + memory_digest
+                ),
+            }
+        )
 
     rpc = AgentChainRPC(bus)
-    result = await rpc.run(
+    agent_result = await rpc.run(
         text=user_message,
-        mode="chat",
+        mode="chat",   # you can switch this to "agentic" later if planner cares
         session_id=session_id,
         user_id=user_id,
-        messages=messages,
-        tools=None,           # verbs later
+        messages=messages_for_chain,
+        tools=None,    # verbs/tooldefs plug in here later
     )
 
-    text = (result.get("text") or "").strip()
+    text = (agent_result.get("text") or "").strip()
+    tokens = len(text.split()) if text else 0
+
+
+    # Try to extract spark_meta from planner_raw, if present
+    spark_meta = None
+    try:
+        planner_raw = agent_result.get("planner_raw") or {}
+        trace = planner_raw.get("trace") or []
+        if trace and isinstance(trace[0], dict):
+            obs = (trace[0].get("observation") or {})
+            spark_meta = obs.get("spark_meta")
+    except Exception:
+        spark_meta = None
+
+
     return {
         "text": text,
+        "tokens": tokens,
         "chat_mode": chat_mode,
         "use_recall": use_recall,
         "recall_debug": recall_debug,
-        "context_used": context,
-        "raw_agent_chain": result,
+        "context_used": {
+            "user_message": user_message,
+            "message_history": messages_for_chain,
+            "memory_digest": memory_digest,
+            "chat_mode": chat_mode,
+            "temperature": temperature,
+            "session_id": session_id,
+            "user_id": user_id,
+        },
+        "raw_agent_chain": agent_result,
+        "spark_meta": spark_meta,
     }

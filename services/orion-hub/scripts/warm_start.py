@@ -115,33 +115,37 @@ def mini_personality_summary() -> str:
 # Warm-start session via LLM Gateway over Orion Bus
 # ───────────────────────────────────────────────────────────────
 
+# ───────────────────────────────────────────────────────────────
+# Warm-start session (now a minimal shim)
+# ───────────────────────────────────────────────────────────────
+
 async def warm_start_session(
     session_id: Optional[str],
     bus,
 ) -> str:
     """
-    Ensure a session is warm-started.
+    Deprecated warm-start shim.
 
-    - Generates a session_id if None
-    - Loads identity + narrative YAMLs
-    - Builds a one-shot warm-start system prompt
-    - Sends it through the LLM Gateway (LLMGatewayService) over the bus
-    - Stores confirmation + warm_started flag in Redis via bus.client
+    - Ensures there is a session_id (generates one if None).
+    - Does NOT load identity/narrative.
+    - Does NOT call LLM Gateway or any other service.
+    - Ignores `bus` entirely on purpose.
+
+    This keeps existing call sites working while personality +
+    warm-start logic moves into Cortex / cognition.
     """
     if session_id is None:
         session_id = str(uuid.uuid4())
-
-    if bus is None or not getattr(bus, "enabled", False):
-        logger.warning(
-            f"Warm-start requested for session {session_id} but OrionBus is disabled."
+        logger.info(
+            "[warm_start_session] Created new session_id=%s (no-op warm start).",
+            session_id,
         )
-        return session_id
+    else:
+        logger.debug(
+            "[warm_start_session] Reusing existing session_id=%s (no-op warm start).",
+            session_id,
+        )
 
-    identity = load_identity()
-    narrative = load_narrative()
-    system_prompt = build_warm_start_system_prompt(identity, narrative)
-
-    # Build a tiny chat-style history:
-    #   - system: full warm-start identity/narrative
-    #   - user: a simple “acknowledge + summarize” nudge
-    m
+    # Intentionally ignore `bus` so Hub stays "dumb" and doesn't
+    # inject any personality or prompts itself.
+    return session_id

@@ -72,6 +72,12 @@ class AgentChainRPC:
     ) -> Dict[str, Any]:
         """
         Send a single AgentChainRequest over the bus and wait for AgentChainResult.
+
+        Agent Chain currently replies with an envelope like:
+          { "status": "ok", "data": { ...AgentChainResult... } }
+
+        We unwrap that so callers just see the AgentChainResult shape:
+          { "mode", "text", "structured", "planner_raw" }
         """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("AgentChainRPC used while OrionBus is disabled")
@@ -104,15 +110,22 @@ class AgentChainRPC:
             trace_id,
         )
 
-        # Agent Chain publishes AgentChainResult.model_dump()
-        if isinstance(raw_reply, dict):
-            return raw_reply
+        if not isinstance(raw_reply, dict):
+            # Fallback: unknown shape, just bubble it
+            return {"raw": raw_reply}
 
-        # Fallback: wrap non-dict reply
-        return {"raw": raw_reply}
+        # If the service wrapped the result as {status, data}, unwrap to the inner result.
+        if "data" in raw_reply and isinstance(raw_reply["data"], dict):
+            result = dict(raw_reply["data"])
+            # optionally keep envelope status around for debugging
+            result["_envelope_status"] = raw_reply.get("status")
+            return result
+
+        # Otherwise assume we already got the AgentChainResult shape
+        return raw_reply
 
 
-# Optional convenience wrapper if you prefer the old function-style call
+# Optional convenience wrapper for  old function-style call
 async def call_agent_chain(
     bus: OrionBus,
     text: str,

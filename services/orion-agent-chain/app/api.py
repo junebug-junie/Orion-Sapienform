@@ -9,8 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .settings import settings
-# 👇 IMPORT MATCHES planner_rpc.py EXACTLY
-from .planner_rpc import call_planner_react 
+from .planner_rpc import call_planner_react
 
 logger = logging.getLogger("agent-chain.api")
 
@@ -135,18 +134,34 @@ def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
         external_facts={"text": body.text}
     )
 
-    # Hardcoded tool for chain demo
-    tools = [
-        ToolDef(
-            tool_id="extract_facts",
-            description="Extract structured subject/predicate/object facts from a span of text.",
-            input_schema={
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-            }
-        )
-    ]
+    # ─────────────────────────────────────────────────────────────
+    # 👇 FIX: Dynamic Tool Injection
+    # ─────────────────────────────────────────────────────────────
+    tools: List[ToolDef] = []
+
+    if body.tools:
+        # Option A: Caller provided specific tools (dynamic payload)
+        # We assume the caller knows the schema (cortex verb definitions).
+        for t_dict in body.tools:
+            # Validate/Convert dict -> ToolDef
+            try:
+                tools.append(ToolDef(**t_dict))
+            except Exception as e:
+                logger.warning("[agent-chain] Invalid tool definition in request: %s", e)
+    else:
+        # Option B: Fallback to the "Toy" demo tool if none provided
+        tools = [
+            ToolDef(
+                tool_id="extract_facts",
+                description="Extract structured subject/predicate/object facts from a span of text.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                }
+            )
+        ]
+    # ─────────────────────────────────────────────────────────────
 
     # Return the OBJECT, not a dict
     return PlannerRequest(
@@ -180,10 +195,10 @@ async def run_chain(body: AgentChainRequest) -> AgentChainResult:
 
     # 2. Call Planner via Bus RPC
     logger.info("[agent-chain] Publishing to %s", settings.planner_request_channel)
-    
+
     # .model_dump() is valid because planner_req is a PlannerRequest object
     raw_resp = await call_planner_react(planner_req.model_dump())
-    
+
     # 3. Rehydrate Response into Pydantic Object
     try:
         planner_resp = PlannerResponse(**raw_resp)
@@ -196,10 +211,10 @@ async def run_chain(body: AgentChainRequest) -> AgentChainResult:
         err_msg = "Unknown planner error"
         if planner_resp.error:
             err_msg = planner_resp.error.get("message", str(planner_resp.error))
-        
+
         if planner_resp.status == "timeout":
             raise HTTPException(status_code=504, detail=f"Planner timed out: {err_msg}")
-            
+
         raise HTTPException(status_code=502, detail=f"Planner error: {err_msg}")
 
     if not planner_resp.final_answer:

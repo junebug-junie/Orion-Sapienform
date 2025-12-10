@@ -27,8 +27,6 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # Assumes build context is repo root and 'orion' is the core package.
 COPY orion /app/orion
 COPY services/orion-agent-chain/app /app/app
-COPY services/orion-planner-react/app /app/planner_react
-RUN touch /app/planner_react/__init__.py
 
 EXPOSE 8092
 

@@ -30,21 +30,23 @@ class AgentChainSettings(BaseSettings):
     # --- Orion bus / Redis ---
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_url: str = Field(
-        "redis://orion-redis:6379/0",
+        "redis://100.92.216.81/0",
         alias="ORION_BUS_URL",
     )
 
     # --- Planner / Cortex integration ---
-    # If agent-chain will call planner-react as a tool orchestrator:
     planner_request_channel: str = Field(
-        "orion-exec:request:PlannerReactService",
-        alias="CHANNEL_PLANNER_REQUEST",
-    )
-    planner_reply_prefix: str = Field(
-        "orion:planner:reply",
-        alias="CHANNEL_PLANNER_REPLY_PREFIX",
+        "orion-planner:request",
+        alias="PLANNER_REQUEST_CHANNEL",
     )
 
+    planner_result_prefix: str = Field(
+        "orion-planner:result",
+        alias="PLANNER_RESULT_PREFIX",
+    )
+    # Defaults for the PlannerRequest
+    default_max_steps: int = Field(6, alias="AGENT_CHAIN_MAX_STEPS")
+    default_timeout_seconds: int = Field(90, alias="AGENT_CHAIN_TIMEOUT_SECONDS")
 
 settings = AgentChainSettings()
 logger.info(

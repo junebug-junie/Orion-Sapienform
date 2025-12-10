@@ -5,51 +5,55 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Literal, Optional
 
-import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .settings import settings
-from orion.core.bus.service import OrionBus  # same as other services
-
-from planner_react.api import (
-    Goal,
-    ContextBlock,
-    ToolDef,
-    Limits,
-    Preferences,
-    PlannerRequest,
-    TraceStep,
-    Usage,
-    FinalAnswer,
-    PlannerResponse,
-)
+# 👇 IMPORT MATCHES planner_rpc.py EXACTLY
+from .planner_rpc import call_planner_react 
 
 logger = logging.getLogger("agent-chain.api")
 
 router = APIRouter()
 
-
 # ─────────────────────────────────────────────
-# Shared message type (like planner-react)
+# 1. VENDORED MODELS (Planner-React Contract)
 # ─────────────────────────────────────────────
 
 Role = Literal["user", "assistant", "system"]
-
 
 class Message(BaseModel):
     role: Role
     content: str
 
+class Goal(BaseModel):
+    type: str = "chat"
+    description: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
-# ─────────────────────────────────────────────
-# AgentChain request/response models
-# ─────────────────────────────────────────────
+class ContextBlock(BaseModel):
+    conversation_history: List[Message] = Field(default_factory=list)
+    orion_state_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    external_facts: Dict[str, Any] = Field(default_factory=dict)
 
-class AgentChainRequest(BaseModel):
-    """
-    Same outer shape as planner-react, so you can reuse the test payloads.
-    """
+class ToolDef(BaseModel):
+    tool_id: str
+    description: Optional[str] = None
+    input_schema: Dict[str, Any] = Field(default_factory=dict)
+    output_schema: Dict[str, Any] = Field(default_factory=dict)
+
+class Limits(BaseModel):
+    max_steps: int = 4
+    max_tokens_reason: int = 2048
+    max_tokens_answer: int = 1024
+    timeout_seconds: int = 60
+
+class Preferences(BaseModel):
+    style: str = "neutral"
+    allow_internal_thought_logging: bool = True
+    return_trace: bool = True
+
+class PlannerRequest(BaseModel):
     request_id: Optional[str] = None
     caller: str = "hub"
     goal: Goal
@@ -58,11 +62,46 @@ class AgentChainRequest(BaseModel):
     limits: Limits = Field(default_factory=Limits)
     preferences: Preferences = Field(default_factory=Preferences)
 
+class FinalAnswer(BaseModel):
+    content: str
+    structured: Dict[str, Any] = Field(default_factory=dict)
+
+class TraceStep(BaseModel):
+    step_index: int
+    thought: Optional[str] = None
+    action: Optional[Dict[str, Any]] = None
+    observation: Optional[Dict[str, Any]] = None
+
+class Usage(BaseModel):
+    steps: int
+    tokens_reason: int
+    tokens_answer: int
+    tools_called: List[str]
+    duration_ms: int
+
+class PlannerResponse(BaseModel):
+    request_id: Optional[str] = None
+    status: Literal["ok", "error", "timeout"] = "ok"
+    error: Optional[Dict[str, Any]] = None
+    final_answer: Optional[FinalAnswer] = None
+    trace: List[TraceStep] = Field(default_factory=list)
+    usage: Optional[Usage] = None
+
+
+# ─────────────────────────────────────────────
+# 2. AGENT CHAIN MODELS (The API Layer)
+# ─────────────────────────────────────────────
+
+class AgentChainRequest(BaseModel):
+    text: str
+    mode: str = "chat"
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    goal_description: Optional[str] = None
+    messages: Optional[List[Message]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
 
 class AgentChainResult(BaseModel):
-    """
-    Normalized output back to Hub.
-    """
     mode: str
     text: str
     structured: Dict[str, Any] = Field(default_factory=dict)
@@ -70,171 +109,106 @@ class AgentChainResult(BaseModel):
 
 
 # ─────────────────────────────────────────────
-# Helper: call planner-react over HTTP
+# 3. HELPER: BUILD PLANNER OBJECT
 # ─────────────────────────────────────────────
 
-async def _call_planner_react(payload: Dict[str, Any]) -> Dict[str, Any]:
-    url = settings.planner_base_url.rstrip("/") + "/plan/react"
-    logger.info("[agent-chain] POST -> %s", url)
-
-    # NOTE: planner-react is stateless HTTP; we don't need bus here.
-    async with httpx.AsyncClient(timeout=settings.default_timeout_seconds) as client:
-        try:
-            r = await client.post(url, json=payload)
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "[agent-chain] planner-react HTTP error %s: %s | body=%s",
-                e.response.status_code,
-                e,
-                e.response.text,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"Planner-react HTTP error: {e}",
-            ) from e
-        except Exception as e:
-            logger.error("[agent-chain] planner-react call failed: %s", e, exc_info=True)
-            raise HTTPException(
-                status_code=502,
-                detail=f"Planner-react unreachable: {e}",
-            ) from e
-
-    data = r.json()
-    return data
-
-
-# ─────────────────────────────────────────────
-# Helper: build PlannerRequest from AgentChainRequest
-# ─────────────────────────────────────────────
-
-def _build_planner_request(body: AgentChainRequest) -> Dict[str, Any]:
+def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
     """
-    Shape a PlannerRequest payload from a simpler AgentChainRequest.
-
-    For now we hard-code a single tool 'extract_facts' for the chain demo.
-    Later we can expand this into a profile-based tool palette.
+    Constructs a valid PlannerRequest Pydantic object from the incoming body.
     """
     goal_desc = (
         body.goal_description
         or "Extract structured facts from the provided text and summarize them in 2–3 bullets."
     )
 
-    # Use the last user message, or synthesize one from text.
     messages = body.messages or []
     if not messages:
         messages = [Message(role="user", content=body.text)]
 
-    context = {
-        "conversation_history": [m.model_dump() for m in messages],
-        "orion_state_snapshot": {
+    context = ContextBlock(
+        conversation_history=messages,
+        orion_state_snapshot={
             "session_id": body.session_id,
             "user_id": body.user_id,
             "mode": body.mode,
         },
-        "external_facts": {
-            "text": body.text,
-        },
-    }
+        external_facts={"text": body.text}
+    )
 
-    planner_payload: Dict[str, Any] = {
-        "caller": settings.service_name,
-        "goal": {
-            "type": body.mode,
-            "description": goal_desc,
-            "metadata": {},
-        },
-        "context": context,
-        "toolset": [
-            {
-                "tool_id": "extract_facts",
-                "description": "Extract structured subject/predicate/object facts from a span of text.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                    },
-                    "required": ["text"],
-                },
-                "output_schema": {},
+    # Hardcoded tool for chain demo
+    tools = [
+        ToolDef(
+            tool_id="extract_facts",
+            description="Extract structured subject/predicate/object facts from a span of text.",
+            input_schema={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
             }
-        ],
-        "limits": {
-            "max_steps": settings.default_max_steps,
-            "timeout_seconds": settings.default_timeout_seconds,
-        },
-        "preferences": {
-            "style": "neutral",
-            "allow_internal_thought_logging": True,
-            "return_trace": True,
-        },
-    }
+        )
+    ]
 
-    return planner_payload
+    # Return the OBJECT, not a dict
+    return PlannerRequest(
+        caller=settings.service_name,
+        goal=Goal(type=body.mode, description=goal_desc),
+        context=context,
+        toolset=tools,
+        limits=Limits(
+            max_steps=settings.default_max_steps,
+            timeout_seconds=settings.default_timeout_seconds
+        ),
+        preferences=Preferences(
+            style="neutral",
+            allow_internal_thought_logging=True,
+            return_trace=True
+        )
+    )
 
 
 # ─────────────────────────────────────────────
-# POST /chain/run — main entrypoint
+# 4. MAIN ENDPOINT (BUS DRIVEN)
 # ─────────────────────────────────────────────
 
 @router.post("/run", response_model=AgentChainResult)
 async def run_chain(body: AgentChainRequest) -> AgentChainResult:
-    """
-    Main AgentChain endpoint.
-
-    Hub calls this with a simple AgentChainRequest. We:
-      - Build a PlannerRequest (using vendored planner-react models)
-      - Call planner-react over HTTP
-      - Normalize the result for Hub
-    """
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="text is required for agent-chain")
 
-    # Optional: bring bus online so we can add telemetry later
-    bus = OrionBus(
-        url=settings.orion_bus_url,
-        enabled=settings.orion_bus_enabled,
-    )
-    if not bus.enabled:
-        logger.warning("[agent-chain] OrionBus disabled; running without telemetry.")
+    # 1. Build Payload Object
+    planner_req = _build_planner_request(body)
 
-    # Build a PlannerRequest from the lightweight AgentChainRequest
-    planner_req: PlannerRequest = _build_planner_request(body)
+    # 2. Call Planner via Bus RPC
+    logger.info("[agent-chain] Publishing to %s", settings.planner_request_channel)
+    
+    # .model_dump() is valid because planner_req is a PlannerRequest object
+    raw_resp = await call_planner_react(planner_req.model_dump())
+    
+    # 3. Rehydrate Response into Pydantic Object
+    try:
+        planner_resp = PlannerResponse(**raw_resp)
+    except Exception as e:
+        logger.error("[agent-chain] Invalid response from planner bus: %s", e)
+        raise HTTPException(status_code=502, detail=f"Invalid bus response: {e}")
 
-    # Call planner-react (this should return a PlannerResponse instance)
-    planner_resp = await _call_planner_react(planner_req)
-
-    # Defensive: if someone changed _call_planner_react to return a dict/raw JSON
-    if not isinstance(planner_resp, PlannerResponse):
-        logger.error(
-            "[agent-chain] planner-react returned non-PlannerResponse: %r",
-            planner_resp,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="planner-react returned unexpected payload (non-PlannerResponse)",
-        )
-
-    # Status / error handling
+    # 4. Handle Errors
     if planner_resp.status != "ok":
-        detail = (planner_resp.error or {}).get("message") if isinstance(planner_resp.error, dict) else None
-        detail = detail or "planner-react error"
-        raise HTTPException(status_code=502, detail=detail)
+        err_msg = "Unknown planner error"
+        if planner_resp.error:
+            err_msg = planner_resp.error.get("message", str(planner_resp.error))
+        
+        if planner_resp.status == "timeout":
+            raise HTTPException(status_code=504, detail=f"Planner timed out: {err_msg}")
+            
+        raise HTTPException(status_code=502, detail=f"Planner error: {err_msg}")
 
-    if planner_resp.final_answer is None:
-        logger.error("[agent-chain] planner-react responded ok but final_answer is None")
-        raise HTTPException(
-            status_code=502,
-            detail="planner-react produced no final_answer",
-        )
+    if not planner_resp.final_answer:
+        raise HTTPException(status_code=502, detail="Planner finished but returned no final answer")
 
-    final: FinalAnswer = planner_resp.final_answer
-    text = (final.content or "").strip()
-    structured = final.structured or {}
-
+    # 5. Return Result
     return AgentChainResult(
         mode=body.mode,
-        text=text,
-        structured=structured,
+        text=planner_resp.final_answer.content,
+        structured=planner_resp.final_answer.structured,
         planner_raw=planner_resp.model_dump(),
     )

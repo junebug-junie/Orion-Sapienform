@@ -20,11 +20,11 @@ logger = logging.getLogger("agent-chain.main")
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Orion Agent Chain",
+        title=settings.service_name,
         version=settings.service_version,
     )
 
-    # CORS — mirror Hub
+    # CORS — allow all for internal/hub usage
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Mount the Agent Chain API
     app.include_router(api_router, prefix="/chain", tags=["agent-chain"])
 
     return app

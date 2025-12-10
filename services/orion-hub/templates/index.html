@@ -123,7 +123,8 @@
         </div>
 
         <!-- Text Input + Mode Toggle -->
-        <div class="mt-2 space-y-2">
+        <!-- Text Input directly under mic -->
+        <div class="mt-2">
           <div class="relative">
             <textarea
               id="chatInput"
@@ -142,9 +143,7 @@
           <!-- Orion Mode Toggle: Brain / Agentic / Council -->
           <div class="flex justify-between items-center mt-2 text-xs">
             <div class="inline-flex items-center gap-2">
-              <span
-                class="inline-flex items-center rounded-full bg-gray-800 px-2 py-1 text-[10px] uppercase tracking-wide text-gray-400"
-              >
+              <span class="inline-flex items-center rounded-full bg-gray-800 px-2 py-1 text-[10px] uppercase tracking-wide text-gray-400">
                 <span class="w-2 h-2 rounded-full bg-green-500 mr-1"></span>
                 Orion Mode
               </span>
@@ -170,7 +169,41 @@
               </button>
             </div>
           </div>
-        </div>
+
+          <!-- Tool Pack Selector -->
+          <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <div class="inline-flex items-center gap-2">
+              <span class="inline-flex items-center rounded-full bg-gray-800 px-2 py-1 uppercase tracking-wide text-gray-400">
+                Packs
+              </span>
+              <span class="text-gray-500">
+                Choose Orion’s tool packs (Agentic mode only)
+              </span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                class="pack-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200"
+                data-pack="memory_pack"
+                data-default="true"
+              >
+                Memory
+              </button>
+              <button
+                class="pack-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200"
+                data-pack="executive_pack"
+                data-default="true"
+              >
+                Executive
+              </button>
+              <button
+                class="pack-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200"
+                data-pack="emergent_pack"
+              >
+                Emergent
+              </button>
+            </div>
+          </div>
+        </div> <!-- end .mt-2 wrapper -->
 
         <!-- Conversation -->
         <div class="flex-grow flex flex-col">

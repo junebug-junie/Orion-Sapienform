@@ -44,6 +44,22 @@ class AgentChainSettings(BaseSettings):
         "orion-planner:result",
         alias="PLANNER_RESULT_PREFIX",
     )
+
+    # ─────────────────────────────────────────────────────────────
+    # UPSTREAM CHANNELS (From UI/Client)
+    # ─────────────────────────────────────────────────────────────
+    # The UI will publish here, and we will listen (once we add the listener)
+    agent_chain_request_channel: str = Field(
+        "orion-agent-chain:request",
+        alias="AGENT_CHAIN_REQUEST_CHANNEL"
+    )
+
+    # We will publish the final answer here
+    agent_chain_result_prefix: str = Field(
+        "orion-agent-chain:result",
+        alias="AGENT_CHAIN_RESULT_PREFIX"
+    )
+
     # Defaults for the PlannerRequest
     default_max_steps: int = Field(6, alias="AGENT_CHAIN_MAX_STEPS")
     default_timeout_seconds: int = Field(90, alias="AGENT_CHAIN_TIMEOUT_SECONDS")

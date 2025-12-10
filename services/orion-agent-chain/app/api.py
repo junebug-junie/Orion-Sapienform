@@ -134,22 +134,16 @@ def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
         external_facts={"text": body.text}
     )
 
-    # ─────────────────────────────────────────────────────────────
-    # 👇 FIX: Dynamic Tool Injection
-    # ─────────────────────────────────────────────────────────────
+    # Dynamic Tool Injection
     tools: List[ToolDef] = []
-
     if body.tools:
-        # Option A: Caller provided specific tools (dynamic payload)
-        # We assume the caller knows the schema (cortex verb definitions).
         for t_dict in body.tools:
-            # Validate/Convert dict -> ToolDef
             try:
                 tools.append(ToolDef(**t_dict))
             except Exception as e:
                 logger.warning("[agent-chain] Invalid tool definition in request: %s", e)
     else:
-        # Option B: Fallback to the "Toy" demo tool if none provided
+        # Fallback to the demo tool if none provided
         tools = [
             ToolDef(
                 tool_id="extract_facts",
@@ -161,9 +155,7 @@ def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
                 }
             )
         ]
-    # ─────────────────────────────────────────────────────────────
 
-    # Return the OBJECT, not a dict
     return PlannerRequest(
         caller=settings.service_name,
         goal=Goal(type=body.mode, description=goal_desc),
@@ -182,21 +174,21 @@ def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
 
 
 # ─────────────────────────────────────────────
-# 4. MAIN ENDPOINT (BUS DRIVEN)
+# 4. CORE EXECUTOR (The Logic Layer)
 # ─────────────────────────────────────────────
 
-@router.post("/run", response_model=AgentChainResult)
-async def run_chain(body: AgentChainRequest) -> AgentChainResult:
-    if not body.text.strip():
-        raise HTTPException(status_code=400, detail="text is required for agent-chain")
-
+async def execute_agent_chain(body: AgentChainRequest) -> AgentChainResult:
+    """
+    Core business logic. Validates request, calls Planner via Bus, 
+    and normalizes the response. Raises RuntimeError on failure.
+    """
     # 1. Build Payload Object
     planner_req = _build_planner_request(body)
 
     # 2. Call Planner via Bus RPC
     logger.info("[agent-chain] Publishing to %s", settings.planner_request_channel)
 
-    # .model_dump() is valid because planner_req is a PlannerRequest object
+    # .model_dump() converts Pydantic object to dict for the bus
     raw_resp = await call_planner_react(planner_req.model_dump())
 
     # 3. Rehydrate Response into Pydantic Object
@@ -204,21 +196,21 @@ async def run_chain(body: AgentChainRequest) -> AgentChainResult:
         planner_resp = PlannerResponse(**raw_resp)
     except Exception as e:
         logger.error("[agent-chain] Invalid response from planner bus: %s", e)
-        raise HTTPException(status_code=502, detail=f"Invalid bus response: {e}")
+        raise RuntimeError(f"Invalid bus response: {e}")
 
-    # 4. Handle Errors
+    # 4. Handle Errors (Logic Level)
     if planner_resp.status != "ok":
         err_msg = "Unknown planner error"
         if planner_resp.error:
             err_msg = planner_resp.error.get("message", str(planner_resp.error))
 
         if planner_resp.status == "timeout":
-            raise HTTPException(status_code=504, detail=f"Planner timed out: {err_msg}")
+            raise TimeoutError(f"Planner timed out: {err_msg}")
 
-        raise HTTPException(status_code=502, detail=f"Planner error: {err_msg}")
+        raise RuntimeError(f"Planner error: {err_msg}")
 
     if not planner_resp.final_answer:
-        raise HTTPException(status_code=502, detail="Planner finished but returned no final answer")
+        raise RuntimeError("Planner finished but returned no final answer")
 
     # 5. Return Result
     return AgentChainResult(
@@ -227,3 +219,25 @@ async def run_chain(body: AgentChainRequest) -> AgentChainResult:
         structured=planner_resp.final_answer.structured,
         planner_raw=planner_resp.model_dump(),
     )
+
+
+# ─────────────────────────────────────────────
+# 5. HTTP ENDPOINT (The Transport Layer)
+# ─────────────────────────────────────────────
+
+@router.post("/run", response_model=AgentChainResult)
+async def run_chain(body: AgentChainRequest) -> AgentChainResult:
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="text is required for agent-chain")
+
+    try:
+        return await execute_agent_chain(body)
+
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except RuntimeError as e:
+        # Generic business logic errors -> 502 Bad Gateway
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        logger.exception("Unexpected error in agent chain")
+        raise HTTPException(status_code=500, detail="Internal agent-chain error")

@@ -1,4 +1,4 @@
-# services/orion-planner-react/app/bus_listener.py
+# services/orion-agent-chain/app/bus_listener.py
 
 from __future__ import annotations
 
@@ -10,19 +10,19 @@ from typing import Any, Dict
 from orion.core.bus.service import OrionBus
 
 from .settings import settings
-from .api import PlannerRequest, PlannerResponse, run_react_loop
+from .api import AgentChainRequest, execute_agent_chain
 
-logger = logging.getLogger("planner-react.bus")
+logger = logging.getLogger("agent-chain.bus")
 
 
-def start_planner_bus_listener_background() -> None:
+def start_agent_chain_bus_listener() -> None:
     """
-    Start a background thread that listens on `PLANNER_REQUEST_CHANNEL`
-    and answers on per-request `PLANNER_RESULT_PREFIX:{trace_id}` channels.
+    Start a background thread that listens on `AGENT_CHAIN_REQUEST_CHANNEL`
+    (from UI/Hub) and answers on the ephemeral reply channel.
     """
     if not settings.orion_bus_enabled:
         logger.warning(
-            "[planner-react] OrionBus disabled; not starting planner bus listener."
+            "[agent-chain] OrionBus disabled; not starting bus listener."
         )
         return
 
@@ -32,24 +32,23 @@ def start_planner_bus_listener_background() -> None:
     )
     if not bus.enabled:
         logger.error(
-            "[planner-react] OrionBus not enabled/connected; cannot start listener."
+            "[agent-chain] OrionBus not enabled/connected; cannot start listener."
         )
         return
 
-    request_channel = settings.planner_request_channel
+    request_channel = settings.agent_chain_request_channel
     logger.info(
-        "[planner-react] Starting planner bus listener on %s", request_channel
+        "[agent-chain] Starting upstream bus listener on %s", request_channel
     )
 
     def _worker() -> None:
         """
-        Blocking worker that consumes messages from `request_channel`
-        and responds with PlannerResponse on the indicated reply_channel.
+        Blocking worker loop for UI requests.
         """
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Blocking generator
+        # Subscribe to requests (e.g. from UI)
         for msg in bus.subscribe(request_channel):
             data: Dict[str, Any] = msg.get("data") or {}
 
@@ -59,66 +58,63 @@ def start_planner_bus_listener_background() -> None:
 
             if not reply_channel:
                 logger.warning(
-                    "[planner-react] bus message missing reply_channel: %r", data
+                    "[agent-chain] bus message missing reply_channel: %r", data
                 )
                 continue
 
+            # 1. Parse Request
             try:
-                planner_req = PlannerRequest(**payload)
+                req = AgentChainRequest(**payload)
             except Exception as e:
                 logger.error(
-                    "[planner-react] invalid PlannerRequest payload on %s: %s",
+                    "[agent-chain] invalid request payload on %s: %s",
                     request_channel,
                     e,
                     exc_info=True,
                 )
-                error_resp = PlannerResponse(
-                    request_id=payload.get("request_id"),
-                    status="error",
-                    error={"message": f"invalid PlannerRequest payload: {e}"},
-                    final_answer=None,
-                    trace=[],
-                    usage=None,
-                )
-                bus.publish(reply_channel, error_resp.model_dump())
+                # Return standard error envelope
+                bus.publish(reply_channel, {
+                    "status": "error",
+                    "error": f"Invalid payload: {e}"
+                })
                 continue
 
-            # Run the ReAct loop in this worker's event loop
+            # 2. Execute Logic (Calls Planner via downstream bus)
             try:
-                resp: PlannerResponse = loop.run_until_complete(
-                    run_react_loop(planner_req)
+                result = loop.run_until_complete(
+                    execute_agent_chain(req)
                 )
+                
+                # Success Response
+                response_payload = {
+                    "status": "ok",
+                    "data": result.model_dump()
+                }
+                
             except Exception as e:
                 logger.error(
-                    "[planner-react] run_react_loop failed (trace_id=%s): %s",
+                    "[agent-chain] execution failed (trace_id=%s): %s",
                     trace_id,
                     e,
                     exc_info=True,
                 )
-                resp = PlannerResponse(
-                    request_id=planner_req.request_id,
-                    status="error",
-                    error={"message": str(e)},
-                    final_answer=None,
-                    trace=[],
-                    usage=None,
-                )
+                response_payload = {
+                    "status": "error",
+                    "error": str(e)
+                }
 
-            # Make sure request_id is preserved if caller set one
-            if resp.request_id is None:
-                resp.request_id = planner_req.request_id
-
-            bus.publish(reply_channel, resp.model_dump())
+            # 3. Reply
+            bus.publish(reply_channel, response_payload)
             logger.info(
-                "[planner-react] replied on %s (trace_id=%s, status=%s)",
+                "[agent-chain] replied on %s (trace_id=%s, status=%s)",
                 reply_channel,
                 trace_id,
-                resp.status,
+                response_payload["status"],
             )
 
     thread = threading.Thread(
         target=_worker,
-        name="planner-react-bus-listener",
+        name="agent-chain-bus-listener",
         daemon=True,
     )
     thread.start()

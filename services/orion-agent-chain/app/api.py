@@ -1,6 +1,7 @@
 # services/orion-agent-chain/app/api.py
 
 from __future__ import annotations
+from pathlib import Path
 
 import logging
 from typing import Any, Dict, List, Literal, Optional
@@ -10,9 +11,13 @@ from pydantic import BaseModel, Field
 
 from .settings import settings
 from .planner_rpc import call_planner_react
+from .tool_registry import ToolRegistry
+
 
 logger = logging.getLogger("agent-chain.api")
 
+
+TOOL_REGISTRY = ToolRegistry(base_dir=Path("/app/orion/cognition"))
 router = APIRouter()
 
 # ─────────────────────────────────────────────
@@ -34,12 +39,6 @@ class ContextBlock(BaseModel):
     conversation_history: List[Message] = Field(default_factory=list)
     orion_state_snapshot: Dict[str, Any] = Field(default_factory=dict)
     external_facts: Dict[str, Any] = Field(default_factory=dict)
-
-class ToolDef(BaseModel):
-    tool_id: str
-    description: Optional[str] = None
-    input_schema: Dict[str, Any] = Field(default_factory=dict)
-    output_schema: Dict[str, Any] = Field(default_factory=dict)
 
 class Limits(BaseModel):
     max_steps: int = 4
@@ -109,77 +108,53 @@ class AgentChainResult(BaseModel):
 
 
 # ─────────────────────────────────────────────
-# 3. HELPER: BUILD PLANNER OBJECT
+# 3. HELPERS: RESOLVE TOOLS & BUILD PLANNER OBJECT
 # ─────────────────────────────────────────────
+
+def _resolve_tools_for_request(body: AgentChainRequest) -> List[ToolDef]:
+    """
+    Decide which tools to offer the Planner:
+
+    - If body.tools is provided, treat it as explicit tool defs from the caller.
+    - Else, if packs are provided, derive tools from those packs.
+    - Else, fall back to default packs.
+    """
+    # 1) Explicit tool definitions win
+    if body.tools:
+        return [ToolDef(**t) for t in body.tools]
+
+    # 2) Pack names from the request
+    if body.packs:
+        pack_names = body.packs
+    else:
+        # 3) Default pack combo when caller doesn't specify any
+        pack_names = ["executive_pack", "memory_pack"]
+
+    return TOOL_REGISTRY.tools_for_packs(pack_names)
+
 
 def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
     """
-    Constructs a valid PlannerRequest Pydantic object from the incoming body.
+    Build the PlannerRequest from the external API payload.
+    This is where we convert packs -> ToolDefs -> Planner tools.
     """
-    goal_desc = (
-        body.goal_description
-        or "Extract structured facts from the provided text and summarize them in 2–3 bullets."
-    )
+    tools = _resolve_tools_for_request(body)
 
-    messages = body.messages or []
-    if not messages:
+    # Use provided messages if any; otherwise just wrap the text
+    if body.messages and len(body.messages) > 0:
+        messages = body.messages
+    else:
         messages = [Message(role="user", content=body.text)]
 
-    context = ContextBlock(
-        conversation_history=messages,
-        orion_state_snapshot={
-            "session_id": body.session_id,
-            "user_id": body.user_id,
-            "mode": body.mode,
-        },
-        external_facts={"text": body.text}
-    )
-
-    # Dynamic Tool Injection
-    tools: List[ToolDef] = []
-
-    if body.tools:
-        for t_dict in body.tools:
-            try:
-                tools.append(ToolDef(**t_dict))
-            except Exception as e:
-                logger.warning("[agent-chain] Invalid tool definition in request: %s", e)
-
-    elif body.packs:
-        try:
-            tools = _TOOL_REGISTRY.tools_for_packs(body.packs)
-        except Exception as e:
-            logger.error("[agent-chain] Failed to load tools for packs %s: %s", body.packs, e)
-            tools = []
-
-    if not tools:
-        # Final fallback: tiny demo tool
-        tools = [
-            ToolDef(
-                tool_id="extract_facts",
-                description="Extract structured subject/predicate/object facts from a span of text.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
-                },
-            )
-        ]
-
     return PlannerRequest(
-        caller=settings.service_name,
-        goal=Goal(type=body.mode, description=goal_desc),
-        context=context,
-        toolset=tools,
-        limits=Limits(
-            max_steps=settings.default_max_steps,
-            timeout_seconds=settings.default_timeout_seconds
-        ),
-        preferences=Preferences(
-            style="neutral",
-            allow_internal_thought_logging=True,
-            return_trace=True
-        )
+        messages=messages,
+        tools=[t.model_dump() for t in tools],
+        goal_description=body.goal_description,
+        session_id=body.session_id,
+        user_id=body.user_id,
+        max_steps=settings.default_max_steps,
+        timeout_seconds=settings.default_timeout_seconds,
+        mode=body.mode,
     )
 
 

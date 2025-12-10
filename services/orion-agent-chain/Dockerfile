@@ -18,7 +18,7 @@ RUN pip3 install --no-cache-dir --upgrade pip
 
 # Copy requirements early for layer caching
 # (explicit path since build context = repo root)
-COPY services/orion-planner-react/requirements.txt ./requirements.txt
+COPY services/orion-agent-chain/requirements.txt ./requirements.txt
 
 # Install service dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt

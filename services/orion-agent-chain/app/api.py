@@ -12,6 +12,19 @@ from pydantic import BaseModel, Field
 from .settings import settings
 from orion.core.bus.service import OrionBus  # same as other services
 
+from planner_react.api import (
+    Goal,
+    ContextBlock,
+    ToolDef,
+    Limits,
+    Preferences,
+    PlannerRequest,
+    TraceStep,
+    Usage,
+    FinalAnswer,
+    PlannerResponse,
+)
+
 logger = logging.getLogger("agent-chain.api")
 
 router = APIRouter()
@@ -35,24 +48,15 @@ class Message(BaseModel):
 
 class AgentChainRequest(BaseModel):
     """
-    What Hub sends to agent-chain.
-
-    Keep it simple: hub just says
-      - who/which session
-      - messages so far
-      - text to analyze
-      - optional explicit goal description
+    Same outer shape as planner-react, so you can reuse the test payloads.
     """
-    session_id: Optional[str] = None
-    user_id: Optional[str] = None
-    mode: str = "analysis"
-
-    messages: List[Message] = Field(default_factory=list)
-    text: str = Field(..., description="Primary text/doc to operate on.")
-    goal_description: Optional[str] = Field(
-        None,
-        description="Override default goal; otherwise agent-chain will synthesize one.",
-    )
+    request_id: Optional[str] = None
+    caller: str = "hub"
+    goal: Goal
+    context: ContextBlock = Field(default_factory=ContextBlock)
+    toolset: List[ToolDef] = Field(default_factory=list)
+    limits: Limits = Field(default_factory=Limits)
+    preferences: Preferences = Field(default_factory=Preferences)
 
 
 class AgentChainResult(BaseModel):
@@ -179,14 +183,14 @@ async def run_chain(body: AgentChainRequest) -> AgentChainResult:
     Main AgentChain endpoint.
 
     Hub calls this with a simple AgentChainRequest. We:
-      - Build a PlannerRequest
+      - Build a PlannerRequest (using vendored planner-react models)
       - Call planner-react over HTTP
       - Normalize the result for Hub
     """
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="text is required for agent-chain")
 
-    # Optional: bring bus online now so we can add telemetry later
+    # Optional: bring bus online so we can add telemetry later
     bus = OrionBus(
         url=settings.orion_bus_url,
         enabled=settings.orion_bus_enabled,
@@ -194,22 +198,43 @@ async def run_chain(body: AgentChainRequest) -> AgentChainResult:
     if not bus.enabled:
         logger.warning("[agent-chain] OrionBus disabled; running without telemetry.")
 
-    planner_req = _build_planner_request(body)
+    # Build a PlannerRequest from the lightweight AgentChainRequest
+    planner_req: PlannerRequest = _build_planner_request(body)
+
+    # Call planner-react (this should return a PlannerResponse instance)
     planner_resp = await _call_planner_react(planner_req)
 
-    status = planner_resp.get("status")
-    if status != "ok":
-        detail = (planner_resp.get("error") or {}).get("message") or "planner-react error"
+    # Defensive: if someone changed _call_planner_react to return a dict/raw JSON
+    if not isinstance(planner_resp, PlannerResponse):
+        logger.error(
+            "[agent-chain] planner-react returned non-PlannerResponse: %r",
+            planner_resp,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="planner-react returned unexpected payload (non-PlannerResponse)",
+        )
+
+    # Status / error handling
+    if planner_resp.status != "ok":
+        detail = (planner_resp.error or {}).get("message") if isinstance(planner_resp.error, dict) else None
+        detail = detail or "planner-react error"
         raise HTTPException(status_code=502, detail=detail)
 
-    final = planner_resp.get("final_answer") or {}
-    text = (final.get("content") or "").strip()
-    structured = final.get("structured") or {}
+    if planner_resp.final_answer is None:
+        logger.error("[agent-chain] planner-react responded ok but final_answer is None")
+        raise HTTPException(
+            status_code=502,
+            detail="planner-react produced no final_answer",
+        )
 
-    # If planner forgot structured, we still send the raw planner reply so Hub can inspect
+    final: FinalAnswer = planner_resp.final_answer
+    text = (final.content or "").strip()
+    structured = final.structured or {}
+
     return AgentChainResult(
         mode=body.mode,
         text=text,
         structured=structured,
-        planner_raw=planner_resp,
+        planner_raw=planner_resp.model_dump(),
     )

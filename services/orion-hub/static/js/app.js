@@ -63,7 +63,8 @@ let baseParticleCount = 200;
 let visionIsFloating = false;
 // Brain (WS) vs Agentic (Planner) vs Council (CouncilRPC over HTTP)
 let currentMode = "brain";
-
+// Selected tool packs for Agentic mode
+let selectedPacks = [];
 // Orion Hub session id (from /api/session)
 let orionSessionId = null;
 
@@ -484,12 +485,15 @@ function sendTextMessage() {
 
   const payload = {
     mode,
-    temperature: parseFloat(tempControl.value),
-    use_recall: true,
     messages: [
       { role: 'user', content: text }
     ],
   };
+
+  // Only Agentic mode uses tool packs
+  if (mode === 'agentic' && Array.isArray(selectedPacks) && selectedPacks.length > 0) {
+    payload.packs = selectedPacks;
+  }
 
   const headers = { 'Content-Type': 'application/json' };
   if (orionSessionId) {
@@ -783,6 +787,8 @@ function setupGuidedCollapseForm() {
   });
 }
 
+
+// DOMContentLoaded
 document.addEventListener("DOMContentLoaded", () => {
   loadCollapseTemplate();
   setupCollapseForm();
@@ -820,6 +826,50 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 });
+
+
+  // Pack selection buttons (for Agentic mode)
+  const packButtons = document.querySelectorAll('.pack-btn');
+
+  function updatePackButtonStyles() {
+    packButtons.forEach((btn) => {
+      const packName = btn.dataset.pack;
+      const isActive = selectedPacks.includes(packName);
+
+      if (isActive) {
+        btn.classList.remove('bg-gray-700', 'text-gray-200');
+        btn.classList.add('bg-emerald-600', 'hover:bg-emerald-700', 'text-white');
+      } else {
+        btn.classList.remove('bg-emerald-600', 'hover:bg-emerald-700', 'text-white');
+        btn.classList.add('bg-gray-700', 'text-gray-200');
+      }
+    });
+  }
+
+  // Initialize defaults from data-default="true"
+  selectedPacks = [];
+  packButtons.forEach((btn) => {
+    const packName = btn.dataset.pack;
+    const isDefault = btn.dataset.default === 'true';
+    if (isDefault && packName && !selectedPacks.includes(packName)) {
+      selectedPacks.push(packName);
+    }
+
+    btn.addEventListener('click', () => {
+      if (!packName) return;
+      const idx = selectedPacks.indexOf(packName);
+      if (idx >= 0) {
+        selectedPacks.splice(idx, 1);
+      } else {
+        selectedPacks.push(packName);
+      }
+      updatePackButtonStyles();
+    });
+  });
+
+  // Apply initial styles
+  updatePackButtonStyles();
+
 
 // --- Final Setup ---
 if (recordButton) {

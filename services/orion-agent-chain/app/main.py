@@ -1,59 +1,48 @@
-# services/orion-agent-chain/app/main.py
-
+# FILE: services/orion-agent-chain/app/main.py
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .settings import settings
-from .api import router as api_router
 from .bus_listener import start_agent_chain_bus_listener
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="[AGENT-CHAIN] %(asctime)s - %(levelname)s - %(name)s - %(message)s",
 )
-
 logger = logging.getLogger("agent-chain.main")
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # ─────────────────────────────────────────────────────────────
-    # STARTUP: Launch the UI/Bus Listener
-    # ─────────────────────────────────────────────────────────────
-    logger.info("Starting Agent Chain Bus Listener...")
-    try:
-        start_agent_chain_bus_listener()
-    except Exception as e:
-        logger.error("Failed to start bus listener: %s", e)
-    
-    yield
-    
-    logger.info("Shutting down Agent Chain...")
+app = FastAPI(
+    title="Orion Agent Chain",
+    version=settings.service_version,
+)
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(
-        title=settings.service_name,
-        version=settings.service_version,
-        lifespan=lifespan,  # <--- Hook logic here
+@app.on_event("startup")
+def on_startup() -> None:
+    logger.info(
+        "Starting Agent Chain (service=%s v=%s, port=%d)",
+        settings.service_name,
+        settings.service_version,
+        settings.port,
     )
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    app.include_router(api_router, prefix="/chain", tags=["agent-chain"])
-
-    return app
+    start_agent_chain_bus_listener()
 
 
-app = create_app()
+@app.get("/")
+async def root() -> dict:
+    return {
+        "service": settings.service_name,
+        "version": settings.service_version,
+        "bus_enabled": settings.orion_bus_enabled,
+        "request_channel": settings.agent_chain_request_channel,
+        "result_prefix": settings.agent_chain_result_prefix,
+    }
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    return JSONResponse({"status": "ok"})

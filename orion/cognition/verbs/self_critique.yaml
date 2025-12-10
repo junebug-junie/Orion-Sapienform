@@ -17,7 +17,7 @@ timeout_ms: 3500
 max_recursion_depth: 1
 
 services:
-  - NewServiceName
+  - LLMGatewayService
 
 prompt_template: self_critique_prompt.j2
 
@@ -27,4 +27,4 @@ plan:
     order: 0
     prompt_template: self_critique_prompt.j2
     services:
-      - NewServiceName
+      - LLMGatewayService

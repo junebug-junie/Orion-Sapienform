@@ -110,24 +110,35 @@
             </button>
           </div>
 
-          <!-- Brain vs Council controls -->
+          <!-- Orion Mode Toggle: Brain / Agentic / Council -->
           <div class="flex justify-between items-center mt-2 text-xs">
             <div class="inline-flex items-center gap-2">
               <span class="inline-flex items-center rounded-full bg-gray-800 px-2 py-1 text-[10px] uppercase tracking-wide text-gray-400">
                 <span class="w-2 h-2 rounded-full bg-green-500 mr-1"></span>
-                Brain (WebSocket)
+                Orion Mode
               </span>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-1">
               <button
-                id="councilButton"
-                class="inline-flex items-center px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white"
+                class="mode-btn inline-flex items-center px-3 py-1 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white text-[11px]"
+                data-mode="brain"
               >
-                Ask Council
+                Brain
+              </button>
+              <button
+                class="mode-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200 text-[11px]"
+                data-mode="agentic"
+              >
+                Agentic
+              </button>
+              <button
+                class="mode-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200 text-[11px]"
+                data-mode="council"
+              >
+                Council
               </button>
             </div>
           </div>
-        </div>
 
         <!-- Conversation -->
         <div class="flex-grow flex flex-col">

@@ -42,6 +42,7 @@ const collapseTooltip = document.getElementById('collapseTooltip');
 
 // These are declared here but assigned inside DOMContentLoaded
 let chatInput, sendButton, textToSpeechToggle, councilButton;
+
 const API_BASE_URL = window.location.origin;
 
 // --- State Management ---
@@ -60,6 +61,8 @@ let liveMicSource;
 let particles = [];
 let baseParticleCount = 200;
 let visionIsFloating = false;
+// Brain (WS) vs Agentic (Planner) vs Council (CouncilRPC over HTTP)
+let currentMode = "brain";
 
 // Orion Hub session id (from /api/session)
 let orionSessionId = null;
@@ -430,41 +433,57 @@ function appendMessage(sender, text, extraClass = 'text-white') {
   conversationDiv.scrollTop = conversationDiv.scrollHeight;
 }
 
+
 function sendTextMessage() {
   if (!chatInput) return;
   const text = chatInput.value.trim();
-  if (!text || !socket || socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  interruptButton && interruptButton.click();
+  if (!text) return;
+
+  console.log('[Hub] sendTextMessage', { currentMode, text });
+
+  // Show user message once
   appendMessage('You', text);
-  updateStatus('Processing...');
-  const payload = {
-    text_input: text,
-    disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
-    temperature: parseFloat(tempControl.value),
-    context_length: parseInt(contextControl.value),
-    session_id: orionSessionId || null,
-    user_id: "local-user",
-  };
-  socket.send(JSON.stringify(payload));
   chatInput.value = '';
-}
+  interruptButton && interruptButton.click();
 
-// --- Council HTTP path (Option B) ---
-async function sendCouncilMessage() {
-  if (!chatInput) return;
-  const text = chatInput.value.trim();
-  if (!text) {
+  // ─────────────────────────────────────────────
+  // Mode: Brain → WebSocket
+  // ─────────────────────────────────────────────
+  if (currentMode === 'brain') {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      updateStatus('WebSocket not connected.');
+      appendMessage('System', 'WebSocket is not connected.', 'text-red-400');
+      return;
+    }
+
+    updateStatus('Processing (Brain)...');
+    const payload = {
+      text_input: text,
+      disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
+      temperature: parseFloat(tempControl.value),
+      context_length: parseInt(contextControl.value),
+      session_id: orionSessionId || null,
+      user_id: "local-user",
+      mode: 'brain',
+    };
+    socket.send(JSON.stringify(payload));
     return;
   }
 
-  // Show user message labeled for council
-  appendMessage('You', text + '  (routed to Council)', 'text-white');
-  updateStatus('Consulting Council...');
+  // ─────────────────────────────────────────────
+  // Modes: Agentic / Council → HTTP /api/chat
+  // ─────────────────────────────────────────────
+  const mode = currentMode; // 'agentic' or 'council'
+  const label = mode === 'agentic' ? 'Agentic' : 'Council';
+
+  updateStatus(
+    mode === 'agentic'
+      ? 'Running Agent Chain...'
+      : 'Consulting Council...'
+  );
 
   const payload = {
-    mode: 'council',
+    mode,
     temperature: parseFloat(tempControl.value),
     use_recall: true,
     messages: [
@@ -472,47 +491,50 @@ async function sendCouncilMessage() {
     ],
   };
 
-  const headers = {
-    'Content-Type': 'application/json',
-  };
+  const headers = { 'Content-Type': 'application/json' };
   if (orionSessionId) {
     headers['X-Orion-Session-Id'] = orionSessionId;
   }
 
-  try {
-    const res = await fetch(`${API_BASE_URL}/api/chat`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    });
+  (async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/chat`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
 
-    if (!res.ok) {
-      const errorText = await res.text().catch(() => '');
-      const msg = `Council error (${res.status}) ${errorText}`;
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => '');
+        const msg = `${label} error (${res.status}) ${errorText}`;
+        appendMessage('System', msg, 'text-red-400');
+        updateStatus(`${label} error`);
+        return;
+      }
+
+      const data = await res.json();
+      const replyText =
+        (data && data.text) ||
+        (data && data.raw && data.raw.text) ||
+        '';
+
+      if (replyText) {
+        appendMessage(
+          label,
+          replyText,
+          mode === 'agentic' ? 'text-emerald-200' : 'text-indigo-200'
+        );
+      } else {
+        appendMessage(label, '(no response)', 'text-gray-400');
+      }
+
+      updateStatusBasedOnState();
+    } catch (err) {
+      const msg = `${label} request failed: ${err.message}`;
       appendMessage('System', msg, 'text-red-400');
-      updateStatus('Council error');
-      return;
+      updateStatus(`${label} error`);
     }
-
-    const data = await res.json();
-    const councilText =
-      (data && data.text) ||
-      (data && data.raw && data.raw.text) ||
-      '';
-
-    if (councilText) {
-      appendMessage('Council', councilText, 'text-indigo-200');
-    } else {
-      appendMessage('Council', '(no response)', 'text-gray-400');
-    }
-
-    chatInput.value = '';
-    updateStatusBasedOnState();
-  } catch (err) {
-    const msg = `Council request failed: ${err.message}`;
-    appendMessage('System', msg, 'text-red-400');
-    updateStatus('Council error');
-  }
+  })();
 }
 
 // Recording helpers
@@ -541,6 +563,7 @@ async function startRecording() {
             disable_tts: false,
             session_id: orionSessionId || null,
             user_id: "local-user",
+            mode: 'brain', // voice = Brain for now
           };
           socket.send(JSON.stringify(payload));
         };
@@ -768,29 +791,34 @@ document.addEventListener("DOMContentLoaded", () => {
   chatInput = document.getElementById('chatInput');
   sendButton = document.getElementById('sendButton');
   textToSpeechToggle = document.getElementById('textToSpeechToggle');
-  councilButton = document.getElementById('councilButton');
 
   if (sendButton) {
     sendButton.addEventListener('click', sendTextMessage);
   }
 
-  if (councilButton) {
-    councilButton.addEventListener('click', sendCouncilMessage);
-  }
+  // Mode toggle buttons
+  const modeButtons = document.querySelectorAll('.mode-btn');
+  modeButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      currentMode = btn.dataset.mode || 'brain';
 
-  if (chatInput) {
-    chatInput.addEventListener('keydown', (event) => {
-      // Shift+Enter → newline (let browser insert line break)
-      if (event.key === 'Enter' && event.shiftKey) {
-        return;
-      }
-      // Enter (without Shift) → send to Brain (WS)
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendTextMessage();
+      // Visual active/inactive state
+      modeButtons.forEach((b) => {
+        b.classList.remove('bg-indigo-600', 'hover:bg-indigo-700', 'text-white');
+        b.classList.add('bg-gray-700', 'hover:bg-gray-600', 'text-gray-200');
+      });
+      btn.classList.add('bg-indigo-600', 'hover:bg-indigo-700', 'text-white');
+      btn.classList.remove('bg-gray-700', 'text-gray-200');
+
+      if (currentMode === 'brain') {
+        updateStatus('Brain mode (WebSocket): press the button to speak or type a message.');
+      } else if (currentMode === 'agentic') {
+        updateStatus('Agentic mode (Agent Chain): type and press Enter to run tools.');
+      } else {
+        updateStatus('Council mode: type and press Enter to consult Council.');
       }
     });
-  }
+  });
 });
 
 // --- Final Setup ---

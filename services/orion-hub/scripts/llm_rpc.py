@@ -72,7 +72,7 @@ async def _request_and_wait(
 
     # 5. Wait for result with timeout
     try:
-        msg = await asyncio.wait_for(queue.get(), timeout=60.0)
+        msg = await asyncio.wait_for(queue.get(), timeout=300.0)
         reply = msg.get("data", {})
         logger.info("[%s] RPC reply received on %s.", trace_id, physical_reply)
         return reply

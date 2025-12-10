@@ -99,6 +99,7 @@ class AgentChainRequest(BaseModel):
     goal_description: Optional[str] = None
     messages: Optional[List[Message]] = None
     tools: Optional[List[Dict[str, Any]]] = None
+    packs: Optional[List[str]] = None
 
 class AgentChainResult(BaseModel):
     mode: str
@@ -136,14 +137,23 @@ def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
 
     # Dynamic Tool Injection
     tools: List[ToolDef] = []
+
     if body.tools:
         for t_dict in body.tools:
             try:
                 tools.append(ToolDef(**t_dict))
             except Exception as e:
                 logger.warning("[agent-chain] Invalid tool definition in request: %s", e)
-    else:
-        # Fallback to the demo tool if none provided
+
+    elif body.packs:
+        try:
+            tools = _TOOL_REGISTRY.tools_for_packs(body.packs)
+        except Exception as e:
+            logger.error("[agent-chain] Failed to load tools for packs %s: %s", body.packs, e)
+            tools = []
+
+    if not tools:
+        # Final fallback: tiny demo tool
         tools = [
             ToolDef(
                 tool_id="extract_facts",
@@ -152,7 +162,7 @@ def _build_planner_request(body: AgentChainRequest) -> PlannerRequest:
                     "type": "object",
                     "properties": {"text": {"type": "string"}},
                     "required": ["text"],
-                }
+                },
             )
         ]
 

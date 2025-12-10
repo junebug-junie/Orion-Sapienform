@@ -10,7 +10,7 @@ import uuid
 from scripts.settings import settings
 from scripts.warm_start import mini_personality_summary
 from scripts.recall_rpc import RecallRPC
-from scripts.llm_rpc import LLMGatewayRPC, CortexOrchRPC
+from scripts.llm_rpc import LLMGatewayRPC, CortexOrchRPC, AgentChainRPC
 
 logger = logging.getLogger("orion-hub.chat-front")
 
@@ -312,4 +312,71 @@ async def run_chat_general(
             "note": "fallback_to_llm_gateway",
             "cortex_reply": raw_reply,
         },
+    }
+
+
+#-------------------------------------------------
+#
+#        Agents
+#
+#-------------------------------------------------
+
+
+async def run_chat_agentic(
+    bus,
+    *,
+    session_id: str,
+    user_id: Optional[str],
+    messages: List[Dict[str, Any]],
+    chat_mode: str = "agentic",
+    use_recall: bool = True,
+) -> Dict[str, Any]:
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("run_chat_agentic requires a non-empty messages list")
+
+    user_message = messages[-1].get("content", "") or ""
+
+    memory_digest = ""
+    recall_debug: Dict[str, Any] = {}
+    if use_recall:
+        try:
+            memory_digest, recall_debug = await build_memory_digest(
+                bus=bus,
+                session_id=session_id,
+                user_prompt=user_message,
+                chat_mode=chat_mode,
+                max_items=12,
+            )
+        except Exception as e:
+            logger.warning("build_memory_digest failed in chat_front (agentic): %s", e, exc_info=True)
+            recall_debug = {"error": str(e)}
+
+    context = {
+        "user_message": user_message,
+        "message_history": messages,
+        "personality_summary": mini_personality_summary(),
+        "memory_digest": memory_digest,
+        "chat_mode": chat_mode,
+        "session_id": session_id,
+        "user_id": user_id,
+    }
+
+    rpc = AgentChainRPC(bus)
+    result = await rpc.run(
+        text=user_message,
+        mode="chat",
+        session_id=session_id,
+        user_id=user_id,
+        messages=messages,
+        tools=None,           # verbs later
+    )
+
+    text = (result.get("text") or "").strip()
+    return {
+        "text": text,
+        "chat_mode": chat_mode,
+        "use_recall": use_recall,
+        "recall_debug": recall_debug,
+        "context_used": context,
+        "raw_agent_chain": result,
     }

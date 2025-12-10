@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
 from .llm_rpc import CouncilRPC
-from .chat_front import run_chat_general
+from .chat_front import run_chat_general, run_chat_agentic
 
 from .session import ensure_session
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
@@ -97,6 +97,28 @@ async def handle_chat_request(
             "raw": reply,
             "recall_debug": {},
             "spark_meta": None,
+        }
+
+    # Agentic mode → Agent Chain (bus-native)
+    if mode == "agentic":
+        convo = await run_chat_agentic(
+            bus,
+            session_id=session_id,
+            user_id=None,  # no auth yet on HTTP path
+            messages=user_messages,
+            chat_mode=mode,
+            temperature=temperature,
+            use_recall=use_recall,
+        )
+        return {
+            "session_id": session_id,
+            "mode": mode,
+            "use_recall": use_recall,
+            "text": convo.get("text") or "",
+            "tokens": convo.get("tokens") or 0,
+            "raw": convo.get("raw_agent_chain"),
+            "recall_debug": convo.get("recall_debug") or {},
+            "spark_meta": convo.get("spark_meta"),
         }
 
     # Default: brain → chat_general via Cortex-Orch + LLM Gateway

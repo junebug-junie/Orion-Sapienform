@@ -262,6 +262,79 @@ class CouncilRPC:
 
         return raw_reply
 
+class AgentChainRPC:
+    """
+    Bus-RPC client for the Orion Agent Chain service.
+
+    Hub uses this to send text + context and get back an AgentChainResult:
+      { mode, text, structured, planner_raw }
+    """
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.request_channel = settings.CHANNEL_AGENT_CHAIN_INTAKE
+        self.result_prefix = settings.CHANNEL_AGENT_CHAIN_REPLY_PREFIX
+
+        if not self.bus or not getattr(self.bus, "enabled", False):
+            logger.warning("[AgentChainRPC] OrionBus is disabled; calls will fail.")
+
+        logger.info(
+            "[AgentChainRPC] Initialized (request_channel=%s, result_prefix=%s)",
+            self.request_channel,
+            self.result_prefix,
+        )
+
+    async def run(
+        self,
+        *,
+        text: str,
+        mode: str = "chat",
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        messages: Optional[list[dict]] = None,
+        tools: Optional[list[dict]] = None,
+        trace_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Mirrors AgentChainRequest in agent-chain/api.py:
+          { text, mode, session_id, user_id, messages, tools }
+        """
+        if not self.bus or not getattr(self.bus, "enabled", False):
+            raise RuntimeError("AgentChainRPC used while OrionBus is disabled")
+
+        trace_id = trace_id or str(uuid.uuid4())
+        reply_channel = f"{self.result_prefix}:{trace_id}"
+
+        payload = {
+            "text": text,
+            "mode": mode,
+            "session_id": session_id,
+            "user_id": user_id,
+        }
+        if messages:
+            payload["messages"] = messages
+        if tools:
+            payload["tools"] = tools
+
+        envelope = {
+            "trace_id": trace_id,
+            "reply_channel": reply_channel,
+            "payload": payload,
+        }
+
+        raw_reply = await _request_and_wait(
+            self.bus,
+            self.request_channel,
+            reply_channel,
+            envelope,
+            trace_id,
+        )
+
+        # raw_reply should be AgentChainResult.model_dump() from agent-chain
+        # { mode, text, structured, planner_raw }
+        return raw_reply if isinstance(raw_reply, dict) else {"raw": raw_reply}
+
+
 
 # ─────────────────────────────────────────────
 # LLM Gateway RPC (Hub → LLMGatewayService)

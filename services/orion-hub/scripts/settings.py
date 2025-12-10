@@ -77,6 +77,16 @@ class Settings(BaseSettings):
         env="CORTEX_RESULT_PREFIX",
     )
 
+
+    CHANNEL_AGENT_CHAIN_INTAKE: str = Field(
+        default="orion-agent-chain:request",
+        env="AGENT_CHAIN_REQUEST_CHANNEL"
+    )
+    CHANNEL_AGENT_CHAIN_REPLY_PREFIX: str = Field(
+        default="orion-agent-chain:result",
+        env="AGENT_CHAIN_REQUEST_PREFIX"
+    )
+
     # --- Recall / RAG Integration (new) ---
     CHANNEL_RECALL_REQUEST: str = Field(
         default="orion:recall:request",

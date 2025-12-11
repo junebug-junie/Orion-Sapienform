@@ -29,13 +29,14 @@ profiles:
     display_name: "Llama 3 7B – 1× V100"
     task_type: chat
     backend: vllm
-    model_id: "meta-llama/Meta-Llama-3-8B-Instruct"  # <-- adjust to your actual model
+    model_id: "meta-llama/Meta-Llama-3-8B-Instruct"
     supports_tools: false
     supports_embeddings: false
     supports_vision: false
     gpu:
       num_gpus: 1
       tensor_parallel_size: 1
+      device_ids: [2, 3]
       max_model_len: 8192
       max_batch_tokens: 4096
       max_concurrent_requests: 4
@@ -79,21 +80,18 @@ profiles:
     display_name: "Llama 3 7B – 4× V100"
     task_type: chat
     backend: vllm
-    model_id: "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_id: "meta-llama/Llama-3.1-8B-Instruct"
     supports_tools: false
     supports_embeddings: false
     supports_vision: false
     gpu:
       num_gpus: 4
       tensor_parallel_size: 4
-      max_model_len: 8192     # can experiment with 12–16K later
+      device_ids: [0, 1, 2, 3]
+      max_model_len: 16000
       max_batch_tokens: 16384
       max_concurrent_requests: 16
       gpu_memory_fraction: 0.9
-    preferred_verbs:
-      - multi_session
-      - background_cognition
-      - batch_processing
     notes: "High throughput profile when node is dedicated to Orion."
 
   # ─────────────────────────────────────────────
@@ -104,21 +102,18 @@ profiles:
     display_name: "Llama 3 70B – 4× V100"
     task_type: chat
     backend: vllm
-    model_id: "meta-llama/Meta-Llama-3-70B-Instruct"  # <-- adjust if different
+    model_id: "hugging-quants/Meta-Llama-3.1-70B-Instruct-AWQ-INT4"
     supports_tools: false
     supports_embeddings: false
     supports_vision: false
     gpu:
       num_gpus: 4
       tensor_parallel_size: 4
+      device_ids: [0, 1, 2, 3]
       max_model_len: 4096       # be conservative for 70B
       max_batch_tokens: 4096
       max_concurrent_requests: 2
-      gpu_memory_fraction: 0.9
-    preferred_verbs:
-      - deep_reflection
-      - architecture_review
-      - long_horizon_planning
+      gpu_memory_fraction: 0.8
     notes: "High-cost, high-capacity profile reserved for select verbs."
 
   # ─────────────────────────────────────────────
@@ -129,18 +124,16 @@ profiles:
     display_name: "Llama Embeddings – 1× V100"
     task_type: embeddings
     backend: vllm
-    model_id: "text-embedding-model-id"  # <-- your actual embedding model
+    model_id: "text-embedding-model-id"  # <-- actual embedding model
     supports_tools: false
     supports_embeddings: true
     supports_vision: false
     gpu:
       num_gpus: 1
       tensor_parallel_size: 1
+      devices_ids: [4]
       max_model_len: 2048
       max_batch_tokens: 8192
       max_concurrent_requests: 8
       gpu_memory_fraction: 0.9
-    preferred_verbs:
-      - build_embeddings
-      - refresh_index
     notes: "Embeddings-only profile for vector stores."

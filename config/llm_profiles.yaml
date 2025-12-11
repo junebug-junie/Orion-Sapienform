@@ -119,7 +119,6 @@ profiles:
   # ─────────────────────────────────────────────
 
   mixtral-8x7b-deep:
-    name: mixtral-8x7b-deep
     display_name: "Mixtral 8x7B Instruct (Atlas Deep)"
     task_type: chat
     backend: vllm
@@ -143,7 +142,6 @@ profiles:
       Uses all 4× V100 on Atlas via tensor parallelism.
 
   qwen25-32b-deep:
-    name: qwen25-32b-deep
     display_name: "Qwen2.5 32B Instruct (Atlas Deep)"
     task_type: chat
     backend: vllm
@@ -168,7 +166,6 @@ profiles:
 
 
   qwen25-14b-main:
-    name: qwen25-14b-main
     display_name: "Qwen2.5 14B Instruct (Main)"
     task_type: chat
     backend: vllm

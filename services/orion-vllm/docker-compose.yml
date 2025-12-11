@@ -21,6 +21,8 @@ services:
       - VLLM_HOST=${VLLM_HOST:-0.0.0.0}
       - VLLM_PORT=${VLLM_PORT:-8000}
 
+      - HF_TOKEN=${HF_TOKEN}
+
       # Profiles config (path *inside* the container)
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
 

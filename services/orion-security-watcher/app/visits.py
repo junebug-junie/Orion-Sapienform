@@ -1,265 +1,251 @@
 # app/visits.py
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from .models import AlertPayload, AlertSnapshot, SecurityState, VisionEvent, VisitSummary
-from .settings import Settings
+from .models import AlertPayload, SecurityState, VisionEvent, VisitSummary
 
-
-class Visit:
-    """
-    Per-camera visit: a continuous period with human/motion activity.
-    """
-
-    def __init__(self, camera_id: str, event_ts: datetime):
-        self.visit_id = str(uuid.uuid4())
-        self.camera_id = camera_id
-        self.started_at = event_ts
-        self.last_seen_at = event_ts
-
-        self.frames_seen: int = 0
-        self.motion_frames: int = 0
-        self.human_frames: int = 0
-
-        self.identity_votes: Dict[str, float] = {}
-        self.alert_sent: bool = False
-
-    def observe(self, event: VisionEvent, settings: Settings) -> None:
-        self.frames_seen += 1
-        self.last_seen_at = event.ts
-
-        # crude area filter if meta has width/height
-        width = None
-        height = None
-        if event.meta:
-            width = event.meta.get("width")
-            height = event.meta.get("height")
-
-        has_motion = False
-        has_human_frame = False
-
-        for det in event.detections:
-            if det.kind == "motion":
-                has_motion = True
-
-            if det.kind in settings.human_kinds:
-                score = det.score or 0.0
-                if score < settings.HUMAN_MIN_SCORE:
-                    continue
-
-                # Optional bbox area filtering
-                if det.bbox and width and height:
-                    x, y, w, h = det.bbox
-                    area = w * h
-                    frac = area / float(width * height)
-                    if frac < settings.MIN_BBOX_AREA_FRACTION:
-                        continue
-
-                has_human_frame = True
-
-                # Identity labeling:
-                # - presence with label: use that
-                # - yolo "person" -> unknown
-                label = det.label or "unknown"
-                if det.kind == "yolo" and label == "person":
-                    label = "unknown"
-
-                # votes
-                self.identity_votes[label] = self.identity_votes.get(label, 0.0) + score
-
-        if has_motion:
-            self.motion_frames += 1
-        if has_human_frame:
-            self.human_frames += 1
-
-    def is_idle(self, now: datetime, settings: Settings) -> bool:
-        return (now - self.last_seen_at).total_seconds() > settings.VISIT_IDLE_TIMEOUT_SEC
-
-    def humans_present(self, settings: Settings) -> bool:
-        return self.human_frames >= settings.MIN_PERSON_FRAMES
-
-    def best_identity(self) -> tuple[str, float]:
-        if not self.identity_votes:
-            return "unknown", 0.0
-        label = max(self.identity_votes, key=lambda k: self.identity_votes[k])
-        total = sum(self.identity_votes.values()) or 1.0
-        return label, self.identity_votes[label] / total
+logger = logging.getLogger("orion-security-watcher.visits")
 
 
 class VisitManager:
     """
-    Manages visits per camera + rate limiting + alert/visit payloads.
+    v1 Visit + Alert manager with basic debouncing and size thresholds.
+
+    - Treat any 'human-ish' detection as presence (face, presence, yolo:person),
+      BUT only if:
+        * it is big enough (bbox area threshold), AND
+        * it persists across a minimum number of frames.
+    - When system is ARMED, the first such event outside the global cooldown
+      window triggers an alert.
+    - We still emit a VisitSummary for bookkeeping, but keep it simple for now.
     """
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings):
         self.settings = settings
-        self.active_visits: Dict[str, Visit] = {}
 
+        # Last time we emitted an alert (for cooldown)
         self.last_alert_ts: Optional[datetime] = None
-        self.last_alert_by_identity: Dict[str, datetime] = {}
 
-    def _get_visit(self, camera_id: str, event_ts: datetime) -> Visit:
-        visit = self.active_visits.get(camera_id)
-        if visit is None:
-            visit = Visit(camera_id=camera_id, event_ts=event_ts)
-            self.active_visits[camera_id] = visit
-            return visit
+        # Simple visit tracking
+        self.last_visit_id: Optional[str] = None
+        self.last_visit_ts: Optional[datetime] = None
 
-        # if idle for too long, close and create new
-        if visit.is_idle(event_ts, self.settings):
-            self.active_visits[camera_id] = Visit(camera_id=camera_id, event_ts=event_ts)
-        return self.active_visits[camera_id]
+        # Cooldowns (seconds). Fallback defaults if not in settings.
+        self.global_cooldown: int = getattr(
+            settings, "SECURITY_GLOBAL_COOLDOWN_SEC", 300
+        )
+        self.identity_cooldown: int = getattr(
+            settings, "SECURITY_IDENTITY_COOLDOWN_SEC", 600
+        )
+
+        # --- NEW: noise resistance knobs ---
+
+        # Minimum bounding-box area (px^2) to treat a FACE as valid human
+        # e.g. 50x50 = 2500
+        self.min_face_area: int = getattr(
+            settings, "SECURITY_MIN_FACE_AREA", 2500
+        )
+
+        # Minimum area for YOLO 'person' detections
+        self.min_person_area: int = getattr(
+            settings, "SECURITY_MIN_PERSON_AREA", 2500
+        )
+
+        # Require at least this many consecutive "human-ish" events before
+        # we say humans_present=True for alert purposes.
+        self.min_human_streak: int = getattr(
+            settings, "SECURITY_MIN_HUMAN_STREAK", 3
+        )
+
+        # Max frame gap between human events to keep the streak going
+        # (at 15 FPS, 45 frames ≈ 3 seconds).
+        self.streak_max_gap: int = getattr(
+            settings, "SECURITY_STREAK_MAX_FRAME_GAP", 45
+        )
+
+        # Internal streak state
+        self._human_streak: int = 0
+        self._last_human_frame_index: Optional[int] = None
+
+    # ─────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────
+
+    def _raw_human_detection(self, ev: VisionEvent) -> bool:
+        """
+        Detect whether this single event *suggests* a human is present,
+        ignoring streak/debouncing.
+
+        v1 rules:
+        - Any 'presence' detection with score >= 0.5
+        - Any 'face' detection with score >= 0.5 and bbox area >= min_face_area
+        - Any 'yolo' detection whose label is 'person' with score >= 0.5 and
+          area >= min_person_area
+        """
+
+        for d in ev.detections:
+            kind = d.kind.lower()
+            label = (d.label or "").lower()
+            x, y, w, h = d.bbox
+            area = max(0, w) * max(0, h)
+
+            # Presence detector is explicit and already smoothed on the edge
+            if kind == "presence" and d.score >= 0.5:
+                return True
+
+            # Face detection: we know a face is a human, but enforce area
+            if kind == "face" and d.score >= 0.5 and area >= self.min_face_area:
+                return True
+
+            # YOLO: look for 'person' class with area gating
+            if (
+                kind == "yolo"
+                and label == "person"
+                and d.score >= 0.5
+                and area >= self.min_person_area
+            ):
+                return True
+
+        return False
+
+    def _update_human_streak(self, ev: VisionEvent, raw_humans: bool) -> bool:
+        """
+        Update the internal streak counters and return whether we now
+        consider humans_present=True (debounced).
+        """
+        frame_index = ev.frame_index or 0
+
+        if not raw_humans:
+            # No human in this event → reset streak
+            self._human_streak = 0
+            self._last_human_frame_index = None
+            return False
+
+        # Human-ish evidence in this event
+        if self._last_human_frame_index is None:
+            # Start new streak
+            self._human_streak = 1
+        else:
+            gap = frame_index - self._last_human_frame_index
+            if gap <= self.streak_max_gap:
+                self._human_streak += 1
+            else:
+                # Too long since last human frame → restart streak
+                self._human_streak = 1
+
+        self._last_human_frame_index = frame_index
+
+        # Only treat as humans_present after enough consecutive-ish events
+        return self._human_streak >= self.min_human_streak
+
+    # ─────────────────────────────────────────────
+    # Core API
+    # ─────────────────────────────────────────────
 
     def process_event(
         self,
         event: VisionEvent,
         state: SecurityState,
-    ) -> tuple[Optional[VisitSummary], Optional[AlertPayload]]:
+    ) -> Tuple[Optional[VisitSummary], Optional[AlertPayload]]:
         """
-        Process a single VisionEvent.
-        Returns (visit_summary, alert_payload) when a visit ends; otherwise (None, None).
+        Process one vision event and return:
+
+        - visit_summary: VisitSummary | None
+        - alert_payload: AlertPayload | None
+
+        v1 policy (with debouncing):
+
+        - Use _raw_human_detection() to see if *this* event looks human-ish.
+        - Feed that into streak logic; only when the streak is long enough
+          do we treat humans_present=True.
+        - Always build a visit summary when humans_present=True (even if not armed).
+        - If ARMED and humans_present, and global cooldown allows,
+          emit a high-severity alert with best_identity="unknown".
         """
 
-        camera_id = event.stream_id
-        if self.settings.camera_ids and camera_id not in self.settings.camera_ids:
-            return None, None
-
-        visit = self._get_visit(camera_id, event.ts)
-        visit.observe(event, self.settings)
-
-        # Decide if we should end the visit now.
-        # We end visits when they go idle, but since we only see messages on detection,
-        # we approximate by checking duration + last_seen.
-        # We'll flush visits when a new one starts OR when explicitly idle.
-        # Here we only flush if idle.
         now = event.ts
-        if not visit.is_idle(now, self.settings):
-            # keep visit open
-            return None, None
 
-        # At this point, we consider visit ended.
-        visit_ended = visit
-        # Remove from active
-        self.active_visits.pop(camera_id, None)
+        raw_humans = self._raw_human_detection(event)
+        humans_present = self._update_human_streak(event, raw_humans)
 
-        duration = (visit_ended.last_seen_at - visit_ended.started_at).total_seconds()
-        humans_present = visit_ended.humans_present(self.settings)
-        best_identity, best_conf = visit_ended.best_identity()
-
-        # simple counts
-        known_ids = [i for i in visit_ended.identity_votes.keys() if i in self.settings.allowed_identities]
-        num_known = len(known_ids)
-        num_unknown = len(visit_ended.identity_votes) - num_known
-        if num_unknown < 0:
-            num_unknown = 0
-
-        decision = {
-            "armed": state.armed,
-            "mode": state.mode,
-            "incident": False,
-            "reason": None,
-        }
-
-        # Only consider incident if system armed + humans present + duration OK
-        incident = False
-        reason = None
-
-        if state.armed and state.enabled and self.settings.SECURITY_ENABLED:
-            if duration >= self.settings.MIN_VISIT_DURATION_SEC and humans_present:
-                reason = "human_detected_while_armed"
-                incident = True
-
-        decision["incident"] = incident
-        decision["reason"] = reason
-
-        visit_summary = VisitSummary(
-            ts=datetime.utcnow(),
-            service=self.settings.SERVICE_NAME,
-            version=self.settings.SERVICE_VERSION,
-            visit_id=visit_ended.visit_id,
-            camera_id=visit_ended.camera_id,
-            started_at=visit_ended.started_at,
-            ended_at=visit_ended.last_seen_at,
-            duration_sec=duration,
-            frames_seen=visit_ended.frames_seen,
-            motion_frames=visit_ended.motion_frames,
-            human_frames=visit_ended.human_frames,
-            humans_present=humans_present,
-            num_tracks=1,
-            num_unknown_tracks=num_unknown if humans_present else 0,
-            num_known_tracks=num_known if humans_present else 0,
-            best_identity=best_identity,
-            best_identity_conf=best_conf,
-            identity_votes=visit_ended.identity_votes,
-            security_decision=decision,
+        logger.debug(
+            f"[VISIT] event ts={now} stream={event.stream_id} "
+            f"armed={state.armed} raw_humans={raw_humans} "
+            f"streak={self._human_streak} humans_present={humans_present}"
         )
 
-        alert_payload: Optional[AlertPayload] = None
+        # Build a minimal visit summary if humans are (debounced) present
+        visit_summary: Optional[VisitSummary] = None
+        visit_id: Optional[str] = self.last_visit_id
+        first_ts: Optional[datetime] = self.last_visit_ts
 
-        if incident and not visit_ended.alert_sent:
-            if self._can_send_alert(best_identity, datetime.utcnow()):
-                rl_info = self._build_rate_limit_info(best_identity, datetime.utcnow(), will_send=True)
-                alert_payload = AlertPayload(
-                    ts=datetime.utcnow(),
-                    service=self.settings.SERVICE_NAME,
-                    version=self.settings.SERVICE_VERSION,
-                    alert_id=str(uuid.uuid4()),
-                    visit_id=visit_ended.visit_id,
-                    camera_id=visit_ended.camera_id,
-                    armed=state.armed,
-                    mode=state.mode,
-                    humans_present=humans_present,
-                    best_identity=best_identity,
-                    best_identity_conf=best_conf,
-                    identity_votes=visit_ended.identity_votes,
-                    reason=reason or "unknown",
-                    severity="high",
-                    snapshots=[],  # filled later by notifier
-                    rate_limit=rl_info,
+        if humans_present:
+            if visit_id is None:
+                visit_id = f"{event.stream_id}-{uuid.uuid4().hex[:8]}"
+                first_ts = now
+
+            self.last_visit_id = visit_id
+            self.last_visit_ts = now
+
+            visit_summary = VisitSummary(
+                visit_id=visit_id,
+                first_ts=first_ts or now,
+                last_ts=now,
+                stream_id=event.stream_id,
+                humans_present=True,
+                events=1,
+            )
+
+        # If not armed or no (debounced) humans, no alert
+        if not state.armed or not humans_present:
+            return visit_summary, None
+
+        # Check global cooldown
+        if self.last_alert_ts:
+            delta = (now - self.last_alert_ts).total_seconds()
+            if delta < self.global_cooldown:
+                logger.info(
+                    f"[VISIT] Alert suppressed by global cooldown "
+                    f"({delta:.1f}s < {self.global_cooldown}s)"
                 )
-                visit_ended.alert_sent = True
-                self._record_alert(best_identity, datetime.utcnow())
-            else:
-                # rate-limited, no alert
-                _ = self._build_rate_limit_info(best_identity, datetime.utcnow(), will_send=False)
+                return visit_summary, None
 
-        return visit_summary, alert_payload
+        # Build alert payload (identity layer is future; v1 = 'unknown')
+        camera_id = event.meta.get("camera", event.stream_id)
 
-    def _can_send_alert(self, identity: str, now: datetime) -> bool:
-        # global
-        if self.last_alert_ts is not None:
-            if (now - self.last_alert_ts).total_seconds() < self.settings.SECURITY_GLOBAL_COOLDOWN_SEC:
-                return False
+        alert = AlertPayload(
+            ts=now,
+            service=self.settings.SERVICE_NAME,
+            version=self.settings.SERVICE_VERSION,
+            alert_id=f"{event.stream_id}-{now.strftime('%Y%m%dT%H%M%S')}",
+            visit_id=visit_id or f"{event.stream_id}-single-{uuid.uuid4().hex[:6]}",
+            camera_id=camera_id,
+            armed=state.armed,
+            mode=state.mode,
+            humans_present=True,
+            best_identity="unknown",
+            best_identity_conf=0.0,
+            identity_votes={"unknown": 1.0},
+            reason="armed_human_detected",
+            severity="high",
+            snapshots=[],
+            rate_limit={
+                "global_blocked": False,
+                "identity_blocked": False,
+                "global_cooldown_sec": self.global_cooldown,
+                "identity_cooldown_sec": self.identity_cooldown,
+            },
+        )
 
-        key = identity or "unknown"
-        last = self.last_alert_by_identity.get(key)
-        if last is not None:
-            if (now - last).total_seconds() < self.settings.SECURITY_IDENTITY_COOLDOWN_SEC:
-                return False
-
-        return True
-
-    def _record_alert(self, identity: str, now: datetime) -> None:
         self.last_alert_ts = now
-        key = identity or "unknown"
-        self.last_alert_by_identity[key] = now
 
-    def _build_rate_limit_info(self, identity: str, now: datetime, will_send: bool) -> dict:
-        info = {
-            "global_blocked": False,
-            "identity_blocked": False,
-            "global_cooldown_sec": self.settings.SECURITY_GLOBAL_COOLDOWN_SEC,
-            "identity_cooldown_sec": self.settings.SECURITY_IDENTITY_COOLDOWN_SEC,
-        }
-        if self.last_alert_ts is not None:
-            if (now - self.last_alert_ts).total_seconds() < self.settings.SECURITY_GLOBAL_COOLDOWN_SEC:
-                info["global_blocked"] = True
-        key = identity or "unknown"
-        last = self.last_alert_by_identity.get(key)
-        if last is not None:
-            if (now - last).total_seconds() < self.settings.SECURITY_IDENTITY_COOLDOWN_SEC:
-                info["identity_blocked"] = True
-        return info
+        logger.info(
+            f"[VISIT] Generated alert {alert.alert_id} "
+            f"stream={event.stream_id} mode={state.mode}"
+        )
+
+        return visit_summary, alert

@@ -64,9 +64,21 @@ def build_vllm_command_and_env() -> tuple[List[str], Dict[str, str]]:
     if settings.enforce_eager:
         cmd += ["--enforce-eager"]
 
-    # Env: let Settings drive CUDA_VISIBLE_DEVICES, we just consume it.
+    # Env: start from current process env
     env = os.environ.copy()
 
+    # 🔒 Bridge hf_token → HF_TOKEN / HUGGING_FACE_HUB_TOKEN for vLLM/HF hub
+    # Prefer settings.hf_token, but fall back to a raw env var named "hf_token" if present.
+    hf_token = getattr(settings, "hf_token", None) or os.environ.get("hf_token")
+    if hf_token:
+        # Don't clobber if user *explicitly* set these already
+        if not env.get("HF_TOKEN"):
+            env["HF_TOKEN"] = hf_token
+        if not env.get("HUGGING_FACE_HUB_TOKEN"):
+            env["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        logger.info("[VLLM] Hugging Face token wired into env for model downloads")
+
+    # CUDA: let Settings/profile drive CUDA_VISIBLE_DEVICES
     cuda_visible = gpu_cfg.get("cuda_visible_devices")
     if cuda_visible:
         logger.info("Using CUDA_VISIBLE_DEVICES=%s (from settings/profile)", cuda_visible)

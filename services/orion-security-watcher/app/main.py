@@ -1,5 +1,6 @@
 # services/orion-security-watcher/app/main.py
 import asyncio
+import logging
 from datetime import datetime
 from typing import Any, Dict
 
@@ -28,6 +29,8 @@ bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
 state_store = SecurityStateStore(settings)
 visit_manager = VisitManager(settings)
 notifier = Notifier(settings)
+
+logger = logging.getLogger("orion-security-watcher")
 
 
 # ─────────────────────────────────────────────
@@ -75,6 +78,7 @@ def _handle_bus_message(msg: Dict[str, Any]) -> None:
     try:
         event = VisionEvent.model_validate(data)
     except Exception:
+        # Not a vision event we understand
         return
 
     state = state_store.load()
@@ -89,7 +93,7 @@ def _handle_bus_message(msg: Dict[str, Any]) -> None:
                 _model_to_json_dict(visit_summary),
             )
         except Exception:
-            pass
+            logger.exception("[SECURITY] Failed to publish visit summary")
 
     # Handle alert (rate-limited decision already made)
     if alert_payload is not None:
@@ -105,7 +109,7 @@ def _handle_bus_message(msg: Dict[str, Any]) -> None:
                     _model_to_json_dict(alert_payload),
                 )
             except Exception:
-                pass
+                logger.exception("[SECURITY] Failed to publish alert payload")
 
         # Inline notification
         if settings.NOTIFY_MODE == "inline":
@@ -113,15 +117,36 @@ def _handle_bus_message(msg: Dict[str, Any]) -> None:
 
 
 def bus_worker() -> None:
+    """
+    Subscribe to all plausible vision channels to be robust against older edge configs:
+    - settings.VISION_EVENTS_SUBSCRIBE_RAW (new)
+    - 'vision.events' (old monolith channel)
+    - 'orion:vision:raw' (older bus-first draft)
+    """
     if not (settings.SECURITY_ENABLED and bus.enabled):
+        logger.info("[SECURITY] Bus worker not started (disabled or bus not enabled)")
         return
 
-    for msg in bus.subscribe(settings.VISION_EVENTS_SUBSCRIBE_RAW):
+    channels = [
+        settings.VISION_EVENTS_SUBSCRIBE_RAW,
+        "vision.events",
+        "orion:vision:raw",
+    ]
+    # Filter out empties / duplicates
+    channels = list({c for c in channels if c})
+
+    logger.info(f"[SECURITY] Subscribing to vision channels: {channels}")
+
+    for msg in bus.subscribe(*channels):
         try:
+            logger.debug(
+                f"[SECURITY] Got vision message on {msg.get('channel')}: "
+                f"{str(msg.get('data'))[:200]}..."
+            )
             _handle_bus_message(msg)
         except Exception:
             # Don't kill loop on bad message
-            continue
+            logger.exception("[SECURITY] Error in bus_worker for message")
 
 
 @app.on_event("startup")
@@ -243,7 +268,7 @@ async def test_alert():
                 _model_to_json_dict(alert),
             )
         except Exception:
-            pass
+            logger.exception("[SECURITY] Failed to publish test alert")
 
     if settings.NOTIFY_MODE == "inline":
         notifier.send_email(alert, snapshots)

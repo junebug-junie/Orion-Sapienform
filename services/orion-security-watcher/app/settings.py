@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     SECURITY_IDENTITY_COOLDOWN_SEC: int = 300
 
     # Snapshot behavior
-    VISION_SNAPSHOT_URL: str = "http://orion-athena-vision-edge:7100/snapshot.jpg"
+    VISION_SNAPSHOT_URL: str = "http://100.92.216.81:7100/snapshot.jpg"
     SECURITY_SNAPSHOT_COUNT: int = 3
     SECURITY_SNAPSHOT_INTERVAL_SEC: int = 2
     SECURITY_SNAPSHOT_DIR: str = "/mnt/telemetry/orion-security/alerts"

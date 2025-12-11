@@ -137,9 +137,7 @@ profiles:
     supports_embeddings: false
     supports_vision: false
 
-    notes: |
-      High-quality MoE model; roughly Llama2-70B-level capability.
-      Uses all 4× V100 on Atlas via tensor parallelism.
+    notes: "High-quality MoE model; roughly Llama2-70B-level capability. Uses all 4× V100 on Atlas via tensor parallelism."
 
   qwen25-32b-deep:
     display_name: "Qwen2.5 32B Instruct (Atlas Deep)"
@@ -160,7 +158,7 @@ profiles:
     supports_embeddings: false
     supports_vision: false
 
-   notes: |
+    notes: |
       Dense 32B model with strong reasoning & JSON skills.
       Tight but workable on 4× 16GB V100; treat it as a low-concurrency deep brain.
 

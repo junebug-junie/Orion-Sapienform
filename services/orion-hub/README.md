@@ -1,210 +1,262 @@
-# Orion Hub Voice & TTS Pipeline
+# 🌀 Orion Hub — Voice, Chat & Agent Modes
 
-This document describes how the Orion Hub voice loop works after the bus-first refactor, and how Brain and TTS services interact through Redis instead of direct HTTP calls.
-
-## Overview
-
-The Orion Hub provides a browser interface that lets you:
-
-- Speak via microphone (WebRTC / getUserMedia)
-- Type text messages
-- Receive Orion's LLM response as text
-- Optionally receive spoken audio via TTS
-
-All cognitive work (LLM, TTS, tagging, triage) is offloaded to backend workers that communicate exclusively through the Orion bus (Redis), not via direct HTTP calls from the Hub.
-
-High level flow:
-
-1. Browser → Hub (WebSocket)
-2. Hub → Bus: publish `brain:intake` with transcript + context
-3. Brain Worker (GPU node) → Bus: consume `brain:intake`, call LLM, publish `brain:response`
-4. Hub → WebSocket: streams LLM text back to browser
-5. Hub → Bus: publish `tts:intake` with full LLM response (optional, if TTS enabled)
-6. TTS Worker (CPU or GPU node) → Bus: consume `tts:intake`, synthesize audio in chunks, publish `tts:response`
-7. Hub → WebSocket: pushes base64 audio chunks as they arrive and plays them in the UI
-
-The Hub itself stays thin: it manages WebSockets, the visualizers, and the Collapse Mirror UI, and delegates cognition to workers.
+**Version:** 0.4.x  
+**Stack:** Python · FastAPI · WebSocket · Tailwind · Orion Bus (Redis)
 
 ---
 
-## Components
+## 📖 Overview
 
-### 1. Browser (UI)
+**Orion Hub** is the browser gateway into the mesh.
 
-Key pieces in `static/app.js`:
+It **does not** run any heavy cognition itself. Instead it:
 
-- `setupWebSocket()` connects to `ws://<hub>/ws`
-- When the user speaks, audio is captured, encoded to base64, and sent as `{ audio: <base64>, ... }`
-- When the user types, text is sent as `{ text_input: "...", disable_tts: <bool>, temperature, context_length, instructions }`
-- The client listens for messages from the server:
-  - `{ transcript }` — recognized text from ASR
-  - `{ llm_response, tokens }` — Orion's text answer
-  - `{ audio_response }` — base64-encoded WAV/OGG chunks to play
-  - `{ state }` — `idle | processing | speaking` for UI status/particles
+- Captures **voice** and **text** from the browser
+- Maintains lightweight UI state (history, mode, visualizers, Collapse Mirror form)
+- Publishes jobs onto the **Orion Bus (Redis)**
+- Waits for answers from downstream workers:
+  - LLM Gateway / Brain
+  - Agent Chain + Planner + Cortex
+  - Agent Council
+  - TTS workers
+  - Collapse / memory writers
 
-### 2. Hub WebSocket Handler
+From Hub’s perspective:
 
-Located in `scripts/websocket_handler.py`.
+> “I don’t know where the models live. I just talk to Redis.”
 
-Responsibilities:
-
-- Accept browser WebSocket connections
-- Receive audio or text_input from the client
-- Use ASR (Whisper) for audio → transcript
-- Maintain a short in-memory `history` list of messages
-- Publish jobs to the brain worker via the bus
-- Wait for brain responses using a correlation ID
-- Send LLM response text back to the browser
-- Optionally trigger TTS via the bus and stream back audio chunks
-- Push state updates: `processing`, `speaking`, `idle`
-
-This module **does not** call the LLM HTTP endpoint directly. Instead it calls `run_llm_tts`, which is now bus-first.
-
-### 3. Orion Bus
-
-Wrapper around Redis (in `scripts/bus.py` or similar). It provides:
-
-- `bus.publish(channel, payload)` — JSON-encodes and publishes messages
-- `bus.subscribe(channel)` — subscribes to one or more channels
-- Optional helper for request/response correlations
-
-Environment variables:
-
-- `ORION_BUS_URL=redis://orion-redis:6379/0`
-- `ORION_BUS_ENABLED=true`
-
-Channels used in the voice loop:
-
-- `CHANNEL_VOICE_TRANSCRIPT` — raw transcripts from ASR
-- `CHANNEL_BRAIN_INTAKE` — LLM jobs
-- `CHANNEL_BRAIN_OUT` — LLM responses
-- `CHANNEL_VOICE_LLM` — voice-oriented LLM telemetry
-- `CHANNEL_VOICE_TTS` — TTS telemetry (chunk sizes)
-- `CHANNEL_COLLAPSE_TRIAGE` — full dialog payloads for downstream tagging / RAG
-
-> The bus is the spine. Hub, Brain, TTS, and triage are all leaves on that spine.
-
-### 4. Brain Worker (LLM, GPU)
-
-A dedicated service (usually running on a GPU node like Atlas or Chrysalis) that:
-
-1. Subscribes to `CHANNEL_BRAIN_INTAKE` (e.g. `orion:brain:intake`).
-2. For each message, calls the configured LLM backend (e.g. `ollama`, `vLLM`, or another container).
-3. Publishes the result to `CHANNEL_BRAIN_OUT` (e.g. `orion:brain:response`) with the same `correlation_id` so the hub can match it back to the original request.
-
-This worker replaces the old `/chat` HTTP endpoint model. There is no longer any `BRAIN_URL` in the hub’s critical path.
-
-### 5. TTS Worker
-
-Instead of having the hub call a TTS HTTP endpoint directly, a TTS worker listens on bus:
-
-1. Subscribes to `orion:tts:intake`.
-2. For each message, uses Coqui TTS or another TTS backend to synthesize audio.
-3. Splits the audio response into chunks (e.g., by sentence or fixed duration) and publishes each as `tts:response` messages containing base64 audio and the original `correlation_id`.
-
-The hub listens for matching `tts:response` messages and pushes the chunks over WebSocket to the browser.
-
-This allows TTS workers to run on CPU or GPU nodes without changing the hub.
+GPU/CPU workers sit behind Tailscale on other nodes (Atlas, Chrysalis, etc.) and all coordination happens over the bus.
 
 ---
 
-## Key Python Modules
+## 🧠 Modes: Brain / Agentic / Council
 
-### `scripts/llm_tts_handler.py`
+The UI exposes an **Orion Mode** toggle:
 
-This module orchestrates LLM + TTS from the hub’s perspective.
+- **Brain**  
+  Direct conversational mode.  
+  Hub talks to **LLM Gateway** via the bus (`chat_general` / simple verbs).  
+  No planning loop, just “good chat” with context.
 
-Responsibilities after refactor:
+- **Agentic**  
+  Goal-oriented reasoning using **Agent Chain + Planner + Cortex**.  
+  Hub sends the user’s text plus selected **tool packs**.  
+  Planner decides which verbs to invoke (e.g. `plan_action`, `assess_risk`) via Cortex.
 
-- Build a job payload: `{ id, history, temperature, instructions, user_id, session_id }`.
-- Publish that payload to `CHANNEL_BRAIN_INTAKE`.
-- Block/wait (with timeout) for a corresponding `CHANNEL_BRAIN_OUT` message with matching `id`.
-- Extract the LLM text and token count.
-- Optionally publish a TTS job to `orion:tts:intake`.
-- Do **not** call `requests.post` or `aiohttp` directly to the brain.
+- **Council**  
+  Multi-agent deliberation route via **Agent Council**.  
+  Hub publishes a council request and waits for the council’s aggregated answer.
 
-Old HTTP-based fields like `settings.BRAIN_URL` are no longer required by the hub.
-
-### `scripts/tts.py`
-
-This used to:
-
-- Read `TTS_URL` from env.
-- Make HTTP `GET` calls to `/api/tts?text=...`.
-
-After the refactor, there are two options:
-
-1. **Move this logic into the TTS worker** (preferred):
-   - The worker uses Coqui/Piper locally, never over HTTP.
-   - The hub no longer imports `TTS` or knows about `TTS_URL`.
-
-2. **Keep it as a helper but only inside a worker service**:
-   - The worker can still call an HTTP TTS server if needed.
-
-Either way, the hub talks only to the bus.
-
-### `scripts/websocket_handler.py`
-
-- Chains:
-  - ASR → transcript
-  - `run_llm_tts` for LLM+TTS orchestration via bus
-  - History maintenance for short-term conversational memory
-  - Publishing full dialog payloads to `CHANNEL_COLLAPSE_TRIAGE`
-
-The WebSocket handler is the bridge between human-facing state (browser) and mesh-facing state (bus).
+All three share the same **WebSocket / HTTP** front end; only the bus payload and channels differ.
 
 ---
 
-## Environment Variables
+## 🔊 Voice & TTS Flow (High Level)
 
-Typical `.env` for the hub service:
+Current voice loop (Hub-centric view):
 
-```env
-# Core
-PROJECT=orion
-SERVICE_NAME=orion-hub
+1. **Browser → Hub (WebSocket)**  
+   Raw audio chunks from `getUserMedia` (press & hold mic).  
+   Optional text messages via the chat box.
 
-# Bus
-ORION_BUS_URL=redis://orion-redis:6379/0
-ORION_BUS_ENABLED=true
+2. **Hub → ASR**  
+   Hub forwards audio to the configured ASR path:
+   - Either **local Whisper** in the same container, or
+   - A separate ASR worker (still reachable over the bus).
+   
+   Result: a **transcript** string.
 
-# Voice / LLM
-LLM_MODEL=llama3.1:8b-instruct-q8_0
-LLM_TIMEOUT_S=30
-CHANNEL_VOICE_TRANSCRIPT=orion:voice:transcript
-CHANNEL_BRAIN_INTAKE=orion:brain:intake
-CHANNEL_BRAIN_OUT=orion:brain:response
-CHANNEL_VOICE_LLM=orion:voice:llm
-CHANNEL_VOICE_TTS=orion:voice:tts
-CHANNEL_COLLAPSE_TRIAGE=orion:collapse:triage
+3. **Hub → Bus: LLM job**  
+   Hub builds a job payload with:
+   - `mode` (brain / agentic / council)
+   - `history` (short chat context)
+   - user’s text / transcript
+   
+   Hub then publishes one of:
+   - `CHANNEL_VOICE_LLM` / `EXEC_REQUEST_PREFIX:LLMGatewayService` (brain)
+   - `AGENT_CHAIN_REQUEST_CHANNEL` (agentic)
+   - `CHANNEL_COUNCIL_INTAKE` (council)
 
-# ASR
-WHISPER_MODEL=distil-medium.en
-WHISPER_DEVICE=cuda
-WHISPER_COMPUTE_TYPE=float16
+4. **Workers → Bus → Hub**  
+   Corresponding worker(s) consume the job and publish a reply on a **reply channel** keyed by `trace_id` or `correlation_id`.  
+   Hub waits (with timeout) and extracts the final **LLM text** and any structured payload.
 
-# Misc
-CHRONICLE_ENVIRONMENT=dev
+5. **Hub → Browser**  
+   Hub streams back:
+   - progress / status events (`processing`, `answering`, etc.)
+   - the final LLM text into the conversation window.
+
+6. **Optional: Hub → Bus: TTS job**  
+   If the user has **“Speak Response”** toggled on:
+   - Hub publishes a `tts:intake` job containing the final LLM message and `trace_id`.
+   
+   A TTS worker (running Piper/Coqui/etc. on some Tailscale node) synthesizes audio and publishes:
+   - `tts:response:<trace_id>` with base64 audio chunks.
+
+7. **Hub → Browser: audio chunks**  
+   Hub relays `tts:response` chunks over the WebSocket.  
+   The browser plays them in sequence via the audio buffer.
+
+---
+
+## 🧩 Components
+
+### 1. Browser UI (`index.html` + `static/js/app.js`)
+
+Key UI features:
+
+- **Mic button**  
+  Press & hold to record; release to send.  
+  Shows a state ring and pulses when recording/processing.
+
+- **Chat box**  
+  Enter sends; Shift+Enter makes a newline.  
+  A conversation pane shows “You” vs “Oríon” messages.
+
+- **Orion Mode toggle**  
+  Buttons: **Brain**, **Agentic**, **Council**.  
+  Agentic mode also exposes **tool pack checkboxes** (Executive, Memory, Emergent, etc.).
+
+- **Collapse Mirror card**  
+  Guided form + raw JSON editor.  
+  Sends structured collapse entries to the backend.
+
+- **Vision dock / PiP**  
+  Stubbed container for future camera feed overlays.
+
+Front-end messages back to the server look roughly like:
+
+```jsonc
+// Voice / text
+{
+  "type": "chat",
+  "mode": "agentic",
+  "text_input": "Help me plan my day...",
+  "packs": ["executive_pack"],
+  "disable_tts": false,
+  "temperature": 0.7,
+  "context_length": 10
+}
+
+// Collapse Mirror
+{
+  "type": "collapse_submit",
+  "payload": { ...collapse fields... }
+}
 ```
 
-Brain worker and TTS worker will have their own `.env` files pointing to the same `ORION_BUS_URL` and defining their intake/output channels.
+### 2. Hub FastAPI App
+
+Typical endpoints:
+
+- `GET /`  
+  Serves the main HTML UI.
+
+- `GET /static/...`  
+  JS/CSS assets.
+
+- `GET /ws` (or similar)  
+  Main WebSocket entrypoint.  
+  Receives chat/voice messages, modes, pack selections.  
+  Sends back transcripts, LLM answers, status events, and TTS audio chunks.
+
+- `POST /collapse/submit`  
+  Used by the Collapse Mirror form to send entries into the collapse pipeline (via bus).
+
+Internally, the app uses:
+
+- **`OrionBus`** wrapper to publish/subscribe on Redis.
+- Small helpers for:
+  - building agent-chain payloads
+  - mapping Orion Mode → correct channels and packs
+  - short-term in-memory history
+
+The Hub **does not** embed any LLM/TTS libraries. All heavy work is done by workers.
 
 ---
 
-## Running the Stack
+## 🚌 Bus & Channels
 
-A simplified `docker-compose.yml` for the hub side might look like:
+Environment variables (examples):
+
+```env
+# Bus
+ORION_BUS_ENABLED=true
+ORION_BUS_URL=redis://100.xx.yy.zz:6379/0
+
+# Voice / LLM / TTS channels
+CHANNEL_VOICE_TRANSCRIPT=orion:voice:transcript
+CHANNEL_VOICE_LLM=orion:voice:llm
+CHANNEL_VOICE_TTS=orion:voice:tts
+CHANNEL_TTS_INTAKE=orion:tts:intake
+
+# Collapse
+CHANNEL_COLLAPSE_INTAKE=orion:collapse:intake
+CHANNEL_COLLAPSE_TRIAGE=orion:collapse:triage
+
+# LLM Gateway / Exec
+LLM_GATEWAY_SERVICE_NAME=LLMGatewayService
+EXEC_REQUEST_PREFIX=orion-exec:request
+
+# Cortex-Orch
+CORTEX_REQUEST_CHANNEL=orion-cortex:request
+CORTEX_RESULT_PREFIX=orion-cortex:result
+
+# Agent Chain / Council
+AGENT_CHAIN_REQUEST_CHANNEL=orion-agent-chain:request
+AGENT_CHAIN_REQUEST_PREFIX=orion-agent-chain:result
+CHANNEL_COUNCIL_INTAKE=orion:agent-council:intake
+CHANNEL_COUNCIL_REPLY_PREFIX=orion:agent-council:reply
+```
+
+Workers use the same `ORION_BUS_URL` (usually a Tailscale IP + port to the Redis node).
+
+---
+
+## 🔀 How Each Mode Routes
+
+### Brain Mode
+
+1. Hub builds a **chat context** (recent messages, mode, sliders).
+2. Publishes an **exec_step / chat** job over the bus to `LLMGatewayService`:
+   - Channel: `orion-exec:request:LLMGatewayService`
+   - Reply: `orion:llm:reply:<trace_id>` (managed by LLM Gateway).
+3. LLM Gateway chooses backend (Ollama, vLLM, etc.) — Hub doesn’t care.
+4. Gateway replies with final text; Hub shows it and optionally forwards to TTS.
+
+### Agentic Mode
+
+1. Hub collects:
+   - User text
+   - Mode = `agentic`
+   - Selected `packs` (e.g., `["executive_pack"]`)
+2. Publishes an RPC envelope to **Agent Chain**:
+   - Bus event: `AGENT_CHAIN_REQUEST_CHANNEL` = `orion-agent-chain:request`
+   - Includes `reply_channel` = `orion-agent-chain:result:<trace_id>`
+3. Agent Chain:
+   - Resolves packs → verbs → `ToolDef`s via `orion-cognition` packs.
+   - Calls **Planner React** via bus (`orion-planner:request` / `orion-planner:result:*`).
+   - Planner uses **Cortex-Orch** to execute verbs on the mesh.
+4. Agent Chain returns `final_answer` → Hub → browser (and TTS if enabled).
+
+### Council Mode
+
+1. Hub publishes a council intake:
+   - `CHANNEL_COUNCIL_INTAKE=orion:agent-council:intake`
+2. Council service:
+   - Fans out to multiple internal agents / prompts.
+   - Aggregates their answers into a single structured response.
+3. Hub listens on `CHANNEL_COUNCIL_REPLY_PREFIX:<trace_id>`
+   and renders the council’s consensus answer in the chat.
+
+---
+
+## 📦 Deployment (Atlas / Chrysalis / Friends)
+
+Typical pattern in `docker-compose`:
 
 ```yaml
-version: "3.9"
-
 services:
-  orion-redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-
   orion-atlas-hub:
     build:
       context: ../..
@@ -216,72 +268,35 @@ services:
       - orion-redis
     ports:
       - "8080:8080"
-
-  # Brain worker(s) and TTS workers are defined in their own compose files
-  # or in the same file if you prefer, as long as they share ORION_BUS_URL.
 ```
 
-Brain and TTS workers can run on entirely different nodes, as long as they can reach the same Redis instance via Tailscale, VPN, or LAN.
+Other services (LLM Gateway, Agent Chain, Planner, Cortex, Council, TTS, ASR, Collapse, Memory) may live on different physical nodes but must all point at the same `ORION_BUS_URL` (usually a Redis instance on the tailnet).
 
 ---
 
-## UX Details
+## 🩺 Troubleshooting
 
-### Text Input
+- **No response in any mode**  
+  - Verify Redis is reachable from Hub (`redis-cli -u $ORION_BUS_URL PING`).  
+  - Ensure at least one LLM worker (Gateway/Brain) is listening on the relevant channels.
 
-- Enter sends the message.
-- Shift+Enter inserts a newline.
-- After sending, the hub appends the `You` message to the conversation and waits for the LLM response.
+- **Agentic times out**  
+  - Check `orion-athena-agent-chain` logs.  
+  - Then check `orion-athena-planner-react` and `orion-athena-cortex-orch` for timeouts or missing verbs.
 
-### Voice Input
+- **Council no-ops**  
+  - Ensure Agent Council worker is running and subscribed to `orion:agent-council:intake`.
 
-- Press and hold the microphone button to record.
-- Release to stop; audio is sent to the hub.
-- Hub streams back:
-  - Recognized text transcript
-  - LLM response
-  - Audio chunks for TTS (if enabled)
-
-### Collapse Mirror
-
-The Collapse card lets you send structured or raw JSON entries into the Collapse pipeline.
-
-- **Guided Form** mode provides fields for `observer`, `trigger`, `observer_state`, `field_resonance`, `type`, `emergent_entity`, `summary`, `mantra`, `causal_echo`, and `environment`.
-- **Raw JSON** mode lets you paste/edit a full collapse JSON payload directly.
-- `submit-collapse` endpoint forwards entries into the Collapse ingestion service (via HTTP or bus, depending on your backend wiring).
-
-There is also a tooltip describing each field:
-
-| Field            | Meaning                                                                 |
-|------------------|-------------------------------------------------------------------------|
-| observer         | The agent (human or AI) who is perceiving or logging the event.        |
-| trigger          | The stimulus or situation that initiated the collapse.                 |
-| observer_state   | Emotional, cognitive, or physical state of the observer.               |
-| field_resonance  | The energetic or symbolic signature of the moment.                     |
-| intent           | Purpose of logging (reflection, ritual, experiment).                   |
-| type             | Category of event (dream-reflection, ritual, shared-collapse, etc.).   |
-| emergent_entity  | Entity/persona that arose in the moment (e.g., Orion, an archetype).   |
-| summary          | Narrative summary of the collapse moment.                              |
-| mantra           | Phrase or symbolic anchor tied to the collapse.                        |
-| causal_echo      | Optional cause/effect linkage.                                         |
-| timestamp        | Auto-generated ISO 8601 UTC timestamp (unless provided).               |
-| environment      | Auto-detected from `CHRONICLE_ENVIRONMENT` or defaults to `dev`.       |
+- **TTS silent**  
+  - Confirm a TTS worker is subscribed to `orion:tts:intake` and publishing `tts:response:*`.  
+  - Verify WebSocket messages with the browser dev tools.
 
 ---
 
-## Future Enhancements
+## 🧵 Philosophy
 
-- **Streaming LLM tokens** via bus to allow partial text to show live.
-- **Interruptible TTS** at the worker level (stop generating new chunks when user presses interrupt).
-- **Multi-brain routing**: different models or personas listening on different intake channels.
-- **Semantic introspection verbs** using the same bus pattern (e.g., `introspect`, `simulate`, `reflect`).
+Hub is intentionally thin:
 
----
+> UI + WebSocket + Bus, nothing else.
 
-If you’re reading this in Atlas’s `/mnt/scripts/Orion-Sapienform/services/orion-hub`, this README is your contract:
-
-> Hub talks to bus.
-> Brain and TTS live as workers.
-> GPU lives with workers, not with hub.
-
-Everything else is an implementation detail.
+All real cognition, memory, and embodiment live elsewhere in the mesh. Hub just gives you a clean window into Oríon’s head — whether you’re chatting, running an executive agent chain, or convening a council.

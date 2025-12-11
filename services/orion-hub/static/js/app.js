@@ -26,10 +26,13 @@ const settingsPanel = document.getElementById('settingsPanel');
 const settingsClose = document.getElementById('settingsClose');
 
 // Vision elements
-const visionPopoutButton = document.getElementById('visionPopoutButton');
-const visionDockedContainer = document.getElementById('visionDockedContainer');
-const visionFloatingContainer = document.getElementById('visionFloatingContainer');
-const visionCloseFloatingButton = document.getElementById('visionCloseFloating');
+const visionPopoutButton = document.getElementById("visionPopoutButton");
+const visionDockedContainer = document.getElementById("visionDockedContainer");
+const visionFloatingContainer = document.getElementById("visionFloatingContainer");
+const visionCloseFloatingButton = document.getElementById("visionCloseFloating");
+const visionSourceSelect = document.getElementById("visionSource");
+
+const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net";
 
 // Collapse Mirror elements
 const collapseModeGuided = document.getElementById('collapseModeGuided');
@@ -176,33 +179,120 @@ if (settingsClose && settingsPanel) {
   });
 }
 
-// Vision popout / dock
-function updateVisionUi() {
-  if (!visionDockedContainer || !visionFloatingContainer || !visionPopoutButton) return;
-  if (visionIsFloating) {
-    visionFloatingContainer.classList.remove('hidden');
-    visionDockedContainer.classList.add('opacity-30');
-    visionPopoutButton.textContent = 'Dock Viewer';
-  } else {
-    visionFloatingContainer.classList.add('hidden');
-    visionDockedContainer.classList.remove('opacity-30');
-    visionPopoutButton.textContent = 'Pop Out';
+
+// Map UI selection -> actual endpoint
+function getVisionEndpointForSource() {
+  if (!visionSourceSelect) return null;
+  const value = visionSourceSelect.value;
+
+  switch (value) {
+    case "gopro-1":
+      // Real Edge feed from Athena
+      return VISION_EDGE_BASE + "/stream.mjpg";
+    case "simulated":
+      // Placeholder; you can point this to a gif or dev stream
+      return "/static/img/vision-simulated.gif";
+    default:
+      return null;
   }
 }
 
+// Helper: attach or update an <img> inside a container
+function attachVisionFeed(container, endpoint) {
+  if (!container || !endpoint) return;
+
+  // Remove placeholder if present
+  const placeholder = container.querySelector("#visionPlaceholder");
+  if (placeholder) {
+    placeholder.remove();
+  }
+
+  let img = container.querySelector("img[data-role='vision-feed']");
+  if (!img) {
+    img = document.createElement("img");
+    img.dataset.role = "vision-feed";
+    img.alt = "Orion Vision Feed";
+    img.className = "w-full h-full object-cover";
+    container.appendChild(img);
+  }
+
+  // Simple cache-busting to keep MJPEG fresh in some browsers
+  img.src = endpoint + "?ts=" + Date.now();
+}
+
+// Helper: restore stub text if no source is selected
+function clearVisionDockedPlaceholder() {
+  if (!visionDockedContainer) return;
+  visionDockedContainer.innerHTML = `
+    <div id="visionPlaceholder" class="text-gray-400 text-sm text-center px-4">
+      Vision service stub. Select a source to view Orion's feed.
+    </div>
+  `;
+}
+
+// Main UI update
+function updateVisionUi() {
+  if (!visionDockedContainer || !visionFloatingContainer || !visionPopoutButton) return;
+
+  const endpoint = getVisionEndpointForSource();
+
+  if (!endpoint) {
+    // No valid source selected → show stub, hide floating
+    clearVisionDockedPlaceholder();
+    visionFloatingContainer.classList.add("hidden");
+    visionDockedContainer.classList.remove("opacity-30");
+    visionPopoutButton.textContent = "Pop Out";
+    return;
+  }
+
+  // Always keep docked view showing the feed
+  attachVisionFeed(visionDockedContainer, endpoint);
+
+  if (visionIsFloating) {
+    visionFloatingContainer.classList.remove("hidden");
+    visionDockedContainer.classList.add("opacity-30");
+    visionPopoutButton.textContent = "Dock Viewer";
+    attachVisionFeed(visionFloatingContainer.querySelector(".flex-1") || visionFloatingContainer, endpoint);
+  } else {
+    visionFloatingContainer.classList.add("hidden");
+    visionDockedContainer.classList.remove("opacity-30");
+    visionPopoutButton.textContent = "Pop Out";
+  }
+}
+
+// Toggle docked <-> floating
 if (visionPopoutButton) {
-  visionPopoutButton.addEventListener('click', () => {
+  visionPopoutButton.addEventListener("click", () => {
     visionIsFloating = !visionIsFloating;
     updateVisionUi();
   });
 }
 
+// Close floating PiP
 if (visionCloseFloatingButton) {
-  visionCloseFloatingButton.addEventListener('click', () => {
+  visionCloseFloatingButton.addEventListener("click", () => {
     visionIsFloating = false;
     updateVisionUi();
   });
 }
+
+// Change source (dropdown)
+if (visionSourceSelect) {
+  visionSourceSelect.addEventListener("change", () => {
+    // Reset to docked when source changes, but keep behavior simple
+    visionIsFloating = false;
+    updateVisionUi();
+  });
+}
+
+// Initialize once DOM is ready (if you're not already calling this elsewhere)
+document.addEventListener("DOMContentLoaded", () => {
+  updateVisionUi();
+});
+
+
+
+
 
 // Collapse Mirror tabs
 function setCollapseMode(mode) {

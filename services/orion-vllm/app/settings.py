@@ -39,6 +39,12 @@ class Settings(BaseSettings):
         description="Model identifier passed to vLLM (overrides profile.model_id if set)",
     )
 
+    hf_token: str = Field(
+        default="TOKEN",
+        alias="HF_TOKEN",
+        description="HuggingFace token"
+    )
+
     # Runtime-only knobs (env defaults that profiles can override)
     gpu_memory_fraction: float = Field(
         default=0.9,

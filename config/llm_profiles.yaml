@@ -13,7 +13,7 @@ profiles:
     gpu:
       num_gpus: 2
       tensor_parallel_size: 2
-      device_ids: [0, 1] # V100 pair on the second riser
+      device_ids: [1, 3] # V100s on pcie
       max_model_len: 8192
       max_batch_tokens: 4096
       max_concurrent_requests: 4
@@ -36,7 +36,7 @@ profiles:
     gpu:
       num_gpus: 1
       tensor_parallel_size: 1
-      device_ids: [2, 3]
+      device_ids: [3]
       max_model_len: 8192
       max_batch_tokens: 4096
       max_concurrent_requests: 4
@@ -62,14 +62,11 @@ profiles:
     gpu:
       num_gpus: 2
       tensor_parallel_size: 2
+      device_ids: [0, 2]
       max_model_len: 8192     # bump later if stable
       max_batch_tokens: 8192
       max_concurrent_requests: 8
-      gpu_memory_fraction: 0.9
-    preferred_verbs:
-      - analysis
-      - narrate_timeline
-      - summarize_long
+      gpu_memory_fraction: 0.
     notes: "Heavier analysis / narrative workloads; more parallelism."
 
   # ─────────────────────────────────────────────
@@ -96,7 +93,7 @@ profiles:
 
   # ─────────────────────────────────────────────
   # 4) Llama3 70B on 4× V100 16GB
-  #    - Big-brain mode for specific verbs
+  #    - FUTURE NON Volta Arch: Big-brain mode for specific verbs
   # ─────────────────────────────────────────────
   llama3-70b-v100-4gpu:
     display_name: "Llama 3 70B – 4× V100"
@@ -115,6 +112,85 @@ profiles:
       max_concurrent_requests: 2
       gpu_memory_fraction: 0.8
     notes: "High-cost, high-capacity profile reserved for select verbs."
+
+  # ─────────────────────────────────────────────
+  # DEEPER Brain options
+  #  
+  # ─────────────────────────────────────────────
+
+  mixtral-8x7b-deep:
+    name: mixtral-8x7b-deep
+    display_name: "Mixtral 8x7B Instruct (Atlas Deep)"
+    task_type: chat
+    backend: vllm
+    model_id: mistralai/Mixtral-8x7B-Instruct-v0.1
+
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      device_ids: [0, 1, 2, 3]
+      max_model_len: 8192
+      max_batch_tokens: null
+      max_concurrent_requests: null
+      gpu_memory_fraction: 0.8
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    notes: |
+      High-quality MoE model; roughly Llama2-70B-level capability.
+      Uses all 4× V100 on Atlas via tensor parallelism.
+
+  qwen25-32b-deep:
+    name: qwen25-32b-deep
+    display_name: "Qwen2.5 32B Instruct (Atlas Deep)"
+    task_type: chat
+    backend: vllm
+    model_id: Qwen/Qwen2.5-32B-Instruct
+
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      device_ids: [0, 1, 2, 3]
+      max_model_len: 4096        # keep this sane for V100 VRAM
+      max_batch_tokens: null
+      max_concurrent_requests: 2 # keep small – this is your “solo guru” brain
+      gpu_memory_fraction: 0.78
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+   notes: |
+      Dense 32B model with strong reasoning & JSON skills.
+      Tight but workable on 4× 16GB V100; treat it as a low-concurrency deep brain.
+
+
+  qwen25-14b-main:
+    name: qwen25-14b-main
+    display_name: "Qwen2.5 14B Instruct (Main)"
+    task_type: chat
+    backend: vllm
+    model_id: Qwen/Qwen2.5-14B-Instruct
+
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 2
+      max_model_len: 8192
+      device_ids: [0, 1, 2, 3]
+      max_batch_tokens: null
+      max_concurrent_requests: 8
+      gpu_memory_fraction: 0.8
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    notes: |
+      Strong generalist. Feels more like a grown-up than 8B models.
+      Leave Mixtral or Qwen2.5-32B for the heavy council / deep modes.
+
 
   # ─────────────────────────────────────────────
   # 5) Embeddings profile (example)

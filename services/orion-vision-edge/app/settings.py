@@ -61,6 +61,7 @@ class Settings(BaseSettings):
 
     # UI / JPEG
     ENABLE_UI: bool = True
+    ANNOTATE: bool = True  # draw boxes / labels on frames
     JPEG_QUALITY: int = 90
 
     # --- Bus integration (bus-first, no brain HTTP) ---

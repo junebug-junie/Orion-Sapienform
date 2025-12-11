@@ -1,0 +1,224 @@
+<!-- app/templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Orion Security Watcher</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #020617;
+      color: #e5e7eb;
+      margin: 0;
+      padding: 1.5rem;
+    }
+    .card {
+      max-width: 480px;
+      margin: 0 auto;
+      background: #020617;
+      border-radius: 1rem;
+      border: 1px solid #1f2937;
+      padding: 1.5rem;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.7rem;
+      border-radius: 999px;
+      background: #111827;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .pill-dot {
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 999px;
+      margin-right: 0.4rem;
+    }
+    .pill-dot.green { background: #22c55e; }
+    .pill-dot.red { background: #ef4444; }
+    .pill-dot.gray { background: #6b7280; }
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 0.5rem 1rem;
+      font-size: 0.9rem;
+      cursor: pointer;
+      background: #ef4444;
+      color: #f9fafb;
+    }
+    button.secondary {
+      background: #1f2937;
+      color: #e5e7eb;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.75rem;
+    }
+    .label {
+      font-size: 0.8rem;
+      color: #9ca3af;
+    }
+    .value {
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: #f9fafb;
+    }
+    .small {
+      font-size: 0.75rem;
+      color: #6b7280;
+      margin-top: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Orion Security</h1>
+    <div id="statusPill" class="pill">
+      <span class="pill-dot gray"></span>
+      <span id="statusText">Loading…</span>
+    </div>
+
+    <div class="row" style="margin-top: 1.25rem;">
+      <div>
+        <div class="label">Armed State</div>
+        <div class="value" id="armedValue">—</div>
+      </div>
+      <div>
+        <button id="toggleArmBtn" disabled>Toggle</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="label">Mode</div>
+        <div class="value" id="modeValue">—</div>
+      </div>
+      <div>
+        <button id="modeBtn" class="secondary" disabled>Cycle Mode</button>
+      </div>
+    </div>
+
+    <div class="small" id="lastUpdated">Last updated: —</div>
+    <div class="small" id="lastAlert">Last alert: —</div>
+
+    <div class="row" style="margin-top: 1.25rem;">
+      <div class="label">Test</div>
+      <button id="testAlertBtn" class="secondary" disabled>Send Test Alert</button>
+    </div>
+
+    <div class="small" id="footerMsg">
+      Connected directly to Athena via Tailscale.
+    </div>
+  </div>
+
+  <script>
+    async function fetchState() {
+      const res = await fetch('/security/state');
+      if (!res.ok) throw new Error('failed');
+      return await res.json();
+    }
+
+    async function updateState(newState) {
+      const res = await fetch('/security/state', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(newState || {})
+      });
+      if (!res.ok) throw new Error('failed');
+      return await res.json();
+    }
+
+    async function sendTestAlert() {
+      const res = await fetch('/security/test-alert', {
+        method: 'POST'
+      });
+      return res.ok;
+    }
+
+    function renderState(s) {
+      const statusPill = document.getElementById('statusPill');
+      const statusText = document.getElementById('statusText');
+      const armedValue = document.getElementById('armedValue');
+      const modeValue = document.getElementById('modeValue');
+      const lastUpdated = document.getElementById('lastUpdated');
+      const lastAlert = document.getElementById('lastAlert');
+      const toggleArmBtn = document.getElementById('toggleArmBtn');
+      const modeBtn = document.getElementById('modeBtn');
+      const testAlertBtn = document.getElementById('testAlertBtn');
+
+      const dot = statusPill.querySelector('.pill-dot');
+      dot.classList.remove('green', 'red', 'gray');
+
+      if (!s.enabled) {
+        dot.classList.add('gray');
+        statusText.textContent = 'Disabled in config';
+      } else if (s.armed) {
+        dot.classList.add('green');
+        statusText.textContent = 'Armed';
+      } else {
+        dot.classList.add('red');
+        statusText.textContent = 'Disarmed';
+      }
+
+      armedValue.textContent = s.armed ? 'Armed' : 'Disarmed';
+      modeValue.textContent = s.mode;
+
+      lastUpdated.textContent = 'Last updated: ' + (s.updated_at || '—');
+      if (s.last_alert && s.last_alert.ts) {
+        lastAlert.textContent = `Last alert: ${s.last_alert.ts} (${s.last_alert.reason || 'n/a'})`;
+      } else {
+        lastAlert.textContent = 'Last alert: —';
+      }
+
+      toggleArmBtn.disabled = !s.enabled;
+      modeBtn.disabled = !s.enabled;
+      testAlertBtn.disabled = !s.enabled;
+    }
+
+    async function init() {
+      try {
+        const state = await fetchState();
+        renderState(state);
+
+        document.getElementById('toggleArmBtn').onclick = async () => {
+          const current = await fetchState();
+          const next = await updateState({ armed: !current.armed });
+          renderState(next);
+        };
+
+        document.getElementById('modeBtn').onclick = async () => {
+          const modes = ['vacation_strict', 'off'];
+          const current = await fetchState();
+          const idx = modes.indexOf(current.mode);
+          const nextMode = modes[(idx + 1) % modes.length];
+          const next = await updateState({ mode: nextMode });
+          renderState(next);
+        };
+
+        document.getElementById('testAlertBtn').onclick = async () => {
+          await sendTestAlert();
+        };
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

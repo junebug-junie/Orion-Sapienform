@@ -1,0 +1,68 @@
+services:
+ security-watcher:
+    build:
+      context: ../..
+      dockerfile: services/orion-security-watcher/Dockerfile
+    container_name: ${PROJECT}-security-watcher
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Bus
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      # Vision events (subscribe to what edge publishes)
+      - VISION_EVENTS_SUBSCRIBE_RAW=${VISION_EVENTS_PUBLISH_RAW}
+
+      # Snapshot endpoint (vision edge HTTP)
+      - VISION_SNAPSHOT_URL=${VISION_SNAPSHOT_URL}
+
+      # Core security toggles
+      - SECURITY_DEFAULT_ARMED=${SECURITY_DEFAULT_ARMED}
+      - SECURITY_ENABLED=${SECURITY_ENABLED}
+      - SECURITY_DEFAULT_ARMED=${SECURITY_DEFAULT_ARMED}
+      - SECURITY_MODE=${SECURITY_MODE}
+      - SECURITY_CAMERA_IDS=${SECURITY_CAMERA_IDS}
+
+      # Visit / rate limiting
+      - VISIT_IDLE_TIMEOUT_SEC=${VISIT_IDLE_TIMEOUT_SEC}
+      - MIN_VISIT_DURATION_SEC=${MIN_VISIT_DURATION_SEC}
+      - MIN_PERSON_FRAMES=${MIN_PERSON_FRAMES}
+      - HUMAN_KINDS=${HUMAN_KINDS}
+      - MOTION_REQUIRED=${MOTION_REQUIRED}
+      - HUMAN_MIN_SCORE=${HUMAN_MIN_SCORE}
+      - MIN_BBOX_AREA_FRACTION=${MIN_BBOX_AREA_FRACTION}
+      - SECURITY_GLOBAL_COOLDOWN_SEC=${SECURITY_GLOBAL_COOLDOWN_SEC}
+      - SECURITY_IDENTITY_COOLDOWN_SEC=${SECURITY_IDENTITY_COOLDOWN_SEC}
+      - ALLOWED_IDENTITIES=${ALLOWED_IDENTITIES}
+      - IDENTITY_CONFIDENCE_THRESHOLD=${IDENTITY_CONFIDENCE_THRESHOLD}
+
+      # Snapshots
+      - SECURITY_SNAPSHOT_COUNT=${SECURITY_SNAPSHOT_COUNT}
+      - SECURITY_SNAPSHOT_INTERVAL_SEC=${SECURITY_SNAPSHOT_INTERVAL_SEC}
+      - SECURITY_SNAPSHOT_DIR=${SECURITY_SNAPSHOT_DIR}
+
+      # Notification mode + email
+      - NOTIFY_MODE=${NOTIFY_MODE}
+      - NOTIFY_EMAIL_ENABLED=${NOTIFY_EMAIL_ENABLED}
+      - NOTIFY_EMAIL_SMTP_HOST=${NOTIFY_EMAIL_SMTP_HOST}
+      - NOTIFY_EMAIL_SMTP_PORT=${NOTIFY_EMAIL_SMTP_PORT}
+      - NOTIFY_EMAIL_SMTP_USERNAME=${NOTIFY_EMAIL_SMTP_USERNAME}
+      - NOTIFY_EMAIL_SMTP_PASSWORD=${NOTIFY_EMAIL_SMTP_PASSWORD}
+      - NOTIFY_EMAIL_USE_TLS=${NOTIFY_EMAIL_USE_TLS}
+      - NOTIFY_EMAIL_FROM=${NOTIFY_EMAIL_FROM}
+      - NOTIFY_EMAIL_TO=${NOTIFY_EMAIL_TO}
+
+      # State file
+      - SECURITY_STATE_PATH=${SECURITY_STATE_PATH}
+    volumes:
+      - /mnt/telemetry/orion-security:/mnt/telemetry/orion-security
+    networks:
+      - app-net
+    ports:
+      - "7120:7120"
+
+networks:
+  app-net:
+    external: true

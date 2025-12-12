@@ -1,44 +1,52 @@
 # services/orion-llamaccp/docker-compose.yml
 
 services:
-  llamacpp:
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda-b4719
-    container_name: ${PROJECT:-orion}-llamaccp
-    restart: unless-stopped
-
+  llamaccp:
+    build:
+      context: ../..
+      dockerfile: services/orion-llamaccp/Dockerfile
     env_file:
       - .env
+    image: orion-llamaccp:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-llamaccp
+    restart: unless-stopped
 
     environment:
-      # Host / port
-      - LLAMA_ARG_HOST=${LLAMACPP_HOST:-0.0.0.0}
-      - LLAMA_ARG_PORT=${LLAMACPP_PORT:-8080}
+      # identity
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
 
-      # Model + runtime
-      - LLAMA_ARG_MODEL=${LLAMACPP_MODEL}
-      - LLAMA_ARG_CTX_SIZE=${LLAMACPP_CTX_SIZE:-8192}
-      - LLAMA_ARG_N_GPU_LAYERS=${LLAMACPP_N_GPU_LAYERS:-80}
-      - LLAMA_ARG_THREADS=${LLAMACPP_THREADS:-16}
-      - LLAMA_ARG_N_PARALLEL=${LLAMACPP_N_PARALLEL:-2}
-      - LLAMA_ARG_BATCH_SIZE=${LLAMACPP_BATCH_SIZE:-512}
+      # profile selection
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH}
+      - LLM_PROFILE_NAME=${LLM_PROFILE_NAME}
 
-      # GPU pinning (nvidia-container-runtime will respect this)
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2}
+      # models mount
+      - MODELS_MOUNT_ROOT=${MODELS_MOUNT_ROOT}
 
-      # Orion-ish vars (for observability / consistency, but not used by the engine)
-      - SERVICE_NAME=${SERVICE_NAME:-orion-llamaccp}
-      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
-      - ORION_BUS_URL=${ORION_BUS_URL}
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
-      - LLM_PROFILE_NAME=${LLM_PROFILE_NAME:-deepseek-70b-gguf-atlas}
-      - LLM_MODEL_ID=${LLM_MODEL_ID:-}
+      # HF tokens
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+
+      # overrides (optional)
+      - LLAMACPP_HOST_OVERRIDE=${LLAMACPP_HOST_OVERRIDE}
+      - LLAMACPP_PORT_OVERRIDE=${LLAMACPP_PORT_OVERRIDE}
+      - LLAMACPP_CTX_SIZE_OVERRIDE=${LLAMACPP_CTX_SIZE_OVERRIDE}
+      - LLAMACPP_N_GPU_LAYERS_OVERRIDE=${LLAMACPP_N_GPU_LAYERS_OVERRIDE}
+      - LLAMACPP_THREADS_OVERRIDE=${LLAMACPP_THREADS_OVERRIDE}
+      - LLAMACPP_N_PARALLEL_OVERRIDE=${LLAMACPP_N_PARALLEL_OVERRIDE}
+      - LLAMACPP_BATCH_SIZE_OVERRIDE=${LLAMACPP_BATCH_SIZE_OVERRIDE}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${CUDA_VISIBLE_DEVICES_OVERRIDE}
+
+      # behavior
+      - ENSURE_MODEL_DOWNLOAD=${ENSURE_MODEL_DOWNLOAD}
+      - WAIT_FOR_MODEL_SECONDS=${WAIT_FOR_MODEL_SECONDS}
 
     volumes:
-      # GGUF models live here on the host
-      - /mnt/telemetry/llm-cache:/models
+      # Host cache (root .env provides LLM_CACHE_DIR) -> /models in container
+      - "${LLM_CACHE_DIR}:/models"
+
     ports:
-      # External mapping; llm-gateway will use orion-llamaccp:8080 on app-net
+      # Publish llama-server port (container binds whatever profile/override chooses; default 8080)
       - "${LLAMACPP_HOST_PORT:-7005}:8080"
 
     networks:

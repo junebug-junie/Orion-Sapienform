@@ -1,96 +1,138 @@
 # services/orion-llamaccp/app/main.py
-
 from __future__ import annotations
 
 import logging
 import os
 import subprocess
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from huggingface_hub import hf_hub_download
 
 from .settings import settings
+from .profiles import LLMProfile, LlamaCppConfig
 
-logger = logging.getLogger("orion-llamacpp")
+logger = logging.getLogger("orion-llamaccp")
 
 
-def build_llamacpp_command_and_env() -> Tuple[List[str], Dict[str, str]]:
+def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
     """
-    Build the llama.cpp `llama-server` command + environment based on:
-
-      - LLM profiles (config/llm_profiles.yaml)
-      - LLM_PROFILE_NAME / LLM_MODEL_ID / LLAMACPP_MODEL
-      - LLAMACPP_* env overrides
-
-    We assume llama.cpp was built into /app/llama.cpp with `llama-server` at:
-      /app/llama.cpp/build/bin/llama-server
+    Ensure the GGUF exists at model_path. If not, use dl.{repo_id,filename,model_root}
+    to download it into model_root.
     """
-    model_id, gpu_cfg = settings.resolve_model_and_gpu()
-    gpu_cfg = gpu_cfg or {}
+    p = Path(model_path)
+    if p.exists():
+        return
 
-    logger.info(
-        "Resolved llama.cpp config: model_id=%s gpu_cfg=%s",
-        model_id,
-        gpu_cfg,
+    if dl is None or not dl.repo_id or not dl.filename:
+        raise FileNotFoundError(
+            f"Model not found and no download spec available: {model_path}"
+        )
+
+    Path(dl.model_root).mkdir(parents=True, exist_ok=True)
+
+    logger.info("Downloading %s/%s -> %s", dl.repo_id, dl.filename, dl.model_root)
+    hf_hub_download(
+        repo_id=dl.repo_id,
+        filename=dl.filename,
+        local_dir=dl.model_root,
+        local_dir_use_symlinks=False,
+        token=settings.hf_token,
     )
 
-    # Interpret model_id as a concrete GGUF path inside the container.
-    model_path = model_id
+    if not p.exists():
+        raise FileNotFoundError(f"Download completed but model still missing at: {model_path}")
 
-    # Context length: prefer profile's max_model_len, fall back to settings.ctx_size
-    ctx_size = int(gpu_cfg.get("max_model_len", settings.ctx_size))
 
-    # Batch size: prefer profile's max_batch_tokens, else settings.batch_size
-    batch_size = int(gpu_cfg.get("max_batch_tokens") or settings.batch_size)
+def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str, str]]:
+    """
+    Returns: (model_path, runtime_cfg, env)
 
-    # Parallelism: profile.max_concurrent_requests is more of a logical hint;
-    # we still derive n_parallel from settings by default.
-    n_parallel = int(
-        gpu_cfg.get("max_concurrent_requests") or settings.n_parallel
-    )
+    - model_path is a concrete /models/.../*.gguf inside container
+    - runtime_cfg is profile.llamacpp with .env overrides applied
+    - env includes CUDA_VISIBLE_DEVICES derived from profile.gpu.device_ids unless overridden
+    """
+    if profile.llamacpp is None:
+        raise RuntimeError(
+            f"Profile '{profile.name}' backend=llamacpp requires a 'llamacpp:' block in llm_profiles.yaml"
+        )
 
-    # N GPU layers (rough tuning knob, only from settings right now)
-    n_gpu_layers = int(settings.n_gpu_layers)
+    cfg = profile.llamacpp
 
-    # Base llama-server path (compiled in Dockerfile)
-    server_bin = "/app/llama.cpp/build/bin/llama-server"
+    # Apply overrides (only when set)
+    if settings.llamacpp_host_override is not None:
+        cfg.host = settings.llamacpp_host_override
+    if settings.llamacpp_port_override is not None:
+        cfg.port = settings.llamacpp_port_override
+    if settings.llamacpp_ctx_size_override is not None:
+        cfg.ctx_size = settings.llamacpp_ctx_size_override
+    if settings.llamacpp_n_gpu_layers_override is not None:
+        cfg.n_gpu_layers = settings.llamacpp_n_gpu_layers_override
+    if settings.llamacpp_threads_override is not None:
+        cfg.threads = settings.llamacpp_threads_override
+    if settings.llamacpp_n_parallel_override is not None:
+        cfg.n_parallel = settings.llamacpp_n_parallel_override
+    if settings.llamacpp_batch_size_override is not None:
+        cfg.batch_size = settings.llamacpp_batch_size_override
+
+    # Concrete model path resolution
+    if settings.llamacpp_model_path_override:
+        model_path = settings.llamacpp_model_path_override
+    else:
+        # Prefer llamacpp.filename + model_root
+        if cfg.filename:
+            model_path = str(Path(cfg.model_root) / cfg.filename)
+        else:
+            # Allow profile.model_id to be a direct absolute gguf path if desired
+            if profile.model_id.endswith(".gguf") and profile.model_id.startswith("/"):
+                model_path = profile.model_id
+            else:
+                raise RuntimeError(
+                    f"Profile '{profile.name}' is missing llamacpp.filename and model_id is not a direct /.../*.gguf path"
+                )
+
+    # Environment
+    env = os.environ.copy()
+    env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+    if settings.cuda_visible_devices_override:
+        env["CUDA_VISIBLE_DEVICES"] = settings.cuda_visible_devices_override
+    elif profile.gpu.device_ids:
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in profile.gpu.device_ids)
+
+    return model_path, cfg, env
+
+
+def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict[str, str]]:
+    model_path, cfg, env = _resolve_runtime(profile)
+
+    # Ensure GGUF exists (download if needed)
+    _ensure_model_file(model_path, cfg)
+
+    # llama-server binary inside your built image
+    server_bin = "/app/llama-server"
+    if not Path(server_bin).exists():
+        server_bin = "/app/llama.cpp/build/bin/llama-server"
 
     cmd: List[str] = [
         server_bin,
         "-m",
         model_path,
         "--host",
-        settings.host,
+        cfg.host,
         "--port",
-        str(settings.port),
+        str(cfg.port),
         "--ctx-size",
-        str(ctx_size),
-        "--batch-size",
-        str(batch_size),
-        "--threads",
-        str(settings.threads),
-        "--n-parallel",
-        str(n_parallel),
+        str(cfg.ctx_size),
         "--n-gpu-layers",
-        str(n_gpu_layers),
+        str(cfg.n_gpu_layers),
+        "--threads",
+        str(cfg.threads),
+        "--parallel",
+        str(cfg.n_parallel),
+        "--batch-size",
+        str(cfg.batch_size),
     ]
-
-    # Env: start from container env
-    env = os.environ.copy()
-
-    # Respect profile.device_ids if present (and override env CUDA_VISIBLE_DEVICES)
-    device_ids = gpu_cfg.get("device_ids")
-    if device_ids:
-        cuda_visible = ",".join(str(i) for i in device_ids)
-        logger.info("Using CUDA_VISIBLE_DEVICES=%s from profile.device_ids", cuda_visible)
-        env["CUDA_VISIBLE_DEVICES"] = cuda_visible
-    elif env.get("CUDA_VISIBLE_DEVICES"):
-        logger.info(
-            "Using existing CUDA_VISIBLE_DEVICES=%s from env",
-            env["CUDA_VISIBLE_DEVICES"],
-        )
-    else:
-        logger.info("No explicit CUDA_VISIBLE_DEVICES provided; using all GPUs visible in container")
-
-    env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
     return cmd, env
 
@@ -101,24 +143,17 @@ def main() -> None:
         format="[LLAMACPP] %(levelname)s - %(name)s - %(message)s",
     )
 
+    profile = settings.resolve_profile()
     logger.info(
-        "Starting %s v%s (host=%s port=%s profile=%s)",
+        "Starting %s v%s profile=%s",
         settings.service_name,
         settings.service_version,
-        settings.host,
-        settings.port,
-        settings.llm_profile_name,
+        profile.name,
     )
 
-    try:
-        cmd, env = build_llamacpp_command_and_env()
-    except Exception as e:
-        logger.error("Failed to resolve llama.cpp configuration: %s", e, exc_info=True)
-        raise
+    cmd, env = build_llama_server_cmd_and_env(profile)
+    logger.info("Launching llama-server: %s", " ".join(cmd))
 
-    logger.info("Launching llama-server with command: %s", " ".join(cmd))
-
-    # Run llama-server in the foreground; if it exits, the container restarts.
     subprocess.run(cmd, check=True, env=env)
 
 

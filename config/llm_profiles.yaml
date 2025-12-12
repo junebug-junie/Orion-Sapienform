@@ -20,118 +20,89 @@ profiles:
       gpu_memory_fraction: 0.8
     notes: "Open, non-gated default for stack bring-up."
 
-# ─────────────────────────────────────────────
-# Dolphin 2.7 Mixtral 8x7B via llama.cpp
-# ─────────────────────────────────────────────
-dolphin-2.7-mixtral-8x7b-gguf:
-  display_name: "Dolphin 2.7 – Mixtral 8x7B Q5_K_M (llama.cpp, Atlas)"
-  task_type: chat
-  backend: llamacpp
-
-  # Logical model id (for our own labeling; llama.cpp mostly ignores it)
-  model_id: "dolphin-2.7-mixtral-8x7b-q5_k_m"
-
-  supports_tools: false
-  supports_embeddings: false
-  supports_vision: false
-
-  gpu:
-    # Intent: mid-to-heavy reasoning MoE model on Atlas via llama.cpp
-    num_gpus: 4
-    tensor_parallel_size: 4          # semantic only; llama.cpp handles GPU layers itself
-    device_ids: [0, 1, 2, 3]               # adjust to whatever you map for orion-atlas-llamaccp
-
-    # Orion’s conceptual view of this profile (not all directly enforced by llama.cpp)
-    max_model_len: 8192              # match LLAMACPP_CTX_SIZE for this model
-    max_batch_tokens: 512            # keep batches modest to avoid latency spikes
-    max_concurrent_requests: 2       # MoE model; okay with a bit more concurrency than 70B
-    gpu_memory_fraction: 0.9         # documentation hint only for llamacpp profiles
-
-  notes: |
-    Dolphin 2.7 Mixtral 8x7B (Q5_K_M GGUF) served by the orion-llamacpp service
-    on Atlas, using llama.cpp server-cuda.
-
-    Engine:
-      - HTTP base URL: http://orion-atlas-llamaccp:8000
-      - GGUF filename (example): /models/dolphin-2.7-mixtral-8x7b-Q5_K_M.gguf
-      - Context: 8192 tokens (LLAMACPP_CTX_SIZE=8192)
-      - N_GPU_LAYERS: tuned to fit Q5_K_M across 2× V100 16GB
-        (e.g. N_GPU_LAYERS=80–120 depending on your tests)
-
-    Orion usage:
-      - General-purpose “deep-ish” chat / analysis model
-      - Good candidate for council / reasoning verbs when 70B is overkill
-      - Slightly higher concurrency than the DeepSeek 70B brain, but still
-        not meant as the ultra-high-throughput casual chitchat model.
 
 
-# ─────────────────────────────────────────────
-# DeepSeek 70B via llama.cpp on Atlas
-# ─────────────────────────────────────────────
-deepseek-70b-gguf-atlas:
-  display_name: "DeepSeek R1 70B – GGUF via llama.cpp (Atlas)"
-  task_type: chat
-  backend: llamacpp
-  # Logical model id (for our own labeling; llama.cpp mostly ignores it)
-  model_id: "deepseek-r1-70b-q4_k_m"
-
-  supports_tools: false
-  supports_embeddings: false     # you can flip to true if you use /v1/embeddings later
-  supports_vision: false
-
-  gpu:
-    # Docs / intent: we’re dedicating 3 V100s on Atlas to this brain
-    num_gpus: 3
-    tensor_parallel_size: 1      # llama.cpp does its own thing; keep 1 for semantic clarity
-    device_ids: [0, 1, 2]        # whichever GPUs you actually pin the container to
-
-    # These shape how Orion *thinks* about using this profile
-    # (llama.cpp has its own ctx/parallel flags, but this keeps everything aligned)
-    max_model_len: 8192          # matches LLAMACPP_CTX_SIZE in .env
-    max_batch_tokens: 512        # effectively “don’t slam this dragon”
-    max_concurrent_requests: 1   # deep brain is low-concurrency, high-depth
-    gpu_memory_fraction: 0.9     # conceptual; not directly used by llama.cpp, but good doc
-
-  notes: |
-    Deep reasoning / council brain for Orion on Atlas.
-    Served by the orion-llamacpp service (llama.cpp server-cuda) on app-net.
-
-    Engine:
-      - HTTP base URL: http://orion-llamacpp:8000
-      - GGUF: /models/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf
-      - Context: 8192 tokens (LLAMACPP_CTX_SIZE)
-      - N_GPU_LAYERS: 80 (tuned for 3× V100 16GB)
-
-    Orion usage:
-      - Single active request at a time (max_concurrent_requests=1)
-      - Small-ish batches (max_batch_tokens=512) to avoid latency spikes
-      - Intended for deep/council/spark verbs, not casual chitchat.
-
-  # ─────────────────────────────────────────────
-  # 1) Llama3 7B on 1× V100 16GB
-  #    - Stable default; low complexity
-  # ─────────────────────────────────────────────
-  llama3-7b-v100-1gpu:
-    display_name: "Llama 3 7B – 1× V100"
+  qwen2.5-32b-instruct-abliterated-gguf:
+    display_name: "Qwen 2.5 32B Instruct – abliterated Q6_K (llama.cpp, Atlas)"
     task_type: chat
-    backend: vllm
-    model_id: "meta-llama/Meta-Llama-3-8B-Instruct"
+    backend: llamacpp
+
+    # Logical label used by Orion; the llamaccp wrapper will resolve to a GGUF path
+    model_id: "qwen2.5-32b-instruct-abliterated-q6_k"
+
     supports_tools: false
     supports_embeddings: false
     supports_vision: false
+
     gpu:
-      num_gpus: 1
-      tensor_parallel_size: 1
-      device_ids: [3]
+      num_gpus: 4
+      tensor_parallel_size: 4      # semantic only for llamacpp
+      device_ids: [0, 1, 2, 3]
+
       max_model_len: 8192
-      max_batch_tokens: 4096
-      max_concurrent_requests: 4
+      max_batch_tokens: 512
+      max_concurrent_requests: 2
       gpu_memory_fraction: 0.9
-    preferred_verbs:
-      - generic_chat
-      - status_report
-      - short_explain
-    notes: "Default vLLM profile: 1× V100, safe context/throughput."
+
+    llamacpp:
+      model_root: "/models/gguf"
+
+      hf_repo_id: "mradermacher/Qwen2.5-32B-Instruct-abliterated-GGUF"
+      hf_filename: "Qwen2.5-32B-Instruct-abliterated.Q6_K.gguf"
+
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 8192
+      n_gpu_layers: 80
+      threads: 16
+      n_parallel: 2
+      batch_size: 512
+
+    notes: |
+      Non-coder Qwen2.5 32B Instruct (abliterated) GGUF via llama.cpp on Atlas.
+      Source:
+        - repo: mradermacher/Qwen2.5-32B-Instruct-abliterated-GGUF
+        - file: Qwen2.5-32B-Instruct-abliterated.Q6_K.gguf
+
+
+  # ─────────────────────────────────────────────
+  # DeepSeek 70B via llama.cpp on Atlas
+  # ─────────────────────────────────────────────
+  deepseek-70b-gguf-atlas:
+    display_name: "DeepSeek R1 70B – GGUF via llama.cpp (Atlas)"
+    task_type: chat
+    backend: llamacpp
+
+    # Make model_id a concrete path the wrapper can load immediately
+    model_id: "/models/gguf/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
+
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 4
+      tensor_parallel_size: 4
+      device_ids: [0, 1, 2, 3]
+      max_model_len: 8192
+      max_batch_tokens: 512
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.9
+
+    llamacpp:
+      model_root: "/models/gguf"
+
+      # Leave these absent or null; model_id path is authoritative
+      # hf_repo_id: ""
+      # hf_filename: ""
+
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 8192
+      n_gpu_layers: 80
+      threads: 16
+      n_parallel: 2
+      batch_size: 512
 
   # ─────────────────────────────────────────────
   # 2) Llama3 7B on 2× V100 16GB

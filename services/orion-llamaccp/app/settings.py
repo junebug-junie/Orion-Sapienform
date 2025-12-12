@@ -1,142 +1,90 @@
 # services/orion-llamaccp/app/settings.py
-
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import yaml
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices
 
 from .profiles import LLMProfileRegistry, LLMProfile
 
-logger = logging.getLogger("orion-llamacpp.settings")
+logger = logging.getLogger("orion-llamaccp.settings")
 
 
 class Settings(BaseSettings):
-    # Identity
-    service_name: str = Field("orion-llamacpp", env="SERVICE_NAME")
-    service_version: str = Field("0.1.0", env="SERVICE_VERSION")
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_ignore_empty=True,   # ✅ empty strings become "unset" instead of parsing errors
+    )
 
-    # HTTP bind
-    host: str = Field("0.0.0.0", env="LLAMACPP_HOST")
-    port: int = Field(8000, env="LLAMACPP_PORT")
+    # Identity
+    service_name: str = Field("orion-llamaccp", env="SERVICE_NAME")
+    service_version: str = Field("0.1.0", env="SERVICE_VERSION")
 
     # Profiles
     llm_profiles_config_path: Path = Field(
         Path("/app/config/llm_profiles.yaml"),
         env="LLM_PROFILES_CONFIG_PATH",
     )
-    llm_profile_name: Optional[str] = Field(None, env="LLM_PROFILE_NAME")
+    llm_profile_name: str = Field(..., env="LLM_PROFILE_NAME")
 
-    # Model overrides (highest priority first)
-    llamacpp_model: Optional[str] = Field(
-        None,
-        env="LLAMACPP_MODEL",
-        description="Optional absolute GGUF path inside container, e.g. /models/foo.gguf",
-    )
-    llm_model_id: Optional[str] = Field(
-        None,
-        env="LLM_MODEL_ID",
-        description="Optional logical model id or GGUF path",
+    # Token (optional; only needed for gated/private repos)
+    hf_token: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("HF_TOKEN", "hf_token"),
     )
 
-    # llama.cpp generic defaults (can be refined via profile.gpu)
-    ctx_size: int = Field(8192, env="LLAMACPP_CTX_SIZE")
-    n_gpu_layers: int = Field(80, env="LLAMACPP_N_GPU_LAYERS")
-    threads: int = Field(16, env="LLAMACPP_THREADS")
-    n_parallel: int = Field(2, env="LLAMACPP_N_PARALLEL")
-    batch_size: int = Field(512, env="LLAMACPP_BATCH_SIZE")
+    # --- Optional hard overrides (take precedence over profile.llamacpp) ---
+    llamacpp_model_path_override: Optional[str] = Field(None, env="LLAMACPP_MODEL_PATH_OVERRIDE")
 
-    class Config:
-        extra = "ignore"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # runtime knob overrides (optional)
+    llamacpp_host_override: Optional[str] = Field(None, env="LLAMACPP_HOST_OVERRIDE")
+    llamacpp_port_override: Optional[int] = Field(None, env="LLAMACPP_PORT_OVERRIDE")
+    llamacpp_ctx_size_override: Optional[int] = Field(None, env="LLAMACPP_CTX_SIZE_OVERRIDE")
+    llamacpp_n_gpu_layers_override: Optional[int] = Field(None, env="LLAMACPP_N_GPU_LAYERS_OVERRIDE")
+    llamacpp_threads_override: Optional[int] = Field(None, env="LLAMACPP_THREADS_OVERRIDE")
+    llamacpp_n_parallel_override: Optional[int] = Field(None, env="LLAMACPP_N_PARALLEL_OVERRIDE")
+    llamacpp_batch_size_override: Optional[int] = Field(None, env="LLAMACPP_BATCH_SIZE_OVERRIDE")
 
-    # --- Runtime cache ---
-    _profile_registry: Optional[LLMProfileRegistry] = None
+    # CUDA override (optional; otherwise profile.gpu.device_ids is used)
+    cuda_visible_devices_override: Optional[str] = Field(None, env="CUDA_VISIBLE_DEVICES")
+
+    _registry: Optional[LLMProfileRegistry] = None
 
     def load_profile_registry(self) -> LLMProfileRegistry:
-        if self._profile_registry is not None:
-            return self._profile_registry
+        if self._registry is not None:
+            return self._registry
 
         path = self.llm_profiles_config_path
         if not path.exists():
             raise FileNotFoundError(f"llm_profiles.yaml not found at {path}")
 
-        with path.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        profiles_raw = raw.get("profiles") if isinstance(raw, dict) else None
+        if not isinstance(profiles_raw, dict):
+            raise ValueError("llm_profiles.yaml must be a dict with top-level key: 'profiles:'")
 
         profiles: Dict[str, LLMProfile] = {}
-        for name, cfg in raw.items():
+        for name, cfg in profiles_raw.items():
             if not isinstance(cfg, dict):
-                logger.warning("Skipping non-dict profile entry: %s", name)
                 continue
             cfg = dict(cfg)
             cfg.setdefault("name", name)
-            try:
-                profiles[name] = LLMProfile(**cfg)
-            except Exception as e:
-                logger.error("Failed to parse LLM profile '%s': %s", name, e, exc_info=True)
-                raise
+            profiles[name] = LLMProfile(**cfg)
 
-        self._profile_registry = LLMProfileRegistry(profiles=profiles)
-        logger.info(
-            "Loaded %d LLM profiles from %s",
-            len(self._profile_registry.profiles),
-            path,
-        )
-        return self._profile_registry
+        self._registry = LLMProfileRegistry(profiles=profiles)
+        logger.info("Loaded %d profiles from %s", len(profiles), path)
+        return self._registry
 
-    def resolve_model_and_gpu(self) -> Tuple[str, Dict[str, Any]]:
-        """
-        Resolve the concrete model_id (usually GGUF path) and GPU config dict.
-
-        Priority:
-          1) env LLAMACPP_MODEL if set (absolute GGUF path)
-          2) env LLM_MODEL_ID if set
-          3) profile.model_id from LLM_PROFILE_NAME
-        """
-        registry = self.load_profile_registry()
-
-        profile: Optional[LLMProfile] = None
-        if self.llm_profile_name:
-            try:
-                profile = registry.get(self.llm_profile_name)
-            except KeyError as e:
-                logger.error("Unknown LLM_PROFILE_NAME '%s'", self.llm_profile_name)
-                raise e
-
-        # Model resolution priority
-        if self.llamacpp_model:
-            model_id = self.llamacpp_model
-            logger.info("Using model from LLAMACPP_MODEL env: %s", model_id)
-        elif self.llm_model_id:
-            model_id = self.llm_model_id
-            logger.info("Using model from LLM_MODEL_ID env: %s", model_id)
-        elif profile is not None:
-            model_id = profile.model_id
-            logger.info(
-                "Using model from profile '%s': %s",
-                self.llm_profile_name,
-                model_id,
-            )
-        else:
-            raise RuntimeError(
-                "No model configured: set LLAMACPP_MODEL, LLM_MODEL_ID, or LLM_PROFILE_NAME."
-            )
-
-        # GPU configuration: start from profile.gpu if present
-        gpu_cfg: Dict[str, Any] = {}
-        if profile is not None and profile.gpu is not None:
-            gpu_cfg = profile.gpu.model_dump()
-
-        # Ensure we have some context length even if profile omits it
-        gpu_cfg.setdefault("max_model_len", self.ctx_size)
-
-        return model_id, gpu_cfg
+    def resolve_profile(self) -> LLMProfile:
+        reg = self.load_profile_registry()
+        return reg.get(self.llm_profile_name)
 
 
 settings = Settings()

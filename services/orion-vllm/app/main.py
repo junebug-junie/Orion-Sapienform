@@ -55,6 +55,16 @@ def build_vllm_command_and_env() -> tuple[List[str], Dict[str, str]]:
     if max_len is not None:
         cmd += ["--max-model-len", str(max_len)]
 
+    # Limit total tokens in a batch (controls KV cache footprint)
+    max_batch_tokens = gpu_cfg.get("max_batch_tokens")
+    if max_batch_tokens is not None:
+        cmd += ["--max-num-batched-tokens", str(max_batch_tokens)]
+
+    # Limit concurrent requests (max active sequences)
+    max_concurrent = gpu_cfg.get("max_concurrent_requests")
+    if max_concurrent is not None:
+        cmd += ["--max-num-seqs", str(max_concurrent)]
+
     # Optional future: derive max_num_seqs from batch tokens / concurrency here
     # using gpu_cfg["max_batch_tokens"] or max_concurrent_requests.
 
@@ -86,6 +96,9 @@ def build_vllm_command_and_env() -> tuple[List[str], Dict[str, str]]:
 
     # Stable mapping index -> physical GPU (important with mixed cards)
     env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+   # Help PyTorch deal with fragmentation on these tight V100s
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     return cmd, env
 

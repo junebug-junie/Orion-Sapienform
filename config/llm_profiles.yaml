@@ -21,6 +21,48 @@ profiles:
     notes: "Open, non-gated default for stack bring-up."
 
 
+# ─────────────────────────────────────────────
+# DeepSeek 70B via llama.cpp on Atlas
+# ─────────────────────────────────────────────
+deepseek-70b-gguf-atlas:
+  display_name: "DeepSeek R1 70B – GGUF via llama.cpp (Atlas)"
+  task_type: chat
+  backend: llamacpp
+  # Logical model id (for our own labeling; llama.cpp mostly ignores it)
+  model_id: "deepseek-r1-70b-q4_k_m"
+
+  supports_tools: false
+  supports_embeddings: false     # you can flip to true if you use /v1/embeddings later
+  supports_vision: false
+
+  gpu:
+    # Docs / intent: we’re dedicating 3 V100s on Atlas to this brain
+    num_gpus: 3
+    tensor_parallel_size: 1      # llama.cpp does its own thing; keep 1 for semantic clarity
+    device_ids: [0, 1, 2]        # whichever GPUs you actually pin the container to
+
+    # These shape how Orion *thinks* about using this profile
+    # (llama.cpp has its own ctx/parallel flags, but this keeps everything aligned)
+    max_model_len: 8192          # matches LLAMACPP_CTX_SIZE in .env
+    max_batch_tokens: 512        # effectively “don’t slam this dragon”
+    max_concurrent_requests: 1   # deep brain is low-concurrency, high-depth
+    gpu_memory_fraction: 0.9     # conceptual; not directly used by llama.cpp, but good doc
+
+  notes: |
+    Deep reasoning / council brain for Orion on Atlas.
+    Served by the orion-llamacpp service (llama.cpp server-cuda) on app-net.
+
+    Engine:
+      - HTTP base URL: http://orion-llamacpp:8000
+      - GGUF: /models/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf
+      - Context: 8192 tokens (LLAMACPP_CTX_SIZE)
+      - N_GPU_LAYERS: 80 (tuned for 3× V100 16GB)
+
+    Orion usage:
+      - Single active request at a time (max_concurrent_requests=1)
+      - Small-ish batches (max_batch_tokens=512) to avoid latency spikes
+      - Intended for deep/council/spark verbs, not casual chitchat.
+
   # ─────────────────────────────────────────────
   # 1) Llama3 7B on 1× V100 16GB
   #    - Stable default; low complexity
@@ -128,10 +170,10 @@ profiles:
       num_gpus: 4
       tensor_parallel_size: 4
       device_ids: [0, 1, 2, 3]
-      max_model_len: 8192
-      max_batch_tokens: null
-      max_concurrent_requests: null
-      gpu_memory_fraction: 0.8
+      max_model_len: 4500 #8192
+      max_batch_tokens: 2000 #null
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.7
 
     supports_tools: true
     supports_embeddings: false

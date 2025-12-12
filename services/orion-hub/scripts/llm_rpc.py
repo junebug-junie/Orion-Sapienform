@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .settings import settings
@@ -82,15 +83,10 @@ async def _request_and_wait(
 class CortexOrchRPC:
     """
     Bus-RPC client for the Orion Cortex Orchestrator.
-
-    Hub uses this to run high-level "verbs" like `chat_general`
-    instead of hand-rolling prompts and wiring directly to LLM Gateway.
     """
 
     def __init__(self, bus):
         self.bus = bus
-
-        # These match planner-react / cortex-orch wiring
         self.request_channel = "orion-cortex:request"
         self.result_prefix = "orion-cortex:result"
 
@@ -112,26 +108,12 @@ class CortexOrchRPC:
         origin_node: str | None = None,
         timeout_ms: int | None = None,
     ) -> dict:
-        """
-        Generic entrypoint for any Cortex verb.
-
-        Mirrors the OrchestrateVerbRequest shape used by cortex-orch:
-
-          {
-            "verb_name": str,
-            "origin_node": str,
-            "context": dict,
-            "steps": [CortexStepConfig-like dicts],
-            "timeout_ms": int | None,
-          }
-        """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("CortexOrchRPC used while OrionBus is disabled")
 
         trace_id = str(uuid.uuid4())
         reply_channel = f"{self.result_prefix}:{trace_id}"
 
-        # If steps is None, let cortex-orch load the YAML verb definition
         core_payload: Dict[str, Any] = {
             "verb_name": verb_name,
             "origin_node": origin_node or settings.SERVICE_NAME,
@@ -141,16 +123,11 @@ class CortexOrchRPC:
         }
 
         envelope: Dict[str, Any] = {
-            # Bus/meta fields
             "event": "orchestrate_verb",
             "trace_id": trace_id,
             "origin_node": origin_node or settings.SERVICE_NAME,
             "reply_channel": reply_channel,
-
-            # OrchestrateVerbRequest fields at TOP LEVEL
             **core_payload,
-
-            # And again under `payload` for parity
             "payload": core_payload,
         }
 
@@ -163,7 +140,6 @@ class CortexOrchRPC:
             timeout_sec=(timeout_ms or 60000) / 1000.0,
         )
 
-        # cortex-orch normally wraps data under "data"
         return raw_reply.get("data") if isinstance(raw_reply, dict) and "data" in raw_reply else raw_reply
 
     async def run_chat_general(
@@ -173,25 +149,14 @@ class CortexOrchRPC:
         origin_node: str | None = None,
         timeout_ms: int | None = None,
     ) -> dict:
-        """
-        Convenience wrapper for the `chat_general` verb.
-
-        We do NOT inline the steps here: we let cortex-orch load
-        /app/orion/cognition/verbs/chat_general.yaml.
-        """
         return await self.run_verb(
             verb_name="chat_general",
             context=context,
-            steps=[],  # empty ⇒ load YAML from orion/cognition/verbs/chat_general.yaml
+            steps=[],
             origin_node=origin_node,
             timeout_ms=timeout_ms or 60000,
         )
 
-
-
-# ─────────────────────────────────────────────
-# Agent Council RPC
-# ─────────────────────────────────────────────
 
 class CouncilRPC:
     """
@@ -202,12 +167,6 @@ class CouncilRPC:
         self.bus = bus
 
     async def call_llm(self, prompt: str, history: list, temperature: float):
-        """
-        Hub → Agent Council over the bus.
-
-        Council is responsible for picking its own LLM backend/model
-        (which can be wired internally to LLM Gateway).
-        """
         trace_id = str(uuid.uuid4())
         reply_channel = f"{settings.CHANNEL_COUNCIL_REPLY_PREFIX}:{trace_id}"
 
@@ -217,7 +176,7 @@ class CouncilRPC:
             "source": settings.SERVICE_NAME,
             "response_channel": reply_channel,
             "prompt": prompt,
-            "history": history[-5:],  # lightweight contextual tail
+            "history": history[-5:],
             "temperature": temperature,
             "mode": "council",
             "ts": datetime.utcnow().isoformat(),
@@ -234,30 +193,22 @@ class CouncilRPC:
             trace_id,
         )
 
-        # raw_reply is whatever the council publishes on the reply channel,
-        # i.e., a CouncilResult dict.
         if isinstance(raw_reply, dict):
             result = raw_reply
-
-            # Normalize shape for callers: ensure .text exists if only final_text is present.
             if "final_text" in result and "text" not in result:
                 result = {**result, "text": result["final_text"]}
-
             return result
 
         return raw_reply
 
 
 # ─────────────────────────────────────────────
-# Agents RPC
+# Agents RPC (The Active Class)
 # ─────────────────────────────────────────────
 
 class AgentChainRPC:
     """
     Bus-RPC client for the Orion Agent Chain service.
-
-    Hub uses this to send text + context and get back an AgentChainResult:
-      { mode, text, structured, planner_raw }
     """
 
     def __init__(self, bus):
@@ -286,10 +237,6 @@ class AgentChainRPC:
         trace_id: Optional[str] = None,
         timeout_sec: float = 1500.0,
     ) -> dict:
-        """
-        Mirrors AgentChainRequest in agent-chain/api.py:
-          { text, mode, session_id, user_id, messages, tools }
-        """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("AgentChainRPC used while OrionBus is disabled")
 
@@ -313,6 +260,8 @@ class AgentChainRPC:
             "payload": payload,
         }
 
+        logger.info(f"[RPC-TRACE] Sending AgentChain request {trace_id}")
+
         raw_reply = await _request_and_wait(
             self.bus,
             self.request_channel,
@@ -322,38 +271,69 @@ class AgentChainRPC:
             timeout_sec=timeout_sec,
         )
 
-        # raw_reply should be AgentChainResult.model_dump() from agent-chain
-        # { mode, text, structured, planner_raw }
-        return raw_reply if isinstance(raw_reply, dict) else {"raw": raw_reply}
+        # DEBUG TRACING
+        logger.info(f"[RPC-TRACE] {trace_id} <- Raw Reply Type: {type(raw_reply)}")
+        if isinstance(raw_reply, dict):
+            # Print keys to confirm if we have 'data' or 'text'
+            logger.info(f"[RPC-TRACE] {trace_id} <- Raw Keys: {list(raw_reply.keys())}")
+        else:
+            logger.info(f"[RPC-TRACE] {trace_id} <- Raw Content: {str(raw_reply)[:200]}")
 
+        if not isinstance(raw_reply, dict):
+            return {"raw": raw_reply}
 
+        # ─────────────────────────────────────────────────────────────
+        # 🛠️ ROBUST UNWRAPPING LOGIC (The Fix)
+        # ─────────────────────────────────────────────────────────────
+        
+        data = raw_reply.get("data")
+        status = raw_reply.get("status")
 
-# ─────────────────────────────────────────────
-# LLM Gateway RPC (Hub → LLMGatewayService)
-# ─────────────────────────────────────────────
+        # DEBUG: Inspect the 'data' field inside the envelope
+        logger.info(f"[RPC-TRACE] 'data' field type: {type(data)}")
+
+        # 1. Double Serialization Check: If data is a string, decode it.
+        if isinstance(data, str):
+            logger.info("[RPC-TRACE] 'data' is string. Attempting json.loads...")
+            try:
+                data = json.loads(data)
+                logger.info(f"[RPC-TRACE] json.loads success. New type: {type(data)}")
+            except Exception as e:
+                logger.warning(f"[RPC-TRACE] json.loads failed: {e}")
+                pass
+
+        # 2. If data is (now) a dict, that is our result.
+        if isinstance(data, dict):
+            has_text = "text" in data
+            logger.info(f"[RPC-TRACE] Unwrap success. Has 'text': {has_text}")
+            
+            result = dict(data)
+            result["_envelope_status"] = status 
+            return result
+
+        # 3. Fallback: If 'text' is in the top level (no wrapper), return raw_reply
+        if "text" in raw_reply:
+             logger.info("[RPC-TRACE] Found 'text' in top-level reply. Returning raw_reply.")
+             return raw_reply
+
+        # 4. Total Fallback
+        logger.warning("[RPC-TRACE] Could not unwrap valid data. Returning raw.")
+        return raw_reply
+
 
 class LLMGatewayRPC:
     """
-    Bus-RPC client for the Orion LLM Gateway (`LLMGatewayService`).
+    Bus-RPC client for the Orion LLM Gateway.
     """
 
     def __init__(self, bus):
         self.bus = bus
-
-        self.service_name = getattr(
-            settings, "LLM_GATEWAY_SERVICE_NAME", None
-        ) or "LLMGatewayService"
-        self.exec_request_prefix = getattr(
-            settings, "EXEC_REQUEST_PREFIX", "orion-exec:request"
-        )
-        self.reply_prefix = getattr(
-            settings, "CHANNEL_LLM_REPLY_PREFIX", "orion:llm:reply"
-        )
+        self.service_name = getattr(settings, "LLM_GATEWAY_SERVICE_NAME", None) or "LLMGatewayService"
+        self.exec_request_prefix = getattr(settings, "EXEC_REQUEST_PREFIX", "orion-exec:request")
+        self.reply_prefix = getattr(settings, "CHANNEL_LLM_REPLY_PREFIX", "orion:llm:reply")
 
         if not self.bus or not getattr(self.bus, "enabled", False):
-            logger.warning(
-                "[LLMGatewayRPC] OrionBus is disabled; LLM calls will fail."
-            )
+            logger.warning("[LLMGatewayRPC] OrionBus is disabled; LLM calls will fail.")
 
         logger.info(
             "[LLMGatewayRPC] Initialized (service=%s, exec_prefix=%s, reply_prefix=%s)",
@@ -361,8 +341,6 @@ class LLMGatewayRPC:
             self.exec_request_prefix,
             self.reply_prefix,
         )
-
-    # ---------- Public API ----------
 
     async def call_chat(
         self,
@@ -377,26 +355,13 @@ class LLMGatewayRPC:
         verb: str | None = None,
         profile_name: str | None = None,
     ) -> dict:
-        """
-        High-level chat call:
-
-          - `history` is treated as the *full* message list (system + user + assistant)
-            in OpenAI-style format.
-          - `prompt` is the latest user wave, used for logging and *only* appended if
-            history does not already end with that prompt as a user message.
-
-        Hub owns context length / trimming. Gateway just forwards.
-        """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")
 
         trace_id = trace_id or str(uuid.uuid4())
         reply_channel = f"{self.reply_prefix}:{trace_id}"
 
-        # 1) Start from the full history as provided by Hub
         messages = list(history or [])
-
-        # 2) Ensure the latest user prompt is present *once* at the end
         if prompt:
             prompt = str(prompt)
             if (
@@ -406,35 +371,18 @@ class LLMGatewayRPC:
             ):
                 messages.append({"role": "user", "content": prompt})
 
-        # 3) Normalize roles so vLLM never sees weird ones like "orion"
         cleaned: list[dict] = []
         for m in messages:
             role = (m.get("role") or "user").lower()
             content = m.get("content", "")
-
-            # Map Orion-specific / odd roles to valid OpenAI roles
             if role not in ("system", "user", "assistant"):
-                if role in ("orion", "bot", "assistant_orion"):
-                    role = "assistant"
-                else:
-                    # Unknown roles become "user" as a safe default
-                    role = "user"
-
-            cleaned.append(
-                {
-                    "role": role,
-                    "content": content,
-                }
-            )
-
+                role = "assistant" if role in ("orion", "bot", "assistant_orion") else "user"
+            cleaned.append({"role": role, "content": content})
         messages = cleaned
 
         body = {
             "messages": messages,
-            "options": {
-                "temperature": temperature,
-                # no backend override here – purely profile/settings-driven
-            },
+            "options": {"temperature": temperature},
             "stream": False,
             "return_json": False,
             "trace_id": trace_id,
@@ -450,9 +398,7 @@ class LLMGatewayRPC:
             "service": self.service_name,
             "correlation_id": trace_id,
             "reply_channel": reply_channel,
-            "payload": {
-                "body": body,
-            },
+            "payload": {"body": body},
         }
 
         exec_channel = f"{self.exec_request_prefix}:{self.service_name}"
@@ -470,10 +416,7 @@ class LLMGatewayRPC:
         if isinstance(payload, dict):
             text = (payload.get("text") or "").strip()
 
-        return {
-            "text": text,
-            "raw": raw_reply,
-        }
+        return {"text": text, "raw": raw_reply}
 
     async def call_generate(
         self,
@@ -487,7 +430,6 @@ class LLMGatewayRPC:
         verb: str | None = None,
         profile_name: str | None = None,
     ) -> dict:
-        # unchanged from your current version
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("LLMGatewayRPC used while OrionBus is disabled")
 
@@ -496,9 +438,7 @@ class LLMGatewayRPC:
 
         body = {
             "prompt": prompt,
-            "options": {
-                "temperature": temperature,
-            },
+            "options": {"temperature": temperature},
             "stream": False,
             "return_json": False,
             "trace_id": trace_id,
@@ -514,9 +454,7 @@ class LLMGatewayRPC:
             "service": self.service_name,
             "correlation_id": trace_id,
             "reply_channel": reply_channel,
-            "payload": {
-                "body": body,
-            },
+            "payload": {"body": body},
         }
 
         exec_channel = f"{self.exec_request_prefix}:{self.service_name}"
@@ -534,7 +472,4 @@ class LLMGatewayRPC:
         if isinstance(payload, dict):
             text = (payload.get("text") or "").strip()
 
-        return {
-            "text": text,
-            "raw": raw_reply,
-        }
+        return {"text": text, "raw": raw_reply}

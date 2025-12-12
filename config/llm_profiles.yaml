@@ -20,6 +20,50 @@ profiles:
       gpu_memory_fraction: 0.8
     notes: "Open, non-gated default for stack bring-up."
 
+# ─────────────────────────────────────────────
+# Dolphin 2.7 Mixtral 8x7B via llama.cpp
+# ─────────────────────────────────────────────
+dolphin-2.7-mixtral-8x7b-gguf:
+  display_name: "Dolphin 2.7 – Mixtral 8x7B Q5_K_M (llama.cpp, Atlas)"
+  task_type: chat
+  backend: llamacpp
+
+  # Logical model id (for our own labeling; llama.cpp mostly ignores it)
+  model_id: "dolphin-2.7-mixtral-8x7b-q5_k_m"
+
+  supports_tools: false
+  supports_embeddings: false
+  supports_vision: false
+
+  gpu:
+    # Intent: mid-to-heavy reasoning MoE model on Atlas via llama.cpp
+    num_gpus: 4
+    tensor_parallel_size: 4          # semantic only; llama.cpp handles GPU layers itself
+    device_ids: [0, 1, 2, 3]               # adjust to whatever you map for orion-atlas-llamaccp
+
+    # Orion’s conceptual view of this profile (not all directly enforced by llama.cpp)
+    max_model_len: 8192              # match LLAMACPP_CTX_SIZE for this model
+    max_batch_tokens: 512            # keep batches modest to avoid latency spikes
+    max_concurrent_requests: 2       # MoE model; okay with a bit more concurrency than 70B
+    gpu_memory_fraction: 0.9         # documentation hint only for llamacpp profiles
+
+  notes: |
+    Dolphin 2.7 Mixtral 8x7B (Q5_K_M GGUF) served by the orion-llamacpp service
+    on Atlas, using llama.cpp server-cuda.
+
+    Engine:
+      - HTTP base URL: http://orion-atlas-llamaccp:8000
+      - GGUF filename (example): /models/dolphin-2.7-mixtral-8x7b-Q5_K_M.gguf
+      - Context: 8192 tokens (LLAMACPP_CTX_SIZE=8192)
+      - N_GPU_LAYERS: tuned to fit Q5_K_M across 2× V100 16GB
+        (e.g. N_GPU_LAYERS=80–120 depending on your tests)
+
+    Orion usage:
+      - General-purpose “deep-ish” chat / analysis model
+      - Good candidate for council / reasoning verbs when 70B is overkill
+      - Slightly higher concurrency than the DeepSeek 70B brain, but still
+        not meant as the ultra-high-throughput casual chitchat model.
+
 
 # ─────────────────────────────────────────────
 # DeepSeek 70B via llama.cpp on Atlas

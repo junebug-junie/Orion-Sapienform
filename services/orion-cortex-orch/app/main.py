@@ -94,34 +94,12 @@ def orchestrate(req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
 # -------------------------------
 
 
+# In services/orion-cortex-orch/app/main.py
+
 def _cortex_orch_bus_worker() -> None:
     """
-    Background worker that listens on CORTEX_ORCH_REQUEST_CHANNEL and
-    runs the orchestrator for each incoming message.
-
-    Expected payload (JSON on the bus):
-
-    {
-      "trace_id": "...",           # optional
-      "result_channel": "...",     # optional
-      "verb_name": "...",
-      "origin_node": "...",
-      "context": {...},
-      "steps": [
-        {
-          "verb_name": "...",
-          "step_name": "...",
-          "description": "...",
-          "order": 1,
-          "services": ["LLMGatewayService"],
-          "prompt_template": "...",
-          "requires_gpu": false,
-          "requires_memory": false
-        },
-        ...
-      ],
-      "timeout_ms": 8000
-    }
+    Background worker that listens on CORTEX_ORCH_REQUEST_CHANNEL.
+    Includes robust unpacking for nested 'payload' envelopes.
     """
     if not bus.enabled:
         logger.warning(
@@ -135,9 +113,11 @@ def _cortex_orch_bus_worker() -> None:
     )
 
     for msg in bus.raw_subscribe(channel):
-        payload = msg.get("data") or {}
-        trace_id = payload.get("trace_id") or str(uuid4())
-        result_channel = payload.get("result_channel") or (
+        envelope = msg.get("data") or {}
+        
+        # 1. Extract Metadata from Envelope
+        trace_id = envelope.get("trace_id") or str(uuid4())
+        result_channel = envelope.get("result_channel") or (
             f"{settings.cortex_orch_result_prefix}:{trace_id}"
         )
 
@@ -148,8 +128,19 @@ def _cortex_orch_bus_worker() -> None:
             result_channel,
         )
 
+        # 2. Smart Unpack: Handle nested "payload" vs top-level keys
+        # If 'verb_name' is missing at top level but exists inside 'payload', flatten it.
+        request_data = envelope
+        if "verb_name" not in request_data and "payload" in request_data:
+            possible_inner = request_data["payload"]
+            if isinstance(possible_inner, dict) and "verb_name" in possible_inner:
+                logger.info("Unpacking nested payload for trace_id=%s", trace_id)
+                # Merge envelope keys (like origin_node) with inner payload keys
+                request_data = {**request_data, **possible_inner}
+
         try:
-            req = OrchestrateVerbRequest(**payload)
+            # 3. Validate against Pydantic Model
+            req = OrchestrateVerbRequest(**request_data)
         except ValidationError as ve:
             logger.error(
                 "Validation error in bus-driven orchestrate (trace_id=%s): %s",
@@ -164,7 +155,7 @@ def _cortex_orch_bus_worker() -> None:
                     "kind": "cortex_orchestrate_error",
                     "error_type": "validation_error",
                     "errors": ve.errors(),
-                    "raw_payload": payload,
+                    "raw_payload": envelope, # Return original envelope for debug
                 },
             )
             continue
@@ -184,6 +175,7 @@ def _cortex_orch_bus_worker() -> None:
             )
             continue
 
+        # 4. Execute
         try:
             resp = run_cortex_verb(bus, req)
             bus.publish(
@@ -210,6 +202,7 @@ def _cortex_orch_bus_worker() -> None:
                     "message": str(e),
                 },
             )
+
 
 
 @app.on_event("startup")

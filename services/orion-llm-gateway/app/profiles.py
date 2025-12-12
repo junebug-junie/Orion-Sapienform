@@ -1,10 +1,9 @@
 from __future__ import annotations
 from typing import Dict, Literal, Optional, List
 
-# 🔧 add ConfigDict here
 from pydantic import BaseModel, Field, ConfigDict
 
-BackendType = Literal["ollama", "vllm", "brain"]
+BackendType = Literal["ollama", "vllm", "brain", "llamacpp"]
 
 
 class GPUConfig(BaseModel):
@@ -16,12 +15,12 @@ class GPUConfig(BaseModel):
     max_batch_tokens: Optional[int] = None
     max_concurrent_requests: Optional[int] = None
     gpu_memory_fraction: Optional[float] = Field(
-        None, description="0-1 fraction hint for vLLM"
+        None, description="0-1 fraction hint for vLLM / other backends"
     )
 
 
 class LLMProfile(BaseModel):
-    # 🔧 Pydantic v2 config to silence the model_id warning
+    # Pydantic v2 config to silence the model_id warning
     model_config = ConfigDict(
         protected_namespaces=(),  # disables the 'model_' reserved namespace
     )
@@ -68,3 +67,4 @@ class LLMProfileRegistry(BaseModel):
         if default:
             return self.profiles.get(default)
         return None
+

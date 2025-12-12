@@ -31,6 +31,7 @@ services:
 
       # Backend endpoints (Ollama is required today; others optional)
       - ORION_LLM_VLLM_URL=${ORION_LLM_VLLM_URL:-}
+      - ORION_LLM_LLAMACPP_URL=${ORION_LLM_LLAMACPP_URL:-}
 
       # Timeouts
       - CONNECT_TIMEOUT_SEC=${CONNECT_TIMEOUT_SEC}
@@ -45,6 +46,7 @@ services:
       # Path inside the container
       - LLM_DEFAULT_PROFILE_NAME=${LLM_DEFAULT_PROFILE_NAME:-llama3-7b-v100-1gpu}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH}
+      - ORION_DEFAULT_LLM_MODEL=${ORION_DEFAULT_LLM_MODEL}
 
     # Optional: keep HTTP port for future metrics / health / UI
     ports:

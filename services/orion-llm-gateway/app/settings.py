@@ -30,15 +30,23 @@ class Settings(BaseSettings):
         env="CHANNEL_SPARK_INTROSPECT_CANDIDATE",
     )
 
-
     # Polling / timing
     poll_timeout: float = Field(1.0, alias="POLL_TIMEOUT")
 
     # Default backend name if caller doesn't specify options["backend"]
     default_backend: str = Field("vllm", alias="ORION_LLM_DEFAULT_BACKEND")
 
-    # Backend endpoints (can be None if not used yet)
+    # 🔹 NEW: default model name for when we have no profile + no body.model
+    # For llama.cpp this is mostly ignored, but required by OpenAI spec.
+    default_model: str = Field(
+        "Active-GGUF-Model",
+        alias="ORION_DEFAULT_LLM_MODEL",
+        description="Fallback model name when no profile/model is provided.",
+    )
+
+    # Backend endpoints
     vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
+    llamacpp_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_URL")
 
     # Timeout knobs (shared across backends)
     connect_timeout_sec: float = Field(10.0, alias="CONNECT_TIMEOUT_SEC")

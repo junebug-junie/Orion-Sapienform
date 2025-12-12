@@ -386,11 +386,12 @@ async def run_chat_agentic(
     rpc = AgentChainRPC(bus)
     agent_result = await rpc.run(
         text=user_message,
-        mode="chat",   # you can switch this to "agentic" later if planner cares
+        mode="chat",
         session_id=session_id,
         user_id=user_id,
         messages=messages_for_chain,
         tools=None,    # verbs/tooldefs plug in here later
+        timeout_sec=1500,
     )
 
     text = (agent_result.get("text") or "").strip()

@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from .settings import settings
-from orion.core.bus.service import OrionBus  # or your bus wrapper import
+from orion.core.bus.service import OrionBus
 
 logger = logging.getLogger("hub.llm-rpc")
 
@@ -18,7 +18,7 @@ async def _request_and_wait(
     channel_reply: str,
     payload: dict,
     trace_id: str,
-    timeout_sec: float = 300.0,  # <--- NEW ARGUMENT (Default 300s)
+    timeout_sec: float = 1500.0,
 ) -> dict:
     """
     Robust RPC helper: Subscribes FIRST, then publishes.
@@ -247,6 +247,11 @@ class CouncilRPC:
 
         return raw_reply
 
+
+# ─────────────────────────────────────────────
+# Agents RPC
+# ─────────────────────────────────────────────
+
 class AgentChainRPC:
     """
     Bus-RPC client for the Orion Agent Chain service.
@@ -279,6 +284,7 @@ class AgentChainRPC:
         messages: Optional[list[dict]] = None,
         tools: Optional[list[dict]] = None,
         trace_id: Optional[str] = None,
+        timeout_sec: float = 1500.0,
     ) -> dict:
         """
         Mirrors AgentChainRequest in agent-chain/api.py:
@@ -313,6 +319,7 @@ class AgentChainRPC:
             reply_channel,
             envelope,
             trace_id,
+            timeout_sec=timeout_sec,
         )
 
         # raw_reply should be AgentChainResult.model_dump() from agent-chain

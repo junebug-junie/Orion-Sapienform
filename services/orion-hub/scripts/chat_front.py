@@ -213,7 +213,7 @@ async def run_chat_general(
         raw_reply = await rpc.run_chat_general(
             context=context,
             origin_node=settings.SERVICE_NAME,
-            timeout_ms=None,  # or settings.CORTEX_CHAT_TIMEOUT_MS if you have it
+            timeout_ms=60000,  # or settings.CORTEX_CHAT_TIMEOUT_MS if you have it
         )
 
         text = ""

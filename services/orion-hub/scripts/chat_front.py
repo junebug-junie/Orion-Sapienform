@@ -171,6 +171,16 @@ async def run_chat_general(
     if not isinstance(messages, list) or not messages:
         raise ValueError("run_chat_general requires a non-empty messages list")
 
+
+
+
+   use_recall = False
+
+
+
+
+
+
     user_message = messages[-1].get("content", "") or ""
 
     memory_digest = ""
@@ -213,7 +223,7 @@ async def run_chat_general(
         raw_reply = await rpc.run_chat_general(
             context=context,
             origin_node=settings.SERVICE_NAME,
-            timeout_ms=60000,  # or settings.CORTEX_CHAT_TIMEOUT_MS if you have it
+            timeout_ms=300000,
         )
 
         text = ""

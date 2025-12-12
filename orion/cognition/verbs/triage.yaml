@@ -15,7 +15,7 @@ requires_memory: false
 timeout_ms: 1500
 max_recursion_depth: 0
 
-services: []
+services: LLMGatewayService
 
 prompt_template: triage_prompt.j2
 

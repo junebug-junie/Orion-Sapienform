@@ -8,6 +8,7 @@ import logging
 import os
 import time
 import uuid
+import sys
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -16,7 +17,14 @@ from pydantic import BaseModel, Field
 from .settings import settings
 from orion.core.bus.service import OrionBus
 
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
 logger = logging.getLogger("planner-react.api")
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -415,9 +423,8 @@ def _extract_llm_output_from_cortex(raw_cortex: Dict[str, Any]) -> Dict[str, Any
 
     step_results = raw_cortex.get("step_results") or []
     if not step_results:
-        raise RuntimeError(
-            f"Cortex-Orch reply has no step_results (ok={ok}, error={raw_cortex.get('error')!r})"
-        )
+        # Some verbs return no steps but are OK (empty).
+        return {"llm_output": "", "raw_cortex": raw_cortex}
 
     first_step = step_results[0] or {}
     services = first_step.get("services") or []
@@ -430,15 +437,24 @@ def _extract_llm_output_from_cortex(raw_cortex: Dict[str, Any]) -> Dict[str, Any
     # LLM-Gateway exec_step usually nests under "result"
     result = srv_payload.get("result") or srv_payload
 
-    text = (
-        result.get("llm_output")
-        or result.get("text")
-        or result.get("response")
-        or ""
-    )
-    text = str(text).strip()
+    # ─────────────────────────────────────────────────────────────
+    # FIX: Handle case where 'result' is a plain string
+    # ─────────────────────────────────────────────────────────────
+    spark_meta = None
+    
+    if isinstance(result, dict):
+        text = (
+            result.get("llm_output")
+            or result.get("text")
+            or result.get("response")
+            or ""
+        )
+        spark_meta = result.get("spark_meta")
+    else:
+        # Fallback for raw strings (backward compatible safety net)
+        text = str(result)
 
-    spark_meta = result.get("spark_meta")
+    text = text.strip()
 
     return {
         "llm_output": text,
@@ -451,7 +467,6 @@ def _extract_llm_output_from_cortex(raw_cortex: Dict[str, Any]) -> Dict[str, Any
             "service": first_service.get("service"),
         },
     }
-
 
 # ─────────────────────────────────────────────
 # Cortex-Orch verb call (tools)

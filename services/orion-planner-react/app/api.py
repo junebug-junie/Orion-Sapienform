@@ -179,6 +179,7 @@ async def _call_planner_llm(
     """
     Use LLM Gateway's 'chat' event to do a single ReAct planning step.
     Expects the LLM to return JSON in the body text.
+    Handles DeepSeek R1 <think> blocks by extracting them and merging them into 'thought'.
     """
     trace_id = str(uuid.uuid4())
 
@@ -341,22 +342,45 @@ Now decide the next step according to the JSON schema above.
         raise RuntimeError("LLM Gateway returned empty text for planner-react")
 
     # ─────────────────────────────────────────────────────────────
-    # FIX: Sanitize LLM Output
+    # FIX: Sanitize LLM Output (DeepSeek / Markdown / Escapes)
     # ─────────────────────────────────────────────────────────────
-    # 1. Strip Markdown Code Blocks (e.g. ```json ... ```)
-    if text.startswith("```"):
-        # split on newline, take everything after first line
-        parts = text.split("\n", 1)
-        if len(parts) > 1:
-            text = parts[1]
-        # strip trailing ```
-        text = text.strip()
-        if text.endswith("```"):
-            text = text[:-3].strip()
+    
+    internal_monologue = ""
+    
+    # 1. Extract <think> blocks (DeepSeek R1 style)
+    # We strip it out for JSON parsing, but save it to append to "thought" later
+    if "<think>" in text:
+        try:
+            # We want to capture the content between tags, and remove the whole block from 'text'
+            # Robust split in case of multiple blocks (takes the first/main one)
+            parts = text.split("</think>")
+            if len(parts) > 1:
+                # Part 0 contains <think>...
+                pre_think = parts[0]
+                # Check where it starts
+                start_idx = pre_think.find("<think>")
+                if start_idx != -1:
+                    internal_monologue = pre_think[start_idx + 7:].strip()
+                    # The JSON should be in the remainder (parts[1])
+                    text = parts[1].strip()
+        except Exception as e:
+            logger.warning(f"Error extracting <think> block: {e}")
+            # fall back to original text, JSON parse might fail but we try
+            pass
 
-    # 2. Fix Invalid Escapes (The "Alice\'s" bug)
+    # 2. Extract strictly the JSON part
+    # Finds the first '{' and the last '}'. This handles ```json wrappers, 
+    # conversational filler, or trailing newlines effectively.
+    idx_start = text.find("{")
+    idx_end = text.rfind("}")
+
+    if idx_start != -1 and idx_end != -1:
+        text = text[idx_start : idx_end + 1]
+
+    # 3. Fix Invalid Escapes (The "Alice\'s" bug)
     # JSON standard does NOT allow escaping single quotes, but LLMs often do it.
     text = text.replace(r"\'", "'")
+
     # ─────────────────────────────────────────────────────────────
 
     try:
@@ -364,6 +388,14 @@ Now decide the next step according to the JSON schema above.
     except Exception as exc:
         # Surface the bad text so we can see what the model is doing
         raise RuntimeError(f"Planner LLM returned non-JSON text: {text!r}") from exc
+
+    # 4. Merge internal monologue into the JSON thought field
+    # This ensures the deep reasoning is preserved in the trace
+    if internal_monologue:
+        original_thought = step.get("thought", "")
+        # Format it clearly so we know what is what
+        combined_thought = f"[Deep Thought]\n{internal_monologue}\n\n[Planner]\n{original_thought}"
+        step["thought"] = combined_thought.strip()
 
     return step
 

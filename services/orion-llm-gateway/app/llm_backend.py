@@ -25,19 +25,15 @@ logger = logging.getLogger("orion-llm-gateway.backend")
 
 _profile_registry: LLMProfileRegistry = settings.load_profile_registry()
 
+
 def _common_http_client() -> httpx.Client:
     """
-    Returns an HTTP client with a generous timeout for reasoning models (DeepSeek R1).
+    Returns an HTTP client using the configured timeouts from settings.
     """
-    # Force a minimum of 300 seconds (5 minutes)
-    # Your settings probably say 60, which is too short for R1.
-    settings_val = getattr(settings, "read_timeout_sec", 300.0)
-    read_timeout = max(300.0, settings_val) 
-
     return httpx.Client(
         timeout=httpx.Timeout(
             connect=getattr(settings, "connect_timeout_sec", 10.0),
-            read=read_timeout,
+            read=getattr(settings, "read_timeout_sec", 60.0), 
             write=10.0,
             pool=10.0
         )

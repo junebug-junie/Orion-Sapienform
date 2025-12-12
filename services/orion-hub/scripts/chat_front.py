@@ -210,11 +210,10 @@ async def run_chat_general(
     raw_reply: Optional[Dict[str, Any]] = None
     try:
         rpc = CortexOrchRPC(bus)
-        raw_reply = await rpc.run_verb(
-            verb_name="chat_general",
-            origin_node=settings.SERVICE_NAME,
+        raw_reply = await rpc.run_chat_general(
             context=context,
-            timeout_ms=None,
+            origin_node=settings.SERVICE_NAME,
+            timeout_ms=None,  # or settings.CORTEX_CHAT_TIMEOUT_MS if you have it
         )
 
         text = ""
@@ -264,7 +263,6 @@ async def run_chat_general(
     # ─────────────────────────────────────────────
     gateway = LLMGatewayRPC(bus)
 
-    # Simple, non-weird system message so we stop hallucinating fake shared history
     system_msg = (
         "You are Oríon, Juniper's collaborative AI co-journeyer.\n"
         "You run as part of a distributed cognitive mesh across multiple nodes and services.\n"
@@ -274,11 +272,8 @@ async def run_chat_general(
     )
 
     history: List[Dict[str, Any]] = [{"role": "system", "content": system_msg}]
-
-    # Keep the visible chat history as-is
     history.extend(messages)
 
-    # Optionally tack on the memory digest as another system msg
     if memory_digest:
         history.append(
             {
@@ -314,15 +309,11 @@ async def run_chat_general(
         },
     }
 
-
 #-------------------------------------------------
 #
 #        Agents
 #
 #-------------------------------------------------
-
-
-from scripts.agent_chain_rpc import AgentChainRPC  # make sure this import exists at top
 
 
 async def run_chat_agentic(

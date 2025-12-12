@@ -95,12 +95,12 @@ class CortexOrchRPC:
     instead of hand-rolling prompts and wiring directly to LLM Gateway.
     """
 
-    def __init__(self, bus):
+    def __init__(self, bus: OrionBus):
         self.bus = bus
 
         # Hub thinks in logical cortex channels; _request_and_wait maps to physical.
-        self.request_channel = "orion:cortex:request"
-        self.result_prefix = "orion:cortex:result"
+        self.request_channel = "orion-cortex:request"
+        self.result_prefix = "orion-cortex:result"
 
         if not self.bus or not getattr(self.bus, "enabled", False):
             logger.warning("[CortexOrchRPC] OrionBus is disabled; calls will fail.")
@@ -116,7 +116,7 @@ class CortexOrchRPC:
         *,
         verb_name: str,
         context: dict,
-        steps: list[dict],
+        steps: list[dict] | None = None,
         origin_node: str | None = None,
         timeout_ms: int | None = None,
     ) -> dict:
@@ -132,6 +132,9 @@ class CortexOrchRPC:
             "steps": [CortexStepConfig-like dicts],
             "timeout_ms": int | None,
           }
+
+        We let cortex-orch handle the timeout based on timeout_ms.
+        Hub-side _request_and_wait() uses its own default timeout.
         """
         if not self.bus or not getattr(self.bus, "enabled", False):
             raise RuntimeError("CortexOrchRPC used while OrionBus is disabled")
@@ -139,20 +142,29 @@ class CortexOrchRPC:
         trace_id = str(uuid.uuid4())
         reply_channel = f"{self.result_prefix}:{trace_id}"
 
-        envelope = {
+        core_payload: dict = {
+            "verb_name": verb_name,
+            "origin_node": origin_node or settings.SERVICE_NAME,
+            "context": context or {},
+            "steps": steps or [],
+            "timeout_ms": timeout_ms,
+        }
+
+        envelope: dict = {
+            # bus/meta
             "event": "orchestrate_verb",
             "trace_id": trace_id,
             "origin_node": origin_node or settings.SERVICE_NAME,
             "reply_channel": reply_channel,
-            "payload": {
-                "verb_name": verb_name,
-                "origin_node": origin_node or settings.SERVICE_NAME,
-                "context": context or {},
-                "steps": steps or [],
-                "timeout_ms": timeout_ms,
-            },
+
+            # cortex-orch expects these at TOP LEVEL
+            **core_payload,
+
+            # and also under `payload` for compatibility
+            "payload": core_payload,
         }
 
+        # IMPORTANT: Hub’s _request_and_wait takes EXACTLY 5 args.
         raw_reply = await _request_and_wait(
             self.bus,
             self.request_channel,
@@ -160,7 +172,6 @@ class CortexOrchRPC:
             envelope,
             trace_id,
         )
-
         return raw_reply
 
     async def run_chat_general(
@@ -173,32 +184,14 @@ class CortexOrchRPC:
         """
         Convenience wrapper for the `chat_general` verb.
 
-        Hub doesn't need to remember the step wiring; we bake it here:
-
-        - Single step: `llm_chat_general`
-        - Service: `LLMGatewayService`
-        - Prompt template: `chat_general.j2`
+        We do NOT inline steps here; we let cortex-orch load
+        /app/orion/cognition/verbs/chat_general.yaml which already
+        defines the `llm_chat_general` step.
         """
-        steps = [
-            {
-                "verb_name": "chat_general",
-                "step_name": "llm_chat_general",
-                "description": (
-                    "Single-step, generalist chat response that interprets "
-                    "intent/tone and generates a final reply."
-                ),
-                "order": 0,
-                "services": ["LLMGatewayService"],
-                "prompt_template": "chat_general.j2",
-                "requires_gpu": True,
-                "requires_memory": True,
-            }
-        ]
-
         return await self.run_verb(
             verb_name="chat_general",
             context=context,
-            steps=steps,
+            steps=[],  # let cortex-orch load from chat_general.yaml
             origin_node=origin_node,
             timeout_ms=timeout_ms,
         )

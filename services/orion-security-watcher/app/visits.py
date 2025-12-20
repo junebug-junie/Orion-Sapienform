@@ -1,10 +1,9 @@
-# app/visits.py
 from __future__ import annotations
 
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 from .models import AlertPayload, SecurityState, VisionEvent, VisitSummary
 
@@ -35,37 +34,32 @@ class VisitManager:
         self.last_visit_ts: Optional[datetime] = None
 
         # Cooldowns (seconds). Fallback defaults if not in settings.
-        self.global_cooldown: int = getattr(
-            settings, "SECURITY_GLOBAL_COOLDOWN_SEC", 300
-        )
+        self.global_cooldown: int = getattr(settings, "SECURITY_GLOBAL_COOLDOWN_SEC", 300)
         self.identity_cooldown: int = getattr(
             settings, "SECURITY_IDENTITY_COOLDOWN_SEC", 600
         )
 
-        # --- NEW: noise resistance knobs ---
+        # --- Noise resistance knobs ---
 
         # Minimum bounding-box area (px^2) to treat a FACE as valid human
         # e.g. 50x50 = 2500
-        self.min_face_area: int = getattr(
-            settings, "SECURITY_MIN_FACE_AREA", 2500
-        )
+        self.min_face_area: int = getattr(settings, "SECURITY_MIN_FACE_AREA", 2500)
 
         # Minimum area for YOLO 'person' detections
-        self.min_person_area: int = getattr(
-            settings, "SECURITY_MIN_PERSON_AREA", 2500
-        )
+        self.min_person_area: int = getattr(settings, "SECURITY_MIN_PERSON_AREA", 2500)
+
+        # Minimum YOLO confidence for a 'person' detection.
+        # IMPORTANT: your YOLO detector runs with conf ~= 0.25 by default,
+        # so keeping this at 0.50 would often suppress all YOLO humans.
+        self.min_yolo_score: float = float(getattr(settings, "SECURITY_MIN_YOLO_SCORE", 0.30))
 
         # Require at least this many consecutive "human-ish" events before
         # we say humans_present=True for alert purposes.
-        self.min_human_streak: int = getattr(
-            settings, "SECURITY_MIN_HUMAN_STREAK", 3
-        )
+        self.min_human_streak: int = getattr(settings, "SECURITY_MIN_HUMAN_STREAK", 3)
 
         # Max frame gap between human events to keep the streak going
         # (at 15 FPS, 45 frames ≈ 3 seconds).
-        self.streak_max_gap: int = getattr(
-            settings, "SECURITY_STREAK_MAX_FRAME_GAP", 45
-        )
+        self.streak_max_gap: int = getattr(settings, "SECURITY_STREAK_MAX_FRAME_GAP", 45)
 
         # Internal streak state
         self._human_streak: int = 0
@@ -83,13 +77,13 @@ class VisitManager:
         v1 rules:
         - Any 'presence' detection with score >= 0.5
         - Any 'face' detection with score >= 0.5 and bbox area >= min_face_area
-        - Any 'yolo' detection whose label is 'person' with score >= 0.5 and
-          area >= min_person_area
+        - Any 'yolo' detection whose label is 'person' with score >= min_yolo_score
+          and area >= min_person_area
         """
-
         for d in ev.detections:
-            kind = d.kind.lower()
+            kind = (d.kind or "").lower()
             label = (d.label or "").lower()
+
             x, y, w, h = d.bbox
             area = max(0, w) * max(0, h)
 
@@ -101,11 +95,11 @@ class VisitManager:
             if kind == "face" and d.score >= 0.5 and area >= self.min_face_area:
                 return True
 
-            # YOLO: look for 'person' class with area gating
+            # YOLO: look for 'person' class with area + confidence gating
             if (
                 kind == "yolo"
                 and label == "person"
-                and d.score >= 0.5
+                and d.score >= self.min_yolo_score
                 and area >= self.min_person_area
             ):
                 return True
@@ -166,7 +160,6 @@ class VisitManager:
         - If ARMED and humans_present, and global cooldown allows,
           emit a high-severity alert with best_identity="unknown".
         """
-
         now = event.ts
 
         raw_humans = self._raw_human_detection(event)

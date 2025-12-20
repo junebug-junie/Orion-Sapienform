@@ -1,0 +1,45 @@
+services:
+  power-guard:
+    container_name: ${PROJECT}-power-guard
+    build:
+      context: ../..
+      dockerfile: services/orion-power-guard/Dockerfile
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: ${SERVICE_NAME}
+      SERVICE_VERSION: ${SERVICE_VERSION}
+
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
+      ORION_BUS_URL: ${ORION_BUS_URL}
+
+      POWER_GUARD_NODE_NAME: ${POWER_GUARD_NODE_NAME}
+      POWER_GUARD_UPS_NAME: ${POWER_GUARD_UPS_NAME}
+
+      POWER_GUARD_UPS_HOST: ${POWER_GUARD_UPS_HOST}
+      POWER_GUARD_SNMP_PORT: ${POWER_GUARD_SNMP_PORT}
+      POWER_GUARD_SNMP_COMMUNITY: ${POWER_GUARD_SNMP_COMMUNITY}
+
+      POWER_GUARD_POLL_INTERVAL_SEC: ${POWER_GUARD_POLL_INTERVAL_SEC}
+      POWER_GUARD_ONBATTERY_GRACE_SEC: ${POWER_GUARD_ONBATTERY_GRACE_SEC}
+
+      CHANNEL_POWER_EVENTS: ${CHANNEL_POWER_EVENTS}
+
+      POWER_GUARD_ENABLE_SHUTDOWN: ${POWER_GUARD_ENABLE_SHUTDOWN}
+      POWER_GUARD_SHUTDOWN_CMD: ${POWER_GUARD_SHUTDOWN_CMD}
+
+      user: "0:0"
+
+    volumes:
+      # Mount the host's private key into the container, read-only
+      - /root/.ssh/powerguard_shutdown:/etc/powerguard/ssh_key:ro
+
+    networks:
+      - app-net
+
+
+networks:
+  app-net:
+    external: true

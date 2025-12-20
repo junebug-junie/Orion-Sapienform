@@ -1,4 +1,3 @@
-# app/state_store.py
 from __future__ import annotations
 
 import json
@@ -11,11 +10,6 @@ from .settings import Settings
 
 
 class SecurityStateStore:
-    """
-    Simple JSON-backed state store for armed/mode.
-    Falls back to defaults if file missing or invalid.
-    """
-
     def __init__(self, settings: Settings):
         self.settings = settings
         self.path = Path(settings.SECURITY_STATE_PATH)
@@ -32,18 +26,16 @@ class SecurityStateStore:
                     enabled=self.settings.SECURITY_ENABLED,
                     armed=data.get("armed", self.settings.SECURITY_DEFAULT_ARMED),
                     mode=data.get("mode", self.settings.SECURITY_MODE),
-                    updated_at=datetime.fromisoformat(data["updated_at"])
-                    if data.get("updated_at")
-                    else None,
+                    updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else None,
                     updated_by=data.get("updated_by"),
                 )
                 return self._state
             except Exception:
-                # fall through to default
                 pass
 
+        # Default
         self._state = SecurityState(
-            enabled=self.settings.SECURITY_DEFAULT_ARMED,
+            enabled=self.settings.SECURITY_ENABLED,
             armed=self.settings.SECURITY_DEFAULT_ARMED,
             mode=self.settings.SECURITY_MODE,
             updated_at=None,
@@ -51,7 +43,12 @@ class SecurityStateStore:
         )
         return self._state
 
-    def save(self, armed: Optional[bool] = None, mode: Optional[str] = None, updated_by: str = "api") -> SecurityState:
+    def save(
+        self,
+        armed: Optional[bool] = None,
+        mode: Optional[str] = None,
+        updated_by: str = "api",
+    ) -> SecurityState:
         current = self.load()
 
         new_state = SecurityState(
@@ -77,7 +74,6 @@ class SecurityStateStore:
                 )
             )
         except Exception:
-            # Not fatal; state just won't persist across restart
             pass
 
         return new_state

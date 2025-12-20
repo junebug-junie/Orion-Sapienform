@@ -1,4 +1,3 @@
-# app/notifications.py
 from __future__ import annotations
 
 import logging
@@ -11,6 +10,7 @@ import smtplib
 import urllib.request
 
 from .models import AlertPayload, AlertSnapshot
+from .utils import redact_url
 
 logger = logging.getLogger("orion-security-watcher.notifications")
 
@@ -27,12 +27,12 @@ class Notifier:
 
         # Snapshot config
         self.snapshot_url = getattr(settings, "VISION_SNAPSHOT_URL", None)
+        self.snapshot_public_url = getattr(settings, "VISION_SNAPSHOT_PUBLIC_URL", "") or ""
+
         self.snapshot_dir = Path(
             getattr(settings, "SECURITY_SNAPSHOT_DIR", "/mnt/telemetry/orion-security/alerts")
         )
-        self.snapshot_count = int(
-            getattr(settings, "SECURITY_SNAPSHOT_COUNT", 3)
-        )
+        self.snapshot_count = int(getattr(settings, "SECURITY_SNAPSHOT_COUNT", 3))
 
         # Ensure directory exists
         try:
@@ -40,19 +40,20 @@ class Notifier:
         except Exception as e:
             logger.error(f"[NOTIFY] Failed to create snapshot dir {self.snapshot_dir}: {e}")
 
-        # Email / SMTP config — now wired to NOTIFY_* settings
+        # Notification mode
         self.mode = getattr(settings, "NOTIFY_MODE", "off")
 
-        # These come from your .env / compose as NOTIFY_EMAIL_*.
+        # SMTP config
         self.smtp_host = getattr(settings, "NOTIFY_EMAIL_SMTP_HOST", "")
         self.smtp_port = int(getattr(settings, "NOTIFY_EMAIL_SMTP_PORT", 587))
         self.smtp_user = getattr(settings, "NOTIFY_EMAIL_SMTP_USERNAME", "")
         self.smtp_pass = getattr(settings, "NOTIFY_EMAIL_SMTP_PASSWORD", "")
         self.smtp_use_tls = bool(getattr(settings, "NOTIFY_EMAIL_USE_TLS", True))
 
+        # Email headers
         self.email_from = getattr(settings, "NOTIFY_EMAIL_FROM", "")
-        self.email_to_raw = getattr(settings, "NOTIFY_EMAIL_TO", "")
-        self.email_to = [e.strip() for e in self.email_to_raw.split(",") if e.strip()]
+        to_raw = getattr(settings, "NOTIFY_EMAIL_TO", "") or ""
+        self.email_to = [e.strip() for e in to_raw.split(",") if e.strip()]
 
     # ─────────────────────────────────────────────
     # Snapshot capture
@@ -60,12 +61,10 @@ class Notifier:
 
     def capture_snapshots(self, alert: AlertPayload) -> List[AlertSnapshot]:
         """
-        Pull a few frames from the vision edge /snapshot.jpg endpoint and
-        save them to disk, returning AlertSnapshot objects.
+        Pull frames from the vision edge /snapshot.jpg endpoint and save to disk.
 
         If snapshot URL or directory are misconfigured, returns [].
         """
-
         if not self.snapshot_url:
             logger.info("[NOTIFY] No VISION_SNAPSHOT_URL configured; skipping snapshots")
             return []
@@ -75,17 +74,18 @@ class Notifier:
             return []
 
         snapshots: List[AlertSnapshot] = []
+        safe_url = redact_url(self.snapshot_url)
 
         for i in range(self.snapshot_count):
             try:
-                logger.debug(f"[NOTIFY] Fetching snapshot {i+1}/{self.snapshot_count} from {self.snapshot_url}")
+                logger.debug(f"[NOTIFY] Fetching snapshot {i+1}/{self.snapshot_count} from {safe_url}")
                 with urllib.request.urlopen(self.snapshot_url, timeout=5) as resp:
-                    if resp.status != 200:
-                        logger.error(f"[NOTIFY] Snapshot HTTP {resp.status} from {self.snapshot_url}")
+                    if getattr(resp, "status", 200) != 200:
+                        logger.error(f"[NOTIFY] Snapshot HTTP {getattr(resp, 'status', '???')} from {safe_url}")
                         continue
                     data = resp.read()
             except Exception as e:
-                logger.error(f"[NOTIFY] Error fetching snapshot from {self.snapshot_url}: {e}")
+                logger.error(f"[NOTIFY] Error fetching snapshot from {safe_url}: {e}")
                 continue
 
             ts = datetime.utcnow()
@@ -113,7 +113,7 @@ class Notifier:
         """
         Send an email with alert details and optional snapshot attachments.
 
-        If SMTP is not configured properly, logs and returns.
+        IMPORTANT: redact URLs to avoid leaking user:pass@ in camera IDs.
         """
         if self.mode != "inline":
             logger.info(f"[NOTIFY] NOTIFY_MODE={self.mode}; skipping email send")
@@ -126,10 +126,12 @@ class Notifier:
             )
             return
 
+        safe_camera = redact_url(str(alert.camera_id))
+
         subject = f"[Orion] Security alert: {alert.reason} ({alert.severity})"
         body_lines = [
             f"Time (UTC): {alert.ts.isoformat()}",
-            f"Camera: {alert.camera_id}",
+            f"Camera: {safe_camera}",
             f"Armed: {alert.armed}",
             f"Mode: {alert.mode}",
             f"Humans present: {alert.humans_present}",
@@ -138,6 +140,11 @@ class Notifier:
             f"Identity votes: {alert.identity_votes}",
             "",
         ]
+
+        # Optional safe/public snapshot URL (no creds)
+        if self.snapshot_public_url.strip():
+            body_lines.append(f"Snapshot URL: {self.snapshot_public_url.strip()}")
+            body_lines.append("")
 
         if snapshots:
             body_lines.append(f"{len(snapshots)} snapshot(s) captured and attached.")
@@ -156,13 +163,7 @@ class Notifier:
                 with open(snap.path, "rb") as f:
                     data = f.read()
                 filename = os.path.basename(snap.path)
-                msg.add_attachment(
-                    data,
-                    maintype="image",
-                    subtype="jpeg",
-                    filename=filename,
-                )
-                logger.debug(f"[NOTIFY] Attached snapshot {filename}")
+                msg.add_attachment(data, maintype="image", subtype="jpeg", filename=filename)
             except Exception as e:
                 logger.error(f"[NOTIFY] Failed to attach snapshot {snap.path}: {e}")
 
@@ -179,9 +180,6 @@ class Notifier:
                         server.login(self.smtp_user, self.smtp_pass)
                     server.send_message(msg)
 
-            logger.info(
-                f"[NOTIFY] Sent alert email to {self.email_to} "
-                f"({len(snapshots)} snapshot(s) attached)"
-            )
+            logger.info(f"[NOTIFY] Sent alert email to {self.email_to} ({len(snapshots)} attached)")
         except Exception as e:
             logger.error(f"[NOTIFY] Failed to send email: {e}")

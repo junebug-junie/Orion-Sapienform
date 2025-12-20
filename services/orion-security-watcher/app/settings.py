@@ -1,6 +1,4 @@
-# app/settings.py
-from typing import List, Optional
-from pydantic import Field
+from typing import List
 from pydantic_settings import BaseSettings
 
 
@@ -20,46 +18,34 @@ class Settings(BaseSettings):
     CHANNEL_SECURITY_ALERTS: str = "orion:security:alerts"
 
     # Core security toggles
-    SECURITY_DEFAULT_ARMED: bool = False
     SECURITY_ENABLED: bool = True
     SECURITY_DEFAULT_ARMED: bool = False
-    SECURITY_MODE: str = "vacation_strict"  # future: family_only, off
-
-    # Cameras of interest (stream_ids); empty = all
-    SECURITY_CAMERA_IDS: str = ""  # comma-separated
-
-    # Visit logic
-    VISIT_IDLE_TIMEOUT_SEC: int = 5
-    MIN_VISIT_DURATION_SEC: int = 2
-    MIN_PERSON_FRAMES: int = 2
-
-    # Detection gating
-    HUMAN_KINDS: str = "face,yolo,presence"
-    MOTION_REQUIRED: bool = True
-    HUMAN_MIN_SCORE: float = 0.4
-    MIN_BBOX_AREA_FRACTION: float = 0.01  # ignore tiny blobs (<1% frame)
-
-    # Identity / whitelist (v2)
-    ALLOWED_IDENTITIES: str = "juniper,wife,kidA,kidB"
-    IDENTITY_CONFIDENCE_THRESHOLD: float = 0.6
+    SECURITY_MODE: str = "vacation_strict"  # "vacation_strict", "off"
 
     # Rate limiting
     SECURITY_GLOBAL_COOLDOWN_SEC: int = 60
     SECURITY_IDENTITY_COOLDOWN_SEC: int = 300
 
+    # YOLO score threshold (edge default conf=0.25, so keep this low-ish)
+    SECURITY_MIN_YOLO_SCORE: float = 0.30
+
     # Snapshot behavior
+    # NOTE: this may contain credentials. We will redact it in logs/emails.
     VISION_SNAPSHOT_URL: str = "http://100.92.216.81:7100/snapshot.jpg"
+
+    # Optional: a safe/public URL to include in emails (no creds)
+    # e.g. "http://100.92.216.81:7100/snapshot.jpg" behind your tailscale ACL/proxy
+    VISION_SNAPSHOT_PUBLIC_URL: str = ""
+
     SECURITY_SNAPSHOT_COUNT: int = 3
-    SECURITY_SNAPSHOT_INTERVAL_SEC: int = 2
     SECURITY_SNAPSHOT_DIR: str = "/mnt/telemetry/orion-security/alerts"
 
     # Notification mode
     # "inline" = send email directly from this service
-    # "none"   = don't send, just publish alerts on bus
+    # "off"    = don't send, just publish alerts on bus
     NOTIFY_MODE: str = "inline"
 
     # Email config (for inline mode)
-    NOTIFY_EMAIL_ENABLED: bool = False
     NOTIFY_EMAIL_SMTP_HOST: str = ""
     NOTIFY_EMAIL_SMTP_PORT: int = 587
     NOTIFY_EMAIL_SMTP_USERNAME: str = ""
@@ -72,18 +58,9 @@ class Settings(BaseSettings):
     SECURITY_STATE_PATH: str = "/mnt/telemetry/orion-security/state.json"
 
     @property
-    def human_kinds(self) -> List[str]:
-        return [k.strip() for k in self.HUMAN_KINDS.split(",") if k.strip()]
-
-    @property
-    def allowed_identities(self) -> List[str]:
-        return [k.strip() for k in self.ALLOWED_IDENTITIES.split(",") if k.strip()]
-
-    @property
-    def camera_ids(self) -> List[str]:
-        if not self.SECURITY_CAMERA_IDS.strip():
-            return []
-        return [c.strip() for c in self.SECURITY_CAMERA_IDS.split(",") if c.strip()]
+    def notify_email_to(self) -> List[str]:
+        raw = self.NOTIFY_EMAIL_TO or ""
+        return [e.strip() for e in raw.split(",") if e.strip()]
 
 
 def get_settings() -> Settings:

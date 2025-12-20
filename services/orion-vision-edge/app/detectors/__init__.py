@@ -18,7 +18,6 @@ settings = get_settings()
 
 DetectorSpec = Tuple[str, str, object]  # (name, mode, instance)
 
-
 def build_detectors() -> List[DetectorSpec]:
     specs: List[DetectorSpec] = []
     names = set(settings.detector_names)
@@ -43,8 +42,14 @@ def build_detectors() -> List[DetectorSpec]:
 
     if "yolo" in names and settings.ENABLE_YOLO:
         classes = settings.yolo_class_set or None
-        # if YOLO_DEVICE is a digit, treat as cuda index, else use as-is
         device = f"cuda:{settings.YOLO_DEVICE}" if settings.YOLO_DEVICE.isdigit() else settings.YOLO_DEVICE
+
+        print(
+            f"[DETECTORS] adding YOLO model={settings.YOLO_MODEL} "
+            f"device={device} enable_yolo={settings.ENABLE_YOLO} names={sorted(list(names))}",
+            flush=True,
+        )
+
         specs.append(
             (
                 "yolo",

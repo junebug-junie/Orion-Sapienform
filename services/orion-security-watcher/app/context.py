@@ -1,0 +1,31 @@
+import logging
+
+from orion.core.bus.service import OrionBus
+
+from .notifications import Notifier
+from .settings import get_settings
+from .state_store import SecurityStateStore
+from .visits import VisitManager
+
+logger = logging.getLogger("orion-security-watcher.context")
+
+
+class AppContext:
+    """
+    Single place to construct shared singletons.
+    Keeps main.py clean and prevents import spaghetti.
+    """
+
+    def __init__(self):
+        self.settings = get_settings()
+
+        self.bus = OrionBus(
+            url=self.settings.ORION_BUS_URL,
+            enabled=self.settings.ORION_BUS_ENABLED,
+        )
+        self.state_store = SecurityStateStore(self.settings)
+        self.visit_manager = VisitManager(self.settings)
+        self.notifier = Notifier(self.settings)
+
+
+ctx = AppContext()

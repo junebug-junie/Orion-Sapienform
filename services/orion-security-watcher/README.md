@@ -1,15 +1,12 @@
 # 🛡 Orion Security Watcher
 
-`orion-security-watcher` is a small, bus-native service that listens to
-**vision events** from `orion-vision-edge` and decides **when something is
-security-relevant enough** to:
+`orion-security-watcher` is a small, bus-native service that listens to **vision events** from `orion-vision-edge` and decides when something is security-relevant enough to:
 
-- Record a **visit** (who/what entered the monitored zone, when, how long).
-- Raise an **alert** (e.g. vacation mode + unknown human + motion).
-- Capture and ship **snapshots** off the machine (email / future cloud hooks).
+- Record a **visit** (a contiguous window of humans present).
+- Raise an **alert** (armed + human-ish detection + passes rate-limit).
+- Capture **snapshots** and optionally send an **email** (v1 inline SMTP).
 
-This is the piece that turns raw pixels into: _"Hey Juniper, someone is in the
-office right now and it’s probably not you."_
+This is the piece that turns raw pixels into: _"Hey Juniper, someone is in the office right now."_
 
 ---
 
@@ -24,47 +21,51 @@ sequenceDiagram
     participant Watcher as Security Watcher
     participant Notifier as Notifier (email / future)
 
-    Vision->>Bus: publish Event (orion:vision:edge:raw)
-    Bus->>Watcher: VisionEvent
-    Watcher->>Watcher: VisitManager.process_event()
+    Vision->>Bus: publish VisionEvent (orion:vision:edge:raw)
+    Bus->>Watcher: subscribe + decode message
+    Watcher->>Watcher: VisitManager.process_event(event, state)
     Watcher->>Bus: publish VisitSummary (orion:security:visits)
-    alt trigger alert
+    alt alert triggered
       Watcher->>Notifier: capture_snapshots(alert_payload)
-      Notifier->>Watcher: list[snapshot]
+      Notifier->>Watcher: list[AlertSnapshot]
       Watcher->>Bus: publish AlertPayload (orion:security:alerts)
-      Watcher->>Notifier: send_email(alert, snapshots) (optional)
+      Watcher->>Notifier: send_email(alert, snapshots) (if NOTIFY_MODE=inline)
     end
 ```
 
 Key components:
 
 - **Bus worker**
-  - Subscribes to `VISION_EVENTS_SUBSCRIBE_RAW` (e.g. `orion:vision:edge:raw`).
+  - Subscribes to `VISION_EVENTS_SUBSCRIBE_RAW` (default `orion:vision:edge:raw`).
+  - **Important:** messages may arrive as `dict`, JSON `str`, or JSON `bytes` depending on `OrionBus` decode behavior. The watcher normalizes these to a `dict` before parsing.
   - Parses messages into `VisionEvent` models.
-  - Hands them to `VisitManager` along with current `SecurityState`.
+  - Passes them to `VisitManager` along with current `SecurityState`.
 
 - **SecurityStateStore**
   - Reads/writes current **armed state** and **mode** to disk (JSON file).
-  - A tiny persistence layer so arming survives restarts.
+  - Keeps arming persistent across restarts.
 
 - **VisitManager**
-  - Maintains in-memory **visit windows**.
-  - Aggregates multiple raw events into a single **VisitSummary**.
-  - Applies **rate limiting** for alerts:
-    - Global cooldown (e.g. don’t alert more than once every N seconds).
-    - Identity cooldown (once we identify `juniper`, don’t scream about her).
+  - Noise resistance via gating + streak:
+    - bbox area thresholds (`SECURITY_MIN_FACE_AREA`, `SECURITY_MIN_PERSON_AREA`)
+    - score thresholds (`SECURITY_MIN_YOLO_SCORE`)
+    - streak debounce (`SECURITY_MIN_HUMAN_STREAK`, `SECURITY_STREAK_MAX_FRAME_GAP`)
+  - Applies rate limiting:
+    - global cooldown (`SECURITY_GLOBAL_COOLDOWN_SEC`)
+    - identity cooldown stub (`SECURITY_IDENTITY_COOLDOWN_SEC`, future)
 
 - **Notifier**
-  - Captures JPEG snapshots when an alert triggers.
-  - Writes them to a local directory (e.g. `/mnt/telemetry/orion-security-watcher`).
-  - Sends email inline (v1, optional, via SMTP).
-  - Later: S3 / object store push, SMS, push notifications, etc.
+  - Captures JPEG snapshots from `VISION_SNAPSHOT_URL` when an alert triggers.
+  - Writes them to `SECURITY_SNAPSHOT_DIR`.
+  - Sends email inline (SMTP) when `NOTIFY_MODE=inline`.
+  - **Credential safety:** URLs are **redacted** (`user:pass@` removed) before logging/email.
+  - Optionally includes a safe link `VISION_SNAPSHOT_PUBLIC_URL` in emails (recommended: credential-free).
 
-- **UI & REST API**
+- **UI + REST API**
   - `/` – simple status + arm/disarm UI (served over Tailscale).
-  - `/security/state` – get current state as JSON.
-  - `/security/state` (POST) – arm/disarm / change mode.
-  - `/security/test-alert` – synthetic alert for pipeline testing.
+  - `/security/state` – get/set armed + mode.
+  - `/security/test-alert` – synthetic alert to validate snapshot+email pipeline.
+  - `/debug/simulate-person` – synthetic YOLO person to test gating/streak (optionally email with `send=1`).
 
 ---
 
@@ -80,37 +81,33 @@ Key components:
 
 - `CHANNEL_SECURITY_VISITS`
   - Default: `orion:security:visits`
-  - Payload: `VisitSummary` (high-level info about a visit window)
+  - Payload: `VisitSummary`
 
 - `CHANNEL_SECURITY_ALERTS`
   - Default: `orion:security:alerts`
-  - Payload: `AlertPayload` (structured alert + snapshot references)
+  - Payload: `AlertPayload`
 
-These channels are meant for **downstream consumers** like:
+These channels are for downstream consumers like:
 
-- A future **security dashboard** or log viewer.
-- A Cortex verb that ingests security events into the narrative/memory stack.
-- External notification services.
+- a future **security dashboard**
+- a Cortex verb ingesting events into memory/chronicle
+- external notification relays
 
 ---
 
-## Models
+## Models (actual v1)
 
 ### SecurityState
-
-Represents the long-lived arming state of the system.
 
 ```python
 class SecurityState(BaseModel):
     armed: bool = False
-    mode: str = "vacation_strict"  # or "off", future modes later
+    mode: str = "vacation_strict"  # or "off"
     updated_at: datetime | None = None
     updated_by: str | None = None
 ```
 
-### VisionEvent (input from vision edge)
-
-A minimal view of the `Event` coming off `orion:vision:edge:raw`:
+### VisionEvent (input)
 
 ```python
 class VisionEvent(BaseModel):
@@ -118,63 +115,58 @@ class VisionEvent(BaseModel):
     stream_id: str
     frame_index: int | None = None
     detections: list[Detection]
-    meta: dict[str, Any] | None = None
+    note: str | None = None
+    meta: dict[str, Any] = {}
 
 class Detection(BaseModel):
-    kind: str
-    bbox: tuple[int, int, int, int]
+    kind: str               # "face", "presence", "yolo", ...
+    bbox: tuple[int,int,int,int]  # [x, y, w, h]
     score: float = 1.0
-    label: str | None = None
-    meta: dict[str, Any] | None = None
+    label: str | None = None      # e.g. "person" for YOLO
+    track_id: str|int|None = None
+    meta: dict[str, Any] = {}
 ```
 
-### VisitSummary
-
-Represents a **collapsed window** of related detections (a single visit).
+### VisitSummary (v1)
 
 ```python
 class VisitSummary(BaseModel):
     visit_id: str
-    camera_id: str
-    started_at: datetime
-    last_seen_at: datetime
-    duration_sec: float
-    humans_present: bool
-    motion_present: bool
-    identities: dict[str, float]  # e.g. {"juniper": 0.8, "unknown": 0.2}
-    frames: int
+    first_ts: datetime
+    last_ts: datetime
+    stream_id: str
+    humans_present: bool = True
+    events: int = 1
 ```
 
 ### AlertPayload
-
-What gets shipped to the bus and (optionally) out via email.
 
 ```python
 class AlertPayload(BaseModel):
     ts: datetime
     service: str
     version: str
+
     alert_id: str
     visit_id: str
     camera_id: str
 
     armed: bool
     mode: str
-
     humans_present: bool
+
     best_identity: str
     best_identity_conf: float
     identity_votes: dict[str, float]
 
-    reason: str    # "unknown_human_vacation_mode", "test_alert", etc.
-    severity: str  # "low", "medium", "high"
+    reason: str
+    severity: Literal["low", "medium", "high"] = "high"
 
-    snapshots: list[str] = []  # file paths or URLs
-
+    snapshots: list[AlertSnapshot] = []
     rate_limit: dict[str, Any]
 ```
 
-All datetime fields are converted to ISO strings when publishing to the bus.
+**Note:** `best_identity_conf` is **identity confidence** (future). Today it’s `0.0` because identity is stubbed as `unknown`.
 
 ---
 
@@ -182,49 +174,65 @@ All datetime fields are converted to ISO strings when publishing to the bus.
 
 Configuration is driven by environment variables via `app/settings.py`.
 
-### Core service config
+### Core / bus
 
-| Env var                     | Type   | Default             | Description                              |
-|-----------------------------|--------|---------------------|------------------------------------------|
-| `SERVICE_NAME`              | str    | `security-watcher`  | Service name                             |
-| `SERVICE_VERSION`           | str    | `0.1.0`             | Version string                           |
-| `SECURITY_ENABLED`          | bool   | `true`              | Turn the watcher on/off                  |
-| `SECURITY_MODE`             | str    | `vacation_strict`   | Default mode                             |
-| `STATE_FILE_PATH`           | str    | `/data/state.json`  | Where SecurityState is stored            |
-| `SNAPSHOT_DIR`              | str    | `/data/snaps`       | Where snapshots are written              |
+| Env var | Type | Default | Description |
+|---|---:|---|---|
+| `ORION_BUS_ENABLED` | bool | `true` | Enable bus integration |
+| `ORION_BUS_URL` | str | `redis://…/0` | Redis URL |
+| `VISION_EVENTS_SUBSCRIBE_RAW` | str | `orion:vision:edge:raw` | Vision event channel |
+| `CHANNEL_SECURITY_VISITS` | str | `orion:security:visits` | Visit summaries channel |
+| `CHANNEL_SECURITY_ALERTS` | str | `orion:security:alerts` | Alerts channel |
 
-### Bus config
+### Security toggles
 
-| Env var                       | Type | Default                      | Description                             |
-|--------------------------------|------|------------------------------|-----------------------------------------|
-| `ORION_BUS_ENABLED`            | bool | `true`                       | Enable bus integration                  |
-| `ORION_BUS_URL`                | str  | `redis://orion-redis:6379/0` | Redis URL                               |
-| `VISION_EVENTS_SUBSCRIBE_RAW`  | str  | `orion:vision:edge:raw`      | Subscribed vision events channel        |
-| `CHANNEL_SECURITY_VISITS`      | str  | `orion:security:visits`      | Visit summaries                         |
-| `CHANNEL_SECURITY_ALERTS`      | str  | `orion:security:alerts`      | Alerts                                  |
+| Env var | Type | Default | Description |
+|---|---:|---|---|
+| `SECURITY_ENABLED` | bool | `true` | Enable watcher |
+| `SECURITY_DEFAULT_ARMED` | bool | `false` | Default arming state |
+| `SECURITY_MODE` | str | `vacation_strict` | Default mode |
+| `SECURITY_CAMERA_IDS` | str | `` | Comma-separated stream_ids, blank=all |
+| `SECURITY_STATE_PATH` | str | `/mnt/telemetry/orion-security/state.json` | Persistent state file |
 
-### Alerting & rate limiting
+### Human detection gating (recommended)
 
-| Env var                           | Type | Default | Description                                        |
-|-----------------------------------|------|---------|----------------------------------------------------|
-| `SECURITY_GLOBAL_COOLDOWN_SEC`    | int  | 300     | Minimum seconds between any two alerts             |
-| `SECURITY_IDENTITY_COOLDOWN_SEC`  | int  | 600     | Minimum seconds between alerts for the same person |
-| `SECURITY_VISIT_IDLE_SEC`         | int  | 30      | Idle time before closing a visit window           |
+| Env var | Type | Default | Description |
+|---|---:|---|---|
+| `SECURITY_MIN_YOLO_SCORE` | float | `0.30` | Minimum YOLO score for label=person |
+| `SECURITY_MIN_FACE_AREA` | int | `2500` | Minimum bbox area for face |
+| `SECURITY_MIN_PERSON_AREA` | int | `2500` | Minimum bbox area for yolo:person |
+| `SECURITY_MIN_HUMAN_STREAK` | int | `3` | Required consecutive-ish human events |
+| `SECURITY_STREAK_MAX_FRAME_GAP` | int | `45` | Max frame gap to keep streak |
+
+### Rate limiting
+
+| Env var | Type | Default | Description |
+|---|---:|---|---|
+| `SECURITY_GLOBAL_COOLDOWN_SEC` | int | `60` | Minimum seconds between alerts |
+| `SECURITY_IDENTITY_COOLDOWN_SEC` | int | `300` | Stub for future identity-specific cooldown |
+
+### Snapshots
+
+| Env var | Type | Default | Description |
+|---|---:|---|---|
+| `VISION_SNAPSHOT_URL` | str |  | Where to fetch `/snapshot.jpg` |
+| `VISION_SNAPSHOT_PUBLIC_URL` | str |  | Optional safe link to include in emails |
+| `SECURITY_SNAPSHOT_COUNT` | int | `3` | Number of snapshots per alert |
+| `SECURITY_SNAPSHOT_INTERVAL_SEC` | int | `2` | Interval between snapshots (seconds) |
+| `SECURITY_SNAPSHOT_DIR` | str | `/mnt/telemetry/orion-security/alerts` | Directory to store snapshot files |
 
 ### Email (optional v1)
 
-| Env var         | Type   | Default | Description                          |
-|-----------------|--------|---------|--------------------------------------|
-| `NOTIFY_MODE`   | str    | `none`  | `none` or `inline` (email inside svc)|
-| `SMTP_HOST`     | str    |         | SMTP server                          |
-| `SMTP_PORT`     | int    | 587     | SMTP port                            |
-| `SMTP_USER`     | str    |         | SMTP username                        |
-| `SMTP_PASS`     | str    |         | SMTP password                        |
-| `SMTP_FROM`     | str    |         | From address                         |
-| `NOTIFY_TO`     | str    |         | Comma-separated recipient emails     |
-
-If `NOTIFY_MODE` is `none`, the service still publishes alerts on the bus but
-won’t send emails.
+| Env var | Type | Default | Description |
+|---|---:|---|---|
+| `NOTIFY_MODE` | str | `none` | `none` or `inline` |
+| `NOTIFY_EMAIL_SMTP_HOST` | str |  | SMTP host |
+| `NOTIFY_EMAIL_SMTP_PORT` | int | `587` | SMTP port |
+| `NOTIFY_EMAIL_SMTP_USERNAME` | str |  | SMTP user |
+| `NOTIFY_EMAIL_SMTP_PASSWORD` | str |  | SMTP password / app password |
+| `NOTIFY_EMAIL_USE_TLS` | bool | `true` | STARTTLS |
+| `NOTIFY_EMAIL_FROM` | str |  | From header |
+| `NOTIFY_EMAIL_TO` | str |  | Comma-separated recipients |
 
 ---
 
@@ -232,17 +240,12 @@ won’t send emails.
 
 ### GET `/`
 
-Renders a tiny HTML control panel:
+Renders a tiny control panel:
 
-- Shows whether the watcher is **armed**.
-- Shows current **mode** (e.g. `vacation_strict`).
-- Provides toggles/buttons to arm/disarm.
-
-Intended to be exposed over Tailscale at a path like `/security`.
+- shows **armed** + **mode**
+- allows arm/disarm
 
 ### GET `/health`
-
-Example response:
 
 ```json
 {
@@ -259,93 +262,52 @@ Example response:
 
 ### GET `/security/state`
 
-Returns the current security state and lightweight rate-limit info:
-
-```json
-{
-  "enabled": true,
-  "armed": true,
-  "mode": "vacation_strict",
-  "updated_at": "2025-12-10T23:07:23.123456Z",
-  "updated_by": "ui:tailscale",
-  "last_alert": {
-    "ts": "2025-12-10T23:12:00.000000Z",
-    "reason": "rate_limited_or_unknown"
-  }
-}
-```
+Returns current persistent state + last alert timestamp.
 
 ### POST `/security/state`
-
-Body:
 
 ```json
 { "armed": true, "mode": "vacation_strict" }
 ```
 
-- `armed`: boolean, optional (if omitted, keep current armed flag).
-- `mode`: optional; if invalid, falls back to `SECURITY_MODE` default.
-
-Response mirrors the GET `/security/state` payload.
-
-Example:
-
-```bash
-curl -X POST http://localhost:7120/security/state \
-  -H 'Content-Type: application/json' \
-  -d '{"armed": true, "mode": "vacation_strict"}'
-```
-
 ### POST `/security/test-alert`
 
-Creates a synthetic `AlertPayload`, captures snapshots, publishes it, and (if
-configured) sends an email.
+Creates a synthetic alert, captures snapshots, publishes alert, and sends email (if configured).
 
 ```bash
 curl -X POST http://localhost:7120/security/test-alert
 ```
 
-Use this to make sure the pipeline works end-to-end **without** needing a real
-intruder.
+### POST `/debug/simulate-person`
+
+Simulate a YOLO person detection to test gating/streak.
+
+- `send=1` will also capture snapshots + publish + email.
+
+```bash
+curl -s -X POST "http://localhost:7120/debug/simulate-person?armed=1&ignore_cooldown=1&reset_streak=1&send=1" \
+  -H "content-type: application/json" \
+  -d '{}'
+```
 
 ---
 
 ## Docker Compose
 
-Example service definition:
+A minimal service definition (recommended: rely on `env_file` and avoid redundant interpolation in `environment:` unless you are overriding):
 
 ```yaml
 services:
-  orion-athena-security-watcher:
+  security-watcher:
     build:
       context: ../..
       dockerfile: services/orion-security-watcher/Dockerfile
-    container_name: orion-athena-security-watcher
+    container_name: ${PROJECT}-security-watcher
     restart: unless-stopped
-    environment:
-      - SERVICE_NAME=${SERVICE_NAME}
-      - SERVICE_VERSION=${SERVICE_VERSION}
-      - SECURITY_ENABLED=${SECURITY_ENABLED}
-      - SECURITY_MODE=${SECURITY_MODE}
-      - STATE_FILE_PATH=${STATE_FILE_PATH}
-      - SNAPSHOT_DIR=${SNAPSHOT_DIR}
-      - ORION_BUS_URL=${ORION_BUS_URL}
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-      - VISION_EVENTS_SUBSCRIBE_RAW=${VISION_EVENTS_SUBSCRIBE_RAW}
-      - CHANNEL_SECURITY_VISITS=${CHANNEL_SECURITY_VISITS}
-      - CHANNEL_SECURITY_ALERTS=${CHANNEL_SECURITY_ALERTS}
-      - SECURITY_GLOBAL_COOLDOWN_SEC=${SECURITY_GLOBAL_COOLDOWN_SEC}
-      - SECURITY_IDENTITY_COOLDOWN_SEC=${SECURITY_IDENTITY_COOLDOWN_SEC}
-      - SECURITY_VISIT_IDLE_SEC=${SECURITY_VISIT_IDLE_SEC}
-      - NOTIFY_MODE=${NOTIFY_MODE}
-      - SMTP_HOST=${SMTP_HOST}
-      - SMTP_PORT=${SMTP_PORT}
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASS=${SMTP_PASS}
-      - SMTP_FROM=${SMTP_FROM}
-      - NOTIFY_TO=${NOTIFY_TO}
+    env_file:
+      - .env
     volumes:
-      - /mnt/telemetry/orion-security-watcher:/data
+      - /mnt/telemetry/orion-security:/mnt/telemetry/orion-security
     ports:
       - "7120:7120"
     networks:
@@ -356,31 +318,21 @@ networks:
     external: true
 ```
 
-Then:
-
-```bash
-docker compose up -d orion-athena-security-watcher
-```
-
 ---
 
 ## Tailscale Exposure
 
-Expose both Vision and Security Watcher from Athena:
+Example (Athena):
 
 ```bash
-# Reset any prior config
 sudo tailscale serve reset
 
-# Vision Edge on /
+# Vision Edge
 sudo tailscale serve --bg 7100
-# → https://athena.<tailnet>.ts.net/
 
-# Security Watcher on /security
+# Security Watcher at /security
 sudo tailscale serve --bg --set-path=/security 7120
-# → https://athena.<tailnet>.ts.net/security
 
-# Check
 tailscale serve status
 ```
 
@@ -388,26 +340,9 @@ tailscale serve status
 
 ## Roadmap
 
-Planned improvements:
+- **Identity-aware alerts** (face/embedding identity service) so `best_identity_conf` becomes meaningful
+- **Richer visit aggregation** (multiple visitors, longer windows)
+- **Security→memory ingestion** (Collapse Mirror / Chronicle)
+- **Notification expansion** (SMS/push via separate notifier service; object-store archival)
 
-- **Identity-aware alerts**
-  - Integrate with a person-identity service (embeddings / face recog) so we can
-    distinguish:
-    - `juniper`, `partner`, `kid-x`, `kid-y`, `unknown`, etc.
-  - Per-identity policies (e.g. alert on `unknown` in vacation mode only).
-
-- **Smarter visit aggregation**
-  - Track multiple overlapping visitors in a single window.
-  - Distinguish "one robber twice" vs "two different people".
-
-- **Richer integrations**
-  - Feed alerts & visits into Collapse Mirror / Chronicle.
-  - Cortex verbs like `observe_security_context` or
-    `reflect_on_intrusion_risk`.
-
-- **Notification expansion**
-  - SMS / push via a dedicated notification service.
-  - S3 / object-store archival of snapshots off-site.
-
-This service is intentionally small but opinionated: it’s the **guardian at the
-edge** that decides when pixels become a story worth reacting to.
+This service is intentionally small but opinionated: it’s the **guardian at the edge** that decides when pixels become a story worth reacting to.

@@ -3,17 +3,15 @@
 <head>
     <meta charset="utf-8" />
     <title>Orion Vision Edge</title>
+    <base href="/vision-edge/">
     <style>
         body {
-            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-                         "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
             margin: 1rem;
             background: #050505;
             color: #f5f5f5;
         }
-        h1 {
-            margin-bottom: 0.5rem;
-        }
+        h1 { margin-bottom: 0.5rem; }
         #wrap {
             display: grid;
             grid-template-columns: 640px 1fr;
@@ -21,7 +19,7 @@
             align-items: flex-start;
         }
         #events {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+            font-family: monospace;
             white-space: pre;
             background: #111;
             color: #0f0;
@@ -38,30 +36,22 @@
             border: 1px solid #333;
             background: #000;
         }
-        a {
-            color: #4ea3ff;
-        }
-        a:hover {
-            color: #7fb9ff;
-        }
-        .meta {
-            margin-top: 0.5rem;
-            font-size: 0.85rem;
-            color: #aaa;
-        }
+        a { color: #4ea3ff; }
+        a:hover { color: #7fb9ff; }
+        .meta { margin-top: 0.5rem; font-size: 0.85rem; color: #aaa; }
     </style>
 </head>
 <body>
     <h1>Orion Vision Edge</h1>
     <div class="meta">
-        <span>Live stream from <code>/stream.mjpg</code></span> •
-        <span>Events from <code>/events</code></span>
+        <span>Live stream from <code>./stream.mjpg</code></span> •
+        <span>Events from <code>./events</code></span>
     </div>
     <div id="wrap">
         <div>
-            <img src="/stream.mjpg" alt="Vision MJPEG stream" />
+            <img src="stream.mjpg" alt="Vision MJPEG stream" />
             <p>
-                <a href="/snapshot.jpg" target="_blank">Open snapshot</a>
+                <a href="snapshot.jpg" target="_blank">Open snapshot</a>
             </p>
         </div>
         <div id="events">[subscribed to bus events]</div>
@@ -69,7 +59,7 @@
 
     <script>
         const box = document.getElementById("events");
-        const evt = new EventSource("/events");
+        const evt = new EventSource("events");
 
         evt.onmessage = (e) => {
             box.textContent += e.data + "\n";

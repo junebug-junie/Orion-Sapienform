@@ -5,9 +5,14 @@ services:
       context: ../..
       dockerfile: services/orion-hub/Dockerfile
     container_name: ${PROJECT}-hub
+
+    # use when on atlas:
     network_mode: "host"
+
+    # use when on athena:
     #ports:
-      #- "${HUB_PORT}:${HUB_PORT}" # if running brain and hub on single node
+    #  - "${HUB_PORT}:${HUB_PORT}" # if running brain and hub on single node
+
     restart: unless-stopped
     volumes:
       - ./templates:/app/templates
@@ -59,6 +64,8 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
 
     runtime: nvidia
+
+    # if running on athena:
     #networks:
     #  - ${NET}
 

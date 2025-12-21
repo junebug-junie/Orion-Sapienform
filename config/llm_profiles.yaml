@@ -21,6 +21,52 @@ profiles:
     notes: "Open, non-gated default for stack bring-up."
 
 
+  llama3-8b-instruct-q4km-athena-p4:
+    display_name: "Llama 3 8B Instruct – Q4_K_M (llama.cpp/llama-cpp-python, Athena P4)"
+    task_type: chat
+    backend: llamacpp
+
+    # Logical label used by Orion; your llamacpp wrapper can resolve this however you prefer
+    model_id: "llama-3-8b-instruct-q4_k_m"
+
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+
+      # P4-safe defaults
+      max_model_len: 4096
+      max_batch_tokens: 256
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+
+    llamacpp:
+      model_root: "/models/gguf"
+
+      hf_repo_id: "PawanKrd/Meta-Llama-3-8B-Instruct-GGUF"
+      hf_filename: "llama-3-8b-instruct.Q4_K_M.gguf"  # exists in repo :contentReference[oaicite:1]{index=1}
+
+      host: "0.0.0.0"
+      port: 7005
+
+      # P4-safe runtime knobs
+      ctx_size: 4096
+      n_gpu_layers: 35     # 8B has 32 blocks; 35 usually means "everything it can"
+      threads: 8
+      n_parallel: 1
+      batch_size: 256
+
+    notes: |
+      P4-friendly Llama 3 8B Instruct via GGUF Q4_K_M.
+      If you OOM:
+        - drop ctx_size to 2048
+        - or lower n_gpu_layers
+        - or use a smaller quant from the same repo.
+
 
   qwen2.5-32b-instruct-abliterated-gguf:
     display_name: "Qwen 2.5 32B Instruct – abliterated Q6_K (llama.cpp, Atlas)"

@@ -8,7 +8,7 @@ services:
     env_file:
       - .env
     image: orion-llamaccp:0.1.0
-    container_name: ${PROJECT:-orion}-atlas-llamaccp
+    container_name: ${PROJECT:-orion}-llamaccp
     restart: unless-stopped
 
     environment:
@@ -47,7 +47,10 @@ services:
 
     ports:
       # Publish llama-server port (container binds whatever profile/override chooses; default 8080)
-      - "${LLAMACPP_HOST_PORT:-7005}:8080"
+      #- "${LLAMACPP_HOST_PORT:-7005}:8080"
+      # when running on athena:
+      - "${LLAMACPP_HOST_PORT:-7005}:7005"
+
 
     networks:
       - app-net

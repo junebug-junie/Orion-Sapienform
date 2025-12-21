@@ -1,11 +1,19 @@
+# services/orion-collapse-mirror/app/main.py
+
+from __future__ import annotations
+
 from fastapi import FastAPI
 from dotenv import load_dotenv
 import asyncio
 import traceback
 import json
+import re
 import redis.asyncio as redis
 from uuid import uuid4
 from datetime import datetime
+from typing import Any, Dict, Optional
+
+from pydantic import ValidationError
 
 from app import routes
 from app.settings import settings
@@ -29,6 +37,86 @@ app.include_router(routes.router, prefix="/api")
 
 # Global synchronous bus (used for publishing + exec worker)
 bus: OrionBus | None = None
+
+
+# ───────────────────────────────────────────────
+# Helpers
+# ───────────────────────────────────────────────
+
+def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Best-effort: extract the first valid JSON object from a string.
+    Handles cases like:
+      "Here is the generated JSON:\\n\\n{ ... }"
+    """
+    if not text or "{" not in text:
+        return None
+
+    starts = [m.start() for m in re.finditer(r"\{", text)]
+    for s in starts:
+        depth = 0
+        in_str = False
+        esc = False
+
+        for i in range(s, len(text)):
+            ch = text[i]
+
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+                continue
+
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[s : i + 1].strip()
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                    break
+
+    return None
+
+
+def _coerce_to_entry_payload(data: Any) -> Any:
+    """
+    Accept:
+      - direct CollapseMirrorEntry dict
+      - accidental "exec result" shapes containing llm_output
+    Return something that CollapseMirrorEntry can validate, or original.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    # allow pings / non-entry messages without spewing stacktraces
+    if data.get("kind") == "ping":
+        return None
+
+    # If someone mistakenly publishes an LLM result wrapper to intake,
+    # try to pull JSON from llm_output.
+    if isinstance(data.get("llm_output"), str):
+        extracted = _extract_first_json_object(data["llm_output"])
+        return extracted or data
+
+    result = data.get("result")
+    if isinstance(result, dict) and isinstance(result.get("llm_output"), str):
+        extracted = _extract_first_json_object(result["llm_output"])
+        return extracted or data
+
+    return data
 
 
 # ───────────────────────────────────────────────
@@ -71,11 +159,27 @@ async def listen_for_intake():
                 if message.get("type") != "message":
                     continue
 
+                raw = message.get("data")
+                if raw is None:
+                    continue
+
                 try:
-                    raw = message["data"]
                     print(f"👂 Received intake payload: {raw}")
                     data = json.loads(raw)
-                    entry = CollapseMirrorEntry.model_validate(data)
+
+                    entry_payload = _coerce_to_entry_payload(data)
+                    if entry_payload is None:
+                        # ping or ignorable
+                        continue
+
+                    entry = CollapseMirrorEntry.model_validate(entry_payload)
+
+                    # If you allow noop in schema, just ignore it here.
+                    try:
+                        if str(getattr(entry, "type", "")).strip().lower() == "noop":
+                            continue
+                    except Exception:
+                        pass
 
                     # Enrich event with ID, timestamp, provenance
                     collapse_id = f"collapse_{uuid4().hex}"
@@ -92,6 +196,8 @@ async def listen_for_intake():
                     else:
                         print("⚠️ Bus not initialized; skipping publish.")
 
+                except ValidationError as ve:
+                    print(f"⚠️ Intake payload failed schema validation (dropping): {ve}")
                 except Exception as e:
                     print(f"❌ Error processing intake message: {e}")
                     traceback.print_exc()

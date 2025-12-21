@@ -215,76 +215,20 @@ def _coerce_pubsub_data(data: Any) -> Dict[str, Any]:
     return {}
 
 
-def _wait_for_exec_results(
+async def _wait_for_exec_results(
     bus,
-    result_channel: str,
-    exec_id: str,
-    expected: int,
+    reply_channel: str,
     timeout_ms: int,
-) -> List[Dict[str, Any]]:
-    """
-    Fan-in helper: wait for up to `expected` results on `result_channel`
-    matching the given exec_id (accepts either trace_id or correlation_id),
-    or until timeout.
-    """
-    timeout_s = timeout_ms / 1000.0
-    started = time.time()
-    collected: List[Dict[str, Any]] = []
-
-    logger.info(
-        "Subscribed %s; waiting for %d result(s). Timeout=%d ms",
-        result_channel,
-        expected,
-        timeout_ms,
-    )
-
-    try:
-        for msg in bus.raw_subscribe(result_channel):
-            now = time.time()
-            if now - started > timeout_s:
-                logger.warning(
-                    "Timeout waiting for results on %s (have %d/%d)",
-                    result_channel,
-                    len(collected),
-                    expected,
-                )
-                break
-
-            payload = msg.get("data") or {}
-
-            # raw_subscribe may yield JSON strings; decode defensively
-            if isinstance(payload, (bytes, bytearray)):
-                payload = payload.decode("utf-8", errors="replace")
-            if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except Exception:
-                    logger.debug("Ignoring non-JSON string payload on %s", result_channel)
-                    continue
-
-            if not isinstance(payload, dict):
-                continue
-
-            # ✅ COMPAT: accept either trace_id or correlation_id from workers
-            pid = payload.get("trace_id") or payload.get("correlation_id")
-            if pid != exec_id:
-                logger.debug(
-                    "Ignoring message with mismatched id on %s: expected=%s got=%s",
-                    result_channel,
-                    exec_id,
-                    pid,
-                )
-                continue
-
-            collected.append(payload)
-
-            if len(collected) >= expected:
-                break
-
-    except Exception as e:
-        logger.error("Error while waiting for exec results on %s: %s", result_channel, e, exc_info=True)
-
-    return collected
+    *,
+    trace_id: str | None = None,
+    correlation_id: str | None = None,
+) -> dict:
+    msg = await bus.rpc_wait(reply_channel=reply_channel, timeout_ms=timeout_ms)
+    if isinstance(msg, (bytes, bytearray)):
+        msg = msg.decode("utf-8", errors="replace")
+    if isinstance(msg, str):
+        msg = json.loads(msg)
+    return msg
 
 
 def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
@@ -318,6 +262,12 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
         # One execution id per step, shared across all services for that step
         exec_id = str(uuid.uuid4())
         result_channel = f"{settings.exec_result_prefix}:{exec_id}"
+
+        if not step.services or len(step.services) == 0:
+            raise ValueError(
+                f"Step has no services: verb={req.verb_name} step={step.step_name} order={step.order}"
+            )
+
         expected = len(step.services)
 
         # ─────────────────────────────────────────────
@@ -377,7 +327,7 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
         raw_results = _wait_for_exec_results(
             bus,
             result_channel,
-            exec_id,      # <- POSITIONAL (no keyword mismatch possible)
+            exec_id,      # positional: avoids keyword signature mismatches
             expected,
             timeout_ms,
         )
@@ -388,7 +338,6 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
             elapsed_ms = int(raw.get("elapsed_ms") or raw.get("elapsed") or 0)
             ok = bool(raw.get("ok", True))
 
-            # keep everything else for downstream extraction
             payload = {
                 k: v
                 for k, v in raw.items()

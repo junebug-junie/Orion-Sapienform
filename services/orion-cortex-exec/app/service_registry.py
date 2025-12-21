@@ -5,6 +5,7 @@ SERVICE_BINDINGS = {
     "llm.brain":           "LLMGatewayService",
     "memory.vector":       "VectorMemoryService",
     "memory.sql":          "SqlMemoryService",
+    "memory.collapse":     "CollapseMirrorService",
     # etc…
 }
 

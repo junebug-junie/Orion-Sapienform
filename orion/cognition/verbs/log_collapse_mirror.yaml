@@ -1,0 +1,51 @@
+name: log_collapse_mirror
+label: Log (Collapse Mirror)
+description: >
+  Two-step Collapse Mirror verb:
+  (1) LLM generates a strict JSON object matching CollapseMirrorEntry.
+  (2) CollapseMirrorService validates + publishes to CHANNEL_COLLAPSE_INTAKE.
+  Cortex-orch remains agnostic to downstream channels.
+
+category: ExecutiveControl
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+timeout_ms: 180000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+  - CollapseMirrorService
+
+prompt_template: log_collapse_mirror.j2
+
+plan:
+  - name: llm_generate_collapse_json
+    description: >
+      Generate a strict JSON CollapseMirrorEntry object.
+      If the moment does not qualify, return type="noop".
+    order: 0
+    prompt_template: log_collapse_mirror.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: true
+
+  - name: publish_collapse
+    description: >
+      Deterministic publish step. Reads prior_step_results, extracts the JSON
+      produced by llm_generate_collapse_json, validates as CollapseMirrorEntry,
+      fills defaults, and publishes to CHANNEL_COLLAPSE_INTAKE unless type="noop".
+    order: 1
+    prompt_template: "noop"
+    services:
+      - CollapseMirrorService
+    requires_gpu: false
+    requires_memory: false
+
+safety_rules: []

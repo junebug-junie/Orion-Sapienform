@@ -11,6 +11,7 @@ from app import routes
 from app.settings import settings
 from orion.core.bus.service import OrionBus
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from app.exec_worker import start_collapse_mirror_exec_worker
 
 # ───────────────────────────────────────────────
 # 🪞 Orion Collapse Mirror — Event Transformer
@@ -26,7 +27,7 @@ app = FastAPI(
 # Register routes (e.g. /api/log/collapse)
 app.include_router(routes.router, prefix="/api")
 
-# Global synchronous bus (used only for publishing)
+# Global synchronous bus (used for publishing + exec worker)
 bus: OrionBus | None = None
 
 
@@ -112,6 +113,11 @@ async def startup_event():
     if settings.ORION_BUS_ENABLED:
         bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
         print(f"🚀 {settings.SERVICE_NAME} starting up (v{settings.SERVICE_VERSION})")
+
+        # ✅ Start the exec-step worker (threaded, blocking subscribe)
+        start_collapse_mirror_exec_worker(bus)
+
+        # ✅ Start the async intake listener
         asyncio.create_task(listen_for_intake())
     else:
         print("⚠️ OrionBus disabled — intake listener not started.")

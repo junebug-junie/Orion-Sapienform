@@ -32,54 +32,23 @@ _jinja_env = Environment(
 
 
 class CortexStepConfig(BaseModel):
-    """
-    Configuration for a single Cortex "step" in a verb.
-
-    Matches NCIO/semantic schema:
-      - verb_name: required
-      - step_name: required
-      - description: required
-      - order: required
-      - services: required
-      - prompt_template: required
-      - requires_gpu: optional (default False)
-      - requires_memory: optional (default False)
-    """
-
     verb_name: str = Field(..., description="High-level verb this step belongs to.")
     step_name: str = Field(..., description="Human-readable name for this step.")
     description: str = Field(..., description="What this step is trying to accomplish.")
     order: int = Field(..., description="Execution order within the verb.")
-    services: list[str] = Field(
-        ..., description="One or more cognitive services to receive this step."
-    )
-    prompt_template: str = Field(
-        ..., description="Base instruction text; orchestrator appends context."
-    )
+    services: list[str] = Field(..., description="One or more cognitive services to receive this step.")
+    prompt_template: str = Field(..., description="Base instruction text; orchestrator appends context.")
 
-    requires_gpu: bool = Field(
-        False,
-        description="If True, this step should be routed to a GPU-capable service.",
-    )
-    requires_memory: bool = Field(
-        False,
-        description="If True, this step needs access to long-term memory services.",
-    )
+    requires_gpu: bool = Field(False)
+    requires_memory: bool = Field(False)
 
 
 class OrchestrateVerbRequest(BaseModel):
     verb_name: str
     origin_node: str = Field("unknown-node")
     context: dict = Field(default_factory=dict)
-    # 👇 NEW: steps are optional; if omitted, load from cognition/verbs/<verb>.yaml
-    steps: Optional[List[CortexStepConfig]] = Field(
-        default=None,
-        description="Ordered list of Cortex steps. If omitted, load from verb YAML.",
-    )
-    timeout_ms: int | None = Field(
-        None,
-        description="Optional per-step timeout override (ms).",
-    )
+    steps: Optional[List[CortexStepConfig]] = Field(default=None)
+    timeout_ms: int | None = Field(None)
 
 
 class ServiceStepResult(BaseModel):
@@ -111,24 +80,6 @@ class OrchestrateVerbResponse(BaseModel):
 # ─────────────────────────────────────
 
 def _load_verb_steps_for_name(verb_name: str) -> List[CortexStepConfig]:
-    """
-    Load a verb definition from cognition/verbs/<verb_name>.yaml and
-    convert its plan[] into CortexStepConfig objects.
-
-    Example (chat_general.yaml):
-
-      name: chat_general
-      services:
-        - LLMGatewayService
-      prompt_template: chat_general.j2
-      plan:
-        - name: llm_chat_general
-          prompt_template: chat_general.j2
-          services:
-            - LLMGatewayService
-          ...
-
-    """
     path = VERBS_DIR / f"{verb_name}.yaml"
     if not path.exists():
         raise FileNotFoundError(f"No verb YAML found for '{verb_name}' at {path}")
@@ -171,12 +122,7 @@ def _load_verb_steps_for_name(verb_name: str) -> List[CortexStepConfig]:
     if not steps:
         raise ValueError(f"Verb YAML {path} has no plan[] steps")
 
-    logger.info(
-        "Loaded %d step(s) for verb '%s' from %s",
-        len(steps),
-        verb_name,
-        path,
-    )
+    logger.info("Loaded %d step(s) for verb '%s' from %s", len(steps), verb_name, path)
     return steps
 
 
@@ -185,36 +131,22 @@ def _render_prompt_template(
     context: Dict[str, Any],
     prior_results: List[StepExecutionResult],
 ) -> str:
-    """
-    Resolve a prompt_template reference.
-
-    - If template_ref looks like a Jinja file name (e.g. 'chat_general.j2'),
-      render it via Jinja2 from cognition/prompts.
-    - Otherwise treat it as literal prompt text.
-    """
     if not template_ref:
         return ""
 
     ref = template_ref.strip()
 
-    # Heuristic: treat as template name if no whitespace and endswith '.j2'
     if (" " not in ref) and ("\n" not in ref) and ref.endswith(".j2"):
         try:
             tmpl = _jinja_env.get_template(ref)
             return tmpl.render(
                 context=context,
-                prior_step_results=[
-                    r.model_dump(mode="json") for r in prior_results
-                ],
+                prior_step_results=[r.model_dump(mode="json") for r in prior_results],
             ).strip()
         except Exception as e:
-            logger.error(
-                "Failed to render Jinja prompt template '%s': %s", ref, e, exc_info=True
-            )
-            # Fall back to the raw ref so we don't blow up exec_step
+            logger.error("Failed to render Jinja prompt template '%s': %s", ref, e, exc_info=True)
             return ref
 
-    # Literal inline text
     return ref
 
 
@@ -225,12 +157,6 @@ def _build_prompt(
     context: Dict[str, Any],
     prior_results: List[StepExecutionResult],
 ) -> str:
-    """
-    Build a rich, debuggable prompt for a Cortex exec_step.
-
-    - Header from prompt_template (possibly via Jinja)
-    - JSON-encoded context and prior results appended as a footer
-    """
     prior_results_json = json.dumps(
         [r.model_dump(mode="json") for r in prior_results],
         indent=2,
@@ -238,11 +164,7 @@ def _build_prompt(
     )
     context_json = json.dumps(context, indent=2, ensure_ascii=False)
 
-    header = _render_prompt_template(
-        step.prompt_template,
-        context=context,
-        prior_results=prior_results,
-    )
+    header = _render_prompt_template(step.prompt_template, context=context, prior_results=prior_results)
 
     suffix = (
         "\n\n"
@@ -262,16 +184,48 @@ def _build_prompt(
     return f"{header}\n{suffix}"
 
 
+# ✅ NEW: robust pubsub payload decoding
+def _coerce_pubsub_data(data: Any) -> Dict[str, Any]:
+    """
+    bus.raw_subscribe() sometimes yields:
+      - {"data": {...}} (already dict)
+      - {"data": "<json string>"} (string)
+      - {"data": b"<json bytes>"} (bytes)
+    Normalize to dict.
+    """
+    if isinstance(data, dict):
+        return data
+
+    if isinstance(data, bytes):
+        try:
+            data = data.decode("utf-8", errors="ignore")
+        except Exception:
+            return {}
+
+    if isinstance(data, str):
+        s = data.strip()
+        if not s:
+            return {}
+        try:
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    return {}
+
+
 def _wait_for_exec_results(
     bus,
     result_channel: str,
-    trace_id: str,
+    exec_id: str,
     expected: int,
     timeout_ms: int,
 ) -> List[Dict[str, Any]]:
     """
     Fan-in helper: wait for up to `expected` results on `result_channel`
-    matching the given trace_id, or until timeout.
+    matching the given exec_id (accepts either trace_id or correlation_id),
+    or until timeout.
     """
     timeout_s = timeout_ms / 1000.0
     started = time.time()
@@ -297,11 +251,28 @@ def _wait_for_exec_results(
                 break
 
             payload = msg.get("data") or {}
-            if payload.get("trace_id") != trace_id:
+
+            # raw_subscribe may yield JSON strings; decode defensively
+            if isinstance(payload, (bytes, bytearray)):
+                payload = payload.decode("utf-8", errors="replace")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    logger.debug("Ignoring non-JSON string payload on %s", result_channel)
+                    continue
+
+            if not isinstance(payload, dict):
+                continue
+
+            # ✅ COMPAT: accept either trace_id or correlation_id from workers
+            pid = payload.get("trace_id") or payload.get("correlation_id")
+            if pid != exec_id:
                 logger.debug(
-                    "Ignoring message with mismatched trace_id on %s: %s",
+                    "Ignoring message with mismatched id on %s: expected=%s got=%s",
                     result_channel,
-                    payload,
+                    exec_id,
+                    pid,
                 )
                 continue
 
@@ -309,34 +280,24 @@ def _wait_for_exec_results(
 
             if len(collected) >= expected:
                 break
+
     except Exception as e:
-        logger.error("Error while waiting for exec results on %s: %s", result_channel, e)
+        logger.error("Error while waiting for exec results on %s: %s", result_channel, e, exc_info=True)
 
     return collected
+
 
 def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
     """
     Execute a high-level "verb" as a sequence of Cortex steps.
 
     For each step:
-      - Build a rich prompt (header + JSON context + prior results).
-      - Fan-out to all configured services on the Orion bus.
-      - Fan-in results from each service on a per-step result channel.
-      - Accumulate results into StepExecutionResult objects.
-
-    The services are bus suffixes like "LLMGatewayService", and requests are
-    published on channels:
-
-        {EXEC_REQUEST_PREFIX}:{service}
-
-    with result messages returned on:
-
-        {EXEC_RESULT_PREFIX}:{trace_id}
-
-    using a standard shape compatible with emit_cortex_step_result / LLM Gateway
-    exec_step replies.
+      - Build a prompt (Jinja header + JSON footer)
+      - Fan-out to {EXEC_REQUEST_PREFIX}:{service}
+      - Fan-in from {EXEC_RESULT_PREFIX}:{exec_id}
+      - Accumulate StepExecutionResult objects
     """
-    # Determine the step config list: either caller-provided or from verb YAML.
+    # Determine step config list: caller-provided or loaded from cognition/verbs/<verb>.yaml
     if req.steps and len(req.steps) > 0:
         steps: List[CortexStepConfig] = list(req.steps)
     else:
@@ -354,12 +315,13 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
     final_step_results: List[StepExecutionResult] = []
 
     for step in ordered_steps:
-        trace_id = str(uuid.uuid4())
-        result_channel = f"{settings.exec_result_prefix}:{trace_id}"
+        # One execution id per step, shared across all services for that step
+        exec_id = str(uuid.uuid4())
+        result_channel = f"{settings.exec_result_prefix}:{exec_id}"
         expected = len(step.services)
 
         # ─────────────────────────────────────────────
-        # Fan-out: publish ExecutionEnvelope-style messages
+        # Fan-out: publish exec_step to each service
         # ─────────────────────────────────────────────
         for service in step.services:
             prompt = _build_prompt(
@@ -372,10 +334,14 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
 
             exec_channel = f"{settings.exec_request_prefix}:{service}"
 
+            # IMPORTANT:
+            # - Orch remains agnostic: it only targets {prefix}:{ServiceName}
+            # - We include both correlation_id + trace_id so mixed workers are fine.
             envelope = {
                 "event": "exec_step",
                 "service": service,
-                "correlation_id": trace_id,
+                "correlation_id": exec_id,
+                "trace_id": exec_id,
                 "reply_channel": result_channel,
                 "payload": {
                     "verb": step.verb_name or req.verb_name,
@@ -391,15 +357,14 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
                     ],
                     "requires_gpu": step.requires_gpu,
                     "requires_memory": step.requires_memory,
-                    # Also include the fully-built prompt (what the LLM will see)
                     "prompt": prompt,
                 },
             }
 
             logger.info(
-                "Published exec_step to %s (trace_id=%s, verb=%s, step=%s, service=%s)",
+                "Published exec_step to %s (exec_id=%s, verb=%s, step=%s, service=%s)",
                 exec_channel,
-                trace_id,
+                exec_id,
                 step.verb_name,
                 step.step_name,
                 service,
@@ -410,11 +375,11 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
         # Fan-in: collect results for this step
         # ─────────────────────────────────────────────
         raw_results = _wait_for_exec_results(
-            bus=bus,
-            result_channel=result_channel,
-            trace_id=trace_id,
-            expected=expected,
-            timeout_ms=timeout_ms,
+            bus,
+            result_channel,
+            exec_id,      # <- POSITIONAL (no keyword mismatch possible)
+            expected,
+            timeout_ms,
         )
 
         step_results: List[ServiceStepResult] = []
@@ -423,12 +388,14 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
             elapsed_ms = int(raw.get("elapsed_ms") or raw.get("elapsed") or 0)
             ok = bool(raw.get("ok", True))
 
+            # keep everything else for downstream extraction
             payload = {
                 k: v
                 for k, v in raw.items()
                 if k
                 not in {
                     "trace_id",
+                    "correlation_id",
                     "service",
                     "service_name",
                     "elapsed_ms",
@@ -440,7 +407,7 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
             step_results.append(
                 ServiceStepResult(
                     service=service_name,
-                    trace_id=trace_id,
+                    trace_id=exec_id,
                     ok=ok,
                     elapsed_ms=elapsed_ms,
                     payload=payload,

@@ -215,21 +215,58 @@ def _coerce_pubsub_data(data: Any) -> Dict[str, Any]:
     return {}
 
 
-async def _wait_for_exec_results(
+def _wait_for_exec_results(
     bus,
     reply_channel: str,
+    correlation_id: str,
+    expected_count: int,
     timeout_ms: int,
-    *,
-    trace_id: str | None = None,
-    correlation_id: str | None = None,
-) -> dict:
-    msg = await bus.rpc_wait(reply_channel=reply_channel, timeout_ms=timeout_ms)
-    if isinstance(msg, (bytes, bytearray)):
-        msg = msg.decode("utf-8", errors="replace")
-    if isinstance(msg, str):
-        msg = json.loads(msg)
-    return msg
+) -> List[Dict[str, Any]]:
+    """
+    Synchronously waits for 'expected_count' results on 'reply_channel'.
+    """
+    results: List[Dict[str, Any]] = []
+    start_time = time.time()
+    deadline = start_time + (timeout_ms / 1000.0)
 
+    # Access the underlying Redis client for precise blocking control
+    # Assuming bus.client is the redis.Redis instance
+    pubsub = bus.client.pubsub()
+    pubsub.subscribe(reply_channel)
+
+    try:
+        while len(results) < expected_count:
+            now = time.time()
+            if now >= deadline:
+                break
+            
+            remaining = deadline - now
+            # Wait for next message with dynamic timeout
+            msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=remaining)
+            
+            if msg:
+                if msg["type"] == "message":
+                    try:
+                        data = _coerce_pubsub_data(msg["data"])
+                        # Verify it belongs to this execution batch
+                        # (checking trace_id or correlation_id)
+                        cid = data.get("correlation_id") or data.get("trace_id")
+                        if cid == correlation_id:
+                            results.append(data)
+                    except Exception as e:
+                        logger.warning(f"Error parsing exec result: {e}")
+            else:
+                # No message yet, short sleep to prevent busy loop 
+                # (though get_message timeout handles most of this)
+                time.sleep(0.005)
+                
+    except Exception as e:
+        logger.error(f"Error waiting for results: {e}")
+    finally:
+        pubsub.unsubscribe()
+        pubsub.close()
+
+    return results
 
 def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
     """

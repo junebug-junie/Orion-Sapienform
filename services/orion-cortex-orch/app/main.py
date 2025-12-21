@@ -84,7 +84,7 @@ def orchestrate(req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
         "Orchestrating verb=%s from origin_node=%s with %d step(s)",
         req.verb_name,
         req.origin_node,
-        len(req.steps),
+        len(req.steps) if req.steps else 0,
     )
     return run_cortex_verb(bus, req)
 
@@ -114,7 +114,7 @@ def _cortex_orch_bus_worker() -> None:
 
     for msg in bus.raw_subscribe(channel):
         envelope = msg.get("data") or {}
-        
+
         # 1. Extract Metadata from Envelope
         trace_id = envelope.get("trace_id") or str(uuid4())
         result_channel = envelope.get("result_channel") or (

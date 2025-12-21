@@ -14,6 +14,7 @@ logger = logging.getLogger("orion-collapse-mirror.exec-worker")
 
 
 def _extract_text(obj: Any) -> Optional[str]:
+    """Recursively attempts to find a text string in likely LLM output structures."""
     if isinstance(obj, str) and obj.strip():
         return obj.strip()
 
@@ -54,8 +55,8 @@ def _extract_text(obj: Any) -> Optional[str]:
 
 def _extract_candidate_from_prior(prior_step_results: Any) -> Tuple[Optional[dict], str]:
     """
-    prior_step_results is a list of StepExecutionResult dicts (from cortex-orch).
-    We walk backward and look for a JSON string inside services[].payload.
+    prior_step_results is a list of StepExecutionResult dicts.
+    We walk backward, find text, and attempt to parse JSON (even if embedded in chatty text).
     """
     if not isinstance(prior_step_results, list) or not prior_step_results:
         return None, "no_prior_step_results"
@@ -76,6 +77,7 @@ def _extract_candidate_from_prior(prior_step_results: Any) -> Tuple[Optional[dic
             if not isinstance(svc_payload, dict):
                 continue
 
+            # Attempt extraction from common locations
             text = _extract_text(svc_payload)
             if not text and isinstance(svc_payload.get("payload"), dict):
                 text = _extract_text(svc_payload.get("payload"))
@@ -83,21 +85,32 @@ def _extract_candidate_from_prior(prior_step_results: Any) -> Tuple[Optional[dic
             if not text:
                 continue
 
+            # --- STRATEGY 1: Clean Parse ---
             try:
                 d = json.loads(text)
                 if isinstance(d, dict):
                     return d, "ok"
             except Exception:
-                continue
+                pass
+
+            # --- STRATEGY 2: Fuzzy Extraction (Find { ... }) ---
+            try:
+                start = text.find("{")
+                end = text.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    candidate = text[start : end + 1]
+                    d = json.loads(candidate)
+                    if isinstance(d, dict):
+                        return d, "fuzzy_extracted"
+            except Exception:
+                pass
 
     return None, "no_json_found"
 
 
 def _fill_defaults(entry: CollapseMirrorEntry) -> CollapseMirrorEntry:
     """
-    Prefer schema helper if present; else fill the same defaults as Hub:
-      - timestamp: ISO8601 UTC
-      - environment: CHRONICLE_ENVIRONMENT (default dev)
+    Prefer schema helper if present; else fill the same defaults as Hub.
     """
     if hasattr(entry, "with_defaults") and callable(getattr(entry, "with_defaults")):
         return entry.with_defaults()
@@ -140,9 +153,6 @@ def _handle_exec_step(bus, envelope: Dict[str, Any]) -> Dict[str, Any]:
     """
     Handles cortex-orch style envelopes:
       { event, service, correlation_id, reply_channel, payload: {...} }
-
-    Also tolerates direct-style payloads (no nested "payload") by treating
-    the top-level dict as exec payload if needed.
     """
     started = time.time()
 
@@ -151,8 +161,7 @@ def _handle_exec_step(bus, envelope: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
     correlation_id = envelope.get("correlation_id") or envelope.get("trace_id") or ""
-    reply_channel = envelope.get("reply_channel") or ""
-
+    
     # cortex-orch: nested payload
     exec_payload = envelope.get("payload")
     if not isinstance(exec_payload, dict):
@@ -162,7 +171,6 @@ def _handle_exec_step(bus, envelope: Dict[str, Any]) -> Dict[str, Any]:
     candidate, reason = _extract_candidate(exec_payload)
     if not candidate:
         return {
-            # cortex-orch fan-in matches on "trace_id"
             "trace_id": correlation_id,
             "correlation_id": correlation_id,
             "service": "CollapseMirrorService",
@@ -171,6 +179,27 @@ def _handle_exec_step(bus, envelope: Dict[str, Any]) -> Dict[str, Any]:
             "published": False,
             "reason": reason,
         }
+
+    # ─────────────────────────────────────────────────────────────
+    # Hydrate NOOPs to satisfy Strict Schema
+    # If type="noop", we provide dummy values for mandatory fields.
+    # ─────────────────────────────────────────────────────────────
+    if str(candidate.get("type", "")).strip().lower() == "noop":
+        defaults = {
+            "observer": "Orion",
+            "trigger": "noop",
+            "observer_state": ["idle"],
+            "field_resonance": "none",
+            "emergent_entity": "none",
+            "summary": "No collapse detected.",
+            "mantra": "void",
+            "causal_echo": None,
+            "timestamp": None,
+            "environment": None
+        }
+        for k, v in defaults.items():
+            if k not in candidate:
+                candidate[k] = v
 
     try:
         entry = CollapseMirrorEntry.model_validate(candidate)
@@ -186,7 +215,7 @@ def _handle_exec_step(bus, envelope: Dict[str, Any]) -> Dict[str, Any]:
             "reason": f"schema_validation_failed:{type(e).__name__}",
         }
 
-    # Gate noop
+    # Gate noop (do not publish to downstream)
     if (entry.type or "").strip().lower() == "noop":
         return {
             "trace_id": correlation_id,
@@ -225,8 +254,23 @@ def start_collapse_mirror_exec_worker(bus) -> None:
 
     def _loop():
         logger.info("[CollapseMirrorService] Subscribing to %s", listen_channel)
+        
         for msg in bus.raw_subscribe(listen_channel):
-            envelope = msg.get("data") or {}
+            raw_data = msg.get("data")
+            
+            # Redis sends integers for subscription events; skip them.
+            if isinstance(raw_data, int) or raw_data is None:
+                continue
+
+            # Decode JSON string/bytes to Dict
+            envelope = raw_data
+            if isinstance(envelope, (str, bytes)):
+                try:
+                    envelope = json.loads(envelope)
+                except Exception:
+                    logger.warning("[CollapseMirrorService] Ignored non-JSON payload")
+                    continue
+
             if not isinstance(envelope, dict):
                 continue
 
@@ -245,6 +289,11 @@ def start_collapse_mirror_exec_worker(bus) -> None:
                 result = _handle_exec_step(bus, envelope)
                 if not result:
                     continue
+                
+                # Ensure envelope fields are mirrored back if missing
+                if "trace_id" not in result:
+                    result["trace_id"] = correlation_id
+                
             except Exception as e:
                 logger.exception("[CollapseMirrorService] Handler error (corr_id=%s): %s", correlation_id, e)
                 result = {

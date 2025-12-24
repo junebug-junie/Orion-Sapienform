@@ -1,0 +1,64 @@
+services:
+  vision-host:
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-host/Dockerfile
+    container_name: orion-${PROJECT}-vision-host
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+
+      - CHANNEL_VISIONHOST_INTAKE=${CHANNEL_VISIONHOST_INTAKE}
+      - CHANNEL_VISIONHOST_REPLY_PREFIX=${CHANNEL_VISIONHOST_REPLY_PREFIX}
+      - CHANNEL_VISIONHOST_PUB=${CHANNEL_VISIONHOST_PUB}
+
+      - MODEL_CACHE_DIR=${MODEL_CACHE_DIR}
+      - HF_HOME=${HF_HOME}
+      - TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE}
+
+      - VISION_PROFILES_PATH=${VISION_PROFILES_PATH}
+      - VISION_ENABLED_PROFILES=${VISION_ENABLED_PROFILES}
+
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
+      - VISION_DEVICE_STRATEGY=${VISION_DEVICE_STRATEGY}
+      - VISION_DEFAULT_DEVICE=${VISION_DEFAULT_DEVICE}
+      - VISION_DEVICES=${VISION_DEVICES}
+      - VISION_PICK_GPU_METRIC=${VISION_PICK_GPU_METRIC}
+
+      - VISION_DTYPE=${VISION_DTYPE}
+      - VISION_TIMEOUT_S=${VISION_TIMEOUT_S}
+
+      - VISION_MAX_INFLIGHT=${VISION_MAX_INFLIGHT}
+      - VISION_MAX_INFLIGHT_PER_GPU=${VISION_MAX_INFLIGHT_PER_GPU}
+      - VISION_QUEUE_WHEN_BUSY=${VISION_QUEUE_WHEN_BUSY}
+      - VISION_MAX_QUEUE=${VISION_MAX_QUEUE}
+
+      - VISION_VRAM_RESERVE_MB=${VISION_VRAM_RESERVE_MB}
+      - VISION_VRAM_SOFT_FLOOR_MB=${VISION_VRAM_SOFT_FLOOR_MB}
+      - VISION_VRAM_HARD_FLOOR_MB=${VISION_VRAM_HARD_FLOOR_MB}
+
+      - TORCH_CUDA_ALLOC_CONF=${TORCH_CUDA_ALLOC_CONF}
+
+    volumes:
+      - /mnt/telemetry/orion-vision-host:/mnt/telemetry/orion-vision-host
+      - /mnt/telemetry/models/vision:/mnt/telemetry/models/vision
+      - /mnt/telemetry/models/hf:/mnt/telemetry/models/hf
+
+    ports:
+      - "${HOST_PORT}:6600"
+
+    gpus: all
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

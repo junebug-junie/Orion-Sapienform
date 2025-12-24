@@ -1,0 +1,24 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+redis[hiredis]==5.0.7
+pydantic==2.9.2
+pydantic-settings==2.5.2
+pyyaml==6.0.2
+loguru==0.7.2
+
+numpy==1.26.4
+pillow==10.4.0
+opencv-python-headless==4.10.0.84
+
+transformers==4.44.2
+accelerate==0.34.2
+safetensors==0.4.5
+
+# GroundingDINO transformer deps commonly needed
+timm==1.0.9
+einops==0.8.0
+scipy==1.11.4
+
+# VRAM-aware GPU selection
+nvidia-ml-py==12.535.161

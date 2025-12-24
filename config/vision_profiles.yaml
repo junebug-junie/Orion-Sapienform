@@ -1,0 +1,481 @@
+version: 0.4.0
+
+# ===================================================================
+# Orion Vision Host Profiles (Model-Runtime Platform)
+# ===================================================================
+# vision-host is the llama-cpp analog for vision:
+# - keeps heavyweight vision models warm (selectively)
+# - runs tasks via a stable task_type contract
+# - emits dense scene artifacts (objects/masks/tracks/embeddings/captions)
+# - schedules across multi-GPU (4x V100 16GB) with VRAM-aware degrade
+# ===================================================================
+
+runtime:
+  device_strategy: best_free_vram          # best_free_vram | fixed | round_robin
+  default_device: cuda:0
+  default_dtype: auto                     # auto | fp16 | bf16 | fp32
+  default_timeout_s: 30
+
+  scheduler:
+    max_inflight_tasks: 4                 # total across all GPUs
+    max_inflight_per_gpu: 1               # heavy-safety on shared node
+    queue_when_busy: true
+    max_queue: 200
+    pick_gpu_metric: free_vram_mb         # free_vram_mb | free_fraction
+
+  vram_budget:
+    reserve_mb: 3500                      # keep this much free for cohabiting llama-cpp spikes
+    soft_floor_mb: 2200                   # degrade when free below this
+    hard_floor_mb: 1400                   # refuse heavy tasks when free below this
+
+  adaptive_degrade:
+    enabled: true
+    steps:
+      - name: shrink_resolution
+        set:
+          max_short_side_px: 640
+
+      - name: drop_optional_profiles
+        disable_profiles:
+          - retina_segment
+          - pose_estimation
+          - depth_estimation
+          - action_recognition
+          - ocr_read
+          - scene_graph
+          - identity_face
+          - person_reid
+          - affect_signals
+          - vlm_vqa
+
+      - name: refuse_ultra_tasks
+        refuse_task_types:
+          - scene_graph
+          - depth_map
+          - action_classify
+          - ocr
+          - vqa
+          - identity_face
+          - person_reid
+          - affect_signals
+
+  defaults:
+    max_short_side_px: 960
+    max_detections: 60
+    score_threshold: 0.25
+    nms_iou: 0.6
+
+# ===================================================================
+# Task Routing
+# ===================================================================
+# Callers send task_type; host resolves it to a pipeline or profile below.
+# ===================================================================
+
+task_routing:
+  retina_fast: pipeline_retina_fast
+  retina_dense: pipeline_retina_dense
+
+  detect_open_vocab: retina_detect_open_vocab
+  segment_anything: retina_segment
+  track_objects: retina_track
+
+  embed_image: embed_image
+  caption_frame: vlm_caption
+  vqa: vlm_vqa
+
+  pose: pose_estimation
+  depth_map: depth_estimation
+  action_classify: action_recognition
+  ocr: ocr_read
+  scene_graph: scene_graph
+
+  identity_face: identity_face
+  person_reid: person_reid
+  affect_signals: affect_signals
+
+# ===================================================================
+# Pipelines (Retina Modes)
+# ===================================================================
+
+pipelines:
+  - name: pipeline_retina_fast
+    enabled: true
+    description: >
+      Fast, high-value "retina" mode: open-vocab detect + optional tracking (video),
+      optional image embedding, optional caption.
+      Designed to be stable under shared VRAM constraints.
+    steps:
+      - use: retina_detect_open_vocab
+      - use: retina_track
+        when: "request.is_video == true"
+      - use: embed_image
+        when: "request.want_embeddings == true"
+      - use: vlm_caption
+        when: "request.want_caption == true"
+    outputs:
+      emits:
+        - objects
+        - tracks_optional
+        - embedding_optional
+        - caption_optional
+
+  - name: pipeline_retina_dense
+    enabled: true
+    description: >
+      Dense retina foundation: open-vocab detect + optional segmentation + optional pose +
+      optional tracking + optional embeddings + optional caption.
+      Segmentation/pose are intentionally "optional" to avoid VRAM thrash.
+    steps:
+      - use: retina_detect_open_vocab
+      - use: retina_segment
+        when: "request.want_masks == true"
+      - use: pose_estimation
+        when: "request.want_pose == true"
+      - use: retina_track
+        when: "request.is_video == true"
+      - use: embed_image
+        when: "request.want_embeddings == true"
+      - use: vlm_caption
+        when: "request.want_caption == true"
+    outputs:
+      emits:
+        - objects
+        - masks_optional
+        - pose_optional
+        - tracks_optional
+        - embedding_optional
+        - caption_optional
+
+# ===================================================================
+# Profiles (Atomic Model Runtimes)
+# ===================================================================
+# model_id values are placeholders — swap later without changing Orion architecture.
+# ===================================================================
+
+profiles:
+
+  - name: retina_detect_open_vocab
+    enabled: true
+    warm_on_start: true
+    kind: detect_open_vocab
+    backend: custom
+    description: >
+      Open-vocabulary detection (not closed-class YOLO-only). Choose backend later
+      (GroundingDINO/OWL-ViT/YOLO-World/etc).
+    model_id: "REPLACE_ME/open_vocab_detector"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 2800
+      latency_class: medium            # low|medium|high
+      gpu_class: heavy                 # light|medium|heavy
+    params:
+      max_short_side_px: 960
+      max_detections: 60
+      score_threshold: 0.25
+      nms_iou: 0.6
+      label_mode: open_vocab           # open_vocab | closed_set
+      labels_hint: []                  # optional label shortlist per request
+    outputs:
+      objects:
+        include_boxes: true
+        include_scores: true
+        include_labels: true
+
+  - name: retina_segment
+    enabled: true
+    warm_on_start: false
+    kind: segmentation
+    backend: custom
+    description: >
+      Segmentation masks (SAM/SAM2 class). Heavy; keep lazy-load and only call when requested.
+    model_id: "REPLACE_ME/segmentation_sam2"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 5200
+      latency_class: high
+      gpu_class: heavy
+    params:
+      max_short_side_px: 960
+      mask_quality: balanced           # fast|balanced|high
+      output_format: rle               # rle|polygons|bitmap_ref
+      refine_edges: false
+    outputs:
+      masks:
+        include_scores: true
+        include_object_links: true
+
+  - name: retina_track
+    enabled: true
+    warm_on_start: false
+    kind: tracking
+    backend: internal
+    description: >
+      Tracking across frames/windows. CPU by default (stable); upgrade to GPU later if desired.
+    device: cpu
+    cost:
+      vram_estimate_mb: 0
+      latency_class: low
+      gpu_class: light
+    params:
+      method: bytetrack                # bytetrack|deepsort|custom
+      max_tracks: 20
+      min_track_len_frames: 6
+      iou_threshold: 0.3
+      max_age_frames: 30
+    outputs:
+      tracks:
+        include_track_ids: true
+        include_trajectories: true
+        include_track_scores: true
+
+  - name: embed_image
+    enabled: true
+    warm_on_start: true
+    kind: embedding
+    backend: transformers
+    description: >
+      Image embeddings for recall/similarity (foundation for memory + retrieval).
+    model_id: "REPLACE_ME/siglip_or_clip_image_embedder"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 1600
+      latency_class: low
+      gpu_class: medium
+    params:
+      normalize: true
+      output_dim: auto
+      store_as: reference              # reference|inline
+      collection: vision_embeddings
+    outputs:
+      embedding:
+        include_ref: true
+        include_vector: false
+
+  - name: vlm_caption
+    enabled: true
+    warm_on_start: true
+    kind: vlm
+    backend: transformers
+    description: >
+      Vision-Language captioner for converting perception into language artifacts.
+      Keep max_tokens conservative. On-demand is supported via request.want_caption.
+    model_id: "REPLACE_ME/qwen2-vl_or_llava_next"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 4200
+      latency_class: high
+      gpu_class: heavy
+    params:
+      mode: caption
+      max_tokens: 128
+      temperature: 0.2
+      top_p: 0.9
+    outputs:
+      text:
+        include_confidence: true
+        include_rationale: false
+
+  - name: vlm_vqa
+    enabled: false
+    warm_on_start: false
+    kind: vlm
+    backend: transformers
+    description: >
+      Visual Q&A. Expensive. Enable later once VRAM coexistence is proven.
+    model_id: "REPLACE_ME/qwen2-vl_or_llava_next"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 5200
+      latency_class: high
+      gpu_class: heavy
+    params:
+      mode: vqa
+      max_tokens: 160
+      temperature: 0.2
+    outputs:
+      text:
+        include_confidence: true
+        include_rationale: false
+
+  - name: pose_estimation
+    enabled: false
+    warm_on_start: false
+    kind: pose
+    backend: custom
+    description: >
+      Pose/keypoints. Useful later for embodied interaction and activity signals.
+    model_id: "REPLACE_ME/pose_model"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 2400
+      latency_class: medium
+      gpu_class: medium
+    params:
+      max_people: 8
+    outputs:
+      pose:
+        include_keypoints: true
+        include_scores: true
+
+  - name: depth_estimation
+    enabled: false
+    warm_on_start: false
+    kind: depth
+    backend: transformers
+    description: >
+      Depth maps. Spatial reasoning. Keep off until you want to spend VRAM.
+    model_id: "REPLACE_ME/depth_model"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 3200
+      latency_class: medium
+      gpu_class: heavy
+    params:
+      max_short_side_px: 768
+      output_format: ref
+    outputs:
+      depth:
+        include_ref: true
+
+  - name: action_recognition
+    enabled: false
+    warm_on_start: false
+    kind: action
+    backend: custom
+    description: >
+      Clip-level action classification. Needs short clip windows; expensive.
+    model_id: "REPLACE_ME/action_model"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 4200
+      latency_class: high
+      gpu_class: heavy
+    params:
+      window_s: 2.0
+      stride_s: 1.0
+      topk: 5
+    outputs:
+      action:
+        include_labels: true
+        include_scores: true
+
+  - name: ocr_read
+    enabled: false
+    warm_on_start: false
+    kind: ocr
+    backend: custom
+    description: >
+      OCR. Privacy-sensitive. Keep off by default.
+    model_id: "REPLACE_ME/ocr_model"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 2200
+      latency_class: medium
+      gpu_class: medium
+    params:
+      language: en
+      min_conf: 0.4
+    outputs:
+      ocr:
+        include_text: true
+        include_boxes: true
+        include_scores: true
+
+  - name: scene_graph
+    enabled: false
+    warm_on_start: false
+    kind: scene_graph
+    backend: custom
+    description: >
+      Relationship triples: (person holding package), (package on porch), etc.
+      Great for reasoning. Expensive.
+    model_id: "REPLACE_ME/scene_graph_model"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 6200
+      latency_class: high
+      gpu_class: heavy
+    params:
+      max_relations: 60
+    outputs:
+      graph:
+        include_triples: true
+        include_scores: true
+
+  - name: identity_face
+    enabled: false
+    warm_on_start: false
+    kind: identity
+    backend: custom
+    description: >
+      Face embeddings + identity hypotheses. Keep disabled until privacy policy is locked.
+    model_id: "REPLACE_ME/face_embedder"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 2600
+      latency_class: medium
+      gpu_class: medium
+    params:
+      match_threshold: 0.35
+      max_candidates: 5
+      store_embeddings: true
+    outputs:
+      identities:
+        include_candidates: true
+        include_confidence: true
+        include_embedding_ref: true
+
+  - name: person_reid
+    enabled: false
+    warm_on_start: false
+    kind: reid
+    backend: custom
+    description: >
+      Re-identification across cameras without face dependence.
+    model_id: "REPLACE_ME/reid_model"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 3200
+      latency_class: high
+      gpu_class: heavy
+    params:
+      match_threshold: 0.30
+      max_candidates: 5
+    outputs:
+      reid:
+        include_candidates: true
+        include_confidence: true
+        include_embedding_ref: true
+
+  - name: affect_signals
+    enabled: false
+    warm_on_start: false
+    kind: affect
+    backend: custom
+    description: >
+      Weak affect/vibe signals only. Never treat as truth.
+    model_id: "REPLACE_ME/affect_model"
+    device: auto
+    dtype: auto
+    cost:
+      vram_estimate_mb: 2600
+      latency_class: medium
+      gpu_class: medium
+    params:
+      outputs: [valence, arousal, engagement]
+    outputs:
+      affect:
+        include_scores: true
+        include_confidence: true

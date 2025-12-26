@@ -44,6 +44,6 @@ COPY config/llm_profiles.yaml ./config/llm_profiles.yaml
 # Copy this service code
 COPY services/orion-llm-gateway /app
 
-EXPOSE 8222
+EXPOSE 8210
 
 CMD ["python", "-m", "app.main"]

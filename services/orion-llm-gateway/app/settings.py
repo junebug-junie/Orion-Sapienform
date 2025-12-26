@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 from .profiles import LLMProfileRegistry, LLMProfile
@@ -25,9 +25,10 @@ class Settings(BaseSettings):
     channel_llm_reply_prefix: str = Field(
         "orion:llm:reply", alias="CHANNEL_LLM_REPLY_PREFIX"
     )
+    # FIXED: Replaced env= with alias= for Pydantic V2 compatibility
     CHANNEL_SPARK_INTROSPECT_CANDIDATE: str = Field(
         "orion:spark:introspect:candidate",
-        env="CHANNEL_SPARK_INTROSPECT_CANDIDATE",
+        alias="CHANNEL_SPARK_INTROSPECT_CANDIDATE",
     )
 
     # Polling / timing
@@ -69,9 +70,8 @@ class Settings(BaseSettings):
         description="Default profile name when profiles are enabled",
     )
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    # FIXED: Updated Config for Pydantic V2 style
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def load_profile_registry(self) -> LLMProfileRegistry:
         """

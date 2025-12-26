@@ -67,4 +67,3 @@ class LLMProfileRegistry(BaseModel):
         if default:
             return self.profiles.get(default)
         return None
-

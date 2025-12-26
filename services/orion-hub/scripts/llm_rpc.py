@@ -393,12 +393,15 @@ class LLMGatewayRPC:
             "profile_name": profile_name,
         }
 
+        # REFACTORED: Use BaseEnvelope via dict construction
         envelope = {
             "event": "chat",
-            "service": self.service_name,
+            "source": "orion-hub",
             "correlation_id": trace_id,
             "reply_channel": reply_channel,
-            "payload": {"body": body},
+            "causality_chain": [],
+            "timestamp": datetime.utcnow().timestamp(),
+            "payload": body
         }
 
         exec_channel = f"{self.exec_request_prefix}:{self.service_name}"
@@ -449,12 +452,15 @@ class LLMGatewayRPC:
             "profile_name": profile_name,
         }
 
+        # REFACTORED: Use BaseEnvelope via dict construction
         envelope = {
             "event": "generate",
-            "service": self.service_name,
+            "source": "orion-hub",
             "correlation_id": trace_id,
             "reply_channel": reply_channel,
-            "payload": {"body": body},
+            "causality_chain": [],
+            "timestamp": datetime.utcnow().timestamp(),
+            "payload": body
         }
 
         exec_channel = f"{self.exec_request_prefix}:{self.service_name}"

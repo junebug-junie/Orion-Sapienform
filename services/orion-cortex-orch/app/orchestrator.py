@@ -1,389 +1,395 @@
-# services/orion-cortex-orch/app/orchestrator.py
+"""Cortex Orchestrator.
 
-import json
+Full-fidelity pipeline:
+
+Hub/UI  →  Cortex Orch  →  Cortex Exec  →  (LLM Gateway / other services)
+
+Orch is responsible for:
+- loading verb YAML (planning)
+- building prompts / contexts
+- deciding step order
+- aggregating results
+
+Exec is responsible for:
+- fan-out to downstream service channels
+- fan-in (collect exec_step_result)
+- timeouts
+
+This file intentionally *does not* implement any PubSub subscribe loops for
+exec results; it delegates those mechanics to Cortex Exec via RPC.
+"""
+
+from __future__ import annotations
+
 import logging
 import time
 import uuid
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import yaml
-from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel, Field
 
-from orion.core.bus.rpc_async import collect_replies
+from orion.core.bus.rpc_async import request_and_wait
 from orion.core.bus.service_async import OrionBusAsync
 
-from .settings import get_settings
-import orion  # Uses the installed orion package to find cognition/
+from .settings import settings
+from .verbs import VerbLoader
 
 logger = logging.getLogger("orion-cortex-orchestrator")
-settings = get_settings()
-
-# ─────────────────────────────────────
-# Cognition / prompts / verbs locations
-# ─────────────────────────────────────
-
-COGNITION_ROOT = Path(orion.__file__).resolve().parent / "cognition"
-VERBS_DIR = COGNITION_ROOT / "verbs"
-PROMPTS_DIR = COGNITION_ROOT / "prompts"
-
-_jinja_env = Environment(
-    loader=FileSystemLoader(str(PROMPTS_DIR)),
-    autoescape=False,
-)
 
 
-class CortexStepConfig(BaseModel):
-    verb_name: str = Field(..., description="High-level verb this step belongs to.")
-    step_name: str = Field(..., description="Human-readable name for this step.")
-    description: str = Field(..., description="What this step is trying to accomplish.")
-    order: int = Field(..., description="Execution order within the verb.")
-    services: list[str] = Field(..., description="One or more cognitive services to receive this step.")
-    prompt_template: str = Field(..., description="Base instruction text; orchestrator appends context.")
-
-    requires_gpu: bool = Field(False)
-    requires_memory: bool = Field(False)
+# ---- Request/Response models ----
 
 
 class OrchestrateVerbRequest(BaseModel):
-    verb_name: str
-    origin_node: str = Field("unknown-node")
-    context: dict = Field(default_factory=dict)
-    steps: Optional[List[CortexStepConfig]] = Field(default=None)
-    timeout_ms: int | None = Field(None)
+    verb_name: str = Field(..., description="Name of verb YAML to load")
+    origin_node: str = Field("hub", description="Who asked for this")
+    session_id: Optional[str] = None
+
+    # Chat use-case
+    text: Optional[str] = None
+    history: Optional[List[Dict[str, Any]]] = None
+
+    # Global args/context for templates
+    args: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+    # Backward-compat (older callers)
+    steps: Optional[List[Dict[str, Any]]] = None
+    timeout_ms: Optional[int] = None
 
 
 class ServiceStepResult(BaseModel):
     service: str
-    trace_id: str
-    ok: bool
-    elapsed_ms: int
-    payload: Dict[str, Any]
+    ok: bool = True
+    elapsed_ms: Optional[int] = None
+    payload: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
 
 
 class StepExecutionResult(BaseModel):
-    verb_name: str
-    step_name: str
+    verb: str
+    step: str
     order: int
-    services: List[ServiceStepResult]
-    prompt_preview: str
+    ok: bool
+    elapsed_ms: int
+    service_results: List[ServiceStepResult]
 
 
 class OrchestrateVerbResponse(BaseModel):
     verb_name: str
-    origin_node: str
-    steps_executed: int
+    exec_id: str
+    ok: bool
+    elapsed_ms: int
+
+    # Stable for Hub/UI
     step_results: List[StepExecutionResult]
-    context_echo: Dict[str, Any]
+
+    # Convenience for chat
+    text: Optional[str] = None
 
 
-# ─────────────────────────────────────
-# Verb loader (cognition/verbs/*.yaml)
-# ─────────────────────────────────────
+@dataclass
+class CortexStepConfig:
+    verb_name: str
+    step_name: str
+    order: int
+    services: List[str]
+    prompt_template: str
+    requires: Dict[str, Any]
 
-def _load_verb_steps_for_name(verb_name: str) -> List[CortexStepConfig]:
-    path = VERBS_DIR / f"{verb_name}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"No verb YAML found for '{verb_name}' at {path}")
 
-    with path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+# ---- Orch Core ----
 
-    name = data.get("name") or verb_name
-    default_desc = data.get("description") or f"Verb {name}"
-    default_services = data.get("services") or []
-    default_prompt_template = data.get("prompt_template") or ""
-    default_requires_gpu = bool(data.get("requires_gpu", False))
-    default_requires_memory = bool(data.get("requires_memory", False))
 
-    plan = data.get("plan") or []
-    steps: List[CortexStepConfig] = []
+class CortexOrchestrator:
+    def __init__(self, verbs_dir: str = "/app/orion/cognition/verbs") -> None:
+        self.loader = VerbLoader(verbs_dir)
 
-    for raw_step in plan:
-        step_name = raw_step.get("name") or raw_step.get("step_name") or "step"
-        step_desc = raw_step.get("description") or default_desc
-        order = int(raw_step.get("order", 0))
-        services = raw_step.get("services") or default_services
-        prompt_template = raw_step.get("prompt_template") or default_prompt_template
-        requires_gpu = bool(raw_step.get("requires_gpu", default_requires_gpu))
-        requires_memory = bool(raw_step.get("requires_memory", default_requires_memory))
+    def _build_prompt(
+        self,
+        *,
+        verb_name: str,
+        step_name: str,
+        service: str,
+        text: Optional[str],
+        history: Optional[List[Dict[str, Any]]],
+        args: Dict[str, Any],
+        context: Dict[str, Any],
+        prior_step_results: List[Dict[str, Any]],
+    ) -> str:
+        """Build a high-fidelity prompt wrapper.
 
-        steps.append(
-            CortexStepConfig(
-                verb_name=name,
-                step_name=step_name,
-                description=step_desc,
-                order=order,
-                services=services,
-                prompt_template=prompt_template,
-                requires_gpu=requires_gpu,
-                requires_memory=requires_memory,
-            )
+        Downstream services can also use `prompt_template` + `context` directly,
+        but this wrapper preserves observability and improves LLM steering.
+        """
+
+        history_len = len(history or [])
+        user_text = (text or "").strip()
+
+        lines = []
+        lines.append("# Orion Cortex Orchestrator")
+        lines.append(f"verb: {verb_name}")
+        lines.append(f"step: {step_name}")
+        lines.append(f"target_service: {service}")
+        lines.append(f"history_len: {history_len}")
+        if user_text:
+            lines.append("\n## User input")
+            lines.append(user_text)
+
+        if context:
+            lines.append("\n## Context")
+            # keep it lightweight; downstream can consume full context dict
+            for k, v in context.items():
+                lines.append(f"- {k}: {v}")
+
+        if prior_step_results:
+            lines.append("\n## Prior step results")
+            for r in prior_step_results[-3:]:
+                step = r.get("step")
+                ok = r.get("ok")
+                lines.append(f"- step={step} ok={ok}")
+
+        # Template-aware: include a marker so the LLM can anchor.
+        lines.append("\n## Instruction")
+        lines.append(
+            "Follow the step template and produce the most helpful response. "
+            "If tool calls are needed, emit them using the target service's contract." 
         )
 
-    if not steps:
-        raise ValueError(f"Verb YAML {path} has no plan[] steps")
+        return "\n".join(lines)
 
-    logger.info("Loaded %d step(s) for verb '%s' from %s", len(steps), verb_name, path)
-    return steps
+    def _extract_text_from_results(self, step_results: List[StepExecutionResult]) -> Optional[str]:
+        # Common path: LLM gateway returns choices[0].message.content
+        for step in reversed(step_results):
+            for sr in step.service_results:
+                if not sr.payload:
+                    continue
+                payload = sr.payload
+                # Some services return nested
+                if isinstance(payload, dict):
+                    # LLM Gateway: {ok, service, payload:{...}} or raw openai shape
+                    if "choices" in payload:
+                        try:
+                            return payload["choices"][0]["message"]["content"]
+                        except Exception:
+                            pass
+                    if "payload" in payload and isinstance(payload["payload"], dict):
+                        inner = payload["payload"]
+                        if "choices" in inner:
+                            try:
+                                return inner["choices"][0]["message"]["content"]
+                            except Exception:
+                                pass
+        return None
 
-
-def _render_prompt_template(
-    template_ref: str,
-    context: Dict[str, Any],
-    prior_results: List[StepExecutionResult],
-) -> str:
-    if not template_ref:
-        return ""
-
-    ref = template_ref.strip()
-
-    if (" " not in ref) and ("\n" not in ref) and ref.endswith(".j2"):
-        try:
-            tmpl = _jinja_env.get_template(ref)
-            return tmpl.render(
-                context=context,
-                prior_step_results=[r.model_dump(mode="json") for r in prior_results],
-            ).strip()
-        except Exception as e:
-            logger.error("Failed to render Jinja prompt template '%s': %s", ref, e, exc_info=True)
-            return ref
-
-    return ref
-
-
-def _build_prompt(
-    step: CortexStepConfig,
-    service: str,
-    origin_node: str,
-    context: Dict[str, Any],
-    prior_results: List[StepExecutionResult],
-) -> str:
-    prior_results_json = json.dumps(
-        [r.model_dump(mode="json") for r in prior_results],
-        indent=2,
-        ensure_ascii=False,
-    )
-    context_json = json.dumps(context, indent=2, ensure_ascii=False)
-
-    header = _render_prompt_template(step.prompt_template, context=context, prior_results=prior_results)
-
-    suffix = (
-        "\n\n"
-        "# Orion Cortex Orchestrator Context\n"
-        f"- Verb: {step.verb_name}\n"
-        f"- Step: {step.step_name} (order={step.order})\n"
-        f"- Target Service: {service}\n"
-        f"- Origin Node: {origin_node}\n"
-        "\n"
-        "## Input Context (JSON)\n"
-        f"{context_json}\n"
-        "\n"
-        "## Prior Step Results (JSON)\n"
-        f"{prior_results_json}\n"
-    )
-
-    return f"{header}\n{suffix}"
-
-
-async def _wait_for_exec_results(
-    bus: OrionBusAsync,
-    *,
-    reply_channel: str,
-    correlation_id: str,
-    expected_count: int,
-    timeout_ms: int,
-) -> List[Dict[str, Any]]:
-    """Fan-in: collect up to N results on a reply channel.
-
-    - Subscribes before publishing (caller should still publish after creating the task).
-    - Filters by correlation_id/trace_id when present.
-    """
-
-    pubsub = bus.pubsub()
-    await pubsub.subscribe(reply_channel)
-    timeout_sec = max(timeout_ms / 1000.0, 0.001)
-
-    def _match(d: Any) -> bool:
-        if not isinstance(d, dict):
-            return False
-        cid = d.get("correlation_id") or d.get("trace_id")
-        # If the service doesn't include cid, accept (best-effort).
-        return (cid == correlation_id) if cid else True
-
-    try:
-        items = await collect_replies(
-            pubsub,
-            expected_count=expected_count,
-            timeout_sec=timeout_sec,
-            match=_match,
-        )
-        return [x for x in items if isinstance(x, dict)]
-    finally:
-        try:
-            await pubsub.unsubscribe(reply_channel)
-        except Exception:
-            pass
-        try:
-            await pubsub.close()
-        except Exception:
-            pass
-
-
-async def run_cortex_verb(bus: OrionBusAsync, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
-    """
-    Execute a high-level "verb" as a sequence of Cortex steps.
-
-    For each step:
-      - Build a prompt (Jinja header + JSON footer)
-      - Fan-out to {EXEC_REQUEST_PREFIX}:{service}
-      - Fan-in from {EXEC_RESULT_PREFIX}:{exec_id}
-      - Accumulate StepExecutionResult objects
-    """
-    # Determine step config list: caller-provided or loaded from cognition/verbs/<verb>.yaml
-    if req.steps and len(req.steps) > 0:
-        steps: List[CortexStepConfig] = list(req.steps)
-    else:
-        steps = _load_verb_steps_for_name(req.verb_name)
-
-    # Ensure each step has a verb_name
-    for s in steps:
-        if not s.verb_name:
-            s.verb_name = req.verb_name
-
-    ordered_steps = sorted(steps, key=lambda s: s.order)
-    timeout_ms = req.timeout_ms or settings.cortex_step_timeout_ms
-
-    prior_step_results: List[StepExecutionResult] = []
-    final_step_results: List[StepExecutionResult] = []
-
-    for step in ordered_steps:
-        # One execution id per step, shared across all services for that step
+    async def orchestrate_verb(self, *, bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
         exec_id = str(uuid.uuid4())
-        result_channel = f"{settings.exec_result_prefix}:{exec_id}"
+        t0 = time.monotonic()
 
-        if not step.services or len(step.services) == 0:
-            raise ValueError(
-                f"Step has no services: verb={req.verb_name} step={step.step_name} order={step.order}"
+        verb_cfg = self.loader.load_verb(req.verb_name)
+        steps_cfg = verb_cfg.get("steps") or []
+        if not steps_cfg:
+            return OrchestrateVerbResponse(
+                verb_name=req.verb_name,
+                exec_id=exec_id,
+                ok=False,
+                elapsed_ms=0,
+                step_results=[],
+                text=None,
             )
 
-        expected = len(step.services)
-
-        # ─────────────────────────────────────────────
-        # Fan-out: publish exec_step to each service
-        # ─────────────────────────────────────────────
-        for service in step.services:
-            prompt = _build_prompt(
-                step=step,
-                service=service,
-                origin_node=req.origin_node,
-                context=req.context,
-                prior_results=prior_step_results,
-            )
-
-            exec_channel = f"{settings.exec_request_prefix}:{service}"
-
-            # IMPORTANT:
-            # - Orch remains agnostic: it only targets {prefix}:{ServiceName}
-            # - We include both correlation_id + trace_id so mixed workers are fine.
-            envelope = {
-                "event": "exec_step",
-                "service": service,
-                "correlation_id": exec_id,
-                "trace_id": exec_id,
-                "reply_channel": result_channel,
-                "payload": {
-                    "verb": step.verb_name or req.verb_name,
-                    "step": step.step_name,
-                    "order": step.order,
-                    "service": service,
-                    "origin_node": req.origin_node,
-                    "prompt_template": step.prompt_template,
-                    "context": req.context,
-                    "args": {},  # reserved for richer argument passing later
-                    "prior_step_results": [
-                        r.model_dump(mode="json") for r in prior_step_results
-                    ],
-                    "requires_gpu": step.requires_gpu,
-                    "requires_memory": step.requires_memory,
-                    "prompt": prompt,
-                },
-            }
-
-            logger.info(
-                "Published exec_step to %s (exec_id=%s, verb=%s, step=%s, service=%s)",
-                exec_channel,
-                exec_id,
-                step.verb_name,
-                step.step_name,
-                service,
-            )
-            await bus.publish(exec_channel, envelope)
-
-        # ─────────────────────────────────────────────
-        # Fan-in: collect results for this step
-        # ─────────────────────────────────────────────
-        raw_results = await _wait_for_exec_results(
-            bus,
-            reply_channel=result_channel,
-            correlation_id=exec_id,
-            expected_count=expected,
-            timeout_ms=timeout_ms,
-        )
-
-        step_results: List[ServiceStepResult] = []
-        for raw in raw_results:
-            service_name = raw.get("service") or raw.get("service_name") or "unknown"
-            elapsed_ms = int(raw.get("elapsed_ms") or raw.get("elapsed") or 0)
-            ok = bool(raw.get("ok", True))
-
-            payload = {
-                k: v
-                for k, v in raw.items()
-                if k
-                not in {
-                    "trace_id",
-                    "correlation_id",
-                    "service",
-                    "service_name",
-                    "elapsed_ms",
-                    "elapsed",
-                    "ok",
-                }
-            }
-
-            step_results.append(
-                ServiceStepResult(
-                    service=service_name,
-                    trace_id=exec_id,
-                    ok=ok,
-                    elapsed_ms=elapsed_ms,
-                    payload=payload,
+        # Normalize step configs
+        steps: List[CortexStepConfig] = []
+        for s in steps_cfg:
+            steps.append(
+                CortexStepConfig(
+                    verb_name=req.verb_name,
+                    step_name=s.get("name") or s.get("step") or "step",
+                    order=int(s.get("order") or 0),
+                    services=list(s.get("services") or []),
+                    prompt_template=str(s.get("prompt_template") or ""),
+                    requires=dict(s.get("requires") or {}),
                 )
             )
 
-        prompt_preview = (
-            step.prompt_template.strip()[:200].replace("\n", " ")
-            if step.prompt_template
-            else ""
+        steps.sort(key=lambda x: x.order)
+        logger.info(
+            "Loaded %s step(s) for verb '%s' from %s",
+            len(steps),
+            req.verb_name,
+            verb_cfg.get("_path") or "(memory)",
         )
 
-        step_execution = StepExecutionResult(
-            verb_name=step.verb_name,
-            step_name=step.step_name,
-            order=step.order,
-            services=step_results,
-            prompt_preview=prompt_preview,
+        prior_step_results: List[Dict[str, Any]] = []
+        step_results: List[StepExecutionResult] = []
+
+        for step in steps:
+            step_t0 = time.monotonic()
+            step_exec_id = str(uuid.uuid4())
+
+            if not step.services:
+                step_results.append(
+                    StepExecutionResult(
+                        verb=req.verb_name,
+                        step=step.step_name,
+                        order=step.order,
+                        ok=False,
+                        elapsed_ms=0,
+                        service_results=[
+                            ServiceStepResult(
+                                service="(none)",
+                                ok=False,
+                                error="No services configured for step",
+                            )
+                        ],
+                    )
+                )
+                continue
+
+            calls: List[Dict[str, Any]] = []
+            for svc in step.services:
+                prompt = self._build_prompt(
+                    verb_name=req.verb_name,
+                    step_name=step.step_name,
+                    service=svc,
+                    text=req.text,
+                    history=req.history,
+                    args=req.args,
+                    context=req.context,
+                    prior_step_results=prior_step_results,
+                )
+
+                payload_for_service = {
+                    "verb": req.verb_name,
+                    "step": step.step_name,
+                    "order": step.order,
+                    "service": svc,
+                    "origin_node": req.origin_node,
+                    "prompt": prompt,
+                    "prompt_template": step.prompt_template,
+                    "context": req.context,
+                    "args": req.args,
+                    "prior_step_results": prior_step_results,
+                    "requires": step.requires,
+                }
+
+                calls.append({"service": svc, "payload": payload_for_service})
+
+            # ---- Delegate runtime mechanics to Cortex Exec ----
+
+            reply_channel = f"{settings.cortex_exec_result_prefix}:{step_exec_id}"
+            exec_req = {
+                "trace_id": step_exec_id,
+                "result_channel": reply_channel,
+                "verb_name": req.verb_name,
+                "step_name": step.step_name,
+                "order": step.order,
+                "origin_node": req.origin_node,
+                "timeout_ms": int(req.timeout_ms or settings.cortex_step_timeout_ms),
+                "calls": calls,
+            }
+
+            try:
+                exec_reply = await request_and_wait(
+                    bus,
+                    intake_channel=settings.cortex_exec_request_channel,
+                    reply_channel=reply_channel,
+                    payload=exec_req,
+                    timeout_sec=(settings.cortex_step_timeout_ms / 1000.0) + 5.0,
+                )
+            except Exception as e:
+                logger.exception("Cortex Exec RPC failed for step %s", step.step_name)
+                step_results.append(
+                    StepExecutionResult(
+                        verb=req.verb_name,
+                        step=step.step_name,
+                        order=step.order,
+                        ok=False,
+                        elapsed_ms=int((time.monotonic() - step_t0) * 1000),
+                        service_results=[
+                            ServiceStepResult(
+                                service="CortexExecService",
+                                ok=False,
+                                error=str(e),
+                            )
+                        ],
+                    )
+                )
+                prior_step_results.append({"step": step.step_name, "ok": False, "error": str(e)})
+                continue
+
+            # Exec reply shape: {ok, results:[...], elapsed_ms, error?}
+            raw_results: List[Dict[str, Any]] = []
+            ok = True
+            if isinstance(exec_reply, dict):
+                ok = bool(exec_reply.get("ok", True))
+                raw_results = list(exec_reply.get("results") or [])
+                if not ok and exec_reply.get("error"):
+                    raw_results.append(
+                        {
+                            "event": "exec_error",
+                            "service": "CortexExecService",
+                            "ok": False,
+                            "error": exec_reply.get("error"),
+                        }
+                    )
+            else:
+                ok = False
+
+            service_results: List[ServiceStepResult] = []
+            for r in raw_results:
+                # These are raw downstream replies; normalize lightly.
+                svc = r.get("service") or r.get("payload", {}).get("service") or "unknown"
+                svc_ok = bool(r.get("ok", True))
+                service_results.append(
+                    ServiceStepResult(
+                        service=svc,
+                        ok=svc_ok,
+                        elapsed_ms=r.get("elapsed_ms"),
+                        payload=r,
+                        error=r.get("error"),
+                    )
+                )
+
+            step_elapsed_ms = int((time.monotonic() - step_t0) * 1000)
+            step_ok = ok and all(sr.ok for sr in service_results) and len(service_results) == len(calls)
+
+            step_results.append(
+                StepExecutionResult(
+                    verb=req.verb_name,
+                    step=step.step_name,
+                    order=step.order,
+                    ok=step_ok,
+                    elapsed_ms=step_elapsed_ms,
+                    service_results=service_results,
+                )
+            )
+
+            prior_step_results.append(
+                {
+                    "step": step.step_name,
+                    "ok": step_ok,
+                    "results": raw_results,
+                }
+            )
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        overall_ok = all(s.ok for s in step_results) if step_results else False
+        text = self._extract_text_from_results(step_results)
+
+        return OrchestrateVerbResponse(
+            verb_name=req.verb_name,
+            exec_id=exec_id,
+            ok=overall_ok,
+            elapsed_ms=elapsed_ms,
+            step_results=step_results,
+            text=text,
         )
 
-        final_step_results.append(step_execution)
-        prior_step_results.append(step_execution)
 
-    return OrchestrateVerbResponse(
-        verb_name=req.verb_name,
-        origin_node=req.origin_node,
-        steps_executed=len(final_step_results),
-        step_results=final_step_results,
-        context_echo=req.context,
-    )
+
+async def run_cortex_verb(bus: OrionBusAsync, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
+    """Compatibility wrapper used by app.main."""
+    orch = CortexOrchestrator()
+    return await orch.orchestrate_verb(bus=bus, req=req)

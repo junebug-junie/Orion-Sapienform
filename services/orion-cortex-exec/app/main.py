@@ -74,6 +74,8 @@ config = ChassisConfig(service_name=settings.service_name, service_version="0.1.
 
 async def handle_exec_rpc(req: CortexExecStepRequestV1) -> dict:
     trace_id = req.trace_id
+
+    logger.info("[CortexExec] recv trace_id=%s verb=%s step=%s calls=%d timeout_ms=%s", trace_id, req.verb_name, req.step_name, len(req.calls), req.timeout_ms)
     replies, elapsed_ms = await executor.execute_step_calls(
         trace_id=trace_id,
         verb_name=req.verb_name,

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     node_name: str = Field("athena-cortex-orchestrator", alias="NODE_NAME")
 
     # Redis / bus config
-    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
     # Exec routing
@@ -29,8 +29,7 @@ class Settings(BaseSettings):
     )
 
     # Timeouts
-    cortex_step_timeout_ms: int = Field(
-        20000, alias="ORION_CORTEX_STEP_TIMEOUT_MS")
+    cortex_step_timeout_ms: int = Field(8000, alias="ORION_CORTEX_STEP_TIMEOUT_MS")
 
     # HTTP service config
     api_host: str = Field("0.0.0.0", alias="API_HOST")

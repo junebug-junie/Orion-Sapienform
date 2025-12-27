@@ -2,140 +2,125 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-from contextlib import suppress
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-import orjson
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 
-from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
-from orion.core.bus.service_async import OrionBusAsync
-
-from .bus_models import CortexOrchBusReply, CortexOrchBusRequest
-from .orchestrator import OrchestrateVerbRequest, OrchestrateVerbResponse, run_cortex_verb
-from .settings import get_settings
-
-
-class ORJSONResponse(JSONResponse):
-    """FastAPI response class using orjson."""
-
-    media_type = "application/json"
-
-    def render(self, content: Dict[str, Any]) -> bytes:  # type: ignore[override]
-        return orjson.dumps(content, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
-
-
-def configure_logging(level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stdout,
-    )
-
-
-settings = get_settings()
-configure_logging(settings.log_level)
+# uvicorn loads `app.main:app` — define it immediately.
+app = FastAPI(title="Orion Cortex Orchestrator", version="0.0.0")
 logger = logging.getLogger("orion-cortex-orchestrator")
-
-bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
-
-cfg = ChassisConfig(
-    service_name="CortexOrchestrator",
-    service_version=getattr(settings, "service_version", "0.1.0"),
-    bus_url=settings.orion_bus_url,
-    bus_enabled=settings.orion_bus_enabled,
-)
-
-
-async def _handle_orch_bus(req: CortexOrchBusRequest) -> CortexOrchBusReply:
-    """Bus entrypoint: validates request, runs the verb, returns a stable reply."""
-    try:
-        orch_req = OrchestrateVerbRequest(
-            verb_name=req.verb_name,
-            origin_node=req.origin_node,
-            context=req.context,
-            steps=req.steps or [],
-            timeout_ms=req.timeout_ms,
-        )
-        resp = await run_cortex_verb(bus, orch_req)
-        return CortexOrchBusReply(trace_id=req.trace_id, ok=True, data=resp.model_dump(mode="json"))
-    except Exception as e:
-        # Chassis will also publish system.error, but we must reply so RPC callers don't hang.
-        logger.exception("Bus orchestration failed (trace_id=%s)", req.trace_id)
-        return CortexOrchBusReply(trace_id=req.trace_id, ok=False, error=str(e), data={})
-
-
-orch_bus = Rabbit[
-    CortexOrchBusRequest,
-    CortexOrchBusReply,
-](
-    cfg,
-    intake_channel=settings.cortex_orch_request_channel,
-    request_model=CortexOrchBusRequest,
-    handler=_handle_orch_bus,
-    bus=bus,
-)
-
-
-app = FastAPI(
-    title="Orion Cortex Orchestrator",
-    version=cfg.service_version,
-    default_response_class=ORJSONResponse,
-)
-
-_orch_task: Optional[asyncio.Task] = None
 
 
 @app.on_event("startup")
 async def _startup() -> None:
-    global _orch_task
+    """Start the Rabbit bus worker in the background.
 
-    logger.info(
-        "Cortex Orchestrator starting; HTTP on %s:%s, bus_channel=%s",
-        settings.api_host,
-        settings.api_port,
-        settings.cortex_orch_request_channel,
+    Imports are delayed so the ASGI attribute `app` always exists even if
+    downstream imports break; this prevents the misleading "attribute app not found"
+    uvicorn error.
+    """
+
+    from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+    from orion.core.bus.service_async import OrionBusAsync
+
+    from .bus_models import CortexOrchBusReplyV1, CortexOrchBusRequestV1
+    from .orchestrator import OrchestrateVerbRequest, run_cortex_verb
+    from .settings import settings
+
+    # Logging once settings are available
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    _orch_task = asyncio.create_task(orch_bus.run(), name="cortex-orch.rabbit")
+    app.version = getattr(settings, "service_version", "0.1.0")
+
+    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
+
+    cfg = ChassisConfig(
+        service_name="CortexOrchestrator",
+        service_version=app.version,
+        bus_url=settings.orion_bus_url,
+        bus_enabled=settings.orion_bus_enabled,
+    )
+
+    async def handler(req: CortexOrchBusRequestV1) -> Dict[str, Any]:
+        orch_req = OrchestrateVerbRequest(
+            trace_id=req.trace_id,
+            verb_name=req.verb_name,
+            origin_node=req.origin_node,
+            session_id=req.session_id,
+            text=req.text,
+            history=req.history,
+            args=req.args,
+            context=req.context,
+            steps=req.steps,
+            timeout_ms=req.timeout_ms,
+        )
+
+        resp = await run_cortex_verb(orch_req, bus=bus)
+
+        data: Dict[str, Any] = {
+            "trace_id": resp.trace_id,
+            "ok": resp.ok,
+            "verb_name": resp.verb_name,
+            "exec_id": resp.exec_id,
+            "elapsed_ms": resp.elapsed_ms,
+            "text": resp.text,
+            "step_results": [sr.model_dump(mode="json") for sr in resp.step_results],
+        }
+
+        reply = CortexOrchBusReplyV1(ok=resp.ok, data=data)
+        return reply.model_dump(mode="json")
+
+    rabbit = Rabbit[
+        CortexOrchBusRequestV1,
+        Dict[str, Any],
+    ](
+        cfg,
+        intake_channel=settings.cortex_orch_request_channel,
+        request_model=CortexOrchBusRequestV1,
+        handler=handler,
+        bus=bus,
+    )
+
+    app.state.orion_bus = bus
+    app.state.rabbit = rabbit
+    app.state.rabbit_task = asyncio.create_task(rabbit.run(), name="cortex-orch.rabbit")
+
+    logger.info(
+        "CortexOrch online (http + bus) request_channel=%s cortex_exec_channel=%s",
+        settings.cortex_orch_request_channel,
+        settings.cortex_exec_request_channel,
+    )
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    global _orch_task
+    rabbit = getattr(app.state, "rabbit", None)
+    task: asyncio.Task | None = getattr(app.state, "rabbit_task", None)
 
-    with suppress(Exception):
-        await orch_bus.stop()
-
-    if _orch_task:
-        _orch_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await _orch_task
-        _orch_task = None
+    try:
+        if rabbit is not None:
+            await rabbit.stop()
+    finally:
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @app.get("/health")
-def health() -> Dict[str, Any]:
-    return {
-        "status": "ok",
-        "node_name": settings.node_name,
-        "bus_enabled": bus.enabled,
-        "bus_url": settings.orion_bus_url,
-        "exec_request_prefix": settings.exec_request_prefix,
-        "exec_result_prefix": settings.exec_result_prefix,
-        "cortex_orch_request_channel": settings.cortex_orch_request_channel,
-        "cortex_orch_result_prefix": settings.cortex_orch_result_prefix,
-    }
+async def health() -> Dict[str, Any]:
+    try:
+        from .settings import settings
 
-
-@app.post("/orchestrate", response_model=OrchestrateVerbResponse)
-async def orchestrate(req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
-    logger.info(
-        "HTTP orchestrate verb=%s origin=%s steps=%d",
-        req.verb_name,
-        req.origin_node,
-        len(req.steps) if req.steps else 0,
-    )
-    return await run_cortex_verb(bus, req)
+        return {
+            "status": "ok",
+            "service": "CortexOrchestrator",
+            "version": getattr(settings, "service_version", "0.1.0"),
+            "bus_url": settings.orion_bus_url,
+            "orch_request_channel": settings.cortex_orch_request_channel,
+            "cortex_exec_request_channel": settings.cortex_exec_request_channel,
+        }
+    except Exception as e:
+        return {"status": "degraded", "error": str(e)}

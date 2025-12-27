@@ -90,15 +90,17 @@ async def handle_llm_request(envelope: ExecutionEnvelopeV1) -> Dict[str, Any]:
         result = await asyncio.to_thread(run_llm_exec_step, body)
         elapsed_ms = int((time.time() - t0) * 1000)
 
-        # Legacy contract used by cortex-exec aggregation
+        # Legacy + cortex-exec compat contract
         return {
+            "event": "exec_step_result",
+            "correlation_id": envelope.correlation_id,
             "trace_id": envelope.correlation_id,
             "service": envelope.service,
             "ok": True,
             "elapsed_ms": elapsed_ms,
+            "status": "success",
             "result": result,
             "artifacts": {},
-            "status": "success",
         }
 
     # ─────────────────────────────

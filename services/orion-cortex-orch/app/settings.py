@@ -9,12 +9,16 @@ class Settings(BaseSettings):
     node_name: str = Field("athena-cortex-orchestrator", alias="NODE_NAME")
 
     # Redis / bus config
-    orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
     # Exec routing
     exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
     exec_result_prefix: str = Field("orion-exec:result", alias="EXEC_RESULT_PREFIX")
+    # Orch → Exec RPC
+    cortex_exec_request_channel: str = Field("orion-cortex-exec:request", alias="CORTEX_EXEC_REQUEST_CHANNEL")
+    cortex_exec_result_prefix: str = Field("orion-cortex-exec:result", alias="CORTEX_EXEC_RESULT_PREFIX")
+
 
     # Optional orchestrator-level routing
     cortex_orch_request_channel: str = Field(
@@ -25,7 +29,8 @@ class Settings(BaseSettings):
     )
 
     # Timeouts
-    cortex_step_timeout_ms: int = Field(8000, alias="ORION_CORTEX_STEP_TIMEOUT_MS")
+    cortex_step_timeout_ms: int = Field(
+        20000, alias="ORION_CORTEX_STEP_TIMEOUT_MS")
 
     # HTTP service config
     api_host: str = Field("0.0.0.0", alias="API_HOST")
@@ -41,3 +46,7 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+# Convenience singleton (used by orchestrator imports)
+settings = get_settings()

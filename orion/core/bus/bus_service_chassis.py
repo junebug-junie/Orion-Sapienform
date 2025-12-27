@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Generic, Iterable, Optional, Type, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .bus_schemas import (
     BaseEnvelope,
@@ -46,6 +46,63 @@ from .service_async import OrionBusAsync
 
 
 logger = logging.getLogger("orion.chassis")
+
+def _extract_reply_channel(raw: Any) -> str | None:
+    """Best-effort extraction of a reply channel from an inbound message.
+
+    Works even if the inbound payload fails Pydantic validation.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    candidates = [raw]
+    pl = raw.get("payload")
+    if isinstance(pl, dict):
+        candidates.append(pl)
+
+    for obj in candidates:
+        for k in ("reply_to", "reply_channel", "response_channel", "result_channel"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def _extract_trace_id(raw: Any) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    for k in ("trace_id", "correlation_id", "exec_id"):
+        v = raw.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    pl = raw.get("payload")
+    if isinstance(pl, dict):
+        for k in ("trace_id", "correlation_id", "exec_id"):
+            v = pl.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def _error_rpc_response(
+    exc: BaseException,
+    *,
+    trace_id: str | None = None,
+    kind: str = "rpc_error",
+    errors: Any = None,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "ok": False,
+        "kind": kind,
+        "error": str(exc),
+    }
+    if trace_id:
+        out["trace_id"] = trace_id
+        out["correlation_id"] = trace_id
+    if errors is not None:
+        out["errors"] = errors
+    return out
+
 
 ReqEnvT = TypeVar("ReqEnvT", bound=BaseModel)
 RespT = TypeVar("RespT")
@@ -87,20 +144,14 @@ class BaseChassis:
     async def start(self) -> None:
         await self.bus.connect()
         self._install_signal_handlers()
-        try:
-            await self._publish_health(status="starting")
-        except Exception as e:
-            logger.warning("[health] failed during start: %s", e)
+        await self._publish_health(status="starting")
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="heartbeat"))
 
     async def stop(self) -> None:
         if self._stop.is_set():
             return
         self._stop.set()
-        try:
-            await self._publish_health(status="stopping")
-        except Exception as e:
-            logger.warning("[health] failed during stop: %s", e)
+        await self._publish_health(status="stopping")
 
         for t in list(self._tasks):
             t.cancel()
@@ -210,10 +261,14 @@ class Rabbit(BaseChassis, Generic[ReqEnvT, RespT]):
 
         try:
             while not self._stop.is_set():
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=self.config.poll_timeout_sec)
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=self.config.poll_timeout_sec,
+                )
                 if not msg:
                     continue
 
+                raw: Any = None
                 try:
                     data = msg.get("data")
                     if isinstance(data, str):
@@ -223,18 +278,62 @@ class Rabbit(BaseChassis, Generic[ReqEnvT, RespT]):
                     else:
                         raw = data
 
-                    req = self.request_model.model_validate(raw)
-                    result = await self.handler(req)
+                    raw_reply = _extract_reply_channel(raw)
+                    raw_trace = _extract_trace_id(raw)
 
-                    reply_to = getattr(req, "reply_to", None) or getattr(req, "reply_channel", None) or getattr(req, "response_channel", None)
+                    # Validate inbound request; on validation error, still reply if possible.
+                    try:
+                        req = self.request_model.model_validate(raw)
+                    except ValidationError as ve:
+                        await self._publish_error(
+                            ve,
+                            context={"intake": self.intake_channel, "trace_id": raw_trace},
+                        )
+                        if raw_reply:
+                            await self.bus.publish(
+                                raw_reply,
+                                _error_rpc_response(
+                                    ve,
+                                    trace_id=raw_trace,
+                                    kind="validation_error",
+                                    errors=ve.errors(),
+                                ),
+                            )
+                        continue
+
+                    # Run handler; on error, publish system.error and also reply if possible.
+                    try:
+                        result = await self.handler(req)
+                    except Exception as e:
+                        await self._publish_error(
+                            e,
+                            context={"intake": self.intake_channel, "trace_id": raw_trace},
+                        )
+                        reply_to = (
+                            getattr(req, "reply_to", None)
+                            or getattr(req, "reply_channel", None)
+                            or getattr(req, "response_channel", None)
+                            or getattr(req, "result_channel", None)
+                            or raw_reply
+                        )
+                        if reply_to:
+                            await self.bus.publish(str(reply_to), _error_rpc_response(e, trace_id=raw_trace))
+                        continue
+
+                    reply_to = (
+                        getattr(req, "reply_to", None)
+                        or getattr(req, "reply_channel", None)
+                        or getattr(req, "response_channel", None)
+                        or getattr(req, "result_channel", None)
+                        or raw_reply
+                    )
                     if not reply_to:
-                        logger.warning("[%s] request missing reply_to/reply_channel", self.config.service_name)
+                        logger.warning("[%s] request missing reply channel", self.config.service_name)
                         continue
 
                     if self.response_publisher:
                         out = self.response_publisher(req, result)
                     else:
-                        # Default: if handler returns a dict, publish it.
                         if isinstance(result, BaseModel):
                             out = result.model_dump(mode="json")
                         elif isinstance(result, dict):
@@ -243,12 +342,20 @@ class Rabbit(BaseChassis, Generic[ReqEnvT, RespT]):
                             out = {"result": result}
 
                     await self.bus.publish(str(reply_to), out)
+
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
+                    # Defensive: if anything went wrong mid-loop, publish system.error
+                    # and attempt to reply with a structured error.
                     await self._publish_error(e, context={"intake": self.intake_channel})
+                    raw_reply = _extract_reply_channel(raw)
+                    raw_trace = _extract_trace_id(raw)
+                    if raw_reply:
+                        await self.bus.publish(raw_reply, _error_rpc_response(e, trace_id=raw_trace))
         finally:
             await pubsub.close()
+
 
 
 class Hunter(BaseChassis, Generic[ReqEnvT]):

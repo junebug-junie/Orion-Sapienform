@@ -1,227 +1,213 @@
-# orion-cortex-exec/app/executor.py
+"""Cortex Exec executor.
 
-import json
-import time
-import uuid
+This service is the *runtime* for plan steps. It does not decide what to do
+(next-step logic is Cortex Orch). Instead, it:
+
+- fans out an "exec_step" to one or more downstream services
+- waits for "exec_step_result" replies
+- returns aggregated results to the caller
+
+The caller can be:
+- Cortex Orch via bus RPC (preferred)
+- the HTTP /execute endpoint (debug / legacy)
+"""
+
+from __future__ import annotations
+
+import asyncio
 import logging
-from typing import Dict, Any, List, Optional
+import time
+from typing import Any, Dict, List, Tuple
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.rpc_async import collect_replies
+from orion.core.bus.service_async import OrionBusAsync
+
+from .models import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
 from .settings import settings
-from .models import ExecutionStep, StepExecutionResult
-from .service_registry import resolve_service
 
-logger = logging.getLogger("orion-cortex.executor")
+logger = logging.getLogger("orion-cortex-exec")
 
-bus = OrionBus()
+
+def _ms() -> float:
+    return time.monotonic() * 1000.0
+
 
 class StepExecutor:
-    def __init__(self, node_name: Optional[str] = None):
-        self.node_name = node_name or settings.NODE_NAME
+    """Executes steps by fanning out to downstream exec-target services."""
 
-    async def execute_step(
+    def __init__(self, bus: OrionBusAsync):
+        self.bus = bus
+
+    async def execute_step_calls(
         self,
-        step: ExecutionStep,
-        args: Dict[str, Any],
-        context: Dict[str, Any],
-    ) -> StepExecutionResult:
+        *,
+        trace_id: str,
+        verb_name: str,
+        step_name: str,
+        order: int,
+        origin_node: str,
+        calls: List[Dict[str, Any]],
+        timeout_ms: int | None = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Execute one step across N services.
 
-        start = time.monotonic()
-        logs: List[str] = []
+        `calls` is a list of:
+          {"service": "LLMGatewayService", "payload": {...}}
 
-        correlation_id = str(uuid.uuid4())
-        # RESULT PREFIX: orion-exec:result:<cid>
-        reply_channel = f"{settings.EXEC_RESULT_PREFIX}:{correlation_id}"
+        Returns: (raw_exec_step_result_messages, elapsed_ms)
+        """
 
-        # Resolve semantic service aliases (e.g. "llm.brain") -> concrete bus services (e.g. "LLMGatewayService")
-        target_services: List[str] = []
-        for svc_alias in step.services:
-            try:
-                svc_name = resolve_service(svc_alias)  # may be identity if already concrete
-                target_services.append(svc_name)
-            except Exception as e:
-                logs.append(f"Service alias '{svc_alias}' could not be resolved: {e}")
+        if not self.bus.enabled:
+            raise RuntimeError("ORION_BUS_ENABLED is false")
 
-        if not target_services:
-            latency_ms = int((time.monotonic() - start) * 1000)
-            return StepExecutionResult(
-                status="fail",
-                verb_name=step.verb_name,
-                step_name=step.step_name,
-                order=step.order,
-                result={},
-                artifacts={},
-                latency_ms=latency_ms,
-                node=self.node_name,
-                logs=logs + ["No resolvable services for this step"],
-                error="No resolvable services for step",
-            )
+        if not trace_id:
+            raise ValueError("trace_id required")
 
-        # Base payload shared across services
-        base_payload = {
-            "event": "exec_step",  # 🔥 brain expects this
-            "verb": step.verb_name,
-            "step": step.step_name,
-            "order": step.order,
-            "requires_gpu": step.requires_gpu,
-            "requires_memory": step.requires_memory,
-            "prompt_template": step.prompt_template,
-            "args": args,
-            "context": context,
-            "correlation_id": correlation_id,
-            "reply_channel": reply_channel,
-            "origin_node": self.node_name,
-        }
+        timeout_ms = int(timeout_ms or settings.step_timeout_ms)
+        timeout_sec = max(0.2, timeout_ms / 1000.0)
 
-        # Publish to each resolved service
-        for service in target_services:
-            payload = dict(base_payload)
-            payload["service"] = service
-            # REQUEST PREFIX: orion-exec:request:<ServiceName>
-            channel = f"{settings.EXEC_REQUEST_PREFIX}:{service}"
-            bus.publish(channel, payload)
-            logs.append(f"Published exec_step to {channel}")
+        result_channel = f"{settings.exec_result_prefix}:{trace_id}"
 
-        # Listen for results on reply_channel, aggregating per service
-        received: Dict[str, Dict[str, Any]] = {}
-        timeout_s = settings.STEP_TIMEOUT_MS / 1000.0
-        deadline = start + timeout_s
+        pubsub = self.bus.pubsub()
+        await pubsub.subscribe(result_channel)
 
-        pubsub = bus.client.pubsub()
-        pubsub.subscribe(reply_channel)
-        logs.append(
-            f"Subscribed {reply_channel}; waiting for {len(target_services)} result(s). "
-            f"Timeout={settings.STEP_TIMEOUT_MS}ms"
-        )
-
+        started = _ms()
         try:
-            while time.monotonic() < deadline and len(received) < len(target_services):
-                msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if not msg:
-                    continue
-                if msg.get("type") != "message":
-                    continue
-
-                try:
-                    data = json.loads(msg["data"])
-                except Exception as e:
-                    logs.append(f"JSON parse error on reply: {e}")
+            # Fan-out
+            for call in calls:
+                svc = str(call.get("service") or "").strip()
+                if not svc:
                     continue
 
-                if data.get("correlation_id") != correlation_id:
-                    continue
+                payload = call.get("payload") or {}
+                request_channel = f"{settings.exec_request_prefix}:{svc}"
 
-                # Only accept proper exec_step_result envelopes
-                if data.get("event") != "exec_step_result":
-                    continue
-
-                svc = data.get("service") or "unknown"
-                received[svc] = data
-        finally:
-            pubsub.close()
-
-        latency_ms = int((time.monotonic() - start) * 1000)
-
-        # Compose final result
-        if not received:
-            return StepExecutionResult(
-                status="fail",
-                verb_name=step.verb_name,
-                step_name=step.step_name,
-                order=step.order,
-                result={},
-                artifacts={},
-                latency_ms=latency_ms,
-                node=self.node_name,
-                logs=logs + [f"Timeout; no responses on {reply_channel}"],
-                error=f"Timeout after {settings.STEP_TIMEOUT_MS} ms with 0/{len(target_services)} responses",
-            )
-
-        # Decide overall status: success only if all responded success
-        statuses = [r.get("status", "success") for r in received.values()]
-        overall = "success" if all(s == "success" for s in statuses) else "partial"
-
-        # Aggregate result & artifacts per service
-        aggregated_result = {svc: r.get("result", {}) for svc, r in received.items()}
-
-        aggregated_artifacts: Dict[str, Any] = {}
-        for svc, r in received.items():
-            artifacts = r.get("artifacts") or {}
-            for key, value in artifacts.items():
-                # naive merge; if collisions, namespace by service
-                if key in aggregated_artifacts and aggregated_artifacts[key] != value:
-                    aggregated_artifacts[f"{svc}.{key}"] = value
-                else:
-                    aggregated_artifacts[key] = value
-
-        logs.append(f"Collected {len(received)}/{len(target_services)} responses in {latency_ms} ms.")
-
-        # emit step-level cognition summary on the bus
-        try:
-            # Trim outputs a bit to avoid spam huge texts
-            result_preview = {}
-            for svc, payload in received.items():
-                svc_result = payload.get("result") or {}
-                llm_out = svc_result.get("llm_output", "")
-                if isinstance(llm_out, str):
-                    llm_out = llm_out[:512]  # keep first 512 chars
-                result_preview[svc] = {
-                    "status": payload.get("status", "success"),
-                    "llm_output": llm_out,
+                envelope = {
+                    "event": "exec_step",
+                    "service": svc,
+                    "correlation_id": trace_id,
+                    "trace_id": trace_id,
+                    "reply_channel": result_channel,
+                    "payload": payload,
                 }
 
-            summary = {
-                "event": "cortex_step_summary",
-                "layer": "step",
-                "correlation_id": correlation_id,
-                "verb": step.verb_name,
-                "step": step.step_name,
-                "services": list(received.keys()),
-                "status": overall,
-                "latency_ms": latency_ms,
-                "node": self.node_name,
-                "args": args,
-                "context": context,
-                "result_preview": result_preview,
-                "timestamp": time.time(),
-            }
+                await self.bus.publish(request_channel, envelope)
 
-            bus.publish(settings.CORTEX_LOG_CHANNEL, summary)
-        except Exception as e:
-            # Don't fail the step if logging fails; just record the error in logs.
-            logs.append(f"Failed to publish cortex_step_summary: {e}")
+            expected = max(0, len([c for c in calls if c.get("service")]))
+            if expected == 0:
+                return [], int(_ms() - started)
 
+            def match(msg: Dict[str, Any]) -> bool:
+                # tolerate legacy variants
+                return (
+                    str(msg.get("correlation_id") or msg.get("trace_id") or "") == trace_id
+                    and str(msg.get("event") or "") in {"exec_step_result", "exec_result"}
+                )
 
-        return StepExecutionResult(
+            replies = await collect_replies(
+                pubsub,
+                expected_count=expected,
+                timeout_sec=timeout_sec,
+                match=match,
+            )
+            elapsed = int(_ms() - started)
+
+            # Telemetry (best-effort)
+            try:
+                await self.bus.publish(
+                    settings.cortex_log_channel,
+                    {
+                        "event": "cortex.exec.step",
+                        "trace_id": trace_id,
+                        "verb": verb_name,
+                        "step": step_name,
+                        "order": order,
+                        "origin_node": origin_node,
+                        "elapsed_ms": elapsed,
+                        "services": [c.get("service") for c in calls],
+                        "ok": all(bool(r.get("payload", {}).get("ok", True)) for r in replies) if replies else True,
+                    },
+                )
+            except Exception:
+                pass
+
+            return replies, elapsed
+        finally:
+            try:
+                await pubsub.close()
+            except Exception:
+                pass
+
+    async def execute_plan(self, request: PlanExecutionRequest) -> PlanExecutionResult:
+        """Legacy/debug: execute a full ExecutionPlan sequentially."""
+
+        plan: ExecutionPlan = request.plan
+
+        if plan.blocked:
+            return PlanExecutionResult(
+                verb_name=plan.verb_name,
+                request_id=request.args.request_id,
+                status="fail",
+                blocked=True,
+                blocked_reason=plan.blocked_reason,
+                steps=[],
+            )
+
+        prior_step_results: Dict[str, Any] = {}
+        step_results: List[StepExecutionResult] = []
+
+        for step in plan.steps:
+            trace_id = request.args.request_id or f"exec-{int(time.time())}-{step.step_name}"
+            calls: List[Dict[str, Any]] = []
+
+            for svc in step.services:
+                calls.append(
+                    {
+                        "service": svc,
+                        "payload": {
+                            "verb": step.verb_name,
+                            "step": step.step_name,
+                            "order": step.order,
+                            "service": svc,
+                            "origin_node": settings.node_name,
+                            "prompt": None,
+                            "prompt_template": step.prompt_template,
+                            "context": request.context,
+                            "args": request.args.model_dump(mode="json"),
+                            "prior_step_results": prior_step_results,
+                        },
+                    }
+                )
+
+            replies, elapsed_ms = await self.execute_step_calls(
+                trace_id=trace_id,
+                verb_name=step.verb_name,
+                step_name=step.step_name,
+                order=step.order,
+                origin_node=settings.node_name,
+                calls=calls,
+                timeout_ms=plan.timeout_ms,
+            )
+
+            ok = any(bool(r.get("payload", {}).get("ok")) for r in replies) if replies else False
+            step_result = StepExecutionResult(
+                status="success" if ok else "fail",
+                verb_name=step.verb_name,
+                step_name=step.step_name,
+                order=step.order,
+                result={"replies": replies},
+                latency_ms=elapsed_ms,
+                node=settings.node_name,
+                error=None if ok else "no successful replies",
+            )
+
+            step_results.append(step_result)
+            prior_step_results[step.step_name] = step_result.model_dump(mode="json")
+
+        overall = "success" if all(s.status == "success" for s in step_results) else "partial"
+        return PlanExecutionResult(
+            verb_name=plan.verb_name,
+            request_id=request.args.request_id,
             status=overall,
-            verb_name=step.verb_name,
-            step_name=step.step_name,
-            order=step.order,
-            result=aggregated_result,
-            artifacts=aggregated_artifacts,
-            latency_ms=latency_ms,
-            node=self.node_name,
-            logs=logs,
-            error=None if overall == "success" else "one or more services failed or timed out",
-        )
-
-    def _fail(
-        self,
-        step: ExecutionStep,
-        logs: List[str],
-        error_msg: str,
-        start: float,
-    ) -> StepExecutionResult:
-        latency = int((time.monotonic() - start) * 1000)
-        return StepExecutionResult(
-            status="fail",
-            verb_name=step.verb_name,
-            step_name=step.step_name,
-            order=step.order,
-            result={},
-            artifacts={},
-            latency_ms=latency,
-            node=self.node_name,
-            logs=logs,
-            error=error_msg,
+            steps=step_results,
         )

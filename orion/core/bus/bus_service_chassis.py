@@ -1,15 +1,4 @@
-"""Orion Bus core.
-
-This package now contains:
-  - Legacy sync bus wrapper: :mod:`orion.core.bus.service`
-  - Async bus wrapper: :mod:`orion.core.bus.service_async`
-  - Titanium contracts: :mod:`orion.core.bus.bus_schemas`
-  - Invisible chassis patterns: :mod:`orion.core.bus.bus_service_chassis`
-"""
-
-from .service import OrionBus  # legacy sync wrapper
-from .service_async import OrionBusAsync
-from .bus_schemas import Base"""orion.core.bus.bus_service_chassis
+"""orion.core.bus.bus_service_chassis
 
 The "Invisible" Chassis.
 
@@ -360,15 +349,4 @@ class Clock(BaseChassis):
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=sleep_for)
             except asyncio.TimeoutError:
-                continueEnvelope
-from .bus_service_chassis import Rabbit, Hunter, Clock, ChassisConfig
-
-__all__ = [
-    "OrionBus",
-    "OrionBusAsync",
-    "BaseEnvelope",
-    "Rabbit",
-    "Hunter",
-    "Clock",
-    "ChassisConfig",
-]
+                continue

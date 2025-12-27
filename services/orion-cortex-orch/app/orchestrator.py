@@ -11,6 +11,9 @@ import yaml
 from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel, Field
 
+from orion.core.bus.rpc_async import collect_replies
+from orion.core.bus.service_async import OrionBusAsync
+
 from .settings import get_settings
 import orion  # Uses the installed orion package to find cognition/
 
@@ -184,91 +187,51 @@ def _build_prompt(
     return f"{header}\n{suffix}"
 
 
-# ✅ NEW: robust pubsub payload decoding
-def _coerce_pubsub_data(data: Any) -> Dict[str, Any]:
-    """
-    bus.raw_subscribe() sometimes yields:
-      - {"data": {...}} (already dict)
-      - {"data": "<json string>"} (string)
-      - {"data": b"<json bytes>"} (bytes)
-    Normalize to dict.
-    """
-    if isinstance(data, dict):
-        return data
-
-    if isinstance(data, bytes):
-        try:
-            data = data.decode("utf-8", errors="ignore")
-        except Exception:
-            return {}
-
-    if isinstance(data, str):
-        s = data.strip()
-        if not s:
-            return {}
-        try:
-            obj = json.loads(s)
-            return obj if isinstance(obj, dict) else {}
-        except Exception:
-            return {}
-
-    return {}
-
-
-def _wait_for_exec_results(
-    bus,
+async def _wait_for_exec_results(
+    bus: OrionBusAsync,
+    *,
     reply_channel: str,
     correlation_id: str,
     expected_count: int,
     timeout_ms: int,
 ) -> List[Dict[str, Any]]:
-    """
-    Synchronously waits for 'expected_count' results on 'reply_channel'.
-    """
-    results: List[Dict[str, Any]] = []
-    start_time = time.time()
-    deadline = start_time + (timeout_ms / 1000.0)
+    """Fan-in: collect up to N results on a reply channel.
 
-    # Access the underlying Redis client for precise blocking control
-    # Assuming bus.client is the redis.Redis instance
-    pubsub = bus.client.pubsub()
-    pubsub.subscribe(reply_channel)
+    - Subscribes before publishing (caller should still publish after creating the task).
+    - Filters by correlation_id/trace_id when present.
+    """
+
+    pubsub = bus.pubsub()
+    await pubsub.subscribe(reply_channel)
+    timeout_sec = max(timeout_ms / 1000.0, 0.001)
+
+    def _match(d: Any) -> bool:
+        if not isinstance(d, dict):
+            return False
+        cid = d.get("correlation_id") or d.get("trace_id")
+        # If the service doesn't include cid, accept (best-effort).
+        return (cid == correlation_id) if cid else True
 
     try:
-        while len(results) < expected_count:
-            now = time.time()
-            if now >= deadline:
-                break
-            
-            remaining = deadline - now
-            # Wait for next message with dynamic timeout
-            msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=remaining)
-            
-            if msg:
-                if msg["type"] == "message":
-                    try:
-                        data = _coerce_pubsub_data(msg["data"])
-                        # Verify it belongs to this execution batch
-                        # (checking trace_id or correlation_id)
-                        cid = data.get("correlation_id") or data.get("trace_id")
-                        if cid == correlation_id:
-                            results.append(data)
-                    except Exception as e:
-                        logger.warning(f"Error parsing exec result: {e}")
-            else:
-                # No message yet, short sleep to prevent busy loop 
-                # (though get_message timeout handles most of this)
-                time.sleep(0.005)
-                
-    except Exception as e:
-        logger.error(f"Error waiting for results: {e}")
+        items = await collect_replies(
+            pubsub,
+            expected_count=expected_count,
+            timeout_sec=timeout_sec,
+            match=_match,
+        )
+        return [x for x in items if isinstance(x, dict)]
     finally:
-        pubsub.unsubscribe()
-        pubsub.close()
+        try:
+            await pubsub.unsubscribe(reply_channel)
+        except Exception:
+            pass
+        try:
+            await pubsub.close()
+        except Exception:
+            pass
 
-    return results
 
-def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
+async def run_cortex_verb(bus: OrionBusAsync, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse:
     """
     Execute a high-level "verb" as a sequence of Cortex steps.
 
@@ -356,17 +319,17 @@ def run_cortex_verb(bus, req: OrchestrateVerbRequest) -> OrchestrateVerbResponse
                 step.step_name,
                 service,
             )
-            bus.publish(exec_channel, envelope)
+            await bus.publish(exec_channel, envelope)
 
         # ─────────────────────────────────────────────
         # Fan-in: collect results for this step
         # ─────────────────────────────────────────────
-        raw_results = _wait_for_exec_results(
+        raw_results = await _wait_for_exec_results(
             bus,
-            result_channel,
-            exec_id,      # positional: avoids keyword signature mismatches
-            expected,
-            timeout_ms,
+            reply_channel=result_channel,
+            correlation_id=exec_id,
+            expected_count=expected,
+            timeout_ms=timeout_ms,
         )
 
         step_results: List[ServiceStepResult] = []

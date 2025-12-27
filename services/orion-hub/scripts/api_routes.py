@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 
@@ -207,7 +208,7 @@ async def api_chat(
                 "spark_meta": spark_meta,
             }
 
-            bus.publish(
+            await bus.publish(
                 settings.CHANNEL_CHAT_HISTORY_LOG,
                 chat_log_payload,
             )
@@ -228,8 +229,8 @@ async def api_chat(
     if client is not None and isinstance(user_messages, list) and user_messages:
         try:
             history_key = f"orion:hub:session:{session_id}:history"
-            client.lpush(history_key, str(user_messages[-1])[:4000])
-            client.ltrim(history_key, 0, 19)
+            await client.lpush(history_key, str(user_messages[-1])[:4000])
+            await client.ltrim(history_key, 0, 19)
         except Exception as e:
             logger.warning(
                 "Failed to store chat tail in Redis for %s: %s",
@@ -305,7 +306,8 @@ async def api_recall(
 def get_collapse_schema():
     """Exposes the CollapseMirrorEntry schema for UI templating."""
     logger.info("Fetching CollapseMirrorEntry schema")
-    return JSONResponse(CollapseMirrorEntry.schema())
+    # Pydantic v2
+    return JSONResponse(CollapseMirrorEntry.model_json_schema())
 
 
 @router.post("/submit-collapse")
@@ -325,7 +327,10 @@ async def submit_collapse(data: dict):
 
     try:
         entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode="json"))
+        await bus.publish(
+            settings.CHANNEL_COLLAPSE_INTAKE,
+            entry.model_dump(mode="json"),
+        )
         logger.info(
             "📡 Published Collapse Mirror → %s",
             settings.CHANNEL_COLLAPSE_INTAKE,
@@ -370,7 +375,7 @@ async def api_debug_spark_last(
         )
 
     key = f"orion:hub:session:{session_id}:spark:last"
-    raw = client.get(key)
+    raw = await client.get(key)
     if not raw:
         return JSONResponse(
             {

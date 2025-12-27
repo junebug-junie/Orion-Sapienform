@@ -38,7 +38,7 @@ async def run_tts_only(
 
         # Telemetry: high-level TTS request event on voice channel
         try:
-            bus.publish(
+            await bus.publish(
                 settings.CHANNEL_VOICE_TTS,
                 {
                     "type": "tts_request",
@@ -68,7 +68,7 @@ async def run_tts_only(
             await tts_q.put({"audio_response": audio_b64})
 
             try:
-                bus.publish(
+                await bus.publish(
                     settings.CHANNEL_VOICE_TTS,
                     {
                         "type": "audio_response",

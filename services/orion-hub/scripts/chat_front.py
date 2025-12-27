@@ -230,8 +230,23 @@ async def run_chat_general(
         text = ""
         spark_meta = None
 
-        if isinstance(raw_reply, dict) and raw_reply.get("ok"):
-            step_results = raw_reply.get("step_results") or []
+        # CortexOrchRPC may return either:
+        #   A) legacy wrapper: {trace_id, ok, data={step_results...}, error?}
+        #   B) unwrapped data: {step_results...}
+        # Be forgiving so Hub doesn't false-fallback.
+        reply_ok: Optional[bool] = None
+        reply_data: Dict[str, Any] = raw_reply if isinstance(raw_reply, dict) else {}
+
+        if isinstance(raw_reply, dict) and isinstance(raw_reply.get("data"), dict):
+            reply_ok = raw_reply.get("ok")
+            reply_data = raw_reply["data"]
+
+        # If ok is missing (unwrapped), treat it as success.
+        if reply_ok is None:
+            reply_ok = True
+
+        if reply_ok and isinstance(reply_data, dict):
+            step_results = reply_data.get("step_results") or []
             if step_results:
                 first_step = step_results[0]
                 services = first_step.get("services") or []
@@ -259,7 +274,7 @@ async def run_chat_general(
         logger.warning(
             "Cortex-Orch returned ok=%s but no text for verb='chat_general'; "
             "falling back to direct LLM Gateway.",
-            raw_reply.get("ok") if isinstance(raw_reply, dict) else None,
+            reply_ok,
         )
 
     except Exception as e:

@@ -9,7 +9,7 @@ from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
 from scripts.asr import ASR
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.service_async import OrionBusAsync
 
 
 # ───────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ app = FastAPI(
 
 # These are populated on startup and imported by other modules:
 asr: ASR | None = None
-bus: OrionBus | None = None
+bus: OrionBusAsync | None = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 
 
@@ -71,18 +71,17 @@ async def startup_event():
     if settings.ORION_BUS_ENABLED:
         try:
             logger.info(f"Connecting OrionBus → {settings.ORION_BUS_URL}")
-            # Use the new OrionBus API (client instead of redis)
-            bus = OrionBus(
+            bus = OrionBusAsync(
                 url=settings.ORION_BUS_URL,
                 enabled=settings.ORION_BUS_ENABLED,
             )
 
-            # Verify connection using the underlying Redis client
+            await bus.connect()
+
             if bus.enabled and getattr(bus, "client", None) is not None:
-                bus.client.ping()
-                logger.info("OrionBus connection established successfully.")
+                logger.info("OrionBusAsync connection established successfully.")
             else:
-                logger.error("OrionBus is enabled but Redis client is not available.")
+                logger.error("OrionBusAsync is enabled but Redis client is not available.")
                 bus = None
 
         except Exception as e:
@@ -104,6 +103,17 @@ async def startup_event():
         html_content = "<html><body><h1>UI template missing</h1></body></html>"
 
     logger.info("Startup complete — Hub is ready.")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Gracefully close shared resources."""
+    global bus
+    if bus is not None:
+        try:
+            await bus.close()
+        except Exception:
+            pass
 
 
 # ───────────────────────────────────────────────────────────────

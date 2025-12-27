@@ -1,142 +1,80 @@
-# services/orion-hub/scripts/recall_rpc.py
+"""scripts.recall_rpc
+
+Async Recall RPC client.
+
+This is a *client* (Hub) → (Recall service) interaction. Hub should not own any
+Redis subscribe loops or thread bridges; those details are centralized in
+`orion.core.bus.rpc_async`.
+"""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import uuid
 from typing import Any, Dict, Optional
 
 from .settings import settings
 
+from orion.core.bus.rpc_async import request_and_wait
+
 logger = logging.getLogger("hub.recall-rpc")
 
 
 class RecallRPC:
-    """
-    Bus-based RPC client for the Recall service.
+    """Bus-RPC client for the Orion Recall service."""
 
-    Protocol (matches orion-recall/app/main.py):
-
-      - Publish JSON payload to CHANNEL_RECALL_REQUEST with:
-          - query / text / query_text
-          - mode (optional)
-          - max_items (optional)
-          - time_window_days (optional)
-          - tags (optional)
-          - phi (optional dict)
-          - trace_id
-          - reply_channel (explicit)
-          - session_id (optional, just passed through)
-
-      - Recall service:
-          - Listens on CHANNEL_RECALL_REQUEST (aioredis)
-          - Builds RecallQuery from payload
-          - Runs run_recall_pipeline(...)
-          - Publishes JSON string to `reply_channel`
-            containing:
-              {
-                "trace_id": ...,
-                "fragments": [...],
-                "debug": {...},
-                ...
-              }
-    """
-
-    def __init__(self, bus):
+    def __init__(self, bus: Any):
         self.bus = bus
+        self.request_channel = settings.CHANNEL_RECALL_REQUEST
+        self.reply_prefix = settings.CHANNEL_RECALL_REPLY_PREFIX
+
+        if not self.bus or not getattr(self.bus, "enabled", False):
+            logger.warning("[RecallRPC] Orion bus is disabled; calls will fail.")
 
     async def call_recall(
         self,
-        query: Optional[str] = None,
-        session_id: Optional[str] = None,
-        mode: Optional[str] = None,
-        time_window_days: Optional[int] = None,
-        max_items: Optional[int] = None,
-        extras: Optional[Dict[str, Any]] = None,
+        *,
+        query: str,
+        mode: str = "hybrid",
+        time_window_days: int = 30,
+        max_items: int = 16,
+        extras: Optional[dict] = None,
+        trace_id: Optional[str] = None,
+        timeout_sec: float = 30.0,
     ) -> Dict[str, Any]:
-        """
-        Send a recall request over the Orion bus, wait for the reply,
-        and return the decoded JSON body from the recall service.
-        """
         if not self.bus or not getattr(self.bus, "enabled", False):
-            raise RuntimeError("RecallRPC used while OrionBus is disabled or unavailable")
+            raise RuntimeError("RecallRPC used while Orion bus is disabled")
 
-        trace_id = str(uuid.uuid4())
-        reply_channel = (
-            f"{settings.CHANNEL_RECALL_DEFAULT_REPLY_PREFIX}:{trace_id}"
-        )
+        trace_id = trace_id or str(uuid.uuid4())
+        reply_channel = f"{self.reply_prefix}:{trace_id}"
 
         payload: Dict[str, Any] = {
             "trace_id": trace_id,
-            "query": query or "",
+            "source": settings.SERVICE_NAME,
+            "reply_channel": reply_channel,
+            "query": query,
             "mode": mode,
             "time_window_days": time_window_days,
             "max_items": max_items,
-            "tags": [],
-            "phi": None,
-            "reply_channel": reply_channel,
-            "session_id": session_id,
+            "extras": extras or {},
         }
 
-        extras = extras or {}
-        # Optional tags / phi hints
-        if isinstance(extras.get("tags"), list):
-            payload["tags"] = extras["tags"]
-        if isinstance(extras.get("phi"), dict):
-            payload["phi"] = extras["phi"]
-
-        # Publish to recall request channel
-        self.bus.publish(settings.CHANNEL_RECALL_REQUEST, payload)
         logger.info(
-            "RecallRPC published request trace_id=%s → %s",
-            trace_id,
-            settings.CHANNEL_RECALL_REQUEST,
+            "[RecallRPC] -> %s (reply=%s, mode=%s, max_items=%s)",
+            self.request_channel,
+            reply_channel,
+            mode,
+            max_items,
         )
 
-        # Wait for reply on reply_channel
-        sub = self.bus.raw_subscribe(reply_channel)
-        loop = asyncio.get_event_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def listener():
-            try:
-                for msg in sub:
-                    loop.call_soon_threadsafe(queue.put_nowait, msg)
-                    break
-            finally:
-                sub.close()
-
-        asyncio.get_running_loop().run_in_executor(None, listener)
-        msg = await queue.get()
-
-        raw_data = msg.get("data")
-
-        # Recall service publishes JSON string via aioredis
-        if isinstance(raw_data, (bytes, bytearray)):
-            raw_data = raw_data.decode("utf-8", "ignore")
-
-        if isinstance(raw_data, str):
-            try:
-                data = json.loads(raw_data)
-            except Exception as e:
-                logger.error("RecallRPC failed to json.loads reply: %s", e, exc_info=True)
-                raise
-        elif isinstance(raw_data, dict):
-            # In case OrionBus ever decodes JSON for us
-            data = raw_data
-        else:
-            logger.error(
-                "RecallRPC got unexpected data type from bus: %r",
-                type(raw_data),
-            )
-            raise RuntimeError("Unexpected recall reply payload type")
-
-        logger.info(
-            "RecallRPC received reply trace_id=%s (fragments=%d)",
-            data.get("trace_id"),
-            len((data.get("fragments") or [])),
+        raw_reply = await request_and_wait(
+            self.bus,
+            intake_channel=self.request_channel,
+            reply_channel=reply_channel,
+            payload=payload,
+            timeout_sec=timeout_sec,
         )
 
-        return data
+        if isinstance(raw_reply, dict):
+            return raw_reply
+        return {"trace_id": trace_id, "raw": raw_reply}

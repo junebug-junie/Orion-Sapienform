@@ -1,58 +1,60 @@
-# scripts/tts_rpc.py
-import uuid
-import asyncio
-import logging
-from datetime import datetime
+"""scripts.tts_rpc
 
-from scripts.settings import settings
+Async TTS RPC client.
+
+Hub publishes a request on CHANNEL_TTS_INTAKE and waits for a reply on
+CHANNEL_TTS_RPC_PREFIX:<trace_id>.
+
+All subscribe/wait boilerplate is handled by `orion.core.bus.rpc_async`.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from typing import Any, Dict
+
+from .settings import settings
+
+from orion.core.bus.rpc_async import request_and_wait
 
 logger = logging.getLogger("hub.tts-rpc")
 
 
 class TTSRPC:
-    """
-    Redis-based RPC client for TTS.
-    Hub publishes text → Brain replies with base64 audio.
-    """
+    """Bus-RPC client for GPU TTS (currently implemented in orion-brain)."""
 
-    def __init__(self, bus):
+    def __init__(self, bus: Any):
         self.bus = bus
 
-    async def call_tts(self, text: str):
+    async def call_tts(self, text: str, *, timeout_sec: float = 60.0) -> Dict[str, Any]:
+        if not self.bus or not getattr(self.bus, "enabled", False):
+            raise RuntimeError("TTSRPC used while Orion bus is disabled")
+
         trace_id = str(uuid.uuid4())
-        reply_channel = f"orion:tts:rpc:{trace_id}"
+        response_channel = f"{settings.CHANNEL_TTS_RPC_PREFIX}:{trace_id}"
 
         payload = {
             "trace_id": trace_id,
-            "source": settings.SERVICE_NAME,
-            "response_channel": reply_channel,
             "text": text,
-            "ts": datetime.utcnow().isoformat(),
+            "response_channel": response_channel,
+            "source": settings.SERVICE_NAME,
         }
 
-        if not self.bus or not self.bus.enabled:
-            raise RuntimeError("TTSRPC used while OrionBus is disabled or missing")
+        logger.info(
+            "[TTSRPC] -> %s (reply=%s)",
+            settings.CHANNEL_TTS_INTAKE,
+            response_channel,
+        )
 
-        # 1) Publish request
-        self.bus.publish(settings.CHANNEL_TTS_INTAKE, payload)
-        logger.info(f"[{trace_id}] Published TTS RPC request to {settings.CHANNEL_TTS_INTAKE}")
+        raw_reply = await request_and_wait(
+            self.bus,
+            intake_channel=settings.CHANNEL_TTS_INTAKE,
+            reply_channel=response_channel,
+            payload=payload,
+            timeout_sec=timeout_sec,
+        )
 
-        # 2) Subscribe for a single reply (same pattern as BrainRPC)
-        sub = self.bus.raw_subscribe(reply_channel)
-        loop = asyncio.get_event_loop()
-        queue = asyncio.Queue()
-
-        def listener():
-            try:
-                for msg in sub:
-                    loop.call_soon_threadsafe(queue.put_nowait, msg)
-                    break
-            finally:
-                sub.close()
-
-        asyncio.get_running_loop().run_in_executor(None, listener)
-
-        msg = await queue.get()
-        reply = msg.get("data", {})
-        logger.info(f"[{trace_id}] TTS RPC reply received.")
-        return reply
+        if isinstance(raw_reply, dict):
+            return raw_reply
+        return {"trace_id": trace_id, "raw": raw_reply}

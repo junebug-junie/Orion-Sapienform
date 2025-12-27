@@ -102,7 +102,11 @@ class BaseEnvelope(BaseModel, Generic[PayloadT]):
     )
 
     # Contract versioning
-    schema: Literal["orion.envelope"] = "orion.envelope"
+    contract: Literal["orion.envelope"] = Field(
+        default="orion.envelope",
+        serialization_alias="schema",
+        validation_alias=AliasChoices("schema", "contract"),
+    )
     schema_version: str = "2.0.0"
 
     # Identity

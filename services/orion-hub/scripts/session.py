@@ -28,7 +28,16 @@ async def ensure_session(session_id: Optional[str], bus) -> str:
 
     # No session id → new + warm start
     if session_id is None:
-        return await warm_start_session(None, bus)
+        session_id = await warm_start_session(None, bus)
+        # Best-effort bookkeeping
+        client = getattr(bus, "client", None)
+        if client is not None:
+            try:
+                key = f"orion:hub:session:{session_id}:state"
+                await client.hset(key, mapping={"warm_started": "1"})
+            except Exception:
+                pass
+        return session_id
 
     client = getattr(bus, "client", None)
     if client is None:
@@ -42,7 +51,7 @@ async def ensure_session(session_id: Optional[str], bus) -> str:
     key = f"orion:hub:session:{session_id}:state"
 
     try:
-        state = client.hgetall(key)
+        state = await client.hgetall(key)
     except Exception as e:
         logger.warning(
             "Failed to read warm-start state from Redis for %s: %s",
@@ -53,6 +62,11 @@ async def ensure_session(session_id: Optional[str], bus) -> str:
 
     if not state or state.get("warm_started") != "1":
         # Session exists but not warm-started — fix it
-        return await warm_start_session(session_id, bus)
+        session_id = await warm_start_session(session_id, bus)
+        try:
+            await client.hset(key, mapping={"warm_started": "1"})
+        except Exception:
+            pass
+        return session_id
 
     return session_id

@@ -87,14 +87,20 @@ class BaseChassis:
     async def start(self) -> None:
         await self.bus.connect()
         self._install_signal_handlers()
-        await self._publish_health(status="starting")
+        try:
+            await self._publish_health(status="starting")
+        except Exception as e:
+            logger.warning("[health] failed during start: %s", e)
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="heartbeat"))
 
     async def stop(self) -> None:
         if self._stop.is_set():
             return
         self._stop.set()
-        await self._publish_health(status="stopping")
+        try:
+            await self._publish_health(status="stopping")
+        except Exception as e:
+            logger.warning("[health] failed during stop: %s", e)
 
         for t in list(self._tasks):
             t.cancel()

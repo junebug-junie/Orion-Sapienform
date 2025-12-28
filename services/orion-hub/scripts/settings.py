@@ -58,14 +58,14 @@ class Settings(BaseSettings):
     # Which bus service name the gateway listens on
     LLM_GATEWAY_SERVICE_NAME: str = Field(
         default="LLMGatewayService",
-        env="LLM_GATEWAY_SERVIE_NAME"
+        env="LLM_GATEWAY_SERVICE_NAME"
     )
 
     # Where Cortex + Hub send exec_step/chat/generate requests
-    #EXEC_REQUEST_PREFIX: str = Field(
-    #    default="orion-exec:request",
-    #    env="EXEC_REQUEST_PREFIX",
-    #)
+    EXEC_REQUEST_PREFIX: str = Field(
+        default="orion-exec:request",
+        env="EXEC_REQUEST_PREFIX",
+    )
 
     # --- Cortex Orchestrator Integration
     CORTEX_ORCH_REQUEST_CHANNEL: str = Field(

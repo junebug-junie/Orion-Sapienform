@@ -1,174 +1,127 @@
-import json
-import threading
+from __future__ import annotations
+
+import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from app.settings import settings
 from app.db import get_session, remove_session
 from app.models import (
-    CollapseEnrichment, CollapseMirror, ChatHistoryLogSQL, Dream, BiometricsTelemetry, SparkIntrospectionLogSQL
+    BiometricsTelemetry,
+    ChatHistoryLogSQL,
+    CollapseEnrichment,
+    CollapseMirror,
+    Dream,
+    SparkIntrospectionLogSQL,
 )
 from app.schemas import (
-    EnrichmentInput, MirrorInput, ChatHistoryInput, DreamInput, BiometricsInput, SparkIntrospectionInput
+    BiometricsInput,
+    ChatHistoryInput,
+    EnrichmentInput,
+    DreamInput,
+    MirrorInput,
+    SparkIntrospectionInput,
 )
-from orion.core.bus.service import OrionBus
 
-logger = logging.getLogger(__name__)
+from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+from orion.core.bus.bus_schemas import BaseEnvelope
 
-def _normalize_message(raw_msg) -> Optional[dict]:
-    if isinstance(raw_msg, (bytes, bytearray)):
-        raw_msg = raw_msg.decode("utf-8", errors="replace")
-    if isinstance(raw_msg, str):
+logger = logging.getLogger("sql-writer")
+
+
+def _cfg() -> ChassisConfig:
+    return ChassisConfig(
+        service_name=settings.service_name,
+        service_version=settings.service_version,
+        node_name=settings.node_name,
+        bus_url=settings.orion_bus_url,
+        bus_enabled=settings.orion_bus_enabled,
+        heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        health_channel=settings.health_channel,
+        error_channel=settings.error_channel,
+        shutdown_grace_sec=settings.shutdown_grace_sec,
+    )
+
+
+def _coerce_payload(model_cls, payload: Any):
+    # Pydantic v2 compatibility: support dict or model already
+    if hasattr(model_cls, "model_validate"):
+        return model_cls.model_validate(payload)
+    return model_cls.parse_obj(payload)  # type: ignore[attr-defined]
+
+
+def _write_row(sql_model_cls, data: dict) -> None:
+    sess = get_session()
+    try:
+        sess.merge(sql_model_cls(**data))
+        sess.commit()
+    finally:
         try:
-            return json.loads(raw_msg)
-        except Exception:
-            logger.warning(f"Skipping non-JSON string payload: {raw_msg[:120]!r}")
-            return None
-    if isinstance(raw_msg, dict):
-        return raw_msg
-    logger.warning(f"Skipping non-object payload type: {type(raw_msg)}")
-    return None
+            sess.close()
+        finally:
+            remove_session()
 
-def _process_one(session, channel: str, msg: dict) -> Optional[str]:
-    table = settings.get_table_for_channel(channel)
-    if not table:
-        logger.warning(f"No table mapping for channel '{channel}', skipping")
-        return None
 
-    log_id = "unknown"
+async def _write(sql_model_cls, schema_cls, payload: Any) -> None:
+    obj = _coerce_payload(schema_cls, payload)
+    data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()  # type: ignore
+    await asyncio.to_thread(_write_row, sql_model_cls, data)
 
-    if table == "collapse_enrichment":
-        payload = EnrichmentInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-        log_id = payload.id
-        session.merge(CollapseEnrichment(**db_data))
 
-    elif table == "collapse_mirror":
-        payload = MirrorInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-        log_id = payload.id
-        session.merge(CollapseMirror(**db_data))
+async def handle_envelope(env: BaseEnvelope, channel: Optional[str] = None) -> None:
+    """Route by Redis channel (preferred) with a fallback on env.kind."""
+    payload = env.payload
 
-    elif table == "chat_history_log":
-
-        kind = msg.get("kind")
-        if kind == "warm_start":
-            logger.info("Skipping warm_start event for chat_history_log")
-            return None
-
-        payload = ChatHistoryInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-        log_id = payload.id
-        session.merge(ChatHistoryLogSQL(**db_data))
-
-    elif table == "dreams":
-        # 1. Filter msg to only include fields known by DreamInput
-        known_fields = DreamInput.model_fields.keys()
-        filtered_msg = {k: v for k, v in msg.items() if k in known_fields}
-
-        # 2. Validate the CLEANED message
-        payload = DreamInput.model_validate(filtered_msg).normalize()
-
-        # 3. Get log_id and query using the PAYLOAD OBJECT (Fixes KeyError)
-        log_id = str(payload.dream_date)
-
-        existing = session.query(Dream).filter(
-            Dream.dream_date == payload.dream_date
-        ).first()
-
-        if existing:
-            logger.info(f"Updating {table} for date: {log_id}")
-            # For updates, exclude_unset=True is correct
-            db_data = payload.model_dump(mode="json", exclude_unset=True)
-            for k, v in db_data.items():
-                setattr(existing, k, v)
-        else:
-            logger.info(f"Inserting new {table} for date: {log_id}")
-            # For inserts, use the full model (no exclude_unset)
-            db_data = payload.model_dump(mode="json")
-            session.add(Dream(**db_data))
-
-    elif table == "orion_biometrics":
-        payload = BiometricsInput.model_validate(msg)
-        db_data = payload.model_dump()
-        session.add(BiometricsTelemetry(**db_data))
-        log_id = db_data.get("timestamp", "unknown")
-
-    elif table == "spark_introspection_log":
-        # Some messages on this channel are *candidates* that do NOT yet
-        # contain an 'introspection' field. Those are for the
-        # orion-spark-introspector to consume, not for SQL persistence.
-        #
-        # Only when the introspector publishes a completed payload
-        # (including 'introspection' text) do we store a row.
-        if "introspection" not in msg or not msg.get("introspection"):
-            logger.info(
-                "[SQL_WRITER] Skipping spark_introspection candidate with no introspection text yet: %s",
-                {
-                    "trace_id": msg.get("trace_id"),
-                    "source": msg.get("source"),
-                    "kind": msg.get("kind"),
-                },
-            )
-            return None
-
-        # At this point we *do* have introspection text; treat as a full row.
-        payload = SparkIntrospectionInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-
-        # Ensure spark_meta is stored as a JSON string
-        spark_meta_val = db_data.get("spark_meta")
-        if isinstance(spark_meta_val, (dict, list)):
-            db_data["spark_meta"] = json.dumps(spark_meta_val)
-        elif spark_meta_val is None:
-            db_data["spark_meta"] = None
-
-        log_id = payload.id
-        logger.info(
-            "[SQL_WRITER] Upserting Spark introspection log id=%s trace_id=%s",
-            log_id,
-            payload.trace_id,
-        )
-
-        session.merge(SparkIntrospectionLogSQL(**db_data))
-        return log_id
-
-    return log_id
-
-def channel_worker(channel: str):
-    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
-    if not bus.enabled:
-        logger.error(f"Bus connection failed for {channel}")
+    # Channel-first routing (keeps backwards compatibility with legacy producers).
+    if channel == settings.channel_collapse_publish:
+        await _write(CollapseMirror, MirrorInput, payload)
+        return
+    if channel == settings.channel_tags_enriched:
+        await _write(CollapseEnrichment, EnrichmentInput, payload)
+        return
+    if channel == settings.channel_chat_log:
+        await _write(ChatHistoryLogSQL, ChatHistoryInput, payload)
+        return
+    if channel == settings.channel_dream:
+        await _write(Dream, DreamInput, payload)
+        return
+    if channel == settings.channel_biometrics:
+        await _write(BiometricsTelemetry, BiometricsInput, payload)
+        return
+    if channel == settings.channel_spark_introspection:
+        await _write(SparkIntrospectionLogSQL, SparkIntrospectionInput, payload)
         return
 
-    logger.info(f"👂 Subscribed (worker) for channel: {channel}")
+    # Kind fallback for newer envelope producers.
+    if env.kind == "collapse.mirror":
+        await _write(CollapseMirror, MirrorInput, payload)
+        return
+    if env.kind in {"collapse.enrichment", "tags.enriched"}:
+        await _write(CollapseEnrichment, EnrichmentInput, payload)
+        return
+    if env.kind in {"chat.history", "chat.log"}:
+        await _write(ChatHistoryLogSQL, ChatHistoryInput, payload)
+        return
+    if env.kind in {"dream.log"}:
+        await _write(Dream, DreamInput, payload)
+        return
+    if env.kind in {"biometrics.telemetry"}:
+        await _write(BiometricsTelemetry, BiometricsInput, payload)
+        return
+    if env.kind in {"spark.introspection.log", "spark.introspection"}:
+        await _write(SparkIntrospectionLogSQL, SparkIntrospectionInput, payload)
+        return
 
-    for message in bus.subscribe(channel):
-        session = None
-        log_id = "unknown"
-        try:
-            normalized = _normalize_message(message.get("data"))
-            if normalized is None:
-                continue
+    logger.debug("No route for kind=%s channel=%s; dropping", env.kind, channel)
 
-            session = get_session()
-            log_id = _process_one(session, channel, normalized)
 
-            if log_id:
-                logger.info(f"🏁 COMMIT for {log_id} on '{channel}'")
-                session.commit()
-
-        except Exception as e:
-            logger.error(f"❌ ROLLBACK on {channel} (payload {log_id}): {e}", exc_info=True)
-            if session:
-                session.rollback()
-        finally:
-            if session:
-                remove_session()
-
-def start_listeners():
-    channels = settings.get_all_subscribe_channels()
-    logger.info(f"🚀 Starting listeners: {channels}")
-    for ch in channels:
-        t = threading.Thread(target=channel_worker, args=(ch,), daemon=False)
-        t.start()
+def build_hunter() -> Hunter:
+    patterns = [
+        settings.channel_collapse_publish,
+        settings.channel_tags_enriched,
+        settings.channel_chat_log,
+        settings.channel_dream,
+        settings.channel_biometrics,
+        settings.channel_spark_introspection,
+    ]
+    return Hunter(_cfg(), patterns=patterns, handler=handle_envelope)

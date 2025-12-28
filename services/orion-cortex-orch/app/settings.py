@@ -1,36 +1,34 @@
-from functools import lru_cache
+from __future__ import annotations
 
-from pydantic import Field
+from functools import lru_cache
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Node identity
-    node_name: str = Field("athena-cortex-orchestrator", alias="NODE_NAME")
+    # Service identity
+    service_name: str = Field("cortex-orch", alias="SERVICE_NAME")
+    service_version: str = Field("0.2.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
 
-    # Redis / bus config
-    orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
+    # Bus config
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
-    # Exec routing
-    exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
-    exec_result_prefix: str = Field("orion-exec:result", alias="EXEC_RESULT_PREFIX")
+    # Chassis
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
-    # Optional orchestrator-level routing
-    cortex_orch_request_channel: str = Field(
-        "orion-cortex:request", alias="ORCH_REQUEST_CHANNEL"
-    )
-    cortex_orch_result_prefix: str = Field(
-        "orion-cortex:result", alias="ORCH_RESULT_PREFIX"
+    # RPC intake channel (hub -> cortex-orch)
+    channel_cortex_request: str = Field(
+        "orion-cortex:request",
+        validation_alias=AliasChoices("CORTEX_REQUEST_CHANNEL", "ORCH_REQUEST_CHANNEL"),
     )
 
-    # Timeouts
-    cortex_step_timeout_ms: int = Field(8000, alias="ORION_CORTEX_STEP_TIMEOUT_MS")
-
-    # HTTP service config
-    api_host: str = Field("0.0.0.0", alias="API_HOST")
-    api_port: int = Field(8072, alias="API_PORT")
-    log_level: str = Field("INFO", alias="LOG_LEVEL")
+    # RPC out to cortex-exec
+    channel_exec_request: str = Field(
+        "orion-cortex-exec:request",
+        validation_alias=AliasChoices("CORTEX_EXEC_REQUEST_CHANNEL", "CHANNEL_EXEC_REQUEST"),
+    )
 
     class Config:
         env_file = ".env"

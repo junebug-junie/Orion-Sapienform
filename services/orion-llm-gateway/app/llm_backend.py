@@ -188,7 +188,7 @@ def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_t
         if delta > 0.05 or self_field.get("uncertainty", 0) > 0.3:
             bus = OrionBus(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
             if bus.enabled:
-                bus.publish(settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE, {
+                bus.publish(settings.channel_spark_introspect_candidate, {
                     "event": "spark_introspect_candidate",
                     "trace_id": body.trace_id or "gw",
                     "source": getattr(body, "source", "gw"),
@@ -382,7 +382,7 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         body.service,
         elapsed_ms,
         backend,
-        model, # <--- Fix applied here
+        model,
     )
 
     return {

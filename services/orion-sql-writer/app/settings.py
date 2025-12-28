@@ -1,75 +1,54 @@
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    PROJECT: str = "orion-athena"
-    SERVICE_NAME: str = "sql-writer"
-    SERVICE_VERSION: str = "0.3.0"
-    PORT: int = 8220
+    # Identity
+    project: str = Field("orion-athena", alias="PROJECT")
+    service_name: str = Field("sql-writer", alias="SERVICE_NAME")
+    service_version: str = Field("0.4.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
+    port: int = Field(8220, alias="PORT")
 
-    # --- Bus ---
-    ORION_BUS_ENABLED: bool = True
-    ORION_BUS_URL: str = "redis://orion-athena-bus-core:6379/0"
+    # Bus (legacy vars preserved)
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
-    CHANNEL_TAGS_RAW: str = "orion:tags"
-    CHANNEL_TAGS_ENRICHED: str = "orion:tags:enriched"
+    # Chassis (new; must be wired in .env_example + docker-compose env)
+    heartbeat_interval_sec: float = Field(10.0, alias="ORION_HEARTBEAT_INTERVAL_SEC")
+    health_channel: str = Field("system.health", alias="ORION_HEALTH_CHANNEL")
+    error_channel: str = Field("system.error", alias="ORION_ERROR_CHANNEL")
+    shutdown_grace_sec: float = Field(10.0, alias="ORION_SHUTDOWN_GRACE_SEC")
 
-    CHANNEL_COLLAPSE_TRIAGE: str = "orion:collapse:triage"
-    CHANNEL_COLLAPSE_PUBLISH: str = "orion:collapse:sql-write"
+    # --- Writer input channels ---
+    channel_tags_raw: str = Field("orion:tags", alias="CHANNEL_TAGS_RAW")
+    channel_tags_enriched: str = Field("orion:tags:enriched", alias="CHANNEL_TAGS_ENRICHED")
 
-    CHANNEL_CHAT_LOG: str = "orion:chat:history:log"
-    CHANNEL_DREAM_TRIGGER: str = "orion:dream:trigger"
+    channel_collapse_triage: str = Field("orion:collapse:triage", alias="CHANNEL_COLLAPSE_TRIAGE")
+    channel_collapse_publish: str = Field("orion:collapse:sql-write", alias="CHANNEL_COLLAPSE_PUBLISH")
 
-    SPARK_INTROSPECT_CANDIDATE_CHANNEL: str =  "orion:spark:introspect:candidate"
+    channel_chat_log: str = Field("orion:chat:history:log", alias="CHANNEL_CHAT_LOG")
 
-    CHANNEL_BIOMETRICS: str = "orion:telemetry:biometrics"
+    channel_dream: str = Field("orion:dream:log", alias="CHANNEL_DREAM_LOG")
+    channel_biometrics: str = Field("orion:biometrics:telemetry", alias="CHANNEL_BIOMETRICS_TELEMETRY")
+    channel_spark_introspection: str = Field("orion:spark:introspection:log", alias="CHANNEL_SPARK_INTROSPECTION_LOG")
 
-    # --- DB ---
-    POSTGRES_URI: str = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
-
-    # --- Channel → Table map ---
-    BUS_TABLE_MAP: str = (
-       "orion:collapse:triage:collapse_mirror,"
-       "orion:tags:raw:collapse_enrichment,"
-       "orion:chat:history:log:chat_history_log,"
-       "orion:rag:document:add:rag_documents,"
-       "orion:dream:trigger:dreams,"
-       "orion:telemetry:biometrics:orion_biometrics,"
-       "orion:spark:introspect:candidate:spark_introspection_log,"
-    )
-
-    POLL_TIMEOUT: float = 1.0
+    # DB
+    postgres_uri: str = Field("sqlite:///./orion.db", alias="POSTGRES_URI")
+    database_url: str = Field("sqlite:///./orion.db", alias="DATABASE_URL")
 
     class Config:
         env_file = ".env"
-        env_file_encoding = "utf-8"
         extra = "ignore"
 
-    def get_table_for_channel(self, channel: str) -> str:
-        """Parses the BUS_TABLE_MAP to find the target table for a given channel."""
-        mapping = {}
-        for pair in (self.BUS_TABLE_MAP or "").split(","):
-            if ":" in pair:
-                parts = pair.split(":")
-                if len(parts) >= 2:
-                    # Handle channel names that might contain colons
-                    channel_name = ":".join(parts[:-1])
-                    table_name = parts[-1]
-                    mapping[channel_name] = table_name
-        return mapping.get(channel)
 
-    def get_all_subscribe_channels(self) -> list[str]:
-        """Returns a list of all channels this service should subscribe to."""
-        return [
-            self.CHANNEL_TAGS_RAW,
-            self.CHANNEL_TAGS_ENRICHED,
-            self.CHANNEL_COLLAPSE_TRIAGE,
-            self.CHANNEL_COLLAPSE_PUBLISH,
-            self.CHANNEL_CHAT_LOG,
-            self.CHANNEL_DREAM_TRIGGER,
-            self.CHANNEL_BIOMETRICS,
-            self.SPARK_INTROSPECT_CANDIDATE_CHANNEL,
-        ]
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
 
 
-settings = Settings()
+settings = get_settings()

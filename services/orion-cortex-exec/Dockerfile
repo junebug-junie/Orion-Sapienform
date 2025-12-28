@@ -43,7 +43,8 @@ COPY orion /app/orion
 # Copy rest of hub service code
 COPY services/orion-cortex-exec /app
 
-EXPOSE 8070
 
 # This CMD is now passed as an argument to the ENTRYPOINT script
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8070"]
+# We keep app/main.py (FastAPI) for local debugging, but production is bus-first.
+CMD ["python", "-m", "app.bus_main"]
+#CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8070"]

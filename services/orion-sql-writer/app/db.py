@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, scoped_session
 from app.settings import settings
 
 engine = create_engine(
-    settings.POSTGRES_URI,
+    settings.postgres_uri,
     pool_pre_ping=True,
     json_serializer=json.dumps,
     json_deserializer=json.loads,

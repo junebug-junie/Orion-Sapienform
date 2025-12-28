@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     CHANNEL_COLLAPSE_INTAKE: str = Field(default="orion:collapse:intake", env="CHANNEL_COLLAPSE_INTAKE")
     CHANNEL_COLLAPSE_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_COLLAPSE_TRIAGE")
 
+    # === Chassis Telemetry / Reliability ===
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, env="HEARTBEAT_INTERVAL_SEC")
+    HEALTH_CHANNEL: str = Field(default="system.health", env="HEALTH_CHANNEL")
+    ERROR_CHANNEL: str = Field(default="system.error", env="ERROR_CHANNEL")
+    SHUTDOWN_GRACE_SEC: float = Field(default=10.0, env="SHUTDOWN_GRACE_SEC")
+
     # === Environment ===
     CHRONICLE_ENVIRONMENT: str = Field(default="dev", env="CHRONICLE_ENVIRONMENT")
     CHRONICLE_MODE: str = Field(default="local", env="CHRONICLE_MODE")

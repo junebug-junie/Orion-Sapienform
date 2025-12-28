@@ -19,7 +19,14 @@ class Settings(BaseSettings):
 
     # ── Orion Bus ─────────────────────────────────────────────────────
     ORION_BUS_ENABLED: bool = True
-    ORION_BUS_URL: str = "redis://localhost:6379/0"
+    ORION_BUS_URL: str = "redis://100.92.216.81:6379/0"
+    RECALL_BUS_INTAKE: str = "orion-recall:request"
+
+    # ── Chassis / Runtime ─────────────────────────────────────────────
+    HEARTBEAT_INTERVAL_SEC: float = 10.0
+    HEALTH_CHANNEL: str = "system.health"
+    ERROR_CHANNEL: str = "system.error"
+    SHUTDOWN_GRACE_SEC: float = 10.0
 
     CHANNEL_RECALL_REQUEST: str = "orion:recall:request"
     CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion:recall:reply"

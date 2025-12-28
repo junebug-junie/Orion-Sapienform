@@ -1,41 +1,56 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
 import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
-from app.settings import settings
 from app.db import Base, engine
-from app.worker import start_listeners
+from app.settings import settings
+from app.worker import build_hunter
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[SQL_WRITER] %(levelname)s - %(name)s - %(message)s"
+    format="[SQL_WRITER] %(levelname)s - %(name)s - %(message)s",
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("sql-writer")
 
-app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
-@app.on_event("startup")
-def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     # Ensure schema exists
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("🛠️  Ensured DB schema is present")
     except Exception as e:
-        logger.warning(f"Schema init warning: {e}")
+        logger.warning("Schema init warning: %s", e)
 
-    # Start bus listeners
-    if not settings.ORION_BUS_ENABLED:
+    task: asyncio.Task | None = None
+    if settings.orion_bus_enabled:
+        svc = build_hunter()
+        logger.info("🚀 starting Hunter")
+        task = asyncio.create_task(svc.start())
+    else:
         logger.warning("Bus disabled; writer will be idle.")
-        return
 
-    logger.info(f"🚀 {settings.SERVICE_NAME} starting listeners")
-    start_listeners()
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            with contextlib.suppress(Exception):
+                await task
+
+
+app = FastAPI(
+    title=settings.service_name,
+    version=settings.service_version,
+    lifespan=lifespan,
+)
+
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "service": settings.SERVICE_NAME,
-        "version": settings.SERVICE_VERSION,
-        "channels": settings.get_all_subscribe_channels(),
-        "bus_url": settings.ORION_BUS_URL,
-    }
+    return {"ok": True, "service": settings.service_name, "version": settings.service_version}

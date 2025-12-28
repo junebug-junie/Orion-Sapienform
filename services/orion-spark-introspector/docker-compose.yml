@@ -11,13 +11,16 @@ services:
       - app-net
     environment:
       - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
       # Bus channels      
-      - CHANNEL_SPARK_INTROSPECT_CANDIDATE=orion:spark:introspect:candidate
-      - SQL_WRITER_CHANNEL=orion:sql:intake
-      - CORTEX_ORCH_URL=http://orion-cortex-orch:8072/orchestrate
+      - CHANNEL_SPARK_CANDIDATE=${CHANNEL_SPARK_CANDIDATE}
+      - CHANNEL_CORTEX_REQUEST=${CHANNEL_CORTEX_REQUEST}
+      - SQL_WRITER_CHANNEL=${SQL_WRITER_CHANNEL}
+      - CORTEX_TIMEOUT_SEC=${CORTEX_TIMEOUT_SEC}
       - CONNECT_TIMEOUT=5.0
       - READ_TIMEOUT=10.0
 networks:

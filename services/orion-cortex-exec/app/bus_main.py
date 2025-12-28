@@ -1,8 +1,17 @@
-# services/orion-cortex-exec/app/main.py
+# services/orion-cortex-exec/app/bus_main.py
+"""Bus-native entrypoint for cortex-exec.
+
+This enables the canonical RPC path:
+  hub -> cortex-orch (Rabbit) -> cortex-exec (Rabbit) -> reply
+
+Containers should run this module by default.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any, Dict
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -10,10 +19,10 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
 from .models import PlanExecutionRequest
-from .router import PlanRouter
+from .router import PlanRunner
 from .settings import settings
 
-logger = logging.getLogger("orion.cortex.exec")
+logger = logging.getLogger("orion.cortex.exec.bus")
 
 
 class CortexExecRequest(BaseEnvelope):
@@ -23,7 +32,7 @@ class CortexExecRequest(BaseEnvelope):
 
 class CortexExecResultPayload(BaseModel):
     ok: bool = True
-    result: dict
+    result: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CortexExecResult(BaseEnvelope):
@@ -50,22 +59,11 @@ def _source() -> ServiceRef:
     )
 
 
-router = PlanRouter()
+runner = PlanRunner()
 svc: Rabbit | None = None
 
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
-    global svc
-    if svc is None:
-        # Should never happen, but prevents weird None crashes during init
-        return BaseEnvelope(
-            kind="cortex.exec.result",
-            source=_source(),
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain,
-            payload={"ok": False, "error": "service_not_ready"},
-        )
-
     try:
         req_env = CortexExecRequest.model_validate(env.model_dump(mode="json"))
     except ValidationError as ve:
@@ -77,13 +75,15 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
         )
 
+    # Build the execution ctx passed down into step services
     ctx = {
         **(req_env.payload.args.extra or {}),
         "user_id": req_env.payload.args.user_id,
         "trigger_source": req_env.payload.args.trigger_source,
     }
 
-    res = await router.run_plan(
+    assert svc is not None, "Rabbit service not initialized"
+    res = await runner.run_plan(
         svc.bus,
         source=_source(),
         req=req_env.payload,
@@ -99,21 +99,16 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     )
 
 
-def _build_service() -> Rabbit:
-    cfg = _cfg()
-    return Rabbit(cfg, request_channel=settings.channel_exec_request, handler=handle)
+svc = Rabbit(_cfg(), request_channel=settings.channel_exec_request, handler=handle)
 
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger.info(
-        "Starting cortex-exec Rabbit request_channel=%s bus=%s",
+        "Starting cortex-exec bus listener channel=%s bus=%s",
         settings.channel_exec_request,
         settings.orion_bus_url,
     )
-
-    global svc
-    svc = _build_service()
     await svc.start()
 
 

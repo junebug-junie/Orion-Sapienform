@@ -67,6 +67,18 @@ class Settings(BaseSettings):
         env="EXEC_REQUEST_PREFIX",
     )
 
+    # --- LLM Gateway RPC channels (hub-side convenience) ---
+    # Note: by convention, LLM Gateway listens on f"{EXEC_REQUEST_PREFIX}:{LLM_GATEWAY_SERVICE_NAME}"
+    # but we keep these explicit for easier overrides + backward compatibility.
+    CHANNEL_LLM_INTAKE: str = Field(
+        default="orion-exec:request:LLMGatewayService",
+        env="CHANNEL_LLM_INTAKE",
+    )
+    CHANNEL_LLM_REPLY_PREFIX: str = Field(
+        default="orion:llm:reply:",
+        env="CHANNEL_LLM_REPLY_PREFIX",
+    )
+
     # --- Cortex Orchestrator Integration
     CORTEX_ORCH_REQUEST_CHANNEL: str = Field(
         default="orion-cortex:request",

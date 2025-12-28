@@ -5,6 +5,7 @@ import asyncio
 import signal
 import traceback
 from dataclasses import dataclass
+from uuid import uuid4
 from typing import Any, Awaitable, Callable, Optional
 
 from loguru import logger
@@ -108,19 +109,21 @@ class BaseChassis:
     async def _heartbeat_loop(self) -> None:
         while not self._stop.is_set():
             try:
+                node = self.cfg.node_name or "unknown"
                 env = BaseEnvelope(
                     kind="system.health",
                     source=self._source(),
                     payload=_SystemHealthPayload(
                         service=self.cfg.service_name,
-                        node=self.cfg.node_name,
+                        node=node,
                         version=self.cfg.service_version,
+                        details={},
                     ).model_dump(mode="json"),
                 )
                 await self.bus.publish(self.cfg.health_channel, env)
-            except Exception:
-                # never crash service from heartbeat
-                logger.exception("Heartbeat publish failed")
+            except Exception as e:
+                # Don't recurse into _publish_error if the bus is down; just log.
+                logger.warning(f"Heartbeat publish failed: {e}")
             await asyncio.sleep(float(self.cfg.heartbeat_interval_sec or 10.0))
 
     async def _publish_error(self, err: BaseException, *, when: str, env: BaseEnvelope | None = None) -> None:
@@ -135,7 +138,7 @@ class BaseChassis:
             out = BaseEnvelope(
                 kind="system.error",
                 source=self._source(),
-                correlation_id=(env.correlation_id if env else None) or None,
+                correlation_id=(env.correlation_id if env else uuid4()),
                 causality_chain=(env.causality_chain if env else []),
                 payload=payload,
             )
@@ -177,21 +180,39 @@ class Rabbit(BaseChassis):
     async def _run(self) -> None:
         logger.info(f"Rabbit listening channel={self.request_channel} bus={self.cfg.bus_url}")
 
-        async for raw in self.bus.subscribe(self.request_channel):
-            if self._stop.is_set():
-                break
-            try:
-                env = self.bus.codec.decode(raw, BaseEnvelope)
-                out = await self.handler(env)
-                if out is not None and env.reply_to:
-                    await self.bus.publish(env.reply_to, out)
-            except Exception as e:
-                await self._publish_error(e, when="rabbit.handle", env=env if "env" in locals() else None)
+        async with self.bus.subscribe(self.request_channel) as pubsub:
+            async for msg in self.bus.iter_messages(pubsub):
+                if self._stop.is_set():
+                    break
+                if not isinstance(msg, dict):
+                    continue
+                data = msg.get("data")
+                if data is None:
+                    continue
+
+                decoded = self.bus.codec.decode(data)
+                if not decoded.ok or decoded.envelope is None:
+                    await self._publish_error(
+                        RuntimeError(decoded.error or "decode_failed"),
+                        when="rabbit.decode",
+                        env=None,
+                    )
+                    continue
+
+                env = decoded.envelope
+                try:
+                    out = await self.handler(env)
+                    if out is not None and env.reply_to:
+                        await self.bus.publish(env.reply_to, out)
+                except Exception as e:
+                    await self._publish_error(e, when="rabbit.handle", env=env)
 
 
 class Hunter(BaseChassis):
     """
     Fire-and-forget consumer. Subscribes to patterns, filters, and acts.
+
+    Uses Redis PSUBSCRIBE behind the scenes (patterns=True).
     """
 
     def __init__(self, cfg: ChassisConfig, *, pattern: str, handler: Callable[[BaseEnvelope], Awaitable[None]]):
@@ -202,14 +223,30 @@ class Hunter(BaseChassis):
     async def _run(self) -> None:
         logger.info(f"Hunter subscribing pattern={self.pattern} bus={self.cfg.bus_url}")
 
-        async for raw in self.bus.psubscribe(self.pattern):
-            if self._stop.is_set():
-                break
-            try:
-                env = self.bus.codec.decode(raw, BaseEnvelope)
-                await self.handler(env)
-            except Exception as e:
-                await self._publish_error(e, when="hunter.handle", env=env if "env" in locals() else None)
+        async with self.bus.subscribe(self.pattern, patterns=True) as pubsub:
+            async for msg in self.bus.iter_messages(pubsub):
+                if self._stop.is_set():
+                    break
+                if not isinstance(msg, dict):
+                    continue
+                data = msg.get("data")
+                if data is None:
+                    continue
+
+                decoded = self.bus.codec.decode(data)
+                if not decoded.ok or decoded.envelope is None:
+                    await self._publish_error(
+                        RuntimeError(decoded.error or "decode_failed"),
+                        when="hunter.decode",
+                        env=None,
+                    )
+                    continue
+
+                env = decoded.envelope
+                try:
+                    await self.handler(env)
+                except Exception as e:
+                    await self._publish_error(e, when="hunter.handle", env=env)
 
 
 class Clock(BaseChassis):

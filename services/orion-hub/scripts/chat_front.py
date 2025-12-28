@@ -152,6 +152,72 @@ async def build_memory_digest(
 # 🧠 Chat front: fire chat_general verb via Cortex
 # ─────────────────────────────────────────────
 
+
+def _extract_text_from_orch_reply(raw_reply: Any) -> Optional[str]:
+    """Best-effort extraction of assistant text from Cortex-Orch replies.
+
+    Supports:
+      - legacy hub format (step_results/services/payload/result/llm_output)
+      - new PlanExecutionResult format coming from cortex-exec (steps[].result[service].content)
+      - nested ok/result wrappers from cortex-orch/cortex-exec
+    """
+    if not isinstance(raw_reply, dict):
+        return None
+
+    # Direct
+    direct = raw_reply.get("text")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+
+    # Unwrap nested ok/result wrappers
+    candidate: Any = raw_reply
+    for _ in range(3):
+        if isinstance(candidate, dict) and "result" in candidate and isinstance(candidate["result"], dict):
+            candidate = candidate["result"]
+        else:
+            break
+
+    # PlanExecutionResult path
+    if isinstance(candidate, dict) and isinstance(candidate.get("steps"), list):
+        for step in candidate["steps"]:
+            if not isinstance(step, dict):
+                continue
+            result = step.get("result")
+            if not isinstance(result, dict):
+                continue
+            for svc_payload in result.values():
+                if not isinstance(svc_payload, dict):
+                    continue
+                if isinstance(svc_payload.get("content"), str) and svc_payload["content"].strip():
+                    return svc_payload["content"]
+                inner = svc_payload.get("result")
+                if isinstance(inner, dict) and isinstance(inner.get("content"), str) and inner["content"].strip():
+                    return inner["content"]
+
+    # Legacy hub/council-ish path
+    step_results = raw_reply.get("step_results")
+    if isinstance(step_results, list):
+        for step in step_results:
+            if not isinstance(step, dict):
+                continue
+            services = step.get("services", [])
+            if not isinstance(services, list):
+                continue
+            for svc in services:
+                if not isinstance(svc, dict):
+                    continue
+                payload = svc.get("payload") or {}
+                if not isinstance(payload, dict):
+                    continue
+                result = payload.get("result") or {}
+                if isinstance(result, dict):
+                    llm_output = result.get("llm_output") or result.get("content")
+                    if isinstance(llm_output, str) and llm_output.strip():
+                        return llm_output
+
+    return None
+
+
 async def run_chat_general(
     bus,
     *,
@@ -240,6 +306,11 @@ async def run_chat_general(
                     result = srv_payload.get("result") or {}
                     text = (result.get("llm_output") or "").strip()
                     spark_meta = result.get("spark_meta")
+
+        if not text:
+            extracted = _extract_text_from_orch_reply(raw_reply)
+            if extracted:
+                text = extracted.strip()
 
         tokens = len(text.split()) if text else 0
 

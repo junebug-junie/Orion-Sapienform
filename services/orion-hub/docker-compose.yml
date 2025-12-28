@@ -33,6 +33,10 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL:-${ORION_BUS_URL}}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
 
+      # LLM Gateway
+      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE}
+      - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX}
+
       # Channels
       - CHANNEL_VOICE_TRANSCRIPT=${CHANNEL_VOICE_TRANSCRIPT}
       - CHANNEL_VOICE_LLM=${CHANNEL_VOICE_LLM}
@@ -72,4 +76,3 @@ services:
 networks:
   app-net:
     external: true
-

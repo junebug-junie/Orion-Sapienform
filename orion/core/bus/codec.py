@@ -35,7 +35,9 @@ class OrionCodec:
 
     def encode(self, obj: BaseModel | Dict[str, Any]) -> bytes:
         if isinstance(obj, BaseModel):
-            return obj.model_dump_json().encode("utf-8")
+            # Always serialize using aliases so our on-the-wire
+            # envelope field names remain stable (e.g. schema_id -> schema).
+            return obj.model_dump_json(by_alias=True).encode("utf-8")
         # dict payload: best-effort JSON
         return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 

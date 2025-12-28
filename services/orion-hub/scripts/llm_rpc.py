@@ -38,7 +38,7 @@ class _BaseRPC:
         return await self.bus.rpc_legacy_dict(
             intake,
             msg,
-            reply_prefix=reply_prefix,
+            reply_prefix=_ensure_prefix(reply_prefix),
             timeout_sec=timeout_sec,
         )
 
@@ -108,11 +108,53 @@ class CortexOrchRPC(_BaseRPC):
     def __init__(self, bus: OrionBusAsync):
         super().__init__(bus)
 
-    async def run(self, *, verb_name: str, args: Dict[str, Any], timeout_sec: float = 300.0) -> Dict[str, Any]:
+    async def run(
+        self,
+        *,
+        verb_name: str,
+        args: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+        origin_node: Optional[str] = None,
+        timeout_ms: Optional[int] = None,
+        timeout_sec: float = 300.0,
+    ) -> Dict[str, Any]:
+        if timeout_ms is not None:
+            timeout_sec = float(timeout_ms) / 1000.0
+
+        payload: Dict[str, Any] = {"verb_name": verb_name, "args": args}
+        if context is not None:
+            payload["context"] = context
+        if origin_node is not None:
+            payload["origin_node"] = origin_node
+
         return await self.request_and_wait(
             intake=settings.CORTEX_ORCH_REQUEST_CHANNEL,
-            reply_prefix=settings.CORTEX_ORCH_RESULT_PREFIX,
-            payload={"verb_name": verb_name, "args": args},
+            reply_prefix=_ensure_prefix(settings.CORTEX_ORCH_RESULT_PREFIX),
+            payload=payload,
+            timeout_sec=timeout_sec,
+        )
+
+    async def run_chat_general(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        origin_node: Optional[str] = None,
+        timeout_ms: Optional[int] = None,
+        timeout_sec: float = 300.0,
+    ) -> Dict[str, Any]:
+        # Backward-compatible convenience wrapper used by chat_front.py
+        if timeout_ms is not None:
+            timeout_sec = float(timeout_ms) / 1000.0
+
+        if "messages" not in context:
+            context = {**context, "messages": messages}
+
+        return await self.run(
+            verb_name="chat_general",
+            args={},
+            context=context,
+            origin_node=origin_node,
             timeout_sec=timeout_sec,
         )
 

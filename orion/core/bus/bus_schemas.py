@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -175,12 +175,11 @@ class ChatRequestPayload(BaseModel):
 class ChatResultPayload(BaseModel):
     """
     Standard response from LLM Gateway.
-    Supports both 'text' (Gateway default) and 'content' (Legacy).
+    Strictly normalizes 'text' (Gateway) vs 'content' (Legacy).
     """
     model_config = ConfigDict(extra="ignore", frozen=True, protected_namespaces=())
 
-    # Gateway returns 'text', we alias it to 'content' for compatibility
-    content: Optional[str] = Field(None, alias="text")
+    content: Optional[str] = None
     model_used: Optional[str] = None
     spark_meta: Optional[Dict[str, Any]] = None
     usage: Dict[str, Any] = Field(default_factory=dict)
@@ -188,8 +187,40 @@ class ChatResultPayload(BaseModel):
 
     @property
     def text(self) -> str:
-        """Helper to safely get the string response."""
         return self.content or ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_content(cls, data: Any) -> Any:
+        """
+        Vacuum Validator:
+        1. Ensures 'content' is populated from 'text'.
+        2. Hoists 'spark_meta' from 'raw' if needed.
+        """
+        if isinstance(data, dict):
+            # 1. Capture text/content overlap
+            text_val = data.get("text")
+            content_val = data.get("content")
+
+            # If we have text but no content, move it over
+            if text_val and not content_val:
+                data["content"] = text_val
+
+            # 2. Cleanup: If 'raw' is somehow missing or empty,
+            # and we have 'raw_llm' from Gateway, use that.
+            if not data.get("raw") and data.get("raw_llm"):
+                data["raw"] = data["raw_llm"]
+
+            # 3. Hoist spark_meta
+            # If top-level is empty, check inside raw
+            if not data.get("spark_meta"):
+                raw = data.get("raw") or {}
+                # Sometimes it's in raw['spark_meta'], sometimes nested deeper
+                if isinstance(raw, dict) and raw.get("spark_meta"):
+                    data["spark_meta"] = raw["spark_meta"]
+
+        return data
+
 
 class RecallRequestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

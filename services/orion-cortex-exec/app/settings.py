@@ -18,12 +18,14 @@ class Settings(BaseSettings):
     # Intake channel (hub or orch -> exec)
     channel_exec_request: str = Field("orion-cortex-exec:request", alias="CHANNEL_EXEC_REQUEST")
 
-    # Legacy downstream routing (exec -> step services)
+    # Downstream routing (exec -> step services)
     exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
-    step_timeout_ms: int = Field(8000, alias="STEP_TIMEOUT_MS")
+    
+    # CHANGED: 8000 -> 60000 (60s). LLMs need time.
+    step_timeout_ms: int = Field(60000, alias="STEP_TIMEOUT_MS")
 
-    # Explicit channel for LLM
-    channel_llm_intake: str = Field("orion-llm:intake", alias="CHANNEL_LLM_INTAKE")
+    # CHANGED: "orion-llm:intake" -> "orion-exec:request:LLMGatewayService"
+    channel_llm_intake: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
 
     class Config:
         env_file = ".env"

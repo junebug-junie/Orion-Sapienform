@@ -46,5 +46,5 @@ COPY services/orion-cortex-exec /app
 
 # This CMD is now passed as an argument to the ENTRYPOINT script
 # We keep app/main.py (FastAPI) for local debugging, but production is bus-first.
-CMD ["python", "-m", "app.bus_main"]
+CMD ["python", "-m", "app.main"]
 #CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8070"]

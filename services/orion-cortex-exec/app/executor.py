@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from uuid import uuid4
 
 from jinja2 import Environment
@@ -31,9 +31,8 @@ def _kind_for(service_name: str) -> str:
 
 def _channel_for(service_name: str) -> str:
     if service_name == "LLMGatewayService":
-        # CHANGED: Match the Gateway's configured channel from .env
-        # Was: "orion-llm:intake" (WRONG)
-        return "orion-exec:request:LLMGatewayService"
+        # CLEAN: Pull from settings, not hardcoded string
+        return settings.channel_llm_intake
     
     # Default behavior for other cortex workers
     return f"{settings.exec_request_prefix}:{service_name}"
@@ -53,11 +52,11 @@ async def call_step_services(
 
     prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
     
-    # [DEBUG] LOUD LOGGING OF PROMPT
-    logger.warning(f"--- EXEC STEP '{step.step_name}' START ---")
+    # CLEAN: Downgraded log level to INFO
+    logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     
-    # [FIX] FORCE 120s TIMEOUT
-    timeout_sec = 120.0 
+    # CLEAN: Pull timeout from settings (converted to seconds)
+    timeout_sec = float(settings.step_timeout_ms) / 1000.0
 
     for service in step.services:
         reply = f"orion:rpc:{uuid4()}"
@@ -72,11 +71,11 @@ async def call_step_services(
             messages_payload = ctx.get("messages")
             
             if not messages_payload:
-                logger.warning("EXEC: No messages in context! Falling back to prompt.")
+                logger.debug("EXEC: No messages in context. Using prompt.")
                 content = prompt or " "
                 messages_payload = [{"role": "user", "content": content}]
             else:
-                logger.warning(f"EXEC: Using {len(messages_payload)} messages from history.")
+                logger.debug(f"EXEC: Using {len(messages_payload)} messages from history.")
 
             payload = ChatRequestPayload(
                 model=req_model,

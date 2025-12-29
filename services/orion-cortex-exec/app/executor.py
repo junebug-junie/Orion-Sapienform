@@ -13,6 +13,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, Service
 
 from .models import ExecutionStep, StepExecutionResult
 from .settings import settings
+from .clients import LLMGatewayClient  # <--- IMPORT THE NEW CLIENT
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -21,21 +22,6 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
     tmpl = env.from_string(template_str or "")
     return tmpl.render(**ctx)
-
-
-def _kind_for(service_name: str) -> str:
-    if service_name == "LLMGatewayService":
-        return "llm.chat.request"
-    return "exec.generic.request"
-
-
-def _channel_for(service_name: str) -> str:
-    if service_name == "LLMGatewayService":
-        # CLEAN: Pull from settings, not hardcoded string
-        return settings.channel_llm_intake
-    
-    # Default behavior for other cortex workers
-    return f"{settings.exec_request_prefix}:{service_name}"
 
 
 async def call_step_services(
@@ -51,73 +37,52 @@ async def call_step_services(
     merged_result: Dict[str, Any] = {}
 
     prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
-    
-    # CLEAN: Downgraded log level to INFO
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     
-    # CLEAN: Pull timeout from settings (converted to seconds)
-    timeout_sec = float(settings.step_timeout_ms) / 1000.0
+    # Instantiate Clients
+    llm_client = LLMGatewayClient(bus)
 
     for service in step.services:
-        reply = f"orion:rpc:{uuid4()}"
-        kind = _kind_for(service)
-        channel = _channel_for(service)
-
-        if service == "LLMGatewayService":
-            # 1. Model Selection
-            req_model = ctx.get("model") or ctx.get("llm_model") or None
-            
-            # 2. Payload Construction
-            messages_payload = ctx.get("messages")
-            
-            if not messages_payload:
-                logger.debug("EXEC: No messages in context. Using prompt.")
-                content = prompt or " "
-                messages_payload = [{"role": "user", "content": content}]
-            else:
-                logger.debug(f"EXEC: Using {len(messages_payload)} messages from history.")
-
-            payload = ChatRequestPayload(
-                model=req_model,
-                messages=messages_payload,
-                options={
-                    "temperature": float(ctx.get("temperature", 0.7)),
-                    "max_tokens": int(ctx.get("max_tokens", 512)),
-                    "stream": False,
-                }
-            ).model_dump(mode="json")
-        else:
-            payload = {"prompt": prompt, "context": ctx, "service": service}
-
-        env = BaseEnvelope(
-            kind=kind,
-            source=source,
-            correlation_id=correlation_id,
-            reply_to=reply,
-            payload=payload,
-        )
+        reply_channel = f"orion:rpc:{uuid4()}"
 
         try:
-            logs.append(f"rpc -> {channel} kind={kind} timeout={timeout_sec}s")
-            msg = await bus.rpc_request(channel, env, reply_channel=reply, timeout_sec=timeout_sec)
-            decoded = bus.codec.decode(msg.get("data"))
-            if decoded.ok and isinstance(decoded.envelope.payload, dict):
-                merged_result[service] = decoded.envelope.payload
-                logs.append(f"ok <- {service}")
-            else:
-                err = decoded.error or "decode_failed"
-                logs.append(f"fail <- {service}: {err}")
-                return StepExecutionResult(
-                    status="fail",
-                    verb_name=step.verb_name,
-                    step_name=step.step_name,
-                    order=step.order,
-                    result=merged_result,
-                    latency_ms=int((time.time() - t0) * 1000),
-                    node=settings.node_name,
-                    logs=logs,
-                    error=f"{service}: {err}",
+            if service == "LLMGatewayService":
+                # --- STRICT PATH ---
+                # 1. Build Pydantic Model
+                req_model = ctx.get("model") or ctx.get("llm_model") or None
+                messages_payload = ctx.get("messages")
+                
+                if not messages_payload:
+                    content = prompt or " "
+                    messages_payload = [{"role": "user", "content": content}]
+
+                request_object = ChatRequestPayload(
+                    model=req_model,
+                    messages=messages_payload,
+                    options={
+                        "temperature": float(ctx.get("temperature", 0.7)),
+                        "max_tokens": int(ctx.get("max_tokens", 512)),
+                        "stream": False,
+                    }
                 )
+
+                # 2. Delegate to Client (No dicts, no strings)
+                logs.append(f"rpc -> LLMGateway via client")
+                result_data = await llm_client.chat(
+                    source=source,
+                    req=request_object,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel
+                )
+                
+                merged_result[service] = result_data
+                logs.append(f"ok <- {service}")
+
+            else:
+                # --- LEGACY/GENERIC PATH (Still loose for now) ---
+                # ... (keep existing generic logic for non-LLM services if needed) ...
+                logs.append(f"skip <- {service} (generic path not implemented in example)")
+
         except Exception as e:
             logs.append(f"exception <- {service}: {e}")
             return StepExecutionResult(

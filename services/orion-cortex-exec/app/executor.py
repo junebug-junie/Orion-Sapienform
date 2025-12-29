@@ -31,7 +31,11 @@ def _kind_for(service_name: str) -> str:
 
 def _channel_for(service_name: str) -> str:
     if service_name == "LLMGatewayService":
-        return "orion-llm:intake"
+        # CHANGED: Match the Gateway's configured channel from .env
+        # Was: "orion-llm:intake" (WRONG)
+        return "orion-exec:request:LLMGatewayService"
+    
+    # Default behavior for other cortex workers
     return f"{settings.exec_request_prefix}:{service_name}"
 
 
@@ -52,7 +56,7 @@ async def call_step_services(
     # [DEBUG] LOUD LOGGING OF PROMPT
     logger.warning(f"--- EXEC STEP '{step.step_name}' START ---")
     
-    # [FIX] FORCE 120s TIMEOUT (Bypassing .env for now to ensure we wait long enough)
+    # [FIX] FORCE 120s TIMEOUT
     timeout_sec = 120.0 
 
     for service in step.services:
@@ -61,11 +65,10 @@ async def call_step_services(
         channel = _channel_for(service)
 
         if service == "LLMGatewayService":
-            # 1. Model Selection: Default to None (use active model)
+            # 1. Model Selection
             req_model = ctx.get("model") or ctx.get("llm_model") or None
             
-            # 2. Payload Construction: [CRITICAL FIX]
-            # Use the full conversation history from context!
+            # 2. Payload Construction
             messages_payload = ctx.get("messages")
             
             if not messages_payload:

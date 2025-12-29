@@ -19,7 +19,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
 from .models import PlanExecutionRequest
-from .router import PlanRunner
+from .router import PlanRouter  # CHANGED: Was PlanRunner
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.bus")
@@ -59,14 +59,24 @@ def _source() -> ServiceRef:
     )
 
 
-runner = PlanRunner()
+# CHANGED: Match main.py class usage
+router = PlanRouter()
 svc: Rabbit | None = None
 
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
+    # [DEBUG] RAW LOGGING OF INCOMING DATA (Ported from main.py)
+    raw_payload = env.payload if isinstance(env.payload, dict) else {}
+    has_context_key = "context" in raw_payload
+    
+    logger.info(f"[EXEC-BUS] Incoming correlation_id={env.correlation_id}")
+    logger.debug(f"[EXEC-BUS] Raw Payload Keys: {list(raw_payload.keys())}")
+    logger.debug(f"[EXEC-BUS] Has 'context'? {has_context_key}")
+
     try:
         req_env = CortexExecRequest.model_validate(env.model_dump(mode="json"))
     except ValidationError as ve:
+        logger.error(f"Validation failed: {ve}")
         return BaseEnvelope(
             kind="cortex.exec.result",
             source=_source(),
@@ -75,15 +85,22 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
         )
 
+    # [CRITICAL FIX] Ported from main.py
+    # Manually extract context from raw_payload if Pydantic lost it
+    payload_context = raw_payload.get("context") or req_env.payload.context or {}
+
     # Build the execution ctx passed down into step services
     ctx = {
+        **payload_context,
         **(req_env.payload.args.extra or {}),
         "user_id": req_env.payload.args.user_id,
         "trigger_source": req_env.payload.args.trigger_source,
     }
 
     assert svc is not None, "Rabbit service not initialized"
-    res = await runner.run_plan(
+    
+    # CHANGED: runner -> router
+    res = await router.run_plan(
         svc.bus,
         source=_source(),
         req=req_env.payload,

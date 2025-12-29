@@ -16,24 +16,21 @@ from .settings import get_settings
 
 logger = logging.getLogger("orion.cortex.orch")
 
-# [DEBUG] Force stdout flushing
 def debug_print(msg):
+    # Force stdout flush to ensure logs appear immediately
     print(f"[ORCH-DEBUG] {msg}", file=sys.stdout, flush=True)
 
 class CortexOrchRequest(BaseEnvelope):
     kind: str = Field("cortex.orch.request", frozen=True)
     payload: CortexOrchInput
 
-
 class CortexOrchResultPayload(BaseModel):
     ok: bool = True
     result: dict
 
-
 class CortexOrchResult(BaseEnvelope):
     kind: str = Field("cortex.orch.result", frozen=True)
     payload: CortexOrchResultPayload
-
 
 def _cfg() -> ChassisConfig:
     s = get_settings()
@@ -46,23 +43,30 @@ def _cfg() -> ChassisConfig:
         heartbeat_interval_sec=float(s.heartbeat_interval_sec or 10.0),
     )
 
-
 def _source() -> ServiceRef:
     s = get_settings()
     return ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
 
-
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     debug_print(f"Handle entered for kind={env.kind}")
     sref = _source()
+
+    # [CRITICAL] Grab RAW payload to bypass Pydantic filtering
+    raw_payload = env.payload if isinstance(env.payload, dict) else {}
+    
+    # [DEBUG] Prove data existence
+    has_context = "context" in raw_payload
+    debug_print(f"RAW INPUT KEYS: {list(raw_payload.keys())} | Has Context? {has_context}")
 
     try:
         if env.kind == "cortex.orch.request":
             req_env = CortexOrchRequest.model_validate(env.model_dump(mode="json"))
             inp = req_env.payload
         else:
-            inp = CortexOrchInput.model_validate(env.payload if isinstance(env.payload, dict) else {})
+            inp = CortexOrchInput.model_validate(raw_payload)
+        
         debug_print(f"Validation successful. Verb={inp.verb_name}")
+        
     except ValidationError as ve:
         logger.warning("Invalid cortex-orch request: %s", ve)
         return BaseEnvelope(
@@ -76,10 +80,14 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     try:
         s = get_settings()
         debug_print(f"Calling call_cortex_exec on channel={s.channel_exec_request}")
+
+        # [CRITICAL] Force the raw context into the call
+        final_context = raw_payload.get("context") or inp.context or {}
         
-        # [DEBUG] Check bus status
-        if not svc.bus.redis:
-            debug_print("CRITICAL: Bus redis connection is missing!")
+        if final_context:
+            debug_print(f"Context found with {len(final_context.get('messages', []))} messages.")
+        else:
+            debug_print("WARNING: Context is EMPTY in Orchestrator!")
 
         result_payload = await call_cortex_exec(
             svc.bus,
@@ -87,7 +95,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             exec_request_channel=s.channel_exec_request,
             verb_name=inp.verb_name,
             args=inp.args,
-            context=inp.context,
+            context=final_context, # <--- Sending the manually extracted data
             correlation_id=str(env.correlation_id),
             timeout_sec=float(inp.args.get("timeout_sec", 900.0)),
         )
@@ -127,7 +135,7 @@ svc = Rabbit(cfg, request_channel=get_settings().channel_cortex_request, handler
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    debug_print("Starting Cortex Orch Main...")
+    debug_print("Starting Cortex Orch Main (FORCE CONTEXT VERSION)...")
     await svc.start()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -14,7 +15,7 @@ from .router import PlanRouter
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec")
-
+print('fu')
 
 class CortexExecRequest(BaseEnvelope):
     kind: str = Field("cortex.exec.request", frozen=True)
@@ -65,6 +66,15 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload={"ok": False, "error": "service_not_ready"},
         )
 
+    # [DEBUG] RAW LOGGING OF INCOMING DATA
+    raw_payload = env.payload if isinstance(env.payload, dict) else {}
+    has_context_key = "context" in raw_payload
+    raw_context = raw_payload.get("context", {})
+    msg_count = len(raw_context.get("messages", [])) if isinstance(raw_context, dict) else 0
+    
+    logger.warning(f"[EXEC-DEBUG] Raw Payload Keys: {list(raw_payload.keys())}")
+    logger.warning(f"[EXEC-DEBUG] Has 'context'? {has_context_key}. Message Count: {msg_count}")
+
     try:
         req_env = CortexExecRequest.model_validate(env.model_dump(mode="json"))
     except ValidationError as ve:
@@ -76,10 +86,12 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
         )
 
-    # [FIX] Merge the incoming payload.context! 
-    # Previously, we were throwing away the user's message/history.
+    # [CRITICAL FIX]
+    # Manually extract context from raw_payload if Pydantic lost it
+    payload_context = raw_payload.get("context") or req_env.payload.context or {}
+    
     ctx = {
-        **(req_env.payload.context or {}),  # <--- CRITICAL FIX
+        **payload_context,
         **(req_env.payload.args.extra or {}),
         "user_id": req_env.payload.args.user_id,
         "trigger_source": req_env.payload.args.trigger_source,

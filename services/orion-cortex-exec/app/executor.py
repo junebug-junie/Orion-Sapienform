@@ -36,9 +36,20 @@ async def call_step_services(
     logs: List[str] = []
     merged_result: Dict[str, Any] = {}
 
-    prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
+    # DEBUG: Log Context Keys to prove data is present
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
+    logger.info(f"Context Keys available: {list(ctx.keys())}")
+
+    prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
     
+    # DEBUG: Log Rendered Prompt (Truncated)
+    debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
+    logger.info(f"Rendered Prompt: {debug_prompt!r}")
+
+    # Calculate Timeout from Step Definition (default to 60s if missing)
+    # The YAML says 60000ms, so we convert to 60.0s
+    step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
+
     # Instantiate Clients
     llm_client = LLMGatewayClient(bus)
 
@@ -62,29 +73,30 @@ async def call_step_services(
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),
-                        "stream": False,
+                        "stream": False,  # Keep this fix!
                     }
                 )
 
-                # 2. Delegate to Client (No dicts, no strings)
-                logs.append(f"rpc -> LLMGateway via client")
-                result_data = await llm_client.chat(
+                # 2. Delegate to Client WITH TIMEOUT [FIXED]
+                logs.append(f"rpc -> LLMGateway via client (timeout={step_timeout_sec}s)")
+                result_object = await llm_client.chat(
                     source=source,
                     req=request_object,
                     correlation_id=correlation_id,
-                    reply_to=reply_channel
+                    reply_to=reply_channel,
+                    timeout_sec=step_timeout_sec,  # <--- CRITICAL FIX
                 )
                 
-                merged_result[service] = result_data
+                # Explicitly dump to dict for storage in result payload
+                merged_result[service] = result_object.model_dump(mode="json")
                 logs.append(f"ok <- {service}")
 
             else:
-                # --- LEGACY/GENERIC PATH (Still loose for now) ---
-                # ... (keep existing generic logic for non-LLM services if needed) ...
                 logs.append(f"skip <- {service} (generic path not implemented in example)")
 
         except Exception as e:
             logs.append(f"exception <- {service}: {e}")
+            logger.error(f"Service {service} failed: {e}")
             return StepExecutionResult(
                 status="fail",
                 verb_name=step.verb_name,

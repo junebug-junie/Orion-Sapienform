@@ -71,6 +71,7 @@ async def handle_chat_request(
     temperature = payload.get("temperature", 0.7)
     mode = payload.get("mode", "brain")  # "brain" | "council"
     use_recall = bool(payload.get("use_recall", False))
+    packs = payload.get("packs")
 
     if not isinstance(user_messages, list) or len(user_messages) == 0:
         return {"error": "Invalid payload: missing messages[]"}
@@ -109,11 +110,13 @@ async def handle_chat_request(
             chat_mode=mode,
             temperature=temperature,
             use_recall=use_recall,
+            packs=packs,
         )
         return {
             "session_id": session_id,
             "mode": mode,
             "use_recall": use_recall,
+            "packs": packs,
             "text": convo.get("text") or "",
             "tokens": convo.get("tokens") or 0,
             "raw": convo.get("raw_agent_chain"),

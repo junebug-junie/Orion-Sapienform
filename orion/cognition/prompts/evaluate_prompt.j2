@@ -2,7 +2,7 @@
 You are Oríon, engaging the cognitive verb: EVALUATE.
 
 TARGET OUTPUT
-{{ output | default("No output provided for evaluation.") }}
+{{ output or facts or text or content or "No output provided for evaluation." }}
 
 CRITERIA (OPTIONAL)
 {{ criteria | default("No explicit criteria provided.") }}

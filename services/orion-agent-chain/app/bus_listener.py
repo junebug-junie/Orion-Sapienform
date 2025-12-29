@@ -1,120 +1,67 @@
 # services/orion-agent-chain/app/bus_listener.py
-
 from __future__ import annotations
-
 import asyncio
 import logging
-import threading
 from typing import Any, Dict
 
-from orion.core.bus.service import OrionBus
-
+from orion.core.bus.async_service import OrionBusAsync
 from .settings import settings
-from .api import AgentChainRequest, execute_agent_chain
+from .api import execute_agent_chain
+from orion.schemas.agents.schemas import AgentChainRequest
 
 logger = logging.getLogger("agent-chain.bus")
 
-
 def start_agent_chain_bus_listener() -> None:
-    """
-    Start a background thread that listens on `AGENT_CHAIN_REQUEST_CHANNEL`
-    (from UI/Hub) and answers on the ephemeral reply channel.
-    """
     if not settings.orion_bus_enabled:
-        logger.warning(
-            "[agent-chain] OrionBus disabled; not starting bus listener."
-        )
         return
 
-    bus = OrionBus(
-        url=settings.orion_bus_url,
-        enabled=settings.orion_bus_enabled,
-    )
-    if not bus.enabled:
-        logger.error(
-            "[agent-chain] OrionBus not enabled/connected; cannot start listener."
-        )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
         return
 
+    loop.create_task(_async_bus_worker())
+
+async def _async_bus_worker() -> None:
+    bus = OrionBusAsync(url=settings.orion_bus_url)
     request_channel = settings.agent_chain_request_channel
-    logger.info(
-        "[agent-chain] Starting upstream bus listener on %s", request_channel
-    )
 
-    def _worker() -> None:
-        """
-        Blocking worker loop for UI requests.
-        """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    logger.info("[agent-chain] Connecting Async Bus on %s", request_channel)
+    await bus.connect()
 
-        # Subscribe to requests (e.g. from UI)
-        for msg in bus.subscribe(request_channel):
-            data: Dict[str, Any] = msg.get("data") or {}
+    # Use Context Manager correctly
+    async with bus.subscribe(request_channel) as pubsub:
+        # Iterate using the helper
+        async for msg in bus.iter_messages(pubsub):
+            asyncio.create_task(_handle_request(bus, msg))
 
-            reply_channel = data.get("reply_channel")
-            payload = data.get("payload") or {}
-            trace_id = data.get("trace_id")
+async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
+    # Decode raw bytes
+    decoded = bus.codec.decode(raw_msg.get("data"))
+    if not decoded.ok:
+        logger.warning(f"[agent-chain] Decode failed: {decoded.error}")
+        return
 
-            if not reply_channel:
-                logger.warning(
-                    "[agent-chain] bus message missing reply_channel: %r", data
-                )
-                continue
+    env = decoded.envelope
+    reply_channel = env.reply_to
 
-            # 1. Parse Request
-            try:
-                req = AgentChainRequest(**payload)
-            except Exception as e:
-                logger.error(
-                    "[agent-chain] invalid request payload on %s: %s",
-                    request_channel,
-                    e,
-                    exc_info=True,
-                )
-                # Return standard error envelope
-                bus.publish(reply_channel, {
-                    "status": "error",
-                    "error": f"Invalid payload: {e}"
-                })
-                continue
+    # Handle legacy payloads where reply_channel might be inside the dict
+    payload = env.payload or {}
+    if not reply_channel:
+        reply_channel = payload.get("reply_channel")
 
-            # 2. Execute Logic (Calls Planner via downstream bus)
-            try:
-                result = loop.run_until_complete(
-                    execute_agent_chain(req)
-                )
-                
-                # Success Response
-                response_payload = {
-                    "status": "ok",
-                    "data": result.model_dump()
-                }
-                
-            except Exception as e:
-                logger.error(
-                    "[agent-chain] execution failed (trace_id=%s): %s",
-                    trace_id,
-                    e,
-                    exc_info=True,
-                )
-                response_payload = {
-                    "status": "error",
-                    "error": str(e)
-                }
+    if not reply_channel:
+        logger.debug("[agent-chain] No reply channel, ignoring message.")
+        return
 
-            # 3. Reply
-            bus.publish(reply_channel, response_payload)
-            logger.info(
-                "[agent-chain] replied on %s (trace_id=%s, status=%s)",
-                reply_channel,
-                trace_id,
-                response_payload["status"],
-            )
+    try:
+        # Strict Shared Schema
+        req = AgentChainRequest(**payload)
 
-    thread = threading.Thread(
-        target=_worker,
-        name="agent-chain-bus-listener",
-        daemon=True,
-    )
-    thread.start()
+        result = await execute_agent_chain(req)
+        resp = {"status": "ok", "data": result.model_dump(mode="json")}
+        await bus.publish(reply_channel, resp)
+
+    except Exception as e:
+        logger.error("[agent-chain] Execution Error: %s", e)
+        await bus.publish(reply_channel, {"status": "error", "error": str(e)})

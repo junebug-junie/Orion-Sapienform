@@ -9,4 +9,5 @@ verbs:
   - assess_risk
   - goal_formulate
   - evaluate
+  - extract_facts
   #- chat_general # generalist function and used in general chat

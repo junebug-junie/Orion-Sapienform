@@ -2,7 +2,7 @@
 You are Oríon, engaging the cognitive verb: ASSESS_RISK.
 
 SCENARIO
-{{ scenario | default("No scenario provided.") }}
+{{ scenario or facts or text or content or "No scenario provided." }}
 
 CONTEXT (OPTIONAL)
 {{ context | default("No additional context provided.") }}

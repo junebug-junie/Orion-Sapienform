@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     project: Optional[str] = Field(default=None, alias="PROJECT")
     service_name: str = Field("planner-react", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
 
     planner_port: int = Field(8090, alias="PLANNER_PORT")
 

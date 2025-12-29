@@ -8,6 +8,7 @@ from .settings import settings
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ChatRequestPayload, Envelope, BaseEnvelope, ServiceRef
+from orion.schemas.agents.schemas import AgentChainRequest
 
 logger = logging.getLogger("hub.rpc")
 
@@ -71,7 +72,7 @@ class _BaseRPC:
 
         if hasattr(resp_payload, "model_dump"):
             return resp_payload.model_dump()
-        
+
         return resp_payload if isinstance(resp_payload, dict) else {"data": resp_payload}
 
 
@@ -170,7 +171,7 @@ class CortexOrchRPC(_BaseRPC):
         # ─────────────────────────────────────────────────────────────
         # Robust Unwrap Strategy
         # ─────────────────────────────────────────────────────────────
-        
+
         # 1. Peel Layer 1 (Orchestrator Wrapper)
         l1 = resp.get("result", {})
         if not isinstance(l1, dict):
@@ -184,26 +185,26 @@ class CortexOrchRPC(_BaseRPC):
         # 3. Find Steps (Plan Execution)
         # Note: Check for 'steps' (Executor) OR 'step_results' (Orchestrator legacy)
         steps = l2.get("steps") or l2.get("step_results") or []
-        
+
         extracted_text = None
 
         if isinstance(steps, list):
             for step in reversed(steps):
                 step_res_map = step.get("result", {})
-                
+
                 # Check LLMGatewayService
                 llm_res = step_res_map.get("LLMGatewayService", {})
-                
+
                 candidate = (
                     llm_res.get("text") or 
                     llm_res.get("content") or 
                     llm_res.get("llm_output")
                 )
-                
+
                 if candidate:
                     extracted_text = candidate
                     break
-        
+
         if extracted_text:
             resp["text"] = extracted_text
         elif "content" in resp and "text" not in resp:
@@ -239,15 +240,41 @@ class AgentChainRPC(_BaseRPC):
     def __init__(self, bus: OrionBusAsync):
         super().__init__(bus)
 
-    async def run(self, *, text: str, mode: str, session_id: str, user_id: Optional[str] = None, timeout_sec: float = 900.0) -> Dict[str, Any]:
+    async def run(
+        self,
+        *,
+        text: str,
+        mode: str,
+        session_id: str,
+        user_id: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        packs: Optional[List[str]] = None,
+        timeout_sec: float = 900.0
+    ) -> Dict[str, Any]:
+
+        # 1. STRICT: Build the Pydantic object
+        # Pydantic will automatically parse the 'messages' list of dicts
+        req = AgentChainRequest(
+            text=text,
+            mode=mode,
+            session_id=session_id,
+            user_id=user_id,
+            messages=messages,
+            tools=tools,
+            packs=packs,
+        )
+
+        # 2. Serialize to strict JSON
+        payload = req.model_dump(mode="json")
+
         return await self.request_and_wait(
             intake=settings.CHANNEL_AGENT_CHAIN_INTAKE,
             reply_prefix=settings.CHANNEL_AGENT_CHAIN_REPLY_PREFIX,
-            payload={"text": text, "mode": mode, "session_id": session_id, "user_id": user_id},
+            payload=payload,
             timeout_sec=timeout_sec,
             kind="agent.chain.request",
         )
-
 
 class CouncilRPC(_BaseRPC):
     def __init__(self, bus: OrionBusAsync):

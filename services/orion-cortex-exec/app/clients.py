@@ -1,3 +1,4 @@
+# services/orion-cortex-exec/app/clients.py
 from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
@@ -24,8 +25,9 @@ class LLMGatewayClient:
         source: ServiceRef,
         req: ChatRequestPayload,
         correlation_id: str,
-        reply_to: str
-    ) -> Dict[str, Any]:
+        reply_to: str,
+        timeout_sec: Optional[float] = None,  # <--- ADDED ARGUMENT
+    ) -> ChatResponsePayload:
         """
         Sends a typed request, returns typed response.
         """
@@ -38,11 +40,14 @@ class LLMGatewayClient:
             payload=req.model_dump(mode="json"),
         )
 
+        # Use passed timeout, or fall back to global default
+        rpc_timeout = timeout_sec if timeout_sec is not None else self.timeout
+
         msg = await self.bus.rpc_request(
             self.channel,
             env,
             reply_channel=reply_to,
-            timeout_sec=self.timeout
+            timeout_sec=rpc_timeout  # <--- PASSED HERE
         )
 
         decoded = self.bus.codec.decode(msg.get("data"))

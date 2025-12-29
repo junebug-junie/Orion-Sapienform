@@ -411,6 +411,7 @@ async def run_chat_agentic(
     chat_mode: str = "agentic",
     temperature: float = 0.7,
     use_recall: bool = True,
+    packs: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Agentic chat front:
@@ -466,6 +467,7 @@ async def run_chat_agentic(
         user_id=user_id,
         messages=messages_for_chain,
         tools=None,    # verbs/tooldefs plug in here later
+        packs=packs,
         timeout_sec=1500,
     )
 

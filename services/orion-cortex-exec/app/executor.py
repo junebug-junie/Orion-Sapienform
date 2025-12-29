@@ -11,9 +11,9 @@ from jinja2 import Environment
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ServiceRef
 
-from .models import ExecutionStep, StepExecutionResult
+from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from .settings import settings
-from .clients import LLMGatewayClient  # <--- IMPORT THE NEW CLIENT
+from .clients import LLMGatewayClient
 
 logger = logging.getLogger("orion.cortex.exec")
 

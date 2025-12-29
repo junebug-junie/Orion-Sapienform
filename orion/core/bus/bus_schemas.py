@@ -173,14 +173,23 @@ class ChatRequestPayload(BaseModel):
 
 
 class ChatResultPayload(BaseModel):
-    # Avoid pydantic protected namespace warning for fields that include "model_"
-    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
+    """
+    Standard response from LLM Gateway.
+    Supports both 'text' (Gateway default) and 'content' (Legacy).
+    """
+    model_config = ConfigDict(extra="ignore", frozen=True, protected_namespaces=())
 
+    # Gateway returns 'text', we alias it to 'content' for compatibility
+    content: Optional[str] = Field(None, alias="text")
     model_used: Optional[str] = None
-    content: str
+    spark_meta: Optional[Dict[str, Any]] = None
     usage: Dict[str, Any] = Field(default_factory=dict)
     raw: Dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def text(self) -> str:
+        """Helper to safely get the string response."""
+        return self.content or ""
 
 class RecallRequestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -211,3 +220,6 @@ class CollapseMirrorPayload(BaseModel):
     pillar: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     raw: Dict[str, Any] = Field(default_factory=dict)
+
+# Alias for clarity in clients
+ChatResponsePayload = ChatResultPayload

@@ -154,66 +154,69 @@ async def build_memory_digest(
 
 
 def _extract_text_from_orch_reply(raw_reply: Any) -> Optional[str]:
-    """Best-effort extraction of assistant text from Cortex-Orch replies.
-
-    Supports:
-      - legacy hub format (step_results/services/payload/result/llm_output)
-      - new PlanExecutionResult format coming from cortex-exec (steps[].result[service].content)
-      - nested ok/result wrappers from cortex-orch/cortex-exec
-    """
+    """Robust extraction of assistant text from Cortex replies."""
     if not isinstance(raw_reply, dict):
         return None
 
-    # Direct
+    # 1. Direct check
     direct = raw_reply.get("text")
     if isinstance(direct, str) and direct.strip():
         return direct
 
-    # Unwrap nested ok/result wrappers
+    # 2. Unwrap nested result wrappers (ok/result/result...)
     candidate: Any = raw_reply
-    for _ in range(3):
+    for _ in range(4):
         if isinstance(candidate, dict) and "result" in candidate and isinstance(candidate["result"], dict):
             candidate = candidate["result"]
         else:
             break
 
-    # PlanExecutionResult path
+    # 3. PlanExecutionResult path (Standard V2)
+    # Structure: steps[].result[ServiceName].content|text|raw.text
     if isinstance(candidate, dict) and isinstance(candidate.get("steps"), list):
         for step in candidate["steps"]:
-            if not isinstance(step, dict):
-                continue
-            result = step.get("result")
-            if not isinstance(result, dict):
-                continue
-            for svc_payload in result.values():
-                if not isinstance(svc_payload, dict):
-                    continue
-                if isinstance(svc_payload.get("content"), str) and svc_payload["content"].strip():
-                    return svc_payload["content"]
-                inner = svc_payload.get("result")
-                if isinstance(inner, dict) and isinstance(inner.get("content"), str) and inner["content"].strip():
-                    return inner["content"]
+            if not isinstance(step, dict): continue
 
-    # Legacy hub/council-ish path
+            res_map = step.get("result") or {}
+            if not isinstance(res_map, dict): continue
+
+            for svc_name, svc_payload in res_map.items():
+                if not isinstance(svc_payload, dict): continue
+
+                # A. Check 'content' (The Alias)
+                c = svc_payload.get("content")
+                if isinstance(c, str) and c.strip(): return c
+
+                # B. Check 'text' (The Original Key)
+                t = svc_payload.get("text")
+                if isinstance(t, str) and t.strip(): return t
+
+                # C. Check 'raw.text' (The Anomaly from logs)
+                raw = svc_payload.get("raw")
+                if isinstance(raw, dict):
+                    rt = raw.get("text")
+                    if isinstance(rt, str) and rt.strip(): return rt
+
+                # D. Check nested 'result' (Legacy wrapper)
+                inner = svc_payload.get("result")
+                if isinstance(inner, dict):
+                    it = inner.get("content") or inner.get("text")
+                    if isinstance(it, str) and it.strip(): return it
+
+    # 4. Legacy hub/council path
     step_results = raw_reply.get("step_results")
     if isinstance(step_results, list):
         for step in step_results:
-            if not isinstance(step, dict):
-                continue
-            services = step.get("services", [])
-            if not isinstance(services, list):
-                continue
-            for svc in services:
-                if not isinstance(svc, dict):
-                    continue
-                payload = svc.get("payload") or {}
-                if not isinstance(payload, dict):
-                    continue
-                result = payload.get("result") or {}
-                if isinstance(result, dict):
-                    llm_output = result.get("llm_output") or result.get("content")
-                    if isinstance(llm_output, str) and llm_output.strip():
-                        return llm_output
+            if not isinstance(step, dict): continue
+            services = step.get("services") or []
+            if isinstance(services, list):
+                for svc in services:
+                    if not isinstance(svc, dict): continue
+                    payload = svc.get("payload") or {}
+                    res = payload.get("result") or {}
+                    out = res.get("llm_output") or res.get("content")
+                    if isinstance(out, str) and out.strip():
+                        return out
 
     return None
 

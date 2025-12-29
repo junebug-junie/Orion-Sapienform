@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
-from .models import PlanExecutionRequest
+from orion.schemas.cortex.schemas import PlanExecutionRequest
 from .router import PlanRouter
 from .settings import settings
 

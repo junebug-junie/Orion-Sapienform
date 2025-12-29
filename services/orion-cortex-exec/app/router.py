@@ -8,7 +8,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import call_step_services
-from .models import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
+from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
 
 logger = logging.getLogger("orion.cortex.router")
 

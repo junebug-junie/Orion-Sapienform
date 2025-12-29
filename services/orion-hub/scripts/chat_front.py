@@ -15,6 +15,7 @@ from scripts.llm_rpc import LLMGatewayRPC, CortexOrchRPC, AgentChainRPC
 logger = logging.getLogger("orion-hub.chat-front")
 
 DEFAULT_CORTEX_TIMEOUT_MS = getattr(settings, "CORTEX_TIMEOUT_MS", 300000)
+timeout = getattr(settings, "TIMEOUT_SEC", 300.0)
 
 # ─────────────────────────────────────────────
 # 🔎 Recall → Memory Digest (shared for HTTP/WS)
@@ -468,7 +469,7 @@ async def run_chat_agentic(
         messages=messages_for_chain,
         tools=None,    # verbs/tooldefs plug in here later
         packs=packs,
-        timeout_sec=1500,
+        timeout_sec=timeout,
     )
 
     text = (agent_result.get("text") or "").strip()

@@ -45,30 +45,60 @@ router = APIRouter()
 def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
     if not requested: return ""
     requested = requested.strip()
-    valid_ids = {t.tool_id for t in toolset}
-    if requested in valid_ids: return requested
-    no_space = requested.replace(" ", "")
-    if no_space in valid_ids: return no_space
-    snake = requested.replace(" ", "_")
-    if snake in valid_ids: return snake
-    kebab = requested.replace("_", "-")
-    if kebab in valid_ids: return kebab
+    tool_map = {t.tool_id: t for t in toolset}
+    if requested in tool_map: return requested
+    
+    variations = [
+        requested.lower(),
+        requested.replace(" ", ""),
+        requested.replace(" ", "_").lower(),
+        requested.replace("_", "-").lower(),
+        requested.replace("-", "_").lower(),
+    ]
+    for v in variations:
+        if v in tool_map: return v
+        for valid_id in tool_map.keys():
+            if valid_id.lower() == v:
+                return valid_id
+
+    req_lower = requested.lower()
+    for t in toolset:
+        tid = t.tool_id.lower()
+        desc = (t.description or "").lower()
+        if tid in req_lower: return t.tool_id
+        if req_lower in tid and len(req_lower) > 4: return t.tool_id
+        if req_lower in desc: return t.tool_id
+
     return requested
 
 def _repair_json(text: str) -> str:
-    # 1. Strip Markdown Code Blocks
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
         text = text.split("```")[1].split("```")[0].strip()
 
-    # 2. Fix Python constants
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
+
     text = text.replace(" None", " null").replace(":None", ":null")
     text = text.replace(" True", " true").replace(":True", ":true")
     text = text.replace(" False", " false").replace(":False", ":false")
     text = re.sub(r",\s*([}\]])", r"\1", text)
-    
     return text
+
+def _format_schema(schema: Dict[str, Any]) -> str:
+    if not schema or "properties" not in schema:
+        return "{}"
+    props = schema.get("properties", {})
+    required = schema.get("required", [])
+    fields = []
+    for name, meta in props.items():
+        type_str = meta.get("type", "any")
+        req_str = " (required)" if name in required else ""
+        fields.append(f'"{name}": "{type_str}{req_str}"')
+    return "{ " + ", ".join(fields) + " }"
 
 # ─────────────────────────────────────────────
 # Async RPC Helpers
@@ -87,7 +117,11 @@ async def _call_planner_llm(
     exec_channel = f"{settings.exec_request_prefix}:{settings.llm_gateway_service_name}"
     reply_channel = f"{settings.llm_reply_prefix}:{trace_id}"
 
-    tools_description = "\n".join(f"- {t.tool_id}: {t.description or ''}" for t in toolset) or "(none)"
+    tool_lines = []
+    for t in toolset:
+        schema_str = _format_schema(t.input_schema)
+        tool_lines.append(f'- TOOL_ID: "{t.tool_id}"\n  DESCRIPTION: {t.description or "No description"}\n  INPUT_FORMAT: {schema_str}\n')
+    tools_description = "\n".join(tool_lines) or "(none)"
     
     prior_summary = ""
     if prior_trace:
@@ -108,40 +142,40 @@ async def _call_planner_llm(
 
     system_msg = f"""
 You are Orion's internal ReAct planner.
-You must output PURE VALID JSON. No markdown, no text, no explanations outside the JSON.
 
-TOOLS AVAILABLE:
+AVAILABLE TOOLS:
 {tools_description}
+
+CORE INSTRUCTIONS:
+1. **ANSWER THE USER'S INTENT EFFICIENTLY.** 2. **DEFINITION OF DONE:** As soon as you have the information to answer the user, STOP. Set "finish": true.
+3. **DO NOT EXECUTE SUGGESTIONS:** If a tool result says "Mitigation: Consult a doctor", do NOT call a tool to do that. REPORT the mitigation to the user.
+4. **FORMAT:** Output strict JSON. 
+5. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
+   - CORRECT: "action": {{ "tool_id": "assess_risk", "input": {{...}} }}
+   - WRONG: "action": "assess_risk"
 
 JSON FORMAT:
 {{
-  "thought": "Your reasoning here",
-  "finish": true or false,
-  "action": {{ "tool_id": "name", "input": {{ ... }} }} or null,
-  "final_answer": {{ "content": "..." }} or null
+  "thought": "I have the risk assessment results. I will summarize them for the user now.",
+  "finish": true,
+  "action": null,
+  "final_answer": {{ "content": "Summary of findings..." }}
 }}
-
-RULES:
-1. If finish=false, "action" MUST NOT be null.
-2. If finish=true, "final_answer" MUST NOT be null.
-3. Do not generate "Observation:" lines. Only generate the next step JSON.
 """.strip()
 
-    # [FIX] Move JSON reminder to the END of the prompt (Recency Bias)
     user_prompt = f"""
 GOAL: {goal.description}
 
 HISTORY: 
 {last_user}
 
-CONTEXT/FACTS:
+CONTEXT:
 {ext_text}
 
-PAST TRACE:
+TRACE:
 {prior_summary}
 
-INSTRUCTION:
-Based on the TRACE above, generate the NEXT step as a JSON object.
+NEXT STEP (JSON ONLY):
 """.strip()
 
     planner_model = os.environ.get("PLANNER_MODEL") or "llama-3-8b-instruct-q4_k_m"
@@ -165,14 +199,10 @@ Based on the TRACE above, generate the NEXT step as a JSON object.
 
     msg = await bus.rpc_request(exec_channel, env, reply_channel=reply_channel, timeout_sec=float(limits.timeout_seconds))
     decoded = bus.codec.decode(msg.get("data"))
-    
-    if not decoded.ok:
-        raise RuntimeError(f"LLM RPC Error: {decoded.error}")
+    if not decoded.ok: raise RuntimeError(f"LLM RPC Error: {decoded.error}")
 
     resp_payload = decoded.envelope.payload or {}
-    
-    if "error" in resp_payload:
-        raise RuntimeError(f"LLM Gateway returned error: {resp_payload.get('error')} Details: {resp_payload.get('details')}")
+    if "error" in resp_payload: raise RuntimeError(f"LLM Gateway Error: {resp_payload.get('error')}")
 
     try:
         chat_res = ChatResultPayload(**resp_payload)
@@ -180,11 +210,7 @@ Based on the TRACE above, generate the NEXT step as a JSON object.
     except Exception:
         text = resp_payload.get("content") or resp_payload.get("text") or ""
 
-    if not text:
-        raise RuntimeError(f"LLM Gateway returned empty text. Payload: {resp_payload}")
-
-    if "<think>" in text:
-        text = text.split("</think>")[-1].strip()
+    if "<think>" in text: text = text.split("</think>")[-1].strip()
     
     text = _repair_json(text)
     text = text.replace(r"\'", "'")
@@ -193,7 +219,6 @@ Based on the TRACE above, generate the NEXT step as a JSON object.
         return json.loads(text)
     except Exception as e:
         raise RuntimeError(f"Planner LLM returned non-JSON: {text!r}") from e
-
 
 async def _call_cortex_verb(
     bus: OrionBusAsync,
@@ -289,11 +314,6 @@ def _extract_llm_output_from_cortex(raw_cortex: Dict[str, Any]) -> Dict[str, Any
 
     return {"llm_output": text.strip(), "spark_meta": spark_meta}
 
-
-# ─────────────────────────────────────────────
-# Core ReAct loop
-# ─────────────────────────────────────────────
-
 async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
@@ -323,9 +343,15 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
             final = planner_step.get("final_answer")
 
             if finish or (final and not action):
-                content = final.get("content", "") if final else thought
+                raw_content = final.get("content") if final else thought
+                if isinstance(raw_content, (dict, list)):
+                    content = json.dumps(raw_content, ensure_ascii=False)
+                elif raw_content is None:
+                    content = ""
+                else:
+                    content = str(raw_content)
+
                 structured = final.get("structured", {}) if final else {}
-                
                 final_answer = FinalAnswer(content=content, structured=structured)
                 trace.append(TraceStep(step_index=step_index, thought=thought))
                 break
@@ -336,11 +362,21 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 trace.append(TraceStep(step_index=step_index, thought=thought))
                 break
 
-            raw_tool_id = action.get("tool_id")
-            tool_input = action.get("input", {})
+            # [FIX] Handle action as dict OR string (AttributeError fix)
+            if isinstance(action, dict):
+                raw_tool_id = action.get("tool_id")
+                tool_input = action.get("input", {})
+            elif isinstance(action, str):
+                # Fallback: LLM hallucinated 'action': 'assess_risk'
+                logger.warning(f"Step {step_index}: LLM returned string action '{action}' instead of object. Attempting auto-fix.")
+                raw_tool_id = action
+                tool_input = {}
+            else:
+                raw_tool_id = None
+                tool_input = {}
             
             if not raw_tool_id:
-                final_answer = FinalAnswer(content=thought)
+                final_answer = FinalAnswer(content=thought or "Invalid action format.")
                 break
 
             tool_id = _normalize_tool_id(raw_tool_id, payload.toolset)

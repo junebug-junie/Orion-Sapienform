@@ -120,6 +120,12 @@ class Settings(BaseSettings):
         env="RECALL_DEFAULT_MODE",
     )
 
+    # --- Runtimes ----
+    TIMEOUT_SEC: int = Field(
+        default=300,
+        env="TIMEOUT_SEC"
+    )
+
     class Config:
         env_file = ".env"
         extra = "ignore"

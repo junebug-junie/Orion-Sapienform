@@ -1,0 +1,17 @@
+name: analyze_text
+label: Analyze Text
+description: Analyzes raw text to extract structure, sentiment, and intent.
+category: cognition
+version: "1.0"
+
+# Timeout: 60s
+timeout_ms: 60000
+
+services:
+  - LLMGatewayService
+
+steps:
+  - name: analyze
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: analyze_text_prompt.j2

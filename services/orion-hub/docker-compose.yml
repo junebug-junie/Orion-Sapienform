@@ -65,6 +65,8 @@ services:
       - RECALL_DEFAULT_TIME_WINDOW_DAYS=${RECALL_DEFAULT_TIME_WINDOW_DAYS}
       - RECALL_DEFAULT_MODE=${RECALL_DEFAULT_MODE}
 
+      # --- Runtimes ---
+      - TIMEOUT_SEC=${TIMEOUT_SEC}
       - NVIDIA_VISIBLE_DEVICES=all
 
     runtime: nvidia

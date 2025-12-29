@@ -39,7 +39,7 @@ def _cfg() -> ChassisConfig:
         heartbeat_interval_sec=settings.heartbeat_interval_sec,
         health_channel=settings.health_channel,
         error_channel=settings.error_channel,
-        shutdown_grace_sec=settings.shutdown_grace_sec,
+        shutdown_timeout_sec=settings.shutdown_grace_sec,
     )
 
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 import logging
+import json
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from .settings import settings
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import ChatRequestPayload, Envelope, ServiceRef
+from orion.core.bus.bus_schemas import ChatRequestPayload, Envelope, BaseEnvelope, ServiceRef
 
 logger = logging.getLogger("hub.rpc")
 
@@ -17,6 +18,12 @@ def _source() -> ServiceRef:
         node=getattr(settings, "NODE_NAME", None),
         version=settings.SERVICE_VERSION,
     )
+
+
+def _ensure_prefix(s: str) -> str:
+    if not s:
+        return ""
+    return s if s.endswith(":") else f"{s}:"
 
 
 class _BaseRPC:
@@ -30,25 +37,45 @@ class _BaseRPC:
         reply_prefix: str,
         payload: Dict[str, Any],
         timeout_sec: float,
+        kind: str = "rpc.general.request",
         correlation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        msg = dict(payload)
-        if correlation_id:
-            msg["correlation_id"] = correlation_id
-        return await self.bus.rpc_legacy_dict(
+        """
+        Sends a BaseEnvelope (payload is dict) via rpc_request.
+        """
+        corr = correlation_id or str(uuid4())
+        reply_channel = f"{_ensure_prefix(reply_prefix)}{corr}"
+
+        env = BaseEnvelope(
+            kind=kind,
+            source=_source(),
+            correlation_id=corr,
+            reply_to=reply_channel,
+            payload=payload,
+        )
+
+        msg = await self.bus.rpc_request(
             intake,
-            msg,
-            reply_prefix=_ensure_prefix(reply_prefix),
+            env,
+            reply_channel=reply_channel,
             timeout_sec=timeout_sec,
         )
 
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return {"ok": False, "error": str(decoded.error)}
+
+        resp_payload = decoded.envelope.payload
+        if resp_payload is None:
+            return {}
+
+        if hasattr(resp_payload, "model_dump"):
+            return resp_payload.model_dump()
+        
+        return resp_payload if isinstance(resp_payload, dict) else {"data": resp_payload}
+
 
 class LLMGatewayRPC:
-    """
-    RPC wrapper for orion-llm-gateway.
-    Uses Titanium envelope on the wire.
-    """
-
     def __init__(self, bus: OrionBusAsync):
         self.bus = bus
 
@@ -97,7 +124,6 @@ class LLMGatewayRPC:
             return {"ok": False, "error": decoded.error}
 
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
-        # normalize to old keys used by hub
         if "content" in payload and "text" not in payload:
             payload["text"] = payload.get("content")
         payload.setdefault("ok", True)
@@ -127,12 +153,63 @@ class CortexOrchRPC(_BaseRPC):
         if origin_node is not None:
             payload["origin_node"] = origin_node
 
-        return await self.request_and_wait(
+        resp = await self.request_and_wait(
             intake=settings.CORTEX_ORCH_REQUEST_CHANNEL,
             reply_prefix=_ensure_prefix(settings.CORTEX_ORCH_RESULT_PREFIX),
             payload=payload,
             timeout_sec=timeout_sec,
+            kind="cortex.orch.request",
         )
+
+        # [DEBUG] PRINT THE EXACT STRUCTURE
+        try:
+            logger.warning(f"DEBUG_HUB_RESP: {json.dumps(resp, default=str)}")
+        except Exception:
+            logger.warning(f"DEBUG_HUB_RESP (raw): {resp}")
+
+        # ─────────────────────────────────────────────────────────────
+        # Robust Unwrap Strategy
+        # ─────────────────────────────────────────────────────────────
+        
+        # 1. Peel Layer 1 (Orchestrator Wrapper)
+        l1 = resp.get("result", {})
+        if not isinstance(l1, dict):
+            l1 = {}
+
+        # 2. Peel Layer 2 (Executor Wrapper)
+        l2 = l1.get("result", {})
+        if not isinstance(l2, dict):
+            l2 = {}
+
+        # 3. Find Steps (Plan Execution)
+        # Note: Check for 'steps' (Executor) OR 'step_results' (Orchestrator legacy)
+        steps = l2.get("steps") or l2.get("step_results") or []
+        
+        extracted_text = None
+
+        if isinstance(steps, list):
+            for step in reversed(steps):
+                step_res_map = step.get("result", {})
+                
+                # Check LLMGatewayService
+                llm_res = step_res_map.get("LLMGatewayService", {})
+                
+                candidate = (
+                    llm_res.get("text") or 
+                    llm_res.get("content") or 
+                    llm_res.get("llm_output")
+                )
+                
+                if candidate:
+                    extracted_text = candidate
+                    break
+        
+        if extracted_text:
+            resp["text"] = extracted_text
+        elif "content" in resp and "text" not in resp:
+            resp["text"] = resp.get("content")
+
+        return resp
 
     async def run_chat_general(
         self,
@@ -143,7 +220,6 @@ class CortexOrchRPC(_BaseRPC):
         timeout_ms: Optional[int] = None,
         timeout_sec: float = 300.0,
     ) -> Dict[str, Any]:
-        # Backward-compatible convenience wrapper used by chat_front.py
         if timeout_ms is not None:
             timeout_sec = float(timeout_ms) / 1000.0
 
@@ -169,6 +245,7 @@ class AgentChainRPC(_BaseRPC):
             reply_prefix=settings.CHANNEL_AGENT_CHAIN_REPLY_PREFIX,
             payload={"text": text, "mode": mode, "session_id": session_id, "user_id": user_id},
             timeout_sec=timeout_sec,
+            kind="agent.chain.request",
         )
 
 
@@ -182,4 +259,5 @@ class CouncilRPC(_BaseRPC):
             reply_prefix=settings.CHANNEL_COUNCIL_REPLY_PREFIX,
             payload={"question": question, "context": context},
             timeout_sec=timeout_sec,
+            kind="council.request",
         )

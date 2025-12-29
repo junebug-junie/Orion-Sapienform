@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
     step_timeout_ms: int = Field(8000, alias="STEP_TIMEOUT_MS")
 
+    # Explicit channel for LLM
+    channel_llm_intake: str = Field("orion-llm:intake", alias="CHANNEL_LLM_INTAKE")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

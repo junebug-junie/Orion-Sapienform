@@ -6,7 +6,8 @@ from typing import Any, Dict
 
 from pydantic import ValidationError
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope
+# [FIX] Added ServiceRef to imports
+from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
 from .llm_backend import run_llm_chat
@@ -27,11 +28,20 @@ def _cfg() -> ChassisConfig:
     )
 
 
+# [FIX] Helper to replace the missing .service_ref() method
+def _source() -> ServiceRef:
+    return ServiceRef(
+        name=settings.service_name,
+        node=getattr(settings, "node_name", None),
+        version=settings.service_version,
+    )
+
+
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     if env.kind not in ("llm.chat.request", "legacy.message"):
         return BaseEnvelope(
             kind="system.error",
-            source=_cfg().service_ref(),
+            source=_source(),  # [FIX]
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
             payload={"error": f"unsupported_kind:{env.kind}"},
@@ -54,7 +64,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     except ValidationError as ve:
         return BaseEnvelope(
             kind="llm.chat.result",
-            source=_cfg().service_ref(),
+            source=_source(),  # [FIX]
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
             payload={"error": "validation_failed", "details": ve.errors()},
@@ -76,7 +86,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     out = Envelope[ChatResultPayload](
         kind="llm.chat.result",
-        source=_cfg().service_ref(),
+        source=_source(),  # [FIX]
         correlation_id=typed_req.correlation_id,
         causality_chain=typed_req.causality_chain,
         payload=ChatResultPayload(

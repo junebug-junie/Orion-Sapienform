@@ -288,6 +288,7 @@ async def run_chat_general(
     try:
         rpc = CortexOrchRPC(bus)
         raw_reply = await rpc.run_chat_general(
+            messages=messages,
             context=context,
             origin_node=settings.SERVICE_NAME,
             timeout_ms=DEFAULT_CORTEX_TIMEOUT_MS,

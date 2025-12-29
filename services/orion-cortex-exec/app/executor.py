@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from jinja2 import Environment
-from pydantic import BaseModel
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ServiceRef
@@ -31,6 +30,8 @@ def _kind_for(service_name: str) -> str:
 
 
 def _channel_for(service_name: str) -> str:
+    if service_name == "LLMGatewayService":
+        return "orion-llm:intake"
     return f"{settings.exec_request_prefix}:{service_name}"
 
 
@@ -47,7 +48,12 @@ async def call_step_services(
     merged_result: Dict[str, Any] = {}
 
     prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
-    timeout_sec = max(1.0, float(settings.step_timeout_ms) / 1000.0)
+    
+    # [DEBUG] LOUD LOGGING OF PROMPT
+    logger.warning(f"--- EXEC STEP '{step.step_name}' START ---")
+    
+    # [FIX] FORCE 120s TIMEOUT (Bypassing .env for now to ensure we wait long enough)
+    timeout_sec = 120.0 
 
     for service in step.services:
         reply = f"orion:rpc:{uuid4()}"
@@ -55,12 +61,28 @@ async def call_step_services(
         channel = _channel_for(service)
 
         if service == "LLMGatewayService":
+            # 1. Model Selection: Default to None (use active model)
+            req_model = ctx.get("model") or ctx.get("llm_model") or None
+            
+            # 2. Payload Construction: [CRITICAL FIX]
+            # Use the full conversation history from context!
+            messages_payload = ctx.get("messages")
+            
+            if not messages_payload:
+                logger.warning("EXEC: No messages in context! Falling back to prompt.")
+                content = prompt or " "
+                messages_payload = [{"role": "user", "content": content}]
+            else:
+                logger.warning(f"EXEC: Using {len(messages_payload)} messages from history.")
+
             payload = ChatRequestPayload(
-                model=ctx.get("model") or ctx.get("llm_model") or "mistral-7b-instruct",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=float(ctx.get("temperature", 0.7)),
-                max_tokens=int(ctx.get("max_tokens", 512)),
-                stream=False,
+                model=req_model,
+                messages=messages_payload,
+                options={
+                    "temperature": float(ctx.get("temperature", 0.7)),
+                    "max_tokens": int(ctx.get("max_tokens", 512)),
+                    "stream": False,
+                }
             ).model_dump(mode="json")
         else:
             payload = {"prompt": prompt, "context": ctx, "service": service}
@@ -74,7 +96,7 @@ async def call_step_services(
         )
 
         try:
-            logs.append(f"rpc -> {channel} kind={kind}")
+            logs.append(f"rpc -> {channel} kind={kind} timeout={timeout_sec}s")
             msg = await bus.rpc_request(channel, env, reply_channel=reply, timeout_sec=timeout_sec)
             decoded = bus.codec.decode(msg.get("data"))
             if decoded.ok and isinstance(decoded.envelope.payload, dict):

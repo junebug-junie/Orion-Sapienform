@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
+import sys
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -14,6 +16,9 @@ from .settings import get_settings
 
 logger = logging.getLogger("orion.cortex.orch")
 
+# [DEBUG] Force stdout flushing
+def debug_print(msg):
+    print(f"[ORCH-DEBUG] {msg}", file=sys.stdout, flush=True)
 
 class CortexOrchRequest(BaseEnvelope):
     kind: str = Field("cortex.orch.request", frozen=True)
@@ -48,17 +53,16 @@ def _source() -> ServiceRef:
 
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
+    debug_print(f"Handle entered for kind={env.kind}")
     sref = _source()
 
-    # The codec may wrap legacy dict messages into an envelope with kind=legacy.message
-    # and payload containing verb_name/args/reply_channel/correlation_id.
     try:
         if env.kind == "cortex.orch.request":
             req_env = CortexOrchRequest.model_validate(env.model_dump(mode="json"))
             inp = req_env.payload
         else:
-            # legacy: validate against payload dict
             inp = CortexOrchInput.model_validate(env.payload if isinstance(env.payload, dict) else {})
+        debug_print(f"Validation successful. Verb={inp.verb_name}")
     except ValidationError as ve:
         logger.warning("Invalid cortex-orch request: %s", ve)
         return BaseEnvelope(
@@ -69,21 +73,46 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
         )
 
-    # Delegate execution to cortex-exec (cortex-orch is a wrapper).
-    s = get_settings()
-    result_payload = await call_cortex_exec(
-        svc.bus,
-        source=sref,
-        exec_request_channel=s.channel_exec_request,
-        verb_name=inp.verb_name,
-        args=inp.args,
-        context=inp.context,
-        correlation_id=str(env.correlation_id),
-        timeout_sec=float(inp.args.get("timeout_sec", 900.0)),
-    )
+    try:
+        s = get_settings()
+        debug_print(f"Calling call_cortex_exec on channel={s.channel_exec_request}")
+        
+        # [DEBUG] Check bus status
+        if not svc.bus.redis:
+            debug_print("CRITICAL: Bus redis connection is missing!")
 
-    ok_flag = bool(result_payload.get("ok", True)) if isinstance(result_payload, dict) else True
+        result_payload = await call_cortex_exec(
+            svc.bus,
+            source=sref,
+            exec_request_channel=s.channel_exec_request,
+            verb_name=inp.verb_name,
+            args=inp.args,
+            context=inp.context,
+            correlation_id=str(env.correlation_id),
+            timeout_sec=float(inp.args.get("timeout_sec", 900.0)),
+        )
+        debug_print("call_cortex_exec returned")
+        ok_flag = bool(result_payload.get("ok", True)) if isinstance(result_payload, dict) else True
+        
+    except Exception as e:
+        debug_print(f"EXCEPTION in handle: {e}")
+        traceback.print_exc()
+        logger.error(f"Execution failed for verb {inp.verb_name}: {e}")
+        return CortexOrchResult(
+            source=sref,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload=CortexOrchResultPayload(
+                ok=False, 
+                result={
+                    "error": str(e),
+                    "type": type(e).__name__,
+                    "traceback": traceback.format_exc()
+                }
+            ),
+        )
 
+    debug_print("Returning success envelope")
     return CortexOrchResult(
         source=sref,
         correlation_id=env.correlation_id,
@@ -98,6 +127,7 @@ svc = Rabbit(cfg, request_channel=get_settings().channel_cortex_request, handler
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    debug_print("Starting Cortex Orch Main...")
     await svc.start()
 
 

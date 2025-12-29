@@ -297,7 +297,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                     else:
                         try:
-                            bus.publish(channel, chat_log_payload)
+                            await bus.publish(channel, chat_log_payload)
                             logger.info(
                                 "Published WS dialogue to chat history channel %s id=%s",
                                 channel,

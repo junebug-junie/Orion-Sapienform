@@ -24,10 +24,7 @@ class Settings(BaseSettings):
     # --- Orion Bus Integration ---
     ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
     ORION_BUS_URL: str = Field(
-        default=(
-            os.getenv("REDIS_URL")
-            or f"redis://{os.getenv('PROJECT', 'orion-janus')}-bus-core:6379/0"
-        ),
+        default=("redis://100.92.216.81:6379/0"),
         env="ORION_BUS_URL",
     )
 

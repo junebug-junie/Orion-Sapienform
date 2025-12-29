@@ -25,9 +25,8 @@ def chassis_cfg() -> ChassisConfig:
         heartbeat_interval_sec=float(getattr(settings, "HEARTBEAT_INTERVAL_SEC", 10.0)),
         health_channel=getattr(settings, "HEALTH_CHANNEL", "system.health"),
         error_channel=getattr(settings, "ERROR_CHANNEL", "system.error"),
-        shutdown_grace_sec=float(getattr(settings, "SHUTDOWN_GRACE_SEC", 10.0)),
+        shutdown_timeout_sec=float(getattr(settings, "SHUTDOWN_GRACE_SEC", 10.0)),
     )
-
 
 def _query_from_payload(p: RecallRequestPayload) -> RecallQuery:
     return RecallQuery(

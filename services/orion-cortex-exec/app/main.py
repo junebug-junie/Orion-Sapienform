@@ -57,7 +57,6 @@ svc: Rabbit | None = None
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     global svc
     if svc is None:
-        # Should never happen, but prevents weird None crashes during init
         return BaseEnvelope(
             kind="cortex.exec.result",
             source=_source(),
@@ -77,7 +76,10 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
         )
 
+    # [FIX] Merge the incoming payload.context! 
+    # Previously, we were throwing away the user's message/history.
     ctx = {
+        **(req_env.payload.context or {}),  # <--- CRITICAL FIX
         **(req_env.payload.args.extra or {}),
         "user_id": req_env.payload.args.user_id,
         "trigger_source": req_env.payload.args.trigger_source,

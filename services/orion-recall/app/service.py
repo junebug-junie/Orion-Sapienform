@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 from pydantic import ValidationError
 
-from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, RecallRequestPayload, RecallResultPayload
+from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, RecallRequestPayload, RecallResultPayload, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig
 
 from .pipeline import run_recall_pipeline
@@ -30,13 +30,24 @@ def chassis_cfg() -> ChassisConfig:
 
 def _query_from_payload(p: RecallRequestPayload) -> RecallQuery:
     return RecallQuery(
-        text=p.text,
+        query_text=p.query_text,
         max_items=int(p.max_items),
         time_window_days=int(p.time_window_days),
         mode=str(p.mode),
-        tags=list(p.tags or []),
+        tags=list((p.tags or []) or (p.packs or [])),
         phi=None,
         trace_id=p.trace_id,
+        session_id=p.session_id,
+        user_id=p.user_id,
+        packs=list(p.packs or []),
+    )
+
+
+def _source() -> ServiceRef:
+    return ServiceRef(
+        name=settings.SERVICE_NAME,
+        version=settings.SERVICE_VERSION,
+        node=getattr(settings, "ORION_NODE_NAME", None),
     )
 
 
@@ -46,7 +57,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     if env.kind not in ("recall.query.request", "legacy.message"):
         return BaseEnvelope(
             kind="recall.query.result",
-            source=chassis_cfg().service_ref(),
+            source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
             payload={"error": f"unsupported_kind:{env.kind}"},
@@ -64,7 +75,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     except ValidationError as ve:
         return BaseEnvelope(
             kind="recall.query.result",
-            source=chassis_cfg().service_ref(),
+            source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
             payload={"error": "validation_failed", "details": ve.errors()},
@@ -91,9 +102,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     out = Envelope[RecallResultPayload](
         kind="recall.query.result",
-        source=chassis_cfg().service_ref(),
+        source=_source(),
         correlation_id=typed.correlation_id,
         causality_chain=typed.causality_chain,
-        payload=RecallResultPayload(items=fragments, meta={"debug": result.debug}),
+        payload=RecallResultPayload(fragments=fragments, debug=result.debug),
     )
     return out.model_copy(update={"reply_to": None})

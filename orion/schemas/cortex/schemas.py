@@ -100,3 +100,8 @@ class PlanExecutionResult(BaseModel):
     blocked: bool = False
     blocked_reason: Optional[str] = None
     steps: List[StepExecutionResult] = Field(default_factory=list)
+    mode: Optional[str] = None
+    final_text: Optional[str] = None
+    memory_used: bool = False
+    recall_debug: Dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None

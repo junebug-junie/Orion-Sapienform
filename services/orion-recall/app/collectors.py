@@ -32,7 +32,7 @@ def collect_fragments(q: RecallQuery) -> List[Fragment]:
     if settings.RECALL_ENABLE_VECTOR and settings.RECALL_VECTOR_BASE_URL:
         fragments.extend(
             fetch_vector_fragments(
-                query_text=q.text,
+                query_text=q.query_text,
                 time_window_days=q.time_window_days,
                 max_items=settings.RECALL_VECTOR_MAX_ITEMS,
             )
@@ -42,7 +42,7 @@ def collect_fragments(q: RecallQuery) -> List[Fragment]:
     if settings.RECALL_ENABLE_RDF and settings.RECALL_RDF_ENDPOINT_URL:
         fragments.extend(
             fetch_rdf_fragments(
-                query_text=q.text,
+                query_text=q.query_text,
                 max_items=8,
             )
         )

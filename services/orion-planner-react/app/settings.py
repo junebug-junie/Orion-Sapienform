@@ -50,11 +50,11 @@ class Settings(BaseSettings):
 
     # Service Request Channels
     planner_request_channel: str = Field(
-        "orion-planner:request",
+        "orion-exec:request:PlannerReactService",
         alias="PLANNER_REQUEST_CHANNEL",
     )
     planner_result_prefix: str = Field(
-        "orion-planner:result",
+        "orion-exec:result:PlannerReactService",
         alias="PLANNER_RESULT_PREFIX",
     )
 

@@ -13,7 +13,6 @@ import orion  # used to locate installed package path for cognition/verbs
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-# Import shared schemas
 from orion.schemas.cortex.schemas import (
     ExecutionPlan, 
     ExecutionStep, 
@@ -21,6 +20,7 @@ from orion.schemas.cortex.schemas import (
     PlanExecutionArgs
 )
 from .clients import CortexExecClient
+from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -58,7 +58,7 @@ def _load_prompt_content(template_ref: Optional[str]) -> Optional[str]:
     return template_ref
 
 
-def build_plan_for_verb(verb_name: str) -> ExecutionPlan:
+def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan:
     data = _load_verb_yaml(verb_name)
 
     # Defaults
@@ -118,7 +118,103 @@ def build_plan_for_verb(verb_name: str) -> ExecutionPlan:
         timeout_ms=timeout_ms,
         max_recursion_depth=int(data.get("max_recursion_depth", 2) or 2),
         steps=steps,
-        metadata={"verb_yaml": f"{verb_name}.yaml"},
+        metadata={"verb_yaml": f"{verb_name}.yaml", "mode": mode},
+    )
+
+
+def build_agent_plan(verb_name: str) -> ExecutionPlan:
+    """Single-step agent plan that defers to AgentChainService."""
+    return ExecutionPlan(
+        verb_name=verb_name,
+        label=f"{verb_name}-agent",
+        description="Agent chain execution via planner-react",
+        category="agentic",
+        priority="normal",
+        interruptible=True,
+        can_interrupt_others=False,
+        timeout_ms=300000,
+        max_recursion_depth=1,
+        steps=[
+            ExecutionStep(
+                verb_name=verb_name,
+                step_name="agent_chain",
+                description="Delegate to AgentChainService (ReAct)",
+                order=0,
+                services=["AgentChainService"],
+                prompt_template=None,
+                requires_gpu=False,
+                requires_memory=True,
+                timeout_ms=300000,
+            )
+        ],
+        metadata={"mode": "agent"},
+    )
+
+
+def build_council_plan(verb_name: str) -> ExecutionPlan:
+    """Stub council plan; routed to CouncilService."""
+    return ExecutionPlan(
+        verb_name=verb_name,
+        label=f"{verb_name}-council",
+        description="Council supervisor stub",
+        category="council",
+        priority="normal",
+        interruptible=False,
+        can_interrupt_others=False,
+        timeout_ms=300000,
+        max_recursion_depth=1,
+        steps=[
+            ExecutionStep(
+                verb_name=verb_name,
+                step_name="council_supervisor",
+                description="Council supervisor placeholder",
+                order=0,
+                services=["CouncilService"],
+                prompt_template=None,
+                requires_gpu=False,
+                requires_memory=True,
+                timeout_ms=120000,
+            )
+        ],
+        metadata={"mode": "council"},
+    )
+
+
+def _build_plan_for_mode(req: CortexClientRequest) -> ExecutionPlan:
+    if req.mode == "agent":
+        return build_agent_plan(req.verb)
+    if req.mode == "council":
+        return build_council_plan(req.verb)
+    return build_plan_for_verb(req.verb, mode=req.mode)
+
+
+def _build_context(req: CortexClientRequest) -> Dict[str, Any]:
+    return {
+        "messages": [m.model_dump(mode="json") for m in req.context.messages],
+        "session_id": req.context.session_id,
+        "user_id": req.context.user_id,
+        "trace_id": req.context.trace_id,
+        "metadata": req.context.metadata,
+        "packs": req.packs,
+        "mode": req.mode,
+    }
+
+
+def _plan_args(req: CortexClientRequest, correlation_id: str) -> PlanExecutionArgs:
+    recall: RecallDirective = req.recall
+    return PlanExecutionArgs(
+        request_id=req.context.trace_id or correlation_id,
+        user_id=req.context.user_id,
+        trigger_source="cortex-orch",
+        extra={
+            "mode": req.mode,
+            "packs": req.packs,
+            "recall": recall.model_dump(),
+            "options": req.options,
+            "trace_id": req.context.trace_id or correlation_id,
+            "session_id": req.context.session_id,
+            "verb": req.verb,
+        },
     )
 
 
@@ -127,34 +223,20 @@ async def call_cortex_exec(
     *,
     source: ServiceRef,
     exec_request_channel: str,
-    verb_name: str,
-    args: Dict[str, Any],
-    context: Dict[str, Any],
+    client_request: CortexClientRequest,
     correlation_id: str,
     timeout_sec: float = 900.0,
 ) -> Dict[str, Any]:
-    
-    # 1. Logic: Build the Plan Object
-    plan = build_plan_for_verb(verb_name)
+    plan = _build_plan_for_mode(client_request)
+    context = _build_context(client_request)
+    args = _plan_args(client_request, correlation_id)
 
-    # 2. Logic: Build the Request Object (Strict Type Check)
-    request_object = PlanExecutionRequest(
-        plan=plan,
-        args=PlanExecutionArgs(
-            request_id=str(args.get("request_id") or args.get("id") or correlation_id),
-            user_id=args.get("user_id"),
-            trigger_source=str(args.get("trigger_source") or "cortex-orch"),
-            extra=args
-        ),
-        context={**(context or {}), **args}
-    )
+    request_object = PlanExecutionRequest(plan=plan, args=args, context=context)
 
-    # 3. Transport: Delegate to Client
     client = CortexExecClient(bus, exec_request_channel)
-    
     return await client.execute_plan(
         source=source,
         req=request_object,
         correlation_id=correlation_id,
-        timeout_sec=timeout_sec
+        timeout_sec=timeout_sec,
     )

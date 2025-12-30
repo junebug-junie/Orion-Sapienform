@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # ── Orion Bus ─────────────────────────────────────────────────────
     ORION_BUS_ENABLED: bool = True
     ORION_BUS_URL: str = "redis://100.92.216.81:6379/0"
-    RECALL_BUS_INTAKE: str = "orion-recall:request"
+    RECALL_BUS_INTAKE: str = "orion-exec:request:RecallService"
 
     # ── Chassis / Runtime ─────────────────────────────────────────────
     HEARTBEAT_INTERVAL_SEC: float = 10.0

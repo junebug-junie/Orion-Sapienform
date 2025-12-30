@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     # CHANGED: "orion-llm:intake" -> "orion-exec:request:LLMGatewayService"
     channel_llm_intake: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    channel_recall_intake: str = Field("orion-exec:request:RecallService", alias="CHANNEL_RECALL_INTAKE")
+    channel_agent_chain_intake: str = Field("orion-exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
+    channel_planner_intake: str = Field("orion-exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
+    channel_council_intake: str = Field("orion-exec:request:CouncilService", alias="CHANNEL_COUNCIL_INTAKE")
 
     class Config:
         env_file = ".env"

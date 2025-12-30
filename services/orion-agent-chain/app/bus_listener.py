@@ -5,6 +5,7 @@ import logging
 from typing import Any, Dict
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .settings import settings
 from .api import execute_agent_chain
 from orion.schemas.agents.schemas import AgentChainRequest
@@ -35,6 +36,14 @@ async def _async_bus_worker() -> None:
         async for msg in bus.iter_messages(pubsub):
             asyncio.create_task(_handle_request(bus, msg))
 
+
+def _source() -> ServiceRef:
+    return ServiceRef(
+        name=settings.service_name,
+        node=getattr(settings, "node_name", None),
+        version=settings.service_version,
+    )
+
 async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
     # Decode raw bytes
     decoded = bus.codec.decode(raw_msg.get("data"))
@@ -50,6 +59,12 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
     if not reply_channel:
         reply_channel = payload.get("reply_channel")
 
+    if env.kind and env.kind not in ("agent.chain.request", "legacy.message"):
+        logger.warning("[agent-chain] Unsupported kind=%s", env.kind)
+        return
+
+    trace_id = env.correlation_id or payload.get("request_id")
+
     if not reply_channel:
         logger.debug("[agent-chain] No reply channel, ignoring message.")
         return
@@ -59,9 +74,22 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         req = AgentChainRequest(**payload)
 
         result = await execute_agent_chain(req)
-        resp = {"status": "ok", "data": result.model_dump(mode="json")}
+        resp = BaseEnvelope(
+            kind="agent.chain.result",
+            source=_source(),
+            correlation_id=trace_id,
+            causality_chain=env.causality_chain,
+            payload=result.model_dump(mode="json"),
+        )
         await bus.publish(reply_channel, resp)
 
     except Exception as e:
         logger.error("[agent-chain] Execution Error: %s", e)
-        await bus.publish(reply_channel, {"status": "error", "error": str(e)})
+        error_env = BaseEnvelope(
+            kind="agent.chain.result",
+            source=_source(),
+            correlation_id=trace_id,
+            causality_chain=env.causality_chain,
+            payload={"error": str(e)},
+        )
+        await bus.publish(reply_channel, error_env)

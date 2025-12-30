@@ -5,31 +5,27 @@ import asyncio
 import logging
 import traceback
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
 from .orchestrator import call_cortex_exec
-from .models import CortexOrchInput  # CHANGED: Import from models
 from .settings import get_settings
+from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
+from orion.schemas.cortex.schemas import StepExecutionResult
 
 logger = logging.getLogger("orion.cortex.orch")
 
 
 class CortexOrchRequest(BaseEnvelope):
     kind: str = Field("cortex.orch.request", frozen=True)
-    payload: CortexOrchInput
-
-
-class CortexOrchResultPayload(BaseModel):
-    ok: bool = True
-    result: dict
+    payload: CortexClientRequest
 
 
 class CortexOrchResult(BaseEnvelope):
     kind: str = Field("cortex.orch.result", frozen=True)
-    payload: CortexOrchResultPayload
+    payload: CortexClientResult
 
 
 def _cfg() -> ChassisConfig:
@@ -56,14 +52,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     # 1. Ingress Validation
     try:
         raw_payload = env.payload if isinstance(env.payload, dict) else {}
-        
-        if env.kind == "cortex.orch.request":
-            req_env = CortexOrchRequest.model_validate(env.model_dump(mode="json"))
-            inp = req_env.payload
-        else:
-            # Fallback for raw sends
-            inp = CortexOrchInput.model_validate(raw_payload)
-
+        req = CortexClientRequest.model_validate(raw_payload)
     except ValidationError as ve:
         logger.warning(f"Validation failed: {ve}")
         return BaseEnvelope(
@@ -71,46 +60,79 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
+            payload=CortexClientResult(
+                ok=False,
+                mode=raw_payload.get("mode") or "brain",
+                verb=raw_payload.get("verb") or raw_payload.get("verb_name") or "unknown",
+                status="fail",
+                memory_used=False,
+                recall_debug={},
+                steps=[],
+                error={"message": "validation_failed", "details": ve.errors()},
+                correlation_id=str(env.correlation_id),
+                final_text=None,
+            ),
         )
-
-    # 2. Context Extraction (Still needed due to payload nesting variations)
-    final_context = raw_payload.get("context") or inp.context or {}
-    logger.debug(f"Context loaded with {len(final_context.get('messages', []))} messages.")
 
     # 3. Execution
     try:
         s = get_settings()
-        
+
         result_payload = await call_cortex_exec(
             svc.bus,
             source=sref,
             exec_request_channel=s.channel_exec_request,
-            verb_name=inp.verb_name,
-            args=inp.args,
-            context=final_context,
+            client_request=req,
             correlation_id=str(env.correlation_id),
-            timeout_sec=float(inp.args.get("timeout_sec", 900.0)),
+            timeout_sec=float(req.options.get("timeout_sec", 900.0)),
         )
-        
-        ok_flag = bool(result_payload.get("ok", True)) if isinstance(result_payload, dict) else True
-        
+
+        steps = [
+            StepExecutionResult.model_validate(s) if not isinstance(s, StepExecutionResult) else s
+            for s in (result_payload.get("steps") or [])
+        ]
+
+        error_payload = result_payload.get("error")
+        if isinstance(error_payload, str):
+            error_payload = {"message": error_payload}
+
+        client_result = CortexClientResult(
+            ok=(result_payload.get("status") == "success"),
+            mode=req.mode,
+            verb=req.verb,
+            status=result_payload.get("status") or "fail",
+            final_text=result_payload.get("final_text"),
+            memory_used=bool(result_payload.get("memory_used")),
+            recall_debug=result_payload.get("recall_debug") or {},
+            steps=steps,
+            error=error_payload,
+            correlation_id=str(env.correlation_id),
+        )
+
         return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=CortexOrchResultPayload(ok=ok_flag, result=result_payload),
+            payload=client_result,
         )
 
     except Exception as e:
-        logger.exception(f"Execution failed for verb {inp.verb_name}")
+        logger.exception(f"Execution failed for verb {getattr(req, 'verb', 'unknown')}")
         return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=CortexOrchResultPayload(
-                ok=False, 
-                result={"error": str(e), "type": type(e).__name__}
+            payload=CortexClientResult(
+                ok=False,
+                mode=getattr(req, "mode", "brain"),
+                verb=getattr(req, "verb", "unknown"),
+                status="fail",
+                final_text=None,
+                memory_used=False,
+                recall_debug={},
+                steps=[],
+                error={"message": str(e), "type": type(e).__name__},
+                correlation_id=str(env.correlation_id),
             ),
         )
 

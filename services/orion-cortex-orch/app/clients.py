@@ -59,8 +59,9 @@ class CortexExecClient:
         if not decoded.ok:
             raise RuntimeError(f"Exec RPC failed: {decoded.error}")
         
-        if not isinstance(decoded.envelope.payload, dict):
-             # Just in case Exec sends back something weird
-             return decoded.envelope.model_dump(mode="json")
-             
-        return decoded.envelope.payload
+        payload = decoded.envelope.payload
+        if isinstance(payload, dict):
+            return payload.get("result") or payload
+
+        # Just in case Exec sends back something weird
+        return decoded.envelope.model_dump(mode="json")

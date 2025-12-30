@@ -31,7 +31,7 @@ class PhiContext:
 
 @dataclass
 class RecallQuery:
-    text: str = ""
+    query_text: str = ""
     max_items: int = 16
     time_window_days: int = 30
     mode: str = "hybrid"
@@ -40,6 +40,9 @@ class RecallQuery:
 
     trace_id: Optional[str] = None
     source: str = "unknown"
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    packs: List[str] = field(default_factory=list)
 
 
 @dataclass

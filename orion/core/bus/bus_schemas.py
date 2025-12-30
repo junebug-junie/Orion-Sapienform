@@ -223,20 +223,30 @@ class ChatResultPayload(BaseModel):
 
 
 class RecallRequestPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    """
+    Canonical recall boundary. The only acceptable request field for text is `query_text`.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    text: str
-    max_items: int = 8
-    time_window_days: int = 90
+    query_text: str = Field(..., alias="text")
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
     mode: str = "hybrid"
+    time_window_days: int = 90
+    max_items: int = 8
+    packs: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
     trace_id: Optional[str] = None
 
 
 class RecallResultPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    items: List[Dict[str, Any]] = Field(default_factory=list)
-    meta: Dict[str, Any] = Field(default_factory=dict)
+    """
+    Normalized recall response. Exec exposes debug counts, not raw fragments, by default.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    fragments: List[Dict[str, Any]] = Field(default_factory=list, alias="items")
+    debug: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CollapseMirrorPayload(BaseModel):

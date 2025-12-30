@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # RPC intake channel (hub -> cortex-orch)
     channel_cortex_request: str = Field(
-        "orion-cortex:request",
+        "orion-cortex-orch:request",
         validation_alias=AliasChoices("CORTEX_REQUEST_CHANNEL", "ORCH_REQUEST_CHANNEL"),
     )
 

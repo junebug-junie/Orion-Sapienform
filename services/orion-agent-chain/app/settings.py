@@ -36,12 +36,12 @@ class AgentChainSettings(BaseSettings):
 
     # --- Planner / Cortex integration ---
     planner_request_channel: str = Field(
-        "orion-planner:request",
+        "orion-exec:request:PlannerReactService",
         alias="PLANNER_REQUEST_CHANNEL",
     )
 
     planner_result_prefix: str = Field(
-        "orion-planner:result",
+        "orion-exec:result:PlannerReactService",
         alias="PLANNER_RESULT_PREFIX",
     )
 
@@ -50,7 +50,7 @@ class AgentChainSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────
     # The UI will publish here, and we will listen (once we add the listener)
     agent_chain_request_channel: str = Field(
-        "orion-agent-chain:request",
+        "orion-exec:request:AgentChainService",
         alias="AGENT_CHAIN_REQUEST_CHANNEL"
     )
 

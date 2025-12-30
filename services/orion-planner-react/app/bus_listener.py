@@ -5,6 +5,7 @@ import logging
 from typing import Any, Dict
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .settings import settings
 from .api import run_react_loop
 from orion.schemas.agents.schemas import PlannerRequest, PlannerResponse
@@ -60,6 +61,10 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
     if not reply_channel:
         return
 
+    if env.kind and env.kind not in ("agent.planner.request", "legacy.message"):
+        logger.warning("[planner-react] Unsupported kind=%s", env.kind)
+        return
+
     try:
         # STRICT VALIDATION
         planner_req = PlannerRequest(**payload)
@@ -70,7 +75,19 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         if resp.request_id is None:
             resp.request_id = planner_req.request_id or str(trace_id)
 
-        await bus.publish(reply_channel, resp.model_dump(mode="json"))
+        out_env = BaseEnvelope(
+            kind="agent.planner.result",
+            source=ServiceRef(
+                name=settings.service_name,
+                version=settings.service_version,
+                node=settings.node_name,
+            ),
+            correlation_id=trace_id,
+            causality_chain=env.causality_chain,
+            payload=resp.model_dump(mode="json"),
+        )
+
+        await bus.publish(reply_channel, out_env)
 
         logger.info(
             "[planner-react] Finished trace=%s status=%s steps=%d",
@@ -84,4 +101,15 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
             status="error",
             error={"message": str(e)}
         )
-        await bus.publish(reply_channel, error_resp.model_dump(mode="json"))
+        err_env = BaseEnvelope(
+            kind="agent.planner.result",
+            source=ServiceRef(
+                name=settings.service_name,
+                version=settings.service_version,
+                node=settings.node_name,
+            ),
+            correlation_id=trace_id,
+            causality_chain=env.causality_chain,
+            payload=error_resp.model_dump(mode="json"),
+        )
+        await bus.publish(reply_channel, err_env)

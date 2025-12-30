@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
-# Reuse core message type so history is compatible system-wide
 from orion.core.bus.bus_schemas import LLMMessage
 
 # ─────────────────────────────────────────────
@@ -34,7 +33,6 @@ class AgentChainRequest(BaseModel):
     session_id: Optional[str] = None
     user_id: Optional[str] = None
     goal_description: Optional[str] = None
-    # Flexible input: accept dicts (which Pydantic converts) or LLMMessage objects
     messages: Optional[List[LLMMessage]] = None 
     tools: Optional[List[Dict[str, Any]]] = None
     packs: Optional[List[str]] = None
@@ -127,3 +125,90 @@ class PlannerResponse(BaseModel):
     final_answer: Optional[FinalAnswer] = None
     trace: List[TraceStep] = Field(default_factory=list)
     usage: Optional[Usage] = None
+
+
+# ─────────────────────────────────────────────
+# Service: Agent Council (NEW)
+# ─────────────────────────────────────────────
+
+# --- φ + SelfField snapshots ---
+
+class PhiSnapshot(BaseModel):
+    valence: float = 0.0
+    energy: float = 0.0
+    coherence: float = 1.0
+    novelty: float = 0.0
+
+class SelfField(BaseModel):
+    calm: Optional[float] = None
+    stress_load: Optional[float] = None
+    uncertainty: Optional[float] = None
+    focus: Optional[float] = None
+    attunement_to_juniper: Optional[float] = None
+    curiosity: Optional[float] = None
+
+# --- Opinion Structures ---
+
+class AgentOpinion(BaseModel):
+    agent_name: str
+    text: str
+
+class BlinkScores(BaseModel):
+    coherence: float = 0.7
+    faithfulness: float = 0.7
+    usefulness: float = 0.7
+    risk: float = 0.3
+    effort_cost: float = 0.5
+    novelty: float = 0.5
+    overall: float = 0.7
+
+class BlinkJudgement(BaseModel):
+    proposed_answer: str
+    scores: BlinkScores
+    disagreement: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
+
+class AuditVerdict(BaseModel):
+    action: str  # "accept" | "revise_same_round" | "new_round"
+    reason: str
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    override_answer: Optional[str] = None
+
+class RoundResult(BaseModel):
+    round_index: int
+    opinions: List[AgentOpinion]
+
+# --- The Contract ---
+
+class DeliberationRequest(BaseModel):
+    """Request to the Agent Council for a multi-agent decision."""
+    model_config = ConfigDict(extra="ignore")
+
+    event: str = "council_deliberation"
+    trace_id: Optional[str] = None
+    source: Optional[str] = None
+
+    prompt: str
+    history: Optional[List[Dict[str, Any]]] = None
+    tags: Optional[List[str]] = None
+    universe: Optional[str] = None
+
+    response_channel: Optional[str] = None
+
+    # Context injections
+    phi: Optional[PhiSnapshot] = None
+    self_field: Optional[SelfField] = None
+    persona_state: Optional[Dict[str, Any]] = None
+
+
+class CouncilResult(BaseModel):
+    """Final output from the Council."""
+    model_config = ConfigDict(extra="ignore")
+
+    trace_id: str
+    prompt: str
+    final_text: str
+    opinions: List[AgentOpinion]
+    blink: BlinkJudgement
+    verdict: AuditVerdict
+    meta: Dict[str, Any] = Field(default_factory=dict)

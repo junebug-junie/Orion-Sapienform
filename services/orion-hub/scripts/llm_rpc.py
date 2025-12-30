@@ -1,3 +1,4 @@
+# services/orion-hub/scripts/llm_rpc.py
 from __future__ import annotations
 import logging
 import json
@@ -280,6 +281,38 @@ class CouncilRPC(_BaseRPC):
     def __init__(self, bus: OrionBusAsync):
         super().__init__(bus)
 
+    # [FIX] Implemented call_llm to match api_routes.py interface
+    async def call_llm(
+        self,
+        *,
+        prompt: str,
+        history: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        timeout_sec: float = 900.0,
+    ) -> Dict[str, Any]:
+        """
+        Sends a DeliberationRequest to the Agent Council.
+        """
+        # Build payload matching orion-agent-council/app/models.py:DeliberationRequest
+        payload = {
+            "event": "council_deliberation",
+            "prompt": prompt,
+            "history": history,
+            "tags": [], # Optional tags
+            "universe": "core", # Default universe
+            # Note: We can pass temperature if we extended DeliberationRequest, 
+            # but standard Council usually manages its own agent temps.
+        }
+
+        return await self.request_and_wait(
+            intake=settings.CHANNEL_COUNCIL_INTAKE,
+            reply_prefix=settings.CHANNEL_COUNCIL_REPLY_PREFIX,
+            payload=payload,
+            timeout_sec=timeout_sec,
+            kind="council.request",
+        )
+
+    # Kept for backward compatibility if any other services use it
     async def ask(self, *, question: str, context: Dict[str, Any], timeout_sec: float = 900.0) -> Dict[str, Any]:
         return await self.request_and_wait(
             intake=settings.CHANNEL_COUNCIL_INTAKE,

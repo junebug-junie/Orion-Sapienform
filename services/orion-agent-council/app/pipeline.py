@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, List
 from uuid import uuid4
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
 
 from .settings import settings
 from .models import DeliberationRequest, RoundResult, BlinkJudgement, AuditVerdict
@@ -20,33 +20,27 @@ logger = logging.getLogger("agent-council.pipeline")
 
 @dataclass
 class DeliberationContext:
-    bus: OrionBus
+    bus: OrionBusAsync
     llm: LLMClient
     req: DeliberationRequest
     trace_id: str
 
     round_index: int = 0
-
     round_result: Optional[RoundResult] = None
     judgement: Optional[BlinkJudgement] = None
     verdict: Optional[AuditVerdict] = None
-
     last_round: Optional[RoundResult] = None
     last_judgement: Optional[BlinkJudgement] = None
-
     stop: bool = False
 
 
 class DeliberationPipeline:
     """
-    Orchestrates the *shape* of deliberation:
-
+    Orchestrates the deliberation flow:
       loop:
         stages (agents -> arbiter -> auditor)
-        policy decides what to do
-        publisher sends output
-
-    It does NOT know about prompt strings or persona wiring.
+        policy decides (accept, revise, delegate)
+        publisher sends final output
     """
 
     def __init__(
@@ -61,24 +55,22 @@ class DeliberationPipeline:
         self.policy = policy
         self.publisher = publisher
 
-    def run(self, req: DeliberationRequest) -> None:
+    async def run(self, req: DeliberationRequest) -> None:
         ctx = self.ctx
-
-        # ensure trace_id
         if not req.trace_id:
             req.trace_id = ctx.trace_id
 
         while ctx.round_index < settings.max_rounds and not ctx.stop:
-            # 1) Run the stage chain once: agents → arbiter → auditor
+            # 1) Run the stage chain: agents → arbiter → auditor
             for stage in self.stages:
-                stage.run(ctx)
+                await stage.run(ctx)  # Natively await async stages
                 if ctx.stop:
                     break
 
             if ctx.stop or ctx.verdict is None:
                 break
 
-            # 2) Ask policy what to do next
+            # 2) Apply Council Policy to the result
             decision = self.policy.decide(ctx)
 
             logger.info(
@@ -88,18 +80,23 @@ class DeliberationPipeline:
                 ctx.round_index,
             )
 
+            if decision is CouncilDecision.DELEGATE:
+                # [PHASE 2.3] Return signal for Hub to hand off to Planner
+                await self.publisher.publish_final(ctx, mode="delegate")
+                return
+
             if decision is CouncilDecision.ACCEPT:
-                self.publisher.publish_final(ctx)
+                await self.publisher.publish_final(ctx)
                 return
 
             if decision is CouncilDecision.REVISE_SAME_ROUND:
                 self.policy.prepare_revision(ctx)
-                # re-run arbiter + auditor with same opinions
+                # Re-run arbiter + auditor with revised prompt constraints
                 for stage in self.stages[1:]:
-                    stage.run(ctx)
+                    await stage.run(ctx)
                     if ctx.stop:
                         break
-                self.publisher.publish_final(ctx)
+                await self.publisher.publish_final(ctx)
                 return
 
             if decision is CouncilDecision.NEW_ROUND:
@@ -107,34 +104,15 @@ class DeliberationPipeline:
                 ctx.round_index += 1
                 continue
 
-            # unknown → fallback to accept
-            logger.warning(
-                "[%s] Unknown decision=%s; treating as ACCEPT.",
-                ctx.trace_id,
-                decision,
-            )
-            self.publisher.publish_final(ctx)
+            # Fallback
+            await self.publisher.publish_final(ctx)
             return
 
-        # 3) Hit max rounds or stop flag
-        logger.warning(
-            "[%s] Max rounds (%d) reached or stop flag set; publishing best-effort.",
-            ctx.trace_id,
-            settings.max_rounds,
-        )
-        self.publisher.publish_best_effort(ctx)
+        logger.warning("[%s] Max rounds reached; publishing best-effort.", ctx.trace_id)
+        await self.publisher.publish_final(ctx)
 
 
-def build_default_pipeline(bus: OrionBus, req: DeliberationRequest) -> DeliberationPipeline:
-    """
-    Factory used by DeliberationRouter.
-
-    Later you can branch here by:
-      - req.universe
-      - req.tags
-      - req.source
-    to build different stage stacks / policies per universe.
-    """
+def build_default_pipeline(bus: OrionBusAsync, req: DeliberationRequest) -> DeliberationPipeline:
     trace_id = req.trace_id or str(uuid4())
     llm = LLMClient(bus)
     ctx = DeliberationContext(bus=bus, llm=llm, req=req, trace_id=trace_id)
@@ -145,7 +123,9 @@ def build_default_pipeline(bus: OrionBus, req: DeliberationRequest) -> Deliberat
         AuditorStage(),
     ]
 
-    policy = CouncilPolicy()
-    publisher = CouncilPublisher()
-
-    return DeliberationPipeline(ctx=ctx, stages=stages, policy=policy, publisher=publisher)
+    return DeliberationPipeline(
+        ctx=ctx,
+        stages=stages,
+        policy=CouncilPolicy(),
+        publisher=CouncilPublisher()
+    )

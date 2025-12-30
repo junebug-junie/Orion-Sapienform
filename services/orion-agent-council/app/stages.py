@@ -20,7 +20,7 @@ logger = logging.getLogger("agent-council.stages")
 
 
 class Stage:
-    def run(self, ctx: dict) -> None:  # pragma: no cover
+    async def run(self, ctx: dict) -> None:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -29,7 +29,7 @@ class Stage:
 # ─────────────────────────────────────────────
 
 class AgentRoundStage(Stage):
-    def run(self, ctx: dict) -> None:
+    async def run(self, ctx: dict) -> None:
         req = ctx.req
         agents = get_agents_for_universe(req.universe)
         persona_state_map = req.persona_state or {}
@@ -38,9 +38,12 @@ class AgentRoundStage(Stage):
 
         opinions: List[AgentOpinion] = []
 
+        # [TODO] Parallelize this loop for speed
         for agent in agents:
             state_for_agent = persona_state_map.get(agent.name) if persona_state_map else None
-            text = ctx.llm.generate(
+            
+            # [FIX] Await async generation
+            text = await ctx.llm.generate(
                 agent=agent,
                 prompt=req.prompt,
                 history=req.history or [],
@@ -73,7 +76,7 @@ class AgentRoundStage(Stage):
 # ─────────────────────────────────────────────
 
 class ArbiterStage(Stage):
-    def run(self, ctx: dict) -> None:
+    async def run(self, ctx: dict) -> None:
         req = ctx.req
         round_result = ctx.round_result
         if round_result is None:
@@ -84,7 +87,8 @@ class ArbiterStage(Stage):
         chair = get_chair_agent()
         prompt = build_chair_prompt(req, round_result)
 
-        raw = ctx.llm.generate(
+        # [FIX] Await async generation
+        raw = await ctx.llm.generate(
             agent=chair,
             prompt=prompt,
             history=None,
@@ -128,7 +132,7 @@ class ArbiterStage(Stage):
 # ─────────────────────────────────────────────
 
 class AuditorStage(Stage):
-    def run(self, ctx: dict) -> None:
+    async def run(self, ctx: dict) -> None:
         req = ctx.req
         round_result = ctx.round_result
         judgement = ctx.judgement
@@ -141,7 +145,8 @@ class AuditorStage(Stage):
         auditor = get_auditor_agent()
         prompt = build_auditor_prompt(req, round_result, judgement)
 
-        raw = ctx.llm.generate(
+        # [FIX] Await async generation
+        raw = await ctx.llm.generate(
             agent=auditor,
             prompt=prompt,
             history=None,

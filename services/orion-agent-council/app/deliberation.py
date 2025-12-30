@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
 
 from .models import DeliberationRequest
 from .pipeline import build_default_pipeline
@@ -14,17 +14,13 @@ logger = logging.getLogger("agent-council.deliberation")
 
 class DeliberationRouter:
     """
-    Very thin router/factory.
-
-    - parse incoming payload
-    - build pipeline
-    - run it
+    Async router/factory.
     """
 
-    def __init__(self, bus: OrionBus) -> None:
+    def __init__(self, bus: OrionBusAsync) -> None:
         self.bus = bus
 
-    def handle(self, raw_payload: Dict[str, Any]) -> None:
+    async def handle(self, raw_payload: Dict[str, Any]) -> None:
         try:
             req = DeliberationRequest(**raw_payload)
         except Exception as e:
@@ -40,4 +36,4 @@ class DeliberationRouter:
             req.universe or "core",
         )
 
-        pipeline.run(req)
+        await pipeline.run(req) # [FIX] Await async pipeline

@@ -29,6 +29,22 @@ def _make_agent(
         use_phi=True,
     )
 
+def get_executive_personas() -> List[AgentConfig]:
+    """
+    The Director persona for high-level scope and delegation.
+    """
+    return [
+        _make_agent(
+            "Director",
+            (
+                "You determine scope. If external action, tool use, or complex planning is needed, "
+                "you do NOT attempt to answer. You DELEGATE to the Planner by setting the decision "
+                "to 'DELEGATE' in your output."
+            ),
+            tags=["executive", "delegation", "scope"],
+            temperature=0.3,
+        ),
+    ]
 
 # ─────────────────────────────────────────────
 # Core “always useful” inner voices
@@ -174,6 +190,7 @@ def get_all_personas() -> List[AgentConfig]:
     """
     personas: List[AgentConfig] = []
     personas.extend(get_core_personas())
+    personas.extend(get_executive_personas())
     personas.extend(get_relational_personas())
     personas.extend(get_safety_personas())
     personas.extend(get_explore_personas())

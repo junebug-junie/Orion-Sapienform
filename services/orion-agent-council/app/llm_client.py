@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Dict, Optional
 from uuid import uuid4
-import time
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from .settings import settings
 from .models import AgentConfig, PhiSnapshot, SelfField
@@ -15,94 +16,16 @@ from .prompt_factory import PromptContext, PromptFactory
 logger = logging.getLogger("agent-council.llm")
 
 
-class BusRPCClient:
-    """
-    Generic request/response helper over OrionBus.
-
-    This is agnostic to LLM vs anything else; council just happens to
-    use it for LLM Gateway right now.
-    """
-
-    def __init__(
-        self,
-        bus: OrionBus,
-        intake_channel: str,
-        reply_prefix: str,
-        timeout_sec: float,
-    ) -> None:
-        self.bus = bus
-        self.intake_channel = intake_channel
-        self.reply_prefix = reply_prefix
-        self.timeout_sec = timeout_sec
-
-    def request(self, envelope: Dict, correlation_id: str) -> Optional[Dict]:
-        reply_channel = f"{self.reply_prefix}:{correlation_id}"
-
-        # Attach correlation + reply_channel to the envelope
-        envelope = {
-            **envelope,
-            "correlation_id": correlation_id,
-            "reply_channel": reply_channel,
-        }
-
-        # --- SUBSCRIBE FIRST ---
-        sub = self.bus.raw_subscribe(reply_channel)
-
-        # --- THEN PUBLISH ---
-        self.bus.publish(self.intake_channel, envelope)
-        logger.info(
-            "[%s] BusRPC -> %s (reply=%s)",
-            correlation_id,
-            self.intake_channel,
-            reply_channel,
-        )
-
-        start = time.monotonic()
-
-        for msg in sub:
-            if msg.get("type") != "message":
-                continue
-
-            data = msg.get("data") or {}
-            if data.get("correlation_id") != correlation_id:
-                continue
-
-            logger.info("[%s] BusRPC got matching reply", correlation_id)
-            return data
-
-        # If the generator exits without us returning, treat as timeout
-        if time.monotonic() - start > self.timeout_sec:
-            logger.warning(
-                "[%s] BusRPC timed out waiting on %s",
-                correlation_id,
-                reply_channel,
-            )
-        return None
-
-
 class LLMClient:
     """
-    Council-facing LLM client. It:
-
-      - builds PromptContext
-      - creates LLM body with PromptFactory
-      - wraps it in a gateway envelope
-      - retrieves `payload.text` from the reply
-
-    NOTE:
-      - Model/backend are now chosen entirely by LLM Gateway via profiles/defaults.
+    Async Council-facing LLM client.
+    Uses OrionBusAsync.rpc_request for reliable request/reply.
     """
 
-    def __init__(self, bus: OrionBus) -> None:
+    def __init__(self, bus: OrionBusAsync) -> None:
         self.bus = bus
-        self.rpc = BusRPCClient(
-            bus=bus,
-            intake_channel=settings.llm_intake_channel,
-            reply_prefix=settings.llm_reply_prefix,
-            timeout_sec=settings.council_llm_timeout_sec,
-        )
 
-    def generate(
+    async def generate(
         self,
         agent: AgentConfig,
         *,
@@ -125,29 +48,28 @@ class LLMClient:
 
         messages = PromptFactory.build_messages(agent, ctx)
 
-        body = {
-            # 🚫 NO model / backend here – let Gateway/profiles decide
+        # [FIX] Simplified Payload: No more nested 'body'
+        payload_dict = {
             "messages": messages,
             "options": {
                 "temperature": agent.temperature,
             },
+            "model": None,   
+            "profile": None, 
             "stream": False,
-            "return_json": False,
-            "trace_id": correlation_id,
-            "source": source,
-            # Optional hints for Gateway if/when you want them:
-            "verb": "council_chat",
-            "profile_name": None,
+            "user_id": None,
+            "session_id": None, 
         }
 
-        envelope = {
-            "event": "chat",
-            "service": settings.llm_service_name,
-            "payload": {
-                "body": body,
-                "agent_name": agent.name,
-            },
-        }
+        reply_channel = f"{settings.llm_reply_prefix}:{correlation_id}"
+        
+        envelope = BaseEnvelope(
+            kind="llm.chat.request",
+            source=ServiceRef(name=settings.service_name, version=settings.service_version),
+            correlation_id=correlation_id,
+            reply_to=reply_channel,
+            payload=payload_dict
+        )
 
         logger.info(
             "[%s] LLMClient.generate -> agent='%s' via %s",
@@ -156,17 +78,40 @@ class LLMClient:
             settings.llm_intake_channel,
         )
 
-        reply = self.rpc.request(envelope, correlation_id)
-        if not reply:
-            logger.warning(
-                "[%s] LLMClient timeout waiting for reply for agent '%s'",
-                correlation_id,
-                agent.name,
-            )
-            return "[AgentCouncil Error] LLM gateway timeout"
+        # RPC Call
+        msg = await self.bus.rpc_request(
+            request_channel=settings.llm_intake_channel,
+            envelope=envelope,
+            reply_channel=reply_channel,
+            timeout_sec=settings.council_llm_timeout_sec,
+        )
 
-        payload = reply.get("payload") or {}
-        text = (payload.get("text") or "").strip()
+        # Decode
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            logger.warning("[%s] LLMClient decode error: %s", correlation_id, decoded.error)
+            return "[AgentCouncil Error] Decode failure"
+
+        resp_payload = decoded.envelope.payload or {}
+        
+        # [FIX] Robust extraction logic
+        text = resp_payload.get("content")
+        
         if not text:
-            logger.warning("[%s] LLMClient empty text for agent '%s'", correlation_id, agent.name)
-        return text
+            text = resp_payload.get("text")
+            
+        if not text:
+            if "payload" in resp_payload and isinstance(resp_payload["payload"], dict):
+                text = resp_payload["payload"].get("text") or resp_payload["payload"].get("content")
+            elif "result" in resp_payload and isinstance(resp_payload["result"], dict):
+                text = resp_payload["result"].get("text") or resp_payload["result"].get("content")
+
+        if not text:
+            logger.error(
+                "[%s] LLMClient EMPTY TEXT. Raw Response keys: %s", 
+                correlation_id, 
+                list(resp_payload.keys())
+            )
+            return ""
+            
+        return text.strip()

@@ -203,8 +203,8 @@ CORTEX_REQUEST_CHANNEL=orion-cortex:request
 CORTEX_RESULT_PREFIX=orion-cortex:result
 
 # Agent Chain / Council
-AGENT_CHAIN_REQUEST_CHANNEL=orion-agent-chain:request
-AGENT_CHAIN_REQUEST_PREFIX=orion-agent-chain:result
+AGENT_CHAIN_REQUEST_CHANNEL=orion-exec:request:AgentChainService
+AGENT_CHAIN_RESULT_PREFIX=orion-exec:result:AgentChainService
 CHANNEL_COUNCIL_INTAKE=orion:agent-council:intake
 CHANNEL_COUNCIL_REPLY_PREFIX=orion:agent-council:reply
 ```
@@ -231,11 +231,11 @@ Workers use the same `ORION_BUS_URL` (usually a Tailscale IP + port to the Redis
    - Mode = `agentic`
    - Selected `packs` (e.g., `["executive_pack"]`)
 2. Publishes an RPC envelope to **Agent Chain**:
-   - Bus event: `AGENT_CHAIN_REQUEST_CHANNEL` = `orion-agent-chain:request`
-   - Includes `reply_channel` = `orion-agent-chain:result:<trace_id>`
+   - Bus event: `AGENT_CHAIN_REQUEST_CHANNEL` = `orion-exec:request:AgentChainService`
+   - Includes `reply_channel` = `orion-exec:result:AgentChainService:<trace_id>`
 3. Agent Chain:
    - Resolves packs → verbs → `ToolDef`s via `orion-cognition` packs.
-   - Calls **Planner React** via bus (`orion-planner:request` / `orion-planner:result:*`).
+   - Calls **Planner React** via bus (`orion-exec:request:PlannerReactService` / `orion-exec:result:PlannerReactService:*`).
    - Planner uses **Cortex-Orch** to execute verbs on the mesh.
 4. Agent Chain returns `final_answer` → Hub → browser (and TTS if enabled).
 

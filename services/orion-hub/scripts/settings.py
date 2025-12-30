@@ -92,8 +92,8 @@ class Settings(BaseSettings):
         env="AGENT_CHAIN_REQUEST_CHANNEL"
     )
     CHANNEL_AGENT_CHAIN_REPLY_PREFIX: str = Field(
-        default="orion-agent-chain:result",
-        env="AGENT_CHAIN_REQUEST_PREFIX"
+        default="orion-exec:result:AgentChainService",
+        env="AGENT_CHAIN_RESULT_PREFIX"
     )
 
     # --- Recall / RAG Integration (new) ---
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     )
 
     CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = Field(
-        default="orion:recall:reply",
+        default="orion-exec:result:RecallService",
         env="CHANNEL_RECALL_DEFAULT_REPLY_PREFIX",
     )
 

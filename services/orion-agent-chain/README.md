@@ -29,13 +29,13 @@ sequenceDiagram
     Client->>Chain: POST /chain/run { text, mode, packs/tools }
     Note over Chain: Validate + build PlannerRequest dict
 
-    Chain->>Bus: PUBLISH orion-planner:request
+    Chain->>Bus: PUBLISH orion-exec:request:PlannerReactService
     Note over Bus: Async Event Routing
 
     Bus->>Planner: Deliver Request
     Note over Planner: Execute ReAct Loop + Cortex verbs
 
-    Planner->>Bus: PUBLISH orion-planner:result:<uuid>
+    Planner->>Bus: PUBLISH orion-exec:result:PlannerReactService:<uuid>
     Bus->>Chain: Deliver Result
 
     Chain->>Client: 200 OK { text, structured, planner_raw }
@@ -146,12 +146,12 @@ Configuration is supplied through **.env** and handled internally by `settings.p
 | `AGENT_CHAIN_PORT` | `8092` | HTTP API port |
 | `ORION_BUS_ENABLED` | `true` | Master switch for Redis connectivity |
 | `ORION_BUS_URL` | `redis://…` | Orion Bus connection URL |
-| `PLANNER_REQUEST_CHANNEL` | `orion-planner:request` | Channel Planner listens on |
-| `PLANNER_RESULT_PREFIX` | `orion-planner:result` | Result channel prefix |
+| `PLANNER_REQUEST_CHANNEL` | `orion-exec:request:PlannerReactService` | Channel Planner listens on |
+| `PLANNER_RESULT_PREFIX` | `orion-exec:result:PlannerReactService` | Result channel prefix |
 | `AGENT_CHAIN_MAX_STEPS` | `6` | Safety limit for ReAct loops |
 | `AGENT_CHAIN_TIMEOUT_SECONDS` | `90` | RPC timeout for Planner RPC |
-| `AGENT_CHAIN_REQUEST_CHANNEL` | `orion-agent-chain:request` | Upstream bus channel Hub publishes to |
-| `AGENT_CHAIN_RESULT_PREFIX` | `orion-agent-chain:result` | Upstream reply prefix for bus RPC |
+| `AGENT_CHAIN_REQUEST_CHANNEL` | `orion-exec:request:AgentChainService` | Upstream bus channel Exec publishes to |
+| `AGENT_CHAIN_RESULT_PREFIX` | `orion-exec:result:AgentChainService` | Upstream reply prefix for bus RPC |
 
 ---
 
@@ -178,7 +178,7 @@ docker logs -f orion-athena-agent-chain
 | `planner_rpc.py` | Implements Bus‑RPC request/response pattern to planner-react |
 | `tool_registry.py` | Bridges Orion packs/verbs into `ToolDef` objects for Planner |
 | `settings.py` | Pydantic settings loader for env config |
-| `bus_listener.py` | Background thread that listens on `orion-agent-chain:request` and replies on `orion-agent-chain:result:<trace_id>` |
+| `bus_listener.py` | Background thread that listens on `orion-exec:request:AgentChainService` and replies on `orion-exec:result:AgentChainService:<trace_id>` |
 
 ---
 

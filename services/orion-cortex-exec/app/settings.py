@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # Downstream routing (exec -> step services)
     exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
+    exec_result_prefix: str = Field("orion-exec:result", alias="EXEC_RESULT_PREFIX")
     
     # CHANGED: 8000 -> 60000 (60s). LLMs need time.
     step_timeout_ms: int = Field(60000, alias="STEP_TIMEOUT_MS")

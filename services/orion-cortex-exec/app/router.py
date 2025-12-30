@@ -49,6 +49,11 @@ class PlanRunner:
         recall_cfg = extra.get("recall") or ctx.get("recall") or {}
         recall_required = bool(recall_cfg.get("required", False))
         recall_enabled = bool(recall_cfg.get("enabled", True))
+        options = extra.get("options") or ctx.get("options") or {}
+        if isinstance(options, dict):
+            ctx.setdefault("options", options)
+            for key, val in options.items():
+                ctx.setdefault(key, val)
 
         ctx["verb"] = plan.verb_name
         needs_memory = recall_enabled or any(s.requires_memory for s in plan.steps)

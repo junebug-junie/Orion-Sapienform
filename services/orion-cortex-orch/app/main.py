@@ -82,6 +82,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             svc.bus,
             source=sref,
             exec_request_channel=s.channel_exec_request,
+            exec_result_prefix=s.channel_exec_result_prefix,
             client_request=req,
             correlation_id=str(env.correlation_id),
             timeout_sec=float(req.options.get("timeout_sec", 900.0)),

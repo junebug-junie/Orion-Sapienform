@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import traceback
-
 from pydantic import BaseModel, Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+from orion.core.bus.contracts import KINDS
 
 from .orchestrator import call_cortex_exec
 from .models import CortexOrchInput  # CHANGED: Import from models
@@ -18,7 +17,7 @@ logger = logging.getLogger("orion.cortex.orch")
 
 
 class CortexOrchRequest(BaseEnvelope):
-    kind: str = Field("cortex.orch.request", frozen=True)
+    kind: str = Field(KINDS.cortex_orch_request, frozen=True)
     payload: CortexOrchInput
 
 
@@ -28,7 +27,7 @@ class CortexOrchResultPayload(BaseModel):
 
 
 class CortexOrchResult(BaseEnvelope):
-    kind: str = Field("cortex.orch.result", frozen=True)
+    kind: str = Field(KINDS.cortex_orch_result, frozen=True)
     payload: CortexOrchResultPayload
 
 

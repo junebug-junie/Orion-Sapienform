@@ -81,7 +81,7 @@ class PlanExecutionRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────
 
 class StepExecutionResult(BaseModel):
-    status: str  # "success" | "fail" | "retry"
+    status: str  # "success" | "fail" | "retry" | "error" | "soft_fail"
     verb_name: str
     step_name: str
     order: int
@@ -91,6 +91,7 @@ class StepExecutionResult(BaseModel):
     node: Optional[str] = None
     logs: List[str] = Field(default_factory=list)
     error: Optional[str] = None
+    soft_fail: bool = False
 
 
 class PlanExecutionResult(BaseModel):

@@ -223,20 +223,31 @@ class ChatResultPayload(BaseModel):
 
 
 class RecallRequestPayload(BaseModel):
+    """
+    Canonical recall request payload.
+    """
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    text: str
+    query_text: str
     max_items: int = 8
     time_window_days: int = 90
-    mode: str = "hybrid"
+    mode: Literal["hybrid", "deep", "short_term"] = "hybrid"
     tags: List[str] = Field(default_factory=list)
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
     trace_id: Optional[str] = None
 
 
 class RecallResultPayload(BaseModel):
+    """
+    Canonical recall response payload.
+    """
     model_config = ConfigDict(extra="forbid", frozen=True)
-    items: List[Dict[str, Any]] = Field(default_factory=list)
-    meta: Dict[str, Any] = Field(default_factory=dict)
+
+    ok: bool = True
+    error: Optional[str] = None
+    fragments: List[Dict[str, Any]] = Field(default_factory=list)
+    debug: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CollapseMirrorPayload(BaseModel):

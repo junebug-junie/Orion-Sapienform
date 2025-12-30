@@ -1,4 +1,3 @@
-# services/orion-cortex-exec/app/executor.py
 from __future__ import annotations
 
 import logging
@@ -9,11 +8,18 @@ from uuid import uuid4
 from jinja2 import Environment
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ServiceRef
-
+from orion.core.bus.bus_schemas import ChatRequestPayload, RecallRequestPayload, ServiceRef
+from orion.core.bus.contracts import KINDS
+from orion.schemas.agents.schemas import AgentChainRequest, PlannerRequest
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from .settings import settings
-from .clients import LLMGatewayClient
+from .clients import (
+    AgentChainClient,
+    CouncilClient,
+    LLMGatewayClient,
+    PlannerReactClient,
+    RecallClient,
+)
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -24,6 +30,14 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     return tmpl.render(**ctx)
 
 
+def _last_user_message(ctx: Dict[str, Any]) -> str:
+    messages = ctx.get("messages") or []
+    for m in reversed(messages):
+        if m.get("role") == "user" and m.get("content"):
+            return str(m["content"])
+    return str(ctx.get("text") or ctx.get("query_text") or "")
+
+
 async def call_step_services(
     bus: OrionBusAsync,
     *,
@@ -32,39 +46,57 @@ async def call_step_services(
     ctx: Dict[str, Any],
     correlation_id: str,
 ) -> StepExecutionResult:
+    """
+    Execute one plan step across its declared services, returning a unified result.
+    Mutates `ctx` for downstream steps (e.g., recall fragments).
+    """
     t0 = time.time()
     logs: List[str] = []
     merged_result: Dict[str, Any] = {}
 
-    # DEBUG: Log Context Keys to prove data is present
-    logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
-    logger.info(f"Context Keys available: {list(ctx.keys())}")
+    logger.info(
+        "--- EXEC STEP '%s' (verb=%s) corr=%s services=%s ---",
+        step.step_name,
+        step.verb_name,
+        correlation_id,
+        step.services,
+    )
 
     prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
-    
-    # DEBUG: Log Rendered Prompt (Truncated)
     debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
-    logger.info(f"Rendered Prompt: {debug_prompt!r}")
+    if prompt:
+        logger.info("Rendered Prompt: %r", debug_prompt)
 
-    # Calculate Timeout from Step Definition (default to 60s if missing)
-    # The YAML says 60000ms, so we convert to 60.0s
-    step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
+    step_timeout_sec = (step.timeout_ms or settings.step_timeout_ms) / 1000.0
 
-    # Instantiate Clients
     llm_client = LLMGatewayClient(bus)
+    recall_client = RecallClient(bus)
+    agent_chain_client = AgentChainClient(bus)
+    planner_client = PlannerReactClient(bus)
+    council_client = CouncilClient(bus)
+
+    def _fail(status: str, error: str) -> StepExecutionResult:
+        return StepExecutionResult(
+            status=status,
+            verb_name=step.verb_name,
+            step_name=step.step_name,
+            order=step.order,
+            result=merged_result,
+            latency_ms=int((time.time() - t0) * 1000),
+            node=settings.node_name,
+            logs=logs,
+            error=error,
+            soft_fail=(status == "soft_fail"),
+        )
 
     for service in step.services:
         reply_channel = f"orion:rpc:{uuid4()}"
-
         try:
             if service == "LLMGatewayService":
-                # --- STRICT PATH ---
-                # 1. Build Pydantic Model
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 messages_payload = ctx.get("messages")
-                
                 if not messages_payload:
-                    content = prompt or " "
+                    content = prompt or _last_user_message(ctx) or " "
                     messages_payload = [{"role": "user", "content": content}]
 
                 request_object = ChatRequestPayload(
@@ -73,41 +105,115 @@ async def call_step_services(
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),
-                        "stream": False,  # Keep this fix!
-                    }
+                        "stream": False,
+                    },
+                    user_id=ctx.get("user_id"),
+                    session_id=ctx.get("session_id"),
                 )
 
-                # 2. Delegate to Client WITH TIMEOUT [FIXED]
-                logs.append(f"rpc -> LLMGateway via client (timeout={step_timeout_sec}s)")
+                logs.append(f"rpc -> LLMGatewayService ({KINDS.llm_chat_request})")
                 result_object = await llm_client.chat(
                     source=source,
                     req=request_object,
                     correlation_id=correlation_id,
                     reply_to=reply_channel,
-                    timeout_sec=step_timeout_sec,  # <--- CRITICAL FIX
+                    timeout_sec=step_timeout_sec,
                 )
-                
-                # Explicitly dump to dict for storage in result payload
                 merged_result[service] = result_object.model_dump(mode="json")
-                logs.append(f"ok <- {service}")
+                logs.append("ok <- LLMGatewayService")
+
+            elif service == "RecallService":
+                query_text = _last_user_message(ctx)
+                recall_request = RecallRequestPayload(
+                    query_text=query_text,
+                    max_items=int(ctx.get("recall_max_items", 8)),
+                    time_window_days=int(ctx.get("recall_time_window_days", 90)),
+                    mode=str(ctx.get("recall_mode", "hybrid")),
+                    tags=list(ctx.get("tags") or []),
+                    user_id=ctx.get("user_id"),
+                    session_id=ctx.get("session_id"),
+                    trace_id=str(correlation_id),
+                )
+                logs.append(f"rpc -> RecallService ({KINDS.recall_query_request})")
+                recall_result = await recall_client.query(
+                    source=source,
+                    req=recall_request,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    timeout_sec=step_timeout_sec,
+                )
+                memory_used = bool(recall_result.fragments)
+                ctx["memory_fragments"] = recall_result.fragments
+                merged_result[service] = {
+                    "memory_used": memory_used,
+                    "recall_debug": recall_result.debug,
+                    "error": recall_result.error,
+                }
+                logs.append(f"ok <- RecallService (items={len(recall_result.fragments)})")
+                if not recall_result.ok:
+                    return _fail("soft_fail", recall_result.error or "recall_error")
+
+            elif service == "AgentChainService":
+                text = _last_user_message(ctx)
+                chain_request = AgentChainRequest(
+                    text=text,
+                    mode="chat",
+                    session_id=ctx.get("session_id"),
+                    user_id=ctx.get("user_id"),
+                    goal_description=ctx.get("goal_description"),
+                    messages=ctx.get("messages"),
+                    tools=ctx.get("tools"),
+                    packs=ctx.get("packs"),
+                )
+                logs.append(f"rpc -> AgentChainService ({KINDS.agent_chain_request})")
+                chain_result = await agent_chain_client.run(
+                    source=source,
+                    req=chain_request,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                )
+                merged_result[service] = chain_result.model_dump(mode="json")
+                ctx["agent_chain"] = chain_result.model_dump(mode="json")
+                logs.append("ok <- AgentChainService")
+
+            elif service == "PlannerReactService":
+                text = _last_user_message(ctx)
+                planner_request = PlannerRequest(
+                    caller="cortex-exec",
+                    goal={"type": "chat", "description": ctx.get("goal_description") or text},
+                    context={"conversation_history": ctx.get("messages") or []},
+                )
+                logs.append(f"rpc -> PlannerReactService ({KINDS.planner_request})")
+                planner_result = await planner_client.run(
+                    source=source,
+                    req=planner_request,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                )
+                merged_result[service] = planner_result.model_dump(mode="json")
+                ctx["planner_result"] = planner_result.model_dump(mode="json")
+                logs.append("ok <- PlannerReactService")
+
+            elif service == "AgentCouncilService":
+                logs.append(f"rpc -> AgentCouncilService ({KINDS.council_request})")
+                council_result = await council_client.deliberate(
+                    source=source,
+                    req={"prompt": _last_user_message(ctx), "trace_id": str(correlation_id)},
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                )
+                merged_result[service] = council_result
+                ctx["council_result"] = council_result
+                logs.append("ok <- AgentCouncilService")
 
             else:
-                logs.append(f"skip <- {service} (generic path not implemented in example)")
+                logs.append(f"skip <- {service} (unsupported service identifier)")
+                merged_result[service] = {"skipped": True}
 
         except Exception as e:
             logs.append(f"exception <- {service}: {e}")
-            logger.error(f"Service {service} failed: {e}")
-            return StepExecutionResult(
-                status="fail",
-                verb_name=step.verb_name,
-                step_name=step.step_name,
-                order=step.order,
-                result=merged_result,
-                latency_ms=int((time.time() - t0) * 1000),
-                node=settings.node_name,
-                logs=logs,
-                error=f"{service}: {e}",
-            )
+            logger.error("Service %s failed (corr=%s): %s", service, correlation_id, e)
+            return _fail("fail", f"{service}: {e}")
 
     return StepExecutionResult(
         status="success",
@@ -118,4 +224,5 @@ async def call_step_services(
         latency_ms=int((time.time() - t0) * 1000),
         node=settings.node_name,
         logs=logs,
+        soft_fail=False,
     )

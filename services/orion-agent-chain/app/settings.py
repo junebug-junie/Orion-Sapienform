@@ -6,6 +6,8 @@ import logging
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from orion.core.bus.contracts import CHANNELS
+
 logger = logging.getLogger("orion-agent-chain.settings")
 
 
@@ -30,7 +32,7 @@ class AgentChainSettings(BaseSettings):
     # --- Orion bus / Redis ---
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_url: str = Field(
-        "redis://100.92.216.81/0",
+        "redis://orion-redis:6379/0",
         alias="ORION_BUS_URL",
     )
 
@@ -50,7 +52,7 @@ class AgentChainSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────
     # The UI will publish here, and we will listen (once we add the listener)
     agent_chain_request_channel: str = Field(
-        "orion-agent-chain:request",
+        CHANNELS.agent_chain_intake,
         alias="AGENT_CHAIN_REQUEST_CHANNEL"
     )
 

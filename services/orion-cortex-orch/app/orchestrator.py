@@ -15,10 +15,10 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 # Import shared schemas
 from orion.schemas.cortex.schemas import (
-    ExecutionPlan, 
-    ExecutionStep, 
-    PlanExecutionRequest, 
-    PlanExecutionArgs
+    ExecutionPlan,
+    ExecutionStep,
+    PlanExecutionRequest,
+    PlanExecutionArgs,
 )
 from .clients import CortexExecClient
 
@@ -122,6 +122,129 @@ def build_plan_for_verb(verb_name: str) -> ExecutionPlan:
     )
 
 
+def build_plan_for_mode(mode: str) -> ExecutionPlan:
+    """
+    Canonical plan builder for top-level modes.
+    """
+    m = (mode or "").lower()
+    if m in ("brain", "chat_general", "chat"):
+        prompt = _load_prompt_content("chat_general.j2")
+        return ExecutionPlan(
+            verb_name="brain.chat_general",
+            label="Brain Chat",
+            description="Brain path: optional recall + single LLM gateway hop.",
+            category="brain",
+            priority="normal",
+            interruptible=True,
+            can_interrupt_others=False,
+            timeout_ms=180000,
+            max_recursion_depth=0,
+            steps=[
+                ExecutionStep(
+                    verb_name="brain.chat_general",
+                    step_name="recall_aug",
+                    description="Optional recall augmentation",
+                    order=0,
+                    services=["RecallService"],
+                    prompt_template=None,
+                    requires_gpu=False,
+                    requires_memory=True,
+                    timeout_ms=5000,
+                ),
+                ExecutionStep(
+                    verb_name="brain.chat_general",
+                    step_name="llm_chat",
+                    description="Primary chat via LLM Gateway",
+                    order=1,
+                    services=["LLMGatewayService"],
+                    prompt_template=prompt,
+                    requires_gpu=True,
+                    requires_memory=True,
+                    timeout_ms=120000,
+                ),
+            ],
+            metadata={"mode": "brain"},
+        )
+
+    if m in ("agent", "agent_chat"):
+        return ExecutionPlan(
+            verb_name="agent.chat",
+            label="Agent Chain",
+            description="Agent mode: optional recall, then agent-chain worker.",
+            category="agent",
+            priority="normal",
+            interruptible=True,
+            can_interrupt_others=False,
+            timeout_ms=180000,
+            max_recursion_depth=0,
+            steps=[
+                ExecutionStep(
+                    verb_name="agent.chat",
+                    step_name="recall_aug",
+                    description="Optional recall augmentation",
+                    order=0,
+                    services=["RecallService"],
+                    prompt_template=None,
+                    requires_gpu=False,
+                    requires_memory=True,
+                    timeout_ms=5000,
+                ),
+                ExecutionStep(
+                    verb_name="agent.chat",
+                    step_name="agent_chain",
+                    description="Agent-chain / planner-react worker",
+                    order=1,
+                    services=["AgentChainService"],
+                    prompt_template=None,
+                    requires_gpu=True,
+                    requires_memory=True,
+                    timeout_ms=120000,
+                ),
+            ],
+            metadata={"mode": "agent"},
+        )
+
+    if m in ("council", "council_supervisor"):
+        return ExecutionPlan(
+            verb_name="council.supervisor",
+            label="Council Supervisor",
+            description="Council stub: optional recall then council deliberation.",
+            category="council",
+            priority="normal",
+            interruptible=True,
+            can_interrupt_others=False,
+            timeout_ms=180000,
+            max_recursion_depth=0,
+            steps=[
+                ExecutionStep(
+                    verb_name="council.supervisor",
+                    step_name="recall_aug",
+                    description="Optional recall augmentation",
+                    order=0,
+                    services=["RecallService"],
+                    prompt_template=None,
+                    requires_gpu=False,
+                    requires_memory=True,
+                    timeout_ms=5000,
+                ),
+                ExecutionStep(
+                    verb_name="council.supervisor",
+                    step_name="council_supervisor",
+                    description="Council deliberation",
+                    order=1,
+                    services=["AgentCouncilService"],
+                    prompt_template=None,
+                    requires_gpu=True,
+                    requires_memory=True,
+                    timeout_ms=120000,
+                ),
+            ],
+            metadata={"mode": "council"},
+        )
+
+    return build_plan_for_verb(mode)
+
+
 async def call_cortex_exec(
     bus: OrionBusAsync,
     *,
@@ -133,9 +256,9 @@ async def call_cortex_exec(
     correlation_id: str,
     timeout_sec: float = 900.0,
 ) -> Dict[str, Any]:
-    
-    # 1. Logic: Build the Plan Object
-    plan = build_plan_for_verb(verb_name)
+
+    # 1. Logic: Build the Plan Object (mode-aware)
+    plan = build_plan_for_mode(verb_name)
 
     # 2. Logic: Build the Request Object (Strict Type Check)
     request_object = PlanExecutionRequest(

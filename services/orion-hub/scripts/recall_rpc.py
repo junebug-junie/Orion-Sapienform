@@ -65,7 +65,7 @@ class RecallRPC:
             correlation_id=corr,
             reply_to=reply,
             payload=RecallRequestPayload(
-                text=text,
+                query_text=text,
                 max_items=max_items,
                 time_window_days=time_window_days,
                 mode=mode,

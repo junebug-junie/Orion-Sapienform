@@ -30,7 +30,7 @@ app = FastAPI(title="Orion Recall", version=settings.SERVICE_VERSION, lifespan=l
 @app.post("/recall", response_model=RecallResponseBody)
 async def recall_endpoint(body: RecallRequestBody):
     q = RecallQuery(
-        text=body.text,
+        text=body.query_text,
         max_items=body.max_items,
         time_window_days=body.time_window_days,
         mode=body.mode,

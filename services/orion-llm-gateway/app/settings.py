@@ -7,6 +7,7 @@ import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+from orion.core.bus.contracts import CHANNELS
 from .profiles import LLMProfile, LLMProfileRegistry
 
 
@@ -17,12 +18,12 @@ class Settings(BaseSettings):
     node_name: Optional[str] = Field(None, alias="NODE_NAME")
 
     # Bus config
-    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # Intake from other services
-    channel_llm_intake: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    channel_llm_intake: str = Field(CHANNELS.llm_intake, alias="CHANNEL_LLM_INTAKE")
 
     # Spark
     channel_spark_introspect_candidate: str = Field(

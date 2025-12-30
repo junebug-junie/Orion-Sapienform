@@ -5,6 +5,8 @@ from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from orion.core.bus.contracts import CHANNELS
+
 
 class Settings(BaseSettings):
     # Core identity
@@ -50,7 +52,7 @@ class Settings(BaseSettings):
 
     # Service Request Channels
     planner_request_channel: str = Field(
-        "orion-planner:request",
+        CHANNELS.planner_intake,
         alias="PLANNER_REQUEST_CHANNEL",
     )
     planner_result_prefix: str = Field(

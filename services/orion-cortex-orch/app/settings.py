@@ -4,6 +4,8 @@ from functools import lru_cache
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
 
+from orion.core.bus.contracts import CHANNELS
+
 
 class Settings(BaseSettings):
     # Service identity
@@ -12,7 +14,7 @@ class Settings(BaseSettings):
     node_name: str = Field("athena", alias="NODE_NAME")
 
     # Bus config
-    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
     # Chassis
@@ -20,13 +22,13 @@ class Settings(BaseSettings):
 
     # RPC intake channel (hub -> cortex-orch)
     channel_cortex_request: str = Field(
-        "orion-cortex:request",
+        CHANNELS.cortex_request,
         validation_alias=AliasChoices("CORTEX_REQUEST_CHANNEL", "ORCH_REQUEST_CHANNEL"),
     )
 
     # RPC out to cortex-exec
     channel_exec_request: str = Field(
-        "orion-cortex-exec:request",
+        CHANNELS.exec_request,
         validation_alias=AliasChoices("CORTEX_EXEC_REQUEST_CHANNEL", "CHANNEL_EXEC_REQUEST"),
     )
 

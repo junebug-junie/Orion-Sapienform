@@ -209,7 +209,14 @@ class Rabbit(BaseChassis):
 
                 env = decoded.envelope
                 # [FIX] LOG RECEIPT TO PROVE WE HIT CORTEX
-                logger.info(f"Rabbit request received: kind={env.kind} source={env.source}")
+                logger.info(
+                    "Rabbit request received: channel=%s kind=%s corr=%s reply_to=%s source=%s",
+                    msg.get("channel"),
+                    env.kind,
+                    env.correlation_id,
+                    env.reply_to,
+                    env.source,
+                )
                 try:
                     out = await self.handler(env)
                     if out is not None and env.reply_to:

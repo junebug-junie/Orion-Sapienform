@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 class RecallRequestBody(BaseModel):
     """HTTP API request model (backwards compatibility)."""
 
-    text: str
+    model_config = {"populate_by_name": True}
+
+    query_text: str = Field(alias="text")
     max_items: int = 8
     time_window_days: int = 90
     mode: str = "hybrid"

@@ -37,9 +37,11 @@ class PlanRunner:
             )
             step_results.append(step_res)
 
-            if step_res.status != "success":
+            if step_res.status != "success" and not step_res.soft_fail:
                 overall_status = "partial" if len(step_results) > 1 else "fail"
                 break
+            if step_res.soft_fail and overall_status == "success":
+                overall_status = "partial"
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,

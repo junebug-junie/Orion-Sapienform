@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+from orion.core.bus.contracts import KINDS
 
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from .router import PlanRouter
@@ -23,7 +24,7 @@ logger = logging.getLogger("orion.cortex.exec.main")
 
 
 class CortexExecRequest(BaseEnvelope):
-    kind: str = Field("cortex.exec.request", frozen=True)
+    kind: str = Field(KINDS.cortex_exec_request, frozen=True)
     payload: PlanExecutionRequest
 
 
@@ -33,7 +34,7 @@ class CortexExecResultPayload(BaseModel):
 
 
 class CortexExecResult(BaseEnvelope):
-    kind: str = Field("cortex.exec.result", frozen=True)
+    kind: str = Field(KINDS.cortex_exec_result, frozen=True)
     payload: CortexExecResultPayload
 
 
@@ -85,6 +86,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         **(req_env.payload.args.extra or {}),
         "user_id": req_env.payload.args.user_id,
         "trigger_source": req_env.payload.args.trigger_source,
+        "mode": (req_env.payload.plan.metadata.get("mode") if req_env.payload.plan.metadata else None) or req_env.payload.plan.verb_name,
     }
     
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")

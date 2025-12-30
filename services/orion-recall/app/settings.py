@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from orion.core.bus.contracts import CHANNELS
+
 
 class Settings(BaseSettings):
     # Pydantic / Settings config
@@ -19,8 +21,8 @@ class Settings(BaseSettings):
 
     # ── Orion Bus ─────────────────────────────────────────────────────
     ORION_BUS_ENABLED: bool = True
-    ORION_BUS_URL: str = "redis://100.92.216.81:6379/0"
-    RECALL_BUS_INTAKE: str = "orion-recall:request"
+    ORION_BUS_URL: str = "redis://orion-redis:6379/0"
+    RECALL_BUS_INTAKE: str = CHANNELS.recall_intake
 
     # ── Chassis / Runtime ─────────────────────────────────────────────
     HEARTBEAT_INTERVAL_SEC: float = 10.0
@@ -28,8 +30,8 @@ class Settings(BaseSettings):
     ERROR_CHANNEL: str = "system.error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 
-    CHANNEL_RECALL_REQUEST: str = "orion:recall:request"
-    CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion:recall:reply"
+    CHANNEL_RECALL_REQUEST: str = CHANNELS.recall_intake
+    CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion:recall:reply:"
 
     # ── Default Recall Behavior ───────────────────────────────────────
     RECALL_DEFAULT_MAX_ITEMS: int = 16

@@ -12,9 +12,30 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import sys
+from pathlib import Path
 from typing import List
 from uuid import uuid4
+
+# Ensure repository root is on sys.path so orion modules are importable
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        os.environ.setdefault(key.strip(), val.strip())
+
+# Load harness-specific env (first .env, then .env_example) without overriding existing env vars.
+_load_env_file(ROOT / "scripts" / ".env")
+_load_env_file(ROOT / "scripts" / ".env_example")
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
@@ -33,17 +54,18 @@ async def _rpc_request(
     *,
     bus_url: str,
     channel: str,
+    reply_prefix: str,
     req: CortexClientRequest,
     service_name: str,
     service_version: str,
     node: str | None,
     timeout: float,
-) -> dict:
+    ) -> dict:
     bus = OrionBusAsync(url=bus_url)
     await bus.connect()
     try:
         corr = uuid4()
-        reply = f"orion-cortex-orch:result:{corr}"
+        reply = f"{reply_prefix}:{corr}"
         env = BaseEnvelope(
             kind="cortex.orch.request",
             source=_service_ref(service_name, service_version, node),
@@ -57,6 +79,11 @@ async def _rpc_request(
             raise RuntimeError(f"Decode failed: {decoded.error}")
         payload = decoded.envelope.payload
         return payload if isinstance(payload, dict) else decoded.envelope.model_dump(mode="json")
+    except TimeoutError as te:
+        raise TimeoutError(
+            f"RPC timeout waiting on reply_channel={reply} (request_channel={channel}, bus={bus_url}). "
+            "Ensure orion-cortex-orch is running and subscribed to the intake channel."
+        ) from te
     finally:
         await bus.close()
 
@@ -112,11 +139,25 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
 
     def add_common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--bus-url", default="redis://100.92.216.81:6379/0")
-        p.add_argument("--channel", default="orion-cortex-orch:request")
+        p.add_argument(
+            "--channel",
+            default=os.getenv("ORCH_REQUEST_CHANNEL", os.getenv("CORTEX_REQUEST_CHANNEL", "orion-cortex:request")),
+            help="Request channel for cortex-orch (defaults to ORCH_REQUEST_CHANNEL/CORTEX_REQUEST_CHANNEL env or orion-cortex:request)",
+        )
+        p.add_argument(
+            "--reply-prefix",
+            default=os.getenv("ORCH_RESULT_PREFIX", "orion-cortex:result"),
+            help="Reply channel prefix (defaults to ORCH_RESULT_PREFIX env or orion-cortex:result)",
+        )
         p.add_argument("--service-name", default="bus-harness")
         p.add_argument("--service-version", default="0.0.1")
         p.add_argument("--node", default="harness")
-        p.add_argument("--timeout", type=float, default=30.0)
+        p.add_argument(
+            "--timeout",
+            type=float,
+            default=float(os.getenv("HARNESS_RPC_TIMEOUT_SEC", 120)),
+            help="RPC timeout in seconds (defaults to HARNESS_RPC_TIMEOUT_SEC or 120s to match LLM step budgets)",
+        )
         p.add_argument("--verb", default="chat_general")
         p.add_argument("--packs", nargs="*", default=["executive_pack"])
         p.add_argument("--temperature", type=float, default=0.7)
@@ -151,17 +192,22 @@ async def _main(argv: List[str]) -> int:
         return 0
 
     req = _build_request(args.cmd, args.text, args)
-    payload = await _rpc_request(
-        bus_url=args.bus_url,
-        channel=args.channel,
-        req=req,
-        service_name=args.service_name,
-        service_version=args.service_version,
-        node=args.node,
-        timeout=args.timeout,
-    )
-    print(json.dumps(payload, indent=2, default=str))
-    return 0
+    try:
+        payload = await _rpc_request(
+            bus_url=args.bus_url,
+            channel=args.channel,
+            reply_prefix=args.reply_prefix,
+            req=req,
+            service_name=args.service_name,
+            service_version=args.service_version,
+            node=args.node,
+            timeout=args.timeout,
+        )
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+    except TimeoutError as te:
+        print(f"[bus-harness] {te}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

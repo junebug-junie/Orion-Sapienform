@@ -1,5 +1,5 @@
 services:
-  orion-cortex-orchestrator:
+  cortex-orchestrator:
     build:
       context: ../..
       dockerfile: services/orion-cortex-orch/Dockerfile

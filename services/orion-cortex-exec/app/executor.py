@@ -44,7 +44,7 @@ async def run_recall_step(
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     t0 = time.time()
     recall_client = RecallClient(bus)
-    reply_channel = f"orion-exec:result:recall:{uuid4()}"
+    reply_channel = f"{settings.exec_result_prefix}:RecallService:{uuid4()}"
 
     query_text = _last_user_message(ctx) or ""
     req = RecallRequestPayload(
@@ -156,7 +156,7 @@ async def call_step_services(
     agent_client = AgentChainClient(bus)
 
     for service in step.services:
-        reply_channel = f"orion:rpc:{uuid4()}"
+        reply_channel = f"{settings.exec_result_prefix}:{service}:{uuid4()}"
 
         try:
             if service == "LLMGatewayService":

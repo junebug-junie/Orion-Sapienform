@@ -223,6 +223,7 @@ async def call_cortex_exec(
     *,
     source: ServiceRef,
     exec_request_channel: str,
+    exec_result_prefix: str,
     client_request: CortexClientRequest,
     correlation_id: str,
     timeout_sec: float = 900.0,
@@ -233,7 +234,11 @@ async def call_cortex_exec(
 
     request_object = PlanExecutionRequest(plan=plan, args=args, context=context)
 
-    client = CortexExecClient(bus, exec_request_channel)
+    client = CortexExecClient(
+        bus,
+        request_channel=exec_request_channel,
+        result_prefix=exec_result_prefix,
+    )
     return await client.execute_plan(
         source=source,
         req=request_object,

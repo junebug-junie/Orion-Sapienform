@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # Orion Bus
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
-    orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # LLM Gateway (Exec bus)
     llm_gateway_service_name: str = Field(

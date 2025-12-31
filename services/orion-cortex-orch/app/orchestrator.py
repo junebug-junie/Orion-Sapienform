@@ -14,9 +14,9 @@ import orion  # used to locate installed package path for cognition/verbs
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.schemas import (
-    ExecutionPlan, 
-    ExecutionStep, 
-    PlanExecutionRequest, 
+    ExecutionPlan,
+    ExecutionStep,
+    PlanExecutionRequest,
     PlanExecutionArgs
 )
 from .clients import CortexExecClient
@@ -27,7 +27,7 @@ logger = logging.getLogger("orion.cortex.orch")
 # Locate cognition directories
 ORION_PKG_DIR = Path(orion.__file__).resolve().parent
 VERBS_DIR = ORION_PKG_DIR / "cognition" / "verbs"
-PROMPTS_DIR = ORION_PKG_DIR / "cognition" / "prompts"  # <--- Added Prompts Directory
+PROMPTS_DIR = ORION_PKG_DIR / "cognition" / "prompts"
 
 
 def _load_verb_yaml(verb_name: str) -> dict:
@@ -45,7 +45,7 @@ def _load_prompt_content(template_ref: Optional[str]) -> Optional[str]:
     """
     if not template_ref:
         return None
-    
+
     if template_ref.strip().endswith(".j2"):
         prompt_path = PROMPTS_DIR / template_ref.strip()
         if prompt_path.exists():
@@ -54,7 +54,7 @@ def _load_prompt_content(template_ref: Optional[str]) -> Optional[str]:
             logger.warning(f"Prompt template file not found: {prompt_path}")
             # Fallback: return the filename so at least something happens
             return template_ref
-            
+
     return template_ref
 
 
@@ -64,14 +64,14 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
     # Defaults
     timeout_ms = int(data.get("timeout_ms", 120000) or 120000)
     default_services = list(data.get("services") or [])
-    
-    # [FIX] Load the raw content if it's a file reference
+
+    # Load the raw content if it's a file reference
     raw_template_ref = str(data.get("prompt_template") or "")
     default_prompt = _load_prompt_content(raw_template_ref)
 
     steps: List[ExecutionStep] = []
-    raw_steps = data.get("steps") or data.get("plan") # handle 'plan' alias in yaml
-    
+    raw_steps = data.get("steps") or data.get("plan")  # handle 'plan' alias in yaml
+
     if isinstance(raw_steps, list) and raw_steps:
         for i, s in enumerate(raw_steps):
             # Resolve step-level prompt if provided, else use default
@@ -123,7 +123,7 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
 
 
 def build_agent_plan(verb_name: str) -> ExecutionPlan:
-    """Single-step agent plan that defers to AgentChainService."""
+    """Two-step agent plan: planner-react followed by agent chain."""
     return ExecutionPlan(
         verb_name=verb_name,
         label=f"{verb_name}-agent",
@@ -135,6 +135,17 @@ def build_agent_plan(verb_name: str) -> ExecutionPlan:
         timeout_ms=300000,
         max_recursion_depth=1,
         steps=[
+            ExecutionStep(
+                verb_name=verb_name,
+                step_name="planner_react",
+                description="Delegate planning to PlannerReactService",
+                order=-1,
+                services=["PlannerReactService"],
+                prompt_template=None,
+                requires_gpu=False,
+                requires_memory=True,
+                timeout_ms=120000,
+            ),
             ExecutionStep(
                 verb_name=verb_name,
                 step_name="agent_chain",
@@ -231,6 +242,17 @@ async def call_cortex_exec(
     plan = _build_plan_for_mode(client_request)
     context = _build_context(client_request)
     args = _plan_args(client_request, correlation_id)
+
+    logger.info(
+        "Dispatching exec plan",
+        extra={
+            "correlation_id": correlation_id,
+            "mode": client_request.mode,
+            "verb": client_request.verb,
+            "step_count": len(plan.steps),
+            "steps": [s.step_name for s in plan.steps],
+        },
+    )
 
     request_object = PlanExecutionRequest(plan=plan, args=args, context=context)
 

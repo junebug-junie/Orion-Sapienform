@@ -44,22 +44,26 @@ class CortexExecClient:
             payload=payload_json,
         )
 
-        logger.info(f"Sending Plan to {self.channel} (steps={len(req.plan.steps)})")
+        logger.info(
+            "Sending Plan to %s (steps=%s)",
+            self.request_channel,
+            len(req.plan.steps),
+        )
 
         # 2. TRANSPORT
         msg = await self.bus.rpc_request(
-            self.request_channel, 
-            env, 
-            reply_channel=reply_channel, 
+            self.request_channel,
+            env,
+            reply_channel=reply_channel,
             timeout_sec=timeout_sec
         )
 
         # 3. DECODE
         decoded = self.bus.codec.decode(msg.get("data"))
-        
+
         if not decoded.ok:
             raise RuntimeError(f"Exec RPC failed: {decoded.error}")
-        
+
         payload = decoded.envelope.payload
         if isinstance(payload, dict):
             return payload.get("result") or payload

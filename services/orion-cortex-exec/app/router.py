@@ -47,8 +47,25 @@ class PlanRunner:
         extra = req.args.extra or {}
         mode = extra.get("mode") or ctx.get("mode") or "brain"
         recall_cfg = extra.get("recall") or ctx.get("recall") or {}
+        raw_enabled = recall_cfg.get("enabled", True)
+        recall_enabled = (
+            str(raw_enabled).lower() not in {"false", "0", "no", "off"}
+            if isinstance(raw_enabled, str)
+            else bool(raw_enabled)
+        )
         recall_required = bool(recall_cfg.get("required", False))
-        recall_enabled = bool(recall_cfg.get("enabled", True))
+
+        logger.info(
+            "Exec plan start: corr=%s mode=%s verb=%s recall_enabled=%s recall_required=%s steps=%s recall_cfg=%s",
+            correlation_id,
+            mode,
+            plan.verb_name,
+            recall_enabled,
+            recall_required,
+            [s.step_name for s in plan.steps],
+            recall_cfg,
+        )
+
         options = extra.get("options") or ctx.get("options") or {}
         if isinstance(options, dict):
             ctx.setdefault("options", options)
@@ -84,6 +101,14 @@ class PlanRunner:
                         recall_debug=recall_debug,
                         error=recall_step.error,
                     )
+
+        else:
+            recall_debug = {"skipped": "disabled_by_client"}
+            ctx["memory_used"] = False
+            logger.info(
+                "Recall skipped by client directive",
+                extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
+            )
 
         for step in sorted(plan.steps, key=lambda s: s.order):
             step_res = await call_step_services(

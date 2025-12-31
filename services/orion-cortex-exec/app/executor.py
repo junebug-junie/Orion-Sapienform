@@ -1,5 +1,9 @@
-# services/orion-cortex-exec/app/executor.py
 from __future__ import annotations
+
+"""
+Core execution engine for cortex-exec.
+Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
+"""
 
 import logging
 import time
@@ -11,10 +15,11 @@ from jinja2 import Environment
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ChatRequestPayload, LLMMessage, RecallRequestPayload, ServiceRef
 
-from orion.schemas.agents.schemas import AgentChainRequest
+from orion.schemas.agents.schemas import AgentChainRequest, PlannerRequest, Goal, ContextBlock
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
+
 from .settings import settings
-from .clients import AgentChainClient, LLMGatewayClient, RecallClient
+from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -47,6 +52,16 @@ async def run_recall_step(
     reply_channel = f"{settings.exec_result_prefix}:RecallService:{uuid4()}"
 
     query_text = _last_user_message(ctx) or ""
+    recall_timeout = float(recall_cfg.get("timeout_sec", settings.step_timeout_ms / 1000.0))
+
+    logger.info(
+        "Recall request: corr=%s reply=%s timeout=%.2fs cfg=%s",
+        correlation_id,
+        reply_channel,
+        recall_timeout,
+        recall_cfg,
+    )
+
     req = RecallRequestPayload(
         query_text=query_text,
         session_id=ctx.get("session_id"),
@@ -66,7 +81,8 @@ async def run_recall_step(
             req=req,
             correlation_id=correlation_id,
             reply_to=reply_channel,
-            timeout_sec=float(settings.step_timeout_ms) / 1000.0,
+            timeout_sec=recall_timeout,
+            #timeout_sec=float(settings.step_timeout_ms) / 1000.0,
         )
         fragments = res.fragments
         debug = {
@@ -142,7 +158,7 @@ async def call_step_services(
     logger.info(f"Context Keys available: {list(ctx.keys())}")
 
     prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
-    
+
     # DEBUG: Log Rendered Prompt (Truncated)
     debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
     logger.info(f"Rendered Prompt: {debug_prompt!r}")
@@ -153,10 +169,20 @@ async def call_step_services(
 
     # Instantiate Clients
     llm_client = LLMGatewayClient(bus)
+    planner_client = PlannerReactClient(bus)
     agent_client = AgentChainClient(bus)
 
     for service in step.services:
         reply_channel = f"{settings.exec_result_prefix}:{service}:{uuid4()}"
+
+        logger.info(
+            "Exec step service start: corr=%s step=%s service=%s reply=%s timeout=%.2fs",
+            correlation_id,
+            step.step_name,
+            service,
+            reply_channel,
+            step_timeout_sec,
+        )
 
         try:
             if service == "LLMGatewayService":
@@ -164,7 +190,7 @@ async def call_step_services(
                 # 1. Build Pydantic Model
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 messages_payload = ctx.get("messages")
-                
+
                 if not messages_payload:
                     content = prompt or " "
                     messages_payload = [{"role": "user", "content": content}]
@@ -179,16 +205,16 @@ async def call_step_services(
                     }
                 )
 
-                # 2. Delegate to Client WITH TIMEOUT [FIXED]
+                # 2. Delegate to Client WITH TIMEOUT
                 logs.append(f"rpc -> LLMGateway via client (timeout={step_timeout_sec}s)")
                 result_object = await llm_client.chat(
                     source=source,
                     req=request_object,
                     correlation_id=correlation_id,
                     reply_to=reply_channel,
-                    timeout_sec=step_timeout_sec,  # <--- CRITICAL FIX
+                    timeout_sec=step_timeout_sec,
                 )
-                
+
                 # Explicitly dump to dict for storage in result payload
                 merged_result[service] = result_object.model_dump(mode="json")
                 logs.append(f"ok <- {service}")
@@ -205,7 +231,7 @@ async def call_step_services(
                     ],
                     packs=ctx.get("packs") or [],
                 )
-                logs.append("rpc -> AgentChainService")
+                logs.append(f"rpc -> AgentChainService (reply={reply_channel}, timeout={step_timeout_sec}s)")
                 agent_res = await agent_client.run_chain(
                     source=source,
                     req=agent_req,
@@ -215,6 +241,28 @@ async def call_step_services(
                 )
                 merged_result[service] = agent_res.model_dump(mode="json")
                 logs.append("ok <- AgentChainService")
+
+            elif service == "PlannerReactService":
+                planner_req = PlannerRequest(
+                    request_id=str(correlation_id),
+                    caller="cortex-exec",
+                    goal=Goal(description=_last_user_message(ctx), metadata={"verb": step.verb_name}),
+                    context=ContextBlock(conversation_history=[LLMMessage(**m) for m in (ctx.get("messages") or [])]),
+                    toolset=[],
+                )
+                logs.append("rpc -> PlannerReactService")
+                planner_res = await planner_client.plan(
+                    source=source,
+                    req=planner_req,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    timeout_sec=step_timeout_sec,
+                )
+                merged_result[service] = planner_res.model_dump(mode="json")
+                logs.append("ok <- PlannerReactService")
+                # expose planner trace to downstream agent chain calls
+                ctx.setdefault("planner_trace", planner_res.model_dump(mode="json"))
+
 
             elif service == "CouncilService":
                 logs.append("stub <- CouncilService (not implemented)")

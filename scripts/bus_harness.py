@@ -191,6 +191,23 @@ async def _main(argv: List[str]) -> int:
         await _tap(args.bus_url)
         return 0
 
+
+    # Pre-flight correlation notice
+    preview_corr = str(uuid4())
+    preview_reply = f"{args.reply_prefix}:{preview_corr}"
+    print(
+        json.dumps(
+            {
+                "preview_correlation": preview_corr,
+                "request_channel": args.channel,
+                "reply_channel": preview_reply,
+                "timeout_sec": args.timeout,
+            },
+            indent=2,
+        ),
+        file=sys.stderr,
+    )
+
     req = _build_request(args.cmd, args.text, args)
     try:
         payload = await _rpc_request(
@@ -203,6 +220,20 @@ async def _main(argv: List[str]) -> int:
             node=args.node,
             timeout=args.timeout,
         )
+
+        print(
+            json.dumps(
+                {
+                    "correlation_id": str(payload.get("correlation_id") or "n/a"),
+                    "reply_prefix": args.reply_prefix,
+                    "request_channel": args.channel,
+                },
+                indent=2,
+                default=str,
+            ),
+            file=sys.stderr,
+        )
+
         print(json.dumps(payload, indent=2, default=str))
         return 0
     except TimeoutError as te:

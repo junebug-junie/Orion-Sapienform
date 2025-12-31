@@ -13,7 +13,7 @@ from orion.core.bus.bus_schemas import (
     RecallResultPayload,
     ServiceRef,
 )
-from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult
+from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult, PlannerRequest, PlannerResponse
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.clients")
@@ -94,6 +94,42 @@ class RecallClient:
         if not decoded.ok:
             raise RuntimeError(f"Decode failed: {decoded.error}")
         return RecallResultPayload.model_validate(decoded.envelope.payload)
+
+
+class PlannerReactClient:
+    """Typed RPC client for PlannerReactService."""
+
+    def __init__(self, bus: OrionBusAsync):
+        self.bus = bus
+        self.channel = settings.channel_planner_intake
+        self.timeout = float(settings.step_timeout_ms) / 1000.0
+
+    async def plan(
+        self,
+        source: ServiceRef,
+        req: PlannerRequest,
+        correlation_id: str,
+        reply_to: str,
+        timeout_sec: Optional[float] = None,
+    ) -> PlannerResponse:
+        env = BaseEnvelope(
+            kind="agent.planner.request",
+            source=source,
+            correlation_id=correlation_id,
+            reply_to=reply_to,
+            payload=req.model_dump(mode="json"),
+        )
+        msg = await self.bus.rpc_request(
+            self.channel,
+            env,
+            reply_channel=reply_to,
+            timeout_sec=timeout_sec or self.timeout,
+        )
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            raise RuntimeError(f"Decode failed: {decoded.error}")
+        return PlannerResponse.model_validate(decoded.envelope.payload)
+
 
 
 class AgentChainClient:

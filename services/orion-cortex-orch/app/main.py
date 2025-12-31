@@ -49,10 +49,40 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     sref = _source()
     logger.info(f"Handling Orch Request kind={env.kind} corr_id={env.correlation_id}")
 
+    if env.kind not in ("cortex.orch.request", "legacy.message"):
+        return CortexOrchResult(
+            source=sref,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload=CortexClientResult(
+                ok=False,
+                mode="brain",
+                verb="unknown",
+                status="fail",
+                final_text=None,
+                memory_used=False,
+                recall_debug={},
+                steps=[],
+                error={"message": f"unsupported_kind:{env.kind}"},
+                correlation_id=str(env.correlation_id),
+            ).model_dump(mode="json"),
+        )
+
     # 1. Ingress Validation
     try:
         raw_payload = env.payload if isinstance(env.payload, dict) else {}
         req = CortexClientRequest.model_validate(raw_payload)
+
+        logger.info(
+            "Validated orch request: corr=%s mode=%s verb=%s packs=%s recall_enabled=%s recall_required=%s",
+            str(env.correlation_id),
+            req.mode,
+            req.verb,
+            req.packs,
+            req.recall.enabled,
+            req.recall.required,
+)
+
     except ValidationError as ve:
         logger.warning(f"Validation failed: {ve}")
         return BaseEnvelope(
@@ -114,7 +144,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=client_result,
+            payload=client_result.model_dump(mode="json"),
         )
 
     except Exception as e:
@@ -134,9 +164,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 steps=[],
                 error={"message": str(e), "type": type(e).__name__},
                 correlation_id=str(env.correlation_id),
-            ),
+           ).model_dump(mode="json"),
         )
-
 
 svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
 

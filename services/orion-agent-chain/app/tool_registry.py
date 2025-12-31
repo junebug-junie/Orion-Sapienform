@@ -51,7 +51,7 @@ class ToolRegistry:
 
                 verb_cfg = self._verb_registry.get(verb_name)
 
-                input_schema = {
+                input_schema = verb_cfg.input_schema or {
                     "type": "object",
                     "properties": {
                         "text": {"type": "string"},
@@ -59,7 +59,7 @@ class ToolRegistry:
                     },
                     "required": ["text"],
                 }
-                output_schema = {
+                output_schema = verb_cfg.output_schema or {
                     "type": "object",
                     "properties": {
                         "llm_output": {"type": "string"},

@@ -2,7 +2,7 @@
 
 import yaml
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable, List, Optional
 
 from .models import VerbConfig
 
@@ -41,3 +41,41 @@ class VerbRegistry:
             raise KeyError(
                 f"Verb '{verb_name}' not found. Available: {list(self._verbs.keys())}"
             ) from e
+
+    def list(self, reload: bool = False) -> List[VerbConfig]:
+        """
+        Return all registered verbs. Use reload=True to refresh the cache.
+        """
+        if reload or not self._verbs:
+            self.load(reload=reload)
+        return list(self._verbs.values())
+
+    def filter(
+        self,
+        *,
+        tags: Optional[Iterable[str]] = None,
+        category: Optional[str] = None,
+        names: Optional[Iterable[str]] = None,
+    ) -> List[VerbConfig]:
+        """
+        Lightweight filtering helper used by supervisors/planners.
+        """
+        if not self._verbs:
+            self.load()
+
+        name_set = set(names or [])
+        tag_set = {t.lower() for t in (tags or [])}
+        filtered: List[VerbConfig] = []
+
+        for verb in self._verbs.values():
+            if name_set and verb.name not in name_set:
+                continue
+            if category and verb.category and verb.category != category:
+                continue
+            if tag_set:
+                vtags = {t.lower() for t in (verb.tags or [])}
+                if not (vtags & tag_set):
+                    continue
+            filtered.append(verb)
+
+        return filtered

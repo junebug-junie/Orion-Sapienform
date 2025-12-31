@@ -9,6 +9,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import call_step_services, run_recall_step
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
+from .supervisor import Supervisor
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.router")
@@ -94,6 +95,17 @@ class PlanRunner:
             ctx["diagnostic"] = True
 
         ctx["verb"] = plan.verb_name
+        # Supervised path: delegate to Supervisor for agentic / council flows
+        if mode in {"agent", "council"} or extra.get("supervised"):
+            supervisor = Supervisor(bus)
+            return await supervisor.execute(
+                source=source,
+                req=plan,
+                correlation_id=correlation_id,
+                ctx=ctx,
+                recall_cfg=recall_cfg,
+            )
+
         needs_memory = recall_enabled
         if needs_memory:
             recall_step, recall_debug, _ = await run_recall_step(

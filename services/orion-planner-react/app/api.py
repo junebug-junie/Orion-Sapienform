@@ -352,14 +352,12 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
 
-    trace: List[TraceStep] = list(getattr(payload, "trace", []) or [])
+    trace: List[TraceStep] = list(payload.trace or [])
     tools_called: List[str] = []
     start = time.monotonic()
     final_answer: Optional[FinalAnswer] = None
     steps_used = 0
-    delegate_only = getattr(payload.preferences, "plan_only", False) or getattr(
-        payload.preferences, "delegate_tool_execution", False
-    )
+    delegate_only = getattr(payload.preferences, "plan_only", False) or getattr(payload.preferences, "delegate_tool_execution", False)
 
     try:
         for step_index in range(payload.limits.max_steps):

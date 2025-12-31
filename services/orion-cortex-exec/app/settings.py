@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     channel_planner_intake: str = Field("orion-exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
     channel_council_intake: str = Field("orion-exec:request:CouncilService", alias="CHANNEL_COUNCIL_INTAKE")
 
+    diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
+    diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")
+    diagnostic_agent_timeout_sec: float = Field(15.0, alias="DIAGNOSTIC_AGENT_TIMEOUT_SEC")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

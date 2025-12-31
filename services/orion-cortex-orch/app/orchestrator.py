@@ -20,6 +20,7 @@ from orion.schemas.cortex.schemas import (
     PlanExecutionArgs
 )
 from .clients import CortexExecClient
+from .settings import get_settings
 from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
 
 logger = logging.getLogger("orion.cortex.orch")
@@ -208,11 +209,21 @@ def _build_context(req: CortexClientRequest) -> Dict[str, Any]:
         "metadata": req.context.metadata,
         "packs": req.packs,
         "mode": req.mode,
+        "diagnostic": _diagnostic_enabled(req),
     }
+
+
+def _diagnostic_enabled(req: CortexClientRequest) -> bool:
+    settings = get_settings()
+    try:
+        return bool(settings.diagnostic_mode or req.options.get("diagnostic") or req.options.get("diagnostic_mode"))
+    except Exception:
+        return settings.diagnostic_mode
 
 
 def _plan_args(req: CortexClientRequest, correlation_id: str) -> PlanExecutionArgs:
     recall: RecallDirective = req.recall
+    diagnostic = _diagnostic_enabled(req)
     return PlanExecutionArgs(
         request_id=req.context.trace_id or correlation_id,
         user_id=req.context.user_id,
@@ -225,6 +236,7 @@ def _plan_args(req: CortexClientRequest, correlation_id: str) -> PlanExecutionAr
             "trace_id": req.context.trace_id or correlation_id,
             "session_id": req.context.session_id,
             "verb": req.verb,
+            "diagnostic": diagnostic,
         },
     )
 
@@ -242,6 +254,7 @@ async def call_cortex_exec(
     plan = _build_plan_for_mode(client_request)
     context = _build_context(client_request)
     args = _plan_args(client_request, correlation_id)
+    diagnostic = _diagnostic_enabled(client_request)
 
     logger.info(
         "Dispatching exec plan",
@@ -261,6 +274,9 @@ async def call_cortex_exec(
         request_channel=exec_request_channel,
         result_prefix=exec_result_prefix,
     )
+
+    if diagnostic:
+        logger.info("Diagnostic PlanExecutionRequest json=%s", request_object.model_dump_json())
     return await client.execute_plan(
         source=source,
         req=request_object,

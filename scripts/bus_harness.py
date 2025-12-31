@@ -123,11 +123,14 @@ def _build_request(mode: str, text: str, args: argparse.Namespace) -> CortexClie
         trace_id=args.trace_id,
         metadata={"harness": True},
     )
+    options = {"temperature": args.temperature, "max_tokens": args.max_tokens}
+    if args.diagnostic:
+        options["diagnostic"] = True
     return CortexClientRequest(
         mode=mode,
         verb=args.verb,
         packs=args.packs,
-        options={"temperature": args.temperature, "max_tokens": args.max_tokens},
+        options=options,
         recall=recall,
         context=ctx,
     )
@@ -170,6 +173,11 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         p.add_argument("--recall-mode", default="hybrid")
         p.add_argument("--time-window-days", type=int, default=90)
         p.add_argument("--max-items", type=int, default=8)
+        p.add_argument(
+            "--diagnostic",
+            action="store_true",
+            help="Enable diagnostic mode (propagates options.diagnostic to orch/exec)",
+        )
 
     brain = sub.add_parser("brain", help="Brain chat through Orch/Exec/LLM")
     add_common(brain)

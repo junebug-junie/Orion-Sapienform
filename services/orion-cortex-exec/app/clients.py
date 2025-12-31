@@ -50,6 +50,14 @@ class LLMGatewayClient:
 
         # Use passed timeout, or fall back to global default
         rpc_timeout = timeout_sec if timeout_sec is not None else self.timeout
+        logger.info(
+            "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_to,
+            rpc_timeout,
+        )
 
         msg = await self.bus.rpc_request(
             self.channel,
@@ -87,6 +95,14 @@ class RecallClient:
             reply_to=reply_to,
             payload=req.model_dump(mode="json"),
         )
+        logger.info(
+            "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_to,
+            timeout_sec,
+        )
         msg = await self.bus.rpc_request(
             self.channel, env, reply_channel=reply_to, timeout_sec=timeout_sec
         )
@@ -119,11 +135,20 @@ class PlannerReactClient:
             reply_to=reply_to,
             payload=req.model_dump(mode="json"),
         )
+        rpc_timeout = timeout_sec or self.timeout
+        logger.info(
+            "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_to,
+            rpc_timeout,
+        )
         msg = await self.bus.rpc_request(
             self.channel,
             env,
             reply_channel=reply_to,
-            timeout_sec=timeout_sec or self.timeout,
+            timeout_sec=rpc_timeout,
         )
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
@@ -155,11 +180,20 @@ class AgentChainClient:
             reply_to=reply_to,
             payload=req.model_dump(mode="json"),
         )
+        rpc_timeout = timeout_sec or self.timeout
+        logger.info(
+            "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_to,
+            rpc_timeout,
+        )
         msg = await self.bus.rpc_request(
             self.channel,
             env,
             reply_channel=reply_to,
-            timeout_sec=timeout_sec or self.timeout,
+            timeout_sec=rpc_timeout,
         )
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:

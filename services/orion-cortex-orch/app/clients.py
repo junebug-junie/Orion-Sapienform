@@ -45,8 +45,11 @@ class CortexExecClient:
         )
 
         logger.info(
-            "Sending Plan to %s (steps=%s)",
+            "RPC emit -> %s kind=%s corr=%s reply=%s steps=%s",
             self.request_channel,
+            env.kind,
+            correlation_id,
+            reply_channel,
             len(req.plan.steps),
         )
 

@@ -46,6 +46,7 @@ async def run_recall_step(
     ctx: Dict[str, Any],
     correlation_id: str,
     recall_cfg: Dict[str, Any],
+    diagnostic: bool = False,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     t0 = time.time()
     recall_client = RecallClient(bus)
@@ -53,6 +54,8 @@ async def run_recall_step(
 
     query_text = _last_user_message(ctx) or ""
     recall_timeout = float(recall_cfg.get("timeout_sec", settings.step_timeout_ms / 1000.0))
+    if diagnostic and settings.diagnostic_recall_timeout_sec:
+        recall_timeout = min(recall_timeout, float(settings.diagnostic_recall_timeout_sec))
 
     logger.info(
         "Recall request: corr=%s reply=%s timeout=%.2fs cfg=%s",
@@ -148,6 +151,7 @@ async def call_step_services(
     step: ExecutionStep,
     ctx: Dict[str, Any],
     correlation_id: str,
+    diagnostic: bool = False,
 ) -> StepExecutionResult:
     t0 = time.time()
     logs: List[str] = []
@@ -174,6 +178,15 @@ async def call_step_services(
 
     for service in step.services:
         reply_channel = f"{settings.exec_result_prefix}:{service}:{uuid4()}"
+        effective_timeout = step_timeout_sec
+        if diagnostic and service in {"AgentChainService", "PlannerReactService"}:
+            effective_timeout = min(step_timeout_sec, float(settings.diagnostic_agent_timeout_sec))
+            logger.info(
+                "Diagnostic timeout override applied: service=%s base=%.2fs diag=%.2fs",
+                service,
+                step_timeout_sec,
+                effective_timeout,
+            )
 
         logger.info(
             "Exec step service start: corr=%s step=%s service=%s reply=%s timeout=%.2fs",
@@ -181,7 +194,7 @@ async def call_step_services(
             step.step_name,
             service,
             reply_channel,
-            step_timeout_sec,
+            effective_timeout,
         )
 
         try:
@@ -206,13 +219,13 @@ async def call_step_services(
                 )
 
                 # 2. Delegate to Client WITH TIMEOUT
-                logs.append(f"rpc -> LLMGateway via client (timeout={step_timeout_sec}s)")
+                logs.append(f"rpc -> LLMGateway via client (timeout={effective_timeout}s)")
                 result_object = await llm_client.chat(
                     source=source,
                     req=request_object,
                     correlation_id=correlation_id,
                     reply_to=reply_channel,
-                    timeout_sec=step_timeout_sec,
+                    timeout_sec=effective_timeout,
                 )
 
                 # Explicitly dump to dict for storage in result payload
@@ -231,13 +244,13 @@ async def call_step_services(
                     ],
                     packs=ctx.get("packs") or [],
                 )
-                logs.append(f"rpc -> AgentChainService (reply={reply_channel}, timeout={step_timeout_sec}s)")
+                logs.append(f"rpc -> AgentChainService (reply={reply_channel}, timeout={effective_timeout}s)")
                 agent_res = await agent_client.run_chain(
                     source=source,
                     req=agent_req,
                     correlation_id=correlation_id,
                     reply_to=reply_channel,
-                    timeout_sec=step_timeout_sec,
+                    timeout_sec=effective_timeout,
                 )
                 merged_result[service] = agent_res.model_dump(mode="json")
                 logs.append("ok <- AgentChainService")
@@ -250,13 +263,13 @@ async def call_step_services(
                     context=ContextBlock(conversation_history=[LLMMessage(**m) for m in (ctx.get("messages") or [])]),
                     toolset=[],
                 )
-                logs.append("rpc -> PlannerReactService")
+                logs.append(f"rpc -> PlannerReactService (timeout={effective_timeout}s)")
                 planner_res = await planner_client.plan(
                     source=source,
                     req=planner_req,
                     correlation_id=correlation_id,
                     reply_to=reply_channel,
-                    timeout_sec=step_timeout_sec,
+                    timeout_sec=effective_timeout,
                 )
                 merged_result[service] = planner_res.model_dump(mode="json")
                 logs.append("ok <- PlannerReactService")

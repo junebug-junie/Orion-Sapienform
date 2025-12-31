@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+import json
 
 from pydantic import Field, ValidationError
 
@@ -26,6 +27,13 @@ class CortexOrchRequest(BaseEnvelope):
 class CortexOrchResult(BaseEnvelope):
     kind: str = Field("cortex.orch.result", frozen=True)
     payload: CortexClientResult
+
+
+def _is_diagnostic(raw_payload: dict | None) -> bool:
+    if get_settings().diagnostic_mode:
+        return True
+    opts = (raw_payload or {}).get("options") if isinstance(raw_payload, dict) else {}
+    return bool(isinstance(opts, dict) and (opts.get("diagnostic") or opts.get("diagnostic_mode")))
 
 
 def _cfg() -> ChassisConfig:
@@ -71,6 +79,14 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     # 1. Ingress Validation
     try:
         raw_payload = env.payload if isinstance(env.payload, dict) else {}
+        diagnostic = _is_diagnostic(raw_payload)
+
+        if diagnostic:
+            logger.info(
+                "Diagnostic ingress payload (raw) corr=%s json=%s",
+                str(env.correlation_id),
+                json.dumps(raw_payload, default=str),
+            )
         req = CortexClientRequest.model_validate(raw_payload)
 
         logger.info(
@@ -81,7 +97,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             req.packs,
             req.recall.enabled,
             req.recall.required,
-)
+        )
+        if diagnostic:
+            logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
 
     except ValidationError as ve:
         logger.warning(f"Validation failed: {ve}")

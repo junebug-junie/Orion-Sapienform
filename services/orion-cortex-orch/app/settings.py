@@ -37,6 +37,7 @@ class Settings(BaseSettings):
         "orion-cortex-exec:result",
         validation_alias=AliasChoices("CORTEX_EXEC_RESULT_PREFIX", "EXEC_RESULT_PREFIX"),
     )
+    diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
 
     class Config:
         env_file = ".env"

@@ -60,6 +60,19 @@ router = PlanRouter()
 svc: Rabbit | None = None
 
 
+def _diagnostic_enabled(payload: PlanExecutionRequest) -> bool:
+    try:
+        extra = payload.args.extra or {}
+        options = extra.get("options") if isinstance(extra, dict) else {}
+        return bool(
+            settings.diagnostic_mode
+            or extra.get("diagnostic")
+            or (isinstance(options, dict) and (options.get("diagnostic") or options.get("diagnostic_mode")))
+        )
+    except Exception:
+        return settings.diagnostic_mode
+
+
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     logger.info(f"Incoming Exec Request: correlation_id={env.correlation_id}")
 
@@ -90,6 +103,12 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
 
     assert svc is not None, "Rabbit service not initialized"
+
+    diagnostic = _diagnostic_enabled(req_env.payload)
+    if diagnostic:
+        logger.info("Diagnostic PlanExecutionRequest json=%s", req_env.payload.model_dump_json())
+        logger.info("Diagnostic args.extra snapshot corr=%s payload=%s", env.correlation_id, req_env.payload.args.extra)
+        ctx["diagnostic"] = True
     
     # 3. Execute Plan
     res = await router.run_plan(

@@ -102,25 +102,25 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
 
     except ValidationError as ve:
-        logger.warning(f"Validation failed: {ve}")
-        return BaseEnvelope(
-            kind="cortex.orch.result",
+        logger.warning("Validation failed: %s", ve)
+        failure = CortexClientResult(
+            ok=False,
+            mode=raw_payload.get("mode") or "brain",
+            verb=raw_payload.get("verb") or raw_payload.get("verb_name") or "unknown",
+            status="fail",
+            memory_used=False,
+            recall_debug={},
+            steps=[],
+            error={"message": "validation_failed", "details": ve.errors()},
+            correlation_id=str(env.correlation_id),
+            final_text=None,
+        )
+        return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=CortexClientResult(
-                ok=False,
-                mode=raw_payload.get("mode") or "brain",
-                verb=raw_payload.get("verb") or raw_payload.get("verb_name") or "unknown",
-                status="fail",
-                memory_used=False,
-                recall_debug={},
-                steps=[],
-                error={"message": "validation_failed", "details": ve.errors()},
-                correlation_id=str(env.correlation_id),
-                final_text=None,
-            ),
-        )
+            payload=failure.model_dump(mode="json"),
+         )
 
     # 3. Execution
     try:

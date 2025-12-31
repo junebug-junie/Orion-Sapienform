@@ -20,14 +20,25 @@ class DeliberationRouter:
     def __init__(self, bus: OrionBusAsync) -> None:
         self.bus = bus
 
-    async def handle(self, raw_payload: Dict[str, Any]) -> None:
+    async def handle(
+        self,
+        raw_payload: Dict[str, Any],
+        *,
+        reply_to: str | None,
+        correlation_id: str | None,
+    ) -> None:
         try:
             req = DeliberationRequest(**raw_payload)
         except Exception as e:
             logger.error("DeliberationRequest parse error: %s payload=%r", e, raw_payload)
             return
 
-        pipeline = build_default_pipeline(bus=self.bus, req=req)
+        pipeline = build_default_pipeline(
+            bus=self.bus,
+            req=req,
+            reply_to=reply_to,
+            correlation_id=correlation_id,
+        )
 
         logger.info(
             "[%s] Routing council_deliberation (source=%s universe=%s)",

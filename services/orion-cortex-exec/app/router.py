@@ -40,6 +40,13 @@ class PlanRunner:
         ctx: Dict[str, Any],
     ) -> PlanExecutionResult:
         plan: ExecutionPlan = req.plan
+        logger.info(
+            "Running plan verb=%s mode=%s steps=%d correlation_id=%s",
+            plan.verb_name,
+            (req.args.extra or {}).get("mode") or ctx.get("mode") or "brain",
+            len(plan.steps),
+            correlation_id,
+        )
         step_results: List[StepExecutionResult] = []
         overall_status = "success"
         recall_debug: Dict[str, Any] = {}

@@ -151,7 +151,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     def add_common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--bus-url", default="redis://100.92.216.81:6379/0")
+        p.add_argument("--bus-url", default=os.getenv("ORION_BUS_URL", "redis://100.92.216.81:6379/0"))
         p.add_argument(
             "--channel",
             default=os.getenv("ORCH_REQUEST_CHANNEL", os.getenv("CORTEX_REQUEST_CHANNEL", "orion-cortex:request")),
@@ -201,7 +201,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     agent.add_argument("text")
 
     tap = sub.add_parser("tap", help="Subscribe to orion:* traffic")
-    tap.add_argument("--bus-url", default="redis://100.92.216.81:6379/0")
+    tap.add_argument("--bus-url", default=os.getenv("ORION_BUS_URL", "redis://100.92.216.81:6379/0"))
 
     return parser.parse_args(argv)
 

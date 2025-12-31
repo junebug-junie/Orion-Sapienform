@@ -24,6 +24,8 @@ class DeliberationContext:
     llm: LLMClient
     req: DeliberationRequest
     trace_id: str
+    correlation_id: str | None = None
+    reply_to: str | None = None
 
     round_index: int = 0
     round_result: Optional[RoundResult] = None
@@ -59,6 +61,8 @@ class DeliberationPipeline:
         ctx = self.ctx
         if not req.trace_id:
             req.trace_id = ctx.trace_id
+        if not req.response_channel:
+            req.response_channel = ctx.reply_to
 
         while ctx.round_index < settings.max_rounds and not ctx.stop:
             # 1) Run the stage chain: agents → arbiter → auditor
@@ -112,10 +116,23 @@ class DeliberationPipeline:
         await self.publisher.publish_final(ctx)
 
 
-def build_default_pipeline(bus: OrionBusAsync, req: DeliberationRequest) -> DeliberationPipeline:
+def build_default_pipeline(
+    bus: OrionBusAsync,
+    req: DeliberationRequest,
+    *,
+    reply_to: str | None,
+    correlation_id: str | None,
+) -> DeliberationPipeline:
     trace_id = req.trace_id or str(uuid4())
     llm = LLMClient(bus)
-    ctx = DeliberationContext(bus=bus, llm=llm, req=req, trace_id=trace_id)
+    ctx = DeliberationContext(
+        bus=bus,
+        llm=llm,
+        req=req,
+        trace_id=trace_id,
+        correlation_id=correlation_id,
+        reply_to=reply_to,
+    )
 
     stages: List[Stage] = [
         AgentRoundStage(),

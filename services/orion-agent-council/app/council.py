@@ -31,8 +31,14 @@ class CouncilService:
         if not payload.get("trace_id"):
             payload["trace_id"] = str(env.correlation_id)
 
+        reply_to = env.reply_to or payload.get("response_channel") or f"{settings.channel_reply_prefix}:{payload['trace_id']}"
+
         # [FIX] Natively await async router logic
         try:
-            await self.router.handle(payload)
+            await self.router.handle(
+                payload,
+                reply_to=reply_to,
+                correlation_id=str(env.correlation_id),
+            )
         except Exception as e:
             logger.exception("Error processing council request: %s", e)

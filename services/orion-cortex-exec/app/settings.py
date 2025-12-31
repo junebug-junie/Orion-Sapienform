@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Downstream routing (exec -> step services)
     exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
     exec_result_prefix: str = Field("orion-exec:result", alias="EXEC_RESULT_PREFIX")
-    
+
     # CHANGED: 8000 -> 60000 (60s). LLMs need time.
     step_timeout_ms: int = Field(60000, alias="STEP_TIMEOUT_MS")
 
@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     channel_recall_intake: str = Field("orion-exec:request:RecallService", alias="CHANNEL_RECALL_INTAKE")
     channel_agent_chain_intake: str = Field("orion-exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
     channel_planner_intake: str = Field("orion-exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
-    channel_council_intake: str = Field("orion:council:intake", alias="CHANNEL_COUNCIL_INTAKE")
+    channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
 
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")

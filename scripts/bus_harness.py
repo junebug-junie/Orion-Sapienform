@@ -123,7 +123,17 @@ def _build_request(mode: str, text: str, args: argparse.Namespace) -> CortexClie
         trace_id=args.trace_id,
         metadata={"harness": True},
     )
-    options = {"temperature": args.temperature, "max_tokens": args.max_tokens}
+    options = {
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+    }
+    # Optional execution hints (remain absent unless explicitly set)
+    if args.require_council:
+        options["require_council"] = True
+    if args.force_agent_chain:
+        options["force_agent_chain"] = True
+    if args.supervised:
+        options["supervised"] = True
     if args.diagnostic:
         options["diagnostic"] = True
     return CortexClientRequest(
@@ -168,6 +178,9 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         p.add_argument("--session-id", default="harness-session")
         p.add_argument("--user-id", default="harness-user")
         p.add_argument("--trace-id", default=None)
+        p.add_argument("--supervised", action="store_true", help="Request supervised execution path (supervisor)")
+        p.add_argument("--require-council", action="store_true", help="Force council checkpoint (if supervisor supports it)")
+        p.add_argument("--force-agent-chain", action="store_true", help="Force escalation to AgentChain after planner")
         p.add_argument("--disable-recall", action="store_true")
         p.add_argument("--require-recall", action="store_true")
         p.add_argument("--recall-mode", default="hybrid")

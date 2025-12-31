@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # --- Council channels (bus) ---
     channel_intake: str = Field("orion:council:intake", alias="CHANNEL_COUNCIL_INTAKE")
-    channel_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
+    channel_reply_prefix: str = Field("orion:agent-council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
 
     # --- LLM Gateway routing (bus) ---
     llm_service_name: str = Field("LLMGateway", alias="LLM_GATEWAY_SERVICE_NAME")

@@ -130,6 +130,7 @@ class Supervisor:
         trace: List[TraceStep],
         ctx: Dict[str, Any],
         correlation_id: str,
+        diagnostic: bool = False,
     ) -> Tuple[PlannerRequest, StepExecutionResult, FinalAnswer | None, Dict[str, Any] | None]:
         planner_req = PlannerRequest(
             request_id=correlation_id,
@@ -147,12 +148,18 @@ class Supervisor:
         reply_channel = f"{settings.exec_result_prefix}:PlannerReactService:{correlation_id}"
         t0 = time.time()
         logs = [f"rpc -> PlannerReactService (plan_only) reply={reply_channel}"]
+        planner_timeout = float(
+            ctx.get("planner_timeout_sec")
+            or (settings.step_timeout_ms / 1000.0)
+        )
+        if diagnostic:
+            planner_timeout = min(planner_timeout, float(settings.diagnostic_agent_timeout_sec))
         planner_res = await self.planner_client.plan(
             source=source,
             req=planner_req,
             correlation_id=correlation_id,
             reply_to=reply_channel,
-            timeout_sec=float(settings.diagnostic_agent_timeout_sec),
+            timeout_sec=planner_timeout,
         )
         logs.append(f"ok <- PlannerReactService status={planner_res.status}")
 
@@ -217,20 +224,29 @@ class Supervisor:
         reply_channel = f"{settings.channel_council_reply_prefix}:{correlation_id}"
         t0 = time.time()
         logs = [f"rpc -> CouncilService reply={reply_channel}"]
-        council_res = await self.council_client.deliberate(
-            source=source,
-            req=deliberation,
-            correlation_id=correlation_id,
-            reply_to=reply_channel,
-            timeout_sec=float(settings.diagnostic_agent_timeout_sec),
-        )
-        logs.append("ok <- CouncilService")
+        try:
+            council_res = await self.council_client.deliberate(
+                source=source,
+                req=deliberation,
+                correlation_id=correlation_id,
+                reply_to=reply_channel,
+                timeout_sec=float(settings.diagnostic_agent_timeout_sec),
+            )
+            logs.append("ok <- CouncilService")
+            status = "success"
+            result_payload = council_res.model_dump(mode="json")
+            error_msg = None
+        except Exception as exc:
+            logs.append(f"timeout/exception <- CouncilService: {exc}")
+            status = "fail"
+            result_payload = {"error": str(exc)}
+            error_msg = str(exc)
         return StepExecutionResult(
-            status="success",
+            status=status,
             verb_name="council_checkpoint",
             step_name="council_checkpoint",
             order=99,
-            result={"CouncilService": council_res.model_dump(mode="json")},
+            result={"CouncilService": result_payload},
             latency_ms=int((time.time() - t0) * 1000),
             node=settings.node_name,
             logs=logs,
@@ -338,6 +354,7 @@ class Supervisor:
         trace: List[TraceStep] = []
         max_steps = int(ctx.get("max_steps") or 3)
         final_text: Optional[str] = None
+        planner_thought: Optional[str] = None
 
         for _ in range(max_steps):
             goal_text = _last_user_message(ctx)
@@ -350,8 +367,20 @@ class Supervisor:
                 correlation_id=correlation_id,
             )
             step_results.append(planner_step)
+
+            planner_thought = planner_step.result.get("PlannerReactService", {}).get("trace", [{}])[-1].get("thought") if isinstance(planner_step.result, dict) else None
+
             if planner_final and planner_final.content:
                 final_text = planner_final.content
+                if not trace:
+                    trace.append(
+                        TraceStep(
+                            step_index=0,
+                            thought=planner_thought,
+                            action=None,
+                            observation={"llm_output": final_text},
+                        )
+                    )
                 break
             if planner_step.status != "success" or not action:
                 break
@@ -375,12 +404,17 @@ class Supervisor:
             if obs.get("llm_output"):
                 final_text = obs.get("llm_output")
 
-        # Council checkpoint if we have trace
+        # Council checkpoint (opt-in unless explicit mode=council)
         council_step: Optional[StepExecutionResult] = None
-        if trace:
+
+        require_council = bool(ctx.get("require_council")) or (ctx.get("mode") == "council")
+        if require_council:
             prompt_lines = [f"Goal: { _last_user_message(ctx)}", "Trace:"]
-            for step in trace:
-                prompt_lines.append(f"- action: {step.action} obs: {step.observation}")
+            if trace:
+                for step in trace:
+                    prompt_lines.append(f"- action: {step.action} obs: {step.observation}")
+            elif planner_thought:
+                prompt_lines.append(f"- planner_thought: {planner_thought}")
             council_prompt = "\n".join(prompt_lines)
             council_step = await self._council_checkpoint(
                 source=source,

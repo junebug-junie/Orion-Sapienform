@@ -13,7 +13,14 @@ from orion.core.bus.bus_schemas import (
     RecallResultPayload,
     ServiceRef,
 )
-from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult, PlannerRequest, PlannerResponse
+from orion.schemas.agents.schemas import (
+    AgentChainRequest,
+    AgentChainResult,
+    PlannerRequest,
+    PlannerResponse,
+    DeliberationRequest,
+    CouncilResult,
+)
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.clients")
@@ -199,3 +206,59 @@ class AgentChainClient:
         if not decoded.ok:
             raise RuntimeError(f"Decode failed: {decoded.error}")
         return AgentChainResult.model_validate(decoded.envelope.payload)
+
+
+class CouncilClient:
+    """Typed RPC client for Agent Council checkpoints."""
+
+    def __init__(self, bus: OrionBusAsync):
+        self.bus = bus
+        self.channel = settings.channel_council_intake
+        self.reply_prefix = settings.channel_council_reply_prefix
+        self.timeout = float(settings.step_timeout_ms) / 1000.0
+
+    async def deliberate(
+        self,
+        source: ServiceRef,
+        req: DeliberationRequest,
+        correlation_id: str,
+        reply_to: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+    ) -> CouncilResult:
+        reply_channel = reply_to or f"{self.reply_prefix}:{correlation_id}"
+        env = BaseEnvelope(
+            kind="council.request",
+            source=source,
+            correlation_id=correlation_id,
+            reply_to=reply_channel,
+            payload=req.model_dump(mode="json"),
+        )
+        rpc_timeout = timeout_sec or self.timeout
+        logger.info(
+            "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_channel,
+            rpc_timeout,
+        )
+        msg = await self.bus.rpc_request(
+            self.channel,
+            env,
+            reply_channel=reply_channel,
+            timeout_sec=rpc_timeout,
+        )
+
+        decoded = self.bus.codec.decode(msg.get("data"))
+        payload: Dict[str, Any] = {}
+        if decoded.ok:
+            payload_obj = decoded.envelope.payload or decoded.envelope
+            payload = payload_obj if isinstance(payload_obj, dict) else payload
+        else:
+            raw_data = msg.get("data")
+            if isinstance(raw_data, dict):
+                payload = raw_data
+        try:
+            return CouncilResult.model_validate(payload)
+        except Exception as exc:
+            raise RuntimeError(f"Council response invalid: {payload}") from exc

@@ -318,16 +318,17 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
 
-    trace: List[TraceStep] = []
+    trace: List[TraceStep] = list(payload.trace or [])
     tools_called: List[str] = []
     start = time.monotonic()
     final_answer = None
     steps_used = 0
+    delegate_only = getattr(payload.preferences, "plan_only", False) or getattr(payload.preferences, "delegate_tool_execution", False)
 
     try:
         for step_index in range(payload.limits.max_steps):
             steps_used = step_index + 1
-            
+
             planner_step = await _call_planner_llm(
                 bus=bus,
                 goal=payload.goal,
@@ -336,7 +337,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 prior_trace=trace,
                 limits=payload.limits
             )
-            
+
             thought = planner_step.get("thought", "")
             finish = planner_step.get("finish", False)
             action = planner_step.get("action")
@@ -355,7 +356,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 final_answer = FinalAnswer(content=content, structured=structured)
                 trace.append(TraceStep(step_index=step_index, thought=thought))
                 break
-            
+
             if not action:
                 logger.warning(f"Step {step_index}: LLM returned no action and finish=False. Terminating.")
                 final_answer = FinalAnswer(content=thought or "Planner halted: No action provided by LLM.")
@@ -374,12 +375,24 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
             else:
                 raw_tool_id = None
                 tool_input = {}
-            
+
             if not raw_tool_id:
                 final_answer = FinalAnswer(content=thought or "Invalid action format.")
                 break
 
             tool_id = _normalize_tool_id(raw_tool_id, payload.toolset)
+
+            if delegate_only:
+                trace.append(
+                    TraceStep(
+                        step_index=step_index,
+                        thought=thought,
+                        action={"tool_id": tool_id, "input": tool_input},
+                        observation=None,
+                    )
+                )
+                final_answer = None
+                break
 
             try:
                 raw_cortex = await _call_cortex_verb(
@@ -406,7 +419,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 observation=observation
             ))
 
-        if not final_answer:
+        if not final_answer and not delegate_only:
             final_answer = FinalAnswer(content="Max steps reached without final answer.")
 
     except Exception as e:

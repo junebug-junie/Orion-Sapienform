@@ -9,9 +9,9 @@ from uuid import uuid4
 from jinja2 import Environment
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import ChatRequestPayload, LLMMessage, RecallRequestPayload, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, RecallRequestPayload, ServiceRef
 
-from orion.schemas.agents.schemas import AgentChainRequest
+from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient
@@ -44,9 +44,10 @@ async def run_recall_step(
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     t0 = time.time()
     recall_client = RecallClient(bus)
-    reply_channel = f"orion-exec:result:recall:{uuid4()}"
+    reply_channel = f"orion-exec:result:RecallService:{uuid4()}"
 
     query_text = _last_user_message(ctx) or ""
+    trace_val = ctx.get("trace_id") or recall_cfg.get("trace_id") or correlation_id
     req = RecallRequestPayload(
         query_text=query_text,
         session_id=ctx.get("session_id"),
@@ -55,7 +56,7 @@ async def run_recall_step(
         time_window_days=int(recall_cfg.get("time_window_days", 90)),
         max_items=int(recall_cfg.get("max_items", 8)),
         packs=list(ctx.get("packs") or []),
-        trace_id=recall_cfg.get("trace_id") or correlation_id,
+        trace_id=trace_val,
     )
 
     logs: List[str] = [f"rpc -> RecallService (mode={req.mode}, window={req.time_window_days})"]
@@ -156,7 +157,7 @@ async def call_step_services(
     agent_client = AgentChainClient(bus)
 
     for service in step.services:
-        reply_channel = f"orion:rpc:{uuid4()}"
+        reply_channel = f"orion-exec:result:{service}:{uuid4()}"
 
         try:
             if service == "LLMGatewayService":
@@ -217,18 +218,36 @@ async def call_step_services(
                 logs.append("ok <- AgentChainService")
 
             elif service == "CouncilService":
-                logs.append("stub <- CouncilService (not implemented)")
-                return StepExecutionResult(
-                    status="fail",
-                    verb_name=step.verb_name,
-                    step_name=step.step_name,
-                    order=step.order,
-                    result={service: {"error": "CouncilService not implemented"}},
-                    latency_ms=int((time.time() - t0) * 1000),
-                    node=settings.node_name,
-                    logs=logs,
-                    error="CouncilService not implemented",
+                council_req = DeliberationRequest(
+                    prompt=_last_user_message(ctx),
+                    history=ctx.get("messages") or [],
+                    tags=ctx.get("packs") or [],
+                    universe=ctx.get("mode") or "agent",
+                    response_channel=reply_channel,
                 )
+
+                env = BaseEnvelope(
+                    kind="council.request",
+                    source=source,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    payload=council_req.model_dump(mode="json"),
+                )
+
+                logs.append(f"rpc -> CouncilService reply={reply_channel}")
+                msg = await bus.rpc_request(
+                    settings.channel_council_intake,
+                    env,
+                    reply_channel=reply_channel,
+                    timeout_sec=step_timeout_sec,
+                )
+                decoded = bus.codec.decode(msg.get("data"))
+                if not decoded.ok:
+                    raise RuntimeError(f"CouncilService decode failed: {decoded.error}")
+
+                payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+                merged_result[service] = payload
+                logs.append("ok <- CouncilService")
 
             else:
                 logs.append(f"skip <- {service} (generic path not implemented in example)")

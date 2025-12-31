@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from .models import CouncilResult
 from .settings import settings
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 logger = logging.getLogger("agent-council.publisher")
 
@@ -16,13 +17,26 @@ class CouncilPublisher:
     Now fully async to match the Titanium bus chassis.
     """
 
+    async def _publish(self, ctx: Any, result: CouncilResult, *, tag: str) -> None:
+        resp_channel = ctx.req.response_channel or ctx.reply_to or f"{settings.channel_reply_prefix}:{ctx.trace_id}"
+        corr = ctx.correlation_id or ctx.trace_id
+
+        env = BaseEnvelope(
+            kind="council.result",
+            source=ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name),
+            correlation_id=corr,
+            payload=result.model_dump(mode="json"),
+            reply_to=None,
+        )
+
+        logger.info("[%s] CouncilPublisher: published (%s) to %s", ctx.trace_id, tag, resp_channel)
+        await ctx.bus.publish(resp_channel, env)
+
     async def publish_final(self, ctx: Any) -> None:
         """
         Publishes the final result when decision is ACCEPT.
         """
         trace_id = ctx.trace_id
-        
-        resp_channel = f"{settings.channel_reply_prefix}:{trace_id}"
 
         verdict = ctx.verdict
         judgement = ctx.judgement
@@ -43,20 +57,13 @@ class CouncilPublisher:
             }
         )
 
-        logger.info(
-            "[%s] CouncilPublisher: published council_result to %s (action=accept)",
-            trace_id,
-            resp_channel,
-        )
-
-        await ctx.bus.publish(resp_channel, result.model_dump(mode="json"))
+        await self._publish(ctx, result, tag="accept")
 
     async def publish_best_effort(self, ctx: Any) -> None:
         """
         Publishes whatever we have if we hit max rounds or timeout.
         """
         trace_id = ctx.trace_id
-        resp_channel = f"{settings.channel_reply_prefix}:{trace_id}"
 
         # Try to grab the last judgement or verdict
         judgement = ctx.last_judgement or ctx.judgement
@@ -79,10 +86,5 @@ class CouncilPublisher:
             }
         )
 
-        logger.warning(
-            "[%s] CouncilPublisher: published best_effort result to %s",
-            trace_id,
-            resp_channel,
-        )
-
-        await ctx.bus.publish(resp_channel, result.model_dump(mode="json"))
+        logger.warning("[%s] CouncilPublisher: best_effort", trace_id)
+        await self._publish(ctx, result, tag="best_effort")

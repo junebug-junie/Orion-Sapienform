@@ -142,7 +142,13 @@ svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, hand
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    logger.info("Starting Cortex Orch Service (Typed Client Version)")
+    s = get_settings()
+    logger.info(
+        "Starting Cortex Orch Service (Typed Client Version) intake=%s exec_channel=%s bus=%s",
+        s.channel_cortex_request,
+        s.channel_exec_request,
+        s.orion_bus_url,
+    )
     await svc.start()
 
 

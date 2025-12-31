@@ -1,169 +1,129 @@
 # Orion Cognitive Bus Contracts (Authoritative)
 
-This document is the single source of truth for cross-service routing, payloads, and correlation rules for the Cortex stack. All clients and services **must** follow these contracts—no ad-hoc dict envelopes, no fallback paths.
+This document is the **only** source of truth for cross-service routing, payloads, and correlation for the Cortex stack. All clients and services must adhere—no bespoke dict envelopes, no fallback HTTP calls, no side channels.
 
 ---
 
-## Envelope & Correlation Rules
+## Envelope & Correlation
 
-* Transport: Redis pub/sub via `orion.core.bus` (Titanium envelope only).
-* Envelope: `orion.core.bus.bus_schemas.BaseEnvelope`
-  * `schema_id`: `"orion.envelope"` (alias `schema`)
-  * `schema_version`: `"2.0.0"`
-  * `id`: unique per hop, auto-generated.
-  * `correlation_id`: **stable per request**; propagated unchanged across hops.
-  * `causality_chain`: append-only lineage (parent hop metadata).
-  * `reply_to`: required for RPC hops; callee publishes the response to this channel.
-  * `source`: `ServiceRef` describing the producer.
-* Encoding: `orion.core.bus.codec.OrionCodec` (never raw JSON outside the codec).
-* Error handling: Failures are returned as structured payloads with `ok=false` (no fallbacks to direct LLM or HTTP).
+* Transport: Redis pub/sub via `orion.core.bus` using `BaseEnvelope` + `OrionCodec`.
+* Envelope: `schema_id="orion.envelope"`, `schema_version="2.0.0"`.
+* `correlation_id`: **stable across the entire request**; do not regenerate downstream.
+* `causality_chain`: append-only lineage; preserve when replying.
+* `reply_to`: required for RPC hops. Caller owns reply channel creation.
+* Errors: returned as structured payloads with `ok=false` (never bypass to LLM).
 
 ---
 
-## Channel Map (canonical)
+## Canonical Channels
 
-| Role | Channel | Kind (request → result) | Notes |
+| Flow | Request channel | Kind (req → res) | Reply prefix (caller-owned) |
 | --- | --- | --- | --- |
-| Client → Cortex-Orch | `orion-cortex:request` | `cortex.orch.request` → `cortex.orch.result` | Single public intake for brain/agent/council. |
-| Cortex-Orch → Cortex-Exec | `orion-cortex-exec:request` | `cortex.exec.request` → `cortex.exec.result` | Orch never calls workers directly. |
-| Exec → LLM Gateway | `orion-exec:request:LLMGatewayService` | `llm.chat.request` → `llm.chat.result` | **Only** intake for LLMs. |
-| Exec → Recall | `orion-exec:request:RecallService` | `recall.query.request` → `recall.query.result` | Augmentation step; never called by clients. |
-| Exec → Agent Chain (ReAct) | `orion-exec:request:AgentChainService` | `agent.chain.request` → `agent.chain.result` | Agentic workflow worker. |
-| Exec → Planner-React (direct) | `orion-exec:request:PlannerReactService` | `agent.planner.request` → `agent.planner.result` | Reserved; Agent Chain proxies by default. |
-| Exec → Council (stub) | `orion-exec:request:CouncilService` | `council.request` → `council.result` | Supervisor/worker path placeholder. |
-| Health | `system.health` | `system.health` | Heartbeats from all services. |
-| Errors | `system.error` | `system.error` | Structured failures with correlation preserved. |
+| Client → Cortex-Orch | `orion-cortex:request` | `cortex.orch.request` → `cortex.orch.result` | `orion-cortex:result` |
+| Orch → Exec | `orion-cortex-exec:request` | `cortex.exec.request` → `cortex.exec.result` | `orion-cortex-exec:result` |
+| Exec → LLM Gateway | `orion-exec:request:LLMGatewayService` | `llm.chat.request` → `llm.chat.result` | `orion-exec:result:LLMGatewayService` |
+| Exec → Recall | `orion-exec:request:RecallService` | `recall.query.request` → `recall.query.result` | `orion-exec:result:RecallService` |
+| Exec → Agent Chain (ReAct) | `orion-exec:request:AgentChainService` | `agent.chain.request` → `agent.chain.result` | `orion-exec:result:AgentChainService` |
+| Exec → Planner-React (direct) | `orion-exec:request:PlannerReactService` | `agent.planner.request` → `agent.planner.result` | `orion-exec:result:PlannerReactService` |
+| Exec → Council (stub) | `orion-exec:request:CouncilService` | `council.request` → `council.result` | `orion-exec:result:CouncilService` |
+| Health | `system.health` | `system.health` | n/a |
+| Errors | `system.error` | `system.error` | n/a |
 
-Reply channels are ephemeral per request and **must** be provided by the caller (e.g., `orion-cortex:result:<uuid>` or `orion-cortex-exec:result:<uuid>`).
+Reply channels are ephemeral per request and **must** be provided by the caller (example: `orion-cortex:result:<uuid>`).
 
 ---
 
-## Cortex Client Contract (Hub/UI → Orch)
+## Cortex Client Contract (Client/Hub → Orch)
 
-**Kind:** `cortex.orch.request`  
-**Payload model:** `orion.schemas.cortex.contracts.CortexClientRequest`
-
-Fields:
-* `mode`: `"brain" | "agent" | "council"` (required)
-* `verb`: logical verb name (e.g., `chat_general`)
-* `packs`: list of capability packs (agent path uses this for tool selection)
-* `options`: free-form tuning (temperature, max_tokens, etc.)
-* `recall`: `RecallDirective`  
-  * `enabled` (default true), `required` (fail-fast if recall fails), `mode` (`hybrid`|`deep`), `time_window_days`, `max_items`
-* `context`:
-  * `messages`: `List[LLMMessage]` (required history)
-  * `session_id`, `user_id`, `trace_id`
-  * `metadata`: dict for client-specific tags
-
-**Result kind:** `cortex.orch.result`  
-**Payload model:** `CortexClientResult`
-* `ok`: bool
-* `mode`, `verb`
-* `status`: `"success" | "partial" | "fail"`
-* `final_text`: normalized reply string
-* `steps`: `List[StepExecutionResult]` (including recall/agent/llm)
-* `memory_used`: bool
-* `recall_debug`: counts/mode/window/error (no raw fragments unless explicitly requested)
-* `error`: optional structured error
-* `correlation_id`: optional string view of the envelope correlation id
+* **Kind:** `cortex.orch.request`
+* **Payload model:** `orion.schemas.cortex.contracts.CortexClientRequest`
+* **Fields:**
+  * `mode`: `"brain" | "agent" | "council"`
+  * `verb`: logical verb (e.g., `chat_general`)
+  * `packs`: list[str] (tool packs for agent flows)
+  * `options`: tuning dict (`temperature`, `max_tokens`, etc.)
+  * `recall`: `RecallDirective` (`enabled`, `required`, `mode`, `time_window_days`, `max_items`)
+  * `context`: `CortexClientContext` (`messages` [required], `session_id`, `user_id`, `trace_id`, `metadata`)
+* **Result kind:** `cortex.orch.result`
+* **Result model:** `CortexClientResult`
+  * `ok`, `status`, `mode`, `verb`, `final_text`
+  * `steps: List[StepExecutionResult]`
+  * `memory_used`, `recall_debug`
+  * `error` (structured), `correlation_id`
 
 ---
 
 ## Exec Contract (Orch → Exec)
 
-**Kind:** `cortex.exec.request`  
-**Payload model:** `orion.schemas.cortex.schemas.PlanExecutionRequest`
+* **Kind:** `cortex.exec.request`
+* **Payload:** `PlanExecutionRequest` (`plan`, `args`, `context`)
+* Required `args.extra` entries:
+  * `mode`, `packs`, `recall: RecallDirective`, `options`, `trace_id`, `session_id`, `verb`
+* **Result kind:** `cortex.exec.result`
+* **Payload:** `PlanExecutionResult` (`status`, `final_text`, `steps`, `memory_used`, `recall_debug`, `error`)
 
-Required args (embedded in `PlanExecutionArgs.extra`):
-* `mode`: `"brain" | "agent" | "council"`
-* `packs`: list[str]
-* `recall`: `RecallDirective` as above
-* `options`: llm/agent tuning
-* `trace_id`: correlation string for downstream logs
-
-**Result kind:** `cortex.exec.result`  
-**Payload:** `PlanExecutionResult` with:
-* `status`: `"success" | "partial" | "fail"`
-* `final_text`: string or `None`
-* `memory_used`: bool
-* `recall_debug`: dict
-* `steps`: ordered `StepExecutionResult`
-* `error`: optional string
-
----
-
-## Environment and Settings Map (canonical)
-
-Each service exposes the bus channels above through settings/env. Defaults **must** match the table:
-
-* Orch intake: `CORTEX_REQUEST_CHANNEL`/`ORCH_REQUEST_CHANNEL` default `orion-cortex:request`
-* Orch → Exec: `CORTEX_EXEC_REQUEST_CHANNEL` default `orion-cortex-exec:request`
-* Exec → LLM: `CHANNEL_LLM_INTAKE` default `orion-exec:request:LLMGatewayService`
-* Exec → Recall: `CHANNEL_RECALL_INTAKE` default `orion-exec:request:RecallService`
-* Exec → Agent Chain: `CHANNEL_AGENT_CHAIN_INTAKE` default `orion-exec:request:AgentChainService`
-* Exec → Planner-React: `CHANNEL_PLANNER_INTAKE` default `orion-exec:request:PlannerReactService`
-* Exec → Council: `CHANNEL_COUNCIL_INTAKE` default `orion-exec:request:CouncilService`
-
-The bus harness (`scripts/bus_harness.py`) reads `ORCH_REQUEST_CHANNEL` and `ORCH_RESULT_PREFIX` to generate reply channels such as `orion-cortex:result:<uuid>`. Exec reply prefixes follow the same pattern (`orion-cortex-exec:result:<uuid>`).
+Exec is the **only** orchestrator of workers. Orch must never call LLM/Recall/Agent directly.
 
 ---
 
 ## Worker Contracts
 
 ### LLM Gateway
-* Request kind: `llm.chat.request`, payload `ChatRequestPayload`
-  * `model`, `profile`, `messages`, `options`, `user_id`, `session_id`
-* Response kind: `llm.chat.result`, payload `ChatResultPayload`
-  * Normalized `content` + `usage` + `spark_meta`
+* `llm.chat.request` → `llm.chat.result`
+* Request: `ChatRequestPayload` (`model`, `profile`, `messages`, `options`, `user_id`, `session_id`)
+* Response: `ChatResultPayload` (`content`, `usage`, `spark_meta`, `raw`)
 
 ### Recall
-* Request kind: `recall.query.request`, payload `RecallRequestPayload`
-  * `query_text`, `session_id`, `user_id`, `mode`, `time_window_days`, `max_items`, `packs`, `trace_id`
-* Response kind: `recall.query.result`, payload `RecallResultPayload`
-  * `fragments[]` (normalized) + `debug` (mode/window/count/error)
-  * Exec surfaces counts + debug; raw fragments stay server-side unless explicitly requested.
+* `recall.query.request` → `recall.query.result`
+* Request: `RecallRequestPayload` (`query_text`, `session_id`, `user_id`, `mode`, `time_window_days`, `max_items`, `packs`, `trace_id`)
+* Response: `RecallResultPayload` (`fragments[]`, `debug`)
+* Exec surfaces only `memory_used` + `recall_debug` to the client unless debug is explicitly requested.
 
 ### Agent Chain (ReAct worker)
-* Request kind: `agent.chain.request`, payload `AgentChainRequest`
-  * `text`, `mode`, `messages`, `session_id`, `user_id`, `packs`, `tools`
-* Response kind: `agent.chain.result`, payload `AgentChainResult`
-  * `text`, `structured`, `planner_raw`
+* `agent.chain.request` → `agent.chain.result`
+* Request: `AgentChainRequest` (`text`, `mode`, `messages`, `session_id`, `user_id`, `packs`, `tools`)
+* Response: `AgentChainResult` (`text`, `structured`, `planner_raw`)
 
 ### Council (stub)
-* Request kind: `council.request`
-* Response kind: `council.result`
-* Currently returns a structured error envelope; path reserved for supervisor/worker.
+* `council.request` → `council.result`
+* Currently returns a structured error envelope; reserved for supervisor/worker path.
+
+---
+
+## Settings Provenance
+
+* `.env_example` → `docker-compose.yml` → `settings.py`
+* Every channel above has a surfaced setting in its service:
+  * Orch: `channel_cortex_request`, `channel_cortex_result_prefix`, `channel_exec_request`, `channel_exec_result_prefix`
+  * Exec: `channel_exec_request`, `exec_request_prefix`, `exec_result_prefix`, `channel_llm_intake`, `channel_recall_intake`, `channel_agent_chain_intake`, `channel_planner_intake`, `channel_council_intake`
+  * Agent Chain: `agent_chain_request_channel`, `agent_chain_result_prefix`, `planner_request_channel`, `planner_result_prefix`
+  * Planner-React: `planner_request_channel`, `planner_result_prefix`
+  * Recall: `RECALL_BUS_INTAKE`
+  * LLM Gateway: `channel_llm_intake`
+
+No service may invent a channel name that is not represented in its settings.
 
 ---
 
 ## Acceptance Harness
 
-`python scripts/bus_harness.py brain "hello world"`  
-* Publishes a `cortex.orch.request` to `orion-cortex:request`
-* Optional envs for the harness (see `scripts/.env_example`):
-  * `ORCH_REQUEST_CHANNEL` / `ORCH_RESULT_PREFIX` – override request/reply channels.
-  * `HARNESS_RPC_TIMEOUT_SEC` – override RPC timeout (default 120s).
-* Waits on a correlation reply channel and prints the envelope + step trace
-
-Other modes:
-* `python scripts/bus_harness.py agent "plan a trip"` (agent chain path)
-* `python scripts/bus_harness.py tap` (pattern-subscribe to `orion:*` for live traffic)
-
-All harness requests use the canonical envelopes above; no bespoke payloads.
+* `python scripts/bus_harness.py brain "hello world"` publishes `cortex.orch.request` to `orion-cortex:request` and waits on `orion-cortex:result:<uuid>`.
+* Other modes: `python scripts/bus_harness.py agent "plan a trip"` or `python scripts/bus_harness.py tap` (pattern subscribe to `orion:*`).
+* Harness envs (`scripts/.env_example`): `ORCH_REQUEST_CHANNEL`, `ORCH_RESULT_PREFIX`, `HARNESS_RPC_TIMEOUT_SEC`.
 
 ---
 
-## Observability Requirements
+## Observability
 
-* Every service logs: service name, kind, correlation_id, request channel, reply channel, and elapsed timing per step.
+* Every hop logs: service name, kind, correlation_id, intake channel, reply channel, elapsed time.
 * Exec returns `StepExecutionResult.logs` with worker hops and timing.
-* Errors are emitted to `system.error` with the same `correlation_id`.
+* Structured failures also publish to `system.error` with the same `correlation_id`.
 
 ---
 
 ## Hard Rules
 
-1. No direct Client → LLM Gateway calls. The only path is Client → Orch → Exec → LLM Gateway.
-2. No fallback paths. Failures bubble up as structured errors with preserved correlation.
-3. Only the channels above are valid. Settings **must** expose them; no magic defaults.
-4. Payloads must be typed via shared `orion/schemas` (never loose dicts).
+1. No direct Client → LLM Gateway calls (only Client → Orch → Exec → LLM).
+2. No fallback paths. Failures bubble as structured errors with correlation preserved.
+3. Only the canonical channels above are valid, and they must be reflected in settings/env.
+4. Payloads must use shared `orion/schemas`; never ship loose dict envelopes.

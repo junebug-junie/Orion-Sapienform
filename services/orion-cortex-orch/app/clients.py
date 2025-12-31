@@ -15,9 +15,10 @@ class CortexExecClient:
     """
     Strict, typed client for sending plans to cortex-exec.
     """
-    def __init__(self, bus: OrionBusAsync, channel: str):
+    def __init__(self, bus: OrionBusAsync, *, request_channel: str, result_prefix: str):
         self.bus = bus
-        self.channel = channel
+        self.request_channel = request_channel
+        self.result_prefix = result_prefix
 
     async def execute_plan(
         self,
@@ -29,7 +30,7 @@ class CortexExecClient:
         """
         Sends a typed PlanExecutionRequest, returns the raw result dict from Exec.
         """
-        reply_channel = f"orion-cortex-exec:result:{uuid4()}"
+        reply_channel = f"{self.result_prefix}:{uuid4()}"
         
         # 1. STRICT: Convert Pydantic -> JSON
         # This ensures we never send a malformed plan
@@ -43,22 +44,29 @@ class CortexExecClient:
             payload=payload_json,
         )
 
-        logger.info(f"Sending Plan to {self.channel} (steps={len(req.plan.steps)})")
+        logger.info(
+            "RPC emit -> %s kind=%s corr=%s reply=%s steps=%s",
+            self.request_channel,
+            env.kind,
+            correlation_id,
+            reply_channel,
+            len(req.plan.steps),
+        )
 
         # 2. TRANSPORT
         msg = await self.bus.rpc_request(
-            self.channel, 
-            env, 
-            reply_channel=reply_channel, 
+            self.request_channel,
+            env,
+            reply_channel=reply_channel,
             timeout_sec=timeout_sec
         )
 
         # 3. DECODE
         decoded = self.bus.codec.decode(msg.get("data"))
-        
+
         if not decoded.ok:
             raise RuntimeError(f"Exec RPC failed: {decoded.error}")
-        
+
         payload = decoded.envelope.payload
         if isinstance(payload, dict):
             return payload.get("result") or payload

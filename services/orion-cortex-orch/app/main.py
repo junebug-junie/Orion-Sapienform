@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+import json
 
 from pydantic import Field, ValidationError
 
@@ -28,6 +29,13 @@ class CortexOrchResult(BaseEnvelope):
     payload: CortexClientResult
 
 
+def _is_diagnostic(raw_payload: dict | None) -> bool:
+    if get_settings().diagnostic_mode:
+        return True
+    opts = (raw_payload or {}).get("options") if isinstance(raw_payload, dict) else {}
+    return bool(isinstance(opts, dict) and (opts.get("diagnostic") or opts.get("diagnostic_mode")))
+
+
 def _cfg() -> ChassisConfig:
     s = get_settings()
     return ChassisConfig(
@@ -49,30 +57,70 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     sref = _source()
     logger.info(f"Handling Orch Request kind={env.kind} corr_id={env.correlation_id}")
 
-    # 1. Ingress Validation
-    try:
-        raw_payload = env.payload if isinstance(env.payload, dict) else {}
-        req = CortexClientRequest.model_validate(raw_payload)
-    except ValidationError as ve:
-        logger.warning(f"Validation failed: {ve}")
-        return BaseEnvelope(
-            kind="cortex.orch.result",
+    if env.kind not in ("cortex.orch.request", "legacy.message"):
+        return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
             payload=CortexClientResult(
                 ok=False,
-                mode=raw_payload.get("mode") or "brain",
-                verb=raw_payload.get("verb") or raw_payload.get("verb_name") or "unknown",
+                mode="brain",
+                verb="unknown",
                 status="fail",
+                final_text=None,
                 memory_used=False,
                 recall_debug={},
                 steps=[],
-                error={"message": "validation_failed", "details": ve.errors()},
+                error={"message": f"unsupported_kind:{env.kind}"},
                 correlation_id=str(env.correlation_id),
-                final_text=None,
-            ),
+            ).model_dump(mode="json"),
         )
+
+    # 1. Ingress Validation
+    try:
+        raw_payload = env.payload if isinstance(env.payload, dict) else {}
+        diagnostic = _is_diagnostic(raw_payload)
+
+        if diagnostic:
+            logger.info(
+                "Diagnostic ingress payload (raw) corr=%s json=%s",
+                str(env.correlation_id),
+                json.dumps(raw_payload, default=str),
+            )
+        req = CortexClientRequest.model_validate(raw_payload)
+
+        logger.info(
+            "Validated orch request: corr=%s mode=%s verb=%s packs=%s recall_enabled=%s recall_required=%s",
+            str(env.correlation_id),
+            req.mode,
+            req.verb,
+            req.packs,
+            req.recall.enabled,
+            req.recall.required,
+        )
+        if diagnostic:
+            logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
+
+    except ValidationError as ve:
+        logger.warning("Validation failed: %s", ve)
+        failure = CortexClientResult(
+            ok=False,
+            mode=raw_payload.get("mode") or "brain",
+            verb=raw_payload.get("verb") or raw_payload.get("verb_name") or "unknown",
+            status="fail",
+            memory_used=False,
+            recall_debug={},
+            steps=[],
+            error={"message": "validation_failed", "details": ve.errors()},
+            correlation_id=str(env.correlation_id),
+            final_text=None,
+        )
+        return CortexOrchResult(
+            source=sref,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload=failure.model_dump(mode="json"),
+         )
 
     # 3. Execution
     try:
@@ -82,6 +130,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             svc.bus,
             source=sref,
             exec_request_channel=s.channel_exec_request,
+            exec_result_prefix=s.channel_exec_result_prefix,
             client_request=req,
             correlation_id=str(env.correlation_id),
             timeout_sec=float(req.options.get("timeout_sec", 900.0)),
@@ -113,7 +162,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=client_result,
+            payload=client_result.model_dump(mode="json"),
         )
 
     except Exception as e:
@@ -133,9 +182,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 steps=[],
                 error={"message": str(e), "type": type(e).__name__},
                 correlation_id=str(env.correlation_id),
-            ),
+           ).model_dump(mode="json"),
         )
-
 
 svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
 

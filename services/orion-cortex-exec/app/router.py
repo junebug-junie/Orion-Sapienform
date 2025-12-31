@@ -9,6 +9,8 @@ from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import call_step_services, run_recall_step
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
+from .supervisor import Supervisor
+from .settings import settings
 
 logger = logging.getLogger("orion.cortex.router")
 
@@ -52,13 +54,66 @@ class PlanRunner:
         soft_failure = False
 
         extra = req.args.extra or {}
+        options = extra.get("options") if isinstance(extra, dict) else {}
+        diagnostic = bool(
+            settings.diagnostic_mode
+            or extra.get("diagnostic")
+            or (isinstance(options, dict) and (options.get("diagnostic") or options.get("diagnostic_mode")))
+        )
         mode = extra.get("mode") or ctx.get("mode") or "brain"
         recall_cfg = extra.get("recall") or ctx.get("recall") or {}
+        raw_enabled = recall_cfg.get("enabled", True)
+        ctx.setdefault("recall", recall_cfg)
+        recall_enabled = (
+            str(raw_enabled).lower() not in {"false", "0", "no", "off"}
+            if isinstance(raw_enabled, str)
+            else bool(raw_enabled)
+        )
         recall_required = bool(recall_cfg.get("required", False))
-        recall_enabled = bool(recall_cfg.get("enabled", True))
+
+        if diagnostic:
+            logger.info("Diagnostic PlanExecutionRequest json=%s", req.model_dump_json())
+            logger.info(
+                "Recall directive (raw) corr=%s enabled=%s required=%s cfg=%s",
+                correlation_id,
+                recall_enabled,
+                recall_required,
+                recall_cfg,
+            )
+
+        logger.info(
+            "Exec plan start: corr=%s mode=%s verb=%s recall_enabled=%s recall_required=%s steps=%s recall_cfg=%s",
+            correlation_id,
+            mode,
+            plan.verb_name,
+            recall_enabled,
+            recall_required,
+            [s.step_name for s in plan.steps],
+            recall_cfg,
+        )
+
+        options = extra.get("options") or ctx.get("options") or {}
+        if isinstance(options, dict):
+            ctx.setdefault("options", options)
+            for key, val in options.items():
+                ctx.setdefault(key, val)
+
+        if diagnostic:
+            ctx["diagnostic"] = True
 
         ctx["verb"] = plan.verb_name
-        needs_memory = recall_enabled or any(s.requires_memory for s in plan.steps)
+        # Supervised path: delegate to Supervisor for agentic / council flows
+        if mode in {"agent", "council"} or extra.get("supervised"):
+            supervisor = Supervisor(bus)
+            return await supervisor.execute(
+                source=source,
+                req=plan,
+                correlation_id=correlation_id,
+                ctx=ctx,
+                recall_cfg=recall_cfg,
+            )
+
+        needs_memory = recall_enabled
         if needs_memory:
             recall_step, recall_debug, _ = await run_recall_step(
                 bus,
@@ -66,6 +121,7 @@ class PlanRunner:
                 ctx=ctx,
                 correlation_id=correlation_id,
                 recall_cfg=recall_cfg,
+                diagnostic=diagnostic,
             )
             step_results.append(recall_step)
             memory_used = recall_step.status == "success"
@@ -87,6 +143,14 @@ class PlanRunner:
                         error=recall_step.error,
                     )
 
+        else:
+            recall_debug = {"skipped": "disabled_by_client"}
+            ctx["memory_used"] = False
+            logger.info(
+                "Recall skipped by client directive",
+                extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg, "diagnostic": diagnostic},
+            )
+
         for step in sorted(plan.steps, key=lambda s: s.order):
             step_res = await call_step_services(
                 bus,
@@ -94,6 +158,7 @@ class PlanRunner:
                 step=step,
                 ctx=ctx,
                 correlation_id=correlation_id,
+                diagnostic=diagnostic,
             )
             step_results.append(step_res)
 

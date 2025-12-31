@@ -77,24 +77,9 @@ class Preferences(BaseModel):
     style: str = "neutral"
     allow_internal_thought_logging: bool = True
     return_trace: bool = True
+    plan_only: bool = False
+    delegate_tool_execution: bool = False
 
-
-class PlannerRequest(BaseModel):
-    """Low-level request to the ReAct Planner."""
-    model_config = ConfigDict(extra="ignore")
-
-    request_id: Optional[str] = None
-    caller: str = "hub"
-    goal: Goal
-    context: ContextBlock = Field(default_factory=ContextBlock)
-    toolset: List[ToolDef] = Field(default_factory=list)
-    limits: Limits = Field(default_factory=Limits)
-    preferences: Preferences = Field(default_factory=Preferences)
-
-
-# ─────────────────────────────────────────────
-# Planner Outputs
-# ─────────────────────────────────────────────
 
 class TraceStep(BaseModel):
     step_index: int
@@ -115,6 +100,24 @@ class FinalAnswer(BaseModel):
     content: str
     structured: Dict[str, Any] = Field(default_factory=dict)
 
+
+class PlannerRequest(BaseModel):
+    """Low-level request to the ReAct Planner."""
+    model_config = ConfigDict(extra="ignore")
+
+    request_id: Optional[str] = None
+    caller: str = "hub"
+    goal: Goal
+    context: ContextBlock = Field(default_factory=ContextBlock)
+    toolset: List[ToolDef] = Field(default_factory=list)
+    trace: List[TraceStep] = Field(default_factory=list)
+    limits: Limits = Field(default_factory=Limits)
+    preferences: Preferences = Field(default_factory=Preferences)
+
+
+# ─────────────────────────────────────────────
+# Planner Outputs
+# ─────────────────────────────────────────────
 
 class PlannerResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")

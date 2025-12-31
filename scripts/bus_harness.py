@@ -123,11 +123,24 @@ def _build_request(mode: str, text: str, args: argparse.Namespace) -> CortexClie
         trace_id=args.trace_id,
         metadata={"harness": True},
     )
+    options = {
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+    }
+    # Optional execution hints (remain absent unless explicitly set)
+    if args.require_council:
+        options["require_council"] = True
+    if args.force_agent_chain:
+        options["force_agent_chain"] = True
+    if args.supervised:
+        options["supervised"] = True
+    if args.diagnostic:
+        options["diagnostic"] = True
     return CortexClientRequest(
         mode=mode,
         verb=args.verb,
         packs=args.packs,
-        options={"temperature": args.temperature, "max_tokens": args.max_tokens},
+        options=options,
         recall=recall,
         context=ctx,
     )
@@ -165,11 +178,19 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         p.add_argument("--session-id", default="harness-session")
         p.add_argument("--user-id", default="harness-user")
         p.add_argument("--trace-id", default=None)
+        p.add_argument("--supervised", action="store_true", help="Request supervised execution path (supervisor)")
+        p.add_argument("--require-council", action="store_true", help="Force council checkpoint (if supervisor supports it)")
+        p.add_argument("--force-agent-chain", action="store_true", help="Force escalation to AgentChain after planner")
         p.add_argument("--disable-recall", action="store_true")
         p.add_argument("--require-recall", action="store_true")
         p.add_argument("--recall-mode", default="hybrid")
         p.add_argument("--time-window-days", type=int, default=90)
         p.add_argument("--max-items", type=int, default=8)
+        p.add_argument(
+            "--diagnostic",
+            action="store_true",
+            help="Enable diagnostic mode (propagates options.diagnostic to orch/exec)",
+        )
 
     brain = sub.add_parser("brain", help="Brain chat through Orch/Exec/LLM")
     add_common(brain)
@@ -191,6 +212,23 @@ async def _main(argv: List[str]) -> int:
         await _tap(args.bus_url)
         return 0
 
+
+    # Pre-flight correlation notice
+    preview_corr = str(uuid4())
+    preview_reply = f"{args.reply_prefix}:{preview_corr}"
+    print(
+        json.dumps(
+            {
+                "preview_correlation": preview_corr,
+                "request_channel": args.channel,
+                "reply_channel": preview_reply,
+                "timeout_sec": args.timeout,
+            },
+            indent=2,
+        ),
+        file=sys.stderr,
+    )
+
     req = _build_request(args.cmd, args.text, args)
     try:
         payload = await _rpc_request(
@@ -203,6 +241,20 @@ async def _main(argv: List[str]) -> int:
             node=args.node,
             timeout=args.timeout,
         )
+
+        print(
+            json.dumps(
+                {
+                    "correlation_id": str(payload.get("correlation_id") or "n/a"),
+                    "reply_prefix": args.reply_prefix,
+                    "request_channel": args.channel,
+                },
+                indent=2,
+                default=str,
+            ),
+            file=sys.stderr,
+        )
+
         print(json.dumps(payload, indent=2, default=str))
         return 0
     except TimeoutError as te:

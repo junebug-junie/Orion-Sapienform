@@ -23,12 +23,21 @@ class Settings(BaseSettings):
         "orion-cortex:request",
         validation_alias=AliasChoices("CORTEX_REQUEST_CHANNEL", "ORCH_REQUEST_CHANNEL"),
     )
+    channel_cortex_result_prefix: str = Field(
+        "orion-cortex:result",
+        validation_alias=AliasChoices("CORTEX_RESULT_PREFIX", "ORCH_RESULT_PREFIX"),
+    )
 
     # RPC out to cortex-exec
     channel_exec_request: str = Field(
         "orion-cortex-exec:request",
         validation_alias=AliasChoices("CORTEX_EXEC_REQUEST_CHANNEL", "CHANNEL_EXEC_REQUEST"),
     )
+    channel_exec_result_prefix: str = Field(
+        "orion-cortex-exec:result",
+        validation_alias=AliasChoices("CORTEX_EXEC_RESULT_PREFIX", "EXEC_RESULT_PREFIX"),
+    )
+    diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
 
     class Config:
         env_file = ".env"

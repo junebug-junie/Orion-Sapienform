@@ -30,7 +30,7 @@ class AgentChainSettings(BaseSettings):
     # --- Orion bus / Redis ---
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_url: str = Field(
-        "redis://100.92.216.81/0",
+        "redis://100.92.216.81:6379/0",
         alias="ORION_BUS_URL",
     )
 
@@ -56,7 +56,7 @@ class AgentChainSettings(BaseSettings):
 
     # We will publish the final answer here
     agent_chain_result_prefix: str = Field(
-        "orion-agent-chain:result",
+        "orion-exec:result:AgentChainService",
         alias="AGENT_CHAIN_RESULT_PREFIX"
     )
 

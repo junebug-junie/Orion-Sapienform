@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
+import json
+from typing import Any, Optional, Dict
 
 from app.settings import settings
 from app.db import get_session, remove_session
@@ -13,6 +14,7 @@ from app.models import (
     CollapseMirror,
     Dream,
     SparkIntrospectionLogSQL,
+    BusFallbackLog
 )
 from app.schemas import (
     BiometricsInput,
@@ -28,6 +30,15 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 
 logger = logging.getLogger("sql-writer")
 
+# Map string keys from settings to actual classes
+MODEL_MAP = {
+    "CollapseMirror": (CollapseMirror, MirrorInput),
+    "CollapseEnrichment": (CollapseEnrichment, EnrichmentInput),
+    "ChatHistoryLogSQL": (ChatHistoryLogSQL, ChatHistoryInput),
+    "Dream": (Dream, DreamInput),
+    "BiometricsTelemetry": (BiometricsTelemetry, BiometricsInput),
+    "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, SparkIntrospectionInput),
+}
 
 def _cfg() -> ChassisConfig:
     return ChassisConfig(
@@ -61,67 +72,52 @@ def _write_row(sql_model_cls, data: dict) -> None:
         finally:
             remove_session()
 
+def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
+    sess = get_session()
+    try:
+        # Ensure payload is JSON-serializable if it isn't already (e.g. if it's a dict, sqlalchemy JSON type handles it, but verify)
+        sess.add(BusFallbackLog(
+            kind=kind,
+            correlation_id=correlation_id,
+            payload=payload if isinstance(payload, (dict, list)) else {"raw": str(payload)},
+            error=error
+        ))
+        sess.commit()
+    finally:
+        try:
+            sess.close()
+        finally:
+            remove_session()
 
 async def _write(sql_model_cls, schema_cls, payload: Any) -> None:
-    obj = _coerce_payload(schema_cls, payload)
-    data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()  # type: ignore
-    await asyncio.to_thread(_write_row, sql_model_cls, data)
+    try:
+        obj = _coerce_payload(schema_cls, payload)
+        data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()  # type: ignore
+        await asyncio.to_thread(_write_row, sql_model_cls, data)
+    except Exception as e:
+        logger.error(f"Failed to write to primary table: {e}")
+        raise e
 
 
-async def handle_envelope(env: BaseEnvelope, channel: Optional[str] = None) -> None:
-    """Route by Redis channel (preferred) with a fallback on env.kind."""
-    payload = env.payload
+async def handle_envelope(env: BaseEnvelope) -> None:
+    """Route by envelope.kind using the configured route map."""
 
-    # Channel-first routing (keeps backwards compatibility with legacy producers).
-    if channel == settings.channel_collapse_publish:
-        await _write(CollapseMirror, MirrorInput, payload)
-        return
-    if channel == settings.channel_tags_enriched:
-        await _write(CollapseEnrichment, EnrichmentInput, payload)
-        return
-    if channel == settings.channel_chat_log:
-        await _write(ChatHistoryLogSQL, ChatHistoryInput, payload)
-        return
-    if channel == settings.channel_dream:
-        await _write(Dream, DreamInput, payload)
-        return
-    if channel == settings.channel_biometrics:
-        await _write(BiometricsTelemetry, BiometricsInput, payload)
-        return
-    if channel == settings.channel_spark_introspection:
-        await _write(SparkIntrospectionLogSQL, SparkIntrospectionInput, payload)
-        return
+    route_key = settings.route_map.get(env.kind)
 
-    # Kind fallback for newer envelope producers.
-    if env.kind == "collapse.mirror":
-        await _write(CollapseMirror, MirrorInput, payload)
-        return
-    if env.kind in {"collapse.enrichment", "tags.enriched"}:
-        await _write(CollapseEnrichment, EnrichmentInput, payload)
-        return
-    if env.kind in {"chat.history", "chat.log"}:
-        await _write(ChatHistoryLogSQL, ChatHistoryInput, payload)
-        return
-    if env.kind in {"dream.log"}:
-        await _write(Dream, DreamInput, payload)
-        return
-    if env.kind in {"biometrics.telemetry"}:
-        await _write(BiometricsTelemetry, BiometricsInput, payload)
-        return
-    if env.kind in {"spark.introspection.log", "spark.introspection"}:
-        await _write(SparkIntrospectionLogSQL, SparkIntrospectionInput, payload)
-        return
-
-    logger.debug("No route for kind=%s channel=%s; dropping", env.kind, channel)
+    if route_key and route_key in MODEL_MAP:
+        sql_model, schema_model = MODEL_MAP[route_key]
+        try:
+            await _write(sql_model, schema_model, env.payload)
+            logger.info(f"Written {env.kind} -> {sql_model.__tablename__}")
+        except Exception as e:
+             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")
+             await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, str(e))
+    else:
+        # Fallback for unknown kinds
+        logger.warning(f"Unknown kind {env.kind}, writing to fallback log.")
+        await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, "Unknown kind")
 
 
 def build_hunter() -> Hunter:
-    patterns = [
-        settings.channel_collapse_publish,
-        settings.channel_tags_enriched,
-        settings.channel_chat_log,
-        settings.channel_dream,
-        settings.channel_biometrics,
-        settings.channel_spark_introspection,
-    ]
+    patterns = settings.sql_writer_subscribe_channels
     return Hunter(_cfg(), patterns=patterns, handler=handle_envelope)

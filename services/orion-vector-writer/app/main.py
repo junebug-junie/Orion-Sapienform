@@ -1,7 +1,7 @@
 import logging
 import threading
 import json
-
+import asyncio
 import chromadb
 import chromadb.utils.embedding_functions as ef
 import time
@@ -11,7 +11,9 @@ from typing import Optional, List, Dict, Any
 
 from .settings import settings
 from app.models import CollapseTriageEvent, ChatMessageEvent, RAGDocumentEvent
-from orion.core.bus.service import OrionBus
+from orion.core.bus.consumer_worker import run_worker
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope
 
 # --- Logging Setup ---
 logging.basicConfig(level=settings.LOG_LEVEL.upper(), format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -37,12 +39,15 @@ def _flatten_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
             flat_meta[key] = json.dumps(value)
     return flat_meta
 
-
-def batch_upsert_worker(chroma_client, embedding_function, bus):
+async def batch_upsert_worker_async(chroma_client, embedding_function, bus_url: str):
     """
     Periodically checks the queue and upserts a batch of documents to ChromaDB.
     """
     logger.info("⚙️ Batch upsert worker started. Batch size: %d", settings.BATCH_SIZE)
+
+    # Use a separate bus for publishing confirmation
+    bus = OrionBusAsync(bus_url, enabled=settings.ORION_BUS_ENABLED)
+    await bus.connect()
 
     # Initialize collection
     collection = None
@@ -60,14 +65,14 @@ def batch_upsert_worker(chroma_client, embedding_function, bus):
             break
         except Exception as e:
             logger.warning(f"⏳ Waiting for ChromaDB... attempt {attempt+1}/10 ({e})")
-            time.sleep(5)
+            await asyncio.sleep(5)
     else:
         logger.critical("🚨 Failed to connect to ChromaDB after multiple attempts.")
         return
 
     # --- Upsert loop ---
     while True:
-        time.sleep(2)
+        await asyncio.sleep(2)
         with _queue_lock:
             if not _doc_queue:
                 continue
@@ -79,82 +84,99 @@ def batch_upsert_worker(chroma_client, embedding_function, bus):
             texts = [doc["text"] for doc in batch]
             metadatas = [ _flatten_metadata(doc["metadata"]) for doc in batch ]
 
-            collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
+            # Chroma client is sync (usually), unless using the async client which is alpha
+            # Since this runs in an asyncio loop, we should probably offload the sync call
+            await asyncio.to_thread(collection.upsert, ids=ids, documents=texts, metadatas=metadatas)
             logger.info(f"✅ Upserted {len(batch)} documents into Chroma collection '{settings.VECTOR_DB_COLLECTION}'")
 
             # Publish confirmation
             for d in batch:
-                bus.publish(settings.PUBLISH_CHANNEL_VECTOR_CONFIRM, {"id": d["id"], "status": "stored"})
+                await bus.publish(settings.PUBLISH_CHANNEL_VECTOR_CONFIRM, {"id": d["id"], "status": "stored"})
 
         except Exception as e:
             logger.error(f"❌ Failed to upsert batch to ChromaDB: {e}", exc_info=True)
 
-def listener_worker(bus: OrionBus):
+# Map string keys from settings to actual classes
+MODEL_MAP = {
+    "CollapseTriageEvent": CollapseTriageEvent,
+    "ChatMessageEvent": ChatMessageEvent,
+    "RAGDocumentEvent": RAGDocumentEvent,
+}
+
+async def message_handler(envelope: BaseEnvelope):
     """
     Listens for messages, validates them, and adds them to a queue for batch processing.
     """
-    channel_to_model_map = {
-        settings.SUBSCRIBE_CHANNEL_COLLAPSE: CollapseTriageEvent,
-        settings.SUBSCRIBE_CHANNEL_CHAT: ChatMessageEvent,
-        settings.SUBSCRIBE_CHANNEL_RAG_DOC: RAGDocumentEvent,
-    }
 
-    channels = list(channel_to_model_map.keys())
-    logger.info(f"👂 Subscribing to channels: {channels}")
+    # Route by kind
+    route_key = settings.route_map.get(envelope.kind)
 
-    for message in bus.subscribe(*channels):
-        channel = message.get("channel")
-        data = message.get("data")
-        model = channel_to_model_map.get(channel)
+    if not route_key or route_key not in MODEL_MAP:
+        logger.debug(f"Skipping unknown kind: {envelope.kind}")
+        return
 
-        if not all([channel, data, model]):
-            continue
+    model_class = MODEL_MAP[route_key]
 
+    try:
+        # Pydantic v2 validation
+        if hasattr(model_class, "model_validate"):
+            validated_event = model_class.model_validate(envelope.payload)
+        else:
+            validated_event = model_class.parse_obj(envelope.payload)
+
+        doc_to_queue = validated_event.to_document()
+
+        with _queue_lock:
+            _doc_queue.append(doc_to_queue)
+
+        logger.debug(f"📥 Queued document {doc_to_queue['id']} from kind {envelope.kind}")
+
+    except Exception as e:
+        logger.warning(f"Skipping invalid message kind {envelope.kind}: {e}")
+
+def run_services_in_thread():
+    """
+    Starts the asyncio event loop for the consumers.
+    """
+    async def _runner():
         try:
-            validated_event = model.model_validate(data)
-            doc_to_queue = validated_event.to_document()
+            logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
+            embedding_function = ef.SentenceTransformerEmbeddingFunction(model_name=settings.EMBEDDING_MODEL)
 
-            with _queue_lock:
-                _doc_queue.append(doc_to_queue)
-
-            logger.debug(f"📥 Queued document {doc_to_queue['id']} from channel {channel}")
-
+            logger.info(f"Connecting to ChromaDB server at: {settings.VECTOR_DB_HOST}:{settings.VECTOR_DB_PORT}")
+            chroma_client = chromadb.HttpClient(
+                host=settings.VECTOR_DB_HOST,
+                port=settings.VECTOR_DB_PORT
+            )
+            chroma_client.heartbeat() # check connection
         except Exception as e:
-            logger.warning(f"Skipping invalid message on channel {channel}: {e}")
+             logger.critical(f"Failed to init Chroma: {e}")
+             return
+
+        # Start the batch upsert worker
+        asyncio.create_task(batch_upsert_worker_async(chroma_client, embedding_function, settings.ORION_BUS_URL))
+
+        # Start the bus consumer
+        await run_worker(
+            service_name=settings.SERVICE_NAME,
+            bus_url=settings.ORION_BUS_URL,
+            channels=settings.VECTOR_WRITER_SUBSCRIBE_CHANNELS,
+            handler=message_handler
+        )
+
+    asyncio.run(_runner())
 
 
 @app.on_event("startup")
 def startup_event():
     """
-    Initializes all dependencies and starts the background worker threads,
-    passing the dependencies to them directly.
+    Initializes all dependencies and starts the background worker threads.
     """
     logger.info(f"🚀 Starting {settings.SERVICE_NAME} v{settings.SERVICE_VERSION}")
 
-    try:
-        logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        embedding_function = ef.SentenceTransformerEmbeddingFunction(model_name=settings.EMBEDDING_MODEL)
-
-        logger.info(f"Connecting to ChromaDB server at: {settings.VECTOR_DB_HOST}:{settings.VECTOR_DB_PORT}")
-        chroma_client = chromadb.HttpClient(
-            host=settings.VECTOR_DB_HOST, 
-            port=settings.VECTOR_DB_PORT
-        )
-        chroma_client.heartbeat()
-
-        logger.info("✅ Initialized ChromaDB client and embedding model.")
-    except Exception as e:
-        logger.critical(f"🚨 Failed to initialize a required service: {e}", exc_info=True)
-        return
-
     if settings.ORION_BUS_ENABLED:
-        bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
         logger.info("Starting listener and batch worker threads...")
-        # The listener needs its own bus instance for thread-safety
-        listen_bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
-
-        threading.Thread(target=listener_worker, args=(listen_bus,), daemon=True).start()
-        threading.Thread(target=batch_upsert_worker, args=(chroma_client, embedding_function, bus), daemon=True).start()
+        threading.Thread(target=run_services_in_thread, daemon=True).start()
     else:
         logger.warning("Bus is disabled; vector writer will be idle.")
 
@@ -167,4 +189,3 @@ def health():
         "version": settings.SERVICE_VERSION,
         "queue_size": len(_doc_queue),
     }
-

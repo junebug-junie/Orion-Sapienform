@@ -89,6 +89,15 @@ Example for the brain LLM service:
 - Request channel: `orion-exec:request:LLMGatewayService`
 - Result channel:  `orion-exec:result:c7cff8c8-1e36-4084-bac3-66884b15c9b7`
 
+Default targets from `.env` / `app/settings.py`:
+
+- Intake from Orch/Hub: `CHANNEL_EXEC_REQUEST=orion-cortex-exec:request`
+- LLM Gateway: `CHANNEL_LLM_INTAKE=orion-exec:request:LLMGatewayService`
+- Recall: `CHANNEL_RECALL_INTAKE=orion-exec:request:RecallService`
+- Planner: `CHANNEL_PLANNER_INTAKE=orion-exec:request:PlannerReactService`
+- Agent Chain: `CHANNEL_AGENT_CHAIN_INTAKE=orion-exec:request:AgentChainService`
+- Council (stub): `CHANNEL_COUNCIL_INTAKE=orion:agent-council:intake`, replies on `CHANNEL_COUNCIL_REPLY_PREFIX=orion:council:reply`
+
 ### Service alias resolution
 
 Cortex keeps a simple registry mapping semantic aliases to bus service names, e.g. in `app/service_registry.py`:

@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     ERROR_CHANNEL: str = "system.error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 
-    CHANNEL_RECALL_REQUEST: str = "orion:recall:request"
-    CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion:recall:reply"
+    CHANNEL_RECALL_REQUEST: str = "orion-exec:request:RecallService"
+    CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion-exec:result:RecallService"
 
     # ── Default Recall Behavior ───────────────────────────────────────
     RECALL_DEFAULT_MAX_ITEMS: int = 16

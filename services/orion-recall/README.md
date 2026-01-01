@@ -25,8 +25,8 @@ The goal is: **one place** to ask, “What should Orion remember right now?”
 - **Node:** running on `athena` alongside SQL and bus.
 - **Bus:**
   - `ORION_BUS_URL=redis://100.92.216.81:6379/0`
-  - Intake channel: `CHANNEL_RECALL_REQUEST`
-  - Reply prefix: `CHANNEL_RECALL_DEFAULT_REPLY_PREFIX`
+  - Intake channel: `RECALL_BUS_INTAKE` / `CHANNEL_RECALL_REQUEST` (default `orion-exec:request:RecallService`)
+  - Reply prefix: `CHANNEL_RECALL_DEFAULT_REPLY_PREFIX` (default `orion-exec:result:RecallService`)
 
 ### Data Sources
 
@@ -91,8 +91,9 @@ ORION_BUS_ENABLED=true
 ORION_BUS_URL=redis://100.92.216.81:6379/0
 
 # --- Bus Channels ---
-CHANNEL_RECALL_REQUEST=orion:recall:request
-CHANNEL_RECALL_DEFAULT_REPLY_PREFIX=orion:recall:reply
+RECALL_BUS_INTAKE=orion-exec:request:RecallService
+CHANNEL_RECALL_REQUEST=orion-exec:request:RecallService
+CHANNEL_RECALL_DEFAULT_REPLY_PREFIX=orion-exec:result:RecallService
 
 # --- Default Retrieval Behavior ---
 RECALL_DEFAULT_MAX_ITEMS=16
@@ -180,7 +181,7 @@ RECALL_TENSOR_RANKER_MODEL_PATH=/mnt/storage-warm/orion/recall/tensor-ranker.pt
 
 ### 5.1 Recall Request
 
-**Channel:** `${CHANNEL_RECALL_REQUEST}` (e.g. `orion:recall:request`)
+**Channel:** `${CHANNEL_RECALL_REQUEST}` (default `orion-exec:request:RecallService`)
 
 **Payload (high-level):**
 
@@ -200,19 +201,15 @@ RECALL_TENSOR_RANKER_MODEL_PATH=/mnt/storage-warm/orion/recall/tensor-ranker.pt
     "tags": ["gpu", "v100"]         // optional: tag hints
   },
 
-  "reply_channel": "orion:recall:reply:brain:xyz" // optional override
+  "reply_channel": "orion-exec:result:RecallService:<uuid>" // supplied by caller (Exec)
 }
 ```
 
-If `reply_channel` is omitted, the service builds one as:
-
-```text
-${CHANNEL_RECALL_DEFAULT_REPLY_PREFIX}:${source}:${trace_id}
-```
+Exec currently provides the reply channel; legacy callers may still supply one explicitly.
 
 ### 5.2 Recall Result
 
-**Channel:** Derived reply channel, e.g. `orion:recall:reply:brain:<trace_id>`.
+**Channel:** Caller-provided reply channel, e.g. `orion-exec:result:RecallService:<uuid>`.
 
 **Payload (simplified):**
 
@@ -322,7 +319,7 @@ You should see `orion-athena-recall` log something like:
 
 - Connected to Postgres at `orion-athena-sql-db:5432`.
 - Connected to Redis bus at `redis://100.92.216.81:6379/0`.
-- Listening on `orion:recall:request`.
+- Listening on `orion-exec:request:RecallService`.
 
 ---
 
@@ -364,7 +361,7 @@ Future options:
 - Verify Chroma:
   - Port-forward or curl `http://${VECTOR_DB_HOST}:${VECTOR_DB_PORT}/api/v1/collections`.
 - Quick bus test:
-  - Publish a simple recall request with `redis-cli` to `orion:recall:request` and watch for replies on `orion:recall:reply:*`.
+  - Publish a simple recall request with `redis-cli` to `orion-exec:request:RecallService` and watch for replies on `orion-exec:result:RecallService:*`.
 
 ---
 

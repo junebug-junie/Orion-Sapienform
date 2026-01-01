@@ -20,12 +20,13 @@ This document is the **only** source of truth for cross-service routing, payload
 | Flow | Request channel | Kind (req → res) | Reply prefix (caller-owned) |
 | --- | --- | --- | --- |
 | Client → Cortex-Orch | `orion-cortex:request` | `cortex.orch.request` → `cortex.orch.result` | `orion-cortex:result` |
-| Orch → Exec | `orion-cortex-exec:request` | `cortex.exec.request` → `cortex.exec.result` | `orion-cortex-exec:result` |
+| Orch → Exec | `orion-cortex-exec:request` | `cortex.exec.request` → `cortex.exec.result` | `orion-exec:result` |
 | Exec → LLM Gateway | `orion-exec:request:LLMGatewayService` | `llm.chat.request` → `llm.chat.result` | `orion-exec:result:LLMGatewayService` |
 | Exec → Recall | `orion-exec:request:RecallService` | `recall.query.request` → `recall.query.result` | `orion-exec:result:RecallService` |
 | Exec → Agent Chain (ReAct) | `orion-exec:request:AgentChainService` | `agent.chain.request` → `agent.chain.result` | `orion-exec:result:AgentChainService` |
 | Exec → Planner-React (direct) | `orion-exec:request:PlannerReactService` | `agent.planner.request` → `agent.planner.result` | `orion-exec:result:PlannerReactService` |
-| Exec → Council (stub) | `orion-exec:request:CouncilService` | `council.request` → `council.result` | `orion-exec:result:CouncilService` |
+| Exec → Council (stub) | `orion:agent-council:intake` | `council.request` → `council.result` | `orion:council:reply` |
+| Planner LLM hop (internal) | `orion-exec:request:LLMGatewayService` | `llm.chat.request` → `llm.chat.result` | `orion:llm:reply` |
 | Health | `system.health` | `system.health` | n/a |
 | Errors | `system.error` | `system.error` | n/a |
 
@@ -72,20 +73,26 @@ Exec is the **only** orchestrator of workers. Orch must never call LLM/Recall/Ag
 * `llm.chat.request` → `llm.chat.result`
 * Request: `ChatRequestPayload` (`model`, `profile`, `messages`, `options`, `user_id`, `session_id`)
 * Response: `ChatResultPayload` (`content`, `usage`, `spark_meta`, `raw`)
+* Default routing:
+  * Exec RPC: `request=orion-exec:request:LLMGatewayService`, `reply=orion-exec:result:LLMGatewayService:<uuid>`
+  * Planner’s internal LLM call: `request=orion-exec:request:LLMGatewayService`, `reply=orion:llm:reply:<uuid>`
 
 ### Recall
 * `recall.query.request` → `recall.query.result`
 * Request: `RecallRequestPayload` (`query_text`, `session_id`, `user_id`, `mode`, `time_window_days`, `max_items`, `packs`, `trace_id`)
 * Response: `RecallResultPayload` (`fragments[]`, `debug`)
+* Bus channels: `request=orion-exec:request:RecallService`, `reply=orion-exec:result:RecallService:<uuid>`
 * Exec surfaces only `memory_used` + `recall_debug` to the client unless debug is explicitly requested.
 
 ### Agent Chain (ReAct worker)
 * `agent.chain.request` → `agent.chain.result`
 * Request: `AgentChainRequest` (`text`, `mode`, `messages`, `session_id`, `user_id`, `packs`, `tools`)
 * Response: `AgentChainResult` (`text`, `structured`, `planner_raw`)
+* Bus channels: `request=orion-exec:request:AgentChainService`, `reply=orion-exec:result:AgentChainService:<uuid>`
 
 ### Council (stub)
 * `council.request` → `council.result`
+* Default channels: `request=orion:agent-council:intake`, `reply=orion:council:reply:<uuid>`
 * Currently returns a structured error envelope; reserved for supervisor/worker path.
 
 ---
@@ -95,10 +102,10 @@ Exec is the **only** orchestrator of workers. Orch must never call LLM/Recall/Ag
 * `.env_example` → `docker-compose.yml` → `settings.py`
 * Every channel above has a surfaced setting in its service:
   * Orch: `channel_cortex_request`, `channel_cortex_result_prefix`, `channel_exec_request`, `channel_exec_result_prefix`
-  * Exec: `channel_exec_request`, `exec_request_prefix`, `exec_result_prefix`, `channel_llm_intake`, `channel_recall_intake`, `channel_agent_chain_intake`, `channel_planner_intake`, `channel_council_intake`
+  * Exec: `channel_exec_request`, `exec_request_prefix`, `exec_result_prefix`, `channel_llm_intake`, `channel_recall_intake`, `channel_agent_chain_intake`, `channel_planner_intake`, `channel_council_intake`, `channel_council_reply_prefix`
   * Agent Chain: `agent_chain_request_channel`, `agent_chain_result_prefix`, `planner_request_channel`, `planner_result_prefix`
-  * Planner-React: `planner_request_channel`, `planner_result_prefix`
-  * Recall: `RECALL_BUS_INTAKE`
+  * Planner-React: `planner_request_channel`, `planner_result_prefix`, `exec_request_prefix`, `llm_reply_prefix`
+  * Recall: `RECALL_BUS_INTAKE`, `CHANNEL_RECALL_REQUEST`, `CHANNEL_RECALL_DEFAULT_REPLY_PREFIX`
   * LLM Gateway: `channel_llm_intake`
 
 No service may invent a channel name that is not represented in its settings.

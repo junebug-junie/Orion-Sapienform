@@ -1,29 +1,29 @@
-version: "3.4"
-
 services:
   dream:
     build:
       context: ../..
       dockerfile: services/orion-dream/Dockerfile
-    image: orion-dream:latest
-    container_name: orion-dream
+    container_name: ${PROJECT}-dream
     restart: unless-stopped
     networks:
       - app-net
     environment:
-      - SERVICE_NAME=orion-dream
-      - SERVICE_VERSION=1.0.0
-      - ORION_BUS_URL=${ORION_BUS_URL:-redis://orion-redis:6379/0}
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
-      - CHANNEL_DREAM_TRIGGER=orion:dream:trigger
-      - POSTGRES_URI=${POSTGRES_URI:-postgresql://postgres:postgres@postgres:5432/conjourney}
-      - GRAPHDB_URL=${GRAPHDB_URL:-http://graphdb:7200}
-      - BRAIN_URL=${BRAIN_URL:-http://brain:8088}
-      - NODE_NAME=${NODE_NAME:-unknown}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - CHANNEL_DREAM_TRIGGER=${CHANNEL_DREAM_TRIGGER}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - GRAPHDB_URL=${GRAPHDB_URL}
+      - BRAIN_URL=${BRAIN_URL}
+      - NODE_NAME=${NODE_NAME}
     ports:
-      - "8620:8620"
+      - "${PORT}:${PORT}"
     volumes:
-      - ./logs:/app/logs
+      - ./sql:/app/sql
+      - /mnt/storage-lukewarm/logs/dream/logs:/app/logs
+    env_file:
+      - .env
 
 networks:
   app-net:

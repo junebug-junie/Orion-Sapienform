@@ -42,4 +42,5 @@ services:
 
 networks:
   app-net:
+    name: ${NET}
     external: true

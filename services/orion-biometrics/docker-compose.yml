@@ -6,21 +6,30 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-biometrics/Dockerfile
-    image: orion-biometrics:latest
     container_name: ${PROJECT}-${SERVICE_NAME}
     restart: unless-stopped
+    networks:
+      - app-net
     privileged: true  # Required for raw hardware access (sensors, gpu)
     ports:
       - "${PORT}:8100"
     environment:
-      - SERVICE_NAME=orion-biometrics
-      - SERVICE_VERSION=0.1.0
-      - ORION_BUS_URL=${ORION_BUS_URL:-redis://orion-redis:6379/0}
+      # --- Service Identity & Runtime ---
+      - PROJECT=${PROJECT}
+      - NODE_NAME=${NODE_NAME}
+      - NET=${NET}
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - TELEMETRY_INTERVAL=${TELEMETRY_INTERVAL}
+      - LOG_LEVEL=${LOG_LEVEL}
+
+      # --- Orion Bus & Database ---
+      # TABLE_NAME removed per review
+      - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
-      - TELEMETRY_PUBLISH_CHANNEL=${TELEMETRY_PUBLISH_CHANNEL:-orion:biometrics:telemetry}
-      - TELEMETRY_INTERVAL=10
-      - LOG_LEVEL=INFO
-      - NODE_NAME=${NODE_NAME:-unknown}
+      - TELEMETRY_PUBLISH_CHANNEL=${TELEMETRY_PUBLISH_CHANNEL}
+      - EXTERNAL_SUBSCRIBE_CHANNEL=${EXTERNAL_SUBSCRIBE_CHANNEL}
+
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     deploy:
@@ -29,3 +38,7 @@ services:
           devices:
             - driver: nvidia
               capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

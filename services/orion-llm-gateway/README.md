@@ -24,11 +24,10 @@ Think of this as the **LLM I/O card** for the organism.
   - Primary: Ollama (Atlas)
   - Future: vLLM (NVLink V100 carrier board), LangChain / LangGraph orchestrations.
 - **Upstream callers:**
-  - `orion-brain` (direct or via bus)
-  - `orion-agent-council`
-  - `orion-dream`
-  - `orion-recall`
-  - Hub / Collapse Mirror flows via Brain.
+  - `cortex-exec` (brain + agent flows)
+  - `planner-react` (planner loop)
+  - `agent-chain` (indirect within tools)
+  - Legacy: `orion-brain`, `orion-dream`, `orion-recall`
 
 The entire point is that **all of those callers only need to know how to talk to the bus**, not how to talk to Ollama vs vLLM vs LangChain.
 
@@ -52,8 +51,8 @@ Bus configuration:
 ORION_BUS_ENABLED=true
 ORION_BUS_URL=redis://100.92.216.81:6379/0
 
-CHANNEL_LLM_INTAKE=orion:llm:intake
-CHANNEL_LLM_REPLY_PREFIX=orion:llm:reply
+CHANNEL_LLM_INTAKE=orion-exec:request:LLMGatewayService
+# Replies always go to the caller-provided reply_to (exec uses orion-exec:result:LLMGatewayService:<uuid>)
 ```
 
 Backend selection / routing (high-level sketch):
@@ -83,40 +82,42 @@ The exact variable names should match what’s defined in `app/settings.py`; thi
 
 ### 4.1 Intake Channel
 
-**Channel:** `${CHANNEL_LLM_INTAKE}` (e.g. `orion:llm:intake`)
+**Channel:** `${CHANNEL_LLM_INTAKE}` (default: `orion-exec:request:LLMGatewayService`)
 
-**Inbound payload (from Brain / Council / Dream / Recall / others):**
+**Inbound envelope (from Exec / Planner / others):**
 
 ```jsonc
 {
-  "trace_id": "uuid-or-upstream-trace",
-  "source": "agent-council",          // or brain / dream / recall / hub
-  "backend": "ollama",                // optional; falls back to LLM_DEFAULT_BACKEND
-  "model": "llama3.1:8b-instruct-q8_0", // logical or backend model name
-  "messages": [
-    {"role": "system", "content": "..."},
-    {"role": "user", "content": "..."}
-  ],
-  "options": {
-    "temperature": 0.6,
-    "top_p": 0.9,
-    "num_ctx": 4096,
-    "num_predict": 512
-  },
-  "stream": false,
-  "reply_channel": "orion:llm:reply:agent-council:xyz"  // optional override
+  "kind": "llm.chat.request",
+  "correlation_id": "uuid-or-upstream-trace",
+  "reply_to": "orion-exec:result:LLMGatewayService:<uuid>",
+  "payload": {
+    "model": "llama3.1:8b-instruct-q8_0",
+    "profile": null,
+    "messages": [
+      {"role": "system", "content": "..."},
+      {"role": "user", "content": "..."}
+    ],
+    "options": {
+      "temperature": 0.6,
+      "top_p": 0.9,
+      "num_ctx": 4096,
+      "max_tokens": 512
+    },
+    "session_id": "abc",
+    "user_id": "abc"
+  }
 }
 ```
 
-If `reply_channel` is not provided, the service builds one from:
+**Reply routing:** LLM Gateway responds on whatever `reply_to` the caller provides:
 
-```text
-${CHANNEL_LLM_REPLY_PREFIX}:${source}:${trace_id}
-```
+- Exec RPC: `orion-exec:result:LLMGatewayService:<uuid>`
+- Planner loop: `orion:llm:reply:<uuid>`
 
 ### 4.2 Reply Payload
 
-**Channel:** Derived reply channel, e.g. `orion:llm:reply:agent-council:<trace_id>`.
+**Channel:** Caller-provided reply channel, e.g. `orion-exec:result:LLMGatewayService:<uuid>` or `orion:llm:reply:<uuid>`.
 
 **Outbound payload:**
 
@@ -234,7 +235,7 @@ Suggestions:
 1. **Health check**
    - `curl http://localhost:8222/health`
 2. **Manual bus test**
-   - Publish a small payload to `orion:llm:intake` with `redis-cli` and verify a reply message shows up on `orion:llm:reply:...`.
+   - Publish a small `llm.chat.request` envelope to `orion-exec:request:LLMGatewayService` with `reply_to=orion-exec:result:LLMGatewayService:smoke` (or your own prefix) and watch that channel for `llm.chat.result`.
 3. **Watch logs**
    - `docker logs -f orion-athena-llm-gateway`
 

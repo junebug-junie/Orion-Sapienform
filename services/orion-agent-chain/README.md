@@ -7,7 +7,13 @@
 ## 📖 Overview
 The **Agent Chain Service** is the lightweight orchestration gateway for the Orion cognitive stack.
 
-Its primary job is to translate **simple HTTP client intents** into the **asynchronous ReAct Planner workflow** that operates over the Orion Redis Bus.
+Its primary job is to translate **Exec-triggered agentic requests** into the **asynchronous ReAct Planner workflow** that operates over the Orion Redis Bus. HTTP remains available for debugging, but the canonical entrypoint is the bus (`orion-exec:request:AgentChainService` with an Exec-provided `reply_to`).
+
+### Bus Channels (defaults)
+
+- **Intake:** `AGENT_CHAIN_REQUEST_CHANNEL=orion-exec:request:AgentChainService`
+- **Replies:** Exec supplies `reply_to` (pattern: `orion-exec:result:AgentChainService:<uuid>`)
+- **Planner RPC:** `PLANNER_REQUEST_CHANNEL=orion-exec:request:PlannerReactService`, `PLANNER_RESULT_PREFIX=orion-exec:result:PlannerReactService:<uuid>`
 
 ### Why this service exists
 - **Simplification** – Clients (Hub/UI) send simple JSON (`text + tools/packs`) and don’t need to understand complex Planner envelopes.
@@ -21,13 +27,13 @@ The service uses a **Bus‑Driven RPC pattern**, acting as a sync/await-style wr
 
 ```mermaid
 sequenceDiagram
-    participant Client as 🖥️ Hub / Client
+    participant Exec as 🧭 Cortex-Exec
     participant Chain as 🔗 Agent Chain
     participant Bus as 🚌 Orion Bus (Redis)
     participant Planner as 🧠 Planner (ReAct)
 
-    Client->>Chain: POST /chain/run { text, mode, packs/tools }
-    Note over Chain: Validate + build PlannerRequest dict
+    Exec->>Bus: PUBLISH orion-exec:request:AgentChainService (reply_to=orion-exec:result:AgentChainService:<uuid>)
+    Note over Chain: Bus listener builds PlannerRequest dict
 
     Chain->>Bus: PUBLISH orion-exec:request:PlannerReactService
     Note over Bus: Async Event Routing
@@ -35,10 +41,10 @@ sequenceDiagram
     Bus->>Planner: Deliver Request
     Note over Planner: Execute ReAct Loop + Cortex verbs
 
-    Planner->>Bus: PUBLISH orion-exec:result:PlannerReactService:<uuid>
-    Bus->>Chain: Deliver Result
+    Planner->>Bus: PUBLISH reply_to from Exec (orion-exec:result:PlannerReactService:<uuid>)
+    Bus->>Chain: Deliver Planner Result
 
-    Chain->>Client: 200 OK { text, structured, planner_raw }
+    Chain->>Exec: agent.chain.result { text, structured, planner_raw }
 ```
 
 ---

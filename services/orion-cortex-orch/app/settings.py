@@ -34,7 +34,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CORTEX_EXEC_REQUEST_CHANNEL", "CHANNEL_EXEC_REQUEST"),
     )
     channel_exec_result_prefix: str = Field(
-        "orion-cortex-exec:result",
+        "orion-exec:result",
         validation_alias=AliasChoices("CORTEX_EXEC_RESULT_PREFIX", "EXEC_RESULT_PREFIX"),
     )
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")

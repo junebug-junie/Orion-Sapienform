@@ -21,6 +21,14 @@ The key point: **Planner-React does not know how tools are implemented.** It onl
 - *What* tools exist (`tool_id`, description, input schema).
 - *How* to ask LLM-Gateway to pick the next tool or finish.
 - *How* to call Cortex-Orch to actually run a verb.
+- The primary entrypoint today is the Exec bus (`orion-exec:request:PlannerReactService`), with HTTP retained for debugging.
+
+### Bus Channels (defaults)
+
+- **Intake:** `PLANNER_REQUEST_CHANNEL=orion-exec:request:PlannerReactService`
+- **Replies:** Exec provides a `reply_to` (pattern: `orion-exec:result:PlannerReactService:<uuid>`)
+- **Planner LLM RPC:** `EXEC_REQUEST_PREFIX=orion-exec:request`, `LLM_GATEWAY_SERVICE_NAME=LLMGatewayService`, reply prefix `CHANNEL_LLM_REPLY_PREFIX=orion:llm:reply`
+- **Optional Cortex RPC:** `CORTEX_REQUEST_CHANNEL=orion-cortex:request`, `CORTEX_RESULT_PREFIX=orion-cortex:result`
 
 This keeps hub/UI “stupid and just UX”, and moves orchestration into a dedicated service.
 
@@ -30,8 +38,8 @@ This keeps hub/UI “stupid and just UX”, and moves orchestration into a dedic
 
 From a 10,000 ft view, one planning request flows like this:
 
-1. **Caller → Planner-React HTTP**  
-   A client (e.g., `curl`, hub, another service) POSTs JSON to:
+1. **Caller → Planner-React HTTP (debug) / Exec bus (prod)**  
+   The canonical path is an RPC from Cortex-Exec on `orion-exec:request:PlannerReactService` (with `reply_to` supplied by Exec). HTTP remains for ad-hoc testing:
    
    ```
    POST /plan/react
@@ -39,10 +47,10 @@ From a 10,000 ft view, one planning request flows like this:
    ```
 
 2. **Planner-React → LLM-Gateway (bus)**  
-   Planner-React builds a planning prompt and sends it to LLM-Gateway via the **Exec** pattern on the Orion bus:
+   Planner-React builds a planning prompt and sends it to LLM-Gateway via the Exec bus pattern:
    
    - Publish to: `orion-exec:request:LLMGatewayService`  
-   - Reply channel: `orion:llm:reply:<trace_id>`
+   - Reply channel: `orion:llm:reply:<trace_id>` (planner-managed)
 
    LLM-Gateway:
    - Selects an LLM profile (e.g., `gemini-planner-profile` or similar).

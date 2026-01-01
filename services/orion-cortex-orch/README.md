@@ -18,6 +18,8 @@ It connects to the **Orion bus (Redis)** and orchestrates fan-out / fan-in via:
 
 - `EXEC_REQUEST_PREFIX:<ServiceName>`
 - `EXEC_RESULT_PREFIX:<trace_id>`
+- Default intake from Hub/Client: `orion-cortex:request` (reply prefix `orion-cortex:result`)
+- Default RPC into Exec: `orion-cortex-exec:request` with replies on `orion-exec:result:<uuid>`
 
 ---
 
@@ -64,6 +66,7 @@ ORION_BUS_ENABLED=true
 # Exec routing
 EXEC_REQUEST_PREFIX=orion-exec:request
 EXEC_RESULT_PREFIX=orion-exec:result
+CORTEX_EXEC_REQUEST_CHANNEL=orion-cortex-exec:request
 
 # Orchestrator bus routing (optional)
 CORTEX_ORCH_REQUEST_CHANNEL=orion-cortex:request

@@ -6,6 +6,8 @@ services:
     image: orion-dream:latest
     container_name: orion-dream
     restart: unless-stopped
+    networks:
+      - app-net
     environment:
       - SERVICE_NAME=orion-dream
       - SERVICE_VERSION=1.0.0
@@ -20,3 +22,7 @@ services:
       - "8620:8620"
     volumes:
       - ./logs:/app/logs
+
+networks:
+  app-net:
+    external: true

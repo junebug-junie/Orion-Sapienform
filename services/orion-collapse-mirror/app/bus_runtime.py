@@ -72,8 +72,14 @@ async def handle_intake(env: BaseEnvelope) -> None:
         return
 
     enriched = _wrap_entry_for_triage(entry)
-    # publish as legacy dict for now (downstream still expects it)
+
+    # Dual-publish:
+    # 1. To Triage (for AI enrichment pipeline)
     await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, enriched)
+
+    # 2. To SQL Writer (for Raw storage) - hardcoded canonical channel per request
+    # Note: enriched dict contains the ID and timestamp needed by the writer
+    await intake_hunter.bus.publish("orion:collapse:sql-write", enriched)
 
 
 async def handle_exec_step(env: BaseEnvelope) -> BaseEnvelope:

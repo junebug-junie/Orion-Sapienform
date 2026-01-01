@@ -16,11 +16,16 @@ from .settings import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    stop_event = asyncio.Event()
+    # Rabbit start_background doesn't take stop_event in latest chassis, it stores tasks.
+    # But checking Rabbit implementation:
+    # async def start_background(self, stop_event: Optional[asyncio.Event] = None) -> None:
+    # It DOES accept stop_event optionally, but generally we rely on .stop()
+
     rabbit = Rabbit(chassis_cfg(), request_channel=settings.RECALL_BUS_INTAKE, handler=handle)
-    await rabbit.start_background(stop_event)
+    await rabbit.start_background()
+
     yield
-    stop_event.set()
+
     await rabbit.stop()
 
 

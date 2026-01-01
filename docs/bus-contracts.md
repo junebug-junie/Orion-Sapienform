@@ -34,6 +34,16 @@ Reply channels are ephemeral per request and **must** be provided by the caller 
 
 ---
 
+## Data Flows
+
+### Flow A (Raw Storage)
+`orion:collapse:intake` → Mirror Service → `orion:collapse:sql-write` → SQL Writer.
+
+### Flow B (AI Enrichment)
+`orion:collapse:intake` → Mirror Service → `orion:collapse:triage` → Meta Tags Service → `orion:tags:enriched` → SQL Writer.
+
+---
+
 ## Cortex Client Contract (Client/Hub → Orch)
 
 * **Kind:** `cortex.orch.request`

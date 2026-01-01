@@ -1,6 +1,8 @@
 services:
   biometrics:
-    build: .
+    build:
+      context: ../..
+      dockerfile: services/orion-biometrics/Dockerfile
     image: orion-biometrics:latest
     container_name: orion-biometrics
     restart: unless-stopped

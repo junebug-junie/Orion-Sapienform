@@ -19,3 +19,9 @@ services:
       - NODE_NAME=${NODE_NAME:-unknown}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]

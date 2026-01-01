@@ -9,7 +9,7 @@ priority: low
 interruptible: false
 can_interrupt_others: false
 
-requires_gpu: false
+requires_gpu: true
 requires_memory: true
 
 timeout_ms: 10000

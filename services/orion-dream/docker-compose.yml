@@ -1,8 +1,10 @@
 version: "3.4"
 
 services:
-  orion-dream:
-    build: .
+  dream:
+    build:
+      context: ../..
+      dockerfile: services/orion-dream/Dockerfile
     image: orion-dream:latest
     container_name: orion-dream
     restart: unless-stopped

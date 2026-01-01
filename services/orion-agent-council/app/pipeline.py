@@ -112,8 +112,15 @@ class DeliberationPipeline:
             await self.publisher.publish_final(ctx)
             return
 
+        # If we exit the loop without a valid judgement/verdict (e.g., timeout),
+        # publish the best-effort result with fallbacks to avoid validation errors.
+        if not ctx.judgement or not ctx.verdict or ctx.stop:
+            logger.warning("[%s] Pipeline stopping early; publishing best-effort.", ctx.trace_id)
+            await self.publisher.publish_best_effort(ctx)
+            return
+
         logger.warning("[%s] Max rounds reached; publishing best-effort.", ctx.trace_id)
-        await self.publisher.publish_final(ctx)
+        await self.publisher.publish_best_effort(ctx)
 
 
 def build_default_pipeline(

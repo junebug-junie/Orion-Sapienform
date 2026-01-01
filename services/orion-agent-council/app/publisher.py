@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from .models import CouncilResult
+from .models import CouncilResult, BlinkJudgement, BlinkScores, AuditVerdict
 from .settings import settings
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
@@ -42,7 +42,7 @@ class CouncilPublisher:
         judgement = ctx.judgement
         round_res = ctx.round_result or ctx.last_round
         
-        # [FIX] Populate all required CouncilResult fields
+        # Populate all required CouncilResult fields
         result = CouncilResult(
             trace_id=trace_id,
             prompt=ctx.req.prompt,  # <--- Added
@@ -70,7 +70,24 @@ class CouncilPublisher:
         verdict = ctx.verdict
         round_res = ctx.round_result or ctx.last_round
 
-        # [FIX] Populate all required CouncilResult fields
+        # Build safe fallbacks to satisfy CouncilResult schema
+        if judgement is None:
+            judgement = BlinkJudgement(
+                proposed_answer="[No response from council]",
+                scores=BlinkScores(),
+                disagreement={"level": 1.0, "notes": "timeout_or_error"},
+                notes="Blink judgement missing; generated fallback.",
+            )
+
+        if verdict is None:
+            verdict = AuditVerdict(
+                action="accept",
+                reason="timeout_or_error",
+                constraints={},
+                override_answer=None,
+            )
+
+        # Populate all required CouncilResult fields
         result = CouncilResult(
             trace_id=trace_id,
             prompt=ctx.req.prompt,

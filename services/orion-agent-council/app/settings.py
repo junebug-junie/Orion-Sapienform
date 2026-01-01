@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     llm_intake_channel: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
     llm_reply_prefix: str = Field("orion:llm:reply", alias="CHANNEL_LLM_REPLY_PREFIX")
 
-    council_llm_timeout_sec: float = Field(30.0, alias="COUNCIL_LLM_TIMEOUT_SEC")
+    council_llm_timeout_sec: float = Field(10.0, alias="COUNCIL_LLM_TIMEOUT_SEC")
+    # Soft per-round budget used to cap agent calls and avoid RPC overruns.
+    council_round_timeout_sec: float = Field(12.0, alias="COUNCIL_ROUND_TIMEOUT_SEC")
+    council_llm_max_attempts: int = Field(2, alias="COUNCIL_LLM_MAX_ATTEMPTS")
 
     # --- Deliberation loop config ---
     max_rounds: int = Field(2, alias="COUNCIL_MAX_ROUNDS")

@@ -13,8 +13,7 @@ services:
       - "${PORT}:${PORT}"
     volumes:
       - /mnt/storage-lukewarm/sql_logs:/app/logs
-      # Map DB volume if using sqlite or keep persistent
-      - orion-db-data:/app/data
+      # Postgres is external; removing SQLite volume mapping to avoid confusion
     environment:
       - PROJECT=${PROJECT}
       - SERVICE_NAME=${SERVICE_NAME}
@@ -35,6 +34,3 @@ networks:
   app-net:
     name: ${NET}
     external: true
-
-volumes:
-  orion-db-data:

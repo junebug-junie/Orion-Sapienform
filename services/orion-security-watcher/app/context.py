@@ -1,6 +1,7 @@
 import logging
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.codec import OrionCodec
 
 from .notifications import Notifier
 from .settings import get_settings
@@ -19,9 +20,10 @@ class AppContext:
     def __init__(self):
         self.settings = get_settings()
 
-        self.bus = OrionBus(
+        self.bus = OrionBusAsync(
             url=self.settings.ORION_BUS_URL,
             enabled=self.settings.ORION_BUS_ENABLED,
+            codec=OrionCodec(),
         )
         self.state_store = SecurityStateStore(self.settings)
         self.visit_manager = VisitManager(self.settings)

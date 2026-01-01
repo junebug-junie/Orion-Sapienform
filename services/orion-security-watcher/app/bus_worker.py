@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, Optional
+
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from .models import VisionEvent
 
 logger = logging.getLogger("orion-security-watcher.bus_worker")
 
 
-def model_to_json_dict(obj: Any) -> Dict[str, Any]:
+def _model_to_dict(obj: Any) -> Dict[str, Any]:
     if hasattr(obj, "model_dump"):
         return obj.model_dump(mode="json")
     if isinstance(obj, dict):
@@ -17,45 +18,18 @@ def model_to_json_dict(obj: Any) -> Dict[str, Any]:
     return dict(obj)
 
 
-def _coerce_payload_to_dict(payload: Any) -> Optional[Dict[str, Any]]:
-    """
-    OrionBus may yield msg["data"] as:
-      - dict (already decoded)
-      - JSON string
-      - bytes of JSON
-    We normalize to dict or return None.
-    """
-    if payload is None:
-        return None
-
-    if isinstance(payload, dict):
-        return payload
-
-    if isinstance(payload, (bytes, bytearray)):
-        try:
-            payload = payload.decode("utf-8", errors="ignore")
-        except Exception:
-            return None
-
-    if isinstance(payload, str):
-        payload = payload.strip()
-        if not payload:
-            return None
-        try:
-            obj = json.loads(payload)
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            return None
-
-    return None
+def _source(ctx) -> ServiceRef:
+    return ServiceRef(
+        name=ctx.settings.SERVICE_NAME,
+        version=ctx.settings.SERVICE_VERSION,
+        node=getattr(ctx.settings, "NODE_NAME", None),
+    )
 
 
-def handle_bus_message(ctx, msg: Dict[str, Any]) -> None:
-    payload = _coerce_payload_to_dict(msg.get("data"))
-    if payload is None:
-        # Uncomment if you want to see what's being dropped:
-        # logger.debug(f"[SECURITY] Dropped non-dict payload type={type(msg.get('data'))}")
-        return
+async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
+    payload: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
+    if env.kind == "legacy.message" and isinstance(payload.get("payload"), dict):
+        payload = payload["payload"]
 
     try:
         event = VisionEvent.model_validate(payload)
@@ -68,8 +42,13 @@ def handle_bus_message(ctx, msg: Dict[str, Any]) -> None:
 
     # Publish visit summary
     if visit_summary is not None and ctx.bus.enabled:
+        visit_env = env.derive_child(
+            kind="security.visit",
+            source=_source(ctx),
+            payload=_model_to_dict(visit_summary),
+        )
         try:
-            ctx.bus.publish(ctx.settings.CHANNEL_SECURITY_VISITS, model_to_json_dict(visit_summary))
+            await ctx.bus.publish(ctx.settings.CHANNEL_SECURITY_VISITS, visit_env)
         except Exception:
             logger.exception("[SECURITY] Failed to publish visit summary")
 
@@ -82,8 +61,13 @@ def handle_bus_message(ctx, msg: Dict[str, Any]) -> None:
 
     # Publish alert payload
     if ctx.bus.enabled:
+        alert_env = env.derive_child(
+            kind="security.alert",
+            source=_source(ctx),
+            payload=_model_to_dict(alert_payload),
+        )
         try:
-            ctx.bus.publish(ctx.settings.CHANNEL_SECURITY_ALERTS, model_to_json_dict(alert_payload))
+            await ctx.bus.publish(ctx.settings.CHANNEL_SECURITY_ALERTS, alert_env)
         except Exception:
             logger.exception("[SECURITY] Failed to publish alert payload")
 
@@ -95,7 +79,7 @@ def handle_bus_message(ctx, msg: Dict[str, Any]) -> None:
             logger.exception("[SECURITY] Inline email send raised exception")
 
 
-def bus_worker(ctx) -> None:
+async def bus_worker(ctx) -> None:
     """
     Subscribe to plausible vision channels to be robust against older configs.
     """
@@ -112,8 +96,19 @@ def bus_worker(ctx) -> None:
 
     logger.info(f"[SECURITY] Subscribing to vision channels: {channels}")
 
-    for msg in ctx.bus.subscribe(*channels):
-        try:
-            handle_bus_message(ctx, msg)
-        except Exception:
-            logger.exception("[SECURITY] Error handling bus message")
+    await ctx.bus.connect()
+
+    async with ctx.bus.subscribe(*channels) as pubsub:
+        async for msg in ctx.bus.iter_messages(pubsub):
+            data = msg.get("data")
+            if data is None:
+                continue
+
+            decoded = ctx.bus.codec.decode(data)
+            if not decoded.ok or decoded.envelope is None:
+                continue
+
+            try:
+                await _handle_envelope(ctx, decoded.envelope)
+            except Exception:
+                logger.exception("[SECURITY] Error handling bus message")

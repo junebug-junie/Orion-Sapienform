@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # === Core Identity ===
     SERVICE_NAME: str = Field(default="collapse-mirror", env="SERVICE_NAME")
     SERVICE_VERSION: str = Field(default="0.4.0", env="SERVICE_VERSION")
+    NODE_NAME: str = Field(default="athena", env="NODE_NAME")
     PORT: int = Field(default=8087, env="PORT")
 
     # === Bus Configuration ===

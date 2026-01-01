@@ -27,6 +27,7 @@ services:
       - CHRONICLE_MODE=${CHRONICLE_MODE}
       - DEV_MODE=${DEV_MODE}
       - PROJECT=${PROJECT}
+      - NODE_NAME=${NODE_NAME}
     ports:
       - "${PORT:-8087}:8087"
 

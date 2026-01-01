@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import List, Dict
+import json
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -14,28 +16,52 @@ class Settings(BaseSettings):
     node_name: str = Field("athena", alias="NODE_NAME")
     port: int = Field(8220, alias="PORT")
 
-    # Bus (legacy vars preserved)
+    # Bus
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
-    # Chassis (new; must be wired in .env_example + docker-compose env)
+    # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="ORION_HEARTBEAT_INTERVAL_SEC")
     health_channel: str = Field("system.health", alias="ORION_HEALTH_CHANNEL")
     error_channel: str = Field("system.error", alias="ORION_ERROR_CHANNEL")
     shutdown_grace_sec: float = Field(10.0, alias="ORION_SHUTDOWN_GRACE_SEC")
 
-    # --- Writer input channels ---
-    channel_tags_raw: str = Field("orion:tags", alias="CHANNEL_TAGS_RAW")
-    channel_tags_enriched: str = Field("orion:tags:enriched", alias="CHANNEL_TAGS_ENRICHED")
+    # Routing
+    # Comma-separated or JSON list of channels to subscribe to
+    sql_writer_subscribe_channels: List[str] = Field(
+        default=[
+            "orion:tags:enriched",
+            "orion:collapse:sql-write",
+            "orion:chat:history:log",
+            "orion:dream:log",
+            "orion:biometrics:telemetry",
+            "orion:spark:introspection:log"
+        ],
+        alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
+    )
 
-    channel_collapse_triage: str = Field("orion:collapse:triage", alias="CHANNEL_COLLAPSE_TRIAGE")
-    channel_collapse_publish: str = Field("orion:collapse:sql-write", alias="CHANNEL_COLLAPSE_PUBLISH")
+    # JSON mapping from envelope.kind -> destination table (or internal model key)
+    sql_writer_route_map_json: str = Field(
+        default=json.dumps({
+            "collapse.mirror": "CollapseMirror",
+            "collapse.enrichment": "CollapseEnrichment",
+            "tags.enriched": "CollapseEnrichment",
+            "chat.history": "ChatHistoryLogSQL",
+            "chat.log": "ChatHistoryLogSQL",
+            "dream.log": "Dream",
+            "biometrics.telemetry": "BiometricsTelemetry",
+            "spark.introspection.log": "SparkIntrospectionLogSQL",
+            "spark.introspection": "SparkIntrospectionLogSQL"
+        }),
+        alias="SQL_WRITER_ROUTE_MAP_JSON"
+    )
 
-    channel_chat_log: str = Field("orion:chat:history:log", alias="CHANNEL_CHAT_LOG")
-
-    channel_dream: str = Field("orion:dream:log", alias="CHANNEL_DREAM_LOG")
-    channel_biometrics: str = Field("orion:biometrics:telemetry", alias="CHANNEL_BIOMETRICS_TELEMETRY")
-    channel_spark_introspection: str = Field("orion:spark:introspection:log", alias="CHANNEL_SPARK_INTROSPECTION_LOG")
+    @property
+    def route_map(self) -> Dict[str, str]:
+        try:
+            return json.loads(self.sql_writer_route_map_json)
+        except Exception:
+            return {}
 
     # DB
     postgres_uri: str = Field("sqlite:///./orion.db", alias="POSTGRES_URI")

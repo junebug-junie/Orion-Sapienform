@@ -1,19 +1,19 @@
 import httpx
-import json
 import logging
-import time
+import asyncio
 from app.settings import settings
 from app.rdf_builder import build_triples
-from orion.core.bus.service import OrionBus
+from orion.core.bus.consumer_worker import run_worker
+from orion.core.bus.bus_schemas import BaseEnvelope
 
 logger = logging.getLogger(settings.SERVICE_NAME)
 
-def _push_to_graphdb(nt_data: str, graph_name: str, event: dict):
+async def _push_to_graphdb(nt_data: str, graph_name: str, envelope_id: str):
     """
     Pushes N-Triples data to GraphDB with a retry mechanism.
     """
     if not nt_data or not graph_name:
-        logger.warning(f"Skipping push for event {event.get('id')} due to empty RDF data.")
+        logger.warning(f"Skipping push for event {envelope_id} due to empty RDF data.")
         return
 
     url = f"{settings.GRAPHDB_URL}/repositories/{settings.GRAPHDB_REPO}/statements?context=<{graph_name}>"
@@ -21,62 +21,70 @@ def _push_to_graphdb(nt_data: str, graph_name: str, event: dict):
 
     for attempt in range(settings.RETRY_LIMIT):
         try:
-            with httpx.Client(timeout=10) as client:
-                res = client.post(url, content=nt_data, headers=headers)
-                res.raise_for_status() # Raise exception for non-2xx responses
-                logger.info(f"✅ RDF inserted ({event.get('id')}) → {graph_name}")
-                return # Success
+            async with httpx.AsyncClient(timeout=10) as client:
+                res = await client.post(url, content=nt_data, headers=headers)
+                res.raise_for_status()
+                logger.info(f"✅ RDF inserted ({envelope_id}) → {graph_name}")
+                return
         except httpx.HTTPStatusError as e:
             logger.warning(f"⚠️ Insert failed (attempt {attempt + 1}/{settings.RETRY_LIMIT}): {e.response.status_code} {e.response.text}")
         except Exception as e:
             logger.error(f"❌ GraphDB connection error (attempt {attempt + 1}/{settings.RETRY_LIMIT}): {e}")
-        time.sleep(settings.RETRY_INTERVAL)
 
-    logger.error(f"🚨 Failed to push event {event.get('id')} after {settings.RETRY_LIMIT} attempts.")
-    # Here you might want to publish an error to the bus or save to a dead-letter queue.
+        await asyncio.sleep(settings.RETRY_INTERVAL)
+
+    logger.error(f"🚨 Failed to push event {envelope_id} after {settings.RETRY_LIMIT} attempts.")
+
+async def message_handler(envelope: BaseEnvelope):
+    """
+    Handles incoming bus messages.
+    """
+    logger.debug(f"Processing envelope kind={envelope.kind}, id={envelope.id}")
+
+    # 1. Check if we have a specific routing rule for this kind
+    # If using explicit map:
+    route_map = settings.route_map
+    # If the kind is not in the map, and we want strict routing, we might skip.
+    # However, existing logic seemed to try to build triples for anything.
+    # We'll allow it to try build_triples.
+
+    # Optional: Override graph context based on route_map
+    # graph_context = route_map.get(envelope.kind)
+    # The current build_triples logic generates graph name dynamically based on observer/provenance.
+    # We might want to pass the suggestion down?
+    # For now, let's keep existing logic but allow build_triples to decide.
+
+    try:
+        triples, graph_name = build_triples(envelope)
+
+        if triples:
+            # If route_map overrides the context:
+            # if envelope.kind in route_map:
+            #     # This is tricky because graph_name is a full URI in build_triples.
+            #     # Let's trust build_triples for now as it handles provenance.
+            #     pass
+
+            await _push_to_graphdb(triples, graph_name, str(envelope.id))
+        else:
+            logger.debug(f"Ignored {envelope.kind} (no triples generated)")
+
+    except Exception as e:
+        logger.exception(f"Error processing {envelope.kind}: {e}")
 
 
 def listener_worker():
     """
-    A single, efficient worker that creates its own bus connection and subscribes
-    to all relevant channels at once. This is a robust and thread-safe pattern.
+    Entrypoint for the worker thread/process.
     """
-    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
-    if not bus.enabled:
-        logger.error("Bus connection failed. RDF-Writer listener thread exiting.")
+    if not settings.ORION_BUS_ENABLED:
+        logger.warning("Bus disabled by config.")
         return
 
-    channels_to_subscribe = settings.get_all_subscribe_channels()
-    logger.info(f"👂 Subscribing to channels: {channels_to_subscribe}")
-
-    for message in bus.subscribe(*channels_to_subscribe):
-        source_channel = message.get("channel")
-        data = message.get("data")
-
-        # OrionBus.subscribe already JSON-decodes, but be defensive.
-        if not source_channel or not isinstance(data, dict):
-            continue
-
-        # Try to log something meaningful, but don't rely on any single field existing.
-        event_type = data.get("event") or data.get("kind") or data.get("type")
-        correlation_id = data.get("correlation_id") or data.get("id")
-
-        logger.debug(
-            f"📥 Received event={event_type!r} cid={correlation_id!r} from {source_channel}"
-        )
-
-        try:
-            # 👇 See section 2: this is the backward-compatible contract
-            triples, graph_name = build_triples(data)
-
-            # If this event isn't something we care about, build_triples returns ([], None)
-            if not triples:
-                continue
-
-            _push_to_graphdb(triples, graph_name, data)
-
-        except Exception as e:
-            logger.exception(
-                f"❌ Unhandled error processing event "
-                f"cid={correlation_id!r} from {source_channel}: {e}"
-            )
+    # run_worker is async, so we need to run it in an event loop.
+    # But wait, this is called from a thread in main.py.
+    asyncio.run(run_worker(
+        service_name=settings.SERVICE_NAME,
+        bus_url=settings.ORION_BUS_URL,
+        channels=settings.RDF_WRITER_SUBSCRIBE_CHANNELS,
+        handler=message_handler
+    ))

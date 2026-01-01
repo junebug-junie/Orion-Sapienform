@@ -1,16 +1,21 @@
-from pydantic_settings import BaseSettings
-from pydantic import Field, field_validator
-
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 class Settings(BaseSettings):
     """
     🏷️ Orion Meta-Tags Service
     Handles NLP tagging and metadata enrichment for Collapse Mirror events.
     """
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
     # === Core Identity ===
     SERVICE_NAME: str = Field(default="meta-tags", env="SERVICE_NAME")
     SERVICE_VERSION: str = Field(default="0.2.0", env="SERVICE_VERSION")
+    NODE_NAME: str = Field(default="unknown")
     PORT: int = Field(default=8201, env="PORT")
 
     # === Orion Bus Configuration ===
@@ -28,16 +33,10 @@ class Settings(BaseSettings):
     STARTUP_DELAY: int = Field(default=5, env="STARTUP_DELAY")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
 
-    @field_validator("ORION_BUS_ENABLED", mode="before")
-    def parse_bool(cls, v):
-        if isinstance(v, str):
-            return v.lower() in ("true", "1", "yes", "on")
-        return bool(v)
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
-
+    # Chassis Defaults
+    HEARTBEAT_INTERVAL_SEC: float = 10.0
+    HEALTH_CHANNEL: str = "system.health"
+    ERROR_CHANNEL: str = "system.error"
+    SHUTDOWN_GRACE_SEC: float = 10.0
 
 settings = Settings()

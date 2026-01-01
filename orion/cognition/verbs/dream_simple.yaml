@@ -1,0 +1,35 @@
+name: dream_simple
+label: Dream Simple
+description: >
+  A simplified dream cycle that can be triggered manually.
+
+category: MetaCognition
+priority: low
+
+interruptible: false
+can_interrupt_others: false
+
+requires_gpu: false
+requires_memory: true
+
+timeout_ms: 10000
+max_recursion_depth: 1
+
+services:
+  - VectorMemoryService
+  - RDFMemoryService
+  - LLMGatewayService
+
+prompt_template: dream_simple.j2
+
+plan:
+  - name: compose_dream
+    description: Compose a dream based on context and mode.
+    order: 0
+    prompt_template: dream_simple.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

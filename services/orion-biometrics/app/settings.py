@@ -1,32 +1,34 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
-from typing import Optional
-
 class Settings(BaseSettings):
-    """
-    Loads and validates configuration from environment variables.
-    """
-    # --- Service Identity ---
-    NODE_NAME: str = Field(..., env="NODE_NAME")
-    PROJECT: str = Field(..., env="PROJECT")
-    SERVICE_NAME: str = Field(..., env="SERVICE_NAME")
-    SERVICE_VERSION: str = Field(..., env="SERVICE_VERSION")
-    NET: str = Field(..., env="NET")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
-    # --- Database & Bus ---
-    ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
-    TELEMETRY_PUBLISH_CHANNEL: str = Field(..., env="TELEMETRY_PUBLISH_CHANNEL")
-    EXTERNAL_SUBSCRIBE_CHANNEL: Optional[str] = Field(default=None, env="EXTERNAL_SUBSCRIBE_CHANNEL")
+    SERVICE_NAME: str = Field(default="orion-biometrics")
+    SERVICE_VERSION: str = Field(default="0.1.0")
+    NODE_NAME: str = Field(default="unknown")
 
-    # --- Runtime ---
-    TELEMETRY_INTERVAL: int = Field(..., env="TELEMETRY_INTERVAL")
-    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
+    # Bus
+    ORION_BUS_URL: str = Field(default="redis://orion-redis:6379/0")
+    ORION_BUS_ENABLED: bool = Field(default=True)
 
-    class Config:
-        # This allows pydantic to read from .env files if needed,
-        # but docker-compose will inject them directly.
-        env_file = ".env"
-        extra = "ignore"
+    # Channels
+    TELEMETRY_PUBLISH_CHANNEL: str = Field(default="orion:biometrics:telemetry")
+
+    # Behavior
+    TELEMETRY_INTERVAL: int = Field(default=30)
+    LOG_LEVEL: str = Field(default="INFO")
+
+    TABLE_NAME: str = Field(default="biometrics_raw")
+
+    # Chassis Defaults
+    HEARTBEAT_INTERVAL_SEC: float = 10.0
+    HEALTH_CHANNEL: str = "system.health"
+    ERROR_CHANNEL: str = "system.error"
+    SHUTDOWN_GRACE_SEC: float = 10.0
 
 settings = Settings()

@@ -1,7 +1,7 @@
 name: dream_simple
 label: Dream Simple
 description: >
-  A simplified dream cycle that can be triggered manually.
+  A simplified dream cycle that takes in the last 24 hours of recall across chat discussions, collapse mirror journals (raw and enriched; RDF entities). Those dreams are synthesized and then gone through a dream state.
 
 category: MetaCognition
 priority: low

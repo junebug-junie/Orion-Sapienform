@@ -7,6 +7,8 @@ services:
     container_name: orion-biometrics
     restart: unless-stopped
     privileged: true  # Required for raw hardware access (sensors, gpu)
+    ports:
+      - "${PORT}:8100"
     environment:
       - SERVICE_NAME=orion-biometrics
       - SERVICE_VERSION=0.1.0
@@ -15,7 +17,6 @@ services:
       - TELEMETRY_PUBLISH_CHANNEL=${TELEMETRY_PUBLISH_CHANNEL:-orion:biometrics:telemetry}
       - TELEMETRY_INTERVAL=10
       - LOG_LEVEL=INFO
-      - TABLE_NAME=biometrics_raw
       - NODE_NAME=${NODE_NAME:-unknown}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

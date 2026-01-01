@@ -64,8 +64,9 @@ class Settings(BaseSettings):
             return {}
 
     # DB
-    postgres_uri: str = Field("sqlite:///./orion.db", alias="POSTGRES_URI")
-    database_url: str = Field("sqlite:///./orion.db", alias="DATABASE_URL")
+    # Ensure default matches prod environment (Postgres), not SQLite.
+    postgres_uri: str = Field("postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney", alias="POSTGRES_URI")
+    database_url: str = Field("postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney", alias="DATABASE_URL")
 
     class Config:
         env_file = ".env"

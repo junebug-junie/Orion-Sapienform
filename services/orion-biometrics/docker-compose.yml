@@ -7,7 +7,7 @@ services:
       context: ../..
       dockerfile: services/orion-biometrics/Dockerfile
     image: orion-biometrics:latest
-    container_name: orion-biometrics
+    container_name: ${PROJECT}-${SERVICE_NAME}
     restart: unless-stopped
     privileged: true  # Required for raw hardware access (sensors, gpu)
     ports:

@@ -1,5 +1,5 @@
 services:
-  orion-biometrics:
+  biometrics:
     build: .
     image: orion-biometrics:latest
     container_name: orion-biometrics

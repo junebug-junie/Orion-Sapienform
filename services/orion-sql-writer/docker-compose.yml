@@ -28,7 +28,7 @@ services:
       - SQL_WRITER_ROUTE_MAP_JSON=${SQL_WRITER_ROUTE_MAP_JSON}
 
       - DATABASE_URL=${DATABASE_URL}
-      - POSTGRES_URI=${POSTGRES_URI}
+      # POSTGRES_URI removed as redundant/conflict
 
 networks:
   app-net:

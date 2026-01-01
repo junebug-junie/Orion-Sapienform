@@ -19,6 +19,7 @@ services:
   - VectorMemoryService
   - RDFMemoryService
   - LLMGatewayService
+  - CollapseMirrorSQLService
 
 prompt_template: dream_simple.j2
 

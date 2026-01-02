@@ -1,11 +1,14 @@
-from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
+from pydantic import BaseModel, Field, model_validator
 
 class EventIn(BaseModel):
-    # ... (Model fields are unchanged) ...
+    """
+    Ingress model for triage events. 
+    automatically extracts the 'best' text representation from various payload shapes.
+    """
     id: str
-    text: str 
+    text: str = ""
     collapse_id: Optional[str] = None
     ts: Optional[datetime] = None
     extra_data: Dict[str, Any] = Field(default_factory=dict)
@@ -17,7 +20,7 @@ class EventIn(BaseModel):
         Core adapter: Finds a suitable text field, prioritizing chat dialogues.
         """
         # Note: 'messages' often requires processing, so we check explicit text fields first.
-        text_source_fields = ["summary", "trigger", "text", "text_content"]
+        text_source_fields = ["summary", "trigger", "text", "text_content", "content"]
 
         found_text = ""
 
@@ -33,15 +36,16 @@ class EventIn(BaseModel):
         # --- 2. Fallback to Simple Text Fields (Only runs if no chat dialogue was found) ---
         if not found_text:
             for field in text_source_fields:
-                if values.get(field):
-                    found_text = values[field]
+                val = values.get(field)
+                if val and isinstance(val, str):
+                    found_text = val
                     break
 
         # --- 3. Final Assignments and Normalization ---
         values['text'] = found_text
 
         # Move all other fields into 'extra_data' for preservation.
-        known_fields = {'id', 'text', 'collapse_id', 'ts', 'prompt', 'response'}
+        known_fields = {'id', 'text', 'collapse_id', 'ts', 'prompt', 'response', 'kind', 'source', 'correlation_id'}
         values['extra_data'] = {k: v for k, v in values.items() if k not in known_fields}
 
         # Normalize collapse_id
@@ -54,9 +58,9 @@ class EventIn(BaseModel):
         ts_val = values.get("ts")
         if isinstance(ts_val, str):
             try:
-                values["ts"] = datetime.fromisoformat(ts_val)
+                values["ts"] = datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
             except Exception:
-                pass # Let Pydantic handle validation if it fails
+                pass # Let Pydantic handle validation if it fails or leave as None
 
         return values
 
@@ -73,7 +77,7 @@ class Enrichment(BaseModel):
     tags: List[str] = Field(default_factory=list)
     entities: List[Dict[str, str]] = Field(default_factory=list)
     salience: float = 0.0
-    ts: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     @model_validator(mode='before')
     @classmethod
@@ -84,7 +88,9 @@ class Enrichment(BaseModel):
             id_val = values["id"]
             if isinstance(id_val, str) and id_val.startswith("collapse_"):
                 values["collapse_id"] = id_val
+        
         # Ensure timestamp always present as ISO string
         if not values.get("ts"):
-            values["ts"] = datetime.utcnow().isoformat()
+            values["ts"] = datetime.now(timezone.utc).isoformat()
+            
         return values

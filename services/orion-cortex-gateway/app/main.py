@@ -10,9 +10,9 @@ from orion.schemas.cortex.contracts import (
     RecallDirective,
     LLMMessage
 )
+from orion.schemas.cortex.gateway import CortexChatRequest
 
 from .settings import get_settings
-from .models import CortexChatRequest
 from .bus_client import BusClient
 
 settings = get_settings()
@@ -21,6 +21,7 @@ bus_client = BusClient()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await bus_client.connect()
+    await bus_client.start_gateway_consumer()
     yield
     await bus_client.close()
 

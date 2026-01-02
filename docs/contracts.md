@@ -46,6 +46,7 @@ This registry maps logical flows to specific channels, message kinds, and payloa
 
 | Flow | Channel (Env Var) | Kind (Req → Res) | Payload Schema |
 | :--- | :--- | :--- | :--- |
+| **Gateway Intake** | `orion-cortex-gateway:request` | `cortex.gateway.chat.request` → `cortex.gateway.chat.result` | `orion.schemas.cortex.gateway.CortexChatRequest` |
 | **Client → Orch** | `orion-cortex:request` | `cortex.orch.request` → `cortex.orch.result` | `orion.schemas.cortex.contracts.CortexClientRequest` |
 | **Orch → Exec** | `orion-cortex-exec:request` | `cortex.exec.request` → `cortex.exec.result` | `orion.schemas.cortex.schemas.PlanExecutionRequest` |
 | **Exec → LLM** | `orion-exec:request:LLMGatewayService` | `llm.chat.request` → `llm.chat.result` | `orion.schemas.chat.ChatRequestPayload` |

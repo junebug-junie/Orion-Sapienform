@@ -30,6 +30,12 @@ class Settings(BaseSettings):
         alias="CORTEX_GATEWAY_RPC_TIMEOUT_SEC"
     )
 
+    # Bus Intake (Gateway <- Client)
+    channel_gateway_request: str = Field(
+        "orion-cortex-gateway:request",
+        alias="CORTEX_GATEWAY_REQUEST_CHANNEL"
+    )
+
     # API Config
     cors_allow_origins: Union[List[str], str] = Field(
         ["*"],

@@ -72,6 +72,9 @@ async def handle_triage_event(envelope: BaseEnvelope):
         # This prevents the NotNullViolation in the SQL writer.
         target_collapse_id = in_payload.collapse_id or in_payload.id
 
+        if not target_collapse_id:
+             logger.warning(f"⚠️  Missing collapse_id for event {in_payload.id}, sql-writer may fail.")
+
         enrichment = Enrichment(
             id=in_payload.id,
             collapse_id=target_collapse_id,

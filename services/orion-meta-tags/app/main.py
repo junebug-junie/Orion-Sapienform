@@ -12,6 +12,7 @@ import spacy
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .settings import settings
+# Use MetaTagsPayload from shared schema (aliased as Enrichment in models.py if kept, or import directly)
 from .models import EventIn, Enrichment
 
 # Setup Logging
@@ -67,11 +68,13 @@ async def handle_triage_event(envelope: BaseEnvelope):
         tags.append(sentiment_tag)
 
         # 3. RESULT GENERATION (Enrichment Model)
+        # Note: Enrichment is now an alias for MetaTagsPayload
         enrichment = Enrichment(
             id=in_payload.id,
             collapse_id=in_payload.collapse_id,
             service_name=settings.SERVICE_NAME,
             service_version=settings.SERVICE_VERSION,
+            # enrichment_type defaults to "tagging" in the shared schema
             tags=tags,
             # entities could be mapped here if needed
             ts=datetime.now(timezone.utc).isoformat()

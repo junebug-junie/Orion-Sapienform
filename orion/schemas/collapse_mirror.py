@@ -16,6 +16,7 @@ class CollapseMirrorEntry(BaseModel):
     summary: str
     mantra: str
     causal_echo: Optional[str] = None
+    id: Optional[str] = Field(default=None)
     timestamp: Optional[str] = Field(default=None, description="ISO timestamp")
     environment: Optional[str] = Field(default=None, description="Environment (dev, prod, etc.)")
 

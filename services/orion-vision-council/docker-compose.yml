@@ -1,0 +1,12 @@
+services:
+  orion-vision-council:
+    build: .
+    environment:
+      - ORION_BUS_URL=redis://redis:6379/0
+      - CHANNEL_COUNCIL_INTAKE=orion:vision:windows
+      - CHANNEL_COUNCIL_PUB=orion:vision:events
+    volumes:
+      - ./app:/app/app
+      - ../../orion:/app/orion
+    depends_on:
+      - redis

@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     VISION_PROFILES_PATH: str = "/app/config/vision_profiles.yaml"
     VISION_ENABLED_PROFILES: str = "pipeline_retina_fast,retina_detect_open_vocab,embed_image,vlm_caption"
 
+    # VLM / Captioning
+    VISION_VLM_MODEL_ID: str = "HuggingFaceM4/idefics2-8b" # Placeholder default, likely overridden by env
+    VISION_VLM_MAX_TOKENS: int = 128
+    VISION_VLM_TEMPERATURE: float = 0.4
+
     # Multi-GPU scheduling
     VISION_DEVICE_STRATEGY: str = Field(default="best_free_vram", description="best_free_vram|fixed|round_robin")
     VISION_DEFAULT_DEVICE: str = "cuda:0"

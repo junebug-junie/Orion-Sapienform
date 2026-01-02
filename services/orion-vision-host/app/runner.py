@@ -16,7 +16,9 @@ import torch
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
+from .settings import Settings
 
+settings = Settings()
 
 def _safe_when(expr: str, request: Dict[str, Any]) -> bool:
     if not expr:
@@ -55,11 +57,13 @@ class VisionRunner:
     What I implemented (real inference):
       - kind=embedding via SigLIP2 (fallback SigLIP)
       - kind=detect_open_vocab via GroundingDINO
+      - kind=caption_frame via VLM
     """
 
     DEFAULT_EMBED_MODEL = "google/siglip2-so400m-patch14-384"
     DEFAULT_EMBED_FALLBACK = "google/siglip-so400m-patch14-384"
     DEFAULT_GDINO_MODEL = "IDEA-Research/grounding-dino-base"
+    # Default VLM handled by env/settings
 
     def __init__(self, profiles: VisionProfiles, enabled_names: List[str], cache_dir: str):
         self.profiles = profiles
@@ -83,8 +87,8 @@ class VisionRunner:
         for name, p in self.profiles.profiles.items():
             if not self._is_enabled(name) or not p.enabled or not p.warm_on_start:
                 continue
-            # Only warm the two implemented backends; others remain lazy.
-            if p.kind in ("embedding", "detect_open_vocab"):
+            # Only warm the implemented backends; others remain lazy.
+            if p.kind in ("embedding", "detect_open_vocab", "caption_frame"):
                 warmed.append(name)
         return warmed
 
@@ -159,6 +163,7 @@ class VisionRunner:
             raise RuntimeError(f"pipeline not enabled: {pipe.name}")
 
         out: Dict[str, Any] = {"pipeline": pipe.name, "steps": [], "artifacts": {}}
+        merged_artifacts = {}
 
         for step in pipe.steps:
             if step.when and not _safe_when(step.when, request):
@@ -177,7 +182,13 @@ class VisionRunner:
             out["steps"].append({"use": step.use, "kind": p.kind})
             out["artifacts"][step.use] = artifacts
 
-        return out
+            # Merge fields for the consolidated artifact
+            if isinstance(artifacts, dict):
+                merged_artifacts.update(artifacts)
+
+        # For retina_fast or other pipelines, we return the merged result as the top-level artifact content
+        # preserving key metadata
+        return merged_artifacts
 
     def _run_profile(
         self,
@@ -191,6 +202,9 @@ class VisionRunner:
 
         if p.kind == "detect_open_vocab":
             return self._run_detect_grounding_dino(p, request, device)
+
+        if p.kind == "caption_frame":
+            return self._run_caption_frame(p, request, device)
 
         # Everything else remains contract-only for now (no fake inference).
         warnings.append(f"kind not implemented yet: {p.kind}")
@@ -257,9 +271,11 @@ class VisionRunner:
             "kind": "embedding",
             "model_id": model_id,
             "device": device,
-            "embedding_ref": ref,
-            "path": str(npy_path),
-            "dim": int(vec.shape[0]),
+            "embedding": {
+                "ref": ref,
+                "path": str(npy_path),
+                "dim": int(vec.shape[0]),
+            }
         }
 
     # -----------------------------------
@@ -389,5 +405,70 @@ class VisionRunner:
             "device": device,
             "prompts": prompts,
             "objects": objects,
-            "path": str(json_path),
+            "artifact_path": str(json_path),
+        }
+
+    # ------------------------
+    # Real Captioning (VLM)
+    # ------------------------
+    def _run_caption_frame(self, p: ProfileDef, request: Dict[str, Any], device: str) -> Dict[str, Any]:
+        img = _load_image_from_request(request)
+
+        # Use env defaults if not specified in profile
+        model_id = settings.VISION_VLM_MODEL_ID
+        if p.model_id and not p.model_id.startswith("REPLACE_ME"):
+            model_id = p.model_id
+
+        dtype = p.dtype or "auto"
+
+        model, processor = self.models.load_vlm_captioner(
+            profile_name=p.name,
+            device=device,
+            dtype=dtype,
+            model_id=model_id,
+        )
+
+        # Simple prompt generation (task agnostic usually)
+        # Some models require specific prompting formats.
+        # For simplicity, we assume standard image-to-text here.
+
+        # prompt = request.get("prompt", "Describe this image.") # Some VLMs need text
+        # But many like BLIP/IDEFICS can just take image or image+prompt.
+        # We'll use a standard prompt if supported by the processor.
+
+        # Note: API differences between VLMs are significant.
+        # Using a generic approach for "IDEFICS2" or similar.
+
+        text_prompt = "Describe this image."
+        inputs = processor(images=img, text=text_prompt, return_tensors="pt")
+
+        if device.startswith("cuda"):
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        max_tokens = settings.VISION_VLM_MAX_TOKENS
+        temperature = settings.VISION_VLM_TEMPERATURE
+
+        with torch.inference_mode():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+                do_sample=(temperature > 0)
+            )
+
+        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        # Clean up prompt from output if needed (model dependent)
+        caption = generated_text.replace(text_prompt, "").strip()
+
+        return {
+            "configured": True,
+            "implemented": True,
+            "kind": "caption_frame",
+            "model_id": model_id,
+            "device": device,
+            "caption": {
+                "text": caption,
+                "confidence": 1.0 # Placeholder
+            }
         }

@@ -1,0 +1,11 @@
+services:
+  orion-vision-scribe:
+    build: .
+    environment:
+      - ORION_BUS_URL=redis://redis:6379/0
+      - CHANNEL_SCRIBE_INTAKE=orion:vision:events
+    volumes:
+      - ./app:/app/app
+      - ../../orion:/app/orion
+    depends_on:
+      - redis

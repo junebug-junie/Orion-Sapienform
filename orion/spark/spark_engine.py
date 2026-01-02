@@ -111,7 +111,7 @@ class SparkEngine:
     """
     High-level orchestrator for Orion's Spark Engine.
 
-    This is what orion-ollama-host / Cortex / Hub should talk to.
+    This is what orion-brain / Cortex / Hub should talk to.
 
     Responsibilities:
 

@@ -37,6 +37,8 @@ async def process_tts_request(
     # 1. Extract request data (Hybrid Access Pattern)
     request_data: Optional[TTSRequestPayload] = None
     reply_to = envelope.reply_to
+    is_legacy = False
+    legacy_trace_id: Optional[str] = None
 
     # Try to parse as typed request
     if envelope.kind == "tts.synthesize.request":
@@ -50,24 +52,42 @@ async def process_tts_request(
                 e,
             )
 
-    # Fallback: legacy/loose payload inspection
+    # Check for legacy request
+    elif envelope.kind == "legacy.message":
+        is_legacy = True
+
+    # Fallback/Legacy payload inspection
     if request_data is None:
         # Legacy payload: {"text": "...", "response_channel": "..."}
-        text = raw_payload.get("text")
-        if not text and envelope.payload:
+        # Note: If it was wrapped by Codec, envelope.payload IS the legacy dict.
+        text = None
+        if envelope.payload:
             text = envelope.payload.get("text")
+
+        # Also check raw_payload just in case Codec behaved differently
+        if not text and raw_payload:
+            text = raw_payload.get("text")
 
         if text:
             # Map legacy fields to model
+            # We assume it is legacy if we fell back to this parsing
+            is_legacy = True
+
+            payload_src = envelope.payload if envelope.payload else raw_payload
+
+            voice_id = payload_src.get("voice_id")
+            language = payload_src.get("language")
+            legacy_trace_id = payload_src.get("trace_id")
+
             request_data = TTSRequestPayload(
                 text=text,
-                voice_id=raw_payload.get("voice_id"),
-                language=raw_payload.get("language"),
+                voice_id=voice_id,
+                language=language,
             )
 
             # Legacy reply channel handling if envelope.reply_to is missing
             if not reply_to:
-                reply_to = raw_payload.get("response_channel")
+                reply_to = payload_src.get("response_channel")
 
     if not request_data:
         logger.warning("[%s] Could not parse TTS request from payload.", envelope.correlation_id)
@@ -78,9 +98,10 @@ async def process_tts_request(
         return
 
     logger.info(
-        "[%s] Processing TTS request (len=%d) -> %s",
+        "[%s] Processing TTS request (len=%d, legacy=%s) -> %s",
         envelope.correlation_id,
         len(request_data.text),
+        is_legacy,
         reply_to,
     )
 
@@ -94,26 +115,39 @@ async def process_tts_request(
 
         audio_b64 = await loop.run_in_executor(None, _synthesize)
 
-        # 3. Create Result Payload
-        result = TTSResultPayload(
-            audio_b64=audio_b64,
-            content_type="audio/wav",
-            # duration_sec could be calculated if TTS engine returns it
-        )
+        # 3. Reply
+        if is_legacy:
+            # Legacy Reply: Raw Dict
+            # Hub expects: {"audio_b64": "...", "trace_id": "..."}
+            # Use original trace_id if available, else correlation_id
+            final_trace_id = legacy_trace_id or str(envelope.correlation_id)
 
-        # 4. Reply
-        # Create response envelope (child of request)
-        response_envelope = envelope.derive_child(
-            kind="tts.synthesize.result",
-            source=ServiceRef(
-                name=settings.service_name,
-                version=settings.service_version,
-            ),
-            payload=result,
-            reply_to=None, # End of RPC chain
-        )
+            legacy_reply = {
+                "trace_id": final_trace_id,
+                "audio_b64": audio_b64,
+                "mime_type": "audio/wav",
+            }
+            # Publish as dict -> JSON on wire
+            await bus.publish(reply_to, legacy_reply)
 
-        await bus.publish(reply_to, response_envelope)
+        else:
+            # Typed Reply: Envelope
+            result = TTSResultPayload(
+                audio_b64=audio_b64,
+                content_type="audio/wav",
+            )
+
+            response_envelope = envelope.derive_child(
+                kind="tts.synthesize.result",
+                source=ServiceRef(
+                    name=settings.service_name,
+                    version=settings.service_version,
+                ),
+                payload=result,
+                reply_to=None, # End of RPC chain
+            )
+
+            await bus.publish(reply_to, response_envelope)
 
         logger.info(
             "[%s] Sent TTS reply to %s (bytes=%d)",
@@ -131,18 +165,21 @@ async def process_tts_request(
         )
         # Publish error if possible
         try:
-            error_envelope = envelope.derive_child(
-                kind="system.error",
-                source=ServiceRef(
-                    name=settings.service_name,
-                    version=settings.service_version,
-                ),
-                payload={
-                    "error": "tts_synthesis_failed",
-                    "details": str(e)
-                },
-            )
-            await bus.publish(reply_to, error_envelope)
+            if is_legacy:
+                 await bus.publish(reply_to, {"error": str(e), "ok": False})
+            else:
+                error_envelope = envelope.derive_child(
+                    kind="system.error",
+                    source=ServiceRef(
+                        name=settings.service_name,
+                        version=settings.service_version,
+                    ),
+                    payload={
+                        "error": "tts_synthesis_failed",
+                        "details": str(e)
+                    },
+                )
+                await bus.publish(reply_to, error_envelope)
         except Exception:
             pass
 

@@ -43,7 +43,7 @@ Reply channels are ephemeral per request and **must** be provided by the caller 
 `orion:collapse:intake` → Mirror Service → `orion:collapse:triage` → Meta Tags Service → `orion:tags:enriched` → SQL Writer.
 
 ### Flow C (Telemetry)
-`orion:biometrics:telemetry` → SQL Writer.
+`orion:telemetry:biometrics` → SQL Writer.
 * **Kind:** `biometrics.telemetry`
 * **Payload:** `orion.schemas.telemetry.biometrics.BiometricsPayload`
 

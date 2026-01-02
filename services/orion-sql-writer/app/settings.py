@@ -34,7 +34,7 @@ class Settings(BaseSettings):
             "orion:collapse:sql-write",
             "orion:chat:history:log",
             "orion:dream:log",
-            "orion:biometrics:telemetry",
+            "orion:telemetry:biometrics",
             "orion:spark:introspection:log"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"

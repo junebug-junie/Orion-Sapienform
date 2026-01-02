@@ -8,11 +8,11 @@ from orion.schemas.cortex.contracts import (
     CortexClientRequest,
     CortexClientContext,
     RecallDirective,
-    LLMMessage
+    LLMMessage,
+    CortexChatRequest
 )
 
 from .settings import get_settings
-from .models import CortexChatRequest
 from .bus_client import BusClient
 from .worker import listener_worker
 import asyncio

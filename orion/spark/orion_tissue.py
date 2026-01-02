@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any
 import os
 
 import numpy as np
+from scipy.spatial import distance
 
 from .surface_encoding import SurfaceEncoding
 from .signal_mapper import SignalMapper
@@ -62,6 +63,69 @@ class OrionTissue:
                 self.T = np.zeros((H, W, C), dtype=np.float32)
         else:
             self.T = np.zeros((H, W, C), dtype=np.float32)
+
+        # Expectation vector for Predictive Coding (initially zero)
+        self.expectation = np.zeros((H, W, C), dtype=np.float32)
+        # Store last calculated novelty for phi
+        self.last_novelty = 0.0
+
+    def calculate_novelty(self, stimulus: np.ndarray) -> float:
+        """
+        Calculate novelty as the cosine distance between the incoming stimulus
+        and the current expectation state.
+
+        Returns a value in [0.0, 1.0].
+        """
+        # Flatten for vector comparison
+        s_flat = stimulus.flatten()
+        e_flat = self.expectation.flatten()
+
+        # Handle zero vectors to avoid NaN
+        s_norm = np.linalg.norm(s_flat)
+        e_norm = np.linalg.norm(e_flat)
+
+        if s_norm == 0.0:
+            # No stimulus => no novelty
+            self.last_novelty = 0.0
+            return 0.0
+
+        if e_norm == 0.0:
+            # Stimulus exists but no expectation => max novelty (cold start)
+            self.last_novelty = 1.0
+            return 1.0
+
+        # Cosine distance: 1 - cosine_similarity
+        # defined in scipy as correlation distance
+        # result is in [0, 2], but for non-negative vectors in [0, 1]
+        try:
+            d = float(distance.cosine(s_flat, e_flat))
+        except ValueError:
+            # Fallback for safety
+            d = 1.0
+
+        # Clamp to [0, 1] just in case
+        d = max(0.0, min(1.0, d))
+
+        self.last_novelty = d
+        return d
+
+    def propagate(
+        self,
+        stimulus: np.ndarray,
+        steps: int = 1,
+        learning_rate: float = 0.2
+    ) -> None:
+        """
+        Main update cycle:
+          1. Update expectation (learning)
+          2. Evolve tissue physics (step)
+        """
+        # Hebbian / EMA update of expectation towards the new stimulus
+        # We do this *after* novelty calculation (which should happen before propagate call)
+        # But here we assume we are committing the stimulus to memory.
+        self.expectation += learning_rate * (stimulus - self.expectation)
+
+        self.step(stimulus, steps=steps)
 
     def step(self, stimulus: Optional[np.ndarray] = None, steps: int = 1) -> None:
         """
@@ -117,7 +181,7 @@ class OrionTissue:
           - valence: mean of channel 0
           - energy: mean absolute activation
           - coherence: 1 / (1 + var(T))
-          - novelty: placeholder (to be wired to a baseline later)
+          - novelty: derived from predictive coding error (cosine distance)
         """
         if self.T.size == 0:
             return {"valence": 0.0, "energy": 0.0, "coherence": 0.0, "novelty": 0.0}
@@ -126,7 +190,7 @@ class OrionTissue:
         energy = float(np.abs(self.T).mean())
         variance = float(self.T.var())
         coherence = float(1.0 / (1.0 + variance))
-        novelty = 0.0
+        novelty = float(self.last_novelty)
 
         return {
             "valence": valence,

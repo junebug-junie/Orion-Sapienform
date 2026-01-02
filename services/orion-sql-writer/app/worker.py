@@ -3,41 +3,45 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+from datetime import datetime
 from typing import Any, Optional, Dict
+
+from sqlalchemy import inspect
+from sqlalchemy.types import DateTime
 
 from app.settings import settings
 from app.db import get_session, remove_session
 from app.models import (
     BiometricsTelemetry,
     ChatHistoryLogSQL,
+    ChatMessageSQL,
     CollapseEnrichment,
     CollapseMirror,
     Dream,
     SparkIntrospectionLogSQL,
     BusFallbackLog
 )
-from app.schemas import (
-    BiometricsInput,
-    ChatHistoryInput,
-    EnrichmentInput,
-    DreamInput,
-    MirrorInput,
-    SparkIntrospectionInput,
-)
-
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope
+
+# Import shared schemas
+from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from orion.schemas.telemetry.meta_tags import MetaTagsPayload
+from orion.schemas.telemetry.biometrics import BiometricsPayload
+from orion.schemas.dream import DreamRequest
+from orion.schemas.chat import RawChat
 
 logger = logging.getLogger("sql-writer")
 
 # Map string keys from settings to actual classes
+# We map: (SQL Model, Pydantic Schema)
 MODEL_MAP = {
-    "CollapseMirror": (CollapseMirror, MirrorInput),
-    "CollapseEnrichment": (CollapseEnrichment, EnrichmentInput),
-    "ChatHistoryLogSQL": (ChatHistoryLogSQL, ChatHistoryInput),
-    "Dream": (Dream, DreamInput),
-    "BiometricsTelemetry": (BiometricsTelemetry, BiometricsInput),
-    "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, SparkIntrospectionInput),
+    "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
+    "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
+    "ChatHistoryLogSQL": (ChatHistoryLogSQL, None), # Legacy log, no shared schema
+    "ChatMessageSQL": (ChatMessageSQL, RawChat),
+    "Dream": (Dream, DreamRequest),
+    "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
 }
 
 def _cfg() -> ChassisConfig:
@@ -55,16 +59,44 @@ def _cfg() -> ChassisConfig:
 
 
 def _coerce_payload(model_cls, payload: Any):
-    # Pydantic v2 compatibility: support dict or model already
+    # Pydantic v2
     if hasattr(model_cls, "model_validate"):
         return model_cls.model_validate(payload)
-    return model_cls.parse_obj(payload)  # type: ignore[attr-defined]
+    # Pydantic v1
+    if hasattr(model_cls, "parse_obj"):
+        return model_cls.parse_obj(payload)
+    return payload
 
 
 def _write_row(sql_model_cls, data: dict) -> None:
     sess = get_session()
     try:
-        sess.merge(sql_model_cls(**data))
+        # 1. Introspect valid columns
+        # We rely on SQLAlchemy introspection to find columns and types.
+        mapper = inspect(sql_model_cls)
+        valid_columns = set(c.key for c in mapper.attrs)
+
+        # 2. Filter input data
+        # Only keep keys that exist in the model definition
+        filtered_data = {k: v for k, v in data.items() if k in valid_columns}
+
+        # 3. Handle Type Coercion (specifically DateTime)
+        for col in mapper.columns:
+            key = col.key
+            if key in filtered_data:
+                val = filtered_data[key]
+                # If column is DateTime and value is a string, attempt parse
+                if isinstance(col.type, DateTime) and isinstance(val, str):
+                    try:
+                        # Attempt generic ISO parse
+                        filtered_data[key] = datetime.fromisoformat(val)
+                    except ValueError:
+                        # Fallback: Let SQLAlchemy try or fail, but log warning?
+                        # Or just leave it as string if the DB adapter handles it (Postgres/psycopg2 often handles ISO strings)
+                        pass
+
+        # 4. Merge
+        sess.merge(sql_model_cls(**filtered_data))
         sess.commit()
     finally:
         try:
@@ -75,7 +107,6 @@ def _write_row(sql_model_cls, data: dict) -> None:
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
     sess = get_session()
     try:
-        # Ensure payload is JSON-serializable if it isn't already (e.g. if it's a dict, sqlalchemy JSON type handles it, but verify)
         sess.add(BusFallbackLog(
             kind=kind,
             correlation_id=correlation_id,
@@ -91,8 +122,13 @@ def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = N
 
 async def _write(sql_model_cls, schema_cls, payload: Any) -> None:
     try:
-        obj = _coerce_payload(schema_cls, payload)
-        data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()  # type: ignore
+        if schema_cls:
+            obj = _coerce_payload(schema_cls, payload)
+            # Dump to dict for SQL
+            data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
+        else:
+            data = payload if isinstance(payload, dict) else {}
+
         await asyncio.to_thread(_write_row, sql_model_cls, data)
     except Exception as e:
         logger.error(f"Failed to write to primary table: {e}")
@@ -113,7 +149,6 @@ async def handle_envelope(env: BaseEnvelope) -> None:
              logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")
              await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, str(e))
     else:
-        # Fallback for unknown kinds
         logger.warning(f"Unknown kind {env.kind}, writing to fallback log.")
         await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, "Unknown kind")
 

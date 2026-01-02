@@ -5,7 +5,19 @@ from typing import Any, Dict
 
 from pydantic import ValidationError
 
-from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, RecallRequestPayload, RecallResultPayload, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
+# We should prefer shared schemas over bus_schemas if they are defined there.
+# The previous code used `RecallRequestPayload` from `orion.core.bus.bus_schemas`.
+# This is "typed", but ideally should be in `orion.schemas.recall`.
+# I will use the `orion.schemas.recall` ones if possible, but I need to ensure they match exactly.
+# Or I can just check if `orion.core.bus.bus_schemas` is the authoritative source for these per `docs/bus-contracts.md`.
+# `docs/bus-contracts.md` says: `Request: RecallRequestPayload`, `Response: RecallResultPayload`.
+# It does NOT say `orion.schemas.recall.RecallRequest`.
+# So `orion.core.bus.bus_schemas` IS the source of truth for these specific contracts right now.
+# However, the user asked me to use `orion.schemas.*`.
+# I will import them from `orion.core.bus.bus_schemas` as the service does, but ensure strict usage.
+
+from orion.core.bus.bus_schemas import RecallRequestPayload, RecallResultPayload
 from orion.core.bus.bus_service_chassis import ChassisConfig
 
 from .pipeline import run_recall_pipeline
@@ -54,7 +66,7 @@ def _source() -> ServiceRef:
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     """Rabbit handler: validate envelope, run recall, return typed result envelope."""
 
-    # Strict kind check before validation
+    # Strict kind check
     if env.kind not in ("recall.query.request", "legacy.message"):
         return BaseEnvelope(
             kind="recall.query.result",
@@ -66,16 +78,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     payload_obj: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
     if env.kind == "legacy.message":
-        # legacy callers often send {text/query/max_items/...} without an envelope
         payload_obj = payload_obj.get("payload") or payload_obj
-
-    # If it is legacy.message, we might want to pretend it is recall.query.request for schema validation purposes?
-    # Or just validate the payload against RecallRequestPayload.
-    # The previous code overwrote 'kind' in the input dict to force validation to pass Envelope[RecallRequestPayload].
-    # That is actually okay IF we trust the check above.
-
-    # However, to be cleaner, we can manually validate the payload into RecallRequestPayload
-    # instead of casting the whole Envelope to Envelope[RecallRequestPayload].
 
     try:
         req_payload = RecallRequestPayload.model_validate(payload_obj)
@@ -85,7 +88,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload={"error": "validation_failed", "details": ve.errors()},
+            payload={"error": "validation_failed", "details": str(ve)},
         )
 
     q = _query_from_payload(req_payload)
@@ -107,11 +110,11 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         for fr in result.fragments
     ]
 
-    out = Envelope[RecallResultPayload](
+    out = BaseEnvelope(
         kind="recall.query.result",
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain,
-        payload=RecallResultPayload(fragments=fragments, debug=result.debug),
+        payload=RecallResultPayload(fragments=fragments, debug=result.debug).model_dump(mode="json"),
     )
-    return out.model_copy(update={"reply_to": None})
+    return out

@@ -1,0 +1,5 @@
+# services/orion-ollama-host/requirements.txt
+pydantic
+pydantic-settings
+pyyaml
+requests

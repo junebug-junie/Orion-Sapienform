@@ -111,7 +111,7 @@ class SparkEngine:
     """
     High-level orchestrator for Orion's Spark Engine.
 
-    This is what orion-brain / Cortex / Hub should talk to.
+    This is what orion-ollama-host / Cortex / Hub should talk to.
 
     Responsibilities:
 
@@ -412,7 +412,7 @@ class SparkEngine:
                 The raw chat text.
 
             agent_id:
-                Identifier for the "observer" or process (e.g. "orion-brain").
+                Identifier for the "observer" or process (e.g. "orion-ollama-host").
 
             tags:
                 Optional channel tags (["juniper", "voice", "hub", ...]).

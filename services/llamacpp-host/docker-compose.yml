@@ -1,14 +1,14 @@
-# services/orion-llamaccp/docker-compose.yml
+# services/llamacpp-host/docker-compose.yml
 
 services:
-  llamaccp:
+  llamacpp-host:
     build:
       context: ../..
-      dockerfile: services/orion-llamaccp/Dockerfile
+      dockerfile: services/llamacpp-host/Dockerfile
     env_file:
       - .env
-    image: orion-llamaccp:0.1.0
-    container_name: ${PROJECT:-orion}-llamaccp
+    image: llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-llamacpp-host
     restart: unless-stopped
 
     environment:
@@ -29,7 +29,8 @@ services:
 
       # overrides (optional)
       - LLAMACPP_HOST_OVERRIDE=${LLAMACPP_HOST_OVERRIDE}
-      - LLAMACPP_PORT_OVERRIDE=${LLAMACPP_PORT_OVERRIDE}
+      # Force internal port to 8080 so Docker mapping works consistently
+      - LLAMACPP_PORT_OVERRIDE=8080
       - LLAMACPP_CTX_SIZE_OVERRIDE=${LLAMACPP_CTX_SIZE_OVERRIDE}
       - LLAMACPP_N_GPU_LAYERS_OVERRIDE=${LLAMACPP_N_GPU_LAYERS_OVERRIDE}
       - LLAMACPP_THREADS_OVERRIDE=${LLAMACPP_THREADS_OVERRIDE}
@@ -46,11 +47,15 @@ services:
       - "${LLM_CACHE_DIR}:/models"
 
     ports:
-      # Publish llama-server port (container binds whatever profile/override chooses; default 8080)
-      #- "${LLAMACPP_HOST_PORT:-7005}:8080"
-      # when running on athena:
-      - "${LLAMACPP_HOST_PORT:-7005}:7005"
+      # Always map to container 8080 because we force LLAMACPP_PORT_OVERRIDE=8080
+      - "${LLAMACPP_HOST_PORT:-7005}:8080"
 
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
     networks:
       - app-net

@@ -1,4 +1,4 @@
-# services/orion-vllm/app/main.py
+# services/orion-vllm-host/app/main.py
 from __future__ import annotations
 
 import logging
@@ -10,7 +10,7 @@ from typing import List, Dict, Any
 from .settings import settings
 
 
-logger = logging.getLogger("orion-vllm")
+logger = logging.getLogger("orion-vllm-host")
 
 
 def build_vllm_command_and_env() -> tuple[List[str], Dict[str, str]]:

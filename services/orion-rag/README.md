@@ -1,6 +1,6 @@
 # 📚 Orion RAG Service
 
-The **Orion RAG (Retrieval-Augmented Generation)** service acts as an intelligent orchestrator that enriches user queries with relevant context from a vector database before delegating the final prompt generation to the **Orion Brain**.
+The **Orion RAG (Retrieval-Augmented Generation)** service acts as an intelligent orchestrator that enriches user queries with relevant context from a vector database before delegating the final prompt generation to the LLM Host.
 
 > **Core Purpose:** To provide accurate, context-aware answers by retrieving information from internal documents and combining it with the power of a large language model.
 
@@ -12,10 +12,10 @@ The service follows a precise, event-driven workflow:
 
 1. **Listens** for incoming requests on a dedicated Redis channel (`orion:rag:request`).
 2. **Searches** the `orion-vector-db` service for documents semantically similar to the user's query.
-3. **Constructs** a new, context-rich prompt for the `orion-brain` service.
-4. **Publishes** this new prompt to the brain's intake channel (`orion:brain:intake`).
-5. **Subscribes** to a unique, temporary reply channel to wait for the brain's response.
-6. **Publishes** the final, context-augmented answer back to the original requester.
+3. **Constructs** a new, context-rich prompt.
+4. **Calls** the LLM host (via `orion-llm-gateway` or direct HTTP to `orion-ollama-host`/`llamacpp-host` depending on configuration) to generate a response.
+   *(Note: The legacy `orion:brain:intake` flow is deprecated as `orion-brain` has been refactored to `orion-ollama-host`, a dumb host).*
+5. **Publishes** the final, context-augmented answer back to the original requester.
 
 ---
 
@@ -28,7 +28,6 @@ Ensure your `.env` file in this directory (`services/orion-rag/`) is correctly c
 - **PROJECT:** The project name, used for connecting to other services.
 - **ORION_BUS_URL:** The connection URL for your Redis instance.
 - **SUBSCRIBE_CHANNEL_RAG_REQUEST:** The channel this service listens on.
-- **PUBLISH_CHANNEL_BRAIN_INTAKE:** The channel where the `orion-brain` service is listening.
 
 ### 2. Launch the Service
 
@@ -112,4 +111,4 @@ This service relies on the following other Orion services to function:
 
 - **orion-bus-core:** For all message passing.
 - **orion-vector-db:** For document retrieval.
-- **orion-brain:** For final prompt generation.
+- **orion-llm-gateway** or **orion-ollama-host**: For final prompt generation.

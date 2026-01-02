@@ -1,12 +1,12 @@
-# services/orion-vllm/docker-compose.yml
+# services/orion-vllm-host/docker-compose.yml
 
 services:
-  vllm:
+  vllm-host:
     build:
       context: ../..
-      dockerfile: services/orion-vllm/Dockerfile
-    image: ${PROJECT:-orion}-vllm:latest
-    container_name: ${PROJECT:-orion}-vllm
+      dockerfile: services/orion-vllm-host/Dockerfile
+    image: orion-vllm-host:latest
+    container_name: ${PROJECT:-orion}-vllm-host
     restart: unless-stopped
 
     env_file:
@@ -14,12 +14,12 @@ services:
 
     environment:
       # Identity
-      - SERVICE_NAME=${SERVICE_NAME_VLLM:-orion-vllm}
-      - SERVICE_VERSION=${SERVICE_VERSION_VLLM:-0.1.0}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-vllm-host}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
 
       # HTTP bind
-      - VLLM_HOST=${VLLM_HOST:-0.0.0.0}
-      - VLLM_PORT=${VLLM_PORT:-8000}
+      - VLLM_HOST=0.0.0.0
+      - VLLM_PORT=8000
 
       - HF_TOKEN=${HF_TOKEN}
 
@@ -27,13 +27,12 @@ services:
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
 
       # Which llm_profiles.yaml entry this node should run
-      # e.g. llama3-7b-v100-1gpu, llama3-7b-v100-2gpu, llama3-70b-v100-4gpu
-      - VLLM_PROFILE_NAME=${VLLM_PROFILE_NAME:-llama3-7b-v100-1gpu}
+      - VLLM_PROFILE_NAME=${VLLM_PROFILE_NAME}
 
-      # Optional model override (if you want to swap model without editing YAML)
+      # Optional model override
       - VLLM_MODEL_ID=${VLLM_MODEL_ID:-}
 
-      # Runtime-only knobs (NOT part of profile; safe to tune here)
+      # Runtime-only knobs
       - VLLM_GPU_MEMORY_FRACTION=${VLLM_GPU_MEMORY_FRACTION:-0.9}
       - VLLM_DOWNLOAD_DIR=${VLLM_DOWNLOAD_DIR:-/models}
       - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
@@ -45,8 +44,15 @@ services:
       - /mnt/storage-warm/models:/models
 
     ports:
-      # Optional external exposure; llm-gateway uses service name on app-net
+      # Map to internal 8000
       - "${VLLM_HOST_PORT:-7000}:8000"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
     runtime: nvidia
     deploy:

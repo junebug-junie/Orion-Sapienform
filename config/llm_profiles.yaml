@@ -73,7 +73,7 @@ profiles:
     task_type: chat
     backend: llamacpp
 
-    # Logical label used by Orion; the llamaccp wrapper will resolve to a GGUF path
+    # Logical label used by Orion; the llamacpp wrapper will resolve to a GGUF path
     model_id: "qwen2.5-32b-instruct-abliterated-q6_k"
 
     supports_tools: false

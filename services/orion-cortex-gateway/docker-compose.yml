@@ -1,0 +1,31 @@
+services:
+  cortex-gateway:
+    build:
+      context: ../..
+      dockerfile: services/orion-cortex-gateway/Dockerfile
+    container_name: ${PROJECT}-cortex-gateway
+    env_file:
+      - .env
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+
+    environment:
+      NODE_NAME: ${NODE_NAME}
+      SERVICE_NAME: "cortex-gateway"
+      SERVICE_VERSION: "0.1.0"
+
+      ORION_BUS_URL: ${ORION_BUS_URL}
+
+      ORCH_REQUEST_CHANNEL: ${ORCH_REQUEST_CHANNEL:-orion-cortex:request}
+      ORCH_RESULT_PREFIX: ${ORCH_RESULT_PREFIX:-orion-cortex:result}
+      CORTEX_GATEWAY_RPC_TIMEOUT_SEC: ${CORTEX_GATEWAY_RPC_TIMEOUT_SEC:-120.0}
+
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

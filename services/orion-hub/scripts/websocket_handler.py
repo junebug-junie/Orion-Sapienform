@@ -12,15 +12,19 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
-from scripts.llm_tts_handler import run_tts_only
-from scripts.llm_rpc import CouncilRPC
 from scripts.warm_start import mini_personality_summary
-from scripts.chat_front import run_chat_general, run_chat_agentic
+
+# Import contract schemas
+from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
+from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
 
 logger = logging.getLogger("orion-hub.ws")
 
 
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
+    """
+    Consumes TTS audio blobs from the queue and streams them to the websocket client.
+    """
     try:
         while websocket.client_state.name == "CONNECTED":
             msg = await queue.get()
@@ -33,21 +37,48 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
         logger.error(f"drain_queue error: {e}", exc_info=True)
 
 
+async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
+    """
+    Sends text to TTS service via bus RPC and puts result on the queue.
+    """
+    if not text.strip():
+        return
+
+    try:
+        req = TTSRequestPayload(text=text)
+        logger.info(f"Sending TTS request for: {text[:30]}...")
+
+        # Blocking call (async but waits for reply)
+        result: TTSResultPayload = await tts_client.speak(req)
+
+        # Prepare message for UI (expects 'audio' key with b64)
+        msg = {
+            "audio": result.audio_b64,
+            "text": text, # Echo text back if UI needs it
+        }
+        await queue.put(msg)
+
+    except Exception as e:
+        logger.error(f"TTS Remote Failed: {e}")
+        # Optionally notify UI of failure, or just silence
+
+
 async def websocket_endpoint(websocket: WebSocket):
-    # [CRITICAL FIX] Lazy import inside the function.
-    # We must access scripts.main.bus NOW, not at module load time.
-    # This ensures we get the connected bus, not the startup 'None'.
+    # Lazy import to ensure we get initialized clients
     import scripts.main
     bus = scripts.main.bus
-    asr = scripts.main.asr
+    cortex_client = scripts.main.cortex_client
+    tts_client = scripts.main.tts_client
 
     await websocket.accept()
     logger.info("WebSocket accepted. Waiting for messages...")
 
-    # [FIX] Do NOT close connection if ASR is missing. Text chat should still work.
-    if asr is None:
-        logger.warning("ASR model is NOT loaded. Voice input will fail, but text chat is active.")
-        await websocket.send_json({"warning": "ASR not loaded; voice disabled."})
+    # Check for Bus/Clients availability
+    if not bus or not cortex_client or not tts_client:
+        logger.error("Bus or Clients not initialized. Refusing WS connection.")
+        await websocket.send_json({"error": "Service unavailable (Bus/RPC missing)"})
+        await websocket.close()
+        return
 
     # Seed conversation history
     history: List[Dict[str, Any]] = [
@@ -63,9 +94,6 @@ async def websocket_endpoint(websocket: WebSocket):
             # 1. Receive Raw Data
             raw = await websocket.receive_text()
             
-            # [DEBUG] LOG RAW INPUT
-            logger.info(f"WS RECEIVED RAW: {raw[:200]}...") 
-
             try:
                 data: Dict[str, Any] = json.loads(raw)
             except json.JSONDecodeError:
@@ -77,42 +105,39 @@ async def websocket_endpoint(websocket: WebSocket):
             disable_tts = data.get("disable_tts", False)
             instructions = data.get("instructions", "")
             context_len = data.get("context_length", 10)
-            temperature = data.get("temperature", 0.7)
             user_id = data.get("user_id")
             session_id = data.get("session_id")
 
             # ---------------------------------------------------------
-            # 🗣️ Step 1: Get transcript (Handle multiple keys)
+            # 🗣️ Step 1: Input Handling (Text or Audio)
             # ---------------------------------------------------------
             transcript: Optional[str] = None
             is_text_input = False
 
-            # Check ALL common text keys
             possible_text = data.get("text_input") or data.get("text") or data.get("content")
             
             if possible_text:
                 transcript = possible_text
                 is_text_input = True
-            else:
+
+            # If audio is present, try to transcribe via Bus RPC
+            elif data.get("audio"):
                 audio_b64 = data.get("audio")
                 if audio_b64:
-                    if asr:
-                        await websocket.send_json({"state": "processing"})
-                        try:
-                            audio_bytes = base64.b64decode(audio_b64)
-                            transcript = asr.transcribe_bytes(audio_bytes)
-                        except Exception as e:
-                            logger.error(f"ASR Error: {e}")
-                            await websocket.send_json({"error": "ASR processing failed"})
-                    else:
-                        logger.error("Received audio but ASR is not loaded.")
-                        await websocket.send_json({"error": "ASR not available"})
-                else:
-                    logger.warning(f"Message contained no text or audio. Keys found: {list(data.keys())}")
-                    continue
+                    await websocket.send_json({"state": "processing"})
+                    try:
+                        logger.info(f"Processing audio input via Bus RPC...")
+                        stt_req = STTRequestPayload(audio_b64=audio_b64)
+                        stt_result: STTResultPayload = await tts_client.transcribe(stt_req)
+                        transcript = stt_result.text
+                        logger.info(f"Transcribed: {transcript}")
+                    except Exception as e:
+                        logger.error(f"STT RPC Failed: {e}")
+                        await websocket.send_json({"error": "Voice transcription failed"})
+                        continue
 
             if not transcript:
-                logger.info("Empty transcript derived.")
+                logger.warning("Empty transcript derived (no text or audio).")
                 continue
 
             logger.info(f"Transcript: {transcript}")
@@ -129,7 +154,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             history.append({"role": "user", "content": transcript})
 
-            # Trim history
+            # Trim History
             if context_len and context_len > 0:
                 system_msgs = [m for m in history if m.get("role") == "system"]
                 other_msgs = [m for m in history if m.get("role") != "system"]
@@ -138,60 +163,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 history = system_msgs + trimmed
 
             # ---------------------------------------------------------
-            # 🧠 Step 3: Call LLM / Bus
+            # 🧠 Step 3: Call Cortex Gateway via Bus
             # ---------------------------------------------------------
             logger.info(f"Routing to mode: {mode}")
             
-            # [CHECK] Ensure bus is alive before calling
-            if bus is None:
-                # Last ditch effort to grab it if startup was slow
-                import scripts.main
-                bus = scripts.main.bus
-                if bus is None:
-                    logger.error("CRITICAL: Bus is still None during request handling.")
-                    await websocket.send_json({"error": "Orion Bus unavailable"})
-                    continue
+            chat_req = CortexChatRequest(
+                prompt=transcript,
+                mode=mode,
+                session_id=session_id,
+                user_id=user_id,
+                metadata={"source": "hub_ws"}
+            )
 
             orion_response_text = ""
-            tokens = 0
-            spark_meta = None
 
-            if mode == "council":
-                rpc = CouncilRPC(bus)
-                reply = await rpc.call_chat(
-                    prompt=transcript,
-                    history=history[:-1], 
-                    temperature=temperature
-                )
-                orion_response_text = reply.get("text") or reply.get("response") or ""
-
-            elif mode == "agentic":
-                convo = await run_chat_agentic(
-                    bus,
-                    session_id=session_id,
-                    user_id=user_id,
-                    messages=history[:],
-                    chat_mode=mode,
-                    temperature=temperature,
-                    use_recall=True,
-                )
-                orion_response_text = convo.get("text") or ""
-                tokens = convo.get("tokens") or 0
-
-            else:
-                # Default: Chat General (Brain)
-                convo = await run_chat_general(
-                    bus,
-                    session_id=session_id,
-                    user_id=user_id,
-                    messages=history[:],
-                    chat_mode=mode,
-                    temperature=temperature,
-                    use_recall=True,
-                )
-                orion_response_text = convo.get("text") or ""
-                tokens = convo.get("tokens") or 0
-                spark_meta = convo.get("spark_meta")
+            try:
+                resp: CortexChatResult = await cortex_client.chat(chat_req)
+                orion_response_text = resp.final_text or ""
+            except Exception as e:
+                logger.error(f"Chat RPC Error: {e}")
+                await websocket.send_json({"error": f"Chat failed: {str(e)}"})
+                continue
 
             # ---------------------------------------------------------
             # 💬 Step 4: Reply
@@ -199,16 +191,15 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"Orion Response: {orion_response_text[:100]}...")
             await websocket.send_json({
                 "llm_response": orion_response_text,
-                "tokens": tokens,
                 "mode": mode,
             })
 
             # ---------------------------------------------------------
-            # 🔊 Step 5: TTS
+            # 🔊 Step 5: TTS (Remote)
             # ---------------------------------------------------------
             if orion_response_text and not disable_tts:
-                asyncio.create_task(
-                    run_tts_only(orion_response_text, tts_q, bus=bus, disable_tts=False)
+                 asyncio.create_task(
+                    run_tts_remote(orion_response_text, tts_client, tts_q)
                 )
 
             # ---------------------------------------------------------

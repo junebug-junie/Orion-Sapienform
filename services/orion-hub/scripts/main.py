@@ -1,15 +1,17 @@
 # scripts/main.py
 
 import logging
+from typing import Optional
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
-from scripts.asr import ASR
 
 from orion.core.bus.async_service import OrionBusAsync
+from scripts.bus_clients.cortex_client import CortexGatewayClient
+from scripts.bus_clients.tts_client import TTSClient
 
 
 # ───────────────────────────────────────────────────────────────
@@ -33,8 +35,9 @@ app = FastAPI(
 )
 
 # These are populated on startup and imported by other modules:
-asr: ASR | None = None
-bus: OrionBusAsync | None = None
+bus: Optional[OrionBusAsync] = None
+cortex_client: Optional[CortexGatewayClient] = None
+tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 
 
@@ -46,24 +49,9 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 async def startup_event():
     """
     Initializes all shared services at application startup.
-    ASR + OrionBus + UI template.
+    OrionBus + Clients + UI template.
     """
-    global asr, bus, html_content
-
-    # ------------------------------------------------------------
-    # ASR Initialization
-    # ------------------------------------------------------------
-    logger.info(
-        f"Loading Whisper model '{settings.WHISPER_MODEL_SIZE}' "
-        f"on {settings.WHISPER_DEVICE}/{settings.WHISPER_COMPUTE_TYPE}"
-    )
-
-    # ASR(size, device, compute_type)
-    asr = ASR(
-        settings.WHISPER_MODEL_SIZE,
-        settings.WHISPER_DEVICE,
-        settings.WHISPER_COMPUTE_TYPE,
-    )
+    global bus, cortex_client, tts_client, html_content
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -79,9 +67,16 @@ async def startup_event():
             await bus.connect()
             logger.info("OrionBusAsync connection established successfully.")
 
+            # Initialize RPC Clients
+            cortex_client = CortexGatewayClient(bus)
+            tts_client = TTSClient(bus)
+            logger.info("Bus Clients initialized.")
+
         except Exception as e:
             logger.error(f"Failed to initialize OrionBus: {e}")
             bus = None
+            cortex_client = None
+            tts_client = None
     else:
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")
 

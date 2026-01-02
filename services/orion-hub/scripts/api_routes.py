@@ -8,11 +8,9 @@ from fastapi import APIRouter, Header
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
-from .llm_rpc import CouncilRPC
-from .chat_front import run_chat_general, run_chat_agentic
-
 from .session import ensure_session
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 
 logger = logging.getLogger("orion-hub.api")
 
@@ -57,94 +55,64 @@ async def api_session(x_orion_session_id: Optional[str] = Header(None)):
 # ======================================================================
 
 async def handle_chat_request(
-    bus,
+    cortex_client,
     payload: dict,
     session_id: str,
 ) -> Dict[str, Any]:
     """
     Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.
-
-    - For mode='brain', routes through Cortex-Orch using the chat_general verb.
-    - For mode='council', routes via Agent Council (legacy direct LLM path).
+    Delegate strict typed requests to orion-cortex-gateway via Bus.
     """
     user_messages = payload.get("messages", [])
-    temperature = payload.get("temperature", 0.7)
-    mode = payload.get("mode", "brain")  # "brain" | "council"
+    mode = payload.get("mode", "brain")
     use_recall = bool(payload.get("use_recall", False))
     packs = payload.get("packs")
+    user_id = payload.get("user_id")
 
     if not isinstance(user_messages, list) or len(user_messages) == 0:
         return {"error": "Invalid payload: missing messages[]"}
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
-    # Council mode stays as-is for now
-    if mode == "council":
-        rpc = CouncilRPC(bus)
-        reply = await rpc.call_llm(
-            prompt=user_prompt,
-            history=user_messages[-5:],  # small tail
-            temperature=temperature,
-        )
-        text = reply.get("text") or reply.get("response") or ""
-        tokens = len(text.split()) if text else 0
+    # Build the Request
+    req = CortexChatRequest(
+        prompt=user_prompt,
+        mode=mode,
+        session_id=session_id,
+        user_id=user_id,
+        packs=packs,
+        # Pass recall config via 'recall' field or 'options' depending on schema
+        # Current schema has 'recall' as Optional[Dict]
+        recall={"enabled": use_recall} if use_recall else None,
+        # Pass full history as context if needed, but 'prompt' is the main driver
+        # cortex-gateway will handle history reconstruction or appending
+        metadata={"source": "hub_http"},
+    )
+
+    try:
+        # Call Bus RPC
+        resp: CortexChatResult = await cortex_client.chat(req)
+
+        # Extract Text
+        text = resp.final_text or ""
+
+        # Map raw result for UI debug
+        raw_result = resp.cortex_result.model_dump(mode="json")
 
         return {
             "session_id": session_id,
             "mode": mode,
             "use_recall": use_recall,
             "text": text,
-            "tokens": tokens,
-            "raw": reply,
-            "recall_debug": {},
-            "spark_meta": None,
+            "tokens": len(text.split()), # simple approx
+            "raw": raw_result,
+            "recall_debug": resp.cortex_result.recall_debug,
+            "spark_meta": None, # Gateway doesn't expose spark_meta easily in top level yet
         }
 
-    # Agentic mode → Agent Chain (bus-native)
-    if mode == "agentic":
-        convo = await run_chat_agentic(
-            bus,
-            session_id=session_id,
-            user_id=None,  # no auth yet on HTTP path
-            messages=user_messages,
-            chat_mode=mode,
-            temperature=temperature,
-            use_recall=use_recall,
-            packs=packs,
-        )
-        return {
-            "session_id": session_id,
-            "mode": mode,
-            "use_recall": use_recall,
-            "packs": packs,
-            "text": convo.get("text") or "",
-            "tokens": convo.get("tokens") or 0,
-            "raw": convo.get("raw_agent_chain"),
-            "recall_debug": convo.get("recall_debug") or {},
-            "spark_meta": convo.get("spark_meta"),
-        }
-
-    # Default: brain → chat_general via Cortex-Orch + LLM Gateway
-    convo = await run_chat_general(
-        bus,
-        session_id=session_id,
-        user_id=None,  # HTTP has no authenticated user_id yet
-        messages=user_messages,
-        chat_mode=mode,
-        temperature=temperature,
-        use_recall=use_recall,
-    )
-
-    return {
-        "session_id": session_id,
-        "mode": mode,
-        "use_recall": use_recall,
-        "text": convo.get("text") or "",
-        "tokens": convo.get("tokens") or 0,
-        "raw": convo.get("raw_cortex"),
-        "recall_debug": convo.get("recall_debug") or {},
-        "spark_meta": convo.get("spark_meta"),
-    }
+    except Exception as e:
+        logger.error(f"Chat RPC failed: {e}", exc_info=True)
+        return {"error": str(e)}
 
 
 # ======================================================================
@@ -157,43 +125,26 @@ async def api_chat(
 ):
     """
     Main LLM chat endpoint.
-
-    - Preserves warm-started sessions + personality stubs.
-    - Uses LLMGatewayRPC by default.
-    - If payload.mode == "council", routes through Agent Council instead.
-    - If payload.use_recall == true, pulls a semantic/salience/recency-weighted
-      memory digest from Recall → Gateway and injects it into the system stub.
+    Delegates to Cortex Gateway via Bus RPC.
     """
-    from .main import bus
-    if not bus:
-        raise RuntimeError("OrionBus not initialized.")
+    from .main import bus, cortex_client
+    if not bus or not cortex_client:
+        raise RuntimeError("OrionBus/Client not initialized.")
 
     # Ensure warm-started session
     session_id = await ensure_session(x_orion_session_id, bus)
 
-    # Keep a local copy of user messages for logging/history
-    user_messages = payload.get("messages") or []
-
-    # Core chat handling (Gateway / Council + Recall)
-    result = await handle_chat_request(bus, payload, session_id)
-
-    # Pull out text/mode/use_recall from the result
-    text: str = (result.get("text") or "").strip()
-    mode: str = result.get("mode", payload.get("mode", "brain"))
-    use_recall: bool = bool(result.get("use_recall", payload.get("use_recall", False)))
-
-    spark_meta = result.get("spark_meta")
-
-    # Reflect the normalized values back into the response dict
-    result["mode"] = mode
-    result["use_recall"] = use_recall
+    # Core chat handling
+    result = await handle_chat_request(cortex_client, payload, session_id)
 
     # ─────────────────────────────────────────────
     # 📡 Publish HTTP chat → chat history log
     # (restores legacy Brain→SQL behavior via CHANNEL_CHAT_LOG)
     # ─────────────────────────────────────────────
+    text = result.get("text")
     if text and getattr(bus, "enabled", False):
         try:
+            user_messages = payload.get("messages", [])
             latest_user_prompt = ""
             if isinstance(user_messages, list) and user_messages:
                 latest_user_prompt = user_messages[-1].get("content", "") or ""
@@ -204,19 +155,14 @@ async def api_chat(
                 "prompt": latest_user_prompt,
                 "response": text,
                 "session_id": session_id,
-                "mode": mode,
-                # we don’t have user_id on HTTP; writer can treat it as optional
+                "mode": result.get("mode", "brain"),
                 "user_id": None,
-                "spark_meta": spark_meta,
+                "spark_meta": None,
             }
 
             bus.publish(
                 settings.CHANNEL_CHAT_HISTORY_LOG,
                 chat_log_payload,
-            )
-            logger.info(
-                "Published HTTP chat to chat history log: %s",
-                chat_log_payload["trace_id"],
             )
         except Exception as e:
             logger.warning(
@@ -224,27 +170,12 @@ async def api_chat(
                 e,
                 exc_info=True,
             )
-    # ─────────────────────────────────────────────────────────────
-    # 🧾 Store chat tail in Redis (last 20 entries)
-    # ─────────────────────────────────────────────────────────────
-    client = getattr(bus, "client", None)
-    if client is not None and isinstance(user_messages, list) and user_messages:
-        try:
-            history_key = f"orion:hub:session:{session_id}:history"
-            client.lpush(history_key, str(user_messages[-1])[:4000])
-            client.ltrim(history_key, 0, 19)
-        except Exception as e:
-            logger.warning(
-                "Failed to store chat tail in Redis for %s: %s",
-                session_id,
-                e,
-            )
 
     return result
 
 
 # ======================================================================
-# 🔍 RECALL / RAG ENDPOINT (bus façade)
+# 🔍 RECALL / RAG ENDPOINT (Retired)
 # ======================================================================
 @router.post("/api/recall")
 async def api_recall(
@@ -252,53 +183,10 @@ async def api_recall(
     x_orion_session_id: Optional[str] = Header(None),
 ):
     """
-    Thin HTTP façade over the Recall service (via Orion Bus).
-
-    Expects payload like:
-        {
-          "query": "string (optional)",
-          "mode": "hybrid|short_term|deep (optional)",
-          "time_window_days": 30,
-          "max_items": 16,
-          "extras": {...}   # optional hints/filters
-        }
-
-    This does NOT call Recall over HTTP – it uses RecallRPC on the bus,
-    same as /api/chat, so all intra-Orion cognition stays on the spine.
-
-    Scoring is handled inside the Recall service (semantic + salience + recency).
+    DEPRECATED: Hub no longer performs direct recall.
+    This logic is now handled by Cortex Gateway / Orchestrator.
     """
-    from .main import bus
-    if not bus:
-        raise RuntimeError("OrionBus not initialized.")
-
-    session_id = await ensure_session(x_orion_session_id, bus)
-
-    query = payload.get("query") or ""
-    mode = payload.get("mode") or "hybrid"
-    time_window_days = payload.get("time_window_days") or 30
-    max_items = payload.get("max_items") or 16
-    extras = payload.get("extras") or None
-
-    client = RecallRPC(bus)
-
-    result = await client.call_recall(
-        query=query,
-        session_id=session_id,
-        mode=mode,
-        time_window_days=time_window_days,
-        max_items=max_items,
-        extras=extras,
-    )
-
-    return {
-        "session_id": session_id,
-        "query": query,
-        "mode": mode,
-        "time_window_days": time_window_days,
-        "max_items": max_items,
-        "result": result,
-    }
+    return {"error": "Endpoint deprecated. Recall is handled by Cortex Stack."}
 
 
 # ======================================================================
@@ -347,50 +235,11 @@ async def submit_collapse(data: dict):
 async def api_debug_spark_last(
     x_orion_session_id: Optional[str] = Header(None),
 ):
-    """
-    Return the last Spark metadata seen for this Hub session.
-
-    This is *not* live SparkEngine state, just the last spark_meta
-    that came back from LLM Gateway (HTTP or WS path) and was stored
-    in Redis under:
-        orion:hub:session:{session_id}:spark:last
-    """
-    from .main import bus
-    if not bus:
-        raise RuntimeError("OrionBus not initialized.")
-
-    # Reuse your warm-start session logic so this lines up with chat.
-    session_id = await ensure_session(x_orion_session_id, bus)
-    client = getattr(bus, "client", None)
-
-    if client is None:
-        return JSONResponse(
-            {
-                "session_id": session_id,
-                "spark_meta": None,
-                "note": "Redis client not available on bus.",
-            }
-        )
-
-    key = f"orion:hub:session:{session_id}:spark:last"
-    raw = client.get(key)
-    if not raw:
-        return JSONResponse(
-            {
-                "session_id": session_id,
-                "spark_meta": None,
-                "note": "No spark_meta recorded yet for this session.",
-            }
-        )
-
-    try:
-        spark_meta = json.loads(raw)
-    except Exception:
-        spark_meta = None
-
+    # Legacy debug endpoint - likely broken but kept safe
     return JSONResponse(
         {
-            "session_id": session_id,
-            "spark_meta": spark_meta,
+            "session_id": x_orion_session_id,
+            "spark_meta": None,
+            "note": "Spark debug deprecated in dumb hub.",
         }
     )

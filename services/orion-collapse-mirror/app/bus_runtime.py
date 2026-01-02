@@ -41,11 +41,21 @@ def _cfg() -> ChassisConfig:
 
 def _wrap_entry_for_triage(entry: CollapseMirrorEntry) -> Dict[str, Any]:
     collapse_id = f"collapse_{uuid4().hex}"
+    
+    # Get the data from the entry
+    data = entry.model_dump(mode="json")
+    
+    # Ensure timestamp is present (fallback if with_defaults wasn't called or failed)
+    if not data.get("timestamp"):
+        data["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+    # Construct result: explict IDs + data
+    # Note: We prioritize the entry's data (like timestamp/environment) 
+    # but enforce our generated ID and service name.
     return {
+        **data,
         "id": collapse_id,
         "service_name": settings.SERVICE_NAME,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **entry.model_dump(mode="json"),
     }
 
 
@@ -63,6 +73,8 @@ async def handle_intake(env: BaseEnvelope) -> None:
 
     try:
         entry = CollapseMirrorEntry.model_validate(payload)
+        # Apply defaults (generates timestamp and environment if missing)
+        entry.with_defaults()
     except ValidationError as ve:
         logger.warning("[collapse-mirror] intake schema failed; dropping: %s", ve)
         return
@@ -78,8 +90,13 @@ async def handle_intake(env: BaseEnvelope) -> None:
     await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, enriched)
 
     # 2. To SQL Writer (for Raw storage) - hardcoded canonical channel per request
-    # Note: enriched dict contains the ID and timestamp needed by the writer
-    await intake_hunter.bus.publish("orion:collapse:sql-write", enriched)
+    # Fix: Wrap in envelope so sql-writer sees kind="collapse.mirror"
+    write_envelope = BaseEnvelope(
+        kind="collapse.mirror",
+        source=_service_ref(),
+        payload=enriched
+    )
+    await intake_hunter.bus.publish("orion:collapse:sql-write", write_envelope)
 
 
 async def handle_exec_step(env: BaseEnvelope) -> BaseEnvelope:
@@ -142,6 +159,8 @@ async def handle_exec_step(env: BaseEnvelope) -> BaseEnvelope:
 
     try:
         entry = CollapseMirrorEntry.model_validate(candidate)
+        # Apply defaults here too
+        entry.with_defaults()
     except Exception as e:
         return BaseEnvelope(
             kind="collapse_mirror.exec_step.result",

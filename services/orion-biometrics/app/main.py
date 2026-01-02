@@ -44,7 +44,7 @@ async def publish_metrics(bus):
         )
 
         env = BaseEnvelope(
-            kind="telemetry.biometrics",
+            kind="biometrics.telemetry",
             source=ServiceRef(
                 name=settings.SERVICE_NAME,
                 version=settings.SERVICE_VERSION,

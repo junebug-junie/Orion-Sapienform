@@ -42,6 +42,11 @@ Reply channels are ephemeral per request and **must** be provided by the caller 
 ### Flow B (AI Enrichment)
 `orion:collapse:intake` → Mirror Service → `orion:collapse:triage` → Meta Tags Service → `orion:tags:enriched` → SQL Writer.
 
+### Flow C (Telemetry)
+`orion:biometrics:telemetry` → SQL Writer.
+* **Kind:** `biometrics.telemetry`
+* **Payload:** `orion.schemas.telemetry.biometrics.BiometricsPayload`
+
 ---
 
 ## Cortex Client Contract (Client/Hub → Orch)

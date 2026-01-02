@@ -1,5 +1,5 @@
 # services/orion-ollama-host/requirements.txt
-pydantic
-pydantic-settings
-pyyaml
-requests
+pydantic==2.9.2
+pydantic-settings==2.6.1
+PyYAML==6.0.2
+requests==2.32.3

@@ -94,3 +94,28 @@ Run from `services/orion-vision-host/scripts/`:
 3.  Send a request via `publish_test_task.py`.
 4.  Observe artifact broadcast on tap script.
 5.  Check downstream logs (`orion-vision-window`, etc.) for processing.
+
+## Cortex Enablement
+
+The vision services are registered with `cortex-exec` and expose RPC endpoints for one-shot cognitive verbs.
+
+### Verbs
+
+- `perceive_retina_fast`: Host -> Artifact (Embed + Detect + Caption)
+- `perceive_caption_frame`: Host -> Artifact (Caption)
+- `perceive_detect_open_vocab`: Host -> Artifact (Detect)
+- `perceive_embed_image`: Host -> Artifact (Embed)
+- `perceive_vision_events`: Host -> Window -> Council -> Events
+- `perceive_vision_memory`: Host -> Window -> Council -> Scribe -> Memory
+
+### RPC Channels
+
+Each service listens on a request channel for `orion-exec`:
+
+| Service | RPC Channel (Env) | Schema (Request) | Schema (Result) |
+| :--- | :--- | :--- | :--- |
+| **Window** | `CHANNEL_WINDOW_REQUEST` | `VisionWindowRequestPayload` | `VisionWindowResultPayload` |
+| **Council** | `CHANNEL_COUNCIL_REQUEST` | `VisionCouncilRequestPayload` | `VisionCouncilResultPayload` |
+| **Scribe** | `CHANNEL_SCRIBE_REQUEST` | `VisionScribeRequestPayload` | `VisionScribeResultPayload` |
+
+**Note**: `VisionHostService` uses its existing intake channel for RPC requests from Cortex.

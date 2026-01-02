@@ -4,6 +4,7 @@ import uuid
 import time
 from typing import Optional
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from loguru import logger
@@ -56,22 +57,15 @@ class RetinaService:
 
     async def _capture_and_publish(self):
         # MOCK IMPLEMENTATION
-        # In real world, this would grab from cv2.VideoCapture or watch a folder
-
         if settings.RETINA_SOURCE_TYPE == "mock":
-             # We assume some test images exist or we just send pointers that might fail if host checks
-             # For robustness, we check if we can find any image in the source path to point to.
-
              image_path = None
              if os.path.exists(settings.RETINA_SOURCE_PATH):
                  files = [f for f in os.listdir(settings.RETINA_SOURCE_PATH) if f.lower().endswith(('.jpg', '.png'))]
                  if files:
-                     # Pick one randomly or rotate? Let's pick random for mock
                      import random
                      image_path = str(Path(settings.RETINA_SOURCE_PATH) / random.choice(files))
 
              if not image_path:
-                 # logger.warning("[RETINA] No images found in source path, skipping frame.")
                  return
 
              payload = VisionFramePointerPayload(
@@ -93,12 +87,11 @@ class RetinaService:
              logger.info(f"[RETINA] Published frame pointer: {image_path}")
 
 service = RetinaService()
-app = FastAPI(title="Orion Vision Retina", version="0.1.0", lifespan=None)
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     await service.start()
-
-@app.on_event("shutdown")
-async def shutdown():
+    yield
     await service.stop()
+
+app = FastAPI(title="Orion Vision Retina", version="0.1.0", lifespan=lifespan)

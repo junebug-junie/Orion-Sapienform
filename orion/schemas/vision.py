@@ -29,6 +29,18 @@ class VisionArtifactOutputs(BaseModel):
     embedding: Optional[VisionEmbedding] = None
 
 
+class VisionArtifactPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_id: str
+    correlation_id: str
+    task_type: str
+    device: str
+    inputs: Dict[str, Any]
+    outputs: VisionArtifactOutputs
+    timing: Dict[str, float]
+    model_fingerprints: Dict[str, str]
+
+
 class VisionTaskRequestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     task_type: str = Field(..., description="embed_image|detect_open_vocab|caption_frame|retina_fast")
@@ -42,21 +54,9 @@ class VisionTaskResultPayload(BaseModel):
     task_type: str
     device: Optional[str] = None
     error: Optional[str] = None
-    result: Optional[Dict[str, Any]] = None
-    artifact_id: Optional[str] = None
+    # result: Optional[Dict[str, Any]] = None # Deprecating in favor of typed artifact
+    artifact: Optional[VisionArtifactPayload] = None
     timings: Optional[Dict[str, float]] = None
-
-
-class VisionArtifactPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    artifact_id: str
-    correlation_id: str
-    task_type: str
-    device: str
-    inputs: Dict[str, Any]
-    outputs: VisionArtifactOutputs
-    timing: Dict[str, float]
-    model_fingerprints: Dict[str, str]
 
 
 class VisionFramePointerPayload(BaseModel):
@@ -77,6 +77,8 @@ class VisionWindowPayload(BaseModel):
     end_ts: float
     summary: Dict[str, Any]
     artifact_ids: List[str]
+    # For one-shot flow, it's helpful to carry the full artifacts if needed,
+    # but the schema usually just has IDs. We'll stick to IDs + summary for payload.
 
 
 class VisionEventBundleItem(BaseModel):
@@ -100,3 +102,31 @@ class VisionScribeAckPayload(BaseModel):
     ok: bool
     message: Optional[str] = None
     error: Optional[str] = None
+
+
+# --- Cortex / RPC Schemas ---
+
+class VisionWindowRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # For one-shot, we pass the artifact directly
+    artifact: VisionArtifactPayload
+
+class VisionWindowResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    window: VisionWindowPayload
+
+class VisionCouncilRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    window: VisionWindowPayload
+
+class VisionCouncilResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    events: VisionEventPayload
+
+class VisionScribeRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    events: VisionEventPayload
+
+class VisionScribeResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ack: VisionScribeAckPayload

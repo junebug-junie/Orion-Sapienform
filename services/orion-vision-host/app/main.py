@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import asyncio
 import os
 import uuid
 import time
 from typing import Any, Dict, Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -183,15 +182,18 @@ class VisionHostService:
         if not self.bus:
             return
 
+        # Prepare artifacts (consolidated)
+        artifact_payload = self._create_artifact_payload(res, source_envelope)
+
         # Prepare result payload
         result_payload = VisionTaskResultPayload(
             ok=res.ok,
             task_type=res.task_type,
             device=res.device,
             error=res.error,
-            result=res.artifacts, # 'artifacts' in VisionResult holds the output dict
-            artifact_id=None, # TODO: generate/extract artifact ID if consolidated
-            timings=res.meta.get("timings") # or extract from meta
+            # result=res.artifacts, # Deprecated
+            artifact=artifact_payload if res.ok else None,
+            timings=res.meta.get("timings")
         )
 
         # Publish reply
@@ -206,20 +208,16 @@ class VisionHostService:
         )
         await self.bus.publish(res.reply_channel, reply_envelope)
 
-        if res.ok and res.artifacts:
-             await self._publish_artifact_broadcast(res, source_envelope)
+        if res.ok and artifact_payload:
+             await self._publish_artifact_broadcast(artifact_payload, source_envelope)
 
-    async def _publish_artifact_broadcast(self, res: VisionResult, source_envelope: BaseEnvelope):
-        # We need to construct a canonical VisionArtifactPayload
-        # The runner returns a dict 'artifacts'. We need to parse/normalize it.
+    def _create_artifact_payload(self, res: VisionResult, source_envelope: BaseEnvelope) -> Optional[VisionArtifactPayload]:
+        if not res.artifacts:
+            return None
 
-        # This is best effort mapping from the free-form runner output to the strict schema.
-        artifacts = res.artifacts or {}
+        artifacts = res.artifacts
+        artifact_id = str(uuid.uuid4())
 
-        # Generate a deterministic artifact ID if not present
-        artifact_id = str(uuid.uuid4()) # In real world, hash inputs + model
-
-        # Map outputs
         objects = None
         caption = None
         embedding = None
@@ -251,28 +249,34 @@ class VisionHostService:
             caption=caption,
             embedding=embedding
         )
-        # Add any extra fields from artifacts to outputs if needed, but schema says extra="allow"
+
+        # Add extras
         for k, v in artifacts.items():
             if k not in ("objects", "caption", "embedding", "configured", "implemented", "kind", "device", "model_id"):
-                setattr(outputs, k, v)
+                if hasattr(outputs, k): # Shouldn't happen given above
+                     pass
+                else:
+                    # VisionArtifactOutputs allows extra, but Pydantic might need setattr
+                    setattr(outputs, k, v)
 
-        payload = VisionArtifactPayload(
+        return VisionArtifactPayload(
             artifact_id=artifact_id,
             correlation_id=res.corr_id,
             task_type=res.task_type,
             device=res.device or "unknown",
-            inputs=res.meta.get("request", {}) or {}, # We might need to pass request better
+            inputs=res.meta.get("request", {}) or {},
             outputs=outputs,
             timing={"latency_s": res.meta.get("latency_s", 0.0)},
-            model_fingerprints={res.task_type: artifacts.get("model_id", "unknown")}
+            model_fingerprints={res.task_type: str(artifacts.get("model_id", "unknown"))}
         )
 
+    async def _publish_artifact_broadcast(self, payload: VisionArtifactPayload, source_envelope: BaseEnvelope):
         envelope = BaseEnvelope(
             schema_id="vision.artifact",
             schema_version="1.0.0",
             kind="vision.artifact",
             source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=res.corr_id,
+            correlation_id=payload.correlation_id,
             causality_chain=source_envelope.causality_chain + [source_envelope.correlation_id] if source_envelope.correlation_id else [],
             payload=payload
         )
@@ -280,15 +284,14 @@ class VisionHostService:
         await self.bus.publish(settings.CHANNEL_VISIONHOST_PUB, envelope)
 
 service = VisionHostService()
-app = FastAPI(title="Orion Vision Host", version="0.1.0", lifespan=None) # We use on_event for now or convert to lifespan
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     await service.start()
-
-@app.on_event("shutdown")
-async def shutdown():
+    yield
     await service.stop()
+
+app = FastAPI(title="Orion Vision Host", version="0.1.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
@@ -366,11 +369,14 @@ async def http_task(payload: Dict[str, Any]):
 
         # Also broadcast artifact if success
         if res.ok and res.artifacts and service.bus:
-             # We create a dummy source envelope
+             # Create dummy source envelope
              dummy_env = BaseEnvelope(
                  schema_id="http", schema_version="1", kind="http", source="http", correlation_id=corr_id, payload={}
              )
-             await service._publish_artifact_broadcast(res, dummy_env)
+             # Reuse creation logic
+             art_payload = service._create_artifact_payload(res, dummy_env)
+             if art_payload:
+                 await service._publish_artifact_broadcast(art_payload, dummy_env)
 
         return res.model_dump()
     except Exception as e:

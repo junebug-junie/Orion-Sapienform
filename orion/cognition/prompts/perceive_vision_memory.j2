@@ -1,0 +1,9 @@
+Vision Memory Persisted.
+
+Status: {{ "Success" if scribe_result.ack.ok else "Failed" }}
+Message: {{ scribe_result.ack.message }}
+
+Events:
+{% for evt in council_result.events.events %}
+- {{ evt.event_type }}: {{ evt.narrative }}
+{% endfor %}

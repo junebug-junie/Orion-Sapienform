@@ -14,5 +14,8 @@ class Settings(BaseSettings):
     CHANNEL_WINDOW_INTAKE: str = "orion:vision:artifacts"
     CHANNEL_WINDOW_PUB: str = "orion:vision:windows"
 
+    # Cortex Exec
+    CHANNEL_WINDOW_REQUEST: str = "orion-exec:request:VisionWindowService"
+
     # Config
     WINDOW_SIZE_SEC: float = 30.0

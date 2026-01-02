@@ -5,6 +5,7 @@ services:
       - ORION_BUS_URL=redis://redis:6379/0
       - CHANNEL_WINDOW_INTAKE=orion:vision:artifacts
       - CHANNEL_WINDOW_PUB=orion:vision:windows
+      - CHANNEL_WINDOW_REQUEST=orion-exec:request:VisionWindowService
     volumes:
       - ./app:/app/app
       - ../../orion:/app/orion

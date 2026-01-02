@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import threading
-import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional, cast
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.tts import TTSRequestPayload, TTSResultPayload
 
 from .settings import settings
 from .tts import TTSEngine
@@ -24,79 +25,132 @@ def get_tts_engine() -> TTSEngine:
     return _tts_engine
 
 
-def process_tts_request(payload: Dict[str, Any]) -> None:
+async def process_tts_request(
+    bus: OrionBusAsync,
+    envelope: BaseEnvelope,
+    raw_payload: Dict[str, Any],
+) -> None:
     """
     Handles a single TTS request from the bus.
-
-    Expected payload (same as old Brain contract):
-
-      {
-        "trace_id": "...",
-        "text": "hello world",
-        "response_channel": "orion:tts:rpc:<uuid>",
-        "source": "hub"
-      }
+    Supports both legacy dict payloads and Typed Envelopes.
     """
-    trace_id = payload.get("trace_id") or str(uuid.uuid4())
-    text = payload.get("text") or ""
-    response_channel = payload.get("response_channel")
+    # 1. Extract request data (Hybrid Access Pattern)
+    request_data: Optional[TTSRequestPayload] = None
+    reply_to = envelope.reply_to
 
-    if not text:
-        logger.warning("[%s] TTS request missing 'text'. Discarding.", trace_id)
+    # Try to parse as typed request
+    if envelope.kind == "tts.synthesize.request":
+        try:
+            request_data = TTSRequestPayload.model_validate(envelope.payload)
+        except Exception as e:
+            logger.warning(
+                "[%s] Invalid typed payload for %s: %s",
+                envelope.correlation_id,
+                envelope.kind,
+                e,
+            )
+
+    # Fallback: legacy/loose payload inspection
+    if request_data is None:
+        # Legacy payload: {"text": "...", "response_channel": "..."}
+        text = raw_payload.get("text")
+        if not text and envelope.payload:
+            text = envelope.payload.get("text")
+
+        if text:
+            # Map legacy fields to model
+            request_data = TTSRequestPayload(
+                text=text,
+                voice_id=raw_payload.get("voice_id"),
+                language=raw_payload.get("language"),
+            )
+
+            # Legacy reply channel handling if envelope.reply_to is missing
+            if not reply_to:
+                reply_to = raw_payload.get("response_channel")
+
+    if not request_data:
+        logger.warning("[%s] Could not parse TTS request from payload.", envelope.correlation_id)
         return
 
-    if not response_channel:
-        logger.warning("[%s] TTS request missing 'response_channel'. Discarding.", trace_id)
+    if not reply_to:
+        logger.warning("[%s] No reply_to/response_channel specified. Dropping.", envelope.correlation_id)
         return
 
     logger.info(
         "[%s] Processing TTS request (len=%d) -> %s",
-        trace_id,
-        len(text),
-        response_channel,
+        envelope.correlation_id,
+        len(request_data.text),
+        reply_to,
     )
 
+    # 2. Synthesize (run in thread pool)
     try:
-        engine = get_tts_engine()
-        audio_b64 = engine.synthesize_to_b64(text)
+        loop = asyncio.get_running_loop()
 
-        bus = OrionBus(
-            url=settings.orion_bus_url,
-            enabled=settings.orion_bus_enabled,
+        def _synthesize():
+            engine = get_tts_engine()
+            return engine.synthesize_to_b64(request_data.text)
+
+        audio_b64 = await loop.run_in_executor(None, _synthesize)
+
+        # 3. Create Result Payload
+        result = TTSResultPayload(
+            audio_b64=audio_b64,
+            content_type="audio/wav",
+            # duration_sec could be calculated if TTS engine returns it
         )
 
-        reply_payload = {
-            "trace_id": trace_id,
-            "audio_b64": audio_b64,
-            "mime_type": "audio/wav",
-        }
-        bus.publish(response_channel, reply_payload)
+        # 4. Reply
+        # Create response envelope (child of request)
+        response_envelope = envelope.derive_child(
+            kind="tts.synthesize.result",
+            source=ServiceRef(
+                name=settings.service_name,
+                version=settings.service_version,
+            ),
+            payload=result,
+            reply_to=None, # End of RPC chain
+        )
+
+        await bus.publish(reply_to, response_envelope)
 
         logger.info(
             "[%s] Sent TTS reply to %s (bytes=%d)",
-            trace_id,
-            response_channel,
+            envelope.correlation_id,
+            reply_to,
             len(audio_b64),
         )
 
     except Exception as e:
         logger.error(
             "[%s] FAILED to synthesize TTS: %s",
-            trace_id,
+            envelope.correlation_id,
             e,
             exc_info=True,
         )
+        # Publish error if possible
+        try:
+            error_envelope = envelope.derive_child(
+                kind="system.error",
+                source=ServiceRef(
+                    name=settings.service_name,
+                    version=settings.service_version,
+                ),
+                payload={
+                    "error": "tts_synthesis_failed",
+                    "details": str(e)
+                },
+            )
+            await bus.publish(reply_to, error_envelope)
+        except Exception:
+            pass
 
 
-def listener_worker() -> None:
+async def listener_worker(bus: OrionBusAsync) -> None:
     """
-    Subscribes to CHANNEL_TTS_INTAKE and spawns a worker thread per message.
+    Subscribes to CHANNEL_TTS_INTAKE and processes messages.
     """
-    bus = OrionBus(
-        url=settings.orion_bus_url,
-        enabled=settings.orion_bus_enabled,
-    )
-
     if not bus.enabled:
         logger.error("Bus is disabled. Whisper/TTS listener exiting.")
         return
@@ -106,39 +160,25 @@ def listener_worker() -> None:
         settings.channel_tts_intake,
     )
 
-    for message in bus.subscribe(settings.channel_tts_intake):
-        if message.get("type") != "message":
-            continue
+    async with bus.subscribe(settings.channel_tts_intake) as pubsub:
+        async for msg in bus.iter_messages(pubsub):
+            try:
+                # Decode using Codec
+                data = msg.get("data")
+                decoded = bus.codec.decode(data)
 
-        raw_channel = message.get("channel")
-        if isinstance(raw_channel, bytes):
-            channel = raw_channel.decode("utf-8")
-        else:
-            channel = str(raw_channel)
+                if not decoded.ok:
+                    logger.warning(
+                        "Decode failed on %s: %s",
+                        settings.channel_tts_intake,
+                        decoded.error
+                    )
+                    continue
 
-        data = message.get("data")
-        if not isinstance(data, dict):
-            logger.warning("Received non-dict message on %s: %r", channel, data)
-            continue
+                # Process asynchronously (fire and forget task to not block listener)
+                asyncio.create_task(
+                    process_tts_request(bus, decoded.envelope, decoded.raw)
+                )
 
-        try:
-            trace_id = data.get("trace_id", "no-trace")
-            logger.info(
-                "[%s] INTAKE payload snapshot: channel=%s keys=%s",
-                trace_id,
-                channel,
-                list(data.keys()),
-            )
-        except Exception:
-            logger.warning(
-                "INTAKE payload snapshot failed for message on %s",
-                channel,
-                exc_info=True,
-            )
-
-        # All traffic on this service is TTS intake
-        threading.Thread(
-            target=process_tts_request,
-            args=(data,),
-            daemon=True,
-        ).start()
+            except Exception:
+                logger.error("Error processing message loop", exc_info=True)

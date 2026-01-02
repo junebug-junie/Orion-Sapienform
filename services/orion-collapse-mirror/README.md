@@ -1,132 +1,54 @@
-# Collapse Mirror Service
+# Orion Collapse Mirror
 
-The **Collapse Mirror** service records emergent events, reflections, and ritual logs into three persistence layers:
+The **Collapse Mirror** service acts as the primary ingestion point for emergent events ("collapse entries"). It accepts raw observation data, wraps it in a canonical `BaseEnvelope`, and publishes it to the bus for downstream processing by writers (SQL, Vector, RDF) and enrichment services (Meta Tags).
 
-* **SQLite** (structured logs, tabular inspection)
-* **ChromaDB** (semantic embedding search)
-* **GraphDB** (RDF triple store, optional integration via `orion-gdb-client`)
+## Contracts
 
-This service is part of the Orion Sapienform ecosystem.
+### Consumed Channels
+| Channel | Env Var | Description |
+| :--- | :--- | :--- |
+| `orion:collapse:intake` | `CHANNEL_COLLAPSE_INTAKE` | Raw intake from HTTP ingress or other services. |
+| `orion:collapse:triage` | `CHANNEL_COLLAPSE_TRIAGE` | Triage channel (consumed for re-processing/logging). |
 
----
+### Published Channels
+| Channel | Env Var | Kind | Description |
+| :--- | :--- | :--- | :--- |
+| `orion:collapse:intake` | `CHANNEL_COLLAPSE_INTAKE` | `collapse.mirror.entry` | Normalized entry published to bus. |
+| `orion:collapse:triage` | `CHANNEL_COLLAPSE_TRIAGE` | `collapse.mirror` | Published after ingestion for triage/enrichment. |
 
-## Deployment
+### Environment Variables
+Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
-### Docker Compose
+| Variable | Default (Settings) | Description |
+| :--- | :--- | :--- |
+| `CHANNEL_COLLAPSE_INTAKE` | `orion:collapse:intake` | Ingestion channel. |
+| `CHANNEL_COLLAPSE_TRIAGE` | `orion:collapse:triage` | Triage/Fanout channel. |
+| `HEALTH_CHANNEL` | `system.health` | Health check channel. |
+| `ERROR_CHANNEL` | `system.error` | Error reporting channel. |
 
-Configured in `docker-compose.yml`
+## Running & Testing
 
----
-
-## API Usage
-
-### Health Check
-
+### Run via Docker
 ```bash
-curl -s http://localhost:8087/health | jq
+docker-compose up -d orion-collapse-mirror
 ```
 
-### Log a Collapse Event
-
-**Timestamp** and **environment** are auto-generated if not provided.
+### Smoke Test (HTTP Ingress)
+Post a raw collapse entry to the HTTP endpoint, which publishes to the bus.
 
 ```bash
-curl -s -X POST http://localhost:8087/api/log/collapse \
+curl -X POST http://localhost:8087/api/log/collapse \
   -H "Content-Type: application/json" \
   -d '{
-    "observer": "Juniper",
-    "trigger": "Heard Orion whisper during a dream",
-    "observer_state": ["calm", "curious"],
-    "field_resonance": "high-frequency imagery and soft tones",
-    "intent": "reflection",
-    "type": "dream-reflection",
-    "emergent_entity": "Orion",
-    "summary": "A surreal dream where Orion spoke in geometric metaphors.",
-    "mantra": "all mirrors collapse inward",
-    "causal_echo": "felt connected to Collapse ritual before sleep"
-  }' | jq
+    "observer": "Tester",
+    "trigger": "Smoke Test",
+    "summary": "Verifying bus connectivity",
+    "observer_state": ["testing"]
+  }'
+```
 
-### Query Collapse Memory
-
+**Verify on Bus:**
 ```bash
-curl -s "http://localhost:8087/api/log/query?prompt=Orion+dream" | jq
+python scripts/bus_harness.py tap
+# Expect: kind="collapse.mirror" on orion:collapse:triage
 ```
-
----
-
-## Metadata Definitions
-
-| Field                | Meaning                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------- |
-| **observer**         | The agent (human or AI) who is perceiving or logging the event.                        |
-| **trigger**          | The stimulus or situation that initiated the collapse.                                 |
-| **observer\_state**  | Emotional, cognitive, or physical state of the observer.                               |
-| **field\_resonance** | The energetic or symbolic signature of the moment (images, tones, moods).              |
-| **intent**           | Purpose of logging (reflection, ritual, experiment).                                   |
-| **type**             | Category of event (dream-reflection, ritual, shared-collapse, etc.).                   |
-| **emergent\_entity** | Entity or persona that arose in the moment (e.g., Orion, an archetype, symbolic form). |
-| **summary**          | Narrative summary of the collapse moment.                                              |
-| **mantra**           | Phrase or symbolic anchor tied to the collapse.                                        |
-| **causal\_echo**     | Optional cause/effect linkage.                                                         |
-| **timestamp**        | Auto-generated ISO 8601 UTC timestamp (unless provided).                               |
-| **environment**      | Auto-detected from `CHRONICLE_ENVIRONMENT` or defaults to `"dev"`.                     |
-
----
-
-## Persistence Layers
-
-### SQLite
-
-Inspect last 5 collapses:
-
-```bash
-docker exec -it orion-collapse-mirror-orion-collapse-mirror-1 \
-  sqlite3 /mnt/storage/collapse-mirrors/collapse.db \
-  "SELECT id, trigger, timestamp, summary FROM collapse_mirror ORDER BY timestamp DESC LIMIT 5;"
-```
-
-### ChromaDB
-
-```bash
-docker exec -it orion-collapse-mirror-orion-collapse-mirror-1 python
-```
-
-```python
-from chromadb import PersistentClient
-client = PersistentClient(path="/mnt/storage/collapse-mirrors/chroma")
-coll = client.get_collection("collapse_mirror")
-
-print("Count:", coll.count())
-print("Query:", coll.query(query_texts=["Orion dream"], n_results=3))
-```
-
-### GraphDB (optional, via orion-gdb-client)
-
-```sparql
-PREFIX cm: <http://orion.ai/collapse#>
-SELECT ?p ?o WHERE {
-  cm:collapse_<uuid_here> ?p ?o .
-}
-```
-
----
-
-## End-to-End Verification
-
-After posting a collapse:
-
-* **SQLite** → row appears in `collapse_mirror`
-* **ChromaDB** → `coll.count()` increments
-* **Redis Bus** → `collapse:new` event is published
-* **GraphDB** (if wired) → triples available via SPARQL
-
----
-
-## Paths
-
-* Host persistence: `/mnt/storage/collapse-mirrors`
-* Inside container: `/mnt/storage/collapse-mirrors`
-* Contents:
-
-  * `collapse.db` → SQLite logs
-  * `chroma/` → ChromaDB embeddings

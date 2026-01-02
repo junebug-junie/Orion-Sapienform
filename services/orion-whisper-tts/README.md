@@ -1,54 +1,29 @@
-# Orion Whisper/TTS Service
+# Orion Whisper TTS
 
-This service provides Text-to-Speech (TTS) capabilities using the Titanium contract stack.
+The **Whisper TTS** service provides Text-to-Speech capabilities, synthesizing audio from text payloads on the bus.
 
-## Architecture
+## Contracts
 
-*   **Bus:** Uses `orion.core.bus.async_service.OrionBusAsync`.
-*   **Protocol:** Redis Pub/Sub with Typed Envelopes (`orion.schemas`).
-*   **Engine:** Coqui TTS (synchronous, runs in thread pool).
+### Consumed Channels
+| Channel | Env Var | Kind | Description |
+| :--- | :--- | :--- | :--- |
+| `orion:tts:intake` | `CHANNEL_TTS_INTAKE` | `tts.synthesize.request` | TTS requests. |
 
-## Interfaces
+### Published Channels
+| Channel | Env Var | Kind | Description |
+| :--- | :--- | :--- | :--- |
+| (Caller-defined) | (via `reply_to`) | `tts.synthesize.result` | Audio data (or URL). |
 
-### 1. Typed Envelope (Preferred)
+### Environment Variables
+Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
-*   **Request Channel:** `orion:tts:intake` (configurable via `CHANNEL_TTS_INTAKE`)
-*   **Kind:** `tts.synthesize.request`
-*   **Payload:** `TTSRequestPayload` (see `orion/schemas/tts.py`)
-    *   `text` (string, required)
-    *   `voice_id` (string, optional)
-    *   `language` (string, optional)
-*   **Response:**
-    *   **Kind:** `tts.synthesize.result`
-    *   **Payload:** `TTSResultPayload`
-        *   `audio_b64` (base64 encoded wav)
-        *   `content_type` (e.g. "audio/wav")
-
-### 2. Legacy/Generic
-
-*   **Request Channel:** `orion:tts:intake`
-*   **Payload:**
-    ```json
-    {
-      "text": "Hello world",
-      "response_channel": "orion:reply:..."
-    }
-    ```
-*   **Response:**
-    *   Typed Envelope with `tts.synthesize.result` sent to `response_channel`.
-
-## Environment Variables
-
-| Variable | Description | Default |
+| Variable | Default (Settings) | Description |
 | :--- | :--- | :--- |
-| `ORION_BUS_URL` | Redis URL | `redis://localhost:6379/0` |
-| `CHANNEL_TTS_INTAKE` | Intake channel | `orion:tts:intake` |
-| `TTS_MODEL_NAME` | TTS Model path/name | `tts_models/en/ljspeech/tacotron2-DDC` |
-| `TTS_USE_GPU` | Enable GPU usage | `true` |
+| `CHANNEL_TTS_INTAKE` | `orion:tts:intake` | Input channel. |
 
-## Development
+## Running & Testing
 
-Run sanity check:
+### Run via Docker
 ```bash
-python -m compileall services/orion-whisper-tts
+docker-compose up -d orion-whisper-tts
 ```

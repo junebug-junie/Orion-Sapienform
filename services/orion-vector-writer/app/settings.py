@@ -1,68 +1,50 @@
+from typing import List, Union
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import List, Dict
 import json
 
 class Settings(BaseSettings):
-    """
-    Configuration for the Orion Vector Writer service.
-    """
-    # --- Service Identity ---
-    SERVICE_NAME: str = Field(..., env="SERVICE_NAME")
-    SERVICE_VERSION: str = Field(..., env="SERVICE_VERSION")
-    PORT: int = Field(..., env="PORT")
+    SERVICE_NAME: str = Field(default="orion-vector-writer", alias="SERVICE_NAME")
+    SERVICE_VERSION: str = Field(default="0.2.0", alias="SERVICE_VERSION")
+    NODE_NAME: str = Field(default="athena", alias="NODE_NAME")
+    LOG_LEVEL: str = Field(default="INFO", alias="LOG_LEVEL")
 
-    # --- Orion Bus ---
-    ORION_BUS_ENABLED: bool = Field(..., env="ORION_BUS_ENABLED")
-    ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
-
-    # --- Routing ---
-    # List of channels to subscribe to
-    VECTOR_WRITER_SUBSCRIBE_CHANNELS: List[str] = Field(
-        default=[
-            "orion:collapse:triage",
-            "orion:chat:message",
-            "orion:rag:doc"
-        ],
-        env="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
-    )
-
-    # JSON mapping from envelope.kind -> collection (or internal model hint)
-    # The current logic uses one collection for everything but different models.
-    # We'll map kind -> collection name, defaulting to "orion_context" if not specified.
-    # OR we map kind -> model type to validation.
-    VECTOR_WRITER_ROUTE_MAP_JSON: str = Field(
-        default=json.dumps({
-            "collapse.triage": "CollapseTriageEvent",
-            "chat.message": "ChatMessageEvent",
-            "rag.document": "RAGDocumentEvent"
-        }),
-        env="VECTOR_WRITER_ROUTE_MAP_JSON"
+    # Bus
+    ORION_BUS_URL: str = Field(..., alias="ORION_BUS_URL")
+    ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
+    HEALTH_CHANNEL: str = "system.health"
+    ERROR_CHANNEL: str = "system.error"
+    
+    # Subscriptions
+    # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
+    VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
+        default='["orion:collapse:sql-write", "orion:chat:history:log", "orion:rag:ingest"]',
+        alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
 
     @property
-    def route_map(self) -> Dict[str, str]:
+    def SUBSCRIBE_CHANNELS(self) -> List[str]:
+        """Helper to parse the subscription channels from env var."""
+        val = self.VECTOR_WRITER_SUBSCRIBE_CHANNELS
+        if isinstance(val, list):
+            return val
         try:
-            return json.loads(self.VECTOR_WRITER_ROUTE_MAP_JSON)
-        except Exception:
-            return {}
+            return json.loads(val)
+        except json.JSONDecodeError:
+            return [x.strip() for x in val.split(",") if x.strip()]
 
-    # --- Publish Channel ---
-    PUBLISH_CHANNEL_VECTOR_CONFIRM: str = Field("orion:vector:confirm", env="PUBLISH_CHANNEL_VECTOR_CONFIRM")
-
-    # --- Vector Store ---
-    VECTOR_DB_HOST: str = Field(..., env="VECTOR_DB_HOST")
-    VECTOR_DB_PORT: int = Field(..., env="VECTOR_DB_PORT")
-    VECTOR_DB_COLLECTION: str = Field(..., env="VECTOR_DB_COLLECTION")
-    VECTOR_DB_CREATE_IF_MISSING: bool = Field(default=True, env="VECTOR_DB_CREATE_IF_MISSING")
-    EMBEDDING_MODEL: str = Field(..., env="EMBEDDING_MODEL")
-
-    # --- Runtime ---
-    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    BATCH_SIZE: int = Field(default=10, env="BATCH_SIZE")
+    # Chroma / Vector DB Configuration
+    # FIX: Map VECTOR_DB_* env vars to CHROMA_* attributes
+    CHROMA_HOST: str = Field(default="orion-vector-db", alias="VECTOR_DB_HOST")
+    CHROMA_PORT: int = Field(default=8000, alias="VECTOR_DB_PORT")
+    
+    # Embedding
+    EMBEDDING_MODEL_NAME: str = Field(default="all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
 
     class Config:
         env_file = ".env"
-        extra = "ignore"
+        extra = "ignore" 
+        # This allows populating by alias (e.g. VECTOR_DB_HOST -> CHROMA_HOST)
+        populate_by_name = True
 
 settings = Settings()

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     # Service configuration
     SERVICE_NAME: str = Field(default="orion-rdf-writer", env="SERVICE_NAME")
+    SERVICE_VERSION: str = Field(default="0.1.0", env="SERVICE_VERSION")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
     RETRY_LIMIT: int = Field(default=3, env="RETRY_LIMIT")
     RETRY_INTERVAL: int = Field(default=2, env="RETRY_INTERVAL")

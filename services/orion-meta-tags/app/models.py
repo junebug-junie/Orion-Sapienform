@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 # Use shared schema for outbound enrichment
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 
+# Ensure compatibility with Titanium Contracts
 class EventIn(BaseModel):
     """
     Ingress model for triage events. 

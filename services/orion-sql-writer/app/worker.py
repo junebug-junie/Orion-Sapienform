@@ -27,6 +27,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 
 # Import shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
+# MetaTagsPayload now includes collapse_id to prevent NotNullViolation
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload
 from orion.schemas.dream import DreamRequest

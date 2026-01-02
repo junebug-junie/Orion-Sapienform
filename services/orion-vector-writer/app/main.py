@@ -1,17 +1,19 @@
 import logging
 import os
 import json
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, List
 
 from fastapi import FastAPI
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-import chromadb.utils.embedding_functions as ef
 from sentence_transformers import SentenceTransformer
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.schemas.vector.schemas import VectorWriteRequest
+
 from app.settings import settings
 
 # Setup Logger
@@ -64,6 +66,70 @@ def _setup_resources():
         logger.error(f"❌ Failed to load embedding model: {e}")
         raise e
 
+def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
+    """
+    Adapts various incoming kinds to a unified VectorWriteRequest.
+    """
+    kind = env.kind
+    payload = env.payload
+
+    if not isinstance(payload, dict):
+        return None
+
+    # If it's already a direct vector write request
+    if kind == "vector.write.request":
+        try:
+            return VectorWriteRequest.model_validate(payload)
+        except Exception:
+            return None
+
+    # Normalization Map
+    content = ""
+    meta = {
+        "source_node": env.source.node or "unknown",
+        "kind": kind,
+        "timestamp": env.created_at or "",
+        "id": env.id
+    }
+    collection = "orion_general"
+
+    if kind == "collapse.mirror":
+        collection = "orion_collapse"
+        content = f"{payload.get('summary', '')} {payload.get('mantra', '')} {payload.get('trigger', '')}"
+        meta.update({
+            "observer": payload.get("observer", "unknown"),
+            "type": payload.get("type", "unknown")
+        })
+    elif kind in ("chat.message", "chat.history"):
+        collection = "orion_chat"
+        content = payload.get("content") or payload.get("message", "")
+        meta.update({
+            "role": payload.get("role", "unknown"),
+            "session_id": payload.get("session_id", "")
+        })
+    elif kind == "rag.document":
+        collection = "orion_knowledge"
+        content = payload.get("text") or payload.get("content", "")
+        meta.update({
+            "filename": payload.get("filename", ""),
+            "doc_id": payload.get("id", "")
+        })
+    else:
+        # Fallback for generic text/event
+        content = payload.get("text") or payload.get("summary") or ""
+
+    if not content.strip():
+        return None
+
+    return VectorWriteRequest(
+        id=env.id,
+        kind=kind,
+        content=content,
+        metadata=meta,
+        collection_name=collection
+    )
+
+
 # --- Bus Handler ---
 async def handle_envelope(env: BaseEnvelope) -> None:
     """
@@ -73,75 +139,34 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         logger.warning("Skipping vector write: Resources not initialized.")
         return
 
-    kind = env.kind
-    payload = env.payload
-    
-    if not isinstance(payload, dict):
-        logger.warning(f"Skipping {kind}: Payload is not a dict.")
-        return
-
     try:
-        # 1. Determine Target Collection & Text Content
-        collection_name = "orion_general" # Default
-        text_content = ""
-        metadata = {
-            "source_node": env.source.node or "unknown",
-            "kind": kind,
-            "timestamp": env.created_at or "",
-            "id": env.id
-        }
-
-        # --- Routing Logic ---
-        if kind == "collapse.mirror":
-            collection_name = "orion_collapse"
-            # Combine fields for semantic search
-            text_content = f"{payload.get('summary', '')} {payload.get('mantra', '')} {payload.get('trigger', '')}"
-            metadata.update({
-                "observer": payload.get("observer", "unknown"),
-                "type": payload.get("type", "unknown")
-            })
-
-        elif kind == "chat.message" or kind == "chat.history":
-            collection_name = "orion_chat"
-            text_content = payload.get("content") or payload.get("message", "")
-            metadata.update({
-                "role": payload.get("role", "unknown"),
-                "session_id": payload.get("session_id", "")
-            })
-
-        elif kind == "rag.document":
-            collection_name = "orion_knowledge"
-            text_content = payload.get("text") or payload.get("content", "")
-            metadata.update({
-                "filename": payload.get("filename", ""),
-                "doc_id": payload.get("id", "")
-            })
-
-        # 2. Validation
-        if not text_content or not text_content.strip():
-            logger.debug(f"Skipping {kind}: No text content to embed.")
+        req = normalize_to_request(env)
+        if not req:
+            # logger.debug(f"Skipping {env.kind}: No valid content found.")
             return
 
-        # 3. Generate Embedding
-        # Run CPU-bound model in thread pool to avoid blocking asyncio loop
-        vector = await asyncio.to_thread(embedding_model.encode, text_content)
-        vector_list = vector.tolist()
+        # 3. Generate Embedding (if not provided)
+        vector_list = req.vector
+        if not vector_list:
+            # Run CPU-bound model in thread pool
+            vector = await asyncio.to_thread(embedding_model.encode, req.content)
+            vector_list = vector.tolist()
 
         # 4. Upsert to Chroma
-        collection = chroma_client.get_or_create_collection(name=collection_name)
+        collection = chroma_client.get_or_create_collection(name=req.collection_name or "orion_general")
         
         await asyncio.to_thread(
             collection.upsert,
-            ids=[env.id],
+            ids=[req.id],
             embeddings=[vector_list],
-            documents=[text_content],
-            metadatas=[metadata]
+            documents=[req.content],
+            metadatas=[req.metadata]
         )
         
-        logger.info(f"✨ Vectorized & stored {kind} -> {collection_name} (id={env.id})")
+        logger.info(f"✨ Vectorized & stored {req.kind} -> {req.collection_name} (id={req.id})")
 
     except Exception as e:
-        logger.exception(f"Error processing {kind}: {e}")
+        logger.exception(f"Error processing {env.kind}: {e}")
 
 
 # --- Lifecycle & App ---
@@ -152,10 +177,7 @@ async def lifespan(app: FastAPI):
     
     # Start Bus Listener
     config = _cfg()
-    # Subscribe to configured channels (ensure settings returns a list)
     channels = settings.SUBSCRIBE_CHANNELS
-    if isinstance(channels, str):
-        channels = json.loads(channels) # Handle stringified JSON from .env if needed
 
     logger.info(f"🏹 Hunter starting. Subscribing to: {channels}")
     hunter = Hunter(config, patterns=channels, handler=handle_envelope)

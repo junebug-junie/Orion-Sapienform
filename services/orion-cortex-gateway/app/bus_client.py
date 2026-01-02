@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from uuid import uuid4
 from typing import Any, Dict
 
@@ -9,9 +10,10 @@ from orion.schemas.cortex.contracts import (
     CortexClientResult,
     CortexClientContext,
     RecallDirective,
-    LLMMessage
+    LLMMessage,
+    CortexChatRequest
 )
-from orion.schemas.cortex.gateway import CortexChatRequest, CortexChatResult
+from orion.schemas.cortex.gateway import CortexChatResult
 
 from .settings import get_settings
 
@@ -85,22 +87,38 @@ class BusClient:
         return payload  # Should be dict or primitive, or BaseEnvelope if unknown
 
     async def start_gateway_consumer(self):
-        logger.info(f"Starting gateway consumer on {self.settings.channel_gateway_request}")
-        # Start a background task for subscription
-        # Since OrionBusAsync.subscribe is not a blocking loop (it usually just subscribes in Redis),
-        # we need a loop to process messages?
-        # Check OrionBusAsync implementation. Usually subscribe takes a handler.
-        await self.bus.subscribe(self.settings.channel_gateway_request, self.handle_gateway_request)
+        """
+        Starts the background task to listen for incoming Gateway requests (from Hub).
+        """
+        # Create a task so it runs in background
+        asyncio.create_task(self._gateway_consumer_loop())
 
-    async def handle_gateway_request(self, message: Dict[str, Any]):
-        # decode
-        decoded = self.bus.codec.decode(message.get("data"))
-        if not decoded.ok:
-            logger.error(f"Gateway decode failed: {decoded.error}")
-            return
+    async def _gateway_consumer_loop(self):
+        channel = self.settings.channel_cortex_gateway_request
+        logger.info(f"Starting gateway consumer on {channel}")
 
-        env = decoded.envelope
-        if env.kind != "cortex.gateway.chat.request":
+        if not self.bus.enabled:
+             logger.warning("Bus disabled, skipping consumer loop")
+             return
+
+        async with self.bus.subscribe(channel) as pubsub:
+            async for msg in self.bus.iter_messages(pubsub):
+                try:
+                    data = msg.get("data")
+                    decoded = self.bus.codec.decode(data)
+
+                    if not decoded.ok:
+                        logger.warning(f"Gateway decode failed: {decoded.error}")
+                        continue
+
+                    # Process asynchronously
+                    asyncio.create_task(self.handle_gateway_request(decoded.envelope))
+
+                except Exception as e:
+                     logger.error(f"Error in gateway consumer loop: {e}", exc_info=True)
+
+    async def handle_gateway_request(self, env: BaseEnvelope):
+        if env.kind != "cortex.gateway.request":
             logger.debug(f"Ignoring kind: {env.kind}")
             return
 
@@ -116,8 +134,8 @@ class BusClient:
 
             context = CortexClientContext(
                 messages=messages,
-                session_id=req.session_id or "gateway-session",
-                user_id=req.user_id or "gateway-user",
+                session_id=req.session_id or "gateway-session-bus",
+                user_id=req.user_id or "gateway-user-bus",
                 trace_id=req.trace_id,
                 metadata=req.metadata or {}
             )
@@ -147,22 +165,34 @@ class BusClient:
                 causality_chain=chain
             )
 
-            # Wrap result
-            cortex_res_obj = CortexClientResult.model_validate(orch_result_dict)
+            # Wrap result - we can just return the raw dict in payload or typed result
+            # The previous worker returned the raw dict from CortexClientResult dump
+            # but incoming code wanted CortexChatResult. Let's support both or stick to one.
+            # Hub expects a CortexClientResult-like dict.
 
-            res_payload = CortexChatResult(
-                cortex_result=cortex_res_obj,
-                final_text=cortex_res_obj.final_text
-            )
+            # The incoming code wanted to wrap it in `CortexChatResult`.
+            # Let's see if we can use that.
+
+            try:
+                cortex_res_obj = CortexClientResult.model_validate(orch_result_dict)
+                res_payload = CortexChatResult(
+                    cortex_result=cortex_res_obj,
+                    final_text=cortex_res_obj.final_text
+                )
+                final_payload = res_payload.model_dump(mode="json")
+                reply_kind = "cortex.gateway.chat.result"
+            except Exception:
+                # Fallback to just returning the dict if validation fails (robustness)
+                final_payload = orch_result_dict
+                reply_kind = "cortex.gateway.result"
 
             # Reply
             if env.reply_to:
-                reply_env = BaseEnvelope(
-                    kind="cortex.gateway.chat.result",
+                reply_env = env.derive_child(
+                    kind=reply_kind,
                     source=self._service_ref(),
-                    correlation_id=env.correlation_id,
-                    causality_chain=chain,
-                    payload=res_payload.model_dump(mode="json")
+                    payload=final_payload,
+                    reply_to=None
                 )
                 await self.bus.publish(env.reply_to, reply_env)
                 logger.info(f"Sent reply to {env.reply_to}")
@@ -171,4 +201,12 @@ class BusClient:
 
         except Exception as e:
             logger.error(f"Error handling gateway request: {e}", exc_info=True)
-            # We could send an error reply here if we wanted
+            # Send error
+            if env.reply_to:
+                err_env = env.derive_child(
+                    kind="system.error",
+                    source=self._service_ref(),
+                    payload={"error": str(e)},
+                    reply_to=None
+                )
+                await self.bus.publish(env.reply_to, err_env)

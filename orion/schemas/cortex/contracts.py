@@ -64,7 +64,7 @@ class CortexChatRequest(BaseModel):
     Gateway inflates this into a full CortexClientRequest.
     """
     prompt: str = Field(..., description="The user's prompt text")
-    mode: str = Field(default="brain", description="Execution mode: brain, agent, council")
+    mode: Literal["brain", "agent", "council"] = Field(default="brain", description="Execution mode: brain, agent, council")
 
     # Optional overrides
     verb: Optional[str] = Field(default=None, description="Cognition verb override")

@@ -14,26 +14,29 @@ from orion.schemas.cortex.contracts import (
 
 from .settings import get_settings
 from .bus_client import BusClient
-from .worker import listener_worker
-import asyncio
 
 settings = get_settings()
 bus_client = BusClient()
-listener_task = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global listener_task
     await bus_client.connect()
-    # Start the bus listener
-    listener_task = asyncio.create_task(listener_worker(bus_client))
+    # Use the incoming branch's consumer method
+    # Note: BusClient in incoming branch has start_gateway_consumer()
+    # I should verify if I have it in my merged bus_client.py
+    # If not, I should have accepted it during merge or I need to add it.
+    # The user provided the conflict block for main.py showing start_gateway_consumer() in incoming.
+    # This implies bus_client.py *was* updated by incoming or merge.
+
+    if hasattr(bus_client, "start_gateway_consumer"):
+        await bus_client.start_gateway_consumer()
+    else:
+        # Fallback to my worker if merge failed to bring in method
+        from .worker import listener_worker
+        import asyncio
+        asyncio.create_task(listener_worker(bus_client))
+
     yield
-    if listener_task:
-        listener_task.cancel()
-        try:
-            await listener_task
-        except asyncio.CancelledError:
-            pass
     await bus_client.close()
 
 app = FastAPI(title="Orion Cortex Gateway", lifespan=lifespan)
@@ -57,15 +60,11 @@ def health():
 @app.post("/v1/cortex/chat")
 async def chat(req: CortexChatRequest, response: Response):
     # Defaults
-    # If verb is not provided, default to chat_general
     verb = req.verb if req.verb else "chat_general"
-    # If packs is not provided, default to executive_pack (harness default)
     packs = req.packs if req.packs is not None else ["executive_pack"]
 
-    # Messages
     messages = [LLMMessage(role="user", content=req.prompt)]
 
-    # Context
     context = CortexClientContext(
         messages=messages,
         session_id=req.session_id or "gateway-session",
@@ -74,12 +73,10 @@ async def chat(req: CortexChatRequest, response: Response):
         metadata=req.metadata or {}
     )
 
-    # Recall
-    # If provided, override defaults. If not, use RecallDirective defaults.
     if req.recall:
         recall = RecallDirective(**req.recall)
     else:
-        recall = RecallDirective() # defaults: enabled=True, etc.
+        recall = RecallDirective()
 
     client_req = CortexClientRequest(
         mode=req.mode,
@@ -91,10 +88,8 @@ async def chat(req: CortexChatRequest, response: Response):
     )
 
     try:
-        # returns dict or dict-dump of CortexClientResult
         result = await bus_client.rpc_call_cortex_orch(client_req)
 
-        # Try to extract correlation_id for header
         if isinstance(result, dict) and "correlation_id" in result:
              response.headers["X-Orion-Correlation-Id"] = str(result["correlation_id"])
 

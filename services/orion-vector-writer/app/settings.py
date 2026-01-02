@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
     HEALTH_CHANNEL: str = "system.health"
     ERROR_CHANNEL: str = "system.error"
-    
+
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
@@ -34,10 +34,12 @@ class Settings(BaseSettings):
             return [x.strip() for x in val.split(",") if x.strip()]
 
     # Chroma / Vector DB Configuration
-    # FIX: Map VECTOR_DB_* env vars to CHROMA_* attributes
     CHROMA_HOST: str = Field(default="orion-vector-db", alias="VECTOR_DB_HOST")
     CHROMA_PORT: int = Field(default=8000, alias="VECTOR_DB_PORT")
-    
+
+    # Capture the collection from .env. Defaults to 'orion_general' if missing.
+    CHROMA_COLLECTION_DEFAULT: str = Field(default="orion_general", alias="VECTOR_DB_COLLECTION")
+
     # Embedding
     EMBEDDING_MODEL_NAME: str = Field(default="all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
 

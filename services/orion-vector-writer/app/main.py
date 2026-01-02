@@ -85,16 +85,20 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
 
     # Normalization Map
     content = ""
-    # [FIX] Ensure metadata values are primitive types (strings), specifically ID and timestamp
+    # Ensure metadata values are primitive types (strings), specifically ID and timestamp
     meta = {
         "source_node": env.source.node or "unknown",
         "kind": kind,
         "timestamp": str(env.created_at) if env.created_at else "",
         "id": str(env.id) # Cast UUID to string for Chroma metadata
     }
-    collection = "orion_general"
+    
+    # [FIX] Use the default collection from .env (via settings)
+    collection = settings.CHROMA_COLLECTION_DEFAULT
 
-    if kind == "collapse.mirror":
+    # [FIX] Check for "collapse.mirror" OR "collapse.mirror.entry"
+    # Specific logic overrides the default collection
+    if kind in ("collapse.mirror", "collapse.mirror.entry"):
         collection = "orion_collapse"
         content = f"{payload.get('summary', '')} {payload.get('mantra', '')} {payload.get('trigger', '')}"
         meta.update({
@@ -122,7 +126,7 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     if not content.strip():
         return None
 
-    # [FIX] Cast env.id (UUID) to str to satisfy VectorWriteRequest schema
+    # Cast env.id (UUID) to str to satisfy VectorWriteRequest schema
     return VectorWriteRequest(
         id=str(env.id),
         kind=kind,

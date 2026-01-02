@@ -1,6 +1,9 @@
 from typing import List, Dict, Optional, Any
-from datetime import datetime, timezone
+from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
+
+# Use shared schema for outbound enrichment
+from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 
 class EventIn(BaseModel):
     """
@@ -65,32 +68,6 @@ class EventIn(BaseModel):
         return values
 
 
-class Enrichment(BaseModel):
-    """
-    Outgoing enrichment message published to downstream meta-writer.
-    """
-    id: str
-    collapse_id: Optional[str] = None
-    service_name: str
-    service_version: str
-    enrichment_type: str = "tagging"
-    tags: List[str] = Field(default_factory=list)
-    entities: List[Dict[str, str]] = Field(default_factory=list)
-    salience: float = 0.0
-    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    @model_validator(mode='before')
-    @classmethod
-    def ensure_ts_and_collapse(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        """Ensures critical fields are present before final validation."""
-        # Default collapse_id if missing
-        if not values.get("collapse_id") and "id" in values:
-            id_val = values["id"]
-            if isinstance(id_val, str) and id_val.startswith("collapse_"):
-                values["collapse_id"] = id_val
-        
-        # Ensure timestamp always present as ISO string
-        if not values.get("ts"):
-            values["ts"] = datetime.now(timezone.utc).isoformat()
-            
-        return values
+# Re-export MetaTagsPayload as Enrichment for compatibility if needed,
+# or simply use MetaTagsPayload directly in main.py
+Enrichment = MetaTagsPayload

@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
 from .session import ensure_session
+from .library import scan_cognition_library
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 
@@ -49,6 +50,17 @@ async def api_session(x_orion_session_id: Optional[str] = Header(None)):
     session_id = await ensure_session(x_orion_session_id, bus)
     return {"session_id": session_id}
 
+# ======================================================================
+# 📚 COGNITION LIBRARY (Verbs & Packs)
+# ======================================================================
+@router.get("/api/cognition/library")
+def get_cognition_library():
+    """
+    Returns the scanned list of Packs and Verbs available in the system.
+    Used by the UI to populate dropdowns and filters.
+    """
+    return scan_cognition_library()
+
 
 # ======================================================================
 # 💬 SHARED CHAT CORE (HTTP + WS)
@@ -69,6 +81,20 @@ async def handle_chat_request(
     packs = payload.get("packs")
     user_id = payload.get("user_id")
 
+    # Handle Verbs override (multi-select from UI)
+    ui_verbs = payload.get("verbs")
+
+    verb_override = None
+    options = payload.get("options") or {}
+
+    if isinstance(ui_verbs, list) and len(ui_verbs) > 0:
+        if len(ui_verbs) == 1:
+             # Single verb -> override entry point
+             verb_override = ui_verbs[0]
+        else:
+             # Multiple verbs -> pass as allowed tools/verbs in options
+             options["allowed_verbs"] = ui_verbs
+
     if not isinstance(user_messages, list) or len(user_messages) == 0:
         return {"error": "Invalid payload: missing messages[]"}
 
@@ -81,11 +107,9 @@ async def handle_chat_request(
         session_id=session_id,
         user_id=user_id,
         packs=packs,
-        # Pass recall config via 'recall' field or 'options' depending on schema
-        # Current schema has 'recall' as Optional[Dict]
+        verb=verb_override,
+        options=options if options else None,
         recall={"enabled": use_recall} if use_recall else None,
-        # Pass full history as context if needed, but 'prompt' is the main driver
-        # cortex-gateway will handle history reconstruction or appending
         metadata={"source": "hub_http"},
     )
 
@@ -107,7 +131,7 @@ async def handle_chat_request(
             "tokens": len(text.split()), # simple approx
             "raw": raw_result,
             "recall_debug": resp.cortex_result.recall_debug,
-            "spark_meta": None, # Gateway doesn't expose spark_meta easily in top level yet
+            "spark_meta": None,
         }
 
     except Exception as e:

@@ -177,32 +177,47 @@
                 Packs
               </span>
               <span class="text-gray-500">
-                Choose Orion’s tool packs (Agentic mode only)
+                Select tools
               </span>
             </div>
-            <div class="flex flex-wrap gap-2">
-              <button
-                class="pack-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200"
-                data-pack="memory_pack"
-                data-default="true"
-              >
-                Memory
-              </button>
-              <button
-                class="pack-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200"
-                data-pack="executive_pack"
-                data-default="true"
-              >
-                Executive
-              </button>
-              <button
-                class="pack-btn inline-flex items-center px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-gray-200"
-                data-pack="emergent_pack"
-              >
-                Emergent
-              </button>
+            <div class="flex flex-wrap gap-2" id="packContainer">
+               <!-- Populated by JS -->
+               <span class="text-gray-500 italic">Loading packs...</span>
             </div>
           </div>
+
+          <!-- Verbs Selector (New) -->
+          <div class="mt-2 text-[11px]">
+            <div class="flex flex-col gap-2">
+               <div class="flex items-center justify-between">
+                   <div class="inline-flex items-center gap-2">
+                      <span class="inline-flex items-center rounded-full bg-gray-800 px-2 py-1 uppercase tracking-wide text-gray-400">
+                        Verbs
+                      </span>
+                      <span class="text-gray-500">
+                        Filter available verbs (optional)
+                      </span>
+                   </div>
+                   <button id="clearVerbs" class="text-xs text-gray-400 hover:text-white underline">Reset</button>
+               </div>
+
+               <!-- Dropdown / Multi-select area -->
+               <div class="relative w-full">
+                 <div id="verbSelectTrigger" class="bg-gray-700 text-white rounded-lg p-2 cursor-pointer flex justify-between items-center text-xs">
+                    <span id="verbSelectLabel">All verbs available</span>
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                 </div>
+
+                 <!-- Dropdown Menu -->
+                 <div id="verbDropdown" class="hidden absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-20 max-h-48 overflow-y-auto p-2">
+                     <div id="verbList" class="grid grid-cols-2 md:grid-cols-3 gap-1">
+                         <!-- Populated by JS -->
+                     </div>
+                 </div>
+               </div>
+            </div>
+          </div>
+
         </div> <!-- end .mt-2 wrapper -->
 
         <!-- Conversation -->
@@ -599,6 +614,6 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js?v=1.0.17" defer></script>
+  <script src="/static/js/app.js?v=1.0.18" defer></script>
 </body>
 </html>

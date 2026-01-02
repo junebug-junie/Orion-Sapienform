@@ -1,5 +1,5 @@
 import logging
-import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
@@ -19,12 +19,9 @@ def _cfg() -> ChassisConfig:
     return ChassisConfig(
         service_name=settings.SERVICE_NAME,
         service_version=settings.SERVICE_VERSION,
-        # Fix: NODE_NAME is not in Settings class, fallback to env
-        node_name=os.getenv("NODE_NAME", "unknown"), 
+        node_name=settings.NODE_NAME,
         bus_url=settings.ORION_BUS_URL,
-        # Fix: Refer to settings instance
         bus_enabled=settings.ORION_BUS_ENABLED,
-        # Using defaults for heartbeat/health unless they are in your settings
         health_channel="system.health",
         error_channel="system.error",
     )
@@ -37,7 +34,6 @@ async def lifespan(app: FastAPI):
     global hunter
     logger.info(f"🚀 Starting {settings.SERVICE_NAME}...")
 
-    # Fix: Use the helper method from Settings instead of manually splitting strings
     channels = settings.get_all_subscribe_channels()
     
     logger.info(f"Subscribing to: {channels}")
@@ -68,6 +64,7 @@ app.include_router(rdf_router)
 def health():
     return {
         "status": "ok", 
-        "service": settings.SERVICE_NAME, # Fix: Match case in settings.py
+        "service": settings.SERVICE_NAME,
+        "version": settings.SERVICE_VERSION,
         "bus_connected": hunter.bus.is_connected if hunter and hunter.bus else False
     }

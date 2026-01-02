@@ -87,14 +87,24 @@ async def handle_intake(env: BaseEnvelope) -> None:
 
     # Dual-publish:
     # 1. To Triage (for AI enrichment pipeline)
-    await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, enriched)
+    # Wrap in typed envelope
+    triage_env = BaseEnvelope(
+        kind="collapse.mirror.entry",
+        source=_service_ref(),
+        payload=enriched,
+        correlation_id=env.correlation_id,
+        causality_chain=env.causality_chain
+    )
+    await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, triage_env)
 
     # 2. To SQL Writer (for Raw storage) - hardcoded canonical channel per request
     # Fix: Wrap in envelope so sql-writer sees kind="collapse.mirror"
     write_envelope = BaseEnvelope(
         kind="collapse.mirror",
         source=_service_ref(),
-        payload=enriched
+        payload=enriched,
+        correlation_id=env.correlation_id,
+        causality_chain=env.causality_chain
     )
     await intake_hunter.bus.publish("orion:collapse:sql-write", write_envelope)
 
@@ -190,7 +200,15 @@ async def handle_exec_step(env: BaseEnvelope) -> BaseEnvelope:
         )
 
     # Publish to intake (canonical path)
-    await exec_rabbit.bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode="json"))
+    # We create an envelope for intake to keep everything typed
+    intake_env = BaseEnvelope(
+        kind="collapse.mirror.intake", # Internal loopback
+        source=sref,
+        payload=entry.model_dump(mode="json"),
+        correlation_id=env.correlation_id,
+        causality_chain=env.causality_chain
+    )
+    await exec_rabbit.bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, intake_env)
 
     elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     return BaseEnvelope(

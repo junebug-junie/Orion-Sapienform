@@ -20,6 +20,7 @@ services:
       # --- Service Identity ---
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
       - PORT=${PORT}
 
       # --- Orion Bus Integration ---
@@ -27,10 +28,16 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
 
       # --- Bus Listener Channels ---
-      - CHANNEL_EVENTS_TRIAGE=${CHANNEL_EVENTS_TRIAGE}
-      - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
+      # Enqueue (Direct writes)
       - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE}
-      - ORION_CORE_EVENTS=${ORION_CORE_EVENTS}
+      # Collapse (Raw)
+      - CHANNEL_EVENTS_COLLAPSE=${CHANNEL_EVENTS_COLLAPSE}
+      # Tagged/Enriched
+      - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
+      # Core Events (Filtering targets="rdf")
+      - CHANNEL_CORE_EVENTS=${CHANNEL_CORE_EVENTS}
+      # Worker intake for Cortex (RPC)
+      - CHANNEL_WORKER_RDF=${CHANNEL_WORKER_RDF}
       - CORTEX_LOG_CHANNEL=${CORTEX_LOG_CHANNEL}
 
       # --- Bus Publish Channels ---

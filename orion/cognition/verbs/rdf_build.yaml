@@ -1,0 +1,34 @@
+name: rdf_build
+label: Build RDF Triples
+description: >
+  Construct and persist RDF triples from raw data, event streams, or specific memory content.
+  Can be used to archive cognitive steps, mirror collapse events, or store arbitrary knowledge.
+
+category: KnowledgeConstruction
+priority: low
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: false
+requires_memory: false
+
+timeout_ms: 5000
+max_recursion_depth: 1
+
+services:
+  - RDFWriterService
+
+prompt_template: rdf_build.j2
+
+plan:
+  - name: rdf_persist
+    description: >
+      Send the payload to the RDF Writer service for normalization and graph insertion.
+    order: 0
+    services:
+      - RDFWriterService
+    requires_gpu: false
+    requires_memory: false
+
+safety_rules: []

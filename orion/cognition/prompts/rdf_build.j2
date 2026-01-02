@@ -1,0 +1,14 @@
+{#
+  This prompt is minimal because RDF building is usually a deterministic translation of
+  arguments provided in the plan (e.g. collapse entry, chat logs).
+  However, if we ever ask the LLM to *design* the triples, this prompt would guide it.
+#}
+You are the Knowledge Graph Architect.
+
+Task: Construct RDF triples for the following context.
+Context: {{ context | tojson }}
+
+Instructions:
+1. Identify the primary subject (Event, Entity, or Concept).
+2. Generate valid Turtle (TTL) syntax.
+3. Use standard prefixes (orion:, cm:, rdf:, rdfs:).

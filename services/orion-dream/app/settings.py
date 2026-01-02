@@ -29,7 +29,11 @@ class Settings(BaseSettings):
     CHANNEL_DREAM_BUFFER: str = Field(default="orion:dream:buffer")
     CHANNEL_DREAM_COMPLETE: str = Field(default="orion:dream:complete")
     CHANNEL_DREAM_STATUS: str = Field(default="orion:dream:status")
-    CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake")
+    CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake") # Legacy
+
+    CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion-cortex-gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
+    CHANNEL_DREAM_REPLY_PREFIX: str = Field(default="orion:dream:reply", alias="DREAM_REPLY_PREFIX")
+    DREAM_VERB: str = Field(default="dream_simple", alias="DREAM_VERB")
 
     # --- Memory streams ---
     CHANNEL_COLLAPSE_SQL_PUBLISH: str = Field(default="orion:collapse:sql-write")

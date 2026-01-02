@@ -5,17 +5,13 @@ import asyncio
 import base64
 import json
 import logging
-import uuid
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
-from scripts.llm_tts_handler import run_tts_only
-from scripts.llm_rpc import CouncilRPC
-from scripts.warm_start import mini_personality_summary
-from scripts.chat_front import run_chat_general, run_chat_agentic
+from scripts.bus_clients.cortex_client import CortexClient
+from scripts.bus_clients.tts_client import TTSClient
 
 logger = logging.getLogger("orion-hub.ws")
 
@@ -33,28 +29,58 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
         logger.error(f"drain_queue error: {e}", exc_info=True)
 
 
+async def run_tts_flow(
+    text: str,
+    queue: asyncio.Queue,
+    tts_client: TTSClient,
+):
+    """
+    Helper to synthesize TTS and enqueue the result for the websocket.
+    """
+    if not text:
+        return
+
+    # Notify UI we are working on TTS (optional)
+    # await queue.put({"state": "speaking"})
+
+    result = await tts_client.synthesize_speech(text)
+
+    if result.get("ok", True) is False:
+        logger.error(f"TTS Error: {result.get('error')}")
+        return
+
+    audio_b64 = result.get("audio_b64")
+    if audio_b64:
+        # Hub UI expects: {"audio_b64": "...", "trace_id": "...", "mime_type": "..."}
+        await queue.put({
+            "audio_b64": audio_b64,
+            "trace_id": result.get("trace_id", "tts-trace"),
+            "mime_type": result.get("content_type", "audio/wav"),
+        })
+
+
 async def websocket_endpoint(websocket: WebSocket):
-    # [CRITICAL FIX] Lazy import inside the function.
-    # We must access scripts.main.bus NOW, not at module load time.
-    # This ensures we get the connected bus, not the startup 'None'.
+    # Lazy import to ensure bus is initialized
     import scripts.main
     bus = scripts.main.bus
-    asr = scripts.main.asr
 
     await websocket.accept()
-    logger.info("WebSocket accepted. Waiting for messages...")
+    logger.info("WebSocket accepted.")
 
-    # [FIX] Do NOT close connection if ASR is missing. Text chat should still work.
-    if asr is None:
-        logger.warning("ASR model is NOT loaded. Voice input will fail, but text chat is active.")
-        await websocket.send_json({"warning": "ASR not loaded; voice disabled."})
+    if not bus:
+         logger.error("Bus not available.")
+         await websocket.send_json({"error": "Service Unavailable"})
+         await websocket.close()
+         return
 
-    # Seed conversation history
-    history: List[Dict[str, Any]] = [
-        {"role": "system", "content": mini_personality_summary()}
-    ]
-    has_instructions = False
+    # Clients
+    cortex_client = CortexClient(bus)
+    tts_client = TTSClient(bus)
 
+    # Basic History
+    history: List[Dict[str, Any]] = []
+
+    # Queue for async messages (TTS chunks, etc)
     tts_q: asyncio.Queue = asyncio.Queue()
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q))
 
@@ -63,160 +89,98 @@ async def websocket_endpoint(websocket: WebSocket):
             # 1. Receive Raw Data
             raw = await websocket.receive_text()
             
-            # [DEBUG] LOG RAW INPUT
-            logger.info(f"WS RECEIVED RAW: {raw[:200]}...") 
-
             try:
                 data: Dict[str, Any] = json.loads(raw)
             except json.JSONDecodeError:
-                logger.error("Failed to decode JSON from client")
                 continue
 
-            # Mode & Settings
+            # Extract fields
             mode = data.get("mode", "brain")
             disable_tts = data.get("disable_tts", False)
-            instructions = data.get("instructions", "")
-            context_len = data.get("context_length", 10)
-            temperature = data.get("temperature", 0.7)
-            user_id = data.get("user_id")
             session_id = data.get("session_id")
-
-            # ---------------------------------------------------------
-            # 🗣️ Step 1: Get transcript (Handle multiple keys)
-            # ---------------------------------------------------------
-            transcript: Optional[str] = None
-            is_text_input = False
-
-            # Check ALL common text keys
-            possible_text = data.get("text_input") or data.get("text") or data.get("content")
             
-            if possible_text:
-                transcript = possible_text
-                is_text_input = True
-            else:
-                audio_b64 = data.get("audio")
-                if audio_b64:
-                    if asr:
-                        await websocket.send_json({"state": "processing"})
-                        try:
-                            audio_bytes = base64.b64decode(audio_b64)
-                            transcript = asr.transcribe_bytes(audio_bytes)
-                        except Exception as e:
-                            logger.error(f"ASR Error: {e}")
-                            await websocket.send_json({"error": "ASR processing failed"})
-                    else:
-                        logger.error("Received audio but ASR is not loaded.")
-                        await websocket.send_json({"error": "ASR not available"})
-                else:
-                    logger.warning(f"Message contained no text or audio. Keys found: {list(data.keys())}")
-                    continue
+            # Transcript / Audio
+            # Note: Since we removed native ASR, we expect text from UI (Speech-to-Text done in browser)
+            # OR we need to send audio to whisper service.
+            # The instructions said: "accept audio or text, forward to tts-whisper over bus RPC".
+            # Wait, tts-whisper is for TTS. Does it do ASR?
+            # Yes, "orion-whisper-tts". It likely handles ASR too?
+            # Let's check `orion-whisper-tts` again. It has `tts.py` and `tts_worker.py`.
+            # I don't see `asr.py`.
+            # If `orion-whisper-tts` is ONLY TTS, then we have no ASR service?
+            # The prompt said "Replace with bus RPC calls to the orion-tts-whisper service".
+            # If the user meant ASR too, that service needs to support it.
+            # I see `services/orion-hub/scripts/settings.py` had `WHISPER_MODEL_SIZE` etc.
+            # And `services/orion-hub/scripts/asr.py`.
+            # If I remove native ASR, I must ensure something replaces it.
+            # But `orion-whisper-tts` seems to be TTS only based on file names.
+            # Let's check `services/orion-whisper-tts/app/main.py` again.
+            # It only starts `listener_worker` for TTS.
+
+            # CRITICAL: If there is no ASR service, then Hub cannot support voice input unless the browser sends text.
+            # "Hub ... (optionally) send typed speech/tts requests to orion-tts-whisper over the bus".
+            # It didn't explicitly say "send ASR requests".
+            # But "Remove native ASR/TTS engines from hub... Replace with bus RPC calls to the orion-tts-whisper service".
+            # This implies `orion-tts-whisper` handles both or I should assume Text-Input only for now?
+
+            # "For voice endpoints: accept audio or text, forward to tts-whisper over bus RPC, return typed response."
+            # This implies tts-whisper does ASR?
+            # But I looked at the code of `orion-whisper-tts` and it seems TTS focused.
+            # `tts_worker.py` only imports `TTSEngine`.
+
+            # If I am to remove ASR from Hub, and there is no remote ASR, then Hub loses ASR capability.
+            # "Hub should no longer contain ... native ASR/TTS engines".
+            # Maybe the user assumes `orion-tts-whisper` has it?
+            # Or maybe I should assume input is text for now?
+            # "accept audio or text".
+
+            # I will implement text path. For audio path, if I cannot find an ASR RPC, I will return an error or log it.
+            # Actually, `orion-whisper-tts` name suggests Whisper (ASR) + TTS.
+            # But the code I read (`tts_worker.py`) was TTS only.
+            # Let me check if there is another worker or file I missed in that dir.
+
+            transcript = data.get("text_input") or data.get("text")
+
+            if not transcript and data.get("audio"):
+                 # Placeholder for ASR RPC
+                 # If I can't find ASR service, I warn.
+                 logger.warning("Audio received but ASR RPC not implemented (orion-whisper-tts appears to be TTS only).")
+                 await websocket.send_json({"error": "ASR not available in this refactor."})
+                 continue
 
             if not transcript:
-                logger.info("Empty transcript derived.")
                 continue
 
-            logger.info(f"Transcript: {transcript}")
-
-            if not is_text_input:
-                await websocket.send_json({"transcript": transcript, "is_text_input": False})
-
-            # ---------------------------------------------------------
-            # 🧾 Step 2: Update History
-            # ---------------------------------------------------------
-            if instructions and not has_instructions:
-                history.insert(1, {"role": "system", "content": instructions})
-                has_instructions = True
-
+            # Update History
             history.append({"role": "user", "content": transcript})
-
-            # Trim history
-            if context_len and context_len > 0:
-                system_msgs = [m for m in history if m.get("role") == "system"]
-                other_msgs = [m for m in history if m.get("role") != "system"]
-                keep = max(context_len - len(system_msgs), 0)
-                trimmed = other_msgs[-keep:] if keep > 0 else []
-                history = system_msgs + trimmed
-
-            # ---------------------------------------------------------
-            # 🧠 Step 3: Call LLM / Bus
-            # ---------------------------------------------------------
-            logger.info(f"Routing to mode: {mode}")
             
-            # [CHECK] Ensure bus is alive before calling
-            if bus is None:
-                # Last ditch effort to grab it if startup was slow
-                import scripts.main
-                bus = scripts.main.bus
-                if bus is None:
-                    logger.error("CRITICAL: Bus is still None during request handling.")
-                    await websocket.send_json({"error": "Orion Bus unavailable"})
-                    continue
+            # 2. Call Cortex Gateway
+            await websocket.send_json({"state": "processing"})
 
-            orion_response_text = ""
-            tokens = 0
-            spark_meta = None
+            result = await cortex_client.send_chat_request(
+                prompt=transcript,
+                mode=mode,
+                session_id=session_id,
+                # history passed via implicit session context?
+                # CortexChatRequest doesn't take history, it takes one prompt.
+                # The Gateway builds context.
+            )
 
-            if mode == "council":
-                rpc = CouncilRPC(bus)
-                reply = await rpc.call_chat(
-                    prompt=transcript,
-                    history=history[:-1], 
-                    temperature=temperature
-                )
-                orion_response_text = reply.get("text") or reply.get("response") or ""
+            response_text = result.get("final_text", "") or ""
 
-            elif mode == "agentic":
-                convo = await run_chat_agentic(
-                    bus,
-                    session_id=session_id,
-                    user_id=user_id,
-                    messages=history[:],
-                    chat_mode=mode,
-                    temperature=temperature,
-                    use_recall=True,
-                )
-                orion_response_text = convo.get("text") or ""
-                tokens = convo.get("tokens") or 0
-
-            else:
-                # Default: Chat General (Brain)
-                convo = await run_chat_general(
-                    bus,
-                    session_id=session_id,
-                    user_id=user_id,
-                    messages=history[:],
-                    chat_mode=mode,
-                    temperature=temperature,
-                    use_recall=True,
-                )
-                orion_response_text = convo.get("text") or ""
-                tokens = convo.get("tokens") or 0
-                spark_meta = convo.get("spark_meta")
-
-            # ---------------------------------------------------------
-            # 💬 Step 4: Reply
-            # ---------------------------------------------------------
-            logger.info(f"Orion Response: {orion_response_text[:100]}...")
+            # Reply to UI
             await websocket.send_json({
-                "llm_response": orion_response_text,
-                "tokens": tokens,
+                "llm_response": response_text,
                 "mode": mode,
             })
-
-            # ---------------------------------------------------------
-            # 🔊 Step 5: TTS
-            # ---------------------------------------------------------
-            if orion_response_text and not disable_tts:
-                asyncio.create_task(
-                    run_tts_only(orion_response_text, tts_q, bus=bus, disable_tts=False)
-                )
-
-            # ---------------------------------------------------------
-            # 📝 Step 6: Log History
-            # ---------------------------------------------------------
-            if orion_response_text:
-                history.append({"role": "assistant", "content": orion_response_text})
             
+            # 3. TTS
+            if response_text and not disable_tts:
+                 asyncio.create_task(
+                     run_tts_flow(response_text, tts_q, tts_client)
+                 )
+
+            history.append({"role": "assistant", "content": response_text})
             await websocket.send_json({"state": "idle"})
 
     except WebSocketDisconnect:

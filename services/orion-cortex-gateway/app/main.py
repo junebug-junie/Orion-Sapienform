@@ -14,14 +14,26 @@ from orion.schemas.cortex.contracts import (
 from .settings import get_settings
 from .models import CortexChatRequest
 from .bus_client import BusClient
+from .worker import listener_worker
+import asyncio
 
 settings = get_settings()
 bus_client = BusClient()
+listener_task = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global listener_task
     await bus_client.connect()
+    # Start the bus listener
+    listener_task = asyncio.create_task(listener_worker(bus_client))
     yield
+    if listener_task:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except asyncio.CancelledError:
+            pass
     await bus_client.close()
 
 app = FastAPI(title="Orion Cortex Gateway", lifespan=lifespan)

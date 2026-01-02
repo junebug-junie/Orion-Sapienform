@@ -7,7 +7,6 @@ from fastapi.staticfiles import StaticFiles
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
-from scripts.asr import ASR
 
 from orion.core.bus.async_service import OrionBusAsync
 
@@ -33,7 +32,6 @@ app = FastAPI(
 )
 
 # These are populated on startup and imported by other modules:
-asr: ASR | None = None
 bus: OrionBusAsync | None = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 
@@ -46,24 +44,9 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 async def startup_event():
     """
     Initializes all shared services at application startup.
-    ASR + OrionBus + UI template.
+    OrionBus + UI template.
     """
-    global asr, bus, html_content
-
-    # ------------------------------------------------------------
-    # ASR Initialization
-    # ------------------------------------------------------------
-    logger.info(
-        f"Loading Whisper model '{settings.WHISPER_MODEL_SIZE}' "
-        f"on {settings.WHISPER_DEVICE}/{settings.WHISPER_COMPUTE_TYPE}"
-    )
-
-    # ASR(size, device, compute_type)
-    asr = ASR(
-        settings.WHISPER_MODEL_SIZE,
-        settings.WHISPER_DEVICE,
-        settings.WHISPER_COMPUTE_TYPE,
-    )
+    global bus, html_content
 
     # ------------------------------------------------------------
     # Orion Bus Initialization

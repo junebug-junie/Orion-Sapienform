@@ -25,6 +25,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CORTEX_RESULT_PREFIX", "ORCH_RESULT_PREFIX"),
     )
 
+    # Inbound Bus Request (Hub -> Gateway)
+    channel_cortex_gateway_request: str = Field(
+        "orion:cortex-gateway:request",
+        alias="CHANNEL_CORTEX_GATEWAY_REQUEST"
+    )
+
     gateway_rpc_timeout_sec: float = Field(
         120.0,
         alias="CORTEX_GATEWAY_RPC_TIMEOUT_SEC"

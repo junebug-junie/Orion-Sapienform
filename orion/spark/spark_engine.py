@@ -374,7 +374,16 @@ class SparkEngine:
               - "tissue_summary":  summary from OrionTissue.summarize_for("(global)")
               - "surface_encoding": encoding serialized as a dict
         """
-        self.tissue.inject_surface(encoding, self.mapper, magnitude=magnitude, steps=steps)
+        # 1. Generate stimulus from surface encoding
+        stimulus = self.mapper.surface_to_stimulus(encoding, magnitude=magnitude)
+
+        # 2. Calculate novelty (Predictive Coding)
+        # This updates the tissue's internal novelty state but does not change physics yet.
+        self.tissue.calculate_novelty(stimulus)
+
+        # 3. Propagate stimulus into tissue (Learning + Physics)
+        # This updates the expectation vector and then runs the tissue step.
+        self.tissue.propagate(stimulus, steps=steps)
 
         # Update recent history + read back state
         self._register_event(encoding)

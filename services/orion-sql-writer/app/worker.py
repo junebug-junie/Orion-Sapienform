@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import uuid
 from datetime import datetime
 from typing import Any, Optional, Dict
 
@@ -120,7 +121,7 @@ def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = N
         finally:
             remove_session()
 
-async def _write(sql_model_cls, schema_cls, payload: Any) -> None:
+async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str, Any] = None) -> None:
     try:
         if schema_cls:
             obj = _coerce_payload(schema_cls, payload)
@@ -128,6 +129,10 @@ async def _write(sql_model_cls, schema_cls, payload: Any) -> None:
             data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
         else:
             data = payload if isinstance(payload, dict) else {}
+
+        # Merge extra fields (e.g. generated IDs) ensuring they override or augment
+        if extra_fields:
+            data.update(extra_fields)
 
         await asyncio.to_thread(_write_row, sql_model_cls, data)
     except Exception as e:
@@ -143,7 +148,44 @@ async def handle_envelope(env: BaseEnvelope) -> None:
     if route_key and route_key in MODEL_MAP:
         sql_model, schema_model = MODEL_MAP[route_key]
         try:
-            await _write(sql_model, schema_model, env.payload)
+            # Enrich payload with Envelope metadata if the schema expects it
+            data_to_process = env.payload
+            if isinstance(data_to_process, dict):
+                # Copy to avoid mutation issues if payload is reused
+                data_to_process = data_to_process.copy()
+                
+                # Inject standard envelope fields if missing
+                if "node" not in data_to_process and env.source and env.source.node:
+                    data_to_process["node"] = env.source.node
+                
+                if "correlation_id" not in data_to_process and env.correlation_id:
+                    data_to_process["correlation_id"] = str(env.correlation_id)
+                
+                if "source_message_id" not in data_to_process and env.id:
+                    data_to_process["source_message_id"] = str(env.id)
+
+            # Prepare extra fields for SQL that might be stripped by Pydantic or missing
+            extra_sql_fields = {}
+            
+            # 1. CollapseMirror: Ensure ID (PK) matches Envelope ID (Idempotency)
+            if route_key == "CollapseMirror":
+                 # Use envelope ID as primary key if missing in payload
+                 if isinstance(data_to_process, dict) and not data_to_process.get("id"):
+                      extra_sql_fields["id"] = str(env.id)
+
+            # 2. CollapseEnrichment: Handle ID (PK) and collapse_id (FK)
+            if route_key == "CollapseEnrichment":
+                 # Generate new PK for the enrichment record itself
+                 extra_sql_fields["id"] = str(uuid.uuid4())
+                 
+                 # Map target ID from payload 'id' to SQL 'collapse_id' if needed
+                 # (Payload 'id' usually refers to the target collapse event)
+                 if isinstance(data_to_process, dict):
+                      target_id = data_to_process.get("id") or data_to_process.get("collapse_id")
+                      if target_id:
+                          extra_sql_fields["collapse_id"] = target_id
+
+            await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
             logger.info(f"Written {env.kind} -> {sql_model.__tablename__}")
         except Exception as e:
              logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")

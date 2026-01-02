@@ -85,11 +85,12 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
 
     # Normalization Map
     content = ""
+    # [FIX] Ensure metadata values are primitive types (strings), specifically ID and timestamp
     meta = {
         "source_node": env.source.node or "unknown",
         "kind": kind,
-        "timestamp": env.created_at or "",
-        "id": env.id
+        "timestamp": str(env.created_at) if env.created_at else "",
+        "id": str(env.id) # Cast UUID to string for Chroma metadata
     }
     collection = "orion_general"
 
@@ -121,8 +122,9 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     if not content.strip():
         return None
 
+    # [FIX] Cast env.id (UUID) to str to satisfy VectorWriteRequest schema
     return VectorWriteRequest(
-        id=env.id,
+        id=str(env.id),
         kind=kind,
         content=content,
         metadata=meta,

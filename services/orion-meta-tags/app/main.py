@@ -12,7 +12,6 @@ import spacy
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .settings import settings
-# Use MetaTagsPayload from shared schema (aliased as Enrichment in models.py if kept, or import directly)
 from .models import EventIn, Enrichment
 
 # Setup Logging
@@ -68,16 +67,26 @@ async def handle_triage_event(envelope: BaseEnvelope):
         tags.append(sentiment_tag)
 
         # 3. RESULT GENERATION (Enrichment Model)
-        # Note: Enrichment is now an alias for MetaTagsPayload
+        # [FIX] Logic to ensure collapse_id is not None
+        # If the input event IS the collapse, then in_payload.id is the collapse_id.
+        # This prevents the NotNullViolation in the SQL writer.
+        target_collapse_id = in_payload.collapse_id or in_payload.id
+
         enrichment = Enrichment(
             id=in_payload.id,
-            collapse_id=in_payload.collapse_id,
+            collapse_id=target_collapse_id,
             service_name=settings.SERVICE_NAME,
             service_version=settings.SERVICE_VERSION,
-            # enrichment_type defaults to "tagging" in the shared schema
+            enrichment_type="tagging", # [FIX] Explicitly set type to satisfy NOT NULL constraints
             tags=tags,
-            # entities could be mapped here if needed
-            ts=datetime.now(timezone.utc).isoformat()
+            entities=[], # entities could be mapped here if needed
+            salience=0.0,
+            ts=datetime.now(timezone.utc).isoformat(),
+            
+            # [FIX] Populate Lineage Fields required by Titanium Contract / MetaTagsPayload
+            node=settings.NODE_NAME,
+            correlation_id=str(envelope.correlation_id) if envelope.correlation_id else str(in_payload.id),
+            source_message_id=str(envelope.id) # Link back to the trigger message
         )
 
         # 4. PUBLISH (Enriched)
@@ -89,7 +98,7 @@ async def handle_triage_event(envelope: BaseEnvelope):
                 version=settings.SERVICE_VERSION, 
                 node=settings.NODE_NAME
             ),
-            payload=enrichment
+            payload=enrichment # Validated, typed object
         )
 
         await meta_tagger.bus.publish(settings.CHANNEL_EVENTS_TAGGED, out_env)
@@ -113,7 +122,7 @@ async def lifespan(app: FastAPI):
         node_name=settings.NODE_NAME,
         bus_url=settings.ORION_BUS_URL,
         bus_enabled=settings.ORION_BUS_ENABLED,
-        heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
+heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
     )
     
     # Initialize Hunter (Subscribe pattern)

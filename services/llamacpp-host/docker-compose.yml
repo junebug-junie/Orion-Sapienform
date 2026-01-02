@@ -29,8 +29,7 @@ services:
 
       # overrides (optional)
       - LLAMACPP_HOST_OVERRIDE=${LLAMACPP_HOST_OVERRIDE}
-      # Force internal port to 8080 so Docker mapping works consistently
-      - LLAMACPP_PORT_OVERRIDE=8080
+      - LLAMACPP_PORT_OVERRIDE=${LLAMACPP_PORT_OVERRIDE}
       - LLAMACPP_CTX_SIZE_OVERRIDE=${LLAMACPP_CTX_SIZE_OVERRIDE}
       - LLAMACPP_N_GPU_LAYERS_OVERRIDE=${LLAMACPP_N_GPU_LAYERS_OVERRIDE}
       - LLAMACPP_THREADS_OVERRIDE=${LLAMACPP_THREADS_OVERRIDE}
@@ -47,11 +46,16 @@ services:
       - "${LLM_CACHE_DIR}:/models"
 
     ports:
-      # Always map to container 8080 because we force LLAMACPP_PORT_OVERRIDE=8080
-      - "${LLAMACPP_HOST_PORT:-7005}:8080"
+      # Publish llama-server port (container binds whatever profile/override chooses; default 8080)
+      #- "${LLAMACPP_HOST_PORT:-7005}:8080"
+      # when running on athena:
+      - "${LLAMACPP_HOST_PORT:-7005}:7005"
 
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      # We cannot easily check specific port since it's dynamic (profile-driven),
+      # so we assume 7005 or rely on Docker's process status.
+      # Or we try both 8080 and 7005.
+      test: ["CMD-SHELL", "curl -f http://localhost:7005/health || curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

@@ -167,14 +167,13 @@ async def websocket_endpoint(websocket: WebSocket):
             # ---------------------------------------------------------
             logger.info(f"Routing to mode: {mode}")
             
-            # FORCE DISABLE RECALL (RecallService broken)
-            logger.warning("Force-disabling recall in Hub WS due to known service outage.")
+            use_recall = data.get("use_recall", False)
             chat_req = CortexChatRequest(
                 prompt=transcript,
                 mode=mode,
                 session_id=session_id,
                 user_id=user_id,
-                recall={"enabled": False},
+                recall={"enabled": use_recall},
                 metadata={"source": "hub_ws"}
             )
 

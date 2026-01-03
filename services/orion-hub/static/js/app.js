@@ -39,6 +39,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatInput = document.getElementById('chatInput');
   const sendButton = document.getElementById('sendButton');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
+  const recallToggle = document.getElementById('recallToggle');
   
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -563,6 +564,7 @@ document.addEventListener("DOMContentLoaded", () => {
        mode: currentMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
+       use_recall: recallToggle ? recallToggle.checked : false,
        packs: selectedPacks,
        verbs: selectedVerbs, // Send user selection
     };
@@ -587,6 +589,7 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ 
           mode: currentMode, 
           messages: [{role: 'user', content: text}],
+          use_recall: recallToggle ? recallToggle.checked : false,
           packs: selectedPacks,
           verbs: selectedVerbs
         })
@@ -621,6 +624,7 @@ document.addEventListener("DOMContentLoaded", () => {
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
+               use_recall: recallToggle ? recallToggle.checked : false,
                packs: selectedPacks,
                verbs: selectedVerbs
              }));

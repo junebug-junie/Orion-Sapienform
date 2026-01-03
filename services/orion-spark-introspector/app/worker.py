@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from uuid import uuid4
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import time
 import numpy as np
 from pathlib import Path
@@ -128,7 +128,14 @@ async def handle_trace(env: BaseEnvelope) -> None:
         arousal = max(0.0, min(1.0, arousal))
         dominance = 0.5
 
-        # 3. Construct Proper SurfaceEncoding
+        # 3. Detect Neural Projection Vector (if any step produced one)
+        spark_vector: Optional[List[float]] = None
+        for step in trace.steps:
+            if step.spark_vector:
+                spark_vector = step.spark_vector
+                break
+
+        # 4. Construct Proper SurfaceEncoding
         # Waveform: Simple activation bump scaled by arousal
         wave_len = 64
         x = np.linspace(-3, 3, wave_len)
@@ -149,36 +156,36 @@ async def handle_trace(env: BaseEnvelope) -> None:
             channel_tags=["cognition", trace.mode, trace.verb],
             waveform=waveform.astype(np.float32),
             feature_vec=feature_vec.astype(np.float32),
+            spark_vector=spark_vector, # Pass vector for Neural Projection
             meta={
                 "text_hash": str(hash(trace.final_text or "")),
                 "verb": trace.verb
             }
         )
 
-        # 4. Calculate Novelty (Predictive Coding)
+        # 5. Calculate Novelty (Predictive Coding)
         stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
         novelty = TISSUE.calculate_novelty(stimulus)
 
-        # 5. Propagate (Update Tissue)
+        # 6. Propagate (Update Tissue)
         TISSUE.propagate(stimulus, steps=2, learning_rate=0.1)
         phi_stats = TISSUE.phi()
         TISSUE.snapshot()
 
-        # 6. Publish Telemetry
+        # 7. Publish Telemetry
         telem = SparkTelemetryPayload(
             correlation_id=trace.correlation_id,
             phi=phi_stats.get("coherence", 0.0), 
             novelty=novelty,
             trace_mode=trace.mode,
             trace_verb=trace.verb,
-            stimulus_summary=f"v={valence:.2f} a={arousal:.2f}",
+            stimulus_summary=f"v={valence:.2f} a={arousal:.2f} vec={'yes' if spark_vector else 'no'}",
             timestamp=time.time(),
             metadata=phi_stats
         )
 
         # Publish via shared bus
         if _pub_bus and _pub_bus.enabled:
-            # FIX: Use Typed Envelope
             out_env = SparkTelemetryEnvelope(
                 source=env.source,
                 correlation_id=env.correlation_id,
@@ -186,7 +193,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
                 payload=telem
             )
             await _pub_bus.publish(settings.channel_spark_telemetry, out_env)
-            logger.info(f"Tissue updated (novelty={novelty:.3f}, phi={telem.phi:.3f}) for trace {trace.correlation_id}")
+            logger.info(f"Tissue updated (novelty={novelty:.3f}, phi={telem.phi:.3f}) for trace {trace.correlation_id} (vec={'yes' if spark_vector else 'no'})")
         else:
             logger.error("Publisher bus not connected; skipping telemetry emit")
 

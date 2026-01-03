@@ -10,9 +10,34 @@ This note summarizes how Orion routes language-model work across brain, agent, a
 | Cortex-Exec | Executes plans step-by-step, invoking workers over the bus and aggregating results. | Owns recall gating and step ordering. |
 | PlannerReactService | Produces a short plan/intent for agent mode. | Runs before the agent chain on `orion-exec:request:PlannerReactService`. |
 | AgentChainService | Executes the agentic step (tool use, ReAct reasoning) and produces the agent answer. | Listens on `orion-exec:request:AgentChainService`. |
-| LLM Gateway | Performs direct chat/completion for brain mode and for planner prompts. | Receives `orion-exec:request:LLMGatewayService`. |
+| LLM Gateway | Performs direct chat/completion for brain mode and for planner prompts. | Receives `orion-exec:request:LLMGatewayService`. **Now reflective.** |
 | RecallService | Supplies retrieved context when enabled. | Skipped when recall is disabled. |
 | CouncilService (stub) | Reserved for supervisor-style flows. | Not used by brain/agent today. |
+
+## Neural Projection (Dual-Lobe Architecture)
+
+Orion now implements **Neural Projection**, meaning every LLM generation is accompanied by a semantic embedding vector ("Neural Vibe"). This is achieved via a "Reflective" Gateway and a "Dual-Lobe" Host.
+
+### 1. The Dual-Lobe Host (`orion-llamacpp-host`)
+The `orion-llamacpp-host` service now runs **two** independent processes in the same container:
+*   **Chat Lobe (Port 8000):** The standard `llama-server` process running the main chat model (e.g., Llama-3).
+*   **Embedding Lobe (Port 8001):** A secondary `llama-server` process running a lightweight embedding model (e.g., `nomic-embed-text`).
+
+### 2. The Reflective Gateway (`orion-llm-gateway`)
+The Gateway acts as the orchestrator for this flow:
+1.  **Generate:** It calls the Chat Lobe (Port 8000) to get the text response.
+2.  **Reflect:** It **immediately** calls the Embedding Lobe (Port 8001) with that generated text.
+3.  **Combine:** It packages the text and the vector (`spark_vector`) into the `ChatResultPayload`.
+
+### 3. The Spark Engine (Neural Prism)
+The `spark_vector` travels back through `Cortex-Exec` and `Cortex-Orch`.
+*   **Ingestion:** The Spark Engine receives the vector (via `record_chat` or trace introspection).
+*   **Signal Mapping:** `SignalMapper` projects this vector onto the `OrionTissue` grid using a **Fixed Random Projection Matrix**.
+*   **Physics:** The vector drives activation in the tissue:
+    *   **Channel 0 (Safety/Context):** Positive activations.
+    *   **Channel 1 (Novelty/Stimulus):** Negative activations.
+
+This ensures that Orion "feels" the semantic weight of its own output.
 
 ## High-Level Flow (All Modes)
 
@@ -33,6 +58,8 @@ flowchart LR
     Orch -->|"orion-cortex-exec:request\ncortex.exec.request"| Exec
 
     Exec -->|"orion-exec:request:LLMGatewayService\nllm.chat.request"| LLM
+    LLM -->|"Retrieves Embedding internally"| LLM
+    LLM -->|"llm.chat.result (with spark_vector)"| Exec
 
     Exec -->|"orion-exec:request:PlannerReactService\nagent.planner.request"| Planner
     Planner -->|"reply_to from Exec\nagent.planner.result"| Exec
@@ -67,7 +94,9 @@ sequenceDiagram
         Recall-->>Exec: recall.query.result on orion-exec:result:RecallService:<uuid>
     end
     Exec->>LLM: orion-exec:request:LLMGatewayService (llm.chat.request, reply=orion-exec:result:LLMGatewayService:<uuid>)
-    LLM-->>Exec: llm.chat.result
+    LLM->>LLM: Generate Text
+    LLM->>LLM: Generate Embedding (Reflective)
+    LLM-->>Exec: llm.chat.result (text + spark_vector)
     Exec-->>Orch: cortex.exec.result on orion-exec:result:<uuid>
     Orch-->>Client: cortex.orch.result on orion-cortex:result:<uuid>
 ```

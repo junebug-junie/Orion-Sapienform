@@ -7,6 +7,15 @@ This service exists to make **GGUF model serving deterministic**:
 - Everything else (model path, HF download spec, llama-server knobs, GPU pinning hints) lives in **`config/llm_profiles.yaml`**.
 - `.env` is for **selection + overrides only**.
 
+## Neural Projection (Dual-Lobe Architecture)
+
+This service now runs **two** independent `llama-server` processes ("lobes") in the same container to support Orion's Neural Projection architecture:
+
+1.  **Chat Lobe (Port 8000):** The primary chat model (e.g., Llama-3, DeepSeek). Defined by the profile.
+2.  **Embedding Lobe (Port 8001):** A secondary lightweight model (e.g., `nomic-embed-text`) dedicated to generating vector embeddings for every chat output.
+
+**Why?** This allows Orion to "feel" the semantic weight of its own output without slowing down the main chat loop or requiring a separate container.
+
 ---
 
 ## What it runs
@@ -17,11 +26,12 @@ This service exists to make **GGUF model serving deterministic**:
 - **Network:** `app-net`
 
 The wrapper:
-1. Loads `config/llm_profiles.yaml`
-2. Selects the profile by `LLM_PROFILE_NAME`
-3. Resolves the GGUF file path
-4. If missing and a download spec is present, downloads from Hugging Face
-5. Launches `llama-server` with CLI flags derived from the profile (plus any env overrides)
+1. Loads `config/llm_profiles.yaml`.
+2. Selects the profile by `LLM_PROFILE_NAME`.
+3. Resolves the Chat GGUF file path (downloads if missing).
+4. Launches the **Chat Lobe** on Port 8000 (standard OpenAI API).
+5. Launches the **Embedding Lobe** on Port 8001 (if configured via env vars).
+6. Monitors both processes and restarts them if they crash.
 
 ---
 
@@ -48,9 +58,9 @@ Important: `config/llm_profiles.yaml` is a **global registry** (many models). Th
 
 ## Configuration model
 
-### 1) Profiles (source of truth)
+### 1) Profiles (Chat Lobe)
 
-The wrapper expects a top-level `profiles:` key.
+The wrapper expects a top-level `profiles:` key for the main chat model.
 
 Example shape:
 
@@ -62,19 +72,6 @@ profiles:
     task_type: chat
     backend: llamacpp
     model_id: "deepseek-r1-70b-q4_k_m"
-
-    supports_tools: false
-    supports_embeddings: false
-    supports_vision: false
-
-    gpu:
-      num_gpus: 4
-      tensor_parallel_size: 4
-      device_ids: [0,1,2,3]
-      max_model_len: 8192
-      max_batch_tokens: 512
-      max_concurrent_requests: 1
-      gpu_memory_fraction: 0.9
 
     llamacpp:
       model_root: "/models/gguf"
@@ -90,14 +87,19 @@ profiles:
       batch_size: 512
 ```
 
-Notes:
-- `backend` **must** be `llamacpp` for this service.
-- `model_id` is Orion’s logical label.
-- The actual file is derived from:
-  - `llamacpp.model_root + llamacpp.hf_filename` (or)
-  - a direct GGUF path (if you set it up that way in your wrapper).
+### 2) Embedding Lobe Configuration (Env Vars)
 
-### 2) Service `.env` (selection + overrides)
+The Embedding Lobe is configured purely via environment variables in `.env` (or docker-compose).
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `EMBEDDING_MODEL_PATH` | `None` | Path to the embedding GGUF model (e.g., `/models/gguf/nomic-embed-text-v1.5.Q4_K_M.gguf`). |
+| `EMBEDDING_HOST` | `0.0.0.0` | Bind address. |
+| `EMBEDDING_PORT` | `8001` | Port for the embedding API. |
+| `EMBEDDING_CTX_SIZE` | `2048` | Context size for embeddings. |
+| `EMBEDDING_N_GPU_LAYERS` | `99` | GPU layers to offload (usually small model fits entirely). |
+
+### 3) Service `.env` (selection + overrides)
 
 This file should be minimal. It chooses the profile and optionally overrides a few knobs.
 
@@ -108,9 +110,13 @@ Recommended minimal `.env`:
 SERVICE_NAME=orion-llamacpp-host
 SERVICE_VERSION=0.1.0
 
-# profile selection
+# profile selection (Chat Lobe)
 LLM_PROFILE_NAME=deepseek-70b-gguf-atlas
 LLM_PROFILES_CONFIG_PATH=/app/config/llm_profiles.yaml
+
+# Embedding Lobe
+EMBEDDING_MODEL_PATH=/models/gguf/nomic-embed-text-v1.5.Q4_K_M.gguf
+EMBEDDING_PORT=8001
 
 # model cache mount inside container (compose uses this)
 LLM_CACHE_DIR=/mnt/telemetry/llm-cache
@@ -119,15 +125,8 @@ LLM_CACHE_DIR=/mnt/telemetry/llm-cache
 HF_TOKEN=
 
 # optional overrides (blank = not set)
-LLAMACPP_CTX_SIZE_OVERRIDE=
-LLAMACPP_N_GPU_LAYERS_OVERRIDE=
-LLAMACPP_THREADS_OVERRIDE=
-LLAMACPP_PARALLEL_OVERRIDE=
-LLAMACPP_BATCH_SIZE_OVERRIDE=
 CUDA_VISIBLE_DEVICES_OVERRIDE=
 ```
-
-Rule: if a value is already in the profile, **don’t duplicate it** in `.env` unless you’re overriding.
 
 ---
 
@@ -150,53 +149,23 @@ docker compose \
 ### Key compose behaviors
 
 - Mounts the host GGUF cache into the container at `/models`.
-- Exposes llama-server on `LLAMACPP_HOST_PORT`.
+- Exposes Chat Lobe on `LLAMACPP_HOST_PORT` (mapped to 8000 internally by default, though config says 8080 often).
+- Exposes Embedding Lobe on `EMBEDDING_PORT` (mapped to 8001 internally).
 - Wrapper reads `/app/config/llm_profiles.yaml` (baked into the image).
 
 ---
 
 ## Runtime endpoints
 
-- **Health:** `GET /health`
-- **OpenAI-style:** `POST /v1/chat/completions`
+- **Chat Lobe:** `POST /v1/chat/completions` (Port 8000/8080)
+- **Embedding Lobe:** `POST /v1/embeddings` (Port 8001)
 
 Typical internal URL (from app-net):
 
 ```
-http://orion-llamacpp-host:8080
+Chat:      http://orion-llamacpp-host:8000
+Embedding: http://orion-llamacpp-host:8001
 ```
-
-If you map it to the host:
-
-```
-http://<host-ip>:<host-port>
-```
-
----
-
-## How the model gets onto disk
-
-### Automatic (preferred)
-If the GGUF file is missing under:
-
-```
-/models/gguf/<hf_filename>
-```
-
-…and your profile provides:
-- `llamacpp.hf_repo_id`
-- `llamacpp.hf_filename`
-
-…the wrapper will download the file using `huggingface_hub`.
-
-### Manual
-You can also copy models into the host cache directory:
-
-```
-${LLM_CACHE_DIR}/gguf/
-```
-
-…and the service will pick them up.
 
 ---
 
@@ -237,10 +206,6 @@ Fix:
 - delete the GGUF and re-download
 - confirm the exact filename in the profile matches what exists under `/models/gguf`
 
-### CLI flag errors (e.g. `invalid argument: --n-parallel`)
-- llama.cpp CLI flags change over time.
-- Confirm the correct flag name for your build (`--parallel` vs `--n-parallel`).
-
 ---
 
 ## Recommended operating pattern
@@ -260,12 +225,6 @@ docker run --rm --entrypoint sh orion-llamacpp-host:0.1.0 -lc \
   "grep -n 'deepseek-70b-gguf-atlas' -n /app/config/llm_profiles.yaml && echo OK"
 ```
 
-### Verify GGUF exists on the host
-
-```bash
-ls -lah ${LLM_CACHE_DIR}/gguf | head
-```
-
 ### Watch VRAM while loading
 
 ```bash
@@ -278,14 +237,3 @@ watch -n 1 nvidia-smi
 
 - `SERVICE_VERSION` should track wrapper changes.
 - Engine build is pinned by the llama.cpp image tag.
-
----
-
-## Notes
-
-This service is intentionally **not** an orchestration layer. It loads **exactly one active profile** per container instance.
-
-To run multiple models at once:
-- start multiple `orion-llamacpp-host` instances (separate service names/ports)
-- each with a different `LLM_PROFILE_NAME`
-- and ideally different GPU pinning

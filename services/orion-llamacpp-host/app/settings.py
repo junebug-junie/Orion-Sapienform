@@ -1,4 +1,4 @@
-# services/llamacpp-host/app/settings.py
+# services/orion-llamacpp-host/app/settings.py
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,7 @@ from pydantic import AliasChoices
 
 from .profiles import LLMProfileRegistry, LLMProfile
 
-logger = logging.getLogger("llamacpp-host.settings")
+logger = logging.getLogger("orion-llamacpp-host.settings")
 
 
 class Settings(BaseSettings):
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     )
 
     # Identity
-    service_name: str = Field("llamacpp-host", env="SERVICE_NAME")
+    service_name: str = Field("orion-llamacpp-host", env="SERVICE_NAME")
     service_version: str = Field("0.1.0", env="SERVICE_VERSION")
 
     # Profiles

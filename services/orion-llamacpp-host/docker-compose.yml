@@ -1,14 +1,14 @@
-# services/llamacpp-host/docker-compose.yml
+# services/orion-llamacpp-host/docker-compose.yml
 
 services:
-  llamacpp-host:
+  orion-llamacpp-host:
     build:
       context: ../..
-      dockerfile: services/llamacpp-host/Dockerfile
+      dockerfile: services/orion-llamacpp-host/Dockerfile
     env_file:
       - .env
-    image: llamacpp-host:0.1.0
-    container_name: ${PROJECT:-orion}-llamacpp-host
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-orion-llamacpp-host
     restart: unless-stopped
 
     environment:

@@ -1,4 +1,4 @@
-# services/llamacpp-host/Dockerfile
+# services/orion-llamacpp-host/Dockerfile
 
 FROM ghcr.io/ggerganov/llama.cpp:server-cuda-b4719
 
@@ -11,11 +11,11 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Python deps for wrapper
-COPY services/llamacpp-host/requirements.txt /app/requirements.txt
+COPY services/orion-llamacpp-host/requirements.txt /app/requirements.txt
 RUN pip3 install --no-cache-dir -r /app/requirements.txt
 
 # Copy wrapper code
-COPY services/llamacpp-host/app /app/app
+COPY services/orion-llamacpp-host/app /app/app
 COPY config /app/config
 
 # Run wrapper (which downloads + launches llama-server)

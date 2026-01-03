@@ -3,7 +3,7 @@
 # We use the official Ollama image as base if possible, but the requirement is to run a "host" service.
 # However, `orion-brain` previously had TWO containers: `brain` (Python) and `brain-llm` (Ollama).
 # The user wants "orion-ollama-host" to be "Gut it down to just a host... similar to its counterparts from above".
-# `llamacpp-host` wraps `llama-server`. `vllm-host` wraps `vllm`.
+# `orion-llamacpp-host` wraps `llama-server`. `vllm-host` wraps `vllm`.
 # `ollama` is a standalone Go binary.
 # If we want a Python wrapper that manages profiles (like llamacpp/vllm), we can keep the Python part.
 # But Ollama manages its own models via `ollama pull`.
@@ -12,7 +12,7 @@
 # BUT the user said "Gut it down to just a host... should be a dumb hub and not do business logic".
 # And "ollama will have only the job of being a host for ollama".
 #
-# If I look at `llamacpp-host`, it downloads models based on profile.
+# If I look at `orion-llamacpp-host`, it downloads models based on profile.
 # If `ollama-host` should do the same, it needs a Python wrapper to run `ollama pull`.
 #
 # So I will create a Python wrapper (using the existing one but gutted) that runs `ollama serve` and manages pulls.

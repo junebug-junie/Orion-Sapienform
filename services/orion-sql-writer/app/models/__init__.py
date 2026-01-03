@@ -6,6 +6,7 @@ from .dreams import Dream
 from .biometrics_telemetry import BiometricsTelemetry
 from .spark_introspection_log import SparkIntrospectionLogSQL
 from .fallback_log import BusFallbackLog
+from .cognition_trace import CognitionTraceSQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -16,4 +17,5 @@ __all__ = [
     "BiometricsTelemetry",
     "SparkIntrospectionLogSQL",
     "BusFallbackLog",
+    "CognitionTraceSQL",
 ]

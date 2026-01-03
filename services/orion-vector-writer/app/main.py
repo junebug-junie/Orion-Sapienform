@@ -73,6 +73,12 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     kind = env.kind
     payload = env.payload
 
+    # Handle Pydantic models (if decoded by codec)
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump()
+    elif hasattr(payload, "dict"):
+        payload = payload.dict()
+
     if not isinstance(payload, dict):
         return None
 
@@ -118,6 +124,32 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
         meta.update({
             "filename": payload.get("filename", ""),
             "doc_id": payload.get("id", "")
+        })
+    elif kind == "cognition.trace":
+        collection = "orion_cognition"
+        # CognitionTracePayload logic
+        # We index the final text.
+        # Payload is a dict here (already dumped) or object? Env payload is usually dict.
+
+        # We need to handle potential Pydantic model in payload if not serialized?
+        # BaseEnvelope.payload is usually dict after decoding.
+
+        # Extract fields
+        final_text = payload.get("final_text") or ""
+        verb = payload.get("verb", "unknown")
+        mode = payload.get("mode", "unknown")
+        correlation_id = payload.get("correlation_id", "")
+
+        content = final_text
+        if not content:
+             # Fallback to description of what happened
+             content = f"Cognition trace for {verb} in {mode} mode."
+
+        meta.update({
+            "correlation_id": str(correlation_id),
+            "verb": verb,
+            "mode": mode,
+            "source": "cognition.trace"
         })
     else:
         # Fallback for generic text/event

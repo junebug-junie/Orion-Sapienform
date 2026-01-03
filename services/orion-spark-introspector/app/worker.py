@@ -9,11 +9,32 @@ from pydantic import BaseModel, Field, ValidationError
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope
 from orion.core.bus.codec import OrionCodec
+from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.schemas.telemetry.spark import SparkTelemetryPayload
+
+from orion.spark.orion_tissue import OrionTissue
+from orion.spark.surface_encoding import SurfaceEncoding
+from orion.spark.signal_mapper import SignalMapper
 
 from .settings import settings
+import time
+import numpy as np
 
 logger = logging.getLogger("orion-spark-introspector")
 
+# Global publisher bus (set by main.py)
+_pub_bus: Optional[OrionBusAsync] = None
+
+def set_publisher_bus(bus: OrionBusAsync):
+    global _pub_bus
+    _pub_bus = bus
+
+# --- Tissue State (Persistent in Memory for Worker) ---
+# We initialize it once. In a real persistent service, this should be properly singleton-managed.
+# The class loads from disk on init.
+from pathlib import Path
+TISSUE = OrionTissue(snapshot_path=Path(settings.orion_tissue_snapshot_path) if settings.orion_tissue_snapshot_path else None)
+MAPPER = SignalMapper(TISSUE.H, TISSUE.W, TISSUE.C)
 
 class SparkCandidatePayload(BaseModel):
     """Legacy-style spark candidate payload produced by brain/hub."""
@@ -77,6 +98,96 @@ def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
     outputs = first_step.get("outputs") or {}
     text = outputs.get("text") or outputs.get("llm_output")
     return text.strip() if isinstance(text, str) else None
+
+
+async def handle_trace(env: BaseEnvelope) -> None:
+    """
+    Consumes CognitionTrace, updates Tissue, emits SparkTelemetry.
+    """
+    try:
+        # 1. Decode Payload
+        trace = CognitionTracePayload.model_validate(env.payload)
+
+        # 2. Derive Surface Encoding
+        # Simple heuristic: map verb/status to valence/arousal
+        # This is "Dumb" mapping for now, mirroring `orion/spark/strategies.py` logic if we imported it.
+        # We construct a synthetic encoding based on trace success/fail/complexity.
+
+        valence = 0.5
+        arousal = 0.5
+
+        # Heuristic: Failures drop valence
+        success_count = sum(1 for s in trace.steps if s.status == "success")
+        fail_count = sum(1 for s in trace.steps if s.status == "fail")
+
+        if fail_count > 0:
+            valence -= (0.1 * fail_count)
+        else:
+            valence += 0.1
+
+        # Heuristic: More steps = higher arousal (energy)
+        arousal += (len(trace.steps) * 0.05)
+
+        # Clamp
+        valence = max(0.0, min(1.0, valence))
+        arousal = max(0.0, min(1.0, arousal))
+
+        encoding = SurfaceEncoding(
+            valence=valence,
+            arousal=arousal,
+            dominance=0.5, # Neutral
+            text_hash=hash(trace.final_text or "")
+        )
+
+        # 3. Calculate Novelty (Predictive Coding)
+        # We need to map the encoding to a stimulus first
+        stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
+        novelty = TISSUE.calculate_novelty(stimulus)
+
+        # 4. Propagate (Update Tissue)
+        # We inject the stimulus and evolve the field
+        # "Inject Surface" does step() internally.
+        # But we want to separate learning (expectation) from physics if possible,
+        # but OrionTissue.propagate combines them.
+        # Let's use propagate to update expectation + tissue.
+        TISSUE.propagate(stimulus, steps=2, learning_rate=0.1)
+
+        # 5. Compute Phi (Self State)
+        phi_stats = TISSUE.phi()
+
+        # 6. Snapshot
+        TISSUE.snapshot()
+
+        # 7. Publish Telemetry
+        telem = SparkTelemetryPayload(
+            correlation_id=trace.correlation_id,
+            phi=phi_stats.get("coherence", 0.0), # Using coherence as proxy for 'phi' scalar if needed, or novelty?
+            # actually spark schema asks for 'phi' as float. Usually phi is integrated information, or coherence.
+            # Let's map phi -> coherence for now as per "SelfField" logic in spark_engine.
+            novelty=novelty,
+            trace_mode=trace.mode,
+            trace_verb=trace.verb,
+            stimulus_summary=f"v={valence:.2f} a={arousal:.2f}",
+            timestamp=time.time(),
+            metadata=phi_stats # Include full phi stats in metadata
+        )
+
+        # Publish via shared bus
+        if _pub_bus and _pub_bus.is_connected:
+            out_env = BaseEnvelope(
+                kind="spark.introspection.log", # Aligned with SQL Writer map
+                source=env.source,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=telem
+            )
+            await _pub_bus.publish(settings.channel_spark_telemetry, out_env)
+            logger.info(f"Tissue updated (novelty={novelty:.3f}, phi={telem.phi:.3f}) for trace {trace.correlation_id}")
+        else:
+            logger.error("Publisher bus not connected; skipping telemetry emit")
+
+    except Exception as e:
+        logger.error(f"Error processing trace for tissue: {e}", exc_info=True)
 
 
 async def handle_candidate(env: BaseEnvelope) -> None:

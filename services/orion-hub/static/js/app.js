@@ -39,7 +39,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const chatInput = document.getElementById('chatInput');
   const sendButton = document.getElementById('sendButton');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
-  
+  const recallToggle = document.getElementById('recallToggle');
+
   // Controls
   const speedControl = document.getElementById('speedControl');
   const speedValue = document.getElementById('speedValue');
@@ -177,7 +178,7 @@ document.addEventListener("DOMContentLoaded", () => {
       btn.classList.remove('bg-gray-700', 'text-gray-200');
 
       if (currentMode === 'brain') updateStatus('Brain mode: Press mic to speak or type.');
-      else if (currentMode === 'agentic') updateStatus('Agentic mode: Type to run tools.');
+      else if (currentMode === 'agent') updateStatus('Agentic mode: Type to run tools.');
       else updateStatus('Council mode: Consult the swarm.');
     });
   });
@@ -206,7 +207,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       // Default packs (legacy hardcoded ones, or logic to select defaults)
-      const defaults = ['executive_pack', 'memory_pack'];
+      const defaults = ['executive_pack'];
 
       packs.forEach(packName => {
           const btn = document.createElement('button');
@@ -231,7 +232,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // Update verb list after rendering packs (initial state)
       renderVerbList();
   }
-  
+
   function togglePack(packName) {
       const idx = selectedPacks.indexOf(packName);
       if (idx >= 0) selectedPacks.splice(idx, 1);
@@ -451,7 +452,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!input) return;
     try {
       const res = await fetch(`${API_BASE_URL}/schema/collapse`);
-      await res.json(); 
+      await res.json();
       input.value = JSON.stringify({
         observer: "DEMO",
         trigger: "UI test",
@@ -532,9 +533,9 @@ document.addEventListener("DOMContentLoaded", () => {
   })();
 
   // --- 4. Helpers that need scope access ---
-  
+
   function updateStatus(msg) { if (statusDiv) statusDiv.textContent = msg; }
-  
+
   function updateStatusBasedOnState() {
     if (orionState === 'idle') updateStatus('Ready.');
     else if (orionState === 'speaking') updateStatus('Speaking...');
@@ -556,13 +557,14 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!text) return;
     appendMessage('You', text);
     chatInput.value = '';
-    
+
     // Construct payload with Verbs and Packs
     const payload = {
        text_input: text,
        mode: currentMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
+       use_recall: recallToggle ? recallToggle.checked : false,
        packs: selectedPacks,
        verbs: selectedVerbs, // Send user selection
     };
@@ -576,17 +578,18 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } else {
       // Agentic/Council via HTTP
-      const label = currentMode === 'agentic' ? 'Agentic' : 'Council';
+      const label = currentMode === 'agent' ? 'Agent' : 'Council';
       updateStatus(`${label} thinking...`);
       fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'X-Orion-Session-Id': orionSessionId || '' 
+          'X-Orion-Session-Id': orionSessionId || ''
         },
-        body: JSON.stringify({ 
-          mode: currentMode, 
+        body: JSON.stringify({
+          mode: currentMode,
           messages: [{role: 'user', content: text}],
+          use_recall: recallToggle ? recallToggle.checked : false,
           packs: selectedPacks,
           verbs: selectedVerbs
         })
@@ -621,6 +624,7 @@ document.addEventListener("DOMContentLoaded", () => {
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
+               use_recall: recallToggle ? recallToggle.checked : false,
                packs: selectedPacks,
                verbs: selectedVerbs
              }));
@@ -673,7 +677,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const gain = audioContext.createGain();
     src.connect(gain);
     gain.connect(audioContext.destination);
-    
+
     // Viz
     analyser = audioContext.createAnalyser();
     src.connect(analyser);
@@ -687,7 +691,7 @@ document.addEventListener("DOMContentLoaded", () => {
       processAudioQueue();
     };
   }
-  
+
   // Viz Loop
   function drawVisualizer() {
     if (!analyser || !canvasCtx) return;
@@ -716,7 +720,7 @@ document.addEventListener("DOMContentLoaded", () => {
       vy: (Math.random()-0.5)*2
     }));
   }
-  
+
   function drawOrionState() {
     if(!stateCtx) return;
     stateCtx.clearRect(0,0,stateVisualizerCanvas.width, stateVisualizerCanvas.height);

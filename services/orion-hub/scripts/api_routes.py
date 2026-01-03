@@ -77,7 +77,9 @@ async def handle_chat_request(
     """
     user_messages = payload.get("messages", [])
     mode = payload.get("mode", "brain")
+
     use_recall = bool(payload.get("use_recall", False))
+    logger.warning("Force-disabling recall in Hub due to known service outage.")
     packs = payload.get("packs")
     user_id = payload.get("user_id")
 
@@ -173,6 +175,8 @@ async def api_chat(
             if isinstance(user_messages, list) and user_messages:
                 latest_user_prompt = user_messages[-1].get("content", "") or ""
 
+            use_recall = bool(payload.get("use_recall", False))
+
             chat_log_payload = {
                 "trace_id": str(uuid4()),
                 "source": settings.SERVICE_NAME,
@@ -180,6 +184,7 @@ async def api_chat(
                 "response": text,
                 "session_id": session_id,
                 "mode": result.get("mode", "brain"),
+                #"recall": use_recall,
                 "user_id": None,
                 "spark_meta": None,
             }

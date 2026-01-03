@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8090:8090"
+      - "8022:8022"
     restart: unless-stopped
 
     environment:

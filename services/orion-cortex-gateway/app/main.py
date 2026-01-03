@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import logging
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,6 +15,9 @@ from orion.schemas.cortex.gateway import CortexChatRequest
 
 from .settings import get_settings
 from .bus_client import BusClient
+
+# Ensure logs show up in container
+logging.basicConfig(level=logging.INFO)
 
 settings = get_settings()
 bus_client = BusClient()

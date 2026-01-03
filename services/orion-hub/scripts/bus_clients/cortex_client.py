@@ -25,11 +25,11 @@ class CortexGatewayClient:
         reply_to = f"{settings.CORTEX_GATEWAY_RESULT_PREFIX}:{correlation_id}"
 
         envelope = BaseEnvelope(
-            kind="cortex.gateway.request",  # Must match gateway subscription
+            kind="cortex.gateway.chat.request",  # Must match gateway subscription
             source=self._source,
             correlation_id=correlation_id,
             reply_to=reply_to,
-            payload=request,
+            payload=request.model_dump(),
         )
 
         logger.info(f"[{correlation_id}] Sending chat request to {settings.CORTEX_GATEWAY_REQUEST_CHANNEL}")

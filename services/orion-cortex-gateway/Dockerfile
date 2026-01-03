@@ -1,5 +1,7 @@
 FROM python:3.12-slim
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,6 +19,6 @@ COPY orion /app/orion
 # Copy service code
 COPY services/orion-cortex-gateway /app
 
-EXPOSE 8090
+EXPOSE 8022
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8022"]

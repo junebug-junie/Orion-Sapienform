@@ -166,12 +166,15 @@ async def websocket_endpoint(websocket: WebSocket):
             # 🧠 Step 3: Call Cortex Gateway via Bus
             # ---------------------------------------------------------
             logger.info(f"Routing to mode: {mode}")
-            
+
+            use_recall = data.get("use_recall", False)
+
             chat_req = CortexChatRequest(
                 prompt=transcript,
                 mode=mode,
                 session_id=session_id,
                 user_id=user_id,
+                recall={"enabled": use_recall},
                 metadata={"source": "hub_ws"}
             )
 

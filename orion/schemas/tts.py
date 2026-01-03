@@ -20,3 +20,23 @@ class TTSResultPayload(BaseModel):
     content_type: str = Field("audio/wav", description="MIME type of the audio")
     duration_sec: Optional[float] = Field(None, description="Duration of the audio in seconds")
     metadata: Optional[dict] = Field(None, description="Additional metadata")
+
+class STTRequestPayload(BaseModel):
+    """
+    Payload for Speech-to-Text (ASR) request.
+    Kind: stt.transcribe.request
+    """
+    audio_b64: str = Field(..., description="Base64 encoded audio data")
+    language: Optional[str] = Field("en", description="Language code")
+    format: Optional[str] = Field("wav", description="Audio format")
+    options: Optional[dict] = Field(None, description="Additional options")
+
+class STTResultPayload(BaseModel):
+    """
+    Payload for Speech-to-Text (ASR) result.
+    Kind: stt.transcribe.result
+    """
+    text: str = Field(..., description="Transcribed text")
+    language_detected: Optional[str] = Field(None, description="Detected language")
+    confidence: Optional[float] = Field(None, description="Confidence score")
+    metadata: Optional[dict] = Field(None, description="Additional metadata")

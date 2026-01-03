@@ -21,7 +21,9 @@ let baseParticleCount = 200;
 let visionIsFloating = false;
 let currentMode = "brain";
 let selectedPacks = [];
+let selectedVerbs = [];
 let orionSessionId = null;
+let cognitionLibrary = { packs: {}, verbs: [], map: {} };
 
 // ───────────────────────────────────────────────────────────────
 // Main Initialization (Waits for HTML to load)
@@ -78,6 +80,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const collapseStatus = document.getElementById('collapseStatus');
   const collapseTooltipToggle = document.getElementById('collapseTooltipToggle');
   const collapseTooltip = document.getElementById('collapseTooltip');
+
+  // Packs & Verbs
+  const packContainer = document.getElementById('packContainer');
+  const verbSelectTrigger = document.getElementById('verbSelectTrigger');
+  const verbSelectLabel = document.getElementById('verbSelectLabel');
+  const verbDropdown = document.getElementById('verbDropdown');
+  const verbList = document.getElementById('verbList');
+  const clearVerbsBtn = document.getElementById('clearVerbs');
 
   // --- 2. Event Listeners ---
 
@@ -172,35 +182,175 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Pack Selection (Agentic)
-  const packButtons = document.querySelectorAll('.pack-btn');
-  function updatePackButtonStyles() {
-    packButtons.forEach((btn) => {
-      const packName = btn.dataset.pack;
-      if (selectedPacks.includes(packName)) {
-        btn.classList.remove('bg-gray-700', 'text-gray-200');
-        btn.classList.add('bg-emerald-600', 'text-white');
-      } else {
-        btn.classList.remove('bg-emerald-600', 'text-white');
-        btn.classList.add('bg-gray-700', 'text-gray-200');
+  // Load Cognition Library (Packs & Verbs)
+  async function loadCognitionLibrary() {
+      try {
+          const res = await fetch(`${API_BASE_URL}/api/cognition/library`);
+          cognitionLibrary = await res.json();
+          renderPackButtons();
+          renderVerbList();
+      } catch (e) {
+          console.error("Failed to load cognition library:", e);
+          if (packContainer) packContainer.innerHTML = '<span class="text-red-400">Failed to load packs</span>';
       }
-    });
+  }
+
+  function renderPackButtons() {
+      if (!packContainer) return;
+      packContainer.innerHTML = '';
+
+      const packs = Object.keys(cognitionLibrary.packs || {});
+      if (packs.length === 0) {
+          packContainer.innerHTML = '<span class="text-gray-500">No packs found.</span>';
+          return;
+      }
+
+      // Default packs (legacy hardcoded ones, or logic to select defaults)
+      const defaults = ['executive_pack', 'memory_pack'];
+
+      packs.forEach(packName => {
+          const btn = document.createElement('button');
+          btn.className = `pack-btn inline-flex items-center px-3 py-1 rounded-full text-gray-200 bg-gray-700 hover:bg-gray-600`;
+          btn.textContent = cognitionLibrary.packs[packName].label || packName;
+          btn.dataset.pack = packName;
+
+          // Auto-select defaults if new session
+          if (defaults.includes(packName) && !selectedPacks.includes(packName)) {
+               selectedPacks.push(packName);
+          }
+
+          if (selectedPacks.includes(packName)) {
+               btn.classList.remove('bg-gray-700', 'text-gray-200');
+               btn.classList.add('bg-emerald-600', 'text-white');
+          }
+
+          btn.addEventListener('click', () => togglePack(packName));
+          packContainer.appendChild(btn);
+      });
+
+      // Update verb list after rendering packs (initial state)
+      renderVerbList();
   }
   
-  packButtons.forEach((btn) => {
-    const packName = btn.dataset.pack;
-    if (btn.dataset.default === 'true' && !selectedPacks.includes(packName)) {
-      selectedPacks.push(packName);
-    }
-    btn.addEventListener('click', () => {
-      if (!packName) return;
+  function togglePack(packName) {
       const idx = selectedPacks.indexOf(packName);
       if (idx >= 0) selectedPacks.splice(idx, 1);
       else selectedPacks.push(packName);
-      updatePackButtonStyles();
-    });
-  });
-  updatePackButtonStyles();
+
+      // Re-render buttons style
+      const btns = document.querySelectorAll('.pack-btn');
+      btns.forEach(btn => {
+          if (selectedPacks.includes(btn.dataset.pack)) {
+              btn.classList.remove('bg-gray-700', 'text-gray-200');
+              btn.classList.add('bg-emerald-600', 'text-white');
+          } else {
+              btn.classList.remove('bg-emerald-600', 'text-white');
+              btn.classList.add('bg-gray-700', 'text-gray-200');
+          }
+      });
+
+      // Update Available Verbs based on Packs
+      renderVerbList();
+  }
+
+  // Verbs UI Logic
+  if (verbSelectTrigger) {
+      verbSelectTrigger.addEventListener('click', (e) => {
+          e.stopPropagation();
+          verbDropdown.classList.toggle('hidden');
+      });
+      document.addEventListener('click', (e) => {
+          if (!verbDropdown.contains(e.target) && e.target !== verbSelectTrigger && !verbSelectTrigger.contains(e.target)) {
+              verbDropdown.classList.add('hidden');
+          }
+      });
+  }
+
+  if (clearVerbsBtn) {
+      clearVerbsBtn.addEventListener('click', () => {
+          selectedVerbs = [];
+          renderVerbList(); // Refresh checkboxes
+          updateVerbLabel();
+      });
+  }
+
+  function renderVerbList() {
+      if (!verbList) return;
+      verbList.innerHTML = '';
+
+      // Determine which verbs to show
+      let availableVerbs = [];
+
+      if (selectedPacks.length === 0) {
+          // No packs -> show all verbs
+          availableVerbs = cognitionLibrary.verbs || [];
+      } else {
+          // Packs selected -> union of verbs in those packs
+          const verbSet = new Set();
+          selectedPacks.forEach(p => {
+              const pVerbs = cognitionLibrary.map[p] || [];
+              pVerbs.forEach(v => verbSet.add(v));
+          });
+          availableVerbs = Array.from(verbSet).sort();
+      }
+
+      // Filter out selectedVerbs that are no longer available?
+      // User requested "one way validation... if you choose packs, only those verbs... otherwise all".
+      // If a verb was selected but now hidden, we should probably unselect it or keep it hidden.
+      // Let's keep it in selectedVerbs but it won't be visible.
+
+      if (availableVerbs.length === 0) {
+          verbList.innerHTML = '<span class="text-gray-500 col-span-2 text-xs p-2">No verbs found.</span>';
+          return;
+      }
+
+      availableVerbs.forEach(verb => {
+          const div = document.createElement('div');
+          div.className = "flex items-center gap-2 p-1 hover:bg-gray-700 rounded";
+
+          const cb = document.createElement('input');
+          cb.type = "checkbox";
+          cb.className = "form-checkbox h-3 w-3 text-red-600 bg-gray-600 border-gray-500 rounded focus:ring-red-500";
+          cb.checked = selectedVerbs.includes(verb);
+          cb.addEventListener('change', () => toggleVerb(verb));
+
+          const span = document.createElement('span');
+          span.textContent = verb;
+          span.className = "text-xs text-gray-300";
+
+          div.appendChild(cb);
+          div.appendChild(span);
+          div.addEventListener('click', (e) => {
+               if (e.target !== cb) {
+                   cb.checked = !cb.checked;
+                   toggleVerb(verb);
+               }
+          });
+
+          verbList.appendChild(div);
+      });
+
+      updateVerbLabel();
+  }
+
+  function toggleVerb(verb) {
+      const idx = selectedVerbs.indexOf(verb);
+      if (idx >= 0) selectedVerbs.splice(idx, 1);
+      else selectedVerbs.push(verb);
+      updateVerbLabel();
+  }
+
+  function updateVerbLabel() {
+      if (!verbSelectLabel) return;
+      if (selectedVerbs.length === 0) {
+          verbSelectLabel.textContent = "All verbs available";
+          verbSelectLabel.className = "text-gray-400 italic";
+      } else {
+          verbSelectLabel.textContent = `${selectedVerbs.length} selected`;
+          verbSelectLabel.className = "text-white font-semibold";
+      }
+  }
+
 
   // Vision UI Logic
   function updateVisionUi() {
@@ -372,6 +522,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- 3. Start Core Services ---
   (async () => {
     await initSession();
+    await loadCognitionLibrary(); // Load packs/verbs
     setupWebSocket();
     setAllCanvasSizes();
     if (stateVisualizerCanvas && stateVisualizerCanvas.width > 0) {
@@ -406,14 +557,19 @@ document.addEventListener("DOMContentLoaded", () => {
     appendMessage('You', text);
     chatInput.value = '';
     
+    // Construct payload with Verbs and Packs
+    const payload = {
+       text_input: text,
+       mode: currentMode,
+       session_id: orionSessionId,
+       disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
+       packs: selectedPacks,
+       verbs: selectedVerbs, // Send user selection
+    };
+
     if (currentMode === 'brain') {
       if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          text_input: text,
-          mode: 'brain',
-          session_id: orionSessionId,
-          disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false
-        }));
+        socket.send(JSON.stringify(payload));
         updateStatus('Sent to Brain...');
       } else {
         appendMessage('System', 'WebSocket disconnected', 'text-red-400');
@@ -431,7 +587,8 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ 
           mode: currentMode, 
           messages: [{role: 'user', content: text}],
-          packs: selectedPacks
+          packs: selectedPacks,
+          verbs: selectedVerbs
         })
       })
       .then(r => r.json())
@@ -462,8 +619,10 @@ document.addEventListener("DOMContentLoaded", () => {
            if(socket && socket.readyState === WebSocket.OPEN) {
              socket.send(JSON.stringify({
                audio: reader.result.split(',')[1],
-               mode: 'brain',
-               session_id: orionSessionId
+               mode: currentMode,
+               session_id: orionSessionId,
+               packs: selectedPacks,
+               verbs: selectedVerbs
              }));
              updateStatus('Audio sent.');
            }

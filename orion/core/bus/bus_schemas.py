@@ -182,6 +182,7 @@ class ChatResultPayload(BaseModel):
     content: Optional[str] = None
     model_used: Optional[str] = None
     spark_meta: Optional[Dict[str, Any]] = None
+    spark_vector: Optional[List[float]] = None
     usage: Dict[str, Any] = Field(default_factory=dict)
     raw: Dict[str, Any] = Field(default_factory=dict)
 

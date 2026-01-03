@@ -86,6 +86,7 @@ class StepExecutionResult(BaseModel):
     step_name: str
     order: int
     result: Dict[str, Any] = Field(default_factory=dict)
+    spark_vector: Optional[List[float]] = None
     artifacts: Dict[str, Any] = Field(default_factory=dict)
     latency_ms: Optional[int] = None
     node: Optional[str] = None

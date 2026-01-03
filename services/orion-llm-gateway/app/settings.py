@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
     llamacpp_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_URL")
 
+    # Embedding endpoint (optional, defaults to llama.cpp embedding lobe)
+    llamacpp_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_EMBEDDING_URL")
+
     # Timeout knobs (shared across backends)
     connect_timeout_sec: float = Field(10.0, alias="CONNECT_TIMEOUT_SEC")
     read_timeout_sec: float = Field(60.0, alias="READ_TIMEOUT_SEC")

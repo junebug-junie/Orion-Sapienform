@@ -1,0 +1,12 @@
+Image analysis complete.
+
+Caption: {{ host_result.artifact.outputs.caption.text if host_result.artifact.outputs.caption else 'None' }}
+
+Detected Objects:
+{% if host_result.artifact.outputs.objects %}
+{% for obj in host_result.artifact.outputs.objects[:5] %}
+- {{ obj.label }} ({{ "%.2f"|format(obj.score) }})
+{% endfor %}
+{% else %}
+None
+{% endif %}

@@ -1,0 +1,11 @@
+services:
+  orion-vision-retina:
+    build: .
+    environment:
+      - ORION_BUS_URL=redis://redis:6379/0
+      - CHANNEL_RETINA_PUB=orion:vision:frames
+    volumes:
+      - ./app:/app/app
+      - ../../orion:/app/orion
+    depends_on:
+      - redis

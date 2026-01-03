@@ -1,0 +1,32 @@
+description: "Analyze an image and persist events to memory (Host -> Window -> Council -> Scribe)."
+steps:
+  - step: call_host
+    service: vision.host
+    method: request
+    payload:
+      task_type: retina_fast
+      request: "{{ input }}"
+    result_key: host_result
+
+  - step: call_window
+    service: vision.window
+    method: request
+    payload:
+      artifact: "{{ host_result.artifact }}"
+    result_key: window_result
+
+  - step: call_council
+    service: vision.council
+    method: request
+    payload:
+      window: "{{ window_result.window }}"
+    result_key: council_result
+
+  - step: call_scribe
+    service: vision.scribe
+    method: request
+    payload:
+      events: "{{ council_result.events }}"
+    result_key: scribe_result
+
+output_template: "perceive_vision_memory.j2"

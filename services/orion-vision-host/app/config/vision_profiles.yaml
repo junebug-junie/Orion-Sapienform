@@ -1,0 +1,48 @@
+version: "1.0.0"
+
+runtime:
+  default_device: "cuda:0"
+  default_dtype: "auto"
+
+task_routing:
+  retina_fast: pipeline_retina_fast
+  embed_image: embed_image
+  detect_open_vocab: retina_detect_open_vocab
+  caption_frame: vlm_caption
+
+pipelines:
+  - name: pipeline_retina_fast
+    enabled: true
+    description: "Standard retina analysis (embed + detect + optional caption)"
+    steps:
+      - use: embed_image
+      - use: retina_detect_open_vocab
+      - use: vlm_caption
+        when: "request.caption == true"
+
+profiles:
+  - name: embed_image
+    enabled: true
+    kind: embedding
+    backend: transformers
+    model_id: REPLACE_ME # Will use default in runner if REPLACE_ME
+    warm_on_start: true
+    description: "SigLIP2 embedding"
+
+  - name: retina_detect_open_vocab
+    enabled: true
+    kind: detect_open_vocab
+    backend: transformers
+    model_id: REPLACE_ME
+    warm_on_start: true
+    params:
+       default_prompts: ["person", "face", "phone", "screen", "laptop", "keyboard", "mouse", "mug", "bottle"]
+    description: "GroundingDINO detection"
+
+  - name: vlm_caption
+    enabled: true
+    kind: caption_frame
+    backend: transformers
+    model_id: REPLACE_ME
+    warm_on_start: false
+    description: "VLM Captioning"

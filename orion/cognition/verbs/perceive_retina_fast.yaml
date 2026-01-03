@@ -1,0 +1,11 @@
+description: "Analyze an image using the retina_fast pipeline (Embed, Detect, Caption)."
+steps:
+  - step: call_host
+    service: vision.host
+    method: request
+    payload:
+      task_type: retina_fast
+      request: "{{ input }}"
+    result_key: host_result
+
+output_template: "perceive_retina_fast.j2"

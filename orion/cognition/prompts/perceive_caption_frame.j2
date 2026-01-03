@@ -1,0 +1,2 @@
+Caption: {{ host_result.artifact.outputs.caption.text if host_result.artifact.outputs.caption else 'No caption generated.' }}
+Confidence: {{ "%.2f"|format(host_result.artifact.outputs.caption.confidence) if host_result.artifact.outputs.caption and host_result.artifact.outputs.caption.confidence else 'N/A' }}

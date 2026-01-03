@@ -1,0 +1,8 @@
+Detected Objects:
+{% if host_result.artifact.outputs.objects %}
+{% for obj in host_result.artifact.outputs.objects %}
+- {{ obj.label }} ({{ "%.2f"|format(obj.score) }})
+{% endfor %}
+{% else %}
+None
+{% endif %}

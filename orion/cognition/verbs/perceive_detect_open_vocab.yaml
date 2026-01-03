@@ -1,0 +1,11 @@
+description: "Detect open-vocabulary objects in an image."
+steps:
+  - step: call_host
+    service: vision.host
+    method: request
+    payload:
+      task_type: detect_open_vocab
+      request: "{{ input }}"
+    result_key: host_result
+
+output_template: "perceive_detect_open_vocab.j2"

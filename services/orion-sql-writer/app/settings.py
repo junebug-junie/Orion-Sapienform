@@ -35,7 +35,8 @@ class Settings(BaseSettings):
             "orion:chat:history:log",
             "orion:dream:log",
             "orion:telemetry:biometrics",
-            "orion:spark:introspection:log"
+            "orion:spark:introspection:log",
+            "orion:cognition:trace"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -51,7 +52,8 @@ class Settings(BaseSettings):
             "dream.log": "Dream",
             "biometrics.telemetry": "BiometricsTelemetry",
             "spark.introspection.log": "SparkIntrospectionLogSQL",
-            "spark.introspection": "SparkIntrospectionLogSQL"
+            "spark.introspection": "SparkIntrospectionLogSQL",
+            "cognition.trace": "CognitionTraceSQL"
         }),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
     )

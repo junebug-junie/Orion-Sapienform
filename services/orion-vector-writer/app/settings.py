@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
-        default='["orion:collapse:sql-write", "orion:chat:history:log", "orion:rag:ingest"]',
+        default='["orion:collapse:sql-write", "orion:chat:history:log", "orion:rag:ingest", "orion:cognition:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
 

@@ -20,7 +20,8 @@ from app.models import (
     CollapseMirror,
     Dream,
     SparkIntrospectionLogSQL,
-    BusFallbackLog
+    BusFallbackLog,
+    CognitionTraceSQL
 )
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope
@@ -32,6 +33,7 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload
 from orion.schemas.dream import DreamRequest
 from orion.schemas.chat import RawChat
+from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 
 logger = logging.getLogger("sql-writer")
 
@@ -44,6 +46,7 @@ MODEL_MAP = {
     "ChatMessageSQL": (ChatMessageSQL, RawChat),
     "Dream": (Dream, DreamRequest),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
+    "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
 }
 
 def _cfg() -> ChassisConfig:

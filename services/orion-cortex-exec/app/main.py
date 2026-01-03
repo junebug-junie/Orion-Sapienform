@@ -16,8 +16,10 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
 from orion.schemas.cortex.schemas import PlanExecutionRequest
+from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from .router import PlanRouter
 from .settings import settings
+import time
 
 logger = logging.getLogger("orion.cortex.exec.main")
 
@@ -118,6 +120,46 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         correlation_id=str(env.correlation_id),
         ctx=ctx,
     )
+
+    # 4. Publish Cognition Trace
+    try:
+        # Attempt to extract 'packs' from args if present (typically passed in extra for agents)
+        packs_used = req_env.payload.args.extra.get("packs") or []
+        if isinstance(packs_used, str):
+            packs_used = [packs_used]
+
+        trace_payload = CognitionTracePayload(
+            correlation_id=env.correlation_id,
+            mode=res.mode or "brain",
+            verb=res.verb_name,
+            packs=packs_used if isinstance(packs_used, list) else [],
+            options=req_env.payload.args.extra.get("options", {}) if req_env.payload.args.extra else {},
+            final_text=res.final_text,
+            steps=res.steps,
+            timestamp=time.time(),
+            source_service=settings.service_name,
+            source_node=settings.node_name,
+            recall_used=res.memory_used,
+            recall_debug=res.recall_debug,
+            metadata={
+                "request_id": res.request_id,
+                "status": res.status,
+            }
+        )
+
+        trace_envelope = BaseEnvelope(
+            kind="cognition.trace",
+            source=_source(),
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain, # Propagate causality
+            payload=trace_payload
+        )
+
+        await svc.bus.publish(settings.channel_cognition_trace_pub, trace_envelope)
+        logger.info(f"Published CognitionTrace to {settings.channel_cognition_trace_pub}")
+
+    except Exception as e:
+        logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)
 
     return CortexExecResult(
         source=_source(),

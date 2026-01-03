@@ -25,6 +25,15 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CHANNEL_SPARK_INTROSPECT_CANDIDATE", "SPARK_CANDIDATE_CHANNEL"),
     )
 
+    # Cognition Trace Intake
+    channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")
+
+    # Telemetry Output
+    channel_spark_telemetry: str = Field("orion:spark:introspection:log", alias="CHANNEL_SPARK_TELEMETRY")
+
+    # Tissue
+    orion_tissue_snapshot_path: str = Field("/tmp/orion_tissue_snapshot.json", alias="ORION_TISSUE_SNAPSHOT_PATH")
+
     # RPC to Cortex-Orch (Spark -> Cortex-Orch)
     channel_cortex_request: str = Field(
         "orion-cortex:request",

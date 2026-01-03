@@ -11,6 +11,7 @@ from rdflib.namespace import RDF, XSD
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.rdf import RdfWriteRequest, RdfBuildRequest
+from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 
 from app.provenance import attach_provenance
 from app.settings import settings
@@ -90,7 +91,15 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             attach_provenance(g, subject_uri, meta.service_name)
             return g.serialize(format="nt"), "orion:enrichment"
 
-        # 5. Core Events (Legacy Fallback or "targets": ["rdf"])
+        # 5. Cognition Trace
+        elif env_kind == "cognition.trace":
+            if isinstance(payload, dict):
+                trace = CognitionTracePayload.model_validate(payload)
+            else:
+                trace = payload
+            return _handle_cognition_trace(g, trace)
+
+        # 6. Core Events (Legacy Fallback or "targets": ["rdf"])
         elif env_kind == "orion.event" or "targets" in str(payload):
              # Legacy dict handling
              if isinstance(payload, dict) and "rdf" in payload.get("targets", []):
@@ -136,6 +145,62 @@ def _handle_cortex_build(g: Graph, args: Any) -> Tuple[str, str]:
         g.add((subject, ORION.verbName, Literal(data["verb"], datatype=XSD.string)))
 
     # Serialize whatever we have
+    return g.serialize(format="nt"), "orion:cognition"
+
+
+def _handle_cognition_trace(g: Graph, trace: CognitionTracePayload) -> Tuple[str, str]:
+    """
+    Builds a connectable graph for a CognitionTrace.
+    """
+    run_uri = ORION[f"run_{trace.correlation_id}"]
+
+    # Run Metadata
+    g.add((run_uri, RDF.type, ORION.CognitionRun))
+    g.add((run_uri, ORION.correlationId, Literal(str(trace.correlation_id), datatype=XSD.string)))
+    g.add((run_uri, ORION.mode, Literal(trace.mode, datatype=XSD.string)))
+    g.add((run_uri, ORION.verb, Literal(trace.verb, datatype=XSD.string)))
+    g.add((run_uri, ORION.timestamp, Literal(trace.timestamp, datatype=XSD.double)))
+    g.add((run_uri, ORION.sourceService, Literal(trace.source_service, datatype=XSD.string)))
+
+    if trace.final_text:
+        # Truncate if excessively large, but generally keep it
+        g.add((run_uri, ORION.producedFinalText, Literal(trace.final_text)))
+
+    # Steps
+    prev_step_uri = None
+
+    for i, step in enumerate(trace.steps):
+        step_uri = ORION[f"step_{trace.correlation_id}_{i}"]
+        g.add((step_uri, RDF.type, ORION.CognitionStep))
+        g.add((step_uri, ORION.stepIndex, Literal(i, datatype=XSD.integer)))
+        g.add((step_uri, ORION.stepName, Literal(step.step_name)))
+        g.add((step_uri, ORION.stepVerb, Literal(step.verb_name)))
+        g.add((step_uri, ORION.status, Literal(step.status)))
+
+        # Link to Run
+        g.add((run_uri, ORION.hasStep, step_uri))
+
+        # Sequence
+        if prev_step_uri:
+            g.add((prev_step_uri, ORION.nextStep, step_uri))
+            g.add((step_uri, ORION.prevStep, prev_step_uri))
+        prev_step_uri = step_uri
+
+        # Evidence / Thoughts (if any in result/artifacts)
+        if step.result:
+            thought = step.result.get("thought") or step.result.get("reasoning")
+            if thought:
+                g.add((step_uri, ORION.hasThought, Literal(thought)))
+
+        # Used Services/Tools
+        # We don't have explicit 'tools used' in StepExecutionResult other than artifacts?
+        # Assuming artifacts might contain refs
+        if step.artifacts:
+            for key, val in step.artifacts.items():
+                # Naive check for IDs
+                if isinstance(val, str) and (val.startswith("http") or val.startswith("uuid:")):
+                     g.add((step_uri, ORION.hasEvidenceRef, Literal(val)))
+
     return g.serialize(format="nt"), "orion:cognition"
 
 

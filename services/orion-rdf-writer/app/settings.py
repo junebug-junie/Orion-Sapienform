@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Worker intake for Cortex (RPC)
     CHANNEL_WORKER_RDF: str = Field(default="orion:rdf:worker", env="CHANNEL_WORKER_RDF")
 
+    # Cognition Trace
+    CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
+
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
     CHANNEL_RDF_ERROR: str = Field(default="orion:rdf:error", env="CHANNEL_RDF_ERROR")
@@ -51,7 +54,8 @@ class Settings(BaseSettings):
             self.CHANNEL_EVENTS_TAGGED,
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_WORKER_RDF,
-            self.CORTEX_LOG_CHANNEL
+            self.CORTEX_LOG_CHANNEL,
+            self.CHANNEL_COGNITION_TRACE_PUB
         ]
 
 settings = Settings()

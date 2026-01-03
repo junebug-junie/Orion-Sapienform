@@ -9,7 +9,7 @@ feature vector) into the 2D+channels tensor that Orion's inner field
 (Tissue) expects.
 """
 
-from typing import Dict
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -30,7 +30,7 @@ class SignalMapper:
         self.W = W
         self.C = C
 
-        # TAG -> channel mapping.
+        # TAG -> channel mapping (Legacy / Fallback).
         self.tag_to_channel: Dict[str, int] = {
             # Embodiment & physical state
             "pain": 0,
@@ -55,6 +55,24 @@ class SignalMapper:
             "orion": 5,
         }
 
+        # Neural Projection: Fixed Random Projection Matrix (seed=42)
+        # Input: 768 dim (embedding) -> Output: 256 dim (16x16 grid)
+        # We assume flattening the grid H*W = 256.
+        # We also need to decide how to map to channels.
+        # Strategy: Project to [H*W] space.
+        # Positive activation -> Channel 0 (Safety/Context)
+        # Negative activation -> Channel 1 (Novelty/Stimulus)
+
+        self.projection_input_dim = 768 # Standard embedding size
+        self.projection_output_dim = self.H * self.W
+
+        rng = np.random.RandomState(42)
+        # Gaussian Random Projection Matrix
+        self.projection_matrix = rng.randn(self.projection_input_dim, self.projection_output_dim).astype(np.float32)
+        # Normalize columns
+        self.projection_matrix /= np.linalg.norm(self.projection_matrix, axis=0)
+
+
     def surface_to_stimulus(
         self,
         encoding: SurfaceEncoding,
@@ -64,13 +82,55 @@ class SignalMapper:
         """
         Convert a SurfaceEncoding into a stimulus tensor S[H, W, C].
 
-        v0 rules (readable, not fancy):
+        Neural Projection Strategy:
+        1. If encoding has `spark_vector`, project it onto the HxW grid.
+        2. Map + activations to Ch 0, - activations to Ch 1.
 
-          1. Pick a quadrant by modality.
-          2. Paint the waveform along X in channel 0.
-          3. For each tag, bump an associated channel at the region center.
+        Fallback Strategy (Legacy):
+        1. Pick a quadrant by modality.
+        2. Paint the waveform along X in channel 0.
+        3. For each tag, bump an associated channel at the region center.
         """
         S = np.zeros((self.H, self.W, self.C), dtype=np.float32)
+
+        # ---------------------------------------------------------
+        # Path A: Neural Projection (if vector available)
+        # ---------------------------------------------------------
+        if encoding.spark_vector is not None and len(encoding.spark_vector) > 0:
+            vec = np.array(encoding.spark_vector, dtype=np.float32)
+
+            # Handle dimension mismatch if vector isn't 768
+            # Simple truncation or padding
+            if vec.shape[0] != self.projection_input_dim:
+                if vec.shape[0] > self.projection_input_dim:
+                     vec = vec[:self.projection_input_dim]
+                else:
+                    padded = np.zeros(self.projection_input_dim, dtype=np.float32)
+                    padded[:vec.shape[0]] = vec
+                    vec = padded
+
+            # Project: [1, 768] @ [768, 256] -> [1, 256]
+            activations = vec @ self.projection_matrix
+
+            # Normalize to 0.0 - 1.0 range (roughly)
+            # Standard deviation normalization
+            activations = activations / (np.std(activations) + 1e-6)
+
+            # Reshape to grid
+            grid = activations.reshape((self.H, self.W))
+
+            # Paint channels
+            # Positive -> Channel 0
+            S[:, :, 0] += np.maximum(grid, 0) * magnitude
+
+            # Negative -> Channel 1 (absolute value)
+            S[:, :, 1] += np.abs(np.minimum(grid, 0)) * magnitude
+
+            return S
+
+        # ---------------------------------------------------------
+        # Path B: Legacy Tag/Waveform Heuristics
+        # ---------------------------------------------------------
 
         # 1) Region choice by modality.
         if encoding.modality == "chat":

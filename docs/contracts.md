@@ -54,6 +54,7 @@ This registry maps logical flows to specific channels, message kinds, and payloa
 | **Exec → Planner** | `orion-exec:request:PlannerReactService` | `agent.planner.request` → `agent.planner.result` | `orion.schemas.agents.schemas.PlannerRequest` |
 | **Exec → AgentChain**| `orion-exec:request:AgentChainService` | `agent.chain.request` → `agent.chain.result` | `orion.schemas.agents.schemas.AgentChainRequest` |
 | **Exec → Council** | `orion:agent-council:intake` | `council.request` → `council.result` | `orion.schemas.agents.schemas.DeliberationRequest` |
+| **Exec → Trace** | `CHANNEL_COGNITION_TRACE_PUB` | `cognition.trace` | `orion.schemas.telemetry.cognition_trace.CognitionTracePayload` |
 
 ### Ingestion & Writes
 
@@ -71,7 +72,21 @@ This registry maps logical flows to specific channels, message kinds, and payloa
 
 ---
 
-## 3. Mismatch Report (Known Divergences)
+## 3. Neural Projection (Spark)
+
+The "Spark Engine" now supports **Neural Projection**, where LLM generations carry semantic embeddings that drive the tissue's physics.
+
+*   **Embedding Source:** `orion-llm-gateway` (Reflective Embeddings).
+*   **Vector Transport:** `spark_vector: List[float]` field in:
+    *   `ChatResultPayload` (Gateway output)
+    *   `StepExecutionResult` (Exec output)
+    *   `CortexClientResult` (Orch output)
+    *   `CognitionTracePayload` (Trace output)
+*   **Ingestion:** `SignalMapper` projects `spark_vector` (via random projection) to tissue channels (Ch 0, Ch 1).
+
+---
+
+## 4. Mismatch Report (Known Divergences)
 
 The following discrepancies exist between the contracts defined here and the current implementation.
 
@@ -99,7 +114,7 @@ The following discrepancies exist between the contracts defined here and the cur
 
 ---
 
-## 4. Configuration & Provenance
+## 5. Configuration & Provenance
 
 Environment variables drive the bus topology. The hierarchy is:
 1.  `.env` (local overrides)
@@ -110,7 +125,7 @@ Environment variables drive the bus topology. The hierarchy is:
 
 ---
 
-## 5. Observability
+## 6. Observability
 
 *   **Correlation ID:** Must be passed to every child message.
 *   **Causality Chain:** Producers append a `CausalityLink` before sending a child message.
@@ -119,7 +134,7 @@ Environment variables drive the bus topology. The hierarchy is:
 
 ---
 
-## 6. Development
+## 7. Development
 
 ### Acceptance Harness
 Use `scripts/bus_harness.py` to test flows.

@@ -407,6 +407,7 @@ class SparkEngine:
         agent_id: str,
         tags: Optional[List[str]] = None,
         sentiment: Optional[float] = None,
+        spark_vector: Optional[List[float]] = None,
         magnitude: float = 1.0,
         steps: int = 2,
     ) -> Dict[str, Any]:
@@ -429,6 +430,9 @@ class SparkEngine:
             sentiment:
                 Optional pre-computed sentiment score, if available.
 
+            spark_vector:
+                Optional embedding vector (Neural Projection).
+
             magnitude, steps:
                 Passed through to ingest_surface / tissue dynamics.
 
@@ -444,6 +448,7 @@ class SparkEngine:
             source="juniper",  # TODO: make configurable if needed
             tags=tags,
             sentiment=sentiment,
+            spark_vector=spark_vector,
         )
 
         self.tissue.inject_surface(encoding, self.mapper, magnitude=magnitude, steps=steps)

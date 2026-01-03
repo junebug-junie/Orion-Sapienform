@@ -51,6 +51,7 @@ class CortexClientResult(BaseModel):
     verb: str
     status: str
     final_text: Optional[str] = None
+    spark_vector: Optional[List[float]] = None
     memory_used: bool = False
     recall_debug: Dict[str, Any] = Field(default_factory=dict)
     steps: List[StepExecutionResult] = Field(default_factory=list)

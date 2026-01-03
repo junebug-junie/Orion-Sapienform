@@ -92,7 +92,7 @@ class BusClient:
         asyncio.create_task(self._consume_gateway_request())
 
     async def _consume_gateway_request(self):
-        logger.info(f"Gateway consumer loop started on {self.settings.channel_gateway_request}")
+        logger.info(f"Gateway consumer loop started. Listening on channel: {self.settings.channel_gateway_request}")
         while True:
             try:
                 async with self.bus.subscribe(self.settings.channel_gateway_request) as pubsub:
@@ -118,6 +118,7 @@ class BusClient:
             return
 
         try:
+            logger.info(f"🔔 Received request from Hub: correlation_id={env.correlation_id} source={env.source}")
             logger.info(f"Processing gateway request correlation_id={env.correlation_id}")
             # Validate payload
             req = CortexChatRequest.model_validate(env.payload)

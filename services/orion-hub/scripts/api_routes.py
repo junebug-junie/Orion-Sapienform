@@ -77,7 +77,10 @@ async def handle_chat_request(
     """
     user_messages = payload.get("messages", [])
     mode = payload.get("mode", "brain")
-    use_recall = bool(payload.get("use_recall", False))
+    # FORCE DISABLE RECALL (RecallService broken)
+    # use_recall = bool(payload.get("use_recall", False))
+    logger.warning("Force-disabling recall in Hub due to known service outage.")
+    use_recall = False
     packs = payload.get("packs")
     user_id = payload.get("user_id")
 

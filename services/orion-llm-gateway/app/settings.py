@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 from .profiles import LLMProfile, LLMProfileRegistry
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
     llamacpp_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_URL")
 
-    # Embedding endpoint (optional, defaults to llama.cpp embedding lobe)
+    # Embedding endpoint (optional, defaults to llama.cpp chat host)
     llamacpp_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_EMBEDDING_URL")
 
     # Timeout knobs (shared across backends)
@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         extra = "ignore"
+
+    @model_validator(mode='after')
+    def default_embedding_url(self) -> "Settings":
+        if not self.llamacpp_embedding_url and self.llamacpp_url:
+            self.llamacpp_embedding_url = self.llamacpp_url
+        return self
 
     def load_profile_registry(self) -> LLMProfileRegistry:
         if not self.llm_profiles_config_path:

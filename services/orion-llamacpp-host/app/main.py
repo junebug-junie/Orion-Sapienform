@@ -133,48 +133,7 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         str(cfg.n_parallel),
         "--batch-size",
         str(cfg.batch_size),
-    ]
-
-    return cmd, env
-
-
-def build_embedding_server_cmd_and_env() -> Tuple[List[str], Dict[str, str]]:
-    """Builds the command for the embedding lobe (port 8001)."""
-    if not settings.embedding_model_path:
-        return [], {}
-
-    # Check if we need to download?
-    # For now, assume model_path must be valid or absolute.
-    # A robust solution might want separate DL config for embeddings, but
-    # the prompt says "nomic-embed-text (or configured small model)".
-    # We will assume it's mounted or downloaded beforehand if it's just a path.
-
-    model_path = settings.embedding_model_path
-
-    # Environment (inherit from chat lobe or default)
-    env = os.environ.copy()
-    env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-    if settings.cuda_visible_devices_override:
-        env["CUDA_VISIBLE_DEVICES"] = settings.cuda_visible_devices_override
-
-    # llama-server binary
-    server_bin = "/app/llama-server"
-    if not Path(server_bin).exists():
-        server_bin = "/app/llama.cpp/build/bin/llama-server"
-
-    cmd: List[str] = [
-        server_bin,
-        "-m",
-        model_path,
-        "--host",
-        settings.embedding_host,
-        "--port",
-        str(settings.embedding_port),
-        "--ctx-size",
-        str(settings.embedding_ctx_size),
-        "--n-gpu-layers",
-        str(settings.embedding_n_gpu_layers),
-        "--embeddings", # Enable embedding mode
+        "--embedding",  # Enable embedding mode on the same port
     ]
 
     return cmd, env
@@ -188,56 +147,40 @@ def main() -> None:
 
     profile = settings.resolve_profile()
     logger.info(
-        "Starting %s v%s profile=%s",
+        "Starting %s v%s profile=%s (Introspective Mode)",
         settings.service_name,
         settings.service_version,
         profile.name,
     )
 
-    # 1. Build Chat Command
-    chat_cmd, chat_env = build_llama_server_cmd_and_env(profile)
-    logger.info("Chat Lobe CMD: %s", " ".join(chat_cmd))
+    # 1. Build Command
+    cmd, env = build_llama_server_cmd_and_env(profile)
+    logger.info("Llama Server CMD: %s", " ".join(cmd))
 
-    # 2. Build Embedding Command
-    embed_cmd, embed_env = build_embedding_server_cmd_and_env()
-    if embed_cmd:
-        logger.info("Embedding Lobe CMD: %s", " ".join(embed_cmd))
-    else:
-        logger.warning("No embedding model path configured. Embedding lobe disabled.")
+    # 2. Process Management Loop
+    process = None
 
-    # 3. Process Management Loop
-    processes = {}
-
-    def launch(name, cmd, env):
-        logger.info(f"Launching {name}...")
+    def launch():
+        logger.info("Launching llama-server...")
         return subprocess.Popen(cmd, env=env)
 
-    # Start Chat
-    processes["chat"] = launch("Chat Lobe", chat_cmd, chat_env)
-
-    # Start Embed (if configured)
-    if embed_cmd:
-        processes["embed"] = launch("Embedding Lobe", embed_cmd, embed_env)
+    process = launch()
 
     try:
         while True:
-            for name, proc in list(processes.items()):
-                ret = proc.poll()
-                if ret is not None:
-                    logger.error(f"{name} died with code {ret}. Restarting...")
-                    if name == "chat":
-                        processes["chat"] = launch("Chat Lobe", chat_cmd, chat_env)
-                    elif name == "embed":
-                        processes["embed"] = launch("Embedding Lobe", embed_cmd, embed_env)
+            ret = process.poll()
+            if ret is not None:
+                logger.error(f"llama-server died with code {ret}. Restarting...")
+                process = launch()
             time.sleep(5)
     except KeyboardInterrupt:
         logger.info("Shutting down...")
-        for name, proc in processes.items():
-            proc.terminate()
+        if process:
+            process.terminate()
             try:
-                proc.wait(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                process.kill()
 
 
 if __name__ == "__main__":

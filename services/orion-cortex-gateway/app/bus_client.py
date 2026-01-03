@@ -137,10 +137,7 @@ class BusClient:
             )
 
             if req.recall:
-                # Filter keys to match RecallDirective fields
-                valid_keys = RecallDirective.model_fields.keys()
-                filtered_recall = {k: v for k, v in req.recall.items() if k in valid_keys}
-                recall = RecallDirective(**filtered_recall)
+                recall = RecallDirective(**req.recall)
             else:
                 recall = RecallDirective() # defaults: enabled=True, etc.
 

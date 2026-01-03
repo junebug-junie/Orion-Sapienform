@@ -13,7 +13,7 @@ The service follows a precise, event-driven workflow:
 1. **Listens** for incoming requests on a dedicated Redis channel (`orion:rag:request`).
 2. **Searches** the `orion-vector-db` service for documents semantically similar to the user's query.
 3. **Constructs** a new, context-rich prompt.
-4. **Calls** the LLM host (via `orion-llm-gateway` or direct HTTP to `orion-ollama-host`/`llamacpp-host` depending on configuration) to generate a response.
+4. **Calls** the LLM host (via `orion-llm-gateway` or direct HTTP to `orion-ollama-host`/`orion-llamacpp-host` depending on configuration) to generate a response.
    *(Note: The legacy `orion:brain:intake` flow is deprecated as `orion-brain` has been refactored to `orion-ollama-host`, a dumb host).*
 5. **Publishes** the final, context-augmented answer back to the original requester.
 

@@ -1,4 +1,4 @@
-# llamacpp-host
+# orion-llamacpp-host
 
 A **bus-native, profile-driven llama.cpp server wrapper** for Orion.
 
@@ -12,7 +12,7 @@ This service exists to make **GGUF model serving deterministic**:
 ## What it runs
 
 - **Engine:** `ghcr.io/ggerganov/llama.cpp:server-cuda-<build>`
-- **Wrapper:** `services/llamacpp-host/app` (Python)
+- **Wrapper:** `services/orion-llamacpp-host/app` (Python)
 - **Model format:** GGUF
 - **Network:** `app-net`
 
@@ -34,7 +34,7 @@ config/
   llm_profiles.yaml
 
 services/
-  llamacpp-host/
+  orion-llamacpp-host/
     app/
     docker-compose.yml
     Dockerfile
@@ -105,7 +105,7 @@ Recommended minimal `.env`:
 
 ```bash
 # identity
-SERVICE_NAME=llamacpp-host
+SERVICE_NAME=orion-llamacpp-host
 SERVICE_VERSION=0.1.0
 
 # profile selection
@@ -142,8 +142,8 @@ Example command:
 ```bash
 docker compose \
   --env-file .env \
-  --env-file services/llamacpp-host/.env \
-  -f services/llamacpp-host/docker-compose.yml \
+  --env-file services/orion-llamacpp-host/.env \
+  -f services/orion-llamacpp-host/docker-compose.yml \
   up -d --build
 ```
 
@@ -163,7 +163,7 @@ docker compose \
 Typical internal URL (from app-net):
 
 ```
-http://llamacpp-host:8080
+http://orion-llamacpp-host:8080
 ```
 
 If you map it to the host:
@@ -256,7 +256,7 @@ Fix:
 ### Verify profile exists inside image
 
 ```bash
-docker run --rm --entrypoint sh llamacpp-host:0.1.0 -lc \
+docker run --rm --entrypoint sh orion-llamacpp-host:0.1.0 -lc \
   "grep -n 'deepseek-70b-gguf-atlas' -n /app/config/llm_profiles.yaml && echo OK"
 ```
 
@@ -286,6 +286,6 @@ watch -n 1 nvidia-smi
 This service is intentionally **not** an orchestration layer. It loads **exactly one active profile** per container instance.
 
 To run multiple models at once:
-- start multiple `llamacpp-host` instances (separate service names/ports)
+- start multiple `orion-llamacpp-host` instances (separate service names/ports)
 - each with a different `LLM_PROFILE_NAME`
 - and ideally different GPU pinning

@@ -1,4 +1,4 @@
-# services/orion-vllm/app/settings.py
+# services/orion-vllm-host/app/settings.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,7 +11,7 @@ import yaml
 
 class Settings(BaseSettings):
     # Service identity
-    service_name: str = Field("orion-vllm", alias="SERVICE_NAME")
+    service_name: str = Field("orion-vllm-host", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
 
     # HTTP bind

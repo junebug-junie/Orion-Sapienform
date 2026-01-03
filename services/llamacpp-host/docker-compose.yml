@@ -1,14 +1,14 @@
-# services/orion-llamaccp/docker-compose.yml
+# services/llamacpp-host/docker-compose.yml
 
 services:
-  llamaccp:
+  llamacpp-host:
     build:
       context: ../..
-      dockerfile: services/orion-llamaccp/Dockerfile
+      dockerfile: services/llamacpp-host/Dockerfile
     env_file:
       - .env
-    image: orion-llamaccp:0.1.0
-    container_name: ${PROJECT:-orion}-llamaccp
+    image: llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-llamacpp-host
     restart: unless-stopped
 
     environment:
@@ -51,6 +51,15 @@ services:
       # when running on athena:
       - "${LLAMACPP_HOST_PORT:-7005}:7005"
 
+    healthcheck:
+      # We cannot easily check specific port since it's dynamic (profile-driven),
+      # so we assume 7005 or rely on Docker's process status.
+      # Or we try both 8080 and 7005.
+      test: ["CMD-SHELL", "curl -f http://localhost:7005/health || curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
     networks:
       - app-net

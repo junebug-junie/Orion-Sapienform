@@ -1,4 +1,4 @@
-# services/orion-llamaccp/app/main.py
+# services/llamacpp-host/app/main.py
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,7 @@ from huggingface_hub import hf_hub_download
 from .settings import settings
 from .profiles import LLMProfile, LlamaCppConfig
 
-logger = logging.getLogger("orion-llamaccp")
+logger = logging.getLogger("llamacpp-host")
 
 
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:

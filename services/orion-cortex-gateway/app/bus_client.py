@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import uuid4
 from typing import Any, Dict
@@ -55,6 +56,7 @@ class BusClient:
             f"RPC Request channel={self.settings.channel_cortex_request} "
             f"correlation_id={corr} reply_to={reply_to}"
         )
+        logger.debug(f"RPC Payload correlation_id={corr}: {env.payload}")
 
         try:
             msg = await self.bus.rpc_request(
@@ -87,10 +89,21 @@ class BusClient:
     async def start_gateway_consumer(self):
         logger.info(f"Starting gateway consumer on {self.settings.channel_gateway_request}")
         # Start a background task for subscription
-        # Since OrionBusAsync.subscribe is not a blocking loop (it usually just subscribes in Redis),
-        # we need a loop to process messages?
-        # Check OrionBusAsync implementation. Usually subscribe takes a handler.
-        await self.bus.subscribe(self.settings.channel_gateway_request, self.handle_gateway_request)
+        asyncio.create_task(self._consume_gateway_request())
+
+    async def _consume_gateway_request(self):
+        logger.info(f"Gateway consumer loop started on {self.settings.channel_gateway_request}")
+        while True:
+            try:
+                async with self.bus.subscribe(self.settings.channel_gateway_request) as pubsub:
+                    async for msg in self.bus.iter_messages(pubsub):
+                        await self.handle_gateway_request(msg)
+            except asyncio.CancelledError:
+                logger.info("Gateway consumer cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Gateway consumer failed: {e}", exc_info=True)
+                await asyncio.sleep(5.0)
 
     async def handle_gateway_request(self, message: Dict[str, Any]):
         # decode

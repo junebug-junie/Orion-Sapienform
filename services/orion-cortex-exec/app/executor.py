@@ -52,6 +52,9 @@ async def run_recall_step(
     recall_client = RecallClient(bus)
     reply_channel = f"orion-exec:result:RecallService:{uuid4()}"
 
+    # FIX: Define the timeout variable that was missing
+    recall_timeout = float(settings.step_timeout_ms) / 1000.0
+
     query_text = _last_user_message(ctx) or ""
     trace_val = ctx.get("trace_id") or recall_cfg.get("trace_id") or correlation_id
     req = RecallRequestPayload(
@@ -74,7 +77,6 @@ async def run_recall_step(
             correlation_id=correlation_id,
             reply_to=reply_channel,
             timeout_sec=recall_timeout,
-            #timeout_sec=float(settings.step_timeout_ms) / 1000.0,
         )
         fragments = res.fragments
         debug = {
@@ -159,6 +161,9 @@ async def call_step_services(
     # Calculate Timeout from Step Definition (default to 60s if missing)
     # The YAML says 60000ms, so we convert to 60.0s
     step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
+    
+    # FIX: Define effective_timeout so the loop below can use it
+    effective_timeout = step_timeout_sec
 
     # Instantiate Clients
     llm_client = LLMGatewayClient(bus)

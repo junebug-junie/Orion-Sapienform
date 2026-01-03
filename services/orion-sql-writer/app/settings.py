@@ -35,7 +35,8 @@ class Settings(BaseSettings):
             "orion:chat:history:log",
             "orion:dream:log",
             "orion:telemetry:biometrics",
-            "orion:spark:introspection:log",
+            "orion:spark:introspection:log", # legacy?
+            "orion:spark:telemetry",
             "orion:cognition:trace"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"

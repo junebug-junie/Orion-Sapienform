@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 from typing import Any, Dict, Optional
+import time
+import numpy as np
+from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -17,8 +20,6 @@ from orion.spark.surface_encoding import SurfaceEncoding
 from orion.spark.signal_mapper import SignalMapper
 
 from .settings import settings
-import time
-import numpy as np
 
 logger = logging.getLogger("orion-spark-introspector")
 
@@ -30,15 +31,16 @@ def set_publisher_bus(bus: OrionBusAsync):
     _pub_bus = bus
 
 # --- Tissue State (Persistent in Memory for Worker) ---
-# We initialize it once. In a real persistent service, this should be properly singleton-managed.
-# The class loads from disk on init.
-from pathlib import Path
 TISSUE = OrionTissue(snapshot_path=Path(settings.orion_tissue_snapshot_path) if settings.orion_tissue_snapshot_path else None)
 MAPPER = SignalMapper(TISSUE.H, TISSUE.W, TISSUE.C)
 
+# --- Typed Envelopes ---
+class SparkTelemetryEnvelope(Envelope[SparkTelemetryPayload]):
+    """Typed contract for Spark Telemetry logs."""
+    kind: str = Field("spark.telemetry", frozen=True)
+
 class SparkCandidatePayload(BaseModel):
     """Legacy-style spark candidate payload produced by brain/hub."""
-
     trace_id: str = Field(default_factory=lambda: str(uuid4()))
     source: str = "brain"
     prompt: str
@@ -78,9 +80,6 @@ def _build_llm_prompt(c: SparkCandidatePayload) -> str:
 def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
     """Best-effort extraction for legacy and typed replies."""
     payload = cortex_reply.payload if isinstance(cortex_reply.payload, dict) else {}
-    # Newer contract: {"ok":..., "steps": [{"outputs": {...}}] ...}
-    # Older contract: {"step_results": [{"services": [{"payload": {"result": {"llm_output": ...}}}]}]}
-
     step_results = payload.get("step_results") or payload.get("steps") or []
     if not step_results:
         return None
@@ -108,11 +107,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
         # 1. Decode Payload
         trace = CognitionTracePayload.model_validate(env.payload)
 
-        # 2. Derive Surface Encoding
-        # Simple heuristic: map verb/status to valence/arousal
-        # This is "Dumb" mapping for now, mirroring `orion/spark/strategies.py` logic if we imported it.
-        # We construct a synthetic encoding based on trace success/fail/complexity.
-
+        # 2. Derive Heuristics (Valence/Arousal)
         valence = 0.5
         arousal = 0.5
 
@@ -131,51 +126,60 @@ async def handle_trace(env: BaseEnvelope) -> None:
         # Clamp
         valence = max(0.0, min(1.0, valence))
         arousal = max(0.0, min(1.0, arousal))
+        dominance = 0.5
+
+        # 3. Construct Proper SurfaceEncoding
+        # Waveform: Simple activation bump scaled by arousal
+        wave_len = 64
+        x = np.linspace(-3, 3, wave_len)
+        waveform = np.exp(-x**2) * arousal 
+
+        # Feature vector: [valence, arousal, dominance, ...padding]
+        feat_dim = 32
+        feature_vec = np.zeros(feat_dim, dtype=np.float32)
+        feature_vec[0] = valence
+        feature_vec[1] = arousal
+        feature_vec[2] = dominance
 
         encoding = SurfaceEncoding(
-            valence=valence,
-            arousal=arousal,
-            dominance=0.5, # Neutral
-            text_hash=hash(trace.final_text or "")
+            event_id=str(trace.correlation_id),
+            modality="system",
+            timestamp=time.time(),
+            source=trace.source_service or "orion",
+            channel_tags=["cognition", trace.mode, trace.verb],
+            waveform=waveform.astype(np.float32),
+            feature_vec=feature_vec.astype(np.float32),
+            meta={
+                "text_hash": str(hash(trace.final_text or "")),
+                "verb": trace.verb
+            }
         )
 
-        # 3. Calculate Novelty (Predictive Coding)
-        # We need to map the encoding to a stimulus first
+        # 4. Calculate Novelty (Predictive Coding)
         stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
         novelty = TISSUE.calculate_novelty(stimulus)
 
-        # 4. Propagate (Update Tissue)
-        # We inject the stimulus and evolve the field
-        # "Inject Surface" does step() internally.
-        # But we want to separate learning (expectation) from physics if possible,
-        # but OrionTissue.propagate combines them.
-        # Let's use propagate to update expectation + tissue.
+        # 5. Propagate (Update Tissue)
         TISSUE.propagate(stimulus, steps=2, learning_rate=0.1)
-
-        # 5. Compute Phi (Self State)
         phi_stats = TISSUE.phi()
-
-        # 6. Snapshot
         TISSUE.snapshot()
 
-        # 7. Publish Telemetry
+        # 6. Publish Telemetry
         telem = SparkTelemetryPayload(
             correlation_id=trace.correlation_id,
-            phi=phi_stats.get("coherence", 0.0), # Using coherence as proxy for 'phi' scalar if needed, or novelty?
-            # actually spark schema asks for 'phi' as float. Usually phi is integrated information, or coherence.
-            # Let's map phi -> coherence for now as per "SelfField" logic in spark_engine.
+            phi=phi_stats.get("coherence", 0.0), 
             novelty=novelty,
             trace_mode=trace.mode,
             trace_verb=trace.verb,
             stimulus_summary=f"v={valence:.2f} a={arousal:.2f}",
             timestamp=time.time(),
-            metadata=phi_stats # Include full phi stats in metadata
+            metadata=phi_stats
         )
 
         # Publish via shared bus
-        if _pub_bus and _pub_bus.is_connected:
-            out_env = BaseEnvelope(
-                kind="spark.introspection.log", # Aligned with SQL Writer map
+        if _pub_bus and _pub_bus.enabled:
+            # FIX: Use Typed Envelope
+            out_env = SparkTelemetryEnvelope(
                 source=env.source,
                 correlation_id=env.correlation_id,
                 causality_chain=env.causality_chain,

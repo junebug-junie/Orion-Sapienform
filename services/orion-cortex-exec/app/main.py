@@ -1,4 +1,3 @@
-# services/orion-cortex-exec/app/main.py
 """
 Canonical Entrypoint for Cortex Exec.
 This handles the RabbitMQ/Bus connection and routes requests to the PlanRouter.
@@ -8,18 +7,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict
 
 from pydantic import BaseModel, Field, ValidationError
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+# IMPORTS UPDATED: Added Envelope for generic typing
+from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from .router import PlanRouter
 from .settings import settings
-import time
 
 logger = logging.getLogger("orion.cortex.exec.main")
 
@@ -37,6 +37,16 @@ class CortexExecResultPayload(BaseModel):
 class CortexExecResult(BaseEnvelope):
     kind: str = Field("cortex.exec.result", frozen=True)
     payload: CortexExecResultPayload
+
+
+# --- NEW CONTRACT DEFINITION ---
+class CognitionTraceEnvelope(Envelope[CognitionTracePayload]):
+    """
+    Typed contract for cognition traces aligning to Titanium Envelope[T].
+    This ensures the payload is validated as a CognitionTracePayload model,
+    not forced into a dict before validation.
+    """
+    kind: str = Field("cognition.trace", frozen=True)
 
 
 def _cfg() -> ChassisConfig:
@@ -147,8 +157,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             }
         )
 
-        trace_envelope = BaseEnvelope(
-            kind="cognition.trace",
+        # UPDATED: Use the typed envelope
+        trace_envelope = CognitionTraceEnvelope(
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain, # Propagate causality

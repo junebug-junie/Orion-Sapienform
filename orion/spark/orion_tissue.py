@@ -13,12 +13,15 @@ from which a low-dimensional self-field φ is derived.
 from pathlib import Path
 from typing import Optional, Dict, Any
 import os
+import logging
 
 import numpy as np
 from scipy.spatial import distance
 
 from .surface_encoding import SurfaceEncoding
 from .signal_mapper import SignalMapper
+
+logger = logging.getLogger("orion.tissue")
 
 
 class OrionTissue:
@@ -43,31 +46,50 @@ class OrionTissue:
         if snapshot_path is not None:
             self.snapshot_path = snapshot_path
         elif env_path:
-            self.snapshot_path = Path(env_path)
+            # FIX: strip any trailing brace typo if present in env var
+            clean_path = env_path.strip().rstrip("}")
+            self.snapshot_path = Path(clean_path)
         else:
-            self.snapshot_path = Path("/mnt/storage-warm/orion/spark/tissue-brain.npy")
+            self.snapshot_path = Path("/mnt/storage-lukewarm/orion/spark/tissue-brain.npy")
 
         self.H = H
         self.W = W
         self.C = C
         self.decay = decay
 
-        if self.snapshot_path.exists():
+        # Initialize defaults (Zero State)
+        self.T = np.zeros((H, W, C), dtype=np.float32)
+        self.expectation = np.zeros((H, W, C), dtype=np.float32)
+        self.last_novelty = 0.0
+
+        # Attempt to Load
+        # We check for the new .npz format (Tissue + Expectation) first
+        npz_path = self.snapshot_path.with_suffix('.npz')
+        
+        if npz_path.exists():
             try:
+                logger.info(f"Loading tissue state from {npz_path}")
+                with np.load(npz_path) as data:
+                    # Load Tissue
+                    if 'tissue' in data:
+                        self.T = data['tissue'].astype(np.float32)
+                    
+                    # Load Expectation (Fixes the Amnesia Bug)
+                    if 'expectation' in data:
+                        self.expectation = data['expectation'].astype(np.float32)
+            except Exception as e:
+                logger.error(f"Failed to load .npz tissue state: {e}")
+
+        elif self.snapshot_path.exists():
+            # Legacy fallback for .npy (Tissue only)
+            try:
+                logger.info(f"Loading legacy tissue state from {self.snapshot_path}")
                 arr = np.load(self.snapshot_path)
                 if arr.shape == (H, W, C):
                     self.T = arr.astype(np.float32)
-                else:
-                    self.T = np.zeros((H, W, C), dtype=np.float32)
-            except Exception:
-                self.T = np.zeros((H, W, C), dtype=np.float32)
-        else:
-            self.T = np.zeros((H, W, C), dtype=np.float32)
+            except Exception as e:
+                logger.error(f"Failed to load legacy .npy tissue state: {e}")
 
-        # Expectation vector for Predictive Coding (initially zero)
-        self.expectation = np.zeros((H, W, C), dtype=np.float32)
-        # Store last calculated novelty for phi
-        self.last_novelty = 0.0
 
     def calculate_novelty(self, stimulus: np.ndarray) -> float:
         """
@@ -95,8 +117,6 @@ class OrionTissue:
             return 1.0
 
         # Cosine distance: 1 - cosine_similarity
-        # defined in scipy as correlation distance
-        # result is in [0, 2], but for non-negative vectors in [0, 1]
         try:
             d = float(distance.cosine(s_flat, e_flat))
         except ValueError:
@@ -215,10 +235,17 @@ class OrionTissue:
     def snapshot(self) -> None:
         """
         Persist the current tissue tensor to disk.
+        Saves both 'tissue' and 'expectation' to prevent amnesia on restart.
         """
         try:
             self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(self.snapshot_path, self.T)
-        except Exception:
-            # fail-soft; not critical path
-            pass
+            
+            # Switch to .npz for multi-array storage
+            # This ensures we save the Expectation vector too
+            save_path = self.snapshot_path.with_suffix('.npz')
+            
+            np.savez(save_path, tissue=self.T, expectation=self.expectation)
+            
+        except Exception as e:
+            # LOG THE ERROR instead of passing
+            logger.error(f"Failed to snapshot tissue to {self.snapshot_path}: {e}")

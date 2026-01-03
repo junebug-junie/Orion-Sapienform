@@ -4,7 +4,7 @@ from uuid import uuid4
 from typing import Any, Dict
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, CausalityLink
 from orion.schemas.cortex.contracts import (
     CortexClientRequest,
     CortexClientResult,
@@ -151,8 +151,13 @@ class BusClient:
 
             # RPC call to Orch
             # Append causality chain
-            chain = env.causality_chain or []
-            chain.append(f"{self.settings.service_name}:{env.correlation_id}")
+            parent_link = CausalityLink(
+                correlation_id=env.correlation_id,
+                kind=env.kind,
+                source=env.source,
+                created_at=env.created_at
+            )
+            chain = (env.causality_chain or []) + [parent_link]
 
             orch_result_dict = await self.rpc_call_cortex_orch(
                 client_req,

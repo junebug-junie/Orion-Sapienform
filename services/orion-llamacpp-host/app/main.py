@@ -1,10 +1,9 @@
-# services/orion-llamacpp-host/app/main.py
+# services/llamacpp-host/app/main.py
 from __future__ import annotations
 
 import logging
 import os
 import subprocess
-import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -13,7 +12,7 @@ from huggingface_hub import hf_hub_download
 from .settings import settings
 from .profiles import LLMProfile, LlamaCppConfig
 
-logger = logging.getLogger("orion-llamacpp-host")
+logger = logging.getLogger("llamacpp-host")
 
 
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
@@ -133,7 +132,6 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         str(cfg.n_parallel),
         "--batch-size",
         str(cfg.batch_size),
-        "--embedding",  # Enable embedding mode on the same port
     ]
 
     return cmd, env
@@ -147,40 +145,16 @@ def main() -> None:
 
     profile = settings.resolve_profile()
     logger.info(
-        "Starting %s v%s profile=%s (Introspective Mode)",
+        "Starting %s v%s profile=%s",
         settings.service_name,
         settings.service_version,
         profile.name,
     )
 
-    # 1. Build Command
     cmd, env = build_llama_server_cmd_and_env(profile)
-    logger.info("Llama Server CMD: %s", " ".join(cmd))
+    logger.info("Launching llama-server: %s", " ".join(cmd))
 
-    # 2. Process Management Loop
-    process = None
-
-    def launch():
-        logger.info("Launching llama-server...")
-        return subprocess.Popen(cmd, env=env)
-
-    process = launch()
-
-    try:
-        while True:
-            ret = process.poll()
-            if ret is not None:
-                logger.error(f"llama-server died with code {ret}. Restarting...")
-                process = launch()
-            time.sleep(5)
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-        if process:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+    subprocess.run(cmd, check=True, env=env)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     HEIGHT: int = 360
     FPS: int = 15
 
+    # Storage for "Pointer" architecture (shared frame paths)
+    FRAME_STORAGE_DIR: str = "/mnt/frames"
+    FRAME_RETENTION_SECONDS: int = 60
+
     # --- Detectors & sampling ---
     DETECTORS: str = "motion,face,yolo,presence"
     DETECT_EVERY_N_FRAMES: int = 10
@@ -57,7 +61,16 @@ class Settings(BaseSettings):
     YOLO_MODEL: str = "yolov8n.pt"
     YOLO_CLASSES: str = "person"  # comma-separated
     YOLO_CONF: float = 0.25
+    YOLO_CONF_THRES: float = 0.25 # explicit new var
+    YOLO_IOU_THRES: float = 0.45
+    YOLO_IMG_SIZE: int = 640
     YOLO_DEVICE: str = "0"  # "0", "1", "cuda:0", "cpu", etc.
+    YOLO_PERSON_RETRY_THRESHOLD: float = 0.15 # for "person-centric" retry
+
+    # Debug / Telemetry
+    EDGE_DEBUG_SAVE_FRAMES: bool = False
+    EDGE_DEBUG_DIR: str = "/mnt/debug"
+    EDGE_DEBUG_SAMPLE_RATE: int = 100 # save 1 in N
 
     # UI / JPEG
     ENABLE_UI: bool = True
@@ -69,8 +82,9 @@ class Settings(BaseSettings):
     ORION_BUS_URL: str = "redis://100.92.216.81:6379/0"
 
     # --- Bus Channels
-    VISION_EVENTS_PUBLISH_RAW: str = "orion:vision:edge:raw"
-    VISION_EVENTS_SUBSCRIBE_RAW: str = "orion:vision:edge:raw"
+    VISION_EVENTS_PUBLISH_RAW: str = "orion:vision:edge:raw" # Deprecated but kept for legacy consumers
+    CHANNEL_VISION_FRAMES: str = "vision.frames" # Pointer channel
+    CHANNEL_VISION_ARTIFACTS: str = "vision.artifacts" # Edge Artifact channel
     VISION_EVENTS_PUBLISH_NOTABLE: str = "orion:vision:edge:event:notable"
 
     # ------ helpers / derived properties ------

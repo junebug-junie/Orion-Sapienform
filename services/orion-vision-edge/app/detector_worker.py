@@ -1,143 +1,225 @@
-# app/detector_worker.py
 import asyncio
-from datetime import datetime
-from typing import List, Tuple
-
+import logging
+import cv2
+import time
+import os
+import uuid
 import numpy as np
+from datetime import datetime, timezone
 
-from .context import settings, bus, camera, detectors
-from .schemas import Detection, Event
-from .state import state
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.vision import (
+    VisionEdgeArtifact, VisionObject, VisionEdgeHealth,
+    VisionFramePointerPayload, VisionEdgeError
+)
+
+from .context import settings, bus, detectors
 from .utils import draw_boxes
 
+logger = logging.getLogger("orion-vision-edge.detector")
 
-def run_detectors_on_frame(frame) -> Tuple[np.ndarray, List[Detection]]:
-    """
-    Run all configured detectors on a single frame.
+def _load_image(path: str) -> np.ndarray:
+    if not os.path.exists(path):
+        return None
+    return cv2.imread(path)
 
-    Returns:
-        annotated_frame (BGR np.ndarray),
-        detections: List[Detection]
-    """
-    annotated = frame.copy()
-    detections: List[Detection] = []
+def _save_debug_frame(frame, detections, name_suffix=""):
+    try:
+        if not settings.EDGE_DEBUG_SAVE_FRAMES:
+            return
 
-    # 1) Frame-based detectors: motion, face, yolo, etc.
-    for name, mode, det in detectors:
-        if mode != "frame":
-            continue
+        # Simple sampling
+        if int(time.time() * 100) % settings.EDGE_DEBUG_SAMPLE_RATE != 0:
+            return
 
-        try:
-            boxes = det.detect(frame)
-        except Exception:
-            boxes = []
+        annotated = frame.copy()
+        # Draw boxes
+        boxes_xywh = []
+        for d in detections:
+            x1, y1, x2, y2 = d.box_xyxy
+            boxes_xywh.append((x1, y1, x2-x1, y2-y1))
 
-        if boxes and settings.ANNOTATE:
-            # YOLO returns 6-tuple; others 4-tuple
-            if boxes and isinstance(boxes[0], tuple) and len(boxes[0]) == 6:
-                draw_boxes(
-                    annotated,
-                    [(x, y, w, h) for (x, y, w, h, _, _) in boxes],
-                    name,
-                )
-            else:
-                draw_boxes(annotated, boxes, name)
+        draw_boxes(annotated, boxes_xywh, name_suffix)
 
-        for b in boxes:
-            if isinstance(b, tuple) and len(b) == 6:
-                x, y, w, h, label, conf = b
-                detections.append(
-                    Detection(
-                        kind=name,
-                        bbox=(x, y, w, h),
-                        score=float(conf),
-                        label=label,
-                    )
-                )
-            else:
-                x, y, w, h = b
-                detections.append(
-                    Detection(
-                        kind=name,
-                        bbox=(x, y, w, h),
-                        score=1.0,
-                    )
-                )
+        os.makedirs(settings.EDGE_DEBUG_DIR, exist_ok=True)
+        ts = int(time.time() * 1000)
+        path = os.path.join(settings.EDGE_DEBUG_DIR, f"debug_{ts}_{name_suffix}.jpg")
+        cv2.imwrite(path, annotated)
+    except Exception as e:
+        logger.warning(f"Debug save failed: {e}")
 
-    # 2) Event-based detectors: presence, future identity/emotion, etc.
-    for name, mode, det in detectors:
-        if mode != "event":
-            continue
+async def run_detector_loop():
+    logger.info(f"[DETECTOR] Starting detector loop. Subscribing to {settings.CHANNEL_VISION_FRAMES}")
 
-        try:
-            events = det.update([d.model_dump() for d in detections])
-        except Exception:
-            events = []
+    if not bus.enabled:
+        logger.warning("Bus disabled, detector loop aborting.")
+        return
 
-        for ev in events:
-            detections.append(
-                Detection(
-                    kind=ev.get("kind", name),
-                    bbox=(0, 0, 0, 0),
-                    score=ev.get("score", 1.0),
-                    label=ev.get("label"),
-                    meta={
-                        k: v
-                        for k, v in ev.items()
-                        if k not in ("kind", "label", "score")
-                    },
-                )
+    # Subscribe
+    async with bus.subscribe(settings.CHANNEL_VISION_FRAMES) as pubsub:
+        async for msg in bus.iter_messages(pubsub):
+            # Decode
+            decoded = bus.codec.decode(msg.get("data"))
+            if not decoded.ok or not decoded.envelope:
+                continue
+
+            env = decoded.envelope
+
+            # Validate payload
+            try:
+                pointer = VisionFramePointerPayload.model_validate(env.payload)
+            except Exception:
+                logger.debug("Ignored non-pointer message")
+                continue
+
+            # Load Frame
+            if not pointer.image_path:
+                continue
+
+            frame = await asyncio.get_event_loop().run_in_executor(
+                None, _load_image, pointer.image_path
             )
 
-    return annotated, detections
+            if frame is None:
+                logger.warning(f"Could not load image: {pointer.image_path}")
+                continue
 
+            # Health Check
+            try:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                mean_brightness = np.mean(gray)
 
-def build_event_from_detections(
-    detections: List[Detection],
-    frame_index: int,
-) -> Event:
-    return Event(
-        ts=datetime.utcnow(),
-        stream_id=settings.STREAM_ID,
-        frame_index=frame_index,
-        detections=detections,
-        meta={"source": "edge", "camera": settings.SOURCE},
-    )
+                health_payload = VisionEdgeHealth(
+                    camera_id=settings.SOURCE,
+                    ts=time.time(),
+                    ok=True,
+                    fps=settings.FPS,
+                    mean_brightness=float(mean_brightness),
+                    resolution=f"{frame.shape[1]}x{frame.shape[0]}"
+                )
 
+                # Publish Health
+                # TODO: Throttle this if needed. For now, emit every frame as per implicit prompt requirement.
+                health_env = env.derive_child(
+                    kind="vision.edge.health",
+                    source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                    payload=health_payload
+                )
+                await bus.publish("vision.edge.health", health_env)
+            except Exception as e:
+                logger.warning(f"Health check failed: {e}")
 
-async def run_detector_loop() -> None:
-    """
-    Background loop:
+            # Run Detectors
+            vision_objects = []
 
-    - pulls frames from camera
-    - runs detector pipeline
-    - publishes raw events to Orion bus
-    - updates latest annotated frame for UI
-    """
-    while True:
-        frame = camera.get_frame()
-        await asyncio.sleep(0.001)
+            try:
+                # 1. Frame Detectors
+                for name, mode, det in detectors:
+                    if mode != "frame":
+                        continue
 
-        if frame is None:
-            await asyncio.sleep(0.05)
-            continue
+                    try:
+                        raw_results = det.detect(frame)
+                    except Exception as det_err:
+                        logger.error(f"Detector {name} failed: {det_err}")
+                        # Emit Error
+                        err_payload = VisionEdgeError(
+                            camera_id=settings.SOURCE,
+                            ts=time.time(),
+                            error_type="detector_failure",
+                            message=str(det_err),
+                            meta={"detector": name}
+                        )
+                        err_env = env.derive_child(
+                            kind="vision.edge.error",
+                            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                            payload=err_payload
+                        )
+                        await bus.publish("vision.edge.error", err_env)
+                        continue
 
-        state.frame_counter += 1
-        if state.frame_counter % max(settings.DETECT_EVERY_N_FRAMES, 1) != 0:
-            continue
+                    for res in raw_results:
+                        if len(res) == 6: # YOLO
+                            x, y, w, h, label, score = res
+                            vision_objects.append(VisionObject(
+                                label=label or name,
+                                score=float(score),
+                                box_xyxy=[float(x), float(y), float(x+w), float(y+h)],
+                                class_id=None
+                            ))
+                        elif len(res) == 4: # Face/Motion
+                            x, y, w, h = res
+                            vision_objects.append(VisionObject(
+                                label=name,
+                                score=1.0,
+                                box_xyxy=[float(x), float(y), float(x+w), float(y+h)]
+                            ))
 
-        annotated, detections = run_detectors_on_frame(frame)
-        if not detections:
-            continue
+                # 2. Event Detectors
+                det_dicts = []
+                for vo in vision_objects:
+                    w = vo.box_xyxy[2] - vo.box_xyxy[0]
+                    h = vo.box_xyxy[3] - vo.box_xyxy[1]
+                    det_dicts.append({
+                        "kind": "yolo" if vo.label in ["person", "cat", "dog"] else vo.label,
+                        "label": vo.label,
+                        "score": vo.score,
+                        "bbox": (vo.box_xyxy[0], vo.box_xyxy[1], w, h)
+                    })
 
-        ev = build_event_from_detections(detections, state.frame_counter)
-        state.last_event = ev
+                for name, mode, det in detectors:
+                    if mode != "event":
+                        continue
+                    try:
+                        events = det.update(det_dicts)
+                        for ev in events:
+                            vision_objects.append(VisionObject(
+                                label=ev.get("label", name),
+                                score=ev.get("score", 1.0),
+                                box_xyxy=[0.0, 0.0, 0.0, 0.0]
+                            ))
+                    except Exception as e:
+                        logger.error(f"Event detector {name} failed: {e}")
 
-        ev_dict = ev.model_dump()
-        ev_dict["ts"] = ev.ts.isoformat()
+                # Debug Save
+                if settings.EDGE_DEBUG_SAVE_FRAMES and vision_objects:
+                    asyncio.get_event_loop().run_in_executor(
+                        None, _save_debug_frame, frame, vision_objects, "all"
+                    )
 
-        # Raw edge events channel
-        bus.publish(settings.VISION_EVENTS_PUBLISH_RAW, ev_dict)
+                # Publish Artifact
+                artifact = VisionEdgeArtifact(
+                    artifact_id=str(uuid.uuid4()),
+                    correlation_id=str(env.correlation_id),
+                    task_type="edge_detection",
+                    device=settings.YOLO_DEVICE,
+                    inputs={"image_path": pointer.image_path, "pointer_id": str(env.id)},
+                    outputs={"objects": vision_objects},
+                    timing={"ts": time.time(), "latency": time.time() - pointer.frame_ts} if pointer.frame_ts else {},
+                    model_fingerprints={"yolo": settings.YOLO_MODEL},
+                    debug_refs=None
+                )
 
-        # Update last annotated frame for MJPEG/snapshot
-        camera.last_frame = annotated
+                out_env = env.derive_child(
+                    kind=settings.CHANNEL_VISION_ARTIFACTS,
+                    source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                    payload=artifact
+                )
+
+                await bus.publish(settings.CHANNEL_VISION_ARTIFACTS, out_env)
+
+            except Exception as e:
+                logger.error(f"Detection loop error: {e}")
+                # Generic Loop Error
+                err_payload = VisionEdgeError(
+                    camera_id=settings.SOURCE,
+                    ts=time.time(),
+                    error_type="loop_error",
+                    message=str(e)
+                )
+                err_env = env.derive_child(
+                    kind="vision.edge.error",
+                    source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                    payload=err_payload
+                )
+                await bus.publish("vision.edge.error", err_env)

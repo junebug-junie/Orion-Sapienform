@@ -14,40 +14,40 @@ class Settings(BaseSettings):
 
     # Vision events
     VISION_EVENTS_SUBSCRIBE_RAW: str = Field("orion:vision:edge:raw", alias="VISION_EVENTS_SUBSCRIBE_RAW")
+    CHANNEL_VISION_ARTIFACTS: str = Field("vision.artifacts", alias="CHANNEL_VISION_ARTIFACTS")
 
-    # Security event channels
+    # Guard Output Channels
+    CHANNEL_VISION_GUARD_SIGNAL: str = Field("vision.guard.signal", alias="CHANNEL_VISION_GUARD_SIGNAL")
+    CHANNEL_VISION_GUARD_ALERT: str = Field("vision.guard.alert", alias="CHANNEL_VISION_GUARD_ALERT")
+
+    # Guard Logic Config
+    GUARD_WINDOW_SECONDS: int = Field(30, alias="GUARD_WINDOW_SECONDS")
+    GUARD_EMIT_EVERY_SECONDS: int = Field(5, alias="GUARD_EMIT_EVERY_SECONDS")
+    GUARD_PERSON_MIN_CONF: float = Field(0.4, alias="GUARD_PERSON_MIN_CONF")
+    GUARD_PERSON_MIN_COUNT: int = Field(1, alias="GUARD_PERSON_MIN_COUNT")
+    GUARD_SUSTAIN_SECONDS: int = Field(2, alias="GUARD_SUSTAIN_SECONDS")
+    GUARD_ALERT_COOLDOWN_SECONDS: int = Field(60, alias="GUARD_ALERT_COOLDOWN_SECONDS")
+
+    # Legacy Security Config (Keep for existing logic compatibility if needed)
     CHANNEL_SECURITY_VISITS: str = Field("orion:security:visits", alias="CHANNEL_SECURITY_VISITS")
     CHANNEL_SECURITY_ALERTS: str = Field("orion:security:alerts", alias="CHANNEL_SECURITY_ALERTS")
-
-    # Core security toggles
     SECURITY_ENABLED: bool = Field(True, alias="SECURITY_ENABLED")
     SECURITY_DEFAULT_ARMED: bool = Field(False, alias="SECURITY_DEFAULT_ARMED")
-    SECURITY_MODE: str = Field("vacation_strict", alias="SECURITY_MODE")  # "vacation_strict", "off"
-
-    # Rate limiting
+    SECURITY_MODE: str = Field("vacation_strict", alias="SECURITY_MODE")
     SECURITY_GLOBAL_COOLDOWN_SEC: int = Field(60, alias="SECURITY_GLOBAL_COOLDOWN_SEC")
     SECURITY_IDENTITY_COOLDOWN_SEC: int = Field(300, alias="SECURITY_IDENTITY_COOLDOWN_SEC")
-
-    # YOLO score threshold (edge default conf=0.25, so keep this low-ish)
     SECURITY_MIN_YOLO_SCORE: float = Field(0.30, alias="SECURITY_MIN_YOLO_SCORE")
 
     # Snapshot behavior
-    # NOTE: this may contain credentials. We will redact it in logs/emails.
     VISION_SNAPSHOT_URL: str = Field("http://100.92.216.81:7100/snapshot.jpg", alias="VISION_SNAPSHOT_URL")
-
-    # Optional: a safe/public URL to include in emails (no creds)
-    # e.g. "http://100.92.216.81:7100/snapshot.jpg" behind your tailscale ACL/proxy
     VISION_SNAPSHOT_PUBLIC_URL: str = Field("", alias="VISION_SNAPSHOT_PUBLIC_URL")
-
     SECURITY_SNAPSHOT_COUNT: int = Field(3, alias="SECURITY_SNAPSHOT_COUNT")
     SECURITY_SNAPSHOT_DIR: str = Field("/mnt/telemetry/orion-security/alerts", alias="SECURITY_SNAPSHOT_DIR")
 
     # Notification mode
-    # "inline" = send email directly from this service
-    # "off"    = don't send, just publish alerts on bus
     NOTIFY_MODE: str = Field("inline", alias="NOTIFY_MODE")
 
-    # Email config (for inline mode)
+    # Email config
     NOTIFY_EMAIL_SMTP_HOST: str = Field("", alias="NOTIFY_EMAIL_SMTP_HOST")
     NOTIFY_EMAIL_SMTP_PORT: int = Field(587, alias="NOTIFY_EMAIL_SMTP_PORT")
     NOTIFY_EMAIL_SMTP_USERNAME: str = Field("", alias="NOTIFY_EMAIL_SMTP_USERNAME")

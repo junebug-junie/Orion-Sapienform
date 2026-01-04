@@ -1,198 +1,111 @@
+from __future__ import annotations
+
+import asyncio
 import logging
-import time
-import threading
+from typing import Any, Dict
 
-from orion.core.bus.service import OrionBus
+from pydantic import ValidationError
 
+# [FIX] Added ServiceRef to imports
+from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
+from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+
+from .llm_backend import run_llm_chat
+from .models import ChatBody
 from .settings import settings
-from .models import (
-    ExecutionEnvelope,
-    ChatBody,
-    GenerateBody,
-    ExecStepPayload,
-    EmbeddingsBody,
-)
-from .llm_backend import (
-    run_llm_chat,
-    run_llm_generate,
-    run_llm_exec_step,
-    run_llm_embeddings,
-)
 
 logger = logging.getLogger("orion-llm-gateway")
 
 
-def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[LLM-GW] %(levelname)s - %(name)s - %(message)s",
+def _cfg() -> ChassisConfig:
+    return ChassisConfig(
+        service_name=settings.service_name,
+        service_version=settings.service_version,
+        node_name=getattr(settings, "node_name", None),
+        bus_url=settings.orion_bus_url,
+        bus_enabled=settings.orion_bus_enabled,
+        heartbeat_interval_sec=float(getattr(settings, "heartbeat_interval_sec", 10.0) or 10.0),
     )
 
-    bus = OrionBus(
-        url=settings.orion_bus_url,
-        enabled=settings.orion_bus_enabled,
+
+# [FIX] Helper to replace the missing .service_ref() method
+def _source() -> ServiceRef:
+    return ServiceRef(
+        name=settings.service_name,
+        node=getattr(settings, "node_name", None),
+        version=settings.service_version,
     )
 
-    if not bus.enabled:
-        logger.error("Orion bus is disabled; exiting.")
-        return
 
-    # Main LLM loop (chat / generate / exec_step / embeddings)
-    for msg in bus.subscribe(settings.channel_llm_intake):
-        if msg.get("type") != "message":
-            continue
+async def handle(env: BaseEnvelope) -> BaseEnvelope:
+    if env.kind not in ("llm.chat.request", "legacy.message"):
+        return BaseEnvelope(
+            kind="system.error",
+            source=_source(),  # [FIX]
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload={"error": f"unsupported_kind:{env.kind}"},
+        )
 
-        try:
-            data = msg["data"]
-            envelope = ExecutionEnvelope(**data)
+    payload_obj: Dict[str, Any] = {}
+    if env.kind == "legacy.message":
+        raw = env.payload if isinstance(env.payload, dict) else {}
+        if raw.get("event") == "chat":
+            payload_obj = raw.get("payload") or raw.get("body") or {}
+        else:
+            payload_obj = raw
+    else:
+        payload_obj = env.payload if isinstance(env.payload, dict) else {}
 
-            logger.info(
-                "Received event=%s service=%s corr_id=%s",
-                envelope.event,
-                envelope.service,
-                envelope.correlation_id,
-            )
+    try:
+        typed_req = Envelope[ChatRequestPayload].model_validate(
+            {**env.model_dump(), "kind": "llm.chat.request", "payload": payload_obj}
+        )
+    except ValidationError as ve:
+        return BaseEnvelope(
+            kind="llm.chat.result",
+            source=_source(),  # [FIX]
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload={"error": "validation_failed", "details": ve.errors()},
+        )
 
-            # -------------------------
-            # CHAT
-            # -------------------------
-            if envelope.event == "chat":
-                raw = envelope.payload.get("body", envelope.payload) or {}
+    body = ChatBody(
+        model=typed_req.payload.model,
+        messages=[m.model_dump() for m in typed_req.payload.messages],
+        options=typed_req.payload.options or {},
+        profile_name=typed_req.payload.profile,
+        trace_id=str(typed_req.correlation_id),
+        user_id=typed_req.payload.user_id,
+        session_id=typed_req.payload.session_id,
+        source=typed_req.source.name,
+    )
 
-                # Backwards-compat: allow simple prompt-only payloads
-                if "messages" not in raw and "prompt" in raw:
-                    prompt = raw.get("prompt") or ""
-                    raw = {
-                        "model": raw.get("model"),
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": prompt,
-                            }
-                        ],
-                        "options": raw.get("options") or {},
-                        "stream": raw.get("stream", False),
-                        "return_json": raw.get("return_json", False),
-                        "trace_id": raw.get("trace_id", envelope.correlation_id),
-                        "user_id": raw.get("user_id"),
-                        "session_id": raw.get("session_id"),
-                        "source": raw.get("source", "brain-cortex"),
-                    }
+    result = run_llm_chat(body)
+    text = result.get("text") if isinstance(result, dict) else str(result)
 
-                body = ChatBody(**raw)
-                result = run_llm_chat(body)
+    out = Envelope[ChatResultPayload](
+        kind="llm.chat.result",
+        source=_source(),  # [FIX]
+        correlation_id=typed_req.correlation_id,
+        causality_chain=typed_req.causality_chain,
+        payload=ChatResultPayload(
+            model_used=(result.get("raw") or {}).get("model") if isinstance(result, dict) else None,
+            content=text or "",
+            usage=(result.get("raw") or {}).get("usage") if isinstance(result, dict) else {},
+            raw=result,
+        ),
+    )
+    return out.model_copy(update={"reply_to": None})
 
-                # New vLLM path returns dict; legacy path returns string.
-                if isinstance(result, dict):
-                    text = result.get("text") or ""
-                    spark_meta = result.get("spark_meta")
-                    raw_llm = result.get("raw")
-                else:
-                    text = str(result)
-                    spark_meta = None
-                    raw_llm = None
 
-                reply = {
-                    "event": "chat_result",
-                    "service": settings.llm_service_name,
-                    "correlation_id": envelope.correlation_id,
-                    "payload": {
-                        "text": text,
-                        "spark_meta": spark_meta,
-                        "raw": raw_llm,
-                    },
-                }
-                bus.publish(envelope.reply_channel, reply)
-
-                logger.info(
-                    "Published chat_result corr_id=%s reply_channel=%s",
-                    envelope.correlation_id,
-                    envelope.reply_channel,
-                )
-
-            # -------------------------
-            # GENERATE
-            # -------------------------
-            elif envelope.event == "generate":
-                body = GenerateBody(**envelope.payload.get("body", envelope.payload))
-                text = run_llm_generate(body)
-
-                reply = {
-                    "event": "generate_result",
-                    "service": settings.llm_service_name,
-                    "correlation_id": envelope.correlation_id,
-                    "payload": {
-                        "text": text,
-                    },
-                }
-                bus.publish(envelope.reply_channel, reply)
-
-                logger.info(
-                    "Published generate_result corr_id=%s reply_channel=%s",
-                    envelope.correlation_id,
-                    envelope.reply_channel,
-                )
-
-            # -------------------------
-            # CORTEX EXEC STEP
-            # -------------------------
-            elif envelope.event == "exec_step":
-                t0 = time.time()
-                body = ExecStepPayload(**envelope.payload)
-
-                result = run_llm_exec_step(body)
-                elapsed_ms = int((time.time() - t0) * 1000)
-
-                reply = {
-                    "trace_id": envelope.correlation_id,
-                    "service": envelope.service,
-                    "ok": True,
-                    "elapsed_ms": elapsed_ms,
-                    "result": result,
-                    "artifacts": {},
-                    "status": "success",
-                }
-
-                bus.publish(envelope.reply_channel, reply)
-
-                logger.info(
-                    "Published exec_step result corr_id=%s reply_channel=%s elapsed_ms=%d",
-                    envelope.correlation_id,
-                    envelope.reply_channel,
-                    elapsed_ms,
-                )
-
-            # -------------------------
-            # EMBEDDINGS
-            # -------------------------
-            elif envelope.event == "embeddings":
-                body = EmbeddingsBody(**envelope.payload.get("body", envelope.payload))
-                data_out = run_llm_embeddings(body)
-
-                reply = {
-                    "event": "embeddings_result",
-                    "service": settings.llm_service_name,
-                    "correlation_id": envelope.correlation_id,
-                    "payload": data_out,
-                }
-                bus.publish(envelope.reply_channel, reply)
-
-                logger.info(
-                    "Published embeddings_result corr_id=%s reply_channel=%s",
-                    envelope.correlation_id,
-                    envelope.reply_channel,
-                )
-
-            else:
-                logger.warning("Unknown event type: %s", envelope.event)
-
-        except Exception as e:
-            logger.exception(
-                "Error processing message on %s: %s",
-                msg.get("channel"),
-                e,
-            )
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="[LLM-GW] %(levelname)s - %(message)s")
+    cfg = _cfg()
+    svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle)
+    logger.info("Rabbit listening channel=%s bus=%s", settings.channel_llm_intake, cfg.bus_url)
+    await svc.start()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

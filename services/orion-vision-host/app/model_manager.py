@@ -128,3 +128,38 @@ class ModelManager:
 
             self.set(key, model, processor)
             return model, processor
+
+    def load_vlm_captioner(
+        self,
+        *,
+        profile_name: str,
+        device: str,
+        dtype: str,
+        model_id: str,
+    ):
+        """
+        Loads a VLM for captioning (e.g. IDEFICS, BLIP-2, Git, etc).
+        Assumes standard transformers AutoProcessor/AutoModelForVision2Seq usage.
+        """
+        from transformers import AutoProcessor, AutoModelForVision2Seq
+
+        key = ModelKey(profile=profile_name, device=device)
+        lock = self._key_lock(key)
+
+        with lock:
+            m, p = self.get(key)
+            if m is not None and p is not None:
+                return m, p
+
+            torch_dtype = self._torch_dtype(dtype, device)
+            logger.info(f"[MODEL] loading vlm profile={profile_name} device={device} dtype={torch_dtype} id={model_id}")
+
+            processor = AutoProcessor.from_pretrained(model_id)
+            model = AutoModelForVision2Seq.from_pretrained(model_id, torch_dtype=torch_dtype)
+
+            model.eval()
+            if device.startswith("cuda"):
+                model.to(device)
+
+            self.set(key, model, processor)
+            return model, processor

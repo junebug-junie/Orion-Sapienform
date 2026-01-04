@@ -1,0 +1,7 @@
+Cognitive Events Generated:
+
+{% for evt in council_result.events.events %}
+Event: {{ evt.event_type }} ({{ "%.2f"|format(evt.confidence) }})
+Narrative: {{ evt.narrative }}
+Tags: {{ evt.tags | join(", ") }}
+{% endfor %}

@@ -1,6 +1,5 @@
 # services/orion-agent-council/app/council_prompts.py
 from __future__ import annotations
-
 from .models import DeliberationRequest, RoundResult, BlinkJudgement
 
 
@@ -11,33 +10,23 @@ def build_chair_prompt(req: DeliberationRequest, round_result: RoundResult) -> s
     council_text = "\n\n".join(blocks)
 
     return f"""
-You are the Council Chair within Orion Sapienform.
+You are the Council Chair/Director within Orion Sapienform.
 
 Juniper asked:
-
 \"\"\"{req.prompt}\"\"\"
 
 Internal agent opinions:
-
 {council_text}
 
-Your job:
+[DELEGATION PROTOCOL]
+If these opinions suggest the task requires tools, web search, or multi-step execution, 
+you must set "decision": "DELEGATE".
 
-1. Propose a single coherent answer for Juniper *right now*.
-2. Provide numeric scores (0.0–1.0):
-   - coherence
-   - faithfulness
-   - usefulness
-   - risk
-   - effort_cost
-   - novelty
-   - overall
-3. Estimate disagreement across the agents (0.0–1.0) and briefly describe the tension.
-
-Respond as STRICT JSON only:
+Respond with ONLY raw JSON. No markdown code blocks, no preamble, no chatter.
 
 {{
   "proposed_answer": "...",
+  "decision": "ACCEPT" | "DELEGATE",
   "scores": {{
     "coherence": 0.0,
     "faithfulness": 0.0,
@@ -47,13 +36,11 @@ Respond as STRICT JSON only:
     "novelty": 0.0,
     "overall": 0.0
   }},
-  "disagreement": {{
-    "level": 0.0,
-    "notes": "..."
-  }},
-  "notes": "optional meta-notes"
+  "disagreement": {{ "level": 0.0, "notes": "..." }},
+  "notes": "..."
 }}
 """.strip()
+
 
 
 def build_auditor_prompt(
@@ -63,60 +50,46 @@ def build_auditor_prompt(
 ) -> str:
     blocks = []
     for op in round_result.opinions:
+        # KEEPING YOUR SPECIFIC FORMATTING
         blocks.append(f"### {op.agent_name}\n\n{op.text.strip()}\n")
     council_text = "\n\n".join(blocks)
 
     return f"""
-	You are the Auditor within Orion Sapienform.
+You are the Auditor within Orion Sapienform.
 
 You do NOT generate new ideas.
-You only evaluate the Chair's proposed answer for:
+You only evaluate the Chair's proposed answer or delegation for:
   - alignment with Juniper's goals,
   - faithfulness to the prompt and agent opinions,
-  - safety,
-  - cognitive and emotional load.
+  - safety.
 
 Prompt:
-
 \"\"\"{req.prompt}\"\"\"
 
 Agent opinions:
-
 {council_text}
 
-Chair's proposed answer:
-
+Chair's Proposal:
 \"\"\"{judgement.proposed_answer}\"\"\"
 
-Blink scores:
-- coherence:   {judgement.scores.coherence:.3f}
-- faithfulness:{judgement.scores.faithfulness:.3f}
-- usefulness:  {judgement.scores.usefulness:.3f}
-- risk:        {judgement.scores.risk:.3f}
-- effort_cost: {judgement.scores.effort_cost:.3f}
-- novelty:     {judgement.scores.novelty:.3f}
-- overall:     {judgement.scores.overall:.3f}
-
-Disagreement:
-{judgement.disagreement}
+Chair's intended action: {getattr(judgement, 'action', 'accept')}
 
 You must choose:
+- "accept"           → answer is okay to show Juniper.
+- "delegate"         → hand off to the ReAct Planner.
+- "revise_same_round" → adjust framing/tone/scope.
+- "new_round"         → we need another agent round.
 
-- "accept"            → answer is okay to show Juniper.
-- "revise_same_round" → same opinions, but adjust framing/tone/scope.
-- "new_round"         → we need another agent round with constraints.
-
-Respond as STRICT JSON only:
+Respond as STRICT JSON only. No preamble.
 
 {{
-  "action": "accept" | "revise_same_round" | "new_round",
+  "action": "accept" | "delegate" | "revise_same_round" | "new_round",
   "reason": "short explanation",
   "constraints": {{
-    "emphasize": ["optional list"],
-    "avoid": ["optional list"],
-    "notes": "optional guidance"
+    "emphasize": [],
+    "avoid": [],
+    "notes": ""
   }},
-  "override_answer": "optional safer answer, or null"
+  "override_answer": null
 }}
 """.strip()
-

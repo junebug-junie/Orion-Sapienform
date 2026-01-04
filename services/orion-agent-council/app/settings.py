@@ -7,35 +7,27 @@ class Settings(BaseSettings):
     # --- Service identity ---
     service_name: str = Field("agent-council", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
+    node_name: str = Field("unknown-node", alias="ORION_NODE_NAME")
 
     # --- Orion bus ---
     orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
     # --- Council channels (bus) ---
-    # Intake = where others send council_deliberation requests
-    channel_intake: str = Field("orion:council:intake", alias="CHANNEL_COUNCIL_INTAKE")
-    # Reply prefix = we publish replies to `${prefix}:${trace_id}` if caller didn’t give a channel
-    channel_reply_prefix: str = Field(
-        "orion:council:reply",
-        alias="CHANNEL_COUNCIL_REPLY_PREFIX",
-    )
+    channel_intake: str = Field("orion-exec:request:CouncilService", alias="CHANNEL_COUNCIL_INTAKE")
+    channel_reply_prefix: str = Field("orion-exec:result:CouncilService", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
 
     # --- LLM Gateway routing (bus) ---
-    llm_intake_channel: str = Field(
-        "orion:llm-gateway:intake",
-        alias="CHANNEL_LLM_GATEWAY_INTAKE",
-    )
-    llm_reply_prefix: str = Field(
-        "orion:llm-gateway:reply",
-        alias="CHANNEL_LLM_GATEWAY_REPLY_PREFIX",
-    )
-    llm_service_name: str = Field(
-        "LLMGateway",
-        alias="LLM_GATEWAY_SERVICE_NAME",
-    )
+    llm_service_name: str = Field("LLMGateway", alias="LLM_GATEWAY_SERVICE_NAME")
 
-    council_llm_timeout_sec: float = Field(30.0, alias="COUNCIL_LLM_TIMEOUT_SEC")
+    #  These fields must exist for .env variables to take effect!
+    llm_intake_channel: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    llm_reply_prefix: str = Field("orion:llm:reply", alias="CHANNEL_LLM_REPLY_PREFIX")
+
+    council_llm_timeout_sec: float = Field(10.0, alias="COUNCIL_LLM_TIMEOUT_SEC")
+    # Soft per-round budget used to cap agent calls and avoid RPC overruns.
+    council_round_timeout_sec: float = Field(12.0, alias="COUNCIL_ROUND_TIMEOUT_SEC")
+    council_llm_max_attempts: int = Field(2, alias="COUNCIL_LLM_MAX_ATTEMPTS")
 
     # --- Deliberation loop config ---
     max_rounds: int = Field(2, alias="COUNCIL_MAX_ROUNDS")

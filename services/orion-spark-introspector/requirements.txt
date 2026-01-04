@@ -3,3 +3,6 @@ redis==5.0.4
 pydantic==2.7.4
 pydantic-settings==2.4.0
 python-dotenv==1.0.1
+loguru>0.7
+numpy>=2.0
+scipy>=1.4

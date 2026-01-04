@@ -1,0 +1,66 @@
+# services/orion-vllm-host/docker-compose.yml
+
+services:
+  vllm-host:
+    build:
+      context: ../..
+      dockerfile: services/orion-vllm-host/Dockerfile
+    image: orion-vllm-host:latest
+    container_name: ${PROJECT:-orion}-vllm-host
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      # Identity
+      - SERVICE_NAME=${SERVICE_NAME:-orion-vllm-host}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+
+      # HTTP bind
+      - VLLM_HOST=0.0.0.0
+      - VLLM_PORT=8000
+
+      - HF_TOKEN=${HF_TOKEN}
+
+      # Profiles config (path *inside* the container)
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+
+      # Which llm_profiles.yaml entry this node should run
+      - VLLM_PROFILE_NAME=${VLLM_PROFILE_NAME}
+
+      # Optional model override
+      - VLLM_MODEL_ID=${VLLM_MODEL_ID:-}
+
+      # Runtime-only knobs
+      - VLLM_GPU_MEMORY_FRACTION=${VLLM_GPU_MEMORY_FRACTION:-0.9}
+      - VLLM_DOWNLOAD_DIR=${VLLM_DOWNLOAD_DIR:-/models}
+      - VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-false}
+    networks:
+      - app-net
+
+    volumes:
+      # Model cache / downloads
+      - /mnt/storage-warm/models:/models
+
+    ports:
+      # Map to internal 8000
+      - "${VLLM_HOST_PORT:-7000}:8000"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

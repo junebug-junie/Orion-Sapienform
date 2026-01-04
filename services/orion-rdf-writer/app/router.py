@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.rdf_builder import build_triples
+from app.rdf_builder import build_triples_from_envelope
 # Import the specific function we need from the refactored service.py
 from app.service import _push_to_graphdb
 from app.utils import logger

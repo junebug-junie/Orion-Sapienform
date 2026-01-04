@@ -89,6 +89,7 @@ class SurfaceEncoding:
 
     waveform: np.ndarray
     feature_vec: np.ndarray
+    spark_vector: Optional[List[float]] = None
     meta: Dict[str, str] = field(default_factory=dict)
 
 
@@ -104,6 +105,7 @@ def encode_chat_to_surface(
     tags: Optional[List[str]] = None,
     sentiment: Optional[float] = None,
     embedding: Optional[np.ndarray] = None,
+    spark_vector: Optional[List[float]] = None,
     waveform_len: int = 64,
     feature_dim: int = 32,
 ) -> SurfaceEncoding:
@@ -174,6 +176,7 @@ def encode_chat_to_surface(
         channel_tags=tags,
         waveform=waveform,
         feature_vec=feature_vec,
+        spark_vector=spark_vector,
         meta={"message_preview": message[:120]},
     )
 

@@ -30,18 +30,18 @@ class AgentChainSettings(BaseSettings):
     # --- Orion bus / Redis ---
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_url: str = Field(
-        "redis://100.92.216.81/0",
+        "redis://100.92.216.81:6379/0",
         alias="ORION_BUS_URL",
     )
 
     # --- Planner / Cortex integration ---
     planner_request_channel: str = Field(
-        "orion-planner:request",
+        "orion-exec:request:PlannerReactService",
         alias="PLANNER_REQUEST_CHANNEL",
     )
 
     planner_result_prefix: str = Field(
-        "orion-planner:result",
+        "orion-exec:result:PlannerReactService",
         alias="PLANNER_RESULT_PREFIX",
     )
 
@@ -50,13 +50,13 @@ class AgentChainSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────
     # The UI will publish here, and we will listen (once we add the listener)
     agent_chain_request_channel: str = Field(
-        "orion-agent-chain:request",
+        "orion-exec:request:AgentChainService",
         alias="AGENT_CHAIN_REQUEST_CHANNEL"
     )
 
     # We will publish the final answer here
     agent_chain_result_prefix: str = Field(
-        "orion-agent-chain:result",
+        "orion-exec:result:AgentChainService",
         alias="AGENT_CHAIN_RESULT_PREFIX"
     )
 

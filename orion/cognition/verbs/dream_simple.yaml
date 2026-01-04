@@ -1,0 +1,36 @@
+name: dream_simple
+label: Dream Simple
+description: >
+  A simplified dream cycle that takes in the last 24 hours of recall across chat discussions, collapse mirror journals (raw and enriched; RDF entities). Those dreams are synthesized and then gone through a dream state.
+
+category: MetaCognition
+priority: low
+
+interruptible: false
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+timeout_ms: 10000
+max_recursion_depth: 1
+
+services:
+  - VectorMemoryService
+  - RDFMemoryService
+  - LLMGatewayService
+  - CollapseMirrorSQLService
+
+prompt_template: dream_simple.j2
+
+plan:
+  - name: compose_dream
+    description: Compose a dream based on context and mode.
+    order: 0
+    prompt_template: dream_simple.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

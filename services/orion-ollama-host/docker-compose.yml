@@ -1,0 +1,54 @@
+# services/orion-ollama-host/docker-compose.yml
+
+services:
+  ollama-host:
+    build:
+      context: ../..
+      dockerfile: services/orion-ollama-host/Dockerfile
+    image: orion-ollama-host:latest
+    container_name: ${PROJECT:-orion}-ollama-host
+    restart: unless-stopped
+
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME:-orion-ollama-host}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+
+      # Ollama specific
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS="*"
+
+      # Profiles (if we want to auto-pull based on profile)
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - OLLAMA_PROFILE_NAME=${OLLAMA_PROFILE_NAME}
+      - OLLAMA_MODEL_ID=${OLLAMA_MODEL_ID}
+
+      # Where to store models (inside container)
+      - OLLAMA_MODELS=/root/.ollama
+
+    volumes:
+      # Map host ollama storage
+      - /mnt/telemetry/models/ollama:/root/.ollama
+
+    ports:
+      - "${OLLAMA_HOST_PORT:-11434}:11434"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

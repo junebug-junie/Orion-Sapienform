@@ -1,133 +1,115 @@
 # services/orion-planner-react/app/bus_listener.py
-
 from __future__ import annotations
-
 import asyncio
 import logging
-import threading
 from typing import Any, Dict
 
-from orion.core.bus.service import OrionBus
-
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from .settings import settings
-from .api import PlannerRequest, PlannerResponse, run_react_loop
+from .api import run_react_loop
+from orion.schemas.agents.schemas import PlannerRequest, PlannerResponse
 
 logger = logging.getLogger("planner-react.bus")
 
-
 def start_planner_bus_listener_background() -> None:
-    """
-    Start a background thread that listens on `PLANNER_REQUEST_CHANNEL`
-    and answers on per-request `PLANNER_RESULT_PREFIX:{trace_id}` channels.
-
-    Envelope shape expected on the bus:
-
-        {
-          "event": "plan_react",
-          "trace_id": "<uuid>",
-          "origin_node": "some-service",
-          "reply_channel": "orion-planner:result:<uuid>",
-          "payload": { ...PlannerRequest JSON... }
-        }
-    """
     if not settings.orion_bus_enabled:
-        logger.warning(
-            "[planner-react] OrionBus disabled; not starting planner bus listener."
-        )
         return
 
-    bus = OrionBus(
-        url=settings.orion_bus_url,
-        enabled=settings.orion_bus_enabled,
-    )
-    if not bus.enabled:
-        logger.error(
-            "[planner-react] OrionBus not enabled/connected; cannot start listener."
-        )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning("No running event loop to attach bus listener.")
         return
 
+    loop.create_task(_async_bus_worker())
+
+async def _async_bus_worker() -> None:
+    bus = OrionBusAsync(url=settings.orion_bus_url)
     request_channel = settings.planner_request_channel
-    logger.info(
-        "[planner-react] Starting planner bus listener on %s", request_channel
-    )
+    
+    logger.info("[planner-react] Connecting Async Bus listener on %s...", request_channel)
+    await bus.connect()
 
-    def _worker() -> None:
-        """
-        Blocking worker that consumes messages from `request_channel`
-        and responds with PlannerResponse on the indicated reply_channel.
-        """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    async with bus.subscribe(request_channel) as pubsub:
+        async for msg in bus.iter_messages(pubsub):
+            asyncio.create_task(_handle_request(bus, msg))
 
-        for msg in bus.subscribe(request_channel):
-            data: Dict[str, Any] = msg.get("data") or {}
+async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
+    decoded = bus.codec.decode(raw_msg.get("data"))
+    if not decoded.ok:
+        return
 
-            reply_channel = data.get("reply_channel")
-            payload = data.get("payload") or {}
-            trace_id = data.get("trace_id")
+    env = decoded.envelope
+    reply_channel = env.reply_to
+    
+    # Payload Logic: 
+    # 1. BaseEnvelope puts the data in env.payload
+    payload = env.payload or {}
+    
+    # 2. Legacy Protection: If the payload is STILL a wrapper (has 'event' and nested 'payload')
+    # we unwrap it. This protects against other services (not just agent-chain) doing it wrong.
+    if "payload" in payload and "event" in payload:
+        payload = payload["payload"]
 
-            if not reply_channel:
-                logger.warning(
-                    "[planner-react] bus message missing reply_channel: %r", data
-                )
-                continue
+    # 3. Fallback for legacy routing
+    if not reply_channel:
+        reply_channel = payload.get("reply_channel") or env.payload.get("reply_channel")
 
-            try:
-                planner_req = PlannerRequest(**payload)
-            except Exception as e:
-                logger.error(
-                    "[planner-react] invalid PlannerRequest payload on %s: %s",
-                    request_channel,
-                    e,
-                    exc_info=True,
-                )
-                error_resp = PlannerResponse(
-                    request_id=payload.get("request_id"),
-                    status="error",
-                    error={"message": f"invalid PlannerRequest payload: {e}"},
-                    final_answer=None,
-                    trace=[],
-                    usage=None,
-                )
-                bus.publish(reply_channel, error_resp.model_dump())
-                continue
+    trace_id = env.correlation_id or payload.get("request_id")
 
-            # Run the ReAct loop in this worker's event loop
-            try:
-                resp: PlannerResponse = loop.run_until_complete(
-                    run_react_loop(planner_req)
-                )
-            except Exception as e:
-                logger.error(
-                    "[planner-react] run_react_loop failed (trace_id=%s): %s",
-                    trace_id,
-                    e,
-                    exc_info=True,
-                )
-                resp = PlannerResponse(
-                    request_id=planner_req.request_id,
-                    status="error",
-                    error={"message": str(e)},
-                    final_answer=None,
-                    trace=[],
-                    usage=None,
-                )
+    if not reply_channel:
+        return
 
-            # Make sure request_id is preserved if caller set one
-            if resp.request_id is None:
-                resp.request_id = planner_req.request_id
+    if env.kind and env.kind not in ("agent.planner.request", "legacy.message"):
+        logger.warning("[planner-react] Unsupported kind=%s", env.kind)
+        return
 
-            bus.publish(reply_channel, resp.model_dump())
-            logger.info(
-                "[planner-react] replied on %s (trace_id=%s, status=%s)",
-                reply_channel,
-                trace_id,
-                resp.status,
-            )
+    try:
+        # STRICT VALIDATION
+        planner_req = PlannerRequest(**payload)
+        
+        # EXECUTE
+        resp = await run_react_loop(planner_req)
+        
+        if resp.request_id is None:
+            resp.request_id = planner_req.request_id or str(trace_id)
 
-    thread = threading.Thread(
-        target=_worker,
-        name="planner-react-bus-listener",
-        daemon=True,
-    )
-    thread.start()
+        out_env = BaseEnvelope(
+            kind="agent.planner.result",
+            source=ServiceRef(
+                name=settings.service_name,
+                version=settings.service_version,
+                node=settings.node_name,
+            ),
+            correlation_id=trace_id,
+            causality_chain=env.causality_chain,
+            payload=resp.model_dump(mode="json"),
+        )
+
+        await bus.publish(reply_channel, out_env)
+
+        logger.info(
+            "[planner-react] Finished trace=%s status=%s steps=%d",
+            trace_id, resp.status, (resp.usage.steps if resp.usage else 0)
+        )
+
+    except Exception as e:
+        logger.error("[planner-react] Error processing %s: %s", trace_id, e)
+        error_resp = PlannerResponse(
+            request_id=str(trace_id),
+            status="error",
+            error={"message": str(e)}
+        )
+        err_env = BaseEnvelope(
+            kind="agent.planner.result",
+            source=ServiceRef(
+                name=settings.service_name,
+                version=settings.service_version,
+                node=settings.node_name,
+            ),
+            correlation_id=trace_id,
+            causality_chain=env.causality_chain,
+            payload=error_resp.model_dump(mode="json"),
+        )
+        await bus.publish(reply_channel, err_env)

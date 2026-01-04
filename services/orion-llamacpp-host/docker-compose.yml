@@ -1,0 +1,76 @@
+# services/orion-llamacpp-host/docker-compose.yml
+
+services:
+  orion-llamacpp-host:
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+    env_file:
+      - .env
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-orion-llamacpp-host
+    restart: unless-stopped
+
+    environment:
+      # identity
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+
+      # profile selection
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH}
+      - LLM_PROFILE_NAME=${LLM_PROFILE_NAME}
+
+      # models mount
+      - MODELS_MOUNT_ROOT=${MODELS_MOUNT_ROOT}
+
+      # HF tokens
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+
+      # overrides (optional)
+      - LLAMACPP_HOST_OVERRIDE=${LLAMACPP_HOST_OVERRIDE}
+      - LLAMACPP_PORT_OVERRIDE=${LLAMACPP_PORT_OVERRIDE}
+      - LLAMACPP_CTX_SIZE_OVERRIDE=${LLAMACPP_CTX_SIZE_OVERRIDE}
+      - LLAMACPP_N_GPU_LAYERS_OVERRIDE=${LLAMACPP_N_GPU_LAYERS_OVERRIDE}
+      - LLAMACPP_THREADS_OVERRIDE=${LLAMACPP_THREADS_OVERRIDE}
+      - LLAMACPP_N_PARALLEL_OVERRIDE=${LLAMACPP_N_PARALLEL_OVERRIDE}
+      - LLAMACPP_BATCH_SIZE_OVERRIDE=${LLAMACPP_BATCH_SIZE_OVERRIDE}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${CUDA_VISIBLE_DEVICES_OVERRIDE}
+
+      # behavior
+      - ENSURE_MODEL_DOWNLOAD=${ENSURE_MODEL_DOWNLOAD}
+      - WAIT_FOR_MODEL_SECONDS=${WAIT_FOR_MODEL_SECONDS}
+
+    volumes:
+      # Host cache (root .env provides LLM_CACHE_DIR) -> /models in container
+      - "${LLM_CACHE_DIR}:/models"
+
+    ports:
+      # Publish llama-server port (container binds whatever profile/override chooses; default 8080)
+      #- "${LLAMACPP_HOST_PORT:-7005}:8080"
+      # when running on athena:
+      - "${LLAMACPP_HOST_PORT:-7005}:7005"
+
+    healthcheck:
+      # We cannot easily check specific port since it's dynamic (profile-driven),
+      # so we assume 7005 or rely on Docker's process status.
+      # Or we try both 8080 and 7005.
+      test: ["CMD-SHELL", "curl -f http://localhost:7005/health || curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    networks:
+      - app-net
+
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

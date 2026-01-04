@@ -1,75 +1,84 @@
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Dict
+import json
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    PROJECT: str = "orion-athena"
-    SERVICE_NAME: str = "sql-writer"
-    SERVICE_VERSION: str = "0.3.0"
-    PORT: int = 8220
+    # Identity
+    project: str = Field("orion-athena", alias="PROJECT")
+    service_name: str = Field("sql-writer", alias="SERVICE_NAME")
+    service_version: str = Field("0.4.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
+    port: int = Field(8220, alias="PORT")
 
-    # --- Bus ---
-    ORION_BUS_ENABLED: bool = True
-    ORION_BUS_URL: str = "redis://orion-athena-bus-core:6379/0"
+    # Bus
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
-    CHANNEL_TAGS_RAW: str = "orion:tags"
-    CHANNEL_TAGS_ENRICHED: str = "orion:tags:enriched"
+    # Chassis
+    heartbeat_interval_sec: float = Field(10.0, alias="ORION_HEARTBEAT_INTERVAL_SEC")
+    health_channel: str = Field("system.health", alias="ORION_HEALTH_CHANNEL")
+    error_channel: str = Field("system.error", alias="ORION_ERROR_CHANNEL")
+    shutdown_grace_sec: float = Field(10.0, alias="ORION_SHUTDOWN_GRACE_SEC")
 
-    CHANNEL_COLLAPSE_TRIAGE: str = "orion:collapse:triage"
-    CHANNEL_COLLAPSE_PUBLISH: str = "orion:collapse:sql-write"
-
-    CHANNEL_CHAT_LOG: str = "orion:chat:history:log"
-    CHANNEL_DREAM_TRIGGER: str = "orion:dream:trigger"
-
-    SPARK_INTROSPECT_CANDIDATE_CHANNEL: str =  "orion:spark:introspect:candidate"
-
-    CHANNEL_BIOMETRICS: str = "orion:telemetry:biometrics"
-
-    # --- DB ---
-    POSTGRES_URI: str = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
-
-    # --- Channel → Table map ---
-    BUS_TABLE_MAP: str = (
-       "orion:collapse:triage:collapse_mirror,"
-       "orion:tags:raw:collapse_enrichment,"
-       "orion:chat:history:log:chat_history_log,"
-       "orion:rag:document:add:rag_documents,"
-       "orion:dream:trigger:dreams,"
-       "orion:telemetry:biometrics:orion_biometrics,"
-       "orion:spark:introspect:candidate:spark_introspection_log,"
+    # Routing
+    # Comma-separated or JSON list of channels to subscribe to
+    sql_writer_subscribe_channels: List[str] = Field(
+        default=[
+            "orion:tags:enriched",
+            "orion:collapse:sql-write",
+            "orion:chat:history:log",
+            "orion:dream:log",
+            "orion:telemetry:biometrics",
+            "orion:spark:introspection:log", # legacy?
+            "orion:spark:telemetry",
+            "orion:cognition:trace"
+        ],
+        alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
 
-    POLL_TIMEOUT: float = 1.0
+    # JSON mapping from envelope.kind -> destination table (or internal model key)
+    sql_writer_route_map_json: str = Field(
+        default=json.dumps({
+            "collapse.mirror": "CollapseMirror",
+            "collapse.enrichment": "CollapseEnrichment",
+            "tags.enriched": "CollapseEnrichment",
+            "chat.history": "ChatHistoryLogSQL",
+            "chat.log": "ChatHistoryLogSQL",
+            "dream.log": "Dream",
+            "biometrics.telemetry": "BiometricsTelemetry",
+            "spark.introspection.log": "SparkIntrospectionLogSQL",
+            "spark.introspection": "SparkIntrospectionLogSQL",
+            "cognition.trace": "CognitionTraceSQL"
+        }),
+        alias="SQL_WRITER_ROUTE_MAP_JSON"
+    )
+
+    @property
+    def route_map(self) -> Dict[str, str]:
+        try:
+            return json.loads(self.sql_writer_route_map_json)
+        except Exception:
+            return {}
+
+    # DB
+    # Ensure default matches prod environment (Postgres), not SQLite.
+    postgres_uri: str = Field("postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney", alias="POSTGRES_URI")
+    database_url: str = Field("postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney", alias="DATABASE_URL")
 
     class Config:
         env_file = ".env"
-        env_file_encoding = "utf-8"
         extra = "ignore"
 
-    def get_table_for_channel(self, channel: str) -> str:
-        """Parses the BUS_TABLE_MAP to find the target table for a given channel."""
-        mapping = {}
-        for pair in (self.BUS_TABLE_MAP or "").split(","):
-            if ":" in pair:
-                parts = pair.split(":")
-                if len(parts) >= 2:
-                    # Handle channel names that might contain colons
-                    channel_name = ":".join(parts[:-1])
-                    table_name = parts[-1]
-                    mapping[channel_name] = table_name
-        return mapping.get(channel)
 
-    def get_all_subscribe_channels(self) -> list[str]:
-        """Returns a list of all channels this service should subscribe to."""
-        return [
-            self.CHANNEL_TAGS_RAW,
-            self.CHANNEL_TAGS_ENRICHED,
-            self.CHANNEL_COLLAPSE_TRIAGE,
-            self.CHANNEL_COLLAPSE_PUBLISH,
-            self.CHANNEL_CHAT_LOG,
-            self.CHANNEL_DREAM_TRIGGER,
-            self.CHANNEL_BIOMETRICS,
-            self.SPARK_INTROSPECT_CANDIDATE_CHANNEL,
-        ]
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
 
 
-settings = Settings()
+settings = get_settings()

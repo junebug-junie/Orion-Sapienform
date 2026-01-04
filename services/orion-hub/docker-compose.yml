@@ -33,6 +33,18 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL:-${ORION_BUS_URL}}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
 
+      # New Titanium Channels
+      - CORTEX_GATEWAY_REQUEST_CHANNEL=${CORTEX_GATEWAY_REQUEST_CHANNEL:-orion-cortex-gateway:request}
+      - CORTEX_GATEWAY_RESULT_PREFIX=${CORTEX_GATEWAY_RESULT_PREFIX:-orion-cortex-gateway:result}
+      - TTS_REQUEST_CHANNEL=${TTS_REQUEST_CHANNEL:-orion:tts:intake}
+      - TTS_RESULT_PREFIX=${TTS_RESULT_PREFIX:-orion:tts:result}
+      - STT_REQUEST_CHANNEL=${STT_REQUEST_CHANNEL:-orion:stt:intake}
+      - STT_RESULT_PREFIX=${STT_RESULT_PREFIX:-orion:stt:result}
+
+      # LLM Gateway (Legacy)
+      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE}
+      - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX}
+
       # Channels
       - CHANNEL_VOICE_TRANSCRIPT=${CHANNEL_VOICE_TRANSCRIPT}
       - CHANNEL_VOICE_LLM=${CHANNEL_VOICE_LLM}
@@ -43,24 +55,26 @@ services:
 
       - CHANNEL_CHAT_HISTORY_LOG=${CHANNEL_CHAT_HISTORY_LOG}
 
-      # --- Agent Council integration ---
+      # --- Agent Council integration (Legacy) ---
       - CHANNEL_COUNCIL_INTAKE=${CHANNEL_COUNCIL_INTAKE}
       - CHANNEL_COUNCIL_REPLY_PREFIX=${CHANNEL_COUNCIL_REPLY_PREFIX}
 
-      # --- Cortex Orchestrator integration ---
+      # --- Cortex Orchestrator integration (Legacy) ---
       - CORTEX_REQUEST_CHANNEL=${CORTEX_REQUEST_CHANNEL}
       - CORTEX_RESULT_PREFIX=${CORTEX_RESULT_PREFIX}
 
       - AGENT_CHAIN_REQUEST_CHANNEL=${AGENT_CHAIN_REQUEST_CHANNEL}
-      - AGENT_CHAIN_REQUEST_PREFIX=${AGENT_CHAIN_REQUEST_PREFIX}
+      - AGENT_CHAIN_RESULT_PREFIX=${AGENT_CHAIN_RESULT_PREFIX}
 
-      # --- Recall / RAG integration ---
+      # --- Recall / RAG integration (Legacy) ---
       - CHANNEL_RECALL_REQUEST=${CHANNEL_RECALL_REQUEST}
       - CHANNEL_RECALL_DEFAULT_REPLY_PREFIX=${CHANNEL_RECALL_DEFAULT_REPLY_PREFIX}
       - RECALL_DEFAULT_MAX_ITEMS=${RECALL_DEFAULT_MAX_ITEMS}
       - RECALL_DEFAULT_TIME_WINDOW_DAYS=${RECALL_DEFAULT_TIME_WINDOW_DAYS}
       - RECALL_DEFAULT_MODE=${RECALL_DEFAULT_MODE}
 
+      # --- Runtimes ---
+      - TIMEOUT_SEC=${TIMEOUT_SEC}
       - NVIDIA_VISIBLE_DEVICES=all
 
     runtime: nvidia
@@ -72,4 +86,3 @@ services:
 networks:
   app-net:
     external: true
-

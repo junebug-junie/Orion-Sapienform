@@ -46,4 +46,5 @@ COPY services/orion-cortex-orch /app
 EXPOSE 8072
 
 # Entrypoint: FastAPI app for the Cortex orchestrator
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8072"]
+CMD ["python", "-m", "app.main"]
+#CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8072"]

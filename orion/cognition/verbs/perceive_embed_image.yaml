@@ -1,0 +1,11 @@
+description: "Compute embeddings for an image."
+steps:
+  - step: call_host
+    service: vision.host
+    method: request
+    payload:
+      task_type: embed_image
+      request: "{{ input }}"
+    result_key: host_result
+
+output_template: "perceive_embed_image.j2"

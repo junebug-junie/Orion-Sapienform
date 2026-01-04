@@ -7,33 +7,28 @@ services:
     restart: unless-stopped
     networks:
       - app-net
+    ports:
+      - "${PORT}:${PORT}"
+    volumes:
+      - /mnt/storage-lukewarm/sql_logs:/app/logs
+      # Postgres is external; removing SQLite volume mapping to avoid confusion
     environment:
       - PROJECT=${PROJECT}
-      - ORION_BUS_URL=${ORION_BUS_URL}
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-
-      # Bus channels
-      - CHANNEL_TAGS_RAW=${CHANNEL_TAGS_RAW}
-      - CHANNEL_TAGS_ENRICHED=${CHANNEL_TAGS_ENRICHED}
-
-      - CHANNEL_COLLAPSE_TRIAGE=${CHANNEL_COLLAPSE_TRIAGE}
-      - CHANNEL_COLLAPSE_PUBLISH=${CHANNEL_COLLAPSE_PUBLISH}
-
-      - CHANNEL_CHAT_LOG=${CHANNEL_CHAT_LOG}
-      - CHANNEL_DREAM_TRIGGER=${CHANNEL_DREAM_TRIGGER}
-      - CHANNEL_BIOMETRICS=${CHANNEL_BIOMETRICS}
-
-      # DB
-      - POSTGRES_URI=${POSTGRES_URI}
-
-      - POLL_TIMEOUT=${POLL_TIMEOUT}
-
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - PORT=${PORT}
 
-    ports:
-      - "8220:8220"
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+
+      - SQL_WRITER_SUBSCRIBE_CHANNELS=${SQL_WRITER_SUBSCRIBE_CHANNELS}
+      - SQL_WRITER_ROUTE_MAP_JSON=${SQL_WRITER_ROUTE_MAP_JSON}
+
+      - DATABASE_URL=${DATABASE_URL}
+      # POSTGRES_URI removed as redundant/conflict
 
 networks:
   app-net:
+    name: ${NET}
     external: true

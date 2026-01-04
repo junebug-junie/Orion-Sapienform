@@ -3,25 +3,37 @@
 # ==================================================
 import os
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+
     # --- Metadata ---
     PROJECT: str = Field(default="orion-janus")
     SERVICE_NAME: str = Field(default="orion-dream")
     SERVICE_VERSION: str = Field(default="1.0.0")
+    NODE_NAME: str = Field(default="unknown")
     ENVIRONMENT: str = Field(default="prod")
     PORT: int = Field(default=8620)
 
     # --- Redis ---
     ORION_BUS_URL: str = Field(default="redis://redis:6379/0")
     ORION_BUS_ENABLED: bool = Field(default=True)
+
+    # --- Channels ---
     CHANNEL_DREAM_TRIGGER: str = Field(default="orion:dream:trigger")
     CHANNEL_DREAM_BUFFER: str = Field(default="orion:dream:buffer")
     CHANNEL_DREAM_COMPLETE: str = Field(default="orion:dream:complete")
     CHANNEL_DREAM_STATUS: str = Field(default="orion:dream:status")
+    CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake") # Legacy
 
-    CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake")
+    CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion-cortex-gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
+    CHANNEL_DREAM_REPLY_PREFIX: str = Field(default="orion:dream:reply", alias="DREAM_REPLY_PREFIX")
+    DREAM_VERB: str = Field(default="dream_simple", alias="DREAM_VERB")
 
     # --- Memory streams ---
     CHANNEL_COLLAPSE_SQL_PUBLISH: str = Field(default="orion:collapse:sql-write")
@@ -44,8 +56,13 @@ class Settings(BaseSettings):
     BRAIN_URL: str = Field(default="http://brain:8088")
     LLM_MODEL: str = Field(default="mistral:instruct")
 
-
     DREAM_LOG_DIR: str = Field(default="/app/logs/dreams")
+
+    # --- Chassis Defaults ---
+    HEARTBEAT_INTERVAL_SEC: float = 10.0
+    HEALTH_CHANNEL: str = "system.health"
+    ERROR_CHANNEL: str = "system.error"
+    SHUTDOWN_GRACE_SEC: float = 10.0
 
 settings = Settings()
 

@@ -8,12 +8,30 @@ services:
     env_file:
       - .env
     environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
       # Bus
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
 
       # Vision events (subscribe to what edge publishes)
       - VISION_EVENTS_SUBSCRIBE_RAW=${VISION_EVENTS_PUBLISH_RAW}
+      - CHANNEL_VISION_ARTIFACTS=${CHANNEL_VISION_ARTIFACTS}
+
+      # Guard Config
+      - CHANNEL_VISION_GUARD_SIGNAL=${CHANNEL_VISION_GUARD_SIGNAL}
+      - CHANNEL_VISION_GUARD_ALERT=${CHANNEL_VISION_GUARD_ALERT}
+      - GUARD_WINDOW_SECONDS=${GUARD_WINDOW_SECONDS}
+      - GUARD_EMIT_EVERY_SECONDS=${GUARD_EMIT_EVERY_SECONDS}
+      - GUARD_PERSON_MIN_CONF=${GUARD_PERSON_MIN_CONF}
+      - GUARD_PERSON_MIN_COUNT=${GUARD_PERSON_MIN_COUNT}
+      - GUARD_SUSTAIN_SECONDS=${GUARD_SUSTAIN_SECONDS}
+      - GUARD_ALERT_COOLDOWN_SECONDS=${GUARD_ALERT_COOLDOWN_SECONDS}
+
+      # Security event channels
+      - CHANNEL_SECURITY_VISITS=${CHANNEL_SECURITY_VISITS}
+      - CHANNEL_SECURITY_ALERTS=${CHANNEL_SECURITY_ALERTS}
 
       # Snapshot endpoint (vision edge HTTP)
       - VISION_SNAPSHOT_URL=${VISION_SNAPSHOT_URL}
@@ -47,6 +65,7 @@ services:
       - SECURITY_STATE_PATH=${SECURITY_STATE_PATH}
     volumes:
       - /mnt/telemetry/orion-security:/mnt/telemetry/orion-security
+      - /tmp/orion-frames:/mnt/frames
     networks:
       - app-net
     ports:

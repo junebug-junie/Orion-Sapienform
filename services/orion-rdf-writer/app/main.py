@@ -1,41 +1,70 @@
-import threading
 import logging
-import sys
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
+
+from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from app.settings import settings
 from app.router import router as rdf_router
-# Import the new listener_worker function from service.py
-from app.service import listener_worker
+from app.service import handle_envelope
 
 # Ensure root logger is configured
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    stream=sys.stdout,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(settings.SERVICE_NAME)
+
+def _cfg() -> ChassisConfig:
+    return ChassisConfig(
+        service_name=settings.SERVICE_NAME,
+        service_version=settings.SERVICE_VERSION,
+        node_name=settings.NODE_NAME,
+        bus_url=settings.ORION_BUS_URL,
+        bus_enabled=settings.ORION_BUS_ENABLED,
+        health_channel="system.health",
+        error_channel="system.error",
+    )
+
+# Global reference to keep the hunter alive
+hunter: Hunter = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global hunter
+    logger.info(f"🚀 Starting {settings.SERVICE_NAME}...")
+
+    channels = settings.get_all_subscribe_channels()
+    
+    logger.info(f"Subscribing to: {channels}")
+
+    hunter = Hunter(
+        _cfg(),
+        patterns=channels,
+        handler=handle_envelope
+    )
+
+    await hunter.start_background()
+
+    yield
+
+    logger.info("🛑 Stopping service...")
+    if hunter:
+        await hunter.stop()
+
+app = FastAPI(
+    title=settings.SERVICE_NAME,
+    version=settings.SERVICE_VERSION,
+    lifespan=lifespan
 )
 
-app = FastAPI(title=settings.SERVICE_NAME, version="1.0.0")
 app.include_router(rdf_router)
-
-@app.on_event("startup")
-def on_startup():
-    """
-    Starts the single, unified listener worker in a background thread.
-    """
-    if settings.ORION_BUS_ENABLED:
-        print("🚀 Starting RDF-Writer listener thread...", file=sys.stderr)
-        threading.Thread(target=listener_worker, daemon=True).start()
-    else:
-        print("⚠️ Bus is disabled; RDF-Writer will be idle.", file=sys.stderr)
-
 
 @app.get("/health")
 def health():
     return {
-        "status": "ok",
+        "status": "ok", 
         "service": settings.SERVICE_NAME,
-        "listening_on": settings.get_all_subscribe_channels(),
-        "graphdb_url": settings.GRAPHDB_URL,
-        "bus_url": settings.ORION_BUS_URL,
+        "version": settings.SERVICE_VERSION,
+        "bus_connected": hunter.bus.is_connected if hunter and hunter.bus else False
     }
-

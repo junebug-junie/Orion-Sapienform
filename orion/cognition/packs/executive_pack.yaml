@@ -4,9 +4,11 @@ description: >
   Verbs that help Oríon classify, plan, prioritize, and evaluate actions.
 
 verbs:
+  - analyze_text
   - triage
   - plan_action
   - assess_risk
   - goal_formulate
   - evaluate
+  - extract_facts
   #- chat_general # generalist function and used in general chat

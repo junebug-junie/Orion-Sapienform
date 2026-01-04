@@ -1,182 +1,121 @@
-# services/orion-planner-react/app/api.py
-
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
+import re
+import sys
 import time
 import uuid
-import sys
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 
 from .settings import settings
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage
+from orion.schemas.agents.schemas import (
+    ContextBlock,
+    FinalAnswer,
+    Goal,
+    Limits,
+    PlannerRequest,
+    PlannerResponse,
+    ToolDef,
+    TraceStep,
+    Usage,
+)
+from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
 
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-
 logger = logging.getLogger("planner-react.api")
 logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
-
 # ─────────────────────────────────────────────
-# Pydantic models — ReAct contract
+# Helpers
 # ─────────────────────────────────────────────
 
-Role = Literal["user", "assistant", "system"]
+
+def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
+    if not requested:
+        return ""
+    requested = requested.strip()
+    tool_map = {t.tool_id: t for t in toolset}
+    if requested in tool_map:
+        return requested
+
+    variations = [
+        requested.lower(),
+        requested.replace(" ", ""),
+        requested.replace(" ", "_").lower(),
+        requested.replace("_", "-").lower(),
+        requested.replace("-", "_").lower(),
+    ]
+    for v in variations:
+        if v in tool_map:
+            return v
+        for valid_id in tool_map.keys():
+            if valid_id.lower() == v:
+                return valid_id
+
+    req_lower = requested.lower()
+    for t in toolset:
+        tid = t.tool_id.lower()
+        desc = (t.description or "").lower()
+        if tid in req_lower:
+            return t.tool_id
+        if req_lower in tid and len(req_lower) > 4:
+            return t.tool_id
+        if req_lower in desc:
+            return t.tool_id
+
+    return requested
 
 
-class Message(BaseModel):
-    role: Role
-    content: str
+def _repair_json(text: str) -> str:
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
+
+    text = text.replace(" None", " null").replace(":None", ":null")
+    text = text.replace(" True", " true").replace(":True", ":true")
+    text = text.replace(" False", " false").replace(":False", ":false")
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    return text
 
 
-class Goal(BaseModel):
-    type: str = "chat"
-    description: str
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ContextBlock(BaseModel):
-    conversation_history: List[Message] = Field(default_factory=list)
-    orion_state_snapshot: Dict[str, Any] = Field(default_factory=dict)
-    external_facts: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ToolDef(BaseModel):
-    tool_id: str
-    description: Optional[str] = None
-    input_schema: Dict[str, Any] = Field(default_factory=dict)
-    output_schema: Dict[str, Any] = Field(default_factory=dict)
-
-
-class Limits(BaseModel):
-    max_steps: int = 4
-    max_tokens_reason: int = 2048
-    max_tokens_answer: int = 1024
-    timeout_seconds: int = 60
-
-
-class Preferences(BaseModel):
-    style: str = "neutral"
-    allow_internal_thought_logging: bool = True
-    return_trace: bool = True
-
-
-class PlannerRequest(BaseModel):
-    request_id: Optional[str] = None
-    caller: str = "hub"
-    goal: Goal
-    context: ContextBlock = Field(default_factory=ContextBlock)
-    toolset: List[ToolDef] = Field(default_factory=list)
-    limits: Limits = Field(default_factory=Limits)
-    preferences: Preferences = Field(default_factory=Preferences)
-
-
-class TraceStep(BaseModel):
-    step_index: int
-    thought: Optional[str] = None
-    action: Optional[Dict[str, Any]] = None
-    observation: Optional[Dict[str, Any]] = None
-
-
-class Usage(BaseModel):
-    steps: int
-    tokens_reason: int
-    tokens_answer: int
-    tools_called: List[str]
-    duration_ms: int
-
-
-class FinalAnswer(BaseModel):
-    content: str
-    structured: Dict[str, Any] = Field(default_factory=dict)
-
-
-class PlannerResponse(BaseModel):
-    request_id: Optional[str] = None
-    status: Literal["ok", "error", "timeout"] = "ok"
-    error: Optional[Dict[str, Any]] = None
-    final_answer: Optional[FinalAnswer] = None
-    trace: List[TraceStep] = Field(default_factory=list)
-    usage: Optional[Usage] = None
+def _format_schema(schema: Dict[str, Any]) -> str:
+    if not schema or "properties" not in schema:
+        return "{}"
+    props = schema.get("properties", {})
+    required = schema.get("required", [])
+    fields = []
+    for name, meta in props.items():
+        type_str = meta.get("type", "any")
+        req_str = " (required)" if name in required else ""
+        fields.append(f'"{name}": "{type_str}{req_str}"')
+    return "{ " + ", ".join(fields) + " }"
 
 
 # ─────────────────────────────────────────────
-# Hub-style RPC helper using OrionBus
+# Async RPC Helpers
 # ─────────────────────────────────────────────
 
-async def _request_and_wait(
-    bus: OrionBus,
-    channel_intake: str,
-    channel_reply: str,
-    payload: dict,
-    trace_id: str,
-    timeout_sec: float = 60.0,
-) -> dict:
-    """
-    Planner-style clone of Hub's _request_and_wait:
-
-    1) Subscribe FIRST on channel_reply.
-    2) Spin a background thread to pump messages into an asyncio.Queue.
-    3) Publish on channel_intake.
-    4) Await first reply from queue or timeout.
-    """
-    if not bus or not getattr(bus, "enabled", False):
-        raise RuntimeError("_request_and_wait used while OrionBus is disabled")
-
-    sub = bus.raw_subscribe(channel_reply)
-    loop = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
-    def listener():
-        try:
-            for msg in sub:
-                loop.call_soon_threadsafe(queue.put_nowait, msg)
-                break
-        finally:
-            sub.close()
-
-    asyncio.get_running_loop().run_in_executor(None, listener)
-
-    # Publish after subscription is live
-    bus.publish(channel_intake, payload)
-    logger.info(
-        "[%s] RPC Published -> %s (awaiting %s)",
-        trace_id,
-        channel_intake,
-        channel_reply,
-    )
-
-    try:
-        msg = await asyncio.wait_for(queue.get(), timeout=timeout_sec)
-        reply = msg.get("data", {})
-        logger.info("[%s] RPC reply received on %s.", trace_id, channel_reply)
-        return reply
-    except asyncio.TimeoutError:
-        logger.error("[%s] RPC timed out waiting for %s", trace_id, channel_reply)
-        return {"error": "timeout"}
-    finally:
-        # sub closed in listener
-        pass
-
-
-# ─────────────────────────────────────────────
-# LLM planning step (LLM Gateway via Exec bus)
-# ─────────────────────────────────────────────
 
 async def _call_planner_llm(
-    bus: OrionBus,
+    bus: OrionBusAsync,
     *,
     goal: Goal,
     toolset: List[ToolDef],
@@ -184,398 +123,246 @@ async def _call_planner_llm(
     prior_trace: List[TraceStep],
     limits: Limits,
 ) -> Dict[str, Any]:
-    """
-    Use LLM Gateway's 'chat' event to do a single ReAct planning step.
-    Expects the LLM to return JSON in the body text.
-    Handles DeepSeek R1 <think> blocks by extracting them and merging them into 'thought'.
-    """
     trace_id = str(uuid.uuid4())
-
-    # Same bus channels Hub uses (exec_request_prefix is fine as "llm-exec" style)
     exec_channel = f"{settings.exec_request_prefix}:{settings.llm_gateway_service_name}"
     reply_channel = f"{settings.llm_reply_prefix}:{trace_id}"
 
-    # ─────────────────────────────────────────
-    # Tools description for prompt
-    # ─────────────────────────────────────────
-    tools_description = "\n".join(
-        f"- {t.tool_id}: {t.description or ''}" for t in toolset
-    ) or "(none)"
+    tool_lines = []
+    for t in toolset:
+        schema_str = _format_schema(t.input_schema)
+        tool_lines.append(
+            f'- TOOL_ID: "{t.tool_id}"\n  DESCRIPTION: {t.description or "No description"}\n  INPUT_FORMAT: {schema_str}\n'
+        )
+    tools_description = "\n".join(tool_lines) or "(none)"
 
-    # Small summary of prior trace
     prior_summary = ""
     if prior_trace:
-        lines: List[str] = []
+        lines = []
         for s in prior_trace[-3:]:
-            # ───────────────────────────────────────────────────────
-            # FIX: Truncate historical observations to prevent bloat
-            # ───────────────────────────────────────────────────────
             obs_str = str(s.observation)
-            if len(obs_str) > 1000:  # Cap history items tightly
+            if len(obs_str) > 1000:
                 obs_str = obs_str[:1000] + "... [TRUNCATED]"
-
-            lines.append(
-                f"Step {s.step_index}: thought={s.thought!r}, "
-                f"action={s.action}, observation={obs_str}"
-            )
+            lines.append(f"Step {s.step_index}: thought={s.thought!r}, action={s.action}, observation={obs_str}")
         prior_summary = "\n".join(lines)
-    # ─────────────────────────────────────────────────────────────
-    # CONTEXT PREPARATION & SAFETY TRUNCATION
-    # ─────────────────────────────────────────────────────────────
 
-    # 1. Truncate User Message (History)
     last_user = ""
     if context.conversation_history:
-        raw_user = context.conversation_history[-1].content or ""
-        MAX_USER_CHARS = 14000
-        if len(raw_user) > MAX_USER_CHARS:
-            logger.warning(f"Truncating last_user from {len(raw_user)} to {MAX_USER_CHARS} chars")
-            last_user = raw_user[:MAX_USER_CHARS] + "\n... [TRUNCATED]"
-        else:
-            last_user = raw_user
+        last_msg = context.conversation_history[-1]
+        raw_user = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content", "")
+        last_user = raw_user[:14000] + "..." if len(raw_user) > 14000 else raw_user
 
-    # 2. Truncate External Facts
-    ext_text = context.external_facts.get("text") or ""
-    MAX_EXT_CHARS = 10000 
-    if len(ext_text) > MAX_EXT_CHARS:
-        logger.warning(
-            "Truncating external_facts from %d to %d chars to prevent context overflow.", 
-            len(ext_text), 
-            MAX_EXT_CHARS
-        )
-        ext_text = ext_text[:MAX_EXT_CHARS] + "\n... [TRUNCATED DUE TO CONTEXT LIMITS]"
+    ext_text = (context.external_facts.get("text") or "")[:10000]
 
-    # ─────────────────────────────────────────
-    # System instructions
-    # ─────────────────────────────────────────
     system_msg = f"""
 You are Orion's internal ReAct planner.
 
-Your job:
-- Look at the goal, tools, and recent history.
-- Decide either to call ONE tool or to finish with a final answer.
-- Respond ONLY with a single JSON object, no backticks, no commentary.
-
-JSON schema:
-{{
-  "thought": "string",
-  "finish": true | false,
-  "action": {{
-    "tool_id": "string | null",
-    "input": {{ "..." : "..." }}
-  }} | null,
-  "final_answer": {{
-    "content": "string",
-    "structured": {{ "..." : "..." }}
-  }} | null
-}}
-
-Rules:
-- If "finish" = true, then "final_answer" MUST be non-null and "action" MUST be null.
-- If "finish" = false, then "action" MUST be non-null and "final_answer" MUST be null.
-- tool_id MUST be one of: {[t.tool_id for t in toolset]}.
-""".strip()
-
-    # ─────────────────────────────────────────
-    # User-side prompt with the concrete planning context
-    # ─────────────────────────────────────────
-    user_prompt = f"""
-GOAL:
-{goal.description}
-
-TOOLS:
+AVAILABLE TOOLS:
 {tools_description}
 
-RECENT HISTORY (last user message):
-{last_user or "(none)"}
+CORE INSTRUCTIONS:
+1. **ANSWER THE USER'S INTENT EFFICIENTLY.** 2. **DEFINITION OF DONE:** As soon as you have the information to answer the user, STOP. Set "finish": true.
+3. **DO NOT EXECUTE SUGGESTIONS:** If a tool result says "Mitigation: Consult a doctor", do NOT call a tool to do that. REPORT the mitigation to the user.
+4. **FORMAT:** Output strict JSON. 
+5. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
+   - CORRECT: "action": {{ "tool_id": "assess_risk", "input": {{...}} }}
+   - WRONG: "action": "assess_risk"
 
-OPTIONAL TEXT (for tools like extract_facts):
-{ext_text or "(none)"}
-
-PRIOR TRACE SUMMARY:
-{prior_summary or "(no previous steps)"}
-
-Now decide the next step according to the JSON schema above.
+JSON FORMAT:
+{{
+  "thought": "I have the risk assessment results. I will summarize them for the user now.",
+  "finish": true,
+  "action": null,
+  "final_answer": {{ "content": "Summary of findings..." }}
+}}
 """.strip()
 
-    messages = [
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": user_prompt},
-    ]
+    user_prompt = f"""
+GOAL: {goal.description}
 
-    body = {
-        # Let env var specify model, or fall back to None (Gateway default)
-        "model": os.environ.get("PLANNER_MODEL"),
-        "messages": messages,
-        "options": {
-            "temperature": 0.1,
-            # You can add "backend": "vllm" here explicitly if you want:
-            # "backend": "vllm",
-        },
-        "stream": False,
-        "return_json": False,
-        "trace_id": trace_id,
-        "user_id": None,
-        "session_id": None,
-        "source": "planner-react",
-        "verb": "planner-react",
-        "profile_name": None,
+HISTORY: 
+{last_user}
+
+CONTEXT:
+{ext_text}
+
+TRACE:
+{prior_summary}
+
+NEXT STEP (JSON ONLY):
+""".strip()
+
+    planner_model = os.environ.get("PLANNER_MODEL") or "llama-3-8b-instruct-q4_k_m"
+
+    payload = {
+        "model": planner_model,
+        "messages": [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_prompt},
+        ],
+        "options": {"temperature": 0.1},
     }
 
-    envelope = {
-        "event": "chat",
-        "service": settings.llm_gateway_service_name,
-        "correlation_id": trace_id,
-        "reply_channel": reply_channel,
-        "payload": {
-            "body": body,
-        },
-    }
-
-    raw_reply = await _request_and_wait(
-        bus=bus,
-        channel_intake=exec_channel,
-        channel_reply=reply_channel,
-        payload=envelope,
-        trace_id=trace_id,
-        timeout_sec=float(limits.timeout_seconds),
+    env = BaseEnvelope(
+        kind="llm.chat.request",
+        source={"name": "planner-react", "node": settings.node_name},
+        correlation_id=trace_id,
+        reply_to=reply_channel,
+        payload=payload,
     )
 
-    if not isinstance(raw_reply, dict):
-        raise RuntimeError(f"LLM Gateway reply not a dict: {raw_reply!r}")
+    msg = await bus.rpc_request(
+        exec_channel,
+        env,
+        reply_channel=reply_channel,
+        timeout_sec=float(limits.timeout_seconds),
+    )
+    decoded = bus.codec.decode(msg.get("data"))
+    if not decoded.ok:
+        raise RuntimeError(f"LLM RPC Error: {decoded.error}")
 
-    payload = raw_reply.get("payload") or {}
-    text = (payload.get("text") or "").strip()
-    if not text:
-        raise RuntimeError("LLM Gateway returned empty text for planner-react")
-
-    # ─────────────────────────────────────────────────────────────
-    # FIX: Sanitize LLM Output (DeepSeek / Markdown / Escapes)
-    # ─────────────────────────────────────────────────────────────
-    
-    internal_monologue = ""
-    
-    # 1. Extract <think> blocks (DeepSeek R1 style)
-    # We strip it out for JSON parsing, but save it to append to "thought" later
-    if "<think>" in text:
-        try:
-            # We want to capture the content between tags, and remove the whole block from 'text'
-            # Robust split in case of multiple blocks (takes the first/main one)
-            parts = text.split("</think>")
-            if len(parts) > 1:
-                # Part 0 contains <think>...
-                pre_think = parts[0]
-                # Check where it starts
-                start_idx = pre_think.find("<think>")
-                if start_idx != -1:
-                    internal_monologue = pre_think[start_idx + 7:].strip()
-                    # The JSON should be in the remainder (parts[1])
-                    text = parts[1].strip()
-        except Exception as e:
-            logger.warning(f"Error extracting <think> block: {e}")
-            # fall back to original text, JSON parse might fail but we try
-            pass
-
-    # 2. Extract strictly the JSON part
-    # Finds the first '{' and the last '}'. This handles ```json wrappers, 
-    # conversational filler, or trailing newlines effectively.
-    idx_start = text.find("{")
-    idx_end = text.rfind("}")
-
-    if idx_start != -1 and idx_end != -1:
-        text = text[idx_start : idx_end + 1]
-
-    # 3. Fix Invalid Escapes (The "Alice\'s" bug)
-    # JSON standard does NOT allow escaping single quotes, but LLMs often do it.
-    text = text.replace(r"\'", "'")
-
-    # ─────────────────────────────────────────────────────────────
+    resp_payload = decoded.envelope.payload or {}
+    if "error" in resp_payload:
+        raise RuntimeError(f"LLM Gateway Error: {resp_payload.get('error')}")
 
     try:
-        step = json.loads(text)
-    except Exception as exc:
-        # Surface the bad text so we can see what the model is doing
-        raise RuntimeError(f"Planner LLM returned non-JSON text: {text!r}") from exc
+        chat_res = ChatResultPayload(**resp_payload)
+        text = chat_res.text
+    except Exception:
+        text = resp_payload.get("content") or resp_payload.get("text") or ""
 
-    # 4. Merge internal monologue into the JSON thought field
-    # This ensures the deep reasoning is preserved in the trace
-    if internal_monologue:
-        original_thought = step.get("thought", "")
-        # Format it clearly so we know what is what
-        combined_thought = f"[Deep Thought]\n{internal_monologue}\n\n[Planner]\n{original_thought}"
-        step["thought"] = combined_thought.strip()
+    if "<think>" in text:
+        text = text.split("</think>")[-1].strip()
 
-    return step
+    text = _repair_json(text)
+    text = text.replace(r"\'", "'")
 
-
-def _extract_llm_output_from_cortex(raw_cortex: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize a Cortex-Orch reply into a compact observation bundle.
-    """
-    if not isinstance(raw_cortex, dict):
-        raise RuntimeError(f"Cortex-Orch reply is not a dict: {type(raw_cortex)}")
-
-    ok = raw_cortex.get("ok", None)
-    if ok is not True:
-        raise RuntimeError(
-            f"Cortex-Orch reported error: {raw_cortex.get('error')!r}"
-        )
-
-    step_results = raw_cortex.get("step_results") or []
-    if not step_results:
-        # Some verbs return no steps but are OK (empty).
-        return {"llm_output": "", "raw_cortex": raw_cortex}
-
-    first_step = step_results[0] or {}
-    services = first_step.get("services") or []
-    if not services:
-        raise RuntimeError(f"Cortex-Orch step has no services: {first_step!r}")
-
-    first_service = services[0] or {}
-    srv_payload = first_service.get("payload") or {}
-
-    # LLM-Gateway exec_step usually nests under "result"
-    result = srv_payload.get("result") or srv_payload
-
-    # ─────────────────────────────────────────────────────────────
-    # FIX: Handle case where 'result' is a plain string
-    # ─────────────────────────────────────────────────────────────
-    spark_meta = None
-    
-    if isinstance(result, dict):
-        text = (
-            result.get("llm_output")
-            or result.get("text")
-            or result.get("response")
-            or ""
-        )
-        spark_meta = result.get("spark_meta")
-    else:
-        # Fallback for raw strings (backward compatible safety net)
-        text = str(result)
-
-    text = text.strip()
-
-    return {
-        "llm_output": text,
-        "spark_meta": spark_meta,
-        "raw_cortex": raw_cortex,
-        "step_meta": {
-            "verb_name": first_step.get("verb_name"),
-            "step_name": first_step.get("step_name"),
-            "order": first_step.get("order"),
-            "service": first_service.get("service"),
-        },
-    }
-
-# ─────────────────────────────────────────────
-# Cortex-Orch verb call (tools)
-# ─────────────────────────────────────────────
+    try:
+        return json.loads(text)
+    except Exception as e:
+        raise RuntimeError(f"Planner LLM returned non-JSON: {text!r}") from e
 
 
 async def _call_cortex_verb(
-    *,
-    bus: OrionBus,
+    bus: OrionBusAsync,
     verb_name: str,
     context: Dict[str, Any],
     timeout_ms: int,
 ) -> Dict[str, Any]:
-    """
-    Bus RPC helper: planner-react → cortex-orch.
-    """
-    if not bus or not getattr(bus, "enabled", False):
-        raise RuntimeError("OrionBus is disabled; cannot call cortex-orch.")
-
     trace_id = str(uuid.uuid4())
+    reply_channel = f"{settings.cortex_result_prefix}:{trace_id}"
 
-    request_channel = settings.cortex_request_channel       # e.g. "orion-cortex:request"
-    result_prefix = settings.cortex_result_prefix           # e.g. "orion-cortex:result"
-    reply_channel = f"{result_prefix}:{trace_id}"
-
-    core_payload: Dict[str, Any] = {
-        "verb_name": verb_name,
-        "origin_node": settings.service_name,
-        "context": context or {},
-        "steps": [],          # let cortex-orch load cognition/verbs/<verb>.yaml
-        "timeout_ms": timeout_ms,
-    }
-
-    envelope: Dict[str, Any] = {
-        # Bus/meta fields
-        "event": "orchestrate_verb",
-        "trace_id": trace_id,
-        "origin_node": settings.service_name,
-        "reply_channel": reply_channel,
-
-        # OrchestrateVerbRequest fields at TOP LEVEL
-        **core_payload,
-
-        # And again under `payload` for older/newer handlers
-        "payload": core_payload,
-    }
-
-    # Subscribe first, then publish — avoid race
-    sub = bus.raw_subscribe(reply_channel)
-    loop = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
-    def listener():
-        try:
-            for msg in sub:
-                loop.call_soon_threadsafe(queue.put_nowait, msg)
-                break
-        finally:
-            # raw_subscribe closes pubsub in its own finally
-            pass
-
-    asyncio.get_running_loop().run_in_executor(None, listener)
-
-    # Now publish the request
-    bus.publish(request_channel, envelope)
-    logger.info(
-        "[%s] planner-react -> cortex-orch published (%s → %s)",
-        trace_id,
-        request_channel,
-        reply_channel,
+    # Build a strict CortexClientRequest (agent mode, recall disabled)
+    content = context.get("text") if isinstance(context.get("text"), str) else json.dumps(context or {}, ensure_ascii=False)
+    ctx = CortexClientContext(
+        messages=[LLMMessage(role="user", content=content)],
+        session_id=context.get("session_id"),
+        user_id=context.get("user_id"),
+        trace_id=trace_id,
+        metadata={},
+    )
+    cortex_req = CortexClientRequest(
+        mode="agent",
+        verb_name=verb_name,
+        packs=[],
+        options={},
+        recall=RecallDirective(enabled=False),
+        context=ctx,
     )
 
-    try:
-        msg = await asyncio.wait_for(queue.get(), timeout=timeout_ms / 1000.0)
-        data = msg.get("data") or {}
-        return data
-    except asyncio.TimeoutError:
-        logger.error(
-            "[%s] planner-react timed out waiting for cortex-orch on %s",
-            trace_id,
-            reply_channel,
-        )
-        return {"error": "timeout"}
+    envelope = BaseEnvelope(
+        kind="cortex.orch.request",
+        source={"name": settings.service_name, "node": settings.node_name},
+        correlation_id=trace_id,
+        reply_to=reply_channel,
+        payload=cortex_req.model_dump(mode="json"),
+    )
+
+    msg = await bus.rpc_request(
+        settings.cortex_request_channel,
+        envelope,
+        reply_channel=reply_channel,
+        timeout_sec=timeout_ms / 1000.0,
+    )
+
+    decoded = bus.codec.decode(msg.get("data"))
+    if not decoded.ok:
+        raise RuntimeError(f"Cortex RPC decode failed: {decoded.error}")
+
+    env_payload = decoded.envelope.payload
+    return env_payload if isinstance(env_payload, dict) else decoded.envelope.payload.model_dump(mode="json")
 
 
-# ─────────────────────────────────────────────
-# Core ReAct loop
-# ─────────────────────────────────────────────
+def _extract_llm_output_from_cortex(raw_cortex: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw_cortex, dict):
+        raise RuntimeError(f"Expected dict from Cortex, got {type(raw_cortex)}")
+
+    if raw_cortex.get("ok") is not True:
+        raise RuntimeError(f"Cortex Error: {raw_cortex.get('error')}")
+
+    candidate = raw_cortex
+    steps = []
+
+    for _ in range(4):
+        if isinstance(candidate, dict) and (candidate.get("steps") or candidate.get("step_results")):
+            steps = candidate.get("steps") or candidate.get("step_results")
+            break
+        if isinstance(candidate, dict) and isinstance(candidate.get("result"), dict):
+            candidate = candidate["result"]
+            continue
+        if isinstance(candidate, dict) and isinstance(candidate.get("payload"), dict):
+            candidate = candidate["payload"]
+            continue
+        break
+
+    if not steps:
+        if isinstance(candidate, list):
+            steps = candidate
+        else:
+            return {"llm_output": "", "spark_meta": None, "raw_cortex": raw_cortex}
+
+    first_step = steps[0]
+    result_map = first_step.get("result")
+
+    text = ""
+    spark_meta = None
+
+    if isinstance(result_map, dict):
+        for val in result_map.values():
+            if isinstance(val, dict):
+                text = val.get("content") or val.get("text") or val.get("llm_output") or ""
+                spark_meta = val.get("spark_meta")
+                if text:
+                    break
+
+    if not text:
+        services = first_step.get("services") or []
+        if isinstance(services, list) and services:
+            srv_payload = services[0].get("payload") or {}
+            res = srv_payload.get("result") or srv_payload
+            if isinstance(res, dict):
+                text = res.get("llm_output") or res.get("content") or res.get("text") or ""
+                spark_meta = res.get("spark_meta")
+            else:
+                text = str(res)
+
+    return {"llm_output": text.strip(), "spark_meta": spark_meta}
+
+
 async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
-    bus = OrionBus(
-        url=settings.orion_bus_url,
-        enabled=settings.orion_bus_enabled,
-    )
-    if not bus.enabled:
-        raise RuntimeError("OrionBus is disabled; planner-react cannot run.")
+    bus = OrionBusAsync(url=settings.orion_bus_url)
+    await bus.connect()
 
-    trace: List[TraceStep] = []
+    trace: List[TraceStep] = list(payload.trace or [])
     tools_called: List[str] = []
-    steps_used = 0
     start = time.monotonic()
-
     final_answer: Optional[FinalAnswer] = None
-    last_planner_step: Optional[Dict[str, Any]] = None
+    steps_used = 0
+    delegate_only = getattr(payload.preferences, "plan_only", False) or getattr(payload.preferences, "delegate_tool_execution", False)
 
     try:
         for step_index in range(payload.limits.max_steps):
             steps_used = step_index + 1
 
-            # 1) Reason: LLM chooses either tool or final answer
             planner_step = await _call_planner_llm(
                 bus=bus,
                 goal=payload.goal,
@@ -584,78 +371,62 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 prior_trace=trace,
                 limits=payload.limits,
             )
-            last_planner_step = planner_step
 
             thought = planner_step.get("thought", "")
-            finish = bool(planner_step.get("finish", False))
+            finish = planner_step.get("finish", False)
             action = planner_step.get("action")
             final = planner_step.get("final_answer")
 
-            # ─────────────────────────────────────────
-            # Case 1: explicit finish=true
-            # ─────────────────────────────────────────
-            if finish:
-                # If planner forgot to attach final_answer but gave us a thought,
-                # treat the thought as the answer instead of crashing.
-                if not final:
-                    final_answer = FinalAnswer(
-                        content=thought or "",
-                        structured={},
-                    )
+            if finish or (final and not action):
+                raw_content = final.get("content") if final else thought
+                if isinstance(raw_content, (dict, list)):
+                    content = json.dumps(raw_content, ensure_ascii=False)
+                elif raw_content is None:
+                    content = ""
                 else:
-                    final_answer = FinalAnswer(
-                        content=final.get("content", ""),
-                        structured=final.get("structured") or {},
-                    )
+                    content = str(raw_content)
 
-                trace.append(
-                    TraceStep(
-                        step_index=step_index,
-                        thought=thought,
-                        action=None,
-                        observation=None,
-                    )
-                )
+                structured = final.get("structured", {}) if final else {}
+                final_answer = FinalAnswer(content=content, structured=structured)
+                trace.append(TraceStep(step_index=step_index, thought=thought))
                 break
 
-            # ─────────────────────────────────────────
-            # Case 2: finish=false — try to get a tool_id
-            # ─────────────────────────────────────────
-            tool_id: Optional[str] = None
-            tool_input: Dict[str, Any] = {}
+            if not action:
+                logger.warning(f"Step {step_index}: LLM returned no action and finish=False. Terminating.")
+                final_answer = FinalAnswer(content=thought or "Planner halted: No action provided by LLM.")
+                trace.append(TraceStep(step_index=step_index, thought=thought))
+                break
 
             if isinstance(action, dict):
-                tool_id = action.get("tool_id")
-                tool_input = action.get("input") or {}
+                raw_tool_id = action.get("tool_id")
+                tool_input = action.get("input", {})
+            elif isinstance(action, str):
+                logger.warning(
+                    f"Step {step_index}: LLM returned string action '{action}' instead of object. Attempting auto-fix."
+                )
+                raw_tool_id = action
+                tool_input = {}
+            else:
+                raw_tool_id = None
+                tool_input = {}
 
-            # If we don't have a tool_id, treat this as an implicit finish:
-            # use final_answer if present, otherwise fall back to thought.
-            if not tool_id:
-                if isinstance(final, dict) and final.get("content"):
-                    final_answer = FinalAnswer(
-                        content=final.get("content", ""),
-                        structured=final.get("structured") or {},
-                    )
-                else:
-                    final_answer = FinalAnswer(
-                        content=thought or "",
-                        structured={},
-                    )
+            if not raw_tool_id:
+                final_answer = FinalAnswer(content=thought or "Invalid action format.")
+                break
 
+            tool_id = _normalize_tool_id(raw_tool_id, payload.toolset)
+
+            if delegate_only:
                 trace.append(
                     TraceStep(
                         step_index=step_index,
                         thought=thought,
-                        action=None,
+                        action={"tool_id": tool_id, "input": tool_input},
                         observation=None,
                     )
                 )
+                final_answer = None
                 break
-
-            # ─────────────────────────────────────────
-            # Case 3: normal tool call path
-            # ─────────────────────────────────────────
-            tool_id = str(tool_id)
 
             try:
                 raw_cortex = await _call_cortex_verb(
@@ -664,19 +435,16 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                     context=tool_input,
                     timeout_ms=payload.limits.timeout_seconds * 1000,
                 )
+                obs_bundle = _extract_llm_output_from_cortex(raw_cortex)
 
-                try:
-                    obs_bundle = _extract_llm_output_from_cortex(raw_cortex)
-                    observation: Dict[str, Any] = obs_bundle
-                    tools_called.append(tool_id)
-                except Exception as exc:
-                    observation = {
-                        "error": str(exc),
-                        "raw_cortex": raw_cortex,
-                    }
+                if not obs_bundle.get("llm_output"):
+                    err = raw_cortex.get("error") or "Unknown error"
+                    obs_bundle["llm_output"] = f"Tool executed but returned no text. (System Error: {err})"
 
-            except Exception as exc:
-                observation = {"error": str(exc)}
+                observation = obs_bundle
+                tools_called.append(tool_id)
+            except Exception as e:
+                observation = {"error": str(e)}
 
             trace.append(
                 TraceStep(
@@ -687,103 +455,32 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 )
             )
 
-        # ─────────────────────────────────────────
-        # If we exit the loop with no final_answer, salvage from last step
-        # ─────────────────────────────────────────
-        if final_answer is None:
-            if last_planner_step is not None:
-                thought = last_planner_step.get("thought", "")
-                final = last_planner_step.get("final_answer")
+        if not final_answer and not delegate_only:
+            final_answer = FinalAnswer(content="Max steps reached without final answer.")
 
-                if isinstance(final, dict) and final.get("content"):
-                    coerced_content = final.get("content", "")
-                    structured = final.get("structured") or {}
-                else:
-                    if isinstance(final, dict):
-                        maybe_content = final.get("content")
-                    else:
-                        maybe_content = None
-
-                    coerced_content = (
-                        maybe_content
-                        or last_planner_step.get("answer")
-                        or last_planner_step.get("text")
-                        or thought
-                        or ""
-                    )
-                    structured = {"planner_raw": last_planner_step}
-
-                final_answer = FinalAnswer(
-                    content=coerced_content,
-                    structured=structured,
-                )
-
-                # Ensure we have a closing trace step
-                if not trace or trace[-1].step_index != steps_used - 1:
-                    trace.append(
-                        TraceStep(
-                            step_index=steps_used - 1,
-                            thought=thought,
-                            action=None,
-                            observation=None,
-                        )
-                    )
-            else:
-                # Truly pathological: we never got even one planner_step
-                raise RuntimeError("ReAct planner did not produce a final answer.")
-
+    except Exception as e:
+        logger.exception("ReAct Loop Failed")
+        return PlannerResponse(status="error", error={"message": str(e)}, request_id=payload.request_id)
     finally:
-        # OrionBus doesn't need explicit close, but leaving here for future parity.
-        pass
-
-    duration_ms = int((time.monotonic() - start) * 1000)
+        await bus.close()
 
     return PlannerResponse(
         request_id=payload.request_id,
         status="ok",
-        error=None,
         final_answer=final_answer,
-        trace=trace if payload.preferences.return_trace else [],
+        trace=trace,
         usage=Usage(
             steps=steps_used,
-            tokens_reason=0,  # could be filled from llm-gateway later
-            tokens_answer=len(final_answer.content.split()),
+            tokens_reason=0,
+            tokens_answer=0,
             tools_called=tools_called,
-            duration_ms=duration_ms,
+            duration_ms=int((time.monotonic() - start) * 1000),
         ),
     )
 
 
-# ─────────────────────────────────────────────
-# FastAPI route
-# ─────────────────────────────────────────────
-
 @router.post("/plan/react", response_model=PlannerResponse)
 async def plan_react(payload: PlannerRequest) -> PlannerResponse:
     if not settings.orion_bus_enabled:
-        raise HTTPException(
-            status_code=500,
-            detail="Orion bus is disabled; planner-react requires bus to talk to LLM and Cortex.",
-        )
-
-    try:
-        return await run_react_loop(payload)
-    except TimeoutError as exc:
-        return PlannerResponse(
-            request_id=payload.request_id,
-            status="timeout",
-            error={"message": str(exc)},
-            final_answer=None,
-            trace=[],
-            usage=None,
-        )
-    except Exception as exc:
-        logger.exception("planner-react error")
-        return PlannerResponse(
-            request_id=payload.request_id,
-            status="error",
-            error={"message": str(exc)},
-            final_answer=None,
-            trace=[],
-            usage=None,
-        )
+        raise HTTPException(status_code=500, detail="Bus disabled")
+    return await run_react_loop(payload)

@@ -1,7 +1,3 @@
-# ───────────────────────────────────────────────────────────────
-# ✍️  Orion Vector Writer — Ingestion service for ChromaDB
-# ───────────────────────────────────────────────────────────────
-
 services:
   vector-writer:
     build:
@@ -13,35 +9,32 @@ services:
       - app-net
     ports:
       - "${PORT}:${PORT}"
+    volumes:
+      - /mnt/storage-lukewarm/vector_logs:/app/logs
+      - ${HOST_RAG_FILES_DIR}:/data
     environment:
-      # --- Service Identity & Runtime ---
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
       - PORT=${PORT}
-      - LOG_LEVEL=${LOG_LEVEL}
-      - BATCH_SIZE=${BATCH_SIZE}
 
-      # --- Orion Bus ---
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - ORION_BUS_URL=${ORION_BUS_URL}
-      - SUBSCRIBE_CHANNEL_COLLAPSE=${SUBSCRIBE_CHANNEL_COLLAPSE}
-      - SUBSCRIBE_CHANNEL_CHAT=${SUBSCRIBE_CHANNEL_CHAT}
-      - SUBSCRIBE_CHANNEL_RAG_DOC=${SUBSCRIBE_CHANNEL_RAG_DOC}
+
+      - VECTOR_WRITER_SUBSCRIBE_CHANNELS=${VECTOR_WRITER_SUBSCRIBE_CHANNELS}
+      - VECTOR_WRITER_ROUTE_MAP_JSON=${VECTOR_WRITER_ROUTE_MAP_JSON}
       - PUBLISH_CHANNEL_VECTOR_CONFIRM=${PUBLISH_CHANNEL_VECTOR_CONFIRM}
 
-      # --- Vector Store ---
-      # Corrected to use the explicit host and port variables.
       - VECTOR_DB_HOST=${VECTOR_DB_HOST}
       - VECTOR_DB_PORT=${VECTOR_DB_PORT}
       - VECTOR_DB_COLLECTION=${VECTOR_DB_COLLECTION}
+      - VECTOR_DB_CREATE_IF_MISSING=${VECTOR_DB_CREATE_IF_MISSING}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - HOST_RAG_FILES_DIR=${HOST_RAG_FILES_DIR}
 
-    volumes:
-      - ${HOST_RAG_FILES_DIR}:/data
+      - LOG_LEVEL=${LOG_LEVEL}
+      - BATCH_SIZE=${BATCH_SIZE}
 
 networks:
   app-net:
     name: ${NET}
     external: true
-

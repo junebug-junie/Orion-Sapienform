@@ -1,0 +1,11 @@
+description: "Generate a caption for an image frame."
+steps:
+  - step: call_host
+    service: vision.host
+    method: request
+    payload:
+      task_type: caption_frame
+      request: "{{ input }}"
+    result_key: host_result
+
+output_template: "perceive_caption_frame.j2"

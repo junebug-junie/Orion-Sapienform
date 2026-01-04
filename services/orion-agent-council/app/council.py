@@ -4,62 +4,41 @@ from __future__ import annotations
 import logging
 from typing import Dict, Any
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.async_service import OrionBusAsync
 
 from .deliberation import DeliberationRouter
 from .settings import settings
 
 logger = logging.getLogger("agent-council.council")
 
-
-class CouncilRouter:
-    """
-    Very thin wrapper:
-      - owns DeliberationRouter
-      - decides which events are 'council' events
-      - delegates to router.handle()
-    """
-
-    def __init__(self, bus: OrionBus) -> None:
+class CouncilService:
+    def __init__(self, bus: OrionBusAsync):
         self.bus = bus
         self.router = DeliberationRouter(bus)
 
-    def handle_message(self, data: Dict[str, Any]) -> None:
-        event = data.get("event")
-        if event != "council_deliberation":
-            logger.warning("Ignoring non-deliberation event on council: %r", event)
+    async def handle_envelope(self, env: BaseEnvelope) -> None:
+        payload = env.payload
+        if not isinstance(payload, dict):
+            logger.warning("Ignoring non-dict payload from %s", env.source)
             return
 
-        # DeliberationRouter exposes .handle(...)
-        self.router.handle(data)
+        event = payload.get("event")
+        if event and event != "council_deliberation":
+            logger.debug("Ignoring non-deliberation event: %s", event)
+            return
 
+        if not payload.get("trace_id"):
+            payload["trace_id"] = str(env.correlation_id)
 
-def run_council_loop(bus: OrionBus) -> None:
-    router = CouncilRouter(bus)
+        reply_to = env.reply_to or payload.get("response_channel") or f"{settings.channel_reply_prefix}:{payload['trace_id']}"
 
-    logger.info(
-        "Starting council loop on %s (service=%s v%s)",
-        settings.channel_intake,
-        settings.service_name,
-        settings.service_version,
-    )
-
-    # Use raw_subscribe for consistency with the rest of Orion
-    for msg in bus.raw_subscribe(settings.channel_intake):
-        if msg.get("type") != "message":
-            continue
-
-        data = msg.get("data")
-        if not isinstance(data, dict):
-            logger.warning("Non-dict message on %s: %r", msg.get("channel"), data)
-            continue
-
+        # [FIX] Natively await async router logic
         try:
-            router.handle_message(data)
-        except Exception as e:
-            logger.error(
-                "Error handling council message: %s data=%r",
-                e,
-                data,
-                exc_info=True,
+            await self.router.handle(
+                payload,
+                reply_to=reply_to,
+                correlation_id=str(env.correlation_id),
             )
+        except Exception as e:
+            logger.exception("Error processing council request: %s", e)

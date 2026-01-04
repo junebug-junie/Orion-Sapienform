@@ -1,38 +1,57 @@
 from __future__ import annotations
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from functools import lru_cache
+
+from pydantic import Field, AliasChoices
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """
-    Central configuration for the Spark Introspector worker.
+    # Identity
+    service_name: str = Field("spark-introspector", alias="SERVICE_NAME")
+    service_version: str = Field("0.2.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
 
-    - Reads from environment variables.
-    - Provides sane defaults for local/dev.
-    - Ignores extra env keys (prevents the usual Pydantic 'extra fields' drama).
-    """
+    # Bus
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
-    # Redis / Orion Bus
-    ORION_BUS_URL: str = "redis://orion-redis:6379/0"
-    ORION_BUS_ENABLED: bool = True
+    # Chassis
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
-    # Channel where brain publishes "spiky" Spark candidates
-    CHANNEL_SPARK_INTROSPECT_CANDIDATE: str = "orion:spark:introspect:candidate"
-
-    # Cortex orchestrator bus wiring
-    # (these mirror ORCH_REQUEST_CHANNEL / ORCH_RESULT_PREFIX in cortex .env)
-    CORTEX_ORCH_REQUEST_CHANNEL: str = "orion-cortex:request"
-    CORTEX_ORCH_RESULT_PREFIX: str = "orion-cortex:result"
-
-    # How long to wait for a cortex_orch result (seconds)
-    CORTEX_ORCH_TIMEOUT_S: float = 10.0
-
-    model_config = SettingsConfigDict(
-        env_prefix="",               # use variable names as-is
-        env_file=".env",             # optional, only if present
-        env_file_encoding="utf-8",
-        extra="ignore",              # don't explode on extra env vars
+    # Consume candidates (legacy dict payloads and/or envelopes)
+    channel_spark_candidate: str = Field(
+        "orion:spark:introspect:candidate:log",
+        validation_alias=AliasChoices("CHANNEL_SPARK_INTROSPECT_CANDIDATE", "SPARK_CANDIDATE_CHANNEL"),
     )
 
+    # Cognition Trace Intake
+    channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")
 
-settings = Settings()
+    # Telemetry Output
+    channel_spark_telemetry: str = Field("orion:spark:telemetry", alias="CHANNEL_SPARK_TELEMETRY")
+
+    # Tissue
+    orion_tissue_snapshot_path: str = Field("/mnt/storage-lukewarm/orion/spark/tissue-brain.npy", alias="ORION_TISSUE_SNAPSHOT_PATH")
+
+    # RPC to Cortex-Orch (Spark -> Cortex-Orch)
+    channel_cortex_request: str = Field(
+        "orion-cortex:request",
+        validation_alias=AliasChoices("CORTEX_REQUEST_CHANNEL", "CORTEX_ORCH_REQUEST_CHANNEL", "ORCH_REQUEST_CHANNEL"),
+    )
+
+    # How long to wait for Cortex-Orch RPC reply
+    cortex_timeout_sec: float = Field(15.0, alias="CORTEX_TIMEOUT_SEC")
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()

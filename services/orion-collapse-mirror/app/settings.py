@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # === Core Identity ===
     SERVICE_NAME: str = Field(default="collapse-mirror", env="SERVICE_NAME")
     SERVICE_VERSION: str = Field(default="0.4.0", env="SERVICE_VERSION")
+    NODE_NAME: str = Field(default="athena", env="NODE_NAME")
     PORT: int = Field(default=8087, env="PORT")
 
     # === Bus Configuration ===
@@ -24,6 +25,12 @@ class Settings(BaseSettings):
     # === Bus Channels ===
     CHANNEL_COLLAPSE_INTAKE: str = Field(default="orion:collapse:intake", env="CHANNEL_COLLAPSE_INTAKE")
     CHANNEL_COLLAPSE_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_COLLAPSE_TRIAGE")
+
+    # === Chassis Telemetry / Reliability ===
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, env="HEARTBEAT_INTERVAL_SEC")
+    HEALTH_CHANNEL: str = Field(default="system.health", env="HEALTH_CHANNEL")
+    ERROR_CHANNEL: str = Field(default="system.error", env="ERROR_CHANNEL")
+    SHUTDOWN_GRACE_SEC: float = Field(default=10.0, env="SHUTDOWN_GRACE_SEC")
 
     # === Environment ===
     CHRONICLE_ENVIRONMENT: str = Field(default="dev", env="CHRONICLE_ENVIRONMENT")

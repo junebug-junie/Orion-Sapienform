@@ -1,10 +1,12 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import BaseModel, Field, ConfigDict
+from typing import List, Optional, Union
 from datetime import datetime, timezone
 import os
 
 
 class CollapseMirrorEntry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     observer: str
     trigger: str
     observer_state: List[str]
@@ -14,6 +16,7 @@ class CollapseMirrorEntry(BaseModel):
     summary: str
     mantra: str
     causal_echo: Optional[str] = None
+    id: Optional[str] = Field(default=None)
     timestamp: Optional[str] = Field(default=None, description="ISO timestamp")
     environment: Optional[str] = Field(default=None, description="Environment (dev, prod, etc.)")
 

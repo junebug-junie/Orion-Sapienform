@@ -39,4 +39,4 @@ async def health():
 @app.on_event("startup")
 async def on_startup():
     if ctx.settings.SECURITY_ENABLED and ctx.bus.enabled:
-        asyncio.create_task(asyncio.to_thread(bus_worker, ctx))
+        asyncio.create_task(bus_worker(ctx))

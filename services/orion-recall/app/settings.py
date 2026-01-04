@@ -1,8 +1,7 @@
 # services/orion-recall/app/settings.py
 from __future__ import annotations
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from pydantic import Field
 
 class Settings(BaseSettings):
     # Pydantic / Settings config
@@ -15,14 +14,23 @@ class Settings(BaseSettings):
     # ── Service Metadata ──────────────────────────────────────────────
     SERVICE_NAME: str = "recall"
     SERVICE_VERSION: str = "0.1.0"
+    NODE_NAME: str = Field(default="unknown")
     PORT: int = 8260
 
     # ── Orion Bus ─────────────────────────────────────────────────────
     ORION_BUS_ENABLED: bool = True
-    ORION_BUS_URL: str = "redis://localhost:6379/0"
+    ORION_BUS_URL: str = "redis://100.92.216.81:6379/0"
 
-    CHANNEL_RECALL_REQUEST: str = "orion:recall:request"
-    CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion:recall:reply"
+    # These channels are for Rabbit usage
+    RECALL_BUS_INTAKE: str = "orion-exec:request:RecallService"
+    CHANNEL_RECALL_REQUEST: str = "orion-exec:request:RecallService"
+    CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion-exec:result:RecallService"
+
+    # ── Chassis / Runtime ─────────────────────────────────────────────
+    HEARTBEAT_INTERVAL_SEC: float = 10.0
+    HEALTH_CHANNEL: str = "system.health"
+    ERROR_CHANNEL: str = "system.error"
+    SHUTDOWN_GRACE_SEC: float = 10.0
 
     # ── Default Recall Behavior ───────────────────────────────────────
     RECALL_DEFAULT_MAX_ITEMS: int = 16

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
 
 from .models import DeliberationRequest
 from .pipeline import build_default_pipeline
@@ -14,24 +14,31 @@ logger = logging.getLogger("agent-council.deliberation")
 
 class DeliberationRouter:
     """
-    Very thin router/factory.
-
-    - parse incoming payload
-    - build pipeline
-    - run it
+    Async router/factory.
     """
 
-    def __init__(self, bus: OrionBus) -> None:
+    def __init__(self, bus: OrionBusAsync) -> None:
         self.bus = bus
 
-    def handle(self, raw_payload: Dict[str, Any]) -> None:
+    async def handle(
+        self,
+        raw_payload: Dict[str, Any],
+        *,
+        reply_to: str | None,
+        correlation_id: str | None,
+    ) -> None:
         try:
             req = DeliberationRequest(**raw_payload)
         except Exception as e:
             logger.error("DeliberationRequest parse error: %s payload=%r", e, raw_payload)
             return
 
-        pipeline = build_default_pipeline(bus=self.bus, req=req)
+        pipeline = build_default_pipeline(
+            bus=self.bus,
+            req=req,
+            reply_to=reply_to,
+            correlation_id=correlation_id,
+        )
 
         logger.info(
             "[%s] Routing council_deliberation (source=%s universe=%s)",
@@ -40,4 +47,4 @@ class DeliberationRouter:
             req.universe or "core",
         )
 
-        pipeline.run(req)
+        await pipeline.run(req) # [FIX] Await async pipeline

@@ -41,6 +41,7 @@ def ingest_chat_and_get_state(
     agent_id: str = "brain",
     tags: Optional[List[str]] = None,
     sentiment: Optional[float] = None,
+    spark_vector: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     """
     Encode a chat message into the inner field and return state for prompts.
@@ -65,6 +66,7 @@ def ingest_chat_and_get_state(
         agent_id=agent_id,
         tags=tags,
         sentiment=sentiment,
+        spark_vector=spark_vector,
     )
 
     return {

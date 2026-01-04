@@ -11,12 +11,13 @@ class Settings(BaseSettings):
     project: Optional[str] = Field(default=None, alias="PROJECT")
     service_name: str = Field("planner-react", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
 
     planner_port: int = Field(8090, alias="PLANNER_PORT")
 
     # Orion Bus
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
-    orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # LLM Gateway (Exec bus)
     llm_gateway_service_name: str = Field(
@@ -49,11 +50,11 @@ class Settings(BaseSettings):
 
     # Service Request Channels
     planner_request_channel: str = Field(
-        "orion-planner:request",
+        "orion-exec:request:PlannerReactService",
         alias="PLANNER_REQUEST_CHANNEL",
     )
     planner_result_prefix: str = Field(
-        "orion-planner:result",
+        "orion-exec:result:PlannerReactService",
         alias="PLANNER_RESULT_PREFIX",
     )
 

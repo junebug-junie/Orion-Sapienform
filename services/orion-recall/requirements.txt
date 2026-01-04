@@ -12,3 +12,4 @@ numpy==1.26.*
 requests==2.32.*
 python-dotenv==1.0.*
 uvloop==0.20.0
+loguru>=0.7

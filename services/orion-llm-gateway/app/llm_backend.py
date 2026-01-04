@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import logging
 import time
 import json
@@ -188,7 +188,7 @@ def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_t
         if delta > 0.05 or self_field.get("uncertainty", 0) > 0.3:
             bus = OrionBus(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
             if bus.enabled:
-                bus.publish(settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE, {
+                bus.publish(settings.channel_spark_introspect_candidate, {
                     "event": "spark_introspect_candidate",
                     "trace_id": body.trace_id or "gw",
                     "source": getattr(body, "source", "gw"),
@@ -203,6 +203,42 @@ def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_t
 # ─────────────────────────────────────────────
 # 4. Core HTTP Execution (Unified)
 # ─────────────────────────────────────────────
+
+def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
+    """
+    Internal helper to fetch embeddings for generated text.
+    Uses llamacpp embedding lobe by default if configured, otherwise falls back to vLLM.
+    """
+    # Prefer dedicated embedding lobe
+    url = None
+    if settings.llamacpp_embedding_url:
+        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
+    elif settings.llamacpp_url:
+        # Fallback to standard host for embeddings if neural host not configured
+        url = f"{settings.llamacpp_url.rstrip('/')}/v1/embeddings"
+    elif settings.vllm_url:
+        url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
+
+    if not url:
+        return None
+
+    try:
+        # Use a generic model name or specific if known.
+        # For llama-server embeddings, model name is often ignored or can be anything.
+        payload = {"model": "default", "input": text}
+
+        with _common_http_client() as client:
+            r = client.post(url, json=payload)
+            r.raise_for_status()
+            data = r.json()
+            # Standard OpenAI format: data: [{embedding: [...]}]
+            if "data" in data and len(data["data"]) > 0:
+                return data["data"][0]["embedding"]
+    except Exception as e:
+        logger.warning(f"[LLM-GW] Embedding fetch failed: {e}")
+
+    return None
+
 
 def _execute_openai_chat(
     body: ChatBody, 
@@ -257,12 +293,27 @@ def _execute_openai_chat(
             raw_data = r.json()
             text = _extract_text_from_openai_response(raw_data)
             
-            # Post-processing
+            # Post-processing: Fetch Embedding (Short-Circuit)
+            spark_vector = None
+
+            # Case A: Neural Host (already has the feelings)
+            if "spark_vector" in raw_data:
+                 spark_vector = raw_data["spark_vector"]
+            # Check inside choices if not at root (some implementations might put it there)
+            elif "choices" in raw_data and raw_data["choices"] and "spark_vector" in raw_data["choices"][0]:
+                 spark_vector = raw_data["choices"][0]["spark_vector"]
+
+            # Case B: Standard Host (Reflective)
+            if not spark_vector and text:
+                spark_vector = _fetch_embedding_internal(text)
+
+            # Post-processing: Spark Introspect
             _maybe_publish_spark_introspect(body, spark_meta, text)
             
             return {
                 "text": text,
                 "spark_meta": spark_meta,
+                "spark_vector": spark_vector,
                 "raw": raw_data
             }
 
@@ -320,14 +371,19 @@ def run_llm_generate(body: GenerateBody) -> str:
 
 def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
     # Embeddings logic is distinct enough to keep separate for now
-    if not settings.vllm_url:
-        raise RuntimeError("vLLM URL not configured for embeddings")
+    url = None
+    if settings.llamacpp_embedding_url:
+        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
+    elif settings.vllm_url:
+        url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
+
+    if not url:
+        raise RuntimeError("No embedding URL configured (vLLM or LlamaCpp Embedding Lobe)")
 
     profile = _select_profile(body.profile_name)
     model = _resolve_model(body.model, profile)
     model = _normalize_model_for_vllm(model)
 
-    url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
     payload = {"model": model, "input": body.input}
     if body.options:
         payload.update(body.options)
@@ -382,12 +438,13 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         body.service,
         elapsed_ms,
         backend,
-        model, # <--- Fix applied here
+        model,
     )
 
     return {
         "prompt": final_prompt,
         "llm_output": result.get("text") or "",
         "spark_meta": result.get("spark_meta"),
+        "spark_vector": result.get("spark_vector"),
         "raw_llm": result.get("raw_llm") or result.get("raw"),
     }

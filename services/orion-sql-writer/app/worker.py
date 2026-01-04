@@ -1,174 +1,195 @@
-import json
-import threading
+from __future__ import annotations
+
+import asyncio
 import logging
-from typing import Optional
+import json
+import uuid
+from datetime import datetime
+from typing import Any, Optional, Dict
+
+from sqlalchemy import inspect
+from sqlalchemy.types import DateTime, String
 
 from app.settings import settings
 from app.db import get_session, remove_session
 from app.models import (
-    CollapseEnrichment, CollapseMirror, ChatHistoryLogSQL, Dream, BiometricsTelemetry, SparkIntrospectionLogSQL
+    BiometricsTelemetry,
+    ChatHistoryLogSQL,
+    ChatMessageSQL,
+    CollapseEnrichment,
+    CollapseMirror,
+    Dream,
+    SparkIntrospectionLogSQL, # Legacy model
+    SparkTelemetrySQL,         # New model <--- Ensure this is imported!
+    BusFallbackLog,
+    CognitionTraceSQL
 )
-from app.schemas import (
-    EnrichmentInput, MirrorInput, ChatHistoryInput, DreamInput, BiometricsInput, SparkIntrospectionInput
-)
-from orion.core.bus.service import OrionBus
+from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+from orion.core.bus.bus_schemas import BaseEnvelope
 
-logger = logging.getLogger(__name__)
+# Import shared schemas
+from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from orion.schemas.telemetry.meta_tags import MetaTagsPayload
+from orion.schemas.telemetry.biometrics import BiometricsPayload
+from orion.schemas.dream import DreamRequest
+from orion.schemas.chat import RawChat
+from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 
-def _normalize_message(raw_msg) -> Optional[dict]:
-    if isinstance(raw_msg, (bytes, bytearray)):
-        raw_msg = raw_msg.decode("utf-8", errors="replace")
-    if isinstance(raw_msg, str):
+try:
+    from orion.schemas.telemetry.spark import SparkTelemetryPayload
+except ImportError:
+    SparkTelemetryPayload = None
+
+logger = logging.getLogger("sql-writer")
+
+# Map string keys from settings to actual classes
+# We map: (SQL Model, Pydantic Schema)
+MODEL_MAP = {
+    "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
+    "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
+    "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
+    "ChatMessageSQL": (ChatMessageSQL, RawChat),
+    "Dream": (Dream, DreamRequest),
+    "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
+    "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
+    "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, None),
+    "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
+}
+
+def _cfg() -> ChassisConfig:
+    return ChassisConfig(
+        service_name=settings.service_name,
+        service_version=settings.service_version,
+        node_name=settings.node_name,
+        bus_url=settings.orion_bus_url,
+        bus_enabled=settings.orion_bus_enabled,
+        heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        health_channel=settings.health_channel,
+        error_channel=settings.error_channel,
+        shutdown_timeout_sec=settings.shutdown_grace_sec,
+    )
+
+
+def _coerce_payload(model_cls, payload: Any):
+    if model_cls is None:
+        return payload
+    if hasattr(model_cls, "model_validate"):
+        return model_cls.model_validate(payload)
+    if hasattr(model_cls, "parse_obj"):
+        return model_cls.parse_obj(payload)
+    return payload
+
+
+def _write_row(sql_model_cls, data: dict) -> None:
+    sess = get_session()
+    try:
+        mapper = inspect(sql_model_cls)
+        valid_columns = set(c.key for c in mapper.attrs)
+        filtered_data = {k: v for k, v in data.items() if k in valid_columns}
+
+        for col in mapper.columns:
+            key = col.key
+            if key in filtered_data:
+                val = filtered_data[key]
+                
+                # Coerce UUID -> String
+                if isinstance(col.type, String) and isinstance(val, uuid.UUID):
+                    filtered_data[key] = str(val)
+                
+                # Coerce DateTime
+                if isinstance(col.type, DateTime):
+                    # Case A: String ISO format
+                    if isinstance(val, str):
+                        try:
+                            filtered_data[key] = datetime.fromisoformat(val)
+                        except ValueError:
+                            pass
+                    # Case B: Numeric Unix Timestamp (Float/Int) <--- ADDED THIS BLOCK
+                    elif isinstance(val, (int, float)):
+                        try:
+                            filtered_data[key] = datetime.fromtimestamp(val)
+                        except (ValueError, OSError):
+                            pass
+
+        sess.merge(sql_model_cls(**filtered_data))
+        sess.commit()
+    finally:
         try:
-            return json.loads(raw_msg)
-        except Exception:
-            logger.warning(f"Skipping non-JSON string payload: {raw_msg[:120]!r}")
-            return None
-    if isinstance(raw_msg, dict):
-        return raw_msg
-    logger.warning(f"Skipping non-object payload type: {type(raw_msg)}")
-    return None
-
-def _process_one(session, channel: str, msg: dict) -> Optional[str]:
-    table = settings.get_table_for_channel(channel)
-    if not table:
-        logger.warning(f"No table mapping for channel '{channel}', skipping")
-        return None
-
-    log_id = "unknown"
-
-    if table == "collapse_enrichment":
-        payload = EnrichmentInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-        log_id = payload.id
-        session.merge(CollapseEnrichment(**db_data))
-
-    elif table == "collapse_mirror":
-        payload = MirrorInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-        log_id = payload.id
-        session.merge(CollapseMirror(**db_data))
-
-    elif table == "chat_history_log":
-
-        kind = msg.get("kind")
-        if kind == "warm_start":
-            logger.info("Skipping warm_start event for chat_history_log")
-            return None
-
-        payload = ChatHistoryInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-        log_id = payload.id
-        session.merge(ChatHistoryLogSQL(**db_data))
-
-    elif table == "dreams":
-        # 1. Filter msg to only include fields known by DreamInput
-        known_fields = DreamInput.model_fields.keys()
-        filtered_msg = {k: v for k, v in msg.items() if k in known_fields}
-
-        # 2. Validate the CLEANED message
-        payload = DreamInput.model_validate(filtered_msg).normalize()
-
-        # 3. Get log_id and query using the PAYLOAD OBJECT (Fixes KeyError)
-        log_id = str(payload.dream_date)
-
-        existing = session.query(Dream).filter(
-            Dream.dream_date == payload.dream_date
-        ).first()
-
-        if existing:
-            logger.info(f"Updating {table} for date: {log_id}")
-            # For updates, exclude_unset=True is correct
-            db_data = payload.model_dump(mode="json", exclude_unset=True)
-            for k, v in db_data.items():
-                setattr(existing, k, v)
-        else:
-            logger.info(f"Inserting new {table} for date: {log_id}")
-            # For inserts, use the full model (no exclude_unset)
-            db_data = payload.model_dump(mode="json")
-            session.add(Dream(**db_data))
-
-    elif table == "orion_biometrics":
-        payload = BiometricsInput.model_validate(msg)
-        db_data = payload.model_dump()
-        session.add(BiometricsTelemetry(**db_data))
-        log_id = db_data.get("timestamp", "unknown")
-
-    elif table == "spark_introspection_log":
-        # Some messages on this channel are *candidates* that do NOT yet
-        # contain an 'introspection' field. Those are for the
-        # orion-spark-introspector to consume, not for SQL persistence.
-        #
-        # Only when the introspector publishes a completed payload
-        # (including 'introspection' text) do we store a row.
-        if "introspection" not in msg or not msg.get("introspection"):
-            logger.info(
-                "[SQL_WRITER] Skipping spark_introspection candidate with no introspection text yet: %s",
-                {
-                    "trace_id": msg.get("trace_id"),
-                    "source": msg.get("source"),
-                    "kind": msg.get("kind"),
-                },
-            )
-            return None
-
-        # At this point we *do* have introspection text; treat as a full row.
-        payload = SparkIntrospectionInput.model_validate(msg).normalize()
-        db_data = payload.model_dump()
-
-        # Ensure spark_meta is stored as a JSON string
-        spark_meta_val = db_data.get("spark_meta")
-        if isinstance(spark_meta_val, (dict, list)):
-            db_data["spark_meta"] = json.dumps(spark_meta_val)
-        elif spark_meta_val is None:
-            db_data["spark_meta"] = None
-
-        log_id = payload.id
-        logger.info(
-            "[SQL_WRITER] Upserting Spark introspection log id=%s trace_id=%s",
-            log_id,
-            payload.trace_id,
-        )
-
-        session.merge(SparkIntrospectionLogSQL(**db_data))
-        return log_id
-
-    return log_id
-
-def channel_worker(channel: str):
-    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=True)
-    if not bus.enabled:
-        logger.error(f"Bus connection failed for {channel}")
-        return
-
-    logger.info(f"👂 Subscribed (worker) for channel: {channel}")
-
-    for message in bus.subscribe(channel):
-        session = None
-        log_id = "unknown"
-        try:
-            normalized = _normalize_message(message.get("data"))
-            if normalized is None:
-                continue
-
-            session = get_session()
-            log_id = _process_one(session, channel, normalized)
-
-            if log_id:
-                logger.info(f"🏁 COMMIT for {log_id} on '{channel}'")
-                session.commit()
-
-        except Exception as e:
-            logger.error(f"❌ ROLLBACK on {channel} (payload {log_id}): {e}", exc_info=True)
-            if session:
-                session.rollback()
+            sess.close()
         finally:
-            if session:
-                remove_session()
+            remove_session()
 
-def start_listeners():
-    channels = settings.get_all_subscribe_channels()
-    logger.info(f"🚀 Starting listeners: {channels}")
-    for ch in channels:
-        t = threading.Thread(target=channel_worker, args=(ch,), daemon=False)
-        t.start()
+
+def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
+    sess = get_session()
+    try:
+        sess.add(BusFallbackLog(
+            kind=kind,
+            correlation_id=correlation_id,
+            payload=payload if isinstance(payload, (dict, list)) else {"raw": str(payload)},
+            error=error
+        ))
+        sess.commit()
+    finally:
+        try:
+            sess.close()
+        finally:
+            remove_session()
+
+async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str, Any] = None) -> None:
+    try:
+        if schema_cls:
+            obj = _coerce_payload(schema_cls, payload)
+            data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
+        else:
+            data = payload if isinstance(payload, dict) else {}
+
+        if extra_fields:
+            data.update(extra_fields)
+
+        await asyncio.to_thread(_write_row, sql_model_cls, data)
+    except Exception as e:
+        logger.error(f"Failed to write to primary table: {e}")
+        raise e
+
+
+async def handle_envelope(env: BaseEnvelope) -> None:
+    route_key = settings.route_map.get(env.kind)
+
+    if route_key and route_key in MODEL_MAP:
+        sql_model, schema_model = MODEL_MAP[route_key]
+        try:
+            data_to_process = env.payload
+            if isinstance(data_to_process, dict):
+                data_to_process = data_to_process.copy()
+                if "node" not in data_to_process and env.source and env.source.node:
+                    data_to_process["node"] = env.source.node
+                if "correlation_id" not in data_to_process and env.correlation_id:
+                    data_to_process["correlation_id"] = str(env.correlation_id)
+                if "source_message_id" not in data_to_process and env.id:
+                    data_to_process["source_message_id"] = str(env.id)
+
+            extra_sql_fields = {}
+            if route_key == "CollapseMirror":
+                 if isinstance(data_to_process, dict) and not data_to_process.get("id"):
+                      extra_sql_fields["id"] = str(env.id)
+            if route_key == "CollapseEnrichment":
+                 extra_sql_fields["id"] = str(uuid.uuid4())
+                 if isinstance(data_to_process, dict):
+                      target_id = data_to_process.get("id") or data_to_process.get("collapse_id")
+                      if target_id:
+                          extra_sql_fields["collapse_id"] = target_id
+
+            await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
+            logger.info(f"Written {env.kind} -> {sql_model.__tablename__}")
+        except Exception as e:
+             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")
+             await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, str(e))
+    else:
+        logger.warning(f"Unknown kind {env.kind}, writing to fallback log.")
+        await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, "Unknown kind")
+
+
+def build_hunter() -> Hunter:
+    patterns = settings.sql_writer_subscribe_channels
+    return Hunter(_cfg(), patterns=patterns, handler=handle_envelope)

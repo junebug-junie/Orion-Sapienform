@@ -374,7 +374,16 @@ class SparkEngine:
               - "tissue_summary":  summary from OrionTissue.summarize_for("(global)")
               - "surface_encoding": encoding serialized as a dict
         """
-        self.tissue.inject_surface(encoding, self.mapper, magnitude=magnitude, steps=steps)
+        # 1. Generate stimulus from surface encoding
+        stimulus = self.mapper.surface_to_stimulus(encoding, magnitude=magnitude)
+
+        # 2. Calculate novelty (Predictive Coding)
+        # This updates the tissue's internal novelty state but does not change physics yet.
+        self.tissue.calculate_novelty(stimulus)
+
+        # 3. Propagate stimulus into tissue (Learning + Physics)
+        # This updates the expectation vector and then runs the tissue step.
+        self.tissue.propagate(stimulus, steps=steps)
 
         # Update recent history + read back state
         self._register_event(encoding)
@@ -398,6 +407,7 @@ class SparkEngine:
         agent_id: str,
         tags: Optional[List[str]] = None,
         sentiment: Optional[float] = None,
+        spark_vector: Optional[List[float]] = None,
         magnitude: float = 1.0,
         steps: int = 2,
     ) -> Dict[str, Any]:
@@ -412,13 +422,16 @@ class SparkEngine:
                 The raw chat text.
 
             agent_id:
-                Identifier for the "observer" or process (e.g. "orion-brain").
+                Identifier for the "observer" or process (e.g. "orion-ollama-host").
 
             tags:
                 Optional channel tags (["juniper", "voice", "hub", ...]).
 
             sentiment:
                 Optional pre-computed sentiment score, if available.
+
+            spark_vector:
+                Optional embedding vector (Neural Projection).
 
             magnitude, steps:
                 Passed through to ingest_surface / tissue dynamics.
@@ -435,6 +448,7 @@ class SparkEngine:
             source="juniper",  # TODO: make configurable if needed
             tags=tags,
             sentiment=sentiment,
+            spark_vector=spark_vector,
         )
 
         self.tissue.inject_surface(encoding, self.mapper, magnitude=magnitude, steps=steps)

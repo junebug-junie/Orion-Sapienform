@@ -6,7 +6,9 @@ import sys
 import time
 from typing import Optional
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.codec import OrionCodec
 
 from .models import PowerEvent
 from .settings import get_settings
@@ -49,7 +51,7 @@ async def monitor_ups() -> None:
         settings.POWER_GUARD_UPS_HOST,
     )
 
-    bus = OrionBus(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
+    bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED, codec=OrionCodec())
     
     # [CHANGED] Initialize NIS Client
     # We use port 3551 (apcupsd default)
@@ -64,6 +66,9 @@ async def monitor_ups() -> None:
     on_battery_started_monotonic: Optional[float] = None
     last_on_battery: bool = False
     grace_event_sent: bool = False
+
+    if bus.enabled:
+        await bus.connect()
 
     while True:
         try:
@@ -96,7 +101,7 @@ async def monitor_ups() -> None:
                 status=status,
                 details={"message": "UPS switched to battery"},
             )
-            _publish_event(bus, settings.CHANNEL_POWER_EVENTS, event)
+            await _publish_event(bus, settings, settings.CHANNEL_POWER_EVENTS, event)
             logger.warning(
                 "UPS switched to battery for node=%s; starting grace timer (%.1fs).",
                 settings.POWER_GUARD_NODE_NAME,
@@ -122,7 +127,7 @@ async def monitor_ups() -> None:
                         "elapsed_sec": elapsed,
                     },
                 )
-                _publish_event(bus, settings.CHANNEL_POWER_EVENTS, event)
+                await _publish_event(bus, settings, settings.CHANNEL_POWER_EVENTS, event)
 
                 logger.error(
                     "UPS on battery beyond grace period (elapsed=%.1fs >= %.1fs).",
@@ -145,7 +150,7 @@ async def monitor_ups() -> None:
                 status=status,
                 details={"message": "Utility power restored"},
             )
-            _publish_event(bus, settings.CHANNEL_POWER_EVENTS, event)
+            await _publish_event(bus, settings, settings.CHANNEL_POWER_EVENTS, event)
             logger.info(
                 "Utility power restored for node=%s.", settings.POWER_GUARD_NODE_NAME
             )
@@ -155,15 +160,27 @@ async def monitor_ups() -> None:
         await asyncio.sleep(poll_interval)
 
 
-def _publish_event(bus: OrionBus, channel: str, event: PowerEvent) -> None:
+def _source(settings) -> ServiceRef:
+    return ServiceRef(
+        name=settings.SERVICE_NAME,
+        version=settings.SERVICE_VERSION,
+        node=settings.POWER_GUARD_NODE_NAME,
+    )
+
+
+async def _publish_event(bus: OrionBusAsync, settings, channel: str, event: PowerEvent) -> None:
     if not getattr(bus, "enabled", False):
         logger.info("Bus disabled; skipping publish for event kind=%s", event.kind)
         return
 
-    # Use model_dump(mode='json') to serialize datetime objects safely
-    payload = event.model_dump(mode='json')
+    payload = event.model_dump(mode="json")
+    envelope = BaseEnvelope(
+        kind="power.guard.event",
+        source=_source(settings),
+        payload=payload,
+    )
     try:
-        bus.publish(channel, payload)
+        await bus.publish(channel, envelope)
         logger.info("Published power event kind=%s channel=%s", event.kind, channel)
     except Exception:
         logger.exception(

@@ -5,3 +5,4 @@ uvicorn[standard]==0.30.6
 SQLAlchemy==2.0.43
 redis[hiredis]==5.0.7
 psycopg2-binary==2.9.9
+loguru>=0.7

@@ -6,7 +6,12 @@ SERVICE_BINDINGS = {
     "memory.vector":       "VectorMemoryService",
     "memory.sql":          "SqlMemoryService",
     "memory.collapse":     "CollapseMirrorService",
-    # etc…
+
+    # Vision Services
+    "vision.host":         "VisionHostService",
+    "vision.window":       "VisionWindowService",
+    "vision.council":      "VisionCouncilService",
+    "vision.scribe":       "VisionScribeService",
 }
 
 

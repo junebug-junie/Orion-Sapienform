@@ -1,26 +1,47 @@
- # orion-cortex-exec/app/settings.py
+from __future__ import annotations
 
-import os
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
-    NODE_NAME: str = "orion-athena"
+    # Identity
+    service_name: str = Field("cortex-exec", alias="SERVICE_NAME")
+    service_version: str = Field("0.2.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
 
-    # bus connection
-    ORION_BUS_URL: str = "redis://orion-redis:6379/0"
-    ORION_BUS_ENABLED: bool = True
+    # Bus
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
-    # channels
-    EXEC_REQUEST_PREFIX: str = "orion-exec:request"
-    EXEC_RESULT_PREFIX: str = "orion-exec:result"
-    CORTEX_LOG_CHANNEL: str = "orion:cortex:telemetry"
+    # Intake channel (hub or orch -> exec)
+    channel_exec_request: str = Field("orion-cortex-exec:request", alias="CHANNEL_EXEC_REQUEST")
 
-    # timeouts
-    STEP_TIMEOUT_MS: int = 8000
+    # Downstream routing (exec -> step services)
+    exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
+    exec_result_prefix: str = Field("orion-exec:result", alias="EXEC_RESULT_PREFIX")
+
+    # CHANGED: 8000 -> 60000 (60s). LLMs need time.
+    step_timeout_ms: int = Field(60000, alias="STEP_TIMEOUT_MS")
+
+    # CHANGED: "orion-llm:intake" -> "orion-exec:request:LLMGatewayService"
+    channel_llm_intake: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    channel_recall_intake: str = Field("orion-exec:request:RecallService", alias="CHANNEL_RECALL_INTAKE")
+    channel_agent_chain_intake: str = Field("orion-exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
+    channel_planner_intake: str = Field("orion-exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
+    channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
+    channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
+    channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")
+
+    diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
+    diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")
+    diagnostic_agent_timeout_sec: float = Field(15.0, alias="DIAGNOSTIC_AGENT_TIMEOUT_SEC")
 
     class Config:
-        env_prefix = "ORION_CORTEX_"
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 settings = Settings()
-

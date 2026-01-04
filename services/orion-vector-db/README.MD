@@ -99,4 +99,39 @@ With this blueprint, we can now proceed with the implementation, which will invo
 
     Creating the full Python application for the orion-vector-writer service, including its Docker configuration and application code.
 
-    Updating the orion-rag service to remove its embedded database and instead query the
+5. Testing
+
+Find the IP:
+    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' orion-athena-vector-db
+
+Run within the container:
+
+    docker exec -it orion-athena-vector-writer python -c "
+
+    import chromadb
+    from chromadb.config import Settings
+    import pprint
+
+    print('🔌 Connecting to ChromaDB...')
+
+    # Disable telemetry to avoid the ClientStartEvent error'
+    client = chromadb.HttpClient(
+        host='172.18.0.22', # or replace with IP from above 
+        port=8000, 
+        settings=Settings(anonymized_telemetry=False)
+    )
+
+    print('\n📊 Collections Report:')
+    collections = client.list_collections()
+    if not collections:
+        print('   (No collections found)')
+
+    for c in collections:
+        count = c.count()
+        print(f'📁 Collection: {c.name} | Items: {count}')
+        if count > 0:
+            print('   🔎 Sample (Metadata):')
+            pprint.pprint(c.peek(limit=1)['metadatas'])
+        print('-' * 40)
+    "
+

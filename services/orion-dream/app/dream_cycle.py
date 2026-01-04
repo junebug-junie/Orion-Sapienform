@@ -16,6 +16,10 @@ from types import SimpleNamespace
 
 import httpx
 
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.cortex.gateway import CortexChatRequest, CortexChatResult
+
 from app import context
 from app.settings import settings
 
@@ -339,32 +343,71 @@ async def run_dream():
     print("🛰️  LLM payload (system prompt + options):")
 
     # =================================================================
-    # --- 8) Publish to Bus
+    # --- 8) Publish to Bus (Cortex Gateway RPC)
     # =================================================================
 
-    if not (context.bus and context.bus.enabled):
-        print("🔴 Bus is disabled or not initialized. Dream synthesis will not be published.")
-        return "Error: Bus is disabled. Task not published."
+    if not settings.ORION_BUS_ENABLED:
+        print("🔴 Bus is disabled. Dream synthesis will not be published.")
+        return "Error: Bus is disabled."
 
     try:
-        # Create the bus-formatted payload
-        bus_payload = {
-            "source": "dream_synthesis",
-            "type": "intake",
-            "content": payload,
-            "trace_id": str(uuid.uuid4()),
+        req_metadata = {
             "fragments": fragments_meta,
             "metrics": metrics
         }
 
-        # Publish to the brain's intake channel
-        context.bus.publish(settings.CHANNEL_BRAIN_INTAKE, bus_payload)
-        print(f"✅ Dream synthesis task published to bus: {settings.CHANNEL_BRAIN_INTAKE}")
+        req = CortexChatRequest(
+            prompt=user_prompt,
+            verb=settings.DREAM_VERB,
+            mode="brain",
+            metadata=req_metadata
+        )
 
-        narrative = f"Dream task published to {settings.CHANNEL_BRAIN_INTAKE}."
-        print(f"✨ Dream cycle triggered — {narrative}")
-        return narrative
+        bus = OrionBusAsync(settings.ORION_BUS_URL)
+        await bus.connect()
+
+        try:
+            svc_ref = ServiceRef(
+                name=settings.SERVICE_NAME,
+                version=settings.SERVICE_VERSION,
+                node=settings.NODE_NAME
+            )
+
+            correlation_id = uuid.uuid4()
+            reply_to = f"{settings.DREAM_REPLY_PREFIX}:{correlation_id}"
+
+            env = BaseEnvelope(
+                kind="cortex.gateway.chat.request",
+                source=svc_ref,
+                correlation_id=correlation_id,
+                reply_to=reply_to,
+                payload=req.model_dump(mode="json")
+            )
+
+            print(f"🛰️ Sending dream request to {settings.CORTEX_GATEWAY_REQUEST_CHANNEL}")
+
+            msg = await bus.rpc_request(
+                 settings.CORTEX_GATEWAY_REQUEST_CHANNEL,
+                 env,
+                 reply_channel=reply_to,
+                 timeout_sec=120.0
+            )
+
+            decoded = bus.codec.decode(msg.get("data"))
+            if not decoded.ok:
+                 raise RuntimeError(f"Decode failed: {decoded.error}")
+
+            res_payload = decoded.envelope.payload
+            # Validate response
+            res = CortexChatResult.model_validate(res_payload)
+
+            narrative = res.final_text or "No narrative generated."
+            print(f"✨ Dream cycle complete. Narrative length: {len(narrative)}")
+            return narrative
+
+        finally:
+            await bus.close()
 
     except Exception as e:
-        print(f"🔴 FAILED TO PUBLISH DREAM TASK: {e}")
-        return f"Error: Failed to publish task to bus: {e}"
+        print(f"🔴 FAILED DREAM CYCLE: {e}")
+        return f"Error: {e}"

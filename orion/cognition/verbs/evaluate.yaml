@@ -12,7 +12,7 @@ can_interrupt_others: false
 requires_gpu: true
 requires_memory: false
 
-timeout_ms: 2500
+timeout_ms: 60000
 max_recursion_depth: 1
 
 services:

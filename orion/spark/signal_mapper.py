@@ -56,21 +56,11 @@ class SignalMapper:
         }
 
         # Neural Projection: Fixed Random Projection Matrix (seed=42)
-        # Input: 768 dim (embedding) -> Output: 256 dim (16x16 grid)
-        # We assume flattening the grid H*W = 256.
-        # We also need to decide how to map to channels.
-        # Strategy: Project to [H*W] space.
-        # Positive activation -> Channel 0 (Safety/Context)
-        # Negative activation -> Channel 1 (Novelty/Stimulus)
-
-        self.projection_input_dim = 768 # Standard embedding size
+        # Input: Dynamic dim (embedding) -> Output: H*W dim (grid)
+        # We assume flattening the grid H*W.
+        # Lazy initialization
+        self.projection_matrix: Optional[np.ndarray] = None
         self.projection_output_dim = self.H * self.W
-
-        rng = np.random.RandomState(42)
-        # Gaussian Random Projection Matrix
-        self.projection_matrix = rng.randn(self.projection_input_dim, self.projection_output_dim).astype(np.float32)
-        # Normalize columns
-        self.projection_matrix /= np.linalg.norm(self.projection_matrix, axis=0)
 
 
     def surface_to_stimulus(
@@ -98,18 +88,18 @@ class SignalMapper:
         # ---------------------------------------------------------
         if encoding.spark_vector is not None and len(encoding.spark_vector) > 0:
             vec = np.array(encoding.spark_vector, dtype=np.float32)
+            input_dim = vec.shape[0]
 
-            # Handle dimension mismatch if vector isn't 768
-            # Simple truncation or padding
-            if vec.shape[0] != self.projection_input_dim:
-                if vec.shape[0] > self.projection_input_dim:
-                     vec = vec[:self.projection_input_dim]
-                else:
-                    padded = np.zeros(self.projection_input_dim, dtype=np.float32)
-                    padded[:vec.shape[0]] = vec
-                    vec = padded
+            # Lazy Init or Resize if dimension changed
+            if (self.projection_matrix is None) or (self.projection_matrix.shape[0] != input_dim):
+                print(f"[SignalMapper] Initializing projection matrix for dim: {input_dim} -> {self.projection_output_dim}")
+                rng = np.random.RandomState(42)
+                # Gaussian Random Projection Matrix
+                self.projection_matrix = rng.randn(input_dim, self.projection_output_dim).astype(np.float32)
+                # Normalize columns
+                self.projection_matrix /= np.linalg.norm(self.projection_matrix, axis=0)
 
-            # Project: [1, 768] @ [768, 256] -> [1, 256]
+            # Project: [1, Dim] @ [Dim, H*W] -> [1, H*W]
             activations = vec @ self.projection_matrix
 
             # Normalize to 0.0 - 1.0 range (roughly)

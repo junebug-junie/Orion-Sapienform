@@ -55,13 +55,6 @@ class Settings(BaseSettings):
     # CUDA override (optional; otherwise profile.gpu.device_ids is used)
     cuda_visible_devices_override: Optional[str] = Field(None, env="CUDA_VISIBLE_DEVICES")
 
-    # Embedding Lobe Configuration
-    embedding_model_path: Optional[str] = Field(None, env="EMBEDDING_MODEL_PATH")
-    embedding_host: str = Field("0.0.0.0", env="EMBEDDING_HOST")
-    embedding_port: int = Field(8001, env="EMBEDDING_PORT")
-    embedding_ctx_size: int = Field(2048, env="EMBEDDING_CTX_SIZE")
-    embedding_n_gpu_layers: int = Field(99, env="EMBEDDING_N_GPU_LAYERS")
-
     _registry: Optional[LLMProfileRegistry] = None
 
     def load_profile_registry(self) -> LLMProfileRegistry:

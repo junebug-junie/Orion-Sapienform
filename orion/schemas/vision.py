@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -9,6 +9,11 @@ class VisionObject(BaseModel):
     label: str
     score: float
     box_xyxy: List[float]
+    class_id: Optional[int] = None
+
+
+# Alias for explicit requirement
+VisionDetection = VisionObject
 
 
 class VisionCaption(BaseModel):
@@ -39,6 +44,13 @@ class VisionArtifactPayload(BaseModel):
     outputs: VisionArtifactOutputs
     timing: Dict[str, float]
     model_fingerprints: Dict[str, str]
+    # Debug refs (overlays, etc)
+    debug_refs: Optional[Dict[str, str]] = None
+
+
+# Specific Edge Artifact Schema (matches VisionArtifactPayload but with stricter intent)
+class VisionEdgeArtifact(VisionArtifactPayload):
+    pass
 
 
 class VisionTaskRequestPayload(BaseModel):
@@ -68,6 +80,13 @@ class VisionFramePointerPayload(BaseModel):
     stream_id: Optional[str] = None
     frame_ts: Optional[float] = None
     clip_id: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    format: Optional[str] = None
+
+
+# Alias for explicit requirement
+VisionFramePointer = VisionFramePointerPayload
 
 
 class VisionWindowPayload(BaseModel):
@@ -102,6 +121,50 @@ class VisionScribeAckPayload(BaseModel):
     ok: bool
     message: Optional[str] = None
     error: Optional[str] = None
+
+
+class VisionGuardSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    camera_id: str
+    window_start: float
+    window_end: float
+    decision: Literal["presence", "unknown", "absent", "alert"]
+    confidence: float
+    summary: Dict[str, Any]
+    evidence_refs: List[str]  # List of artifact_ids
+    salience: float = 0.0
+
+
+class VisionGuardAlert(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    camera_id: str
+    ts: float
+    alert_type: str
+    severity: Literal["low", "medium", "high"]
+    summary: str
+    evidence_refs: List[str]
+    snapshot_path: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None
+
+
+class VisionEdgeHealth(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    camera_id: str
+    ts: float
+    ok: bool
+    fps: float
+    mean_brightness: Optional[float] = None
+    resolution: Optional[str] = None
+    dropped_frames: Optional[int] = None
+
+
+class VisionEdgeError(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    camera_id: str
+    ts: float
+    error_type: str
+    message: str
+    meta: Optional[Dict[str, Any]] = None
 
 
 # --- Cortex / RPC Schemas ---

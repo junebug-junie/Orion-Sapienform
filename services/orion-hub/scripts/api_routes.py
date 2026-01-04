@@ -79,7 +79,7 @@ async def handle_chat_request(
     mode = payload.get("mode", "brain")
 
     use_recall = bool(payload.get("use_recall", False))
-    logger.warning("Force-disabling recall in Hub due to known service outage.")
+
     packs = payload.get("packs")
     user_id = payload.get("user_id")
 
@@ -111,7 +111,7 @@ async def handle_chat_request(
         packs=packs,
         verb=verb_override,
         options=options if options else None,
-        recall={"enabled": use_recall} if use_recall else None,
+        recall={"enabled": use_recall},
         metadata={"source": "hub_http"},
     )
 

@@ -1,4 +1,5 @@
 description: "Analyze an image and persist events to memory (Host -> Window -> Council -> Scribe)."
+name: perceive_vision_memory
 steps:
   - step: call_host
     service: vision.host

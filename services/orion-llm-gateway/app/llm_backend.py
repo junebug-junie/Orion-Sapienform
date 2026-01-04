@@ -213,6 +213,9 @@ def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
     url = None
     if settings.llamacpp_embedding_url:
         url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
+    elif settings.llamacpp_url:
+        # Fallback to standard host for embeddings if neural host not configured
+        url = f"{settings.llamacpp_url.rstrip('/')}/v1/embeddings"
     elif settings.vllm_url:
         url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
 
@@ -290,9 +293,18 @@ def _execute_openai_chat(
             raw_data = r.json()
             text = _extract_text_from_openai_response(raw_data)
             
-            # Post-processing: Fetch Embedding
+            # Post-processing: Fetch Embedding (Short-Circuit)
             spark_vector = None
-            if text:
+
+            # Case A: Neural Host (already has the feelings)
+            if "spark_vector" in raw_data:
+                 spark_vector = raw_data["spark_vector"]
+            # Check inside choices if not at root (some implementations might put it there)
+            elif "choices" in raw_data and raw_data["choices"] and "spark_vector" in raw_data["choices"][0]:
+                 spark_vector = raw_data["choices"][0]["spark_vector"]
+
+            # Case B: Standard Host (Reflective)
+            if not spark_vector and text:
                 spark_vector = _fetch_embedding_internal(text)
 
             # Post-processing: Spark Introspect

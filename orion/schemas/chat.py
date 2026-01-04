@@ -17,6 +17,17 @@ class RawChat(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+class ChatResultPayload(BaseModel):
+    """
+    Standardized payload for LLM generation results.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    content: str
+    role: str = "assistant"
+    spark_vector: Optional[List[float]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
 class EnrichedChat(BaseModel):
     """
     Enriched metadata for a chat message (tags, summary, embeddings pointer).

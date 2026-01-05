@@ -144,9 +144,15 @@ async def run_detector_loop():
         logger.warning("Bus disabled, detector loop aborting.")
         return
 
+    processed_count = 0
+
     # Subscribe
     async with bus.subscribe(settings.CHANNEL_VISION_FRAMES) as pubsub:
         async for msg in bus.iter_messages(pubsub):
+            processed_count += 1
+            if processed_count % 100 == 0:
+                logger.info(f"[DETECTOR] Processed {processed_count} frames.")
+
             # Decode
             decoded = bus.codec.decode(msg.get("data"))
             if not decoded.ok or not decoded.envelope:
@@ -203,6 +209,11 @@ async def run_detector_loop():
                     None, _run_detectors, frame
                 )
 
+                if vision_objects:
+                     # Log detections
+                     labels = [o.label for o in vision_objects]
+                     logger.info(f"[DETECTOR] Found: {labels}")
+
                 # Debug Save
                 if settings.EDGE_DEBUG_SAVE_FRAMES and vision_objects:
                     asyncio.get_event_loop().run_in_executor(
@@ -229,6 +240,15 @@ async def run_detector_loop():
                 )
                 
                 await bus.publish(settings.CHANNEL_VISION_ARTIFACTS, out_env)
+
+                # Also publish to raw events channel for UI
+                if settings.VISION_EVENTS_PUBLISH_RAW and settings.VISION_EVENTS_PUBLISH_RAW != settings.CHANNEL_VISION_ARTIFACTS:
+                     raw_env = env.derive_child(
+                        kind=settings.VISION_EVENTS_PUBLISH_RAW,
+                        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                        payload=artifact
+                    )
+                     await bus.publish(settings.VISION_EVENTS_PUBLISH_RAW, raw_env)
             
             except Exception as e:
                 logger.error(f"Detection loop error: {e}")

@@ -7,7 +7,7 @@ class ChatHistoryLogSQL(Base):
     __tablename__ = "chat_history_log"
 
     id = Column(String, primary_key=True)
-    trace_id = Column(String, index=True)
+    # trace_id removed: we now rely on correlation_id
     correlation_id = Column(String, index=True, nullable=True)
     source = Column(String)
     prompt = Column(Text)

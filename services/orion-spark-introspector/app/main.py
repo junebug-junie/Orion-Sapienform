@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -57,7 +57,6 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Spark Introspector Hunter patterns=%s", patterns)
 
     # Run Hunter in background
-    # Hunter.start() runs a loop, so we wrap it in a task
     hunter_task = asyncio.create_task(svc.start())
 
     yield
@@ -73,29 +72,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Mount static files
-# We use relative path assuming CWD is services/orion-spark-introspector (where app module is)
-# Wait, if run as `python -m app.main` from services/orion-spark-introspector/
-# directory is "app/static".
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+# Router for shared endpoints
+router = APIRouter()
 
-
-@app.get("/")
-async def root():
-    return RedirectResponse(url="/ui")
-
-
-@app.get("/ui")
+@router.get("/ui")
 async def get_ui():
     return FileResponse("app/static/index.html")
 
-
-@app.websocket("/ws/tissue")
+@router.websocket("/ws/tissue")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Keep connection alive
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -103,6 +91,22 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.warning(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
+# Include router at root and /spark
+app.include_router(router)
+app.include_router(router, prefix="/spark")
+
+# Mount static files at both locations
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app.mount("/spark/static", StaticFiles(directory="app/static"), name="static_spark")
+
+# Redirects
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/ui")
+
+@app.get("/spark")
+async def spark_root():
+    return RedirectResponse(url="/spark/ui")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=settings.port)

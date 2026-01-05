@@ -189,7 +189,7 @@ async def api_chat(
                 "spark_meta": None,
             }
 
-            bus.publish(
+            await bus.publish(
                 settings.CHANNEL_CHAT_HISTORY_LOG,
                 chat_log_payload,
             )

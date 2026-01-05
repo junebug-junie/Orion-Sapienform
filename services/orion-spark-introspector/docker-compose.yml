@@ -34,6 +34,9 @@ services:
       - READ_TIMEOUT=10.0
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
 
+    ports:
+      - "8444:8444"
+
     volumes:
       - /mnt/storage-lukewarm/orion/spark:/mnt/storage-lukewarm/orion/spark
 

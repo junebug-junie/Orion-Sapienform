@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -78,6 +78,11 @@ app = FastAPI(lifespan=lifespan)
 # Wait, if run as `python -m app.main` from services/orion-spark-introspector/
 # directory is "app/static".
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/ui")
 
 
 @app.get("/ui")

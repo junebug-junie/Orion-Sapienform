@@ -198,6 +198,62 @@ async def websocket_endpoint(websocket: WebSocket):
             })
 
             # ---------------------------------------------------------
+            # 🗄️ Step 4.5: Persist chat turn to SQL writer
+            # ---------------------------------------------------------
+            try:
+                from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+                corr_id = (
+                    getattr(resp, "corr_id", None)
+                    or getattr(resp, "correlation_id", None)
+                    or str(uuid.uuid4())
+                )
+
+                # Use the corr_id/trace_id as the row id so we never end up
+                # inserting a NULL primary key (and so writes are idempotent).
+                row_id = str(corr_id)
+
+                # Preserve any Spark/trace metadata surfaced by the gateway.
+                gateway_meta = (
+                    getattr(resp, "spark_meta", None)
+                    or getattr(resp, "meta", None)
+                    or getattr(resp, "metadata", None)
+                )
+                if isinstance(gateway_meta, str):
+                    try:
+                        gateway_meta = json.loads(gateway_meta)
+                    except Exception:
+                        gateway_meta = {"raw": gateway_meta}
+                if gateway_meta is None:
+                    gateway_meta = {}
+
+                chat_row = {
+                    "id": row_id,
+                    "trace_id": str(corr_id),
+                    "source": "hub_ws",
+                    "prompt": transcript,
+                    "response": orion_response_text,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "spark_meta": {
+                        "mode": mode,
+                        "use_recall": bool(use_recall),
+                        **(gateway_meta if isinstance(gateway_meta, dict) else {}),
+                    },
+                }
+
+                env = BaseEnvelope(
+                    kind="chat.history"
+                  , correlation_id=str(corr_id)
+                  , source=ServiceRef(name="hub", node=settings.NODE_NAME)
+                  , payload=chat_row
+                )
+
+                await bus.publish(settings.CHANNEL_CHAT_HISTORY_LOG, env)
+            except Exception as e:
+                logger.error(f"Failed to publish chat history: {e}", exc_info=True)
+
+            # ---------------------------------------------------------
             # 🔊 Step 5: TTS (Remote)
             # ---------------------------------------------------------
             if orion_response_text and not disable_tts:

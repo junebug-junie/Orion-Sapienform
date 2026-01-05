@@ -84,8 +84,35 @@ def _write_row(sql_model_cls, data: dict) -> None:
     sess = get_session()
     try:
         mapper = inspect(sql_model_cls)
-        valid_columns = set(c.key for c in mapper.attrs)
-        filtered_data = {k: v for k, v in data.items() if k in valid_columns}
+
+        # Accept either ORM attribute keys (e.g. "metadata_") OR raw DB column names
+        # (e.g. "metadata") coming from upstream payloads.
+        col_key_by_name = {col.name: col.key for col in mapper.columns}
+        valid_keys = set(attr.key for attr in mapper.attrs)
+
+        filtered_data: dict = {}
+        for k, v in data.items():
+            kk = col_key_by_name.get(k, k)
+            if kk in valid_keys:
+                filtered_data[kk] = v
+
+        # Ensure we never insert NULL primary keys when upstream omits them.
+        if "telemetry_id" in valid_keys and not filtered_data.get("telemetry_id"):
+            filtered_data["telemetry_id"] = str(uuid.uuid4())
+
+        # chat_history_log uses a non-null string PK named "id".
+        # If upstream omits it, use trace_id (for idempotency) or a new uuid.
+        if (
+            sql_model_cls is ChatHistoryLogSQL
+            and ("id" in valid_keys)
+            and not filtered_data.get("id")
+        ):
+            filtered_data["id"] = filtered_data.get("trace_id") or str(uuid.uuid4())
+
+        # spark_telemetry: keep metadata non-null so it's queryable.
+        if sql_model_cls is SparkTelemetrySQL:
+            if "metadata_json" in valid_keys and filtered_data.get("metadata_json") is None:
+                filtered_data["metadata_json"] = data.get("metadata") or data.get("metadata_json") or {}
 
         for col in mapper.columns:
             key = col.key

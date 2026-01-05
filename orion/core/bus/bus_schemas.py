@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -18,9 +18,9 @@ class ServiceRef(BaseModel):
 
     Keep this tiny + stable; you can always add optional fields later.
     """
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    name: str = Field(..., description="Logical service name (e.g. 'orion-hub').")
+    name: str = Field(..., validation_alias=AliasChoices("name", "service"), description="Logical service name (e.g. 'orion-hub').")
     node: Optional[str] = Field(None, description="Node/host identifier (e.g. 'athena', 'atlas').")
     version: Optional[str] = Field(None, description="Service version (semantic version recommended).")
     instance: Optional[str] = Field(None, description="Ephemeral instance id (container id / pod id).")
@@ -30,7 +30,7 @@ class CausalityLink(BaseModel):
     """
     A single step in a causality chain. Used for Conjourney lineage.
     """
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     correlation_id: UUID
     kind: str
@@ -39,7 +39,7 @@ class CausalityLink(BaseModel):
 
 
 class ErrorInfo(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     type: str
     message: str
@@ -151,7 +151,7 @@ class Envelope(BaseEnvelope, Generic[PayloadT]):
 # ─────────────────────────────────────────────────────────────
 
 class LLMMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
     role: Literal["system", "user", "assistant", "tool"] = "user"
     content: str
 
@@ -160,7 +160,7 @@ class ChatRequestPayload(BaseModel):
     """
     Request payload for LLM chat.
     """
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     model: Optional[str] = None
     profile: Optional[str] = None
@@ -254,7 +254,7 @@ class CollapseMirrorPayload(BaseModel):
     """
     Example: collapse mirror journal entry intake (skeleton).
     """
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     observer: str
     trigger: str

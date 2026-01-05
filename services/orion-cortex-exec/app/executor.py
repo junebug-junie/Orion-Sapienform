@@ -147,6 +147,11 @@ async def call_step_services(
     t0 = time.time()
     logs: List[str] = []
     merged_result: Dict[str, Any] = {}
+    # Optional embedding vector returned by some LLM backends (e.g. the
+    # llama.cpp neural host). Keep it at the step level so downstream
+    # consumers (Spark introspector, vector writers, etc.) don't need to
+    # know how each service nests its result payload.
+    spark_vector: list[float] | None = None
 
     # DEBUG: Log Context Keys to prove data is present
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
@@ -206,6 +211,16 @@ async def call_step_services(
 
                 # Explicitly dump to dict for storage in result payload
                 merged_result[service] = result_object.model_dump(mode="json")
+
+                # Capture optional embedding vector if present. Some backends
+                # don't return it ("vec=no"), others do ("vec=yes").
+                if spark_vector is None:
+                    try:
+                        _sv = getattr(result_object, "spark_vector", None)
+                    except Exception:
+                        _sv = None
+                    if _sv:
+                        spark_vector = _sv
                 logs.append(f"ok <- {service}")
 
             elif service == "AgentChainService":
@@ -309,6 +324,7 @@ async def call_step_services(
         step_name=step.step_name,
         order=step.order,
         result=merged_result,
+        spark_vector=spark_vector,
         latency_ms=int((time.time() - t0) * 1000),
         node=settings.node_name,
         logs=logs,

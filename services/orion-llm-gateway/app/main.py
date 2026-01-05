@@ -84,6 +84,11 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     result = run_llm_chat(body)
     text = result.get("text") if isinstance(result, dict) else str(result)
 
+    # Optional Spark/NeuralHost enrichments. These may be absent depending on
+    # which gateway instance handled the request.
+    spark_meta = (result.get("spark_meta") if isinstance(result, dict) else None) or {}
+    spark_vector = (result.get("spark_vector") if isinstance(result, dict) else None)
+
     out = Envelope[ChatResultPayload](
         kind="llm.chat.result",
         source=_source(),  # [FIX]
@@ -94,6 +99,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             content=text or "",
             usage=(result.get("raw") or {}).get("usage") if isinstance(result, dict) else {},
             raw=result,
+            spark_meta=spark_meta,
+            spark_vector=spark_vector,
         ),
     )
     return out.model_copy(update={"reply_to": None})

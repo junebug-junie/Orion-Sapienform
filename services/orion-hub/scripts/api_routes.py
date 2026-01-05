@@ -244,8 +244,29 @@ async def submit_collapse(data: dict):
         )
 
     try:
+        # Normalize legacy ServiceRef objects coming from the UI.
+        # Some clients still send {"service": "hub", "node": "..."}
+        # but our canonical model uses {"name": "...", "node": "..."}.
+        src = data.get("source")
+        if isinstance(src, dict) and "name" not in src and "service" in src:
+            src = dict(src)
+            src["name"] = src.pop("service")
+            data["source"] = src
+
         entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode="json"))
+
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+        # generate correlation id for this submission
+        corr_id = str(uuid4())
+        env = BaseEnvelope(
+            kind="collapse.submit"
+          , correlation_id=corr_id
+          , source=ServiceRef(name="hub", node=settings.NODE_NAME)
+          , payload=entry.model_dump(mode="json")
+        )
+
+        await bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, env)
         logger.info(
             "📡 Published Collapse Mirror → %s",
             settings.CHANNEL_COLLAPSE_INTAKE,

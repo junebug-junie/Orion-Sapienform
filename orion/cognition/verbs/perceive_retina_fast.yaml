@@ -1,3 +1,4 @@
+name: perceive_retina_fast
 description: "Analyze an image using the retina_fast pipeline (Embed, Detect, Caption)."
 steps:
   - step: call_host

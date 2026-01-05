@@ -116,7 +116,7 @@ async def handle_chat_request(
     )
 
     try:
-        # Call Bus RPC
+        # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
         resp: CortexChatResult = await cortex_client.chat(req)
 
         # Extract Text
@@ -124,6 +124,11 @@ async def handle_chat_request(
 
         # Map raw result for UI debug
         raw_result = resp.cortex_result.model_dump(mode="json")
+
+        # Use the correlation_id from the response (gateway) if available
+        # or it might be passed back from the client logic if modified to do so.
+        # Here we rely on CortexChatResult having it.
+        correlation_id = resp.correlation_id
 
         return {
             "session_id": session_id,
@@ -134,6 +139,7 @@ async def handle_chat_request(
             "raw": raw_result,
             "recall_debug": resp.cortex_result.recall_debug,
             "spark_meta": None,
+            "correlation_id": correlation_id,
         }
 
     except Exception as e:
@@ -167,6 +173,8 @@ async def api_chat(
     # 📡 Publish HTTP chat → chat history log
     # ─────────────────────────────────────────────
     text = result.get("text")
+    correlation_id = result.get("correlation_id")
+
     if text and getattr(bus, "enabled", False):
         try:
             user_messages = payload.get("messages", [])
@@ -176,8 +184,13 @@ async def api_chat(
 
             use_recall = bool(payload.get("use_recall", False))
 
+            # If we didn't get a correlation_id from gateway, fallback to new UUID
+            # (but ideally we got it).
+            final_corr_id = correlation_id or str(uuid4())
+
             chat_log_payload = {
-                "trace_id": str(uuid4()),
+                "trace_id": final_corr_id,
+                "correlation_id": final_corr_id,
                 "source": settings.SERVICE_NAME,
                 "prompt": latest_user_prompt,
                 "response": text,
@@ -240,11 +253,11 @@ async def submit_collapse(data: dict):
 
         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
-        # generate correlation id for this submission
-        corr_id = str(uuid4())
+        # Note: we do NOT explicitly set correlation_id here.
+        # BaseEnvelope will generate a random one, but our worker heuristic (empty causality chain)
+        # will treat it as ad-hoc and not persist it to DB.
         env = BaseEnvelope(
             kind="collapse.submit"
-          , correlation_id=corr_id
           , source=ServiceRef(name="hub", node=settings.NODE_NAME)
           , payload=entry.model_dump(mode="json")
         )

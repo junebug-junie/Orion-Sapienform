@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     cortex_timeout_sec: float = Field(15.0, alias="CORTEX_TIMEOUT_SEC")
 
     # HTTP
-    port: int = Field(8000, alias="PORT")
+    port: int = Field(8444, alias="PORT")
 
     class Config:
         env_file = ".env"

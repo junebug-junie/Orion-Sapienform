@@ -195,10 +195,22 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
         # Prefer neural projection vector when present
         spark_vector: Optional[List[float]] = None
+        latest_user_message = ""
+        spark_tags = ["orion", trace.source_service or "unknown", trace.mode, trace.verb]
+
+        # Try to find user prompt in trace steps (usually first step prompt or context)
+        # trace.steps[0].prompt_template or input?
+        # CognitionTracePayload doesn't strictly field 'prompt'.
+        # But handle_candidate uses candidate.prompt.
+        # We'll try to extract it from step 0 inputs if available or fall back to empty.
+
         for step in trace.steps:
             if step.spark_vector:
                 spark_vector = step.spark_vector
-                break
+            # Naive prompt extraction
+            if not latest_user_message:
+                # Some traces might have inputs in step metadata or args
+                 pass
 
         # ---- Build a SurfaceEncoding for the tissue ----
         wave_len = 64
@@ -231,6 +243,9 @@ async def handle_trace(env: BaseEnvelope) -> None:
         stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
         novelty = TISSUE.calculate_novelty(stimulus)
 
+        # Capture state before propagation
+        phi_before = TISSUE.phi()
+
         TISSUE.propagate(stimulus, steps=2, learning_rate=0.1)
         phi_stats = TISSUE.phi()
         TISSUE.snapshot()
@@ -246,6 +261,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
             metadata={
                 "phi": phi_stats,
                 "phi_after": phi_stats,
+                "phi_before": phi_before,
                 "valence": valence,
                 "arousal": arousal,
                 "dominance": dominance,

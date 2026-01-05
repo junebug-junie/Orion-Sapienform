@@ -1,0 +1,408 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// --- STATE MANAGEMENT ---
+const state = {
+    phi: 0.0,
+    novelty: 0.0,
+    valence: 0.0,
+    arousal: 0.0,
+    targetPhi: 0.0,
+    targetNovelty: 0.0,
+    targetValence: 0.0,
+    targetArousal: 0.0,
+    lastUpdate: 0,
+    metadata: {},
+    correlationId: null
+};
+
+const INTERPOLATION_SPEED = 0.05;
+
+// --- WEBSOCKET ---
+class WSClient {
+    constructor() {
+        this.ws = null;
+        this.reconnectDelay = 1000;
+    }
+
+    connect() {
+        // Construct URL relative to current path to support Tailscale /spark prefix
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        // Remove '/ui' from end of pathname to get base path
+        const basePath = window.location.pathname.replace(/\/ui\/?$/, '');
+        const wsUrl = `${protocol}//${host}${basePath}/ws/tissue`;
+        
+        console.log("Connecting to WS:", wsUrl);
+        
+        this.ws = new WebSocket(wsUrl);
+        this.ws.onopen = () => {
+            console.log("Connected to Tissue Stream");
+            this.reconnectDelay = 1000;
+        };
+        this.ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === "tissue.update") {
+                this.handleUpdate(data);
+            }
+        };
+        this.ws.onclose = () => {
+            console.log("Disconnected. Reconnecting in " + this.reconnectDelay + "ms");
+            setTimeout(() => this.connect(), this.reconnectDelay);
+            this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10000);
+        };
+        this.ws.onerror = (err) => {
+            console.error("WS Error", err);
+            this.ws.close();
+        };
+    }
+
+    handleUpdate(data) {
+        state.targetPhi = data.stats.phi;
+        state.targetNovelty = data.stats.novelty;
+        state.targetValence = data.stats.valence;
+        state.targetArousal = data.stats.arousal;
+        state.lastUpdate = Date.now();
+        state.correlationId = data.correlation_id;
+        state.metadata = data.metadata;
+        state.telemetryId = data.telemetry_id;
+        state.timestamp = data.timestamp;
+
+        this.updateDOM();
+    }
+
+    updateDOM() {
+        const elId = document.getElementById('val-id');
+        const elTs = document.getElementById('val-ts');
+        if(elId) elId.innerText = (state.correlationId || "NULL").substring(0, 8) + '...';
+        if(elTs) elTs.innerText = state.timestamp;
+        
+        let metaHtml = "";
+        if (state.metadata) {
+            const keys = ['source_service', 'trace_verb', 'trace_mode', 'vector_present'];
+            keys.forEach(k => {
+                if (state.metadata[k] !== undefined) {
+                    metaHtml += `<div><span style="color:#aaa">${k}:</span> <span style="color:#fff">${state.metadata[k]}</span></div>`;
+                }
+            });
+        }
+        const elMeta = document.getElementById('meta-panel');
+        if(elMeta) elMeta.innerHTML = metaHtml || "No Metadata";
+    }
+}
+
+// --- VISUALIZERS ---
+
+class BaseVisualizer {
+    constructor(scene, camera) {
+        this.scene = scene;
+        this.camera = camera;
+    }
+    init() {}
+    update(dt) {}
+    dispose() {}
+}
+
+// 1. Synthwave Terrain
+class SynthwaveVisualizer extends BaseVisualizer {
+    init() {
+        this.camera.position.set(0, 5, 10);
+        this.camera.lookAt(0, 0, 0);
+        
+        // Grid
+        const geometry = new THREE.PlaneGeometry(100, 100, 50, 50);
+        const material = new THREE.MeshBasicMaterial({ 
+            color: 0xff00ff, 
+            wireframe: true,
+            transparent: true,
+            opacity: 0.5
+        });
+        this.plane = new THREE.Mesh(geometry, material);
+        this.plane.rotation.x = -Math.PI / 2;
+        this.scene.add(this.plane);
+
+        // Sun
+        const sunGeom = new THREE.SphereGeometry(20, 32, 32);
+        this.sunMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+        this.sun = new THREE.Mesh(sunGeom, this.sunMat);
+        this.sun.position.set(0, 0, -50);
+        this.scene.add(this.sun);
+        
+        this.vertexStore = geometry.attributes.position.array.slice();
+    }
+
+    update(dt) {
+        const positions = this.plane.geometry.attributes.position.array;
+        const time = Date.now() * 0.001;
+        
+        const heightFactor = state.novelty * 2.0 + 0.5;
+        
+        for (let i = 0; i < positions.length; i += 3) {
+            const x = this.vertexStore[i];
+            const y = this.vertexStore[i+1];
+            const z = this.vertexStore[i+2];
+            
+            const dist = Math.sqrt(x*x + y*y);
+            const wave = Math.sin(dist * 0.5 - time * 2) * Math.cos(x * 0.2 + time);
+            
+            positions[i+2] = z + wave * heightFactor;
+        }
+        this.plane.geometry.attributes.position.needsUpdate = true;
+
+        // Color shift based on Valence
+        const r = 1.0 - state.valence;
+        const b = state.valence;
+        this.plane.material.color.setRGB(r, 0, b);
+        this.sunMat.color.setRGB(1, state.valence, 0);
+    }
+
+    dispose() {
+        this.scene.remove(this.plane);
+        this.plane.geometry.dispose();
+        this.plane.material.dispose();
+        this.scene.remove(this.sun);
+        this.sun.geometry.dispose();
+        this.sunMat.dispose();
+    }
+}
+
+// 2. Neural Nebula
+class NebulaVisualizer extends BaseVisualizer {
+    init() {
+        this.camera.position.set(0, 0, 30);
+        this.camera.lookAt(0, 0, 0);
+        
+        const count = 2000;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(count * 3);
+        const colors = new Float32Array(count * 3);
+        
+        for(let i=0; i<count; i++) {
+            positions[i*3] = (Math.random() - 0.5) * 40;
+            positions[i*3+1] = (Math.random() - 0.5) * 40;
+            positions[i*3+2] = (Math.random() - 0.5) * 40;
+            
+            colors[i*3] = 1;
+            colors[i*3+1] = 1;
+            colors[i*3+2] = 1;
+        }
+        
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        
+        const material = new THREE.PointsMaterial({ 
+            size: 0.2, 
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            transparent: true
+        });
+        
+        this.points = new THREE.Points(geometry, material);
+        this.scene.add(this.points);
+        this.angularVelocity = 0;
+    }
+
+    update(dt) {
+        const targetSpeed = state.arousal * 0.5;
+        this.angularVelocity += (targetSpeed - this.angularVelocity) * 0.1;
+        
+        this.points.rotation.y += this.angularVelocity * dt * 5;
+        this.points.rotation.z += this.angularVelocity * dt * 2;
+        
+        const colors = this.points.geometry.attributes.color.array;
+        const r = Math.max(0.2, 1.0 - state.valence);
+        const g = Math.max(0.2, state.phi); 
+        const b = Math.max(0.2, state.valence);
+        
+        const burst = state.novelty > 0.8 && Math.random() < 0.1;
+
+        for(let i=0; i<colors.length; i+=3) {
+            if (burst && Math.random() < 0.01) {
+                    colors[i] = 1; colors[i+1] = 1; colors[i+2] = 1;
+            } else {
+                    colors[i] = colors[i] * 0.95 + r * 0.05;
+                    colors[i+1] = colors[i+1] * 0.95 + g * 0.05;
+                    colors[i+2] = colors[i+2] * 0.95 + b * 0.05;
+            }
+        }
+        this.points.geometry.attributes.color.needsUpdate = true;
+    }
+
+    dispose() {
+        this.scene.remove(this.points);
+        this.points.geometry.dispose();
+        this.points.material.dispose();
+    }
+}
+
+// 3. Bioluminescent Deep
+class BioDeepVisualizer extends BaseVisualizer {
+    init() {
+        this.camera.position.set(0, 0, 20);
+        this.camera.lookAt(0, 0, 0);
+        this.scene.fog = new THREE.FogExp2(0x000000, 0.05);
+        
+        this.creatures = [];
+        const geom = new THREE.OctahedronGeometry(0.5, 0);
+        
+        for(let i=0; i<50; i++) {
+            const mat = new THREE.MeshBasicMaterial({ 
+                color: 0x00ffaa, 
+                transparent: true, 
+                opacity: 0.6 
+            });
+            const mesh = new THREE.Mesh(geom, mat);
+            mesh.position.set(
+                (Math.random() - 0.5) * 30,
+                (Math.random() - 0.5) * 30,
+                (Math.random() - 0.5) * 30
+            );
+            mesh.userData = {
+                velocity: new THREE.Vector3(
+                    (Math.random()-0.5)*0.5,
+                    (Math.random()-0.5)*0.5,
+                    (Math.random()-0.5)*0.5
+                ),
+                offset: Math.random() * 100
+            };
+            this.scene.add(mesh);
+            this.creatures.push(mesh);
+        }
+    }
+
+    update(dt) {
+        const targetDensity = 0.1 - (state.phi * 0.09);
+        this.scene.fog.density = this.scene.fog.density * 0.95 + targetDensity * 0.05;
+
+        const speedMult = 1.0 + state.arousal * 3.0;
+        const flash = state.novelty > 0.7;
+
+        this.creatures.forEach(c => {
+            c.position.addScaledVector(c.userData.velocity, speedMult * dt * 5);
+            
+            if(c.position.length() > 20) c.position.multiplyScalar(-0.9);
+            
+            c.rotation.x += dt;
+            c.rotation.y += dt;
+
+            const time = Date.now() * 0.001;
+            const pulse = Math.sin(time * 2 + c.userData.offset);
+            
+            let r = 0, g = 1, b = 0.5;
+            if (flash && Math.random() < 0.1) {
+                    r=1; g=1; b=1;
+            }
+            
+            c.material.opacity = 0.3 + pulse * 0.3 + (state.phi * 0.4);
+            c.material.color.setRGB(r, g, b);
+        });
+    }
+
+    dispose() {
+        this.scene.fog = null;
+        this.creatures.forEach(c => {
+            this.scene.remove(c);
+            c.geometry.dispose();
+            c.material.dispose();
+        });
+        this.creatures = [];
+    }
+}
+
+// --- MANAGER ---
+class VisualizerManager {
+    constructor() {
+        this.container = document.body;
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.container.appendChild(this.renderer.domElement);
+
+        this.scene = new THREE.Scene();
+        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true;
+        
+        this.clock = new THREE.Clock();
+
+        this.currentViz = null;
+        this.activeMode = 'synthwave';
+
+        window.addEventListener('resize', this.onResize.bind(this));
+        
+        this.modes = {
+            'synthwave': SynthwaveVisualizer,
+            'nebula': NebulaVisualizer,
+            'deep': BioDeepVisualizer
+        };
+        
+        this.switchMode('synthwave');
+        this.animate();
+    }
+
+    switchMode(mode) {
+        if (this.currentViz) {
+            this.currentViz.dispose();
+        }
+        
+        // Clear scene contents
+        while(this.scene.children.length > 0){ 
+            this.scene.remove(this.scene.children[0]); 
+        }
+        
+        const ClassRef = this.modes[mode];
+        this.currentViz = new ClassRef(this.scene, this.camera);
+        this.currentViz.init();
+        this.activeMode = mode;
+        
+        document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        const btn = document.getElementById(mode === 'deep' ? 'btn-deep' : (mode === 'nebula' ? 'btn-nebula' : 'btn-synthwave'));
+        if(btn) btn.classList.add('active');
+    }
+
+    onResize() {
+        this.camera.aspect = window.innerWidth / window.innerHeight;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    animate() {
+        requestAnimationFrame(this.animate.bind(this));
+        
+        const dt = this.clock.getDelta();
+
+        state.phi += (state.targetPhi - state.phi) * INTERPOLATION_SPEED;
+        state.novelty += (state.targetNovelty - state.novelty) * INTERPOLATION_SPEED;
+        state.valence += (state.targetValence - state.valence) * INTERPOLATION_SPEED;
+        state.arousal += (state.targetArousal - state.arousal) * INTERPOLATION_SPEED;
+
+        const elPhi = document.getElementById('val-phi');
+        if(elPhi) elPhi.innerText = state.phi.toFixed(2);
+        
+        const elNov = document.getElementById('val-novelty');
+        if(elNov) elNov.innerText = state.novelty.toFixed(2);
+        
+        const elVal = document.getElementById('val-valence');
+        if(elVal) elVal.innerText = state.valence.toFixed(2);
+        
+        const elAr = document.getElementById('val-arousal');
+        if(elAr) elAr.innerText = state.arousal.toFixed(2);
+
+        this.controls.update();
+        
+        if (this.currentViz) {
+            this.currentViz.update(dt);
+        }
+
+        this.renderer.render(this.scene, this.camera);
+    }
+}
+
+const manager = new VisualizerManager();
+const wsClient = new WSClient();
+wsClient.connect();
+
+document.getElementById('btn-synthwave').addEventListener('click', () => manager.switchMode('synthwave'));
+document.getElementById('btn-nebula').addEventListener('click', () => manager.switchMode('nebula'));
+document.getElementById('btn-deep').addEventListener('click', () => manager.switchMode('deep'));

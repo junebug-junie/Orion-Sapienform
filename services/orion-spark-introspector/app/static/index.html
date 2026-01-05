@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Orion Mind Tissue</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; color: #fff; font-family: monospace; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 10; pointer-events: none; }
+        .hud-panel { background: rgba(0, 0, 0, 0.7); padding: 10px; border: 1px solid #333; margin-bottom: 10px; pointer-events: auto; }
+        .stat-row { display: flex; justify-content: space-between; width: 250px; margin-bottom: 5px; }
+        .stat-label { color: #aaa; }
+        .stat-value { color: #0f0; font-weight: bold; }
+        #controls { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; gap: 10px; }
+        button { background: #222; border: 1px solid #555; color: #fff; padding: 8px 16px; cursor: pointer; font-family: monospace; text-transform: uppercase; }
+        button:hover { background: #444; }
+        button.active { background: #0066cc; border-color: #0088ff; }
+        #meta-panel { font-size: 11px; color: #888; max-width: 300px; word-wrap: break-word; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+</head>
+<body>
+    <div id="ui">
+        <div class="hud-panel">
+            <div class="stat-row"><span class="stat-label">PHI (Coherence)</span><span id="val-phi" class="stat-value">0.00</span></div>
+            <div class="stat-row"><span class="stat-label">NOVELTY</span><span id="val-novelty" class="stat-value">0.00</span></div>
+            <div class="stat-row"><span class="stat-label">VALENCE</span><span id="val-valence" class="stat-value">0.00</span></div>
+            <div class="stat-row"><span class="stat-label">AROUSAL</span><span id="val-arousal" class="stat-value">0.00</span></div>
+            <div style="margin-top: 10px; border-top: 1px solid #444; padding-top: 5px;">
+                <div class="stat-row"><span class="stat-label">ID</span><span id="val-id" class="stat-value" style="font-size: 10px;">-</span></div>
+                <div class="stat-row"><span class="stat-label">TS</span><span id="val-ts" class="stat-value" style="font-size: 10px;">-</span></div>
+            </div>
+        </div>
+        <div class="hud-panel" id="meta-panel">
+            WAITING FOR SIGNAL...
+        </div>
+    </div>
+
+    <div id="controls">
+        <button id="btn-synthwave" class="active">Synthwave</button>
+        <button id="btn-nebula">Nebula</button>
+        <button id="btn-deep">Bio-Deep</button>
+    </div>
+
+    <script type="module" src="static/tissue_viz.js?v=1.2"></script>
+</body>
+</html>

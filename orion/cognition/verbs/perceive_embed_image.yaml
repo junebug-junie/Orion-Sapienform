@@ -1,3 +1,4 @@
+name: perceive_embed_image
 description: "Compute embeddings for an image."
 steps:
   - step: call_host

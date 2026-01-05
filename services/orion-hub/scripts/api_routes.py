@@ -165,7 +165,6 @@ async def api_chat(
 
     # ─────────────────────────────────────────────
     # 📡 Publish HTTP chat → chat history log
-    # (restores legacy Brain→SQL behavior via CHANNEL_CHAT_LOG)
     # ─────────────────────────────────────────────
     text = result.get("text")
     if text and getattr(bus, "enabled", False):
@@ -184,12 +183,12 @@ async def api_chat(
                 "response": text,
                 "session_id": session_id,
                 "mode": result.get("mode", "brain"),
-                #"recall": use_recall,
+                "recall": use_recall,
                 "user_id": None,
                 "spark_meta": None,
             }
 
-            bus.publish(
+            await bus.publish(
                 settings.CHANNEL_CHAT_HISTORY_LOG,
                 chat_log_payload,
             )
@@ -201,22 +200,6 @@ async def api_chat(
             )
 
     return result
-
-
-# ======================================================================
-# 🔍 RECALL / RAG ENDPOINT (Retired)
-# ======================================================================
-@router.post("/api/recall")
-async def api_recall(
-    payload: dict,
-    x_orion_session_id: Optional[str] = Header(None),
-):
-    """
-    DEPRECATED: Hub no longer performs direct recall.
-    This logic is now handled by Cortex Gateway / Orchestrator.
-    """
-    return {"error": "Endpoint deprecated. Recall is handled by Cortex Stack."}
-
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS

@@ -17,11 +17,13 @@ class CortexGatewayClient:
             version=settings.SERVICE_VERSION,
         )
 
-    async def chat(self, request: CortexChatRequest) -> CortexChatResult:
+    async def chat(self, request: CortexChatRequest, correlation_id: Optional[str] = None) -> CortexChatResult:
         """
         Sends a CortexChatRequest to the Gateway and waits for a CortexChatResult.
         """
-        correlation_id = str(uuid.uuid4())
+        if not correlation_id:
+            correlation_id = str(uuid.uuid4())
+
         reply_to = f"{settings.CORTEX_GATEWAY_RESULT_PREFIX}:{correlation_id}"
 
         envelope = BaseEnvelope(

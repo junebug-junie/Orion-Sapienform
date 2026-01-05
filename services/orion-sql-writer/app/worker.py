@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional, Dict
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, update
 from sqlalchemy.types import DateTime, String
 
 from app.settings import settings
@@ -20,7 +20,7 @@ from app.models import (
     CollapseMirror,
     Dream,
     SparkIntrospectionLogSQL, # Legacy model
-    SparkTelemetrySQL,         # New model <--- Ensure this is imported!
+    SparkTelemetrySQL,         # New model
     BusFallbackLog,
     CognitionTraceSQL
 )
@@ -107,12 +107,40 @@ def _write_row(sql_model_cls, data: dict) -> None:
             and ("id" in valid_keys)
             and not filtered_data.get("id")
         ):
-            filtered_data["id"] = filtered_data.get("trace_id") or str(uuid.uuid4())
+            # Prefer correlation_id -> trace_id -> uuid
+            filtered_data["id"] = filtered_data.get("correlation_id") or filtered_data.get("trace_id") or str(uuid.uuid4())
 
         # spark_telemetry: keep metadata non-null so it's queryable.
         if sql_model_cls is SparkTelemetrySQL:
-            if "metadata_json" in valid_keys and filtered_data.get("metadata_json") is None:
-                filtered_data["metadata_json"] = data.get("metadata") or data.get("metadata_json") or {}
+            # FIX: SparkTelemetrySQL maps 'metadata' column to 'metadata_' attribute.
+            # We must populate 'metadata_' from the payload's 'metadata'.
+            if "metadata_" in valid_keys and filtered_data.get("metadata_") is None:
+                filtered_data["metadata_"] = data.get("metadata") or data.get("metadata_json") or {}
+
+            # SIDE EFFECT: When writing spark telemetry, try to update the corresponding chat log
+            # with this rich metadata.
+            corr_id = filtered_data.get("correlation_id")
+            meta = filtered_data.get("metadata_")
+            if corr_id and meta:
+                 try:
+                    stmt = (
+                        update(ChatHistoryLogSQL)
+                        .where(ChatHistoryLogSQL.correlation_id == corr_id)
+                        .values(spark_meta=meta)
+                    )
+                    sess.execute(stmt)
+
+                    # Fallback for older rows
+                    stmt2 = (
+                        update(ChatHistoryLogSQL)
+                        .where(ChatHistoryLogSQL.trace_id == corr_id)
+                        .where(ChatHistoryLogSQL.correlation_id == None) # Only if corr_id is null/missing
+                        .values(spark_meta=meta)
+                    )
+                    sess.execute(stmt2)
+                 except Exception as ex:
+                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
+
 
         for col in mapper.columns:
             key = col.key
@@ -131,7 +159,7 @@ def _write_row(sql_model_cls, data: dict) -> None:
                             filtered_data[key] = datetime.fromisoformat(val)
                         except ValueError:
                             pass
-                    # Case B: Numeric Unix Timestamp (Float/Int) <--- ADDED THIS BLOCK
+                    # Case B: Numeric Unix Timestamp (Float/Int)
                     elif isinstance(val, (int, float)):
                         try:
                             filtered_data[key] = datetime.fromtimestamp(val)

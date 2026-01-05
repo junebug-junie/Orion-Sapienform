@@ -102,6 +102,9 @@ async def handle_chat_request(
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
+    # Generate a correlation ID for this interaction to track end-to-end
+    correlation_id = str(uuid4())
+
     # Build the Request
     req = CortexChatRequest(
         prompt=user_prompt,
@@ -117,7 +120,7 @@ async def handle_chat_request(
 
     try:
         # Call Bus RPC
-        resp: CortexChatResult = await cortex_client.chat(req)
+        resp: CortexChatResult = await cortex_client.chat(req, correlation_id=correlation_id)
 
         # Extract Text
         text = resp.final_text or ""
@@ -134,6 +137,7 @@ async def handle_chat_request(
             "raw": raw_result,
             "recall_debug": resp.cortex_result.recall_debug,
             "spark_meta": None,
+            "correlation_id": correlation_id, # Pass it back
         }
 
     except Exception as e:
@@ -168,6 +172,8 @@ async def api_chat(
     # (restores legacy Brain→SQL behavior via CHANNEL_CHAT_LOG)
     # ─────────────────────────────────────────────
     text = result.get("text")
+    correlation_id = result.get("correlation_id") # Generated inside handle_chat_request
+
     if text and getattr(bus, "enabled", False):
         try:
             user_messages = payload.get("messages", [])
@@ -177,8 +183,12 @@ async def api_chat(
 
             use_recall = bool(payload.get("use_recall", False))
 
+            # Use the SAME correlation_id for trace_id and correlation_id to link everything.
+            final_corr_id = correlation_id or str(uuid4())
+
             chat_log_payload = {
-                "trace_id": str(uuid4()),
+                "trace_id": final_corr_id,
+                "correlation_id": final_corr_id,
                 "source": settings.SERVICE_NAME,
                 "prompt": latest_user_prompt,
                 "response": text,

@@ -101,14 +101,14 @@ def _write_row(sql_model_cls, data: dict) -> None:
             filtered_data["telemetry_id"] = str(uuid.uuid4())
 
         # chat_history_log uses a non-null string PK named "id".
-        # If upstream omits it, use trace_id (for idempotency) or a new uuid.
+        # If upstream omits it, use correlation_id (for idempotency) or a new uuid.
         if (
             sql_model_cls is ChatHistoryLogSQL
             and ("id" in valid_keys)
             and not filtered_data.get("id")
         ):
-            # Prefer correlation_id -> trace_id -> uuid
-            filtered_data["id"] = filtered_data.get("correlation_id") or filtered_data.get("trace_id") or str(uuid.uuid4())
+            # Prefer correlation_id -> uuid
+            filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
 
         # spark_telemetry: keep metadata non-null so it's queryable.
         if sql_model_cls is SparkTelemetrySQL:
@@ -130,14 +130,6 @@ def _write_row(sql_model_cls, data: dict) -> None:
                     )
                     sess.execute(stmt)
 
-                    # Fallback for older rows
-                    stmt2 = (
-                        update(ChatHistoryLogSQL)
-                        .where(ChatHistoryLogSQL.trace_id == corr_id)
-                        .where(ChatHistoryLogSQL.correlation_id == None) # Only if corr_id is null/missing
-                        .values(spark_meta=meta)
-                    )
-                    sess.execute(stmt2)
                  except Exception as ex:
                      logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
 

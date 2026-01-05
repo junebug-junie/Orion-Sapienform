@@ -128,7 +128,7 @@ async def handle_chat_request(
         # Use the correlation_id from the response (gateway) if available
         # or it might be passed back from the client logic if modified to do so.
         # Here we rely on CortexChatResult having it.
-        correlation_id = resp.correlation_id
+        correlation_id = resp.cortex_result.correlation_id
 
         return {
             "session_id": session_id,
@@ -189,7 +189,6 @@ async def api_chat(
             final_corr_id = correlation_id or str(uuid4())
 
             chat_log_payload = {
-                "trace_id": final_corr_id,
                 "correlation_id": final_corr_id,
                 "source": settings.SERVICE_NAME,
                 "prompt": latest_user_prompt,
@@ -198,6 +197,8 @@ async def api_chat(
                 "mode": result.get("mode", "brain"),
                 "recall": use_recall,
                 "user_id": None,
+                # Stop writing generic metadata here.
+                # Rich spark_meta will be populated by sql-writer via side-effect (from SparkTelemetry)
                 "spark_meta": None,
             }
 

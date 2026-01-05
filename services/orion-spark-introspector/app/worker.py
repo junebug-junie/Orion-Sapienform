@@ -21,6 +21,7 @@ from orion.spark.signal_mapper import SignalMapper
 from orion.spark.surface_encoding import SurfaceEncoding
 
 from .settings import settings
+from .conn_manager import manager
 
 logger = logging.getLogger("orion-spark-introspector")
 
@@ -193,6 +194,28 @@ async def handle_trace(env: BaseEnvelope) -> None:
                 "source_node": trace.source_node,
             },
         )
+
+        # Broadcast to Web UI
+        try:
+            # Use telem.id if available, otherwise generate new
+            telemetry_id = str(getattr(telem, "id", uuid4()))
+            ws_payload = {
+                "type": "tissue.update",
+                "telemetry_id": telemetry_id,
+                "correlation_id": corr_id,
+                "timestamp": iso_ts,
+                "stats": {
+                    "phi": telem.phi,
+                    "novelty": telem.novelty,
+                    "valence": valence,
+                    "arousal": arousal
+                },
+                "grid": [],
+                "metadata": telem.metadata
+            }
+            await manager.broadcast(ws_payload)
+        except Exception as e:
+            logger.warning(f"Failed to broadcast tissue update: {e}")
 
         if _pub_bus and _pub_bus.enabled:
             out_env = SparkTelemetryEnvelope(

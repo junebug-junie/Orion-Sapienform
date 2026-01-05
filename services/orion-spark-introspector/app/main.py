@@ -1,21 +1,19 @@
-"""Spark Introspector
-
-Consumes Spark introspection candidates and asks Cortex-Orch to run an
-introspection step (LLM-backed), then re-publishes a completed candidate
-payload for downstream persistence (e.g. SQL writer).
-
-This service uses the Orion V2 chassis (Hunter + RPC client).
-"""
-
 from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
-from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.codec import OrionCodec
+
+from .conn_manager import manager
 from .settings import settings
 from .worker import handle_candidate, handle_trace, set_publisher_bus
 
@@ -34,7 +32,8 @@ def _cfg() -> ChassisConfig:
     )
 
 
-async def main() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     # Initialize shared publisher bus
     pub_bus = OrionBusAsync(settings.orion_bus_url, enabled=settings.orion_bus_enabled, codec=OrionCodec())
     await pub_bus.connect()
@@ -57,11 +56,48 @@ async def main() -> None:
     )
     logger.info("Starting Spark Introspector Hunter patterns=%s", patterns)
 
+    # Run Hunter in background
+    # Hunter.start() runs a loop, so we wrap it in a task
+    hunter_task = asyncio.create_task(svc.start())
+
+    yield
+
+    # Cleanup
+    hunter_task.cancel()
     try:
-        await svc.start()
-    finally:
-        await pub_bus.close()
+        await hunter_task
+    except asyncio.CancelledError:
+        pass
+    await pub_bus.close()
+
+
+app = FastAPI(lifespan=lifespan)
+
+# Mount static files
+# We use relative path assuming CWD is services/orion-spark-introspector (where app module is)
+# Wait, if run as `python -m app.main` from services/orion-spark-introspector/
+# directory is "app/static".
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.get("/ui")
+async def get_ui():
+    return FileResponse("app/static/index.html")
+
+
+@app.websocket("/ws/tissue")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.warning(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvicorn.run(app, host="0.0.0.0", port=settings.port)

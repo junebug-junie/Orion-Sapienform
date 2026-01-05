@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # How long to wait for Cortex-Orch RPC reply
     cortex_timeout_sec: float = Field(15.0, alias="CORTEX_TIMEOUT_SEC")
 
+    # HTTP
+    port: int = Field(8000, alias="PORT")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

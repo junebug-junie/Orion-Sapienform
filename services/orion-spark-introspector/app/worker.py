@@ -24,32 +24,21 @@ from .settings import settings
 
 logger = logging.getLogger("orion-spark-introspector")
 
-# Global publisher bus (set by main.py)
 _pub_bus: Optional[OrionBusAsync] = None
-
 
 def set_publisher_bus(bus: OrionBusAsync):
     global _pub_bus
     _pub_bus = bus
 
-
-# --- Tissue State (Persistent in Memory for Worker) ---
 TISSUE = OrionTissue(
     snapshot_path=Path(settings.orion_tissue_snapshot_path) if settings.orion_tissue_snapshot_path else None
 )
 MAPPER = SignalMapper(TISSUE.H, TISSUE.W, TISSUE.C)
 
-
-# --- Typed Envelopes ---
 class SparkTelemetryEnvelope(Envelope[SparkTelemetryPayload]):
-    """Typed contract for Spark Telemetry logs."""
-
     kind: str = Field("spark.telemetry", frozen=True)
 
-
 class SparkCandidatePayload(BaseModel):
-    """Legacy-style spark candidate payload produced by brain/hub."""
-
     trace_id: str = Field(default_factory=lambda: str(uuid4()))
     source: str = "brain"
     prompt: str
@@ -57,64 +46,36 @@ class SparkCandidatePayload(BaseModel):
     spark_meta: Dict[str, Any] = Field(default_factory=dict)
     introspection: Optional[str] = None
 
-
 def _coerce_epoch_ts(v: Any) -> float:
-    """Coerce timestamps to epoch-seconds float.
-
-    Accepts:
-      - float/int (epoch seconds)
-      - ISO strings (with or without Z)
-      - numeric strings
-      - datetime
-      - None (=> now)
-
-    Never raises; falls back to now.
-    """
-    if v is None:
-        return time.time()
-
-    if isinstance(v, (int, float)):
-        return float(v)
-
+    if v is None: return time.time()
+    if isinstance(v, (int, float)): return float(v)
     if isinstance(v, datetime):
         dt = v
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
         return float(dt.timestamp())
-
     if isinstance(v, str):
-        s = v.strip()
-        # numeric string
         try:
-            return float(s)
+            return float(v)
         except Exception:
             pass
-
-        # iso string
         try:
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
+            s = v.strip()
+            if s.endswith("Z"): s = s[:-1] + "+00:00"
             dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
             return float(dt.timestamp())
         except Exception:
             return time.time()
-
-    # unknown type
     return time.time()
-
 
 def _to_iso_utc(ts_epoch: float) -> str:
     return datetime.fromtimestamp(float(ts_epoch), tz=timezone.utc).isoformat()
-
 
 def _build_llm_prompt(c: SparkCandidatePayload) -> str:
     spark_meta = c.spark_meta or {}
     phi_before = spark_meta.get("phi_before") or {}
     phi_after = spark_meta.get("phi_after") or {}
     self_field = spark_meta.get("spark_self_field") or {}
-
     return (
         "You are Orion reflecting on your own internal state.\n\n"
         "You are given:\n"
@@ -136,75 +97,55 @@ def _build_llm_prompt(c: SparkCandidatePayload) -> str:
         "Write as a short internal note from Orion to itself. Avoid boilerplate."
     ).strip()
 
-
 def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
-    """Best-effort extraction for legacy and typed replies."""
     payload = cortex_reply.payload if isinstance(cortex_reply.payload, dict) else {}
     step_results = payload.get("step_results") or payload.get("steps") or []
-    if not step_results:
-        return None
-
+    if not step_results: return None
     first_step = step_results[0]
-    # legacy
     services = first_step.get("services") or []
     if services:
         first_service = services[0]
         p = (first_service.get("payload") or {}).get("result") or {}
         text = p.get("llm_output") or p.get("text")
         return text.strip() if isinstance(text, str) else None
-
-    # typed-ish
     outputs = first_step.get("outputs") or {}
     text = outputs.get("text") or outputs.get("llm_output")
     return text.strip() if isinstance(text, str) else None
 
-
 async def handle_trace(env: BaseEnvelope) -> None:
-    """Consumes CognitionTrace, updates Tissue, emits SparkTelemetry."""
     try:
         trace = CognitionTracePayload.model_validate(env.payload)
-
-        # Corr id must always be a string (strict titanium contracts downstream)
+        
+        # Priority: Trace payload > Envelope Header > Generate New (Error case)
         corr_id = (trace.correlation_id or str(getattr(env, "correlation_id", "") or "")).strip()
         if not corr_id:
             corr_id = str(uuid4())
+            logger.warning("Missing correlation_id in trace/envelope; generated new one: %s", corr_id)
 
-        # We expect CognitionTracePayload.timestamp to be epoch-seconds float.
-        # But we coerce defensively because a few services historically emitted ISO strings.
         ts_epoch = _coerce_epoch_ts(getattr(trace, "timestamp", None))
         iso_ts = _to_iso_utc(ts_epoch)
 
-        # ---- Heuristics (placeholder until we use learned / latent mappings) ----
         valence = 0.5
         arousal = 0.5
-
         success_count = sum(1 for s in trace.steps if s.status == "success")
         fail_count = sum(1 for s in trace.steps if s.status == "fail")
 
-        if fail_count > 0:
-            valence -= (0.1 * fail_count)
-        else:
-            # reward clean execution (lightly)
-            valence += 0.1
-
+        if fail_count > 0: valence -= (0.1 * fail_count)
+        else: valence += 0.1
         arousal += (len(trace.steps) * 0.05)
-
         valence = max(0.0, min(1.0, valence))
         arousal = max(0.0, min(1.0, arousal))
         dominance = 0.5
 
-        # Prefer neural projection vector when present
         spark_vector: Optional[List[float]] = None
         for step in trace.steps:
             if step.spark_vector:
                 spark_vector = step.spark_vector
                 break
 
-        # ---- Build a SurfaceEncoding for the tissue ----
         wave_len = 64
         x = np.linspace(-3, 3, wave_len)
         waveform = (np.exp(-x**2) * arousal).astype(np.float32)
-
         feat_dim = 32
         feature_vec = np.zeros(feat_dim, dtype=np.float32)
         feature_vec[0] = float(valence)
@@ -214,7 +155,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
         encoding = SurfaceEncoding(
             event_id=corr_id,
             modality="system",
-            timestamp=float(ts_epoch),  # SurfaceEncoding expects epoch seconds
+            timestamp=float(ts_epoch),
             source=trace.source_service or "orion",
             channel_tags=["cognition", trace.mode, trace.verb],
             waveform=waveform,
@@ -230,7 +171,6 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
         stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
         novelty = TISSUE.calculate_novelty(stimulus)
-
         TISSUE.propagate(stimulus, steps=2, learning_rate=0.1)
         phi_stats = TISSUE.phi()
         TISSUE.snapshot()
@@ -263,11 +203,9 @@ async def handle_trace(env: BaseEnvelope) -> None:
             )
             await _pub_bus.publish(settings.channel_spark_telemetry, out_env)
             logger.info(
-                "Tissue updated (novelty=%0.3f, phi=%0.3f) for trace %s (vec=%s)",
-                novelty,
+                "Emitted SparkTelemetry (phi=%0.3f) for corr_id=%s",
                 telem.phi,
                 corr_id,
-                "yes" if spark_vector else "no",
             )
         else:
             logger.error("Publisher bus not connected; skipping telemetry emit")
@@ -277,9 +215,6 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
 
 async def handle_candidate(env: BaseEnvelope) -> None:
-    """Hunter handler: validate candidate, RPC to cortex-orch, republish completed candidate."""
-
-    # Accept either legacy dict messages or a typed envelope.
     raw = env.payload if isinstance(env.payload, dict) else {}
     if env.kind == "legacy.message" and isinstance(raw.get("payload"), dict):
         raw = raw.get("payload")
@@ -290,9 +225,7 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         logger.warning("Skipping invalid spark candidate payload")
         return
 
-    # if already introspected, don't loop
-    if candidate.introspection:
-        return
+    if candidate.introspection: return
 
     reply_channel = f"orion:spark:introspector:reply:{candidate.trace_id}"
     prompt = _build_llm_prompt(candidate)
@@ -341,12 +274,8 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         if not decoded.ok or not decoded.envelope:
             logger.warning("Cortex reply decode failed: %s", decoded.error)
             return
-
         introspection = _extract_introspection_text(decoded.envelope)
-        if not introspection:
-            logger.warning("Could not extract introspection from cortex reply")
-            return
-
+        if not introspection: return
         completed = BaseEnvelope(
             kind="legacy.message",
             source=env.source,

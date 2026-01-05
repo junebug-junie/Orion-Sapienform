@@ -156,6 +156,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             steps=steps,
             error=error_payload,
             correlation_id=str(env.correlation_id),
+            metadata=result_payload.get("metadata") or result_payload.get("spark_meta") or {},
         )
 
         return CortexOrchResult(

@@ -168,12 +168,14 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"Routing to mode: {mode}")
 
             use_recall = data.get("use_recall", False)
+            trace_id = str(uuid.uuid4())
 
             chat_req = CortexChatRequest(
                 prompt=transcript,
                 mode=mode,
                 session_id=session_id,
                 user_id=user_id,
+                trace_id=trace_id,
                 recall={"enabled": use_recall},
                 metadata={"source": "hub_ws"}
             )
@@ -181,7 +183,8 @@ async def websocket_endpoint(websocket: WebSocket):
             orion_response_text = ""
 
             try:
-                resp: CortexChatResult = await cortex_client.chat(chat_req)
+                # Force ID continuity
+                resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
             except Exception as e:
                 logger.error(f"Chat RPC Error: {e}")
@@ -203,33 +206,26 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
-                corr_id = (
-                    getattr(resp, "corr_id", None)
-                    or getattr(resp, "correlation_id", None)
-                    or str(uuid.uuid4())
-                )
-
-                # Use the corr_id/trace_id as the row id so we never end up
-                # inserting a NULL primary key (and so writes are idempotent).
-                row_id = str(corr_id)
+                # Use the trace_id we generated upfront as the canonical ID
+                row_id = trace_id
 
                 # Preserve any Spark/trace metadata surfaced by the gateway.
-                gateway_meta = (
-                    getattr(resp, "spark_meta", None)
-                    or getattr(resp, "meta", None)
-                    or getattr(resp, "metadata", None)
-                )
-                if isinstance(gateway_meta, str):
-                    try:
-                        gateway_meta = json.loads(gateway_meta)
-                    except Exception:
-                        gateway_meta = {"raw": gateway_meta}
-                if gateway_meta is None:
-                    gateway_meta = {}
+                # Since CortexChatResult wraps CortexClientResult, we look deeper.
+                gateway_meta = {}
+                if hasattr(resp, "cortex_result") and resp.cortex_result:
+                    gateway_meta = resp.cortex_result.metadata or {}
+                
+                # Fallback for legacy paths
+                if not gateway_meta:
+                     gateway_meta = (
+                        getattr(resp, "metadata", None) or 
+                        getattr(resp, "spark_meta", None) or 
+                        {}
+                    )
 
                 chat_row = {
                     "id": row_id,
-                    "trace_id": str(corr_id),
+                    "correlation_id": row_id,
                     "source": "hub_ws",
                     "prompt": transcript,
                     "response": orion_response_text,
@@ -244,7 +240,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 env = BaseEnvelope(
                     kind="chat.history"
-                  , correlation_id=str(corr_id)
+                  , correlation_id=row_id
                   , source=ServiceRef(name="hub", node=settings.NODE_NAME)
                   , payload=chat_row
                 )

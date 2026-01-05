@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional, Dict
 
-from sqlalchemy import inspect, update
+from sqlalchemy import inspect, update, select
 from sqlalchemy.types import DateTime, String
 
 from app.settings import settings
@@ -110,15 +110,17 @@ def _write_row(sql_model_cls, data: dict) -> None:
             # Prefer correlation_id -> uuid
             filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
 
-        # spark_telemetry: keep metadata non-null so it's queryable.
+        # -------------------------------------------------------------------------
+        # 🔄 STRATEGY: Bi-Directional Metadata Sync (Handling Async Races)
+        # -------------------------------------------------------------------------
+        
+        # Path A: Writing SparkTelemetry -> Try to update existing Chat Log
         if sql_model_cls is SparkTelemetrySQL:
-            # FIX: SparkTelemetrySQL maps 'metadata' column to 'metadata_' attribute.
-            # We must populate 'metadata_' from the payload's 'metadata'.
+            # Populate 'metadata_' from payload 'metadata' if needed
             if "metadata_" in valid_keys and filtered_data.get("metadata_") is None:
                 filtered_data["metadata_"] = data.get("metadata") or data.get("metadata_json") or {}
 
-            # SIDE EFFECT: When writing spark telemetry, try to update the corresponding chat log
-            # with this rich metadata.
+            # SIDE EFFECT: Update chat log if it exists
             corr_id = filtered_data.get("correlation_id")
             meta = filtered_data.get("metadata_")
             if corr_id and meta:
@@ -129,11 +131,29 @@ def _write_row(sql_model_cls, data: dict) -> None:
                         .values(spark_meta=meta)
                     )
                     sess.execute(stmt)
-
                  except Exception as ex:
                      logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
 
+        # Path B: Writing Chat Log -> Check if SparkTelemetry arrived first
+        if sql_model_cls is ChatHistoryLogSQL:
+            corr_id = filtered_data.get("correlation_id")
+            if corr_id:
+                try:
+                    # Look for orphaned telemetry that missed the update
+                    telem = sess.query(SparkTelemetrySQL).filter(SparkTelemetrySQL.correlation_id == corr_id).first()
+                    if telem and telem.metadata_:
+                        current_meta = filtered_data.get("spark_meta") or {}
+                        if isinstance(current_meta, dict) and isinstance(telem.metadata_, dict):
+                            # Merge telemetry stats INTO the chat meta (priority to telemetry)
+                            current_meta.update(telem.metadata_)
+                            filtered_data["spark_meta"] = current_meta
+                            logger.info(f"Merged existing SparkTelemetry into ChatLog for {corr_id}")
+                except Exception as ex:
+                    logger.warning(f"Failed to merge existing telemetry into chat log: {ex}")
 
+        # -------------------------------------------------------------------------
+        # Standard Column Coercion
+        # -------------------------------------------------------------------------
         for col in mapper.columns:
             key = col.key
             if key in filtered_data:
@@ -145,13 +165,11 @@ def _write_row(sql_model_cls, data: dict) -> None:
                 
                 # Coerce DateTime
                 if isinstance(col.type, DateTime):
-                    # Case A: String ISO format
                     if isinstance(val, str):
                         try:
                             filtered_data[key] = datetime.fromisoformat(val)
                         except ValueError:
                             pass
-                    # Case B: Numeric Unix Timestamp (Float/Int)
                     elif isinstance(val, (int, float)):
                         try:
                             filtered_data[key] = datetime.fromtimestamp(val)
@@ -212,14 +230,6 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 if "node" not in data_to_process and env.source and env.source.node:
                     data_to_process["node"] = env.source.node
 
-                # -------------------------------------------------------------
-                # HEURISTIC: Only persist correlation_id from envelope if:
-                # 1. It's explicitly in payload (priority)
-                # 2. OR it's a cortex-driven flow (non-empty causality chain)
-                #
-                # This prevents "ad-hoc" hub events (which have a random envelope ID
-                # but no chain) from polluting the DB with fake correlation IDs.
-                # -------------------------------------------------------------
                 if "correlation_id" not in data_to_process:
                      is_ad_hoc = len(env.causality_chain) == 0
                      if not is_ad_hoc and env.correlation_id:

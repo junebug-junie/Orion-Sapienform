@@ -204,32 +204,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
                 corr_id = (
-                    getattr(resp, "corr_id", None)
-                    or getattr(resp, "correlation_id", None)
+                    getattr(resp.cortex_result, "correlation_id", None)
                     or str(uuid.uuid4())
                 )
 
-                # Use the corr_id/trace_id as the row id so we never end up
+                # Use the corr_id as the row id so we never end up
                 # inserting a NULL primary key (and so writes are idempotent).
                 row_id = str(corr_id)
 
-                # Preserve any Spark/trace metadata surfaced by the gateway.
-                gateway_meta = (
-                    getattr(resp, "spark_meta", None)
-                    or getattr(resp, "meta", None)
-                    or getattr(resp, "metadata", None)
-                )
-                if isinstance(gateway_meta, str):
-                    try:
-                        gateway_meta = json.loads(gateway_meta)
-                    except Exception:
-                        gateway_meta = {"raw": gateway_meta}
-                if gateway_meta is None:
-                    gateway_meta = {}
-
                 chat_row = {
                     "id": row_id,
-                    "trace_id": str(corr_id),
+                    "correlation_id": str(corr_id),
                     "source": "hub_ws",
                     "prompt": transcript,
                     "response": orion_response_text,
@@ -238,7 +223,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     "spark_meta": {
                         "mode": mode,
                         "use_recall": bool(use_recall),
-                        **(gateway_meta if isinstance(gateway_meta, dict) else {}),
                     },
                 }
 

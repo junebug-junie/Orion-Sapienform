@@ -197,9 +197,10 @@ async def api_chat(
                 "mode": result.get("mode", "brain"),
                 "recall": use_recall,
                 "user_id": None,
-                # Stop writing generic metadata here.
-                # Rich spark_meta will be populated by sql-writer via side-effect (from SparkTelemetry)
-                "spark_meta": None,
+                "spark_meta": {
+                    "mode": result.get("mode", "brain"),
+                    "use_recall": use_recall,
+                },
             }
 
             await bus.publish(

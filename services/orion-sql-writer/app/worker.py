@@ -110,6 +110,31 @@ def _write_row(sql_model_cls, data: dict) -> None:
             # Prefer correlation_id -> uuid
             filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
 
+            # RACE CONDITION HANDLING: If SparkTelemetry arrived BEFORE this chat log,
+            # we must fetch it and merge the metadata now.
+            corr_id = filtered_data.get("correlation_id")
+            if corr_id:
+                try:
+                    # Look for existing telemetry for this correlation_id
+                    telemetry = (
+                        sess.query(SparkTelemetrySQL)
+                        .filter(SparkTelemetrySQL.correlation_id == corr_id)
+                        .first()
+                    )
+                    if telemetry and telemetry.metadata_:
+                        # Merge rich telemetry metadata into our spark_meta
+                        # Priority: Existing payload < Telemetry
+                        current_meta = filtered_data.get("spark_meta") or {}
+                        # If existing is None, make it dict
+                        if current_meta is None:
+                            current_meta = {}
+
+                        # Merge: current (e.g. mode) updated with telemetry (rich)
+                        merged = {**current_meta, **telemetry.metadata_}
+                        filtered_data["spark_meta"] = merged
+                except Exception as ex:
+                    logger.warning(f"Failed to fetch pre-existing telemetry for merge: {ex}")
+
         # spark_telemetry: keep metadata non-null so it's queryable.
         if sql_model_cls is SparkTelemetrySQL:
             # FIX: SparkTelemetrySQL maps 'metadata' column to 'metadata_' attribute.
@@ -126,7 +151,7 @@ def _write_row(sql_model_cls, data: dict) -> None:
                     stmt = (
                         update(ChatHistoryLogSQL)
                         .where(ChatHistoryLogSQL.correlation_id == corr_id)
-                        .values(spark_meta=meta)
+                        .values(spark_meta=func.coalesce(ChatHistoryLogSQL.spark_meta, {}) + meta)
                     )
                     sess.execute(stmt)
 

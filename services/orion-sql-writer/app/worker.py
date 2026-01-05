@@ -219,8 +219,20 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 data_to_process = data_to_process.copy()
                 if "node" not in data_to_process and env.source and env.source.node:
                     data_to_process["node"] = env.source.node
-                if "correlation_id" not in data_to_process and env.correlation_id:
-                    data_to_process["correlation_id"] = str(env.correlation_id)
+
+                # -------------------------------------------------------------
+                # HEURISTIC: Only persist correlation_id from envelope if:
+                # 1. It's explicitly in payload (priority)
+                # 2. OR it's a cortex-driven flow (non-empty causality chain)
+                #
+                # This prevents "ad-hoc" hub events (which have a random envelope ID
+                # but no chain) from polluting the DB with fake correlation IDs.
+                # -------------------------------------------------------------
+                if "correlation_id" not in data_to_process:
+                     is_ad_hoc = len(env.causality_chain) == 0
+                     if not is_ad_hoc and env.correlation_id:
+                          data_to_process["correlation_id"] = str(env.correlation_id)
+
                 if "source_message_id" not in data_to_process and env.id:
                     data_to_process["source_message_id"] = str(env.id)
 

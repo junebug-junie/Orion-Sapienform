@@ -102,9 +102,6 @@ async def handle_chat_request(
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
-    # Generate a correlation ID for this interaction to track end-to-end
-    correlation_id = str(uuid4())
-
     # Build the Request
     req = CortexChatRequest(
         prompt=user_prompt,
@@ -119,14 +116,19 @@ async def handle_chat_request(
     )
 
     try:
-        # Call Bus RPC
-        resp: CortexChatResult = await cortex_client.chat(req, correlation_id=correlation_id)
+        # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
+        resp: CortexChatResult = await cortex_client.chat(req)
 
         # Extract Text
         text = resp.final_text or ""
 
         # Map raw result for UI debug
         raw_result = resp.cortex_result.model_dump(mode="json")
+
+        # Use the correlation_id from the response (gateway) if available
+        # or it might be passed back from the client logic if modified to do so.
+        # Here we rely on CortexChatResult having it.
+        correlation_id = resp.correlation_id
 
         return {
             "session_id": session_id,
@@ -137,7 +139,7 @@ async def handle_chat_request(
             "raw": raw_result,
             "recall_debug": resp.cortex_result.recall_debug,
             "spark_meta": None,
-            "correlation_id": correlation_id, # Pass it back
+            "correlation_id": correlation_id,
         }
 
     except Exception as e:
@@ -172,7 +174,7 @@ async def api_chat(
     # (restores legacy Brain→SQL behavior via CHANNEL_CHAT_LOG)
     # ─────────────────────────────────────────────
     text = result.get("text")
-    correlation_id = result.get("correlation_id") # Generated inside handle_chat_request
+    correlation_id = result.get("correlation_id")
 
     if text and getattr(bus, "enabled", False):
         try:
@@ -183,7 +185,8 @@ async def api_chat(
 
             use_recall = bool(payload.get("use_recall", False))
 
-            # Use the SAME correlation_id for trace_id and correlation_id to link everything.
+            # If we didn't get a correlation_id from gateway, fallback to new UUID
+            # (but ideally we got it).
             final_corr_id = correlation_id or str(uuid4())
 
             chat_log_payload = {
@@ -267,11 +270,11 @@ async def submit_collapse(data: dict):
 
         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
-        # generate correlation id for this submission
-        corr_id = str(uuid4())
+        # Note: we do NOT explicitly set correlation_id here.
+        # BaseEnvelope will generate a random one, but our worker heuristic (empty causality chain)
+        # will treat it as ad-hoc and not persist it to DB.
         env = BaseEnvelope(
             kind="collapse.submit"
-          , correlation_id=corr_id
           , source=ServiceRef(name="hub", node=settings.NODE_NAME)
           , payload=entry.model_dump(mode="json")
         )

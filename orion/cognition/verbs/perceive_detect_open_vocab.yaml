@@ -1,4 +1,3 @@
-name: perceive_detect_open_vocab
 description: "Detect open-vocabulary objects in an image."
 steps:
   - step: call_host

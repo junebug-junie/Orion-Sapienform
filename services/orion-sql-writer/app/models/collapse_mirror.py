@@ -5,7 +5,6 @@ class CollapseMirror(Base):
     __tablename__ = "collapse_mirror"
 
     id = Column(String, primary_key=True, index=True)
-    correlation_id = Column(String, index=True, nullable=True)
     observer = Column(String)
     trigger = Column(Text)
     observer_state = Column(String)

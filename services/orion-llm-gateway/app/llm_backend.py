@@ -69,48 +69,6 @@ def _extract_text_from_openai_response(data: Dict[str, Any]) -> str:
     logger.warning(f"[LLM-GW] Response format not understood: {str(data)[:200]}...")
     return ""
 
-
-def _extract_vector_from_openai_response(data: Dict[str, Any]) -> Optional[List[float]]:
-    """
-    Best-effort extraction of an embedding/state vector from OpenAI-compatible
-    response payloads.
-
-    We support multiple possible key names because Orion may run mixed gateways:
-    - A "neural" llama.cpp host that returns an internal state vector
-    - A standard host that returns only text
-
-    Preferred key order:
-      1) spark_vector
-      2) state_embedding / state_vector
-      3) embedding / embeds / vector
-
-    Also checks inside choices[0] for the same keys.
-    """
-
-    def _maybe_vec(obj: Any) -> Optional[List[float]]:
-        if isinstance(obj, list) and obj and all(isinstance(x, (int, float)) for x in obj):
-            return [float(x) for x in obj]
-        return None
-
-    # Top-level keys
-    for k in ("spark_vector", "state_embedding", "state_vector", "embedding", "embeds", "vector"):
-        v = _maybe_vec(data.get(k))
-        if v is not None:
-            return v
-
-    # Common OpenAI-compatible location: choices[0]
-    try:
-        choices = data.get("choices") or []
-        first = (choices[0] or {}) if choices else {}
-        for k in ("spark_vector", "state_embedding", "state_vector", "embedding", "embeds", "vector"):
-            v = _maybe_vec(first.get(k))
-            if v is not None:
-                return v
-    except Exception:
-        pass
-
-    return None
-
 def _select_profile(profile_name: str | None) -> LLMProfile | None:
     if not _profile_registry.profiles:
         return None
@@ -335,13 +293,18 @@ def _execute_openai_chat(
             raw_data = r.json()
             text = _extract_text_from_openai_response(raw_data)
             
-            # Post-processing: embed/state vector (if present)
-            spark_vector = _extract_vector_from_openai_response(raw_data)
+            # Post-processing: Fetch Embedding (Short-Circuit)
+            spark_vector = None
+
+            # Case A: Neural Host (already has the feelings)
+            if "spark_vector" in raw_data:
+                 spark_vector = raw_data["spark_vector"]
+            # Check inside choices if not at root (some implementations might put it there)
+            elif "choices" in raw_data and raw_data["choices"] and "spark_vector" in raw_data["choices"][0]:
+                 spark_vector = raw_data["choices"][0]["spark_vector"]
 
             # Case B: Standard Host (Reflective)
-            # If the backend didn't include a vector, optionally do a secondary
-            # embedding call (useful for a *separate* "embeds-on" gateway instance).
-            if settings.include_embeddings and (not spark_vector) and text:
+            if not spark_vector and text:
                 spark_vector = _fetch_embedding_internal(text)
 
             # Post-processing: Spark Introspect

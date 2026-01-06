@@ -57,7 +57,6 @@ class CortexClientResult(BaseModel):
     steps: List[StepExecutionResult] = Field(default_factory=list)
     error: Optional[Dict[str, Any]] = None
     correlation_id: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CortexChatRequest(BaseModel):

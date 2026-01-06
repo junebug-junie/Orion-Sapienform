@@ -6,6 +6,3 @@ python-dotenv==1.0.1
 loguru>0.7
 numpy>=2.0
 scipy>=1.4
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-websockets>=14.0

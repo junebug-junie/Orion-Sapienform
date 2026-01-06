@@ -72,10 +72,18 @@ class Settings(BaseSettings):
 
     PUBLISH_CHAT_HISTORY_LOG: bool = Field(default=True, env="PUBLISH_CHAT_HISTORY_LOG")
 
+    CHAT_HISTORY_LOG_CHANNEL: str | None = Field(
+        default=None,
+        env="CHAT_HISTORY_LOG_CHANNEL",
+    )
     CHANNEL_CHAT_HISTORY_LOG: str = Field(
-        "orion:chat:history:log",
+        default="orion:chat:history:log",
         env="CHANNEL_CHAT_HISTORY_LOG",
     )
+
+    @property
+    def chat_history_channel(self) -> str:
+        return self.CHAT_HISTORY_LOG_CHANNEL or self.CHANNEL_CHAT_HISTORY_LOG
 
     # --- Legacy Agent Council Integration ---
     CHANNEL_COUNCIL_INTAKE: str = Field(

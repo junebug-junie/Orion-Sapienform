@@ -14,6 +14,11 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vector.schemas import VectorWriteRequest
 
+from app.chat_history import (
+    CHAT_HISTORY_COLLECTION,
+    CHAT_HISTORY_MESSAGE_KIND,
+    chat_history_envelope_to_request,
+)
 from app.settings import settings
 
 # Setup Logger
@@ -70,6 +75,14 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     """
     Adapts various incoming kinds to a unified VectorWriteRequest.
     """
+    chat_req = chat_history_envelope_to_request(
+        env,
+        channel=settings.VECTOR_WRITER_CHAT_HISTORY_CHANNEL,
+        collection_name=settings.VECTOR_WRITER_CHAT_COLLECTION or CHAT_HISTORY_COLLECTION,
+    )
+    if chat_req:
+        return chat_req
+
     kind = env.kind
     payload = env.payload
 
@@ -182,6 +195,15 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         if not req:
             # logger.debug(f"Skipping {env.kind}: No valid content found.")
             return
+
+        if env.kind == CHAT_HISTORY_MESSAGE_KIND:
+            logger.info(
+                "Chat history ingest id=%s role=%s session=%s correlation_id=%s",
+                req.id,
+                req.metadata.get("role"),
+                req.metadata.get("session_id"),
+                getattr(env, "correlation_id", None),
+            )
 
         # 3. Generate Embedding (if not provided)
         vector_list = req.vector

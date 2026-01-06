@@ -36,7 +36,112 @@ def _last_user_message(ctx: Dict[str, Any]) -> str:
         for m in reversed(msgs):
             if isinstance(m, dict) and m.get("role") == "user":
                 return str(m.get("content") or "")
+            if isinstance(m, LLMMessage) and getattr(m, "role", None) == "user":
+                return str(getattr(m, "content", "") or "")
+            if hasattr(m, "model_dump"):
+                try:
+                    d = m.model_dump(mode="json")
+                    if isinstance(d, dict) and d.get("role") == "user":
+                        return str(d.get("content") or "")
+                except Exception:
+                    pass
     return str(ctx.get("user_message") or "")
+
+
+def _json_sanitize(obj: Any, *, _seen: set[int] | None = None, _depth: int = 0, _max_depth: int = 10) -> Any:
+    """
+    Best-effort JSON-safe conversion with circular reference protection.
+
+    # KEEP / IMPORTANT:
+    This is NOT for "pretty serialization". It's for safety when objects or
+    accidental backrefs leak into payloads. If we see a cycle, we replace it.
+    """
+    if _seen is None:
+        _seen = set()
+
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    oid = id(obj)
+    if oid in _seen:
+        return "<circular_ref>"
+    if _depth >= _max_depth:
+        return "<max_depth>"
+
+    if isinstance(obj, dict):
+        _seen.add(oid)
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            out[str(k)] = _json_sanitize(v, _seen=_seen, _depth=_depth + 1, _max_depth=_max_depth)
+        _seen.remove(oid)
+        return out
+
+    if isinstance(obj, (list, tuple, set)):
+        _seen.add(oid)
+        out_list = [_json_sanitize(v, _seen=_seen, _depth=_depth + 1, _max_depth=_max_depth) for v in obj]
+        _seen.remove(oid)
+        return out_list
+
+    if isinstance(obj, LLMMessage):
+        return _json_sanitize(obj.model_dump(mode="json"), _seen=_seen, _depth=_depth + 1, _max_depth=_max_depth)
+
+    if hasattr(obj, "model_dump"):
+        try:
+            return _json_sanitize(obj.model_dump(mode="json"), _seen=_seen, _depth=_depth + 1, _max_depth=_max_depth)
+        except Exception:
+            return str(obj)
+
+    return str(obj)
+
+
+def _build_hop_messages(
+    *,
+    prompt: str,
+    ctx_messages: Any,
+) -> List[Dict[str, Any]]:
+    """
+    Build the message list for downstream LLM-like services.
+
+    # KEEP / IMPORTANT:
+    Step execution (prompt_template) is the lynchpin of Orion's architecture.
+    The rendered step prompt MUST be injected as a SYSTEM message on every hop.
+
+    # KEEP / IMPORTANT (DUAL PATHWAY):
+    DO NOT mutate ctx["messages"].
+    DO NOT prepend the system prompt into ctx.
+    This function returns a NEW list of NEW dicts for the outbound hop only.
+    This preserves the race-safe/persistence-safe pathway used by Spark + SQL-writer.
+    """
+    normalized: List[Dict[str, Any]] = []
+
+    raw_msgs = ctx_messages or []
+    if isinstance(raw_msgs, list):
+        for m in raw_msgs:
+            if isinstance(m, dict):
+                normalized.append(_json_sanitize(m))
+            elif isinstance(m, LLMMessage):
+                normalized.append(_json_sanitize(m.model_dump(mode="json")))
+            elif hasattr(m, "model_dump"):
+                try:
+                    normalized.append(_json_sanitize(m.model_dump(mode="json")))
+                except Exception:
+                    pass
+
+    if prompt and str(prompt).strip():
+        sys_msg = {"role": "system", "content": str(prompt)}
+
+        # Replace upstream system rather than stacking multiple system messages.
+        if normalized and isinstance(normalized[0], dict) and normalized[0].get("role") == "system":
+            normalized[0] = sys_msg
+        else:
+            normalized = [sys_msg] + normalized
+
+    if not normalized:
+        content = (prompt or " ").strip() or " "
+        normalized = [{"role": "user", "content": content}]
+
+    return normalized
+
 
 
 async def run_recall_step(
@@ -184,35 +289,16 @@ async def call_step_services(
                 # 1. Build Pydantic Model
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
 
-                raw_msgs = ctx.get("messages") or []
-                normalized: List[Dict[str, Any]] = []
-
-                if isinstance(raw_msgs, list):
-                    for m in raw_msgs:
-                        if isinstance(m, dict):
-                            normalized.append(m)
-                        elif isinstance(m, LLMMessage):
-                            normalized.append(m.model_dump(mode="json"))
-                        elif hasattr(m, "model_dump"):
-                            normalized.append(m.model_dump(mode="json"))
-
-                # ALWAYS inject the rendered step prompt as system message
-                # so the verb's prompt_template actually governs the LLM hop.
-                if prompt and str(prompt).strip():
-                    sys_msg = {"role": "system", "content": str(prompt)}
-
-                    if normalized and normalized[0].get("role") == "system":
-                        normalized[0] = sys_msg
-                    else:
-                        normalized = [sys_msg] + normalized
-
-                if not normalized:
-                    content = (prompt or " ").strip() or " "
-                    normalized = [{"role": "user", "content": content}]
+                # KEEP / IMPORTANT:
+                # Step prompt_template MUST govern this hop even if ctx["messages"] exists.
+                messages_payload = _build_hop_messages(
+                    prompt=prompt,
+                    ctx_messages=ctx.get("messages"),
+                )
 
                 request_object = ChatRequestPayload(
                     model=req_model,
-                    messages=normalized,
+                    messages=messages_payload,
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),
@@ -245,6 +331,13 @@ async def call_step_services(
                 logs.append(f"ok <- {service}")
 
             elif service == "AgentChainService":
+                # KEEP / IMPORTANT:
+                # Agent chain must also receive the step prompt_template as a system message.
+                hop_msgs = _build_hop_messages(
+                    prompt=prompt,
+                    ctx_messages=ctx.get("messages"),
+                )
+
                 agent_req = AgentChainRequest(
                     text=_last_user_message(ctx),
                     mode=ctx.get("mode") or "agent",
@@ -252,7 +345,7 @@ async def call_step_services(
                     user_id=ctx.get("user_id"),
                     messages=[
                         LLMMessage(**m) if not isinstance(m, LLMMessage) else m
-                        for m in (ctx.get("messages") or [])
+                        for m in (hop_msgs or [])
                     ],
                     packs=ctx.get("packs") or [],
                 )

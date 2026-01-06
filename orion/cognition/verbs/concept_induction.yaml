@@ -1,0 +1,16 @@
+name: concept_induction
+label: Concept Induction
+description: Consolidate recent Orion experience into concept profiles and clusters.
+category: spark
+version: "1.0"
+
+timeout_ms: 120000
+
+services:
+  - LLMGatewayService
+
+steps:
+  - name: induce_concepts
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: concept_induction_prompt.j2

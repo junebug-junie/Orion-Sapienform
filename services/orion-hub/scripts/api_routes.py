@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
 from .session import ensure_session
+from .chat_history import build_chat_history_envelope, publish_chat_history
 from .library import scan_cognition_library
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
@@ -188,6 +189,31 @@ async def api_chat(
             # (but ideally we got it).
             final_corr_id = correlation_id or str(uuid4())
 
+            envelopes = []
+            if latest_user_prompt:
+                envelopes.append(
+                    build_chat_history_envelope(
+                        content=latest_user_prompt,
+                        role="user",
+                        session_id=session_id,
+                        correlation_id=final_corr_id,
+                        speaker=payload.get("user_id") or "user",
+                        tags=[result.get("mode", "brain")],
+                    )
+                )
+            envelopes.append(
+                build_chat_history_envelope(
+                    content=text,
+                    role="assistant",
+                    session_id=session_id,
+                    correlation_id=final_corr_id,
+                    speaker=settings.SERVICE_NAME,
+                    tags=[result.get("mode", "brain")],
+                )
+            )
+            await publish_chat_history(bus, envelopes)
+
+            # Legacy log for downstream SQL-writer compatibility
             chat_log_payload = {
                 "correlation_id": final_corr_id,
                 "source": settings.SERVICE_NAME,
@@ -197,13 +223,11 @@ async def api_chat(
                 "mode": result.get("mode", "brain"),
                 "recall": use_recall,
                 "user_id": None,
-                # Stop writing generic metadata here.
-                # Rich spark_meta will be populated by sql-writer via side-effect (from SparkTelemetry)
                 "spark_meta": None,
             }
 
             await bus.publish(
-                settings.CHANNEL_CHAT_HISTORY_LOG,
+                settings.chat_history_channel,
                 chat_log_payload,
             )
         except Exception as e:

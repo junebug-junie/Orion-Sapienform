@@ -451,6 +451,18 @@ Soft transhumanism — one human and one machine mind gradually braiding cogniti
 
 ---
 
+## 🚀 Spark Concept Induction
+
+Bus-native Spark capability that consolidates recent Orion experience into concept profiles and deltas, then publishes them on the bus.
+
+- **Service:** `orion-spark-concept-induction`
+- **Kinds:** `memory.concepts.profile.v1`, `memory.concepts.delta.v1`
+- **Defaults:** intake on `orion:chat:history:log`, `orion:collapse:mirror`, `orion:memory:episode`; outputs to `orion:spark:concepts:profile` / `orion:spark:concepts:delta`
+- **Run:** `docker compose -f services/orion-spark-concept-induction/docker-compose.yml --env-file .env up -d orion-spark-concept-induction`
+- **Test:** `python -m scripts.test_concept_induction_publish`
+
+---
+
 ## 📚 References & Conceptual Anchors
 
 This project is heavily inspired by work at the intersection of **black hole thermodynamics, holography, relational quantum mechanics, extended mind, and active inference**. A non-exhaustive list:

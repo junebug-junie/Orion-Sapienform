@@ -11,6 +11,11 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vector.schemas import VectorDocumentUpsertV1, VectorWriteRequest
 
+from app.chat_history import (
+    CHAT_HISTORY_COLLECTION,
+    CHAT_HISTORY_MESSAGE_KIND,
+    chat_history_envelope_to_request,
+)
 from app.settings import settings
 
 # Setup Logger
@@ -59,6 +64,14 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     """
     Adapts various incoming kinds to a unified VectorWriteRequest.
     """
+    chat_req = chat_history_envelope_to_request(
+        env,
+        channel=settings.VECTOR_WRITER_CHAT_HISTORY_CHANNEL,
+        collection_name=settings.VECTOR_WRITER_CHAT_COLLECTION or CHAT_HISTORY_COLLECTION,
+    )
+    if chat_req:
+        return chat_req
+
     kind = env.kind
     payload = env.payload
 
@@ -210,6 +223,21 @@ async def handle_envelope(env: BaseEnvelope) -> None:
             meta["latent_ref"] = req.latent_ref
         if req.latent_summary:
             meta["latent_summary"] = req.latent_summary
+        if env.kind == CHAT_HISTORY_MESSAGE_KIND:
+            logger.info(
+                "Chat history ingest id=%s role=%s session=%s correlation_id=%s",
+                req.id,
+                req.metadata.get("role"),
+                req.metadata.get("session_id"),
+                getattr(env, "correlation_id", None),
+            )
+
+        # 3. Generate Embedding (if not provided)
+        vector_list = req.vector
+        if not vector_list:
+            # Run CPU-bound model in thread pool
+            vector = await asyncio.to_thread(embedding_model.encode, req.content)
+            vector_list = vector.tolist()
 
         collection_name = req.collection or settings.CHROMA_COLLECTION_DEFAULT
         collection = chroma_client.get_or_create_collection(name=collection_name)

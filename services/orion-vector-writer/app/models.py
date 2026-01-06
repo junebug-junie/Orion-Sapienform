@@ -46,26 +46,6 @@ class CollapseTriageEvent(BaseModel):
             "metadata": metadata,
         }
 
-class ChatMessageEvent(BaseModel):
-    """
-    Defines the schema for chat messages that should be logged for long-term
-    memory, coming from a channel like 'orion:chat:history:log'.
-    """
-    id: str
-    user: str
-    content: str
-    timestamp: str
-
-    def to_document(self) -> Dict[str, Any]:
-        """Converts the chat message into a standard document format."""
-        metadata = self.model_dump(exclude={'content'})
-        metadata['source_channel'] = 'orion:chat:history:log' # Example channel
-        return {
-            "id": self.id,
-            "text": f"User '{self.user}' said: {self.content}",
-            "metadata": metadata
-        }
-
 class RAGDocumentEvent(BaseModel):
     """
 
@@ -81,4 +61,3 @@ class RAGDocumentEvent(BaseModel):
         # The metadata is already well-structured for this event type.
         self.metadata['source_channel'] = 'orion:rag:document:add'
         return self.model_dump()
-

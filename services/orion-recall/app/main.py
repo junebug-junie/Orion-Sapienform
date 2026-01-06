@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 
 from orion.core.bus.bus_service_chassis import Rabbit
 
@@ -16,20 +16,21 @@ from .settings import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Rabbit start_background doesn't take stop_event in latest chassis, it stores tasks.
+    # But checking Rabbit implementation:
+    # async def start_background(self, stop_event: Optional[asyncio.Event] = None) -> None:
+    # It DOES accept stop_event optionally, but generally we rely on .stop()
+
     rabbit = Rabbit(chassis_cfg(), request_channel=settings.RECALL_BUS_INTAKE, handler=handle)
     await rabbit.start_background()
+
     yield
+
     await rabbit.stop()
 
 
 app = FastAPI(title="Orion Recall", version=settings.SERVICE_VERSION, lifespan=lifespan)
 
-# --- ADD THIS ENDPOINT ---
-@app.get("/health")
-async def health():
-    """Health check for Docker/K8s."""
-    return {"status": "ok", "service": settings.SERVICE_NAME}
-# -------------------------
 
 @app.post("/recall", response_model=RecallResponseBody)
 async def recall_endpoint(body: RecallRequestBody):

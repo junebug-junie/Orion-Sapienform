@@ -28,11 +28,23 @@ class Settings(BaseSettings):
     # Cognition Trace Intake
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")
 
-    # Telemetry Output
+    # Durable telemetry output (SQL writer ingests this)
     channel_spark_telemetry: str = Field("orion:spark:telemetry", alias="CHANNEL_SPARK_TELEMETRY")
 
+    # Real-time snapshot stream (state-service + UI can subscribe)
+    channel_spark_state_snapshot: str = Field(
+        "orion:spark:state:snapshot",
+        alias="CHANNEL_SPARK_STATE_SNAPSHOT",
+    )
+
+    # Freshness semantics (for read-model)
+    spark_state_valid_for_ms: int = Field(15000, alias="SPARK_STATE_VALID_FOR_MS")
+
     # Tissue
-    orion_tissue_snapshot_path: str = Field("/mnt/storage-lukewarm/orion/spark/tissue-brain.npy", alias="ORION_TISSUE_SNAPSHOT_PATH")
+    orion_tissue_snapshot_path: str = Field(
+        "/mnt/storage-lukewarm/orion/spark/tissue-brain.npy",
+        alias="ORION_TISSUE_SNAPSHOT_PATH",
+    )
 
     # RPC to Cortex-Orch (Spark -> Cortex-Orch)
     channel_cortex_request: str = Field(
@@ -43,6 +55,7 @@ class Settings(BaseSettings):
     # How long to wait for Cortex-Orch RPC reply
     cortex_timeout_sec: float = Field(15.0, alias="CORTEX_TIMEOUT_SEC")
 
+    # Web UI
     port: int = Field(8444, alias="PORT")
 
     class Config:

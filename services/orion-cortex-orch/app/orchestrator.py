@@ -19,8 +19,9 @@ from orion.schemas.cortex.schemas import (
     PlanExecutionRequest,
     PlanExecutionArgs
 )
-from .clients import CortexExecClient
+from .clients import CortexExecClient, StateServiceClient
 from .settings import get_settings
+from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
 
 logger = logging.getLogger("orion.cortex.orch")
@@ -241,6 +242,35 @@ def _plan_args(req: CortexClientRequest, correlation_id: str) -> PlanExecutionAr
     )
 
 
+
+async def _maybe_fetch_state(bus: OrionBusAsync, *, source: ServiceRef, correlation_id: str) -> StateLatestReply | None:
+    """
+    Best-effort fetch of the latest Orion state snapshot from orion-state-service.
+    Never raises; returns None on failure.
+    """
+    settings = get_settings()
+    if not settings.orion_state_enabled:
+        return None
+
+    try:
+        client = StateServiceClient(
+            bus,
+            request_channel=settings.state_request_channel,
+            result_prefix=settings.state_result_prefix,
+        )
+        node = (settings.state_node or "").strip() or None
+        req = StateGetLatestRequest(scope=settings.state_scope, node=node)
+        return await client.get_latest(
+            source=source,
+            req=req,
+            correlation_id=correlation_id,
+            timeout_sec=float(settings.state_timeout_sec),
+        )
+    except Exception as e:
+        logger.warning(f"State service unavailable (corr={correlation_id}): {e}")
+        return None
+
+
 async def call_cortex_exec(
     bus: OrionBusAsync,
     *,
@@ -253,6 +283,18 @@ async def call_cortex_exec(
 ) -> Dict[str, Any]:
     plan = _build_plan_for_mode(client_request)
     context = _build_context(client_request)
+
+    # Attach latest Orion state (Spark) as a read-model artifact
+    state_reply = await _maybe_fetch_state(bus, source=source, correlation_id=correlation_id)
+    if state_reply is not None:
+        context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")
+    else:
+        context.setdefault("metadata", {})["orion_state"] = StateLatestReply(
+            ok=False,
+            status="missing",
+            note="state_service_unavailable",
+        ).model_dump(mode="json")
+
     args = _plan_args(client_request, correlation_id)
     diagnostic = _diagnostic_enabled(client_request)
 

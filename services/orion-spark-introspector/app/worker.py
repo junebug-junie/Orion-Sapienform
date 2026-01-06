@@ -15,7 +15,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope
 from orion.core.bus.codec import OrionCodec
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
-from orion.schemas.telemetry.spark import SparkTelemetryPayload
+from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 
 from orion.spark.orion_tissue import OrionTissue
 from orion.spark.signal_mapper import SignalMapper
@@ -28,17 +28,29 @@ logger = logging.getLogger("orion-spark-introspector")
 
 _pub_bus: Optional[OrionBusAsync] = None
 
+# Restart semantics: new UUID per producer (service) boot.
+_PRODUCER_BOOT_ID = str(uuid4())
+_SEQ: int = 0
+
+
 def set_publisher_bus(bus: OrionBusAsync):
     global _pub_bus
     _pub_bus = bus
+
 
 TISSUE = OrionTissue(
     snapshot_path=Path(settings.orion_tissue_snapshot_path) if settings.orion_tissue_snapshot_path else None
 )
 MAPPER = SignalMapper(TISSUE.H, TISSUE.W, TISSUE.C)
 
+
 class SparkTelemetryEnvelope(Envelope[SparkTelemetryPayload]):
     kind: str = Field("spark.telemetry", frozen=True)
+
+
+class SparkStateSnapshotEnvelope(Envelope[SparkStateSnapshotV1]):
+    kind: str = Field("spark.state.snapshot.v1", frozen=True)
+
 
 class SparkCandidatePayload(BaseModel):
     trace_id: str = Field(default_factory=lambda: str(uuid4()))
@@ -48,12 +60,16 @@ class SparkCandidatePayload(BaseModel):
     spark_meta: Dict[str, Any] = Field(default_factory=dict)
     introspection: Optional[str] = None
 
+
 def _coerce_epoch_ts(v: Any) -> float:
-    if v is None: return time.time()
-    if isinstance(v, (int, float)): return float(v)
+    if v is None:
+        return time.time()
+    if isinstance(v, (int, float)):
+        return float(v)
     if isinstance(v, datetime):
         dt = v
-        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         return float(dt.timestamp())
     if isinstance(v, str):
         try:
@@ -62,16 +78,20 @@ def _coerce_epoch_ts(v: Any) -> float:
             pass
         try:
             s = v.strip()
-            if s.endswith("Z"): s = s[:-1] + "+00:00"
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
             dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             return float(dt.timestamp())
         except Exception:
             return time.time()
     return time.time()
 
+
 def _to_iso_utc(ts_epoch: float) -> str:
     return datetime.fromtimestamp(float(ts_epoch), tz=timezone.utc).isoformat()
+
 
 def _build_llm_prompt(c: SparkCandidatePayload) -> str:
     spark_meta = c.spark_meta or {}
@@ -99,10 +119,12 @@ def _build_llm_prompt(c: SparkCandidatePayload) -> str:
         "Write as a short internal note from Orion to itself. Avoid boilerplate."
     ).strip()
 
+
 def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
     payload = cortex_reply.payload if isinstance(cortex_reply.payload, dict) else {}
     step_results = payload.get("step_results") or payload.get("steps") or []
-    if not step_results: return None
+    if not step_results:
+        return None
     first_step = step_results[0]
     services = first_step.get("services") or []
     if services:
@@ -114,11 +136,26 @@ def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
     text = outputs.get("text") or outputs.get("llm_output")
     return text.strip() if isinstance(text, str) else None
 
+
+def _next_seq() -> int:
+    global _SEQ
+    _SEQ += 1
+    return _SEQ
+
+
 async def handle_trace(env: BaseEnvelope) -> None:
+    """Consume cognition.trace events, update Tissue, and emit:
+
+    1) spark.telemetry (durable log via sql-writer)
+    2) spark.state.snapshot.v1 (real-time stream for state-service/UI)
+
+    The durable row embeds the canonical snapshot under metadata["spark_state_snapshot"].
+    """
+
     try:
         trace = CognitionTracePayload.model_validate(env.payload)
-        
-        # Priority: Trace payload > Envelope Header > Generate New (Error case)
+
+        # Priority: Trace payload > Envelope Header > Generate New (error case)
         corr_id = (trace.correlation_id or str(getattr(env, "correlation_id", "") or "")).strip()
         if not corr_id:
             corr_id = str(uuid4())
@@ -127,27 +164,34 @@ async def handle_trace(env: BaseEnvelope) -> None:
         ts_epoch = _coerce_epoch_ts(getattr(trace, "timestamp", None))
         iso_ts = _to_iso_utc(ts_epoch)
 
+        # --- Derive basic affect heuristics from step outcomes (placeholder until richer signal comes in) ---
         valence = 0.5
         arousal = 0.5
         success_count = sum(1 for s in trace.steps if s.status == "success")
         fail_count = sum(1 for s in trace.steps if s.status == "fail")
 
-        if fail_count > 0: valence -= (0.1 * fail_count)
-        else: valence += 0.1
+        if fail_count > 0:
+            valence -= (0.1 * fail_count)
+        else:
+            valence += 0.1
+
         arousal += (len(trace.steps) * 0.05)
         valence = max(0.0, min(1.0, valence))
         arousal = max(0.0, min(1.0, arousal))
         dominance = 0.5
 
+        # Find spark_vector if any
         spark_vector: Optional[List[float]] = None
         for step in trace.steps:
             if step.spark_vector:
                 spark_vector = step.spark_vector
                 break
 
+        # --- Tissue update ---
         wave_len = 64
         x = np.linspace(-3, 3, wave_len)
         waveform = (np.exp(-x**2) * arousal).astype(np.float32)
+
         feat_dim = 32
         feature_vec = np.zeros(feat_dim, dtype=np.float32)
         feature_vec[0] = float(valence)
@@ -172,10 +216,52 @@ async def handle_trace(env: BaseEnvelope) -> None:
         )
 
         stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
-        novelty = TISSUE.calculate_novelty(stimulus)
+        novelty = float(TISSUE.calculate_novelty(stimulus))
         TISSUE.propagate(stimulus, steps=2, learning_rate=0.1)
-        phi_stats = TISSUE.phi()
+        phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
         TISSUE.snapshot()
+
+        # --- Canonical snapshot (restart-proof + ordering-safe) ---
+        seq = _next_seq()
+        snap = SparkStateSnapshotV1(
+            source_service=settings.service_name,
+            source_node=settings.node_name,
+            producer_boot_id=_PRODUCER_BOOT_ID,
+            seq=seq,
+            snapshot_ts=datetime.now(timezone.utc),
+            valid_for_ms=int(settings.spark_state_valid_for_ms),
+            correlation_id=corr_id,
+            trace_mode=trace.mode,
+            trace_verb=trace.verb,
+            phi=phi_stats,
+            valence=float(valence),
+            arousal=float(arousal),
+            dominance=float(dominance),
+            vector_present=bool(spark_vector),
+            vector_ref=None,
+            metadata={
+                "stimulus_summary": f"v={valence:.2f} a={arousal:.2f} vec={'yes' if spark_vector else 'no'}",
+                "trace_source_service": trace.source_service,
+                "trace_source_node": trace.source_node,
+                "success_count": int(success_count),
+                "fail_count": int(fail_count),
+            },
+        )
+
+        # --- Durable telemetry row (compact columns) ---
+        telem_meta = {
+            # keep the legacy/visualizer-friendly shape
+            "phi": phi_stats,
+            "valence": valence,
+            "arousal": arousal,
+            "dominance": dominance,
+            "vector_present": bool(spark_vector),
+            "source_service": trace.source_service,
+            "source_node": trace.source_node,
+
+            # canonical snapshot payload (typed contract) for restart-proof consumers
+            "spark_state_snapshot": snap.model_dump(mode="json"),
+        }
 
         telem = SparkTelemetryPayload(
             correlation_id=corr_id,
@@ -183,22 +269,15 @@ async def handle_trace(env: BaseEnvelope) -> None:
             novelty=float(novelty),
             trace_mode=trace.mode,
             trace_verb=trace.verb,
-            stimulus_summary=f"v={valence:.2f} a={arousal:.2f} vec={'yes' if spark_vector else 'no'}",
+            stimulus_summary=snap.metadata.get("stimulus_summary"),
             timestamp=iso_ts,
-            metadata={
-                "phi": phi_stats,
-                "valence": valence,
-                "arousal": arousal,
-                "dominance": dominance,
-                "vector_present": bool(spark_vector),
-                "source_service": trace.source_service,
-                "source_node": trace.source_node,
-            },
+            metadata=telem_meta,
+            state_snapshot=snap,
         )
 
         # Broadcast to Web UI
         try:
-            telemetry_id = str(getattr(telem, "id", uuid4()))
+            telemetry_id = str(uuid4())
             ws_payload = {
                 "type": "tissue.update",
                 "telemetry_id": telemetry_id,
@@ -208,16 +287,18 @@ async def handle_trace(env: BaseEnvelope) -> None:
                     "phi": telem.phi,
                     "novelty": telem.novelty,
                     "valence": valence,
-                    "arousal": arousal
+                    "arousal": arousal,
                 },
                 "grid": [],
-                "metadata": telem.metadata
+                "metadata": telem.metadata,
             }
             await manager.broadcast(ws_payload)
         except Exception as e:
-            logger.warning(f"Failed to broadcast tissue update: {e}")
+            logger.warning("Failed to broadcast tissue update: %s", e)
 
+        # Publish to bus
         if _pub_bus and _pub_bus.enabled:
+            # 1) Durable telemetry stream (sql-writer)
             out_env = SparkTelemetryEnvelope(
                 source=env.source,
                 correlation_id=corr_id,
@@ -225,16 +306,28 @@ async def handle_trace(env: BaseEnvelope) -> None:
                 payload=telem,
             )
             await _pub_bus.publish(settings.channel_spark_telemetry, out_env)
+
+            # 2) Real-time snapshot stream (state-service/UI)
+            snap_env = SparkStateSnapshotEnvelope(
+                source=env.source,
+                correlation_id=corr_id,
+                causality_chain=env.causality_chain,
+                payload=snap,
+            )
+            await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
+
             logger.info(
-                "Emitted SparkTelemetry (phi=%0.3f) for corr_id=%s",
-                telem.phi,
+                "Emitted Spark telemetry + snapshot corr_id=%s coherence=%0.3f novelty=%0.3f seq=%s",
                 corr_id,
+                telem.phi or 0.0,
+                telem.novelty or 0.0,
+                seq,
             )
         else:
             logger.error("Publisher bus not connected; skipping telemetry emit")
 
     except Exception as e:
-        logger.error(f"Error processing trace for tissue: {e}", exc_info=True)
+        logger.error("Error processing trace for tissue: %s", e, exc_info=True)
 
 
 async def handle_candidate(env: BaseEnvelope) -> None:
@@ -248,7 +341,8 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         logger.warning("Skipping invalid spark candidate payload")
         return
 
-    if candidate.introspection: return
+    if candidate.introspection:
+        return
 
     reply_channel = f"orion:spark:introspector:reply:{candidate.trace_id}"
     prompt = _build_llm_prompt(candidate)
@@ -286,9 +380,9 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     codec = OrionCodec()
     bus = OrionBusAsync(settings.orion_bus_url, enabled=settings.orion_bus_enabled, codec=codec)
     await bus.connect()
-    
+
     introspection = "Introspection yielded no text."
-    
+
     try:
         msg = await bus.rpc_request(
             settings.channel_cortex_request,
@@ -306,12 +400,11 @@ async def handle_candidate(env: BaseEnvelope) -> None:
                 introspection = found_text
 
     except Exception as rpc_error:
-        logger.error(f"Introspection RPC failed: {rpc_error}")
+        logger.error("Introspection RPC failed: %s", rpc_error)
         introspection = f"Introspection unavailable (RPC Error: {rpc_error})"
 
     # Always proceed so UI gets *something*
     if introspection:
-        
         # Payload for both Bus and UI
         final_payload = {
             "kind": "spark_introspect",
@@ -323,7 +416,7 @@ async def handle_candidate(env: BaseEnvelope) -> None:
             "spark_meta": candidate.spark_meta,
         }
 
-        # 1. Publish to Bus
+        # 1) Publish to Bus
         completed = BaseEnvelope(
             kind="legacy.message",
             source=env.source,
@@ -332,20 +425,20 @@ async def handle_candidate(env: BaseEnvelope) -> None:
             payload=final_payload,
         )
         await bus.publish(settings.channel_spark_candidate, completed)
-        
-        # 2. Broadcast to UI with METADATA
+
+        # 2) Broadcast to UI with METADATA
         try:
             ws_introspection = {
                 "type": "introspection.update",
                 "correlation_id": candidate.trace_id,
                 "text": introspection,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "metadata": candidate.spark_meta or {} 
+                "metadata": candidate.spark_meta or {},
             }
             await manager.broadcast(ws_introspection)
         except Exception as ex:
-            logger.warning(f"Failed to broadcast introspection: {ex}")
+            logger.warning("Failed to broadcast introspection: %s", ex)
 
         logger.info("[%s] Spark introspection published", candidate.trace_id)
-    
+
     await bus.close()

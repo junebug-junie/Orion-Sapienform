@@ -54,6 +54,7 @@ class Settings(BaseSettings):
             "biometrics.telemetry": "BiometricsTelemetry",
             "spark.introspection.log": "SparkIntrospectionLogSQL",
             "spark.introspection": "SparkIntrospectionLogSQL",
+            "spark.telemetry": "SparkTelemetrySQL",
             "cognition.trace": "CognitionTraceSQL"
         }),
         alias="SQL_WRITER_ROUTE_MAP_JSON"

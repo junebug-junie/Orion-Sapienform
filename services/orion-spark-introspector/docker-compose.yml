@@ -11,32 +11,34 @@ services:
     networks:
       - app-net
     environment:
-      - PROJECT=${PROJECT}
-      - SERVICE_NAME=${SERVICE_NAME}
-      - SERVICE_VERSION=${SERVICE_VERSION}
-      - ORION_BUS_URL=${ORION_BUS_URL}
-      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
-      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
-      - PORT=${PORT}
+      PROJECT: ${PROJECT}
+      NODE_NAME: ${NODE_NAME}
+      SERVICE_NAME: ${SERVICE_NAME}
+      SERVICE_VERSION: ${SERVICE_VERSION}
+
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC}
+      PORT: ${PORT}
 
       # Bus channels
-      - CHANNEL_SPARK_TELEMETRY=${CHANNEL_SPARK_TELEMETRY}
-      - CHANNEL_SPARK_CANDIDATE=${CHANNEL_SPARK_CANDIDATE}
-      - CHANNEL_COGNITION_TRACE_PUB=${CHANNEL_COGNITION_TRACE_PUB:-orion:cognition:trace}
-      - CHANNEL_SPARK_TELEMETRY=${CHANNEL_SPARK_TELEMETRY:-orion:spark:introspection:log}
-      - CHANNEL_CORTEX_REQUEST=${CHANNEL_CORTEX_REQUEST}
+      CHANNEL_COGNITION_TRACE_PUB: ${CHANNEL_COGNITION_TRACE_PUB:-orion:cognition:trace}
+      CHANNEL_SPARK_TELEMETRY: ${CHANNEL_SPARK_TELEMETRY:-orion:spark:telemetry}
+      CHANNEL_SPARK_STATE_SNAPSHOT: ${CHANNEL_SPARK_STATE_SNAPSHOT:-orion:spark:state:snapshot}
+      CHANNEL_SPARK_INTROSPECT_CANDIDATE: ${CHANNEL_SPARK_INTROSPECT_CANDIDATE:-orion:spark:introspect:candidate:log}
+      CORTEX_REQUEST_CHANNEL: ${CORTEX_REQUEST_CHANNEL:-orion-cortex:request}
+
+      # Freshness
+      SPARK_STATE_VALID_FOR_MS: ${SPARK_STATE_VALID_FOR_MS:-15000}
 
       # Tissue
-      - ORION_TISSUE_SNAPSHOT_PATH=${ORION_TISSUE_SNAPSHOT_PATH:-/mnt/storage-lukewarm/orion/spark/tissue-brain.npz}
+      ORION_TISSUE_SNAPSHOT_PATH: ${ORION_TISSUE_SNAPSHOT_PATH:-/mnt/storage-lukewarm/orion/spark/tissue-brain.npy}
 
-      - SQL_WRITER_CHANNEL=${SQL_WRITER_CHANNEL}
-      - CORTEX_TIMEOUT_SEC=${CORTEX_TIMEOUT_SEC}
-      - CONNECT_TIMEOUT=5.0
-      - READ_TIMEOUT=10.0
-      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+      # Cortex timeouts
+      CORTEX_TIMEOUT_SEC: ${CORTEX_TIMEOUT_SEC:-15}
 
     ports:
-      - "${PORT}:8444"
+      - "${PORT:-8444}:${PORT:-8444}"
 
     volumes:
       - /mnt/storage-lukewarm/orion/spark:/mnt/storage-lukewarm/orion/spark

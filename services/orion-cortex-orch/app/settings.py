@@ -39,6 +39,20 @@ class Settings(BaseSettings):
     )
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
 
+    # Latest Orion state (Spark) read-model service
+    orion_state_enabled: bool = Field(True, alias="ORION_STATE_ENABLED")
+    state_request_channel: str = Field(
+        "orion-state:request",
+        validation_alias=AliasChoices("STATE_REQUEST_CHANNEL", "ORION_STATE_REQUEST_CHANNEL"),
+    )
+    state_result_prefix: str = Field(
+        "orion-state:reply",
+        validation_alias=AliasChoices("STATE_RESULT_PREFIX", "ORION_STATE_RESULT_PREFIX"),
+    )
+    state_timeout_sec: float = Field(2.0, alias="STATE_TIMEOUT_SEC")
+    state_scope: str = Field("global", alias="STATE_SCOPE")  # global|node
+    state_node: str = Field("", alias="STATE_NODE")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

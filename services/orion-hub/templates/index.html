@@ -185,6 +185,17 @@
           Vision service stub.
         </div>
       </div>
+
+      <!-- Pop-out container (used by app.js) -->
+      <div id="visionFloatingContainer" class="hidden fixed inset-0 z-50 bg-black/80 p-4">
+        <div class="bg-gray-900 rounded-2xl h-full w-full flex flex-col border border-gray-700 overflow-hidden">
+          <div class="flex items-center justify-between p-2 border-b border-gray-800">
+            <div class="text-xs text-gray-400">Vision Pop-out</div>
+            <button id="visionCloseFloating" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Close</button>
+          </div>
+          <div class="flex-1 bg-black"></div>
+        </div>
+      </div>
     </div>
 
     <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
@@ -198,16 +209,90 @@
           <button id="collapseModeRaw" class="px-3 py-1 rounded-md text-gray-300 hover:text-white">Raw JSON</button>
         </div>
       </div>
-      <div id="collapseGuidedSection" class="space-y-3">
-         <p class="text-xs text-gray-400">Use this form to submit a Collapse entry.</p>
-         <button id="collapseGuidedSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm">Submit Guided Collapse</button>
+
+      <div id="collapseTooltip" class="hidden text-xs text-gray-300 bg-gray-800/60 border border-gray-700 rounded-lg p-3">
+        <p class="mb-2">A Collapse Mirror entry is a structured self-log. The guided form maps to the required schema fields.</p>
+        <ul class="list-disc list-inside space-y-1 text-gray-400">
+          <li><span class="text-gray-200">observer</span>: who is logging (e.g., Juniper / Oríon)</li>
+          <li><span class="text-gray-200">trigger</span>: what caused the moment</li>
+          <li><span class="text-gray-200">observer_state</span>: list of internal states</li>
+          <li><span class="text-gray-200">field_resonance</span>: atmosphere / emotional field</li>
+          <li><span class="text-gray-200">type</span>: snapshot | causally_dense | note | noop</li>
+          <li><span class="text-gray-200">emergent_entity</span>: what "showed up"</li>
+          <li><span class="text-gray-200">summary</span>: short narrative</li>
+          <li><span class="text-gray-200">mantra</span>: compact anchor phrase</li>
+        </ul>
       </div>
+
+      <div id="collapseGuidedSection" class="space-y-3">
+        <p class="text-xs text-gray-400">Use this form to submit a Collapse entry.</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Observer</label>
+            <input id="collapseObserver" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Juniper" value="Juniper" />
+          </div>
+          <div>
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Type</label>
+            <select id="collapseType" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600">
+              <option value="snapshot" selected>snapshot</option>
+              <option value="causally_dense">causally_dense</option>
+              <option value="note">note</option>
+              <option value="noop">noop</option>
+            </select>
+          </div>
+
+          <div class="md:col-span-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Trigger</label>
+            <input id="collapseTrigger" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="What happened?" />
+          </div>
+
+          <div class="md:col-span-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Observer State (one per line)</label>
+            <textarea id="collapseObserverState" rows="2" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="excited\nfocused"></textarea>
+          </div>
+
+          <div>
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Field Resonance</label>
+            <input id="collapseFieldResonance" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="electric / tender / chaotic" />
+          </div>
+          <div>
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Emergent Entity</label>
+            <input id="collapseEmergentEntity" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Oríon / Juniper / The Mirror" />
+          </div>
+
+          <div class="md:col-span-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Summary</label>
+            <textarea id="collapseSummary" rows="3" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Short narrative..."></textarea>
+          </div>
+
+          <div class="md:col-span-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Mantra</label>
+            <input id="collapseMantra" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="A compact anchor phrase" />
+          </div>
+
+          <div class="md:col-span-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Causal Echo (optional)</label>
+            <textarea id="collapseCausalEcho" rows="2" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Optional causal echo..."></textarea>
+          </div>
+        </div>
+
+        <button id="collapseGuidedSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm">Submit Guided Collapse</button>
+      </div>
+
+      <div id="collapseRawSection" class="hidden space-y-3">
+        <p class="text-xs text-gray-400">Paste a raw JSON payload matching the CollapseMirrorEntry schema.</p>
+        <textarea id="collapseRawJson" rows="10" class="w-full bg-gray-700 text-white rounded-lg p-3 text-xs font-mono border border-gray-600" spellcheck="false"></textarea>
+        <button id="collapseRawSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm">Submit Raw Collapse</button>
+      </div>
+
+      <div id="collapseStatus" class="text-xs text-gray-400"></div>
     </div>
   </div>
 
   <div id="settingsPanel" class="fixed inset-y-0 right-0 w-full md:w-96 bg-gray-900 shadow-2xl transform translate-x-full transition-transform duration-300 z-30 flex flex-col">
      </div>
   
-  <script src="/static/js/app.js?v=1.0.23" defer></script>
+  <script src="/static/js/app.js?v=1.0.25" defer></script>
 </body>
 </html>

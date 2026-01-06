@@ -31,7 +31,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload
-from orion.schemas.dream import DreamRequest
+from orion.schemas.telemetry.dream import DreamRequest
 from orion.schemas.chat import RawChat
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 

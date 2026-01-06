@@ -37,41 +37,28 @@ This document outlines the architecture for a dedicated, mesh-wide vector store.
 This design moves away from embedded databases (like the one previously in orion-rag) to a centralized, service-oriented architecture, mirroring the pattern used by orion-sql-db.
 1. Architectural Overview
 
-The architecture consists of two new, distinct services:
+The architecture consists of two primary services:
 
     orion-vector-db (The Database Server): A standalone service that runs the official ChromaDB vector database in a container. Its only job is to store and retrieve vectorized data.
 
-    orion-vector-writer (The Ingestion Service): A "headless" worker service that acts as the single, intelligent gateway for writing data to the vector database. It listens for various events on the Orion Bus, validates their schemas, transforms them into a standardized document format, generates embeddings, and upserts them into the orion-vector-db.
+    orion-vector-writer (The Ingestion Service): A "headless" worker service that acts as the single, intelligent gateway for writing data to the vector database. It listens for pre-embedded upsert events on the Orion Bus and persists them into the orion-vector-db. Embeddings are produced upstream (for example by the chat memory service or a dedicated embedding host) and passed through unchanged.
 
-This separation of concerns is critical. It means that services like collapse-mirror or orion-hub don't need to know anything about embeddings or vector databases. They just publish their standard events to the bus, and the vector-writer handles the rest.
+This separation of concerns is critical. It means that services like collapse-mirror or orion-hub don't need to know anything about vector databases. They publish normalized upsert events to the bus with embeddings already attached, and the vector-writer handles the storage.
 2. The "Schema Enforcer" Pattern
 
-The orion-vector-writer will function as the schema enforcement middleware you asked about. It will be built to understand different types of incoming data.
+The orion-vector-writer functions as a schema enforcement and storage middleware. It now consumes `memory.vector.upsert.v1` envelopes that already contain embeddings and optional latent references. Upstream services are responsible for obtaining embeddings and populating the standard payload.
+
 Subscription Channels:
 
-The writer will listen to multiple channels simultaneously, for example:
+The writer listens to pre-embedded upsert events, for example:
 
-    orion:collapse:triage (for new collapse mirror events)
-
-    orion:chat:history:log (for chat messages to be logged for long-term memory)
-
-    orion:rag:document:add (for explicitly adding documents to the RAG store)
+    orion:memory:vector:upsert (for all vectorizable memory docs)
 
 Schema Mapping:
 
-Inside the vector-writer's code, there will be a mapping that links each channel to a specific Pydantic validation schema.
+Upsert payloads are validated against a shared `VectorDocumentUpsertV1` Pydantic schema, which carries the document text, metadata, embedding, embedding model info, and optional latent references.
 
-    When a message arrives on orion:collapse:triage, it's validated against a CollapseMirrorEvent schema. The summary field is extracted as the text to be embedded.
-
-    When a message arrives on orion:chat:history:log, it's validated against a ChatMessage schema. The content field is extracted.
-
-This makes the system incredibly extensible. To add a new data source, you simply:
-
-    Add a new channel to the writer's subscription list.
-
-    Create a new Pydantic model for that data type.
-
-    Add a new rule to the channel-to-schema map.
+This makes the system extensible. To add a new data source, emit a compliant upsert envelope with the embedding already attached and the writer will persist it.
 
 3. Data Flow Example (Collapse Mirror)
 
@@ -79,17 +66,15 @@ This makes the system incredibly extensible. To add a new data source, you simpl
 
     [ orion-collapse-mirror ] processes it and publishes the full event to orion:collapse:triage.
 
-    [ orion-vector-writer ] (listening on orion:collapse:triage):
+    [ orion-chat-memory / embedding host ] generates an embedding for the collapse summary and publishes a `memory.vector.upsert.v1` message.
+
+    [ orion-vector-writer ] (listening on orion:memory:vector:upsert):
 
         Receives the message.
 
-        Validates it against its CollapseMirrorEvent schema.
+        Validates it against the VectorDocumentUpsertV1 schema.
 
-        Extracts the summary field.
-
-        Uses a sentence-embedding model to generate a vector for the summary.
-
-        Connects to orion-vector-db and upserts the document, vector, and metadata.
+        Upserts the document, vector, and metadata into the vector store without recomputing embeddings.
 
 4. Next Steps
 
@@ -134,4 +119,3 @@ Run within the container:
             pprint.pprint(c.peek(limit=1)['metadatas'])
         print('-' * 40)
     "
-

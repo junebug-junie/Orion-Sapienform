@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
+        default='["orion:memory:vector:upsert"]',
         default='["orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -50,9 +51,6 @@ class Settings(BaseSettings):
 
     # Capture the collection from .env. Defaults to 'orion_general' if missing.
     CHROMA_COLLECTION_DEFAULT: str = Field(default="orion_general", alias="VECTOR_DB_COLLECTION")
-
-    # Embedding
-    EMBEDDING_MODEL_NAME: str = Field(default="all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
 
     class Config:
         env_file = ".env"

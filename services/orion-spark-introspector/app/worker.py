@@ -286,6 +286,9 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     codec = OrionCodec()
     bus = OrionBusAsync(settings.orion_bus_url, enabled=settings.orion_bus_enabled, codec=codec)
     await bus.connect()
+    
+    introspection = "Introspection yielded no text."
+    
     try:
         msg = await bus.rpc_request(
             settings.channel_cortex_request,
@@ -296,9 +299,18 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         decoded = codec.decode(msg.get("data"))
         if not decoded.ok or not decoded.envelope:
             logger.warning("Cortex reply decode failed: %s", decoded.error)
-            return
-        introspection = _extract_introspection_text(decoded.envelope)
-        if not introspection: return
+            introspection = "Error: Introspection decode failed."
+        else:
+            found_text = _extract_introspection_text(decoded.envelope)
+            if found_text:
+                introspection = found_text
+
+    except Exception as rpc_error:
+        logger.error(f"Introspection RPC failed: {rpc_error}")
+        introspection = f"Introspection unavailable (RPC Error: {rpc_error})"
+
+    # Always proceed so UI gets *something*
+    if introspection:
         
         # Payload for both Bus and UI
         final_payload = {
@@ -335,5 +347,5 @@ async def handle_candidate(env: BaseEnvelope) -> None:
             logger.warning(f"Failed to broadcast introspection: {ex}")
 
         logger.info("[%s] Spark introspection published", candidate.trace_id)
-    finally:
-        await bus.close()
+    
+    await bus.close()

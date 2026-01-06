@@ -73,6 +73,22 @@ async def websocket_endpoint(websocket: WebSocket):
 
             mode = data.get("mode", "brain")
             disable_tts = data.get("disable_tts", False)
+
+            # --- FIX: Trace Verb & Test Stub Logic ---
+            # 1. Default to general chat
+            trace_verb = "chat_general"
+            
+            # 2. Map modes to verbs for the Visualizer
+            if mode == "agent":
+                trace_verb = "task_execution"
+            elif mode == "council":
+                trace_verb = "council_deliberation"
+            
+            # 3. Force verb for Test/Stub Submissions
+            if data.get("test_mode") or data.get("submission_id"):
+                trace_verb = "test_submission"
+            # -----------------------------------------
+
             transcript: Optional[str] = None
             is_text_input = False
 
@@ -107,9 +123,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"error": "Cortex disconnected (Bus offline)"})
                 continue
 
-            logger.info(f"Routing to mode: {mode}")
+            logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
             trace_id = str(uuid.uuid4())
-            
+
+            # Inject trace_verb into metadata so Cortex might see it too
             chat_req = CortexChatRequest(
                 prompt=transcript,
                 mode=mode,
@@ -118,7 +135,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 trace_id=trace_id,
                 recall={"enabled": data.get("use_recall", False)},
                 packs=data.get("packs"),
-                metadata={"source": "hub_ws"}
+                metadata={"source": "hub_ws", "trace_verb": trace_verb} 
             )
 
             # Handle Verbs selection
@@ -145,14 +162,16 @@ async def websocket_endpoint(websocket: WebSocket):
             if bus:
                 try:
                     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-                    
+
                     # Extract rich metadata
                     gateway_meta = {}
                     if hasattr(resp, "cortex_result") and resp.cortex_result:
                         gateway_meta = resp.cortex_result.metadata or {}
-                    
+
+                    # FIX: Include trace_verb in spark_meta for the Visualizer
                     spark_meta = {
                         "mode": mode,
+                        "trace_verb": trace_verb,
                         "use_recall": bool(data.get("use_recall", False)),
                         **(gateway_meta if isinstance(gateway_meta, dict) else {}),
                     }
@@ -177,7 +196,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                     await bus.publish(settings.CHANNEL_CHAT_HISTORY_LOG, env_sql)
 
-                    # 2. Spark Introspection Candidate (PATCH: This triggers the thought stream)
+                    # 2. Spark Introspection Candidate
                     candidate_payload = {
                         "trace_id": trace_id,
                         "source": "hub_ws",
@@ -186,12 +205,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         "spark_meta": spark_meta
                     }
                     env_spark = BaseEnvelope(
-                        kind="spark.candidate", 
+                        kind="spark.candidate",
                         correlation_id=trace_id,
                         source=ServiceRef(name="hub", node=settings.NODE_NAME),
                         payload=candidate_payload
                     )
-                    # We use the literal string to ensure it hits the default introspection channel
+                    # Kept the literal string to ensure it hits the default introspection channel
+                    # and avoids settings attribute errors
                     await bus.publish("orion.spark.candidate", env_spark)
 
                 except Exception as e:
@@ -203,7 +223,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if orion_response_text:
                 history.append({"role": "assistant", "content": orion_response_text})
-            
+
             await websocket.send_json({"state": "idle"})
 
     except WebSocketDisconnect:

@@ -38,6 +38,7 @@ class OrionTissue:
         W: int = 16,
         C: int = 8,
         decay: float = 0.95,
+        coherence_alpha: float = 50.0,
         snapshot_path: Optional[Path] = None,
     ) -> None:
 
@@ -56,6 +57,15 @@ class OrionTissue:
         self.W = W
         self.C = C
         self.decay = decay
+
+        # Coherence scaling: the original v0 coherence = 1/(1+var)
+        # often saturates near 1.0 because var(T) tends to stay small.
+        # We scale variance to get a useful dynamic range.
+        env_alpha = os.environ.get("ORION_TISSUE_COH_ALPHA")
+        try:
+            self.coh_alpha = float(env_alpha) if env_alpha is not None else float(coherence_alpha)
+        except Exception:
+            self.coh_alpha = float(coherence_alpha)
 
         # Initialize defaults (Zero State)
         self.T = np.zeros((H, W, C), dtype=np.float32)
@@ -186,12 +196,18 @@ class OrionTissue:
         *,
         magnitude: float = 1.0,
         steps: int = 2,
+        learning_rate: float = 0.2,
     ) -> None:
         """
         Convert a SurfaceEncoding into a stimulus and integrate it.
         """
         S = mapper.surface_to_stimulus(encoding, magnitude=magnitude)
-        self.step(S, steps=steps)
+
+        # Predictive coding: novelty is based on mismatch vs expectation.
+        self.calculate_novelty(S)
+
+        # Commit: update expectation + evolve tissue.
+        self.propagate(S, steps=steps, learning_rate=learning_rate)
 
     def phi(self) -> Dict[str, float]:
         """
@@ -206,10 +222,16 @@ class OrionTissue:
         if self.T.size == 0:
             return {"valence": 0.0, "energy": 0.0, "coherence": 0.0, "novelty": 0.0}
 
-        valence = float(self.T[..., 0].mean())
+        # Valence is defined as a difference between a "positive" channel
+        # and a "negative" channel when available (neural projection uses
+        # ch0 for +, ch1 for -). This gives us a sign.
+        if self.C >= 2:
+            valence = float(self.T[..., 0].mean() - self.T[..., 1].mean())
+        else:
+            valence = float(self.T[..., 0].mean())
         energy = float(np.abs(self.T).mean())
         variance = float(self.T.var())
-        coherence = float(1.0 / (1.0 + variance))
+        coherence = float(1.0 / (1.0 + (self.coh_alpha * variance)))
         novelty = float(self.last_novelty)
 
         return {

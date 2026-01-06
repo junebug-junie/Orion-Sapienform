@@ -116,7 +116,7 @@ async def handle_chat_request(
     )
 
     try:
-        # Call Bus RPC
+        # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
         resp: CortexChatResult = await cortex_client.chat(req)
 
         # Extract Text
@@ -124,6 +124,11 @@ async def handle_chat_request(
 
         # Map raw result for UI debug
         raw_result = resp.cortex_result.model_dump(mode="json")
+
+        # Use the correlation_id from the response (gateway) if available
+        # or it might be passed back from the client logic if modified to do so.
+        # Here we rely on CortexChatResult having it.
+        correlation_id = resp.cortex_result.correlation_id
 
         return {
             "session_id": session_id,
@@ -134,6 +139,7 @@ async def handle_chat_request(
             "raw": raw_result,
             "recall_debug": resp.cortex_result.recall_debug,
             "spark_meta": None,
+            "correlation_id": correlation_id,
         }
 
     except Exception as e:
@@ -165,9 +171,10 @@ async def api_chat(
 
     # ─────────────────────────────────────────────
     # 📡 Publish HTTP chat → chat history log
-    # (restores legacy Brain→SQL behavior via CHANNEL_CHAT_LOG)
     # ─────────────────────────────────────────────
     text = result.get("text")
+    correlation_id = result.get("correlation_id")
+
     if text and getattr(bus, "enabled", False):
         try:
             user_messages = payload.get("messages", [])
@@ -177,19 +184,25 @@ async def api_chat(
 
             use_recall = bool(payload.get("use_recall", False))
 
+            # If we didn't get a correlation_id from gateway, fallback to new UUID
+            # (but ideally we got it).
+            final_corr_id = correlation_id or str(uuid4())
+
             chat_log_payload = {
-                "trace_id": str(uuid4()),
+                "correlation_id": final_corr_id,
                 "source": settings.SERVICE_NAME,
                 "prompt": latest_user_prompt,
                 "response": text,
                 "session_id": session_id,
                 "mode": result.get("mode", "brain"),
-                #"recall": use_recall,
+                "recall": use_recall,
                 "user_id": None,
+                # Stop writing generic metadata here.
+                # Rich spark_meta will be populated by sql-writer via side-effect (from SparkTelemetry)
                 "spark_meta": None,
             }
 
-            bus.publish(
+            await bus.publish(
                 settings.CHANNEL_CHAT_HISTORY_LOG,
                 chat_log_payload,
             )
@@ -201,22 +214,6 @@ async def api_chat(
             )
 
     return result
-
-
-# ======================================================================
-# 🔍 RECALL / RAG ENDPOINT (Retired)
-# ======================================================================
-@router.post("/api/recall")
-async def api_recall(
-    payload: dict,
-    x_orion_session_id: Optional[str] = Header(None),
-):
-    """
-    DEPRECATED: Hub no longer performs direct recall.
-    This logic is now handled by Cortex Gateway / Orchestrator.
-    """
-    return {"error": "Endpoint deprecated. Recall is handled by Cortex Stack."}
-
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS
@@ -244,8 +241,29 @@ async def submit_collapse(data: dict):
         )
 
     try:
+        # Normalize legacy ServiceRef objects coming from the UI.
+        # Some clients still send {"service": "hub", "node": "..."}
+        # but our canonical model uses {"name": "...", "node": "..."}.
+        src = data.get("source")
+        if isinstance(src, dict) and "name" not in src and "service" in src:
+            src = dict(src)
+            src["name"] = src.pop("service")
+            data["source"] = src
+
         entry = CollapseMirrorEntry(**data).with_defaults()
-        bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, entry.model_dump(mode="json"))
+
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+        # Note: we do NOT explicitly set correlation_id here.
+        # BaseEnvelope will generate a random one, but our worker heuristic (empty causality chain)
+        # will treat it as ad-hoc and not persist it to DB.
+        env = BaseEnvelope(
+            kind="collapse.submit"
+          , source=ServiceRef(name="hub", node=settings.NODE_NAME)
+          , payload=entry.model_dump(mode="json")
+        )
+
+        await bus.publish(settings.CHANNEL_COLLAPSE_INTAKE, env)
         logger.info(
             "📡 Published Collapse Mirror → %s",
             settings.CHANNEL_COLLAPSE_INTAKE,

@@ -39,7 +39,6 @@ class CortexExecResult(BaseEnvelope):
     payload: CortexExecResultPayload
 
 
-# --- NEW CONTRACT DEFINITION ---
 class CognitionTraceEnvelope(Envelope[CognitionTracePayload]):
     """
     Typed contract for cognition traces aligning to Titanium Envelope[T].
@@ -86,7 +85,8 @@ def _diagnostic_enabled(payload: PlanExecutionRequest) -> bool:
 
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
-    logger.info(f"Incoming Exec Request: correlation_id={env.correlation_id}")
+    corr_id = str(env.correlation_id)
+    logger.info(f"Incoming Exec Request: correlation_id={corr_id}")
 
     try:
         req_env = CortexExecRequest.model_validate(env.model_dump(mode="json"))
@@ -95,7 +95,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         return BaseEnvelope(
             kind="cortex.exec.result",
             source=_source(),
-            correlation_id=env.correlation_id,
+            correlation_id=corr_id,
             causality_chain=env.causality_chain,
             payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
         )
@@ -111,7 +111,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         "user_id": req_env.payload.args.user_id,
         "trigger_source": req_env.payload.args.trigger_source,
     }
-    
+
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
 
     assert svc is not None, "Rabbit service not initialized"
@@ -121,13 +121,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         logger.info("Diagnostic PlanExecutionRequest json=%s", req_env.payload.model_dump_json())
         logger.info("Diagnostic args.extra snapshot corr=%s payload=%s", env.correlation_id, req_env.payload.args.extra)
         ctx["diagnostic"] = True
-    
+
     # 3. Execute Plan
     res = await router.run_plan(
         svc.bus,
         source=_source(),
         req=req_env.payload,
-        correlation_id=str(env.correlation_id),
+        correlation_id=corr_id,
         ctx=ctx,
     )
 
@@ -139,7 +139,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             packs_used = [packs_used]
 
         trace_payload = CognitionTracePayload(
-            correlation_id=env.correlation_id,
+            correlation_id=corr_id,
             mode=res.mode or "brain",
             verb=res.verb_name,
             packs=packs_used if isinstance(packs_used, list) else [],
@@ -160,7 +160,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         # UPDATED: Use the typed envelope
         trace_envelope = CognitionTraceEnvelope(
             source=_source(),
-            correlation_id=env.correlation_id,
+            correlation_id=corr_id,
             causality_chain=env.causality_chain, # Propagate causality
             payload=trace_payload
         )
@@ -173,7 +173,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     return CortexExecResult(
         source=_source(),
-        correlation_id=env.correlation_id,
+        correlation_id=corr_id,
         causality_chain=env.causality_chain,
         payload=CortexExecResultPayload(ok=True, result=res.model_dump(mode="json")),
     )

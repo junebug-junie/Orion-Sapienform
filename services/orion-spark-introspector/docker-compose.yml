@@ -17,6 +17,7 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+      - PORT=${PORT}
 
       # Bus channels
       - CHANNEL_SPARK_TELEMETRY=${CHANNEL_SPARK_TELEMETRY}
@@ -33,6 +34,9 @@ services:
       - CONNECT_TIMEOUT=5.0
       - READ_TIMEOUT=10.0
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+
+    ports:
+      - "${PORT}:8444"
 
     volumes:
       - /mnt/storage-lukewarm/orion/spark:/mnt/storage-lukewarm/orion/spark

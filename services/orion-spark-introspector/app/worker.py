@@ -16,6 +16,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, Envelope
 from orion.core.bus.codec import OrionCodec
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
+from orion.schemas.telemetry.spark_signal import SparkSignalV1
 
 from orion.spark.orion_tissue import OrionTissue
 from orion.spark.signal_mapper import SignalMapper
@@ -31,6 +32,7 @@ _pub_bus: Optional[OrionBusAsync] = None
 # Restart semantics: new UUID per producer (service) boot.
 _PRODUCER_BOOT_ID = str(uuid4())
 _SEQ: int = 0
+_ACTIVE_SIGNALS: List[Dict[str, Any]] = []
 
 
 def set_publisher_bus(bus: OrionBusAsync):
@@ -59,6 +61,43 @@ class SparkCandidatePayload(BaseModel):
     response: str
     spark_meta: Dict[str, Any] = Field(default_factory=dict)
     introspection: Optional[str] = None
+
+
+def _register_signal(signal: SparkSignalV1) -> None:
+    expires_at = time.time() + (float(signal.ttl_ms) / 1000.0)
+    _ACTIVE_SIGNALS.append(
+        {
+            "intensity": float(signal.intensity),
+            "valence_delta": float(signal.valence_delta or 0.0),
+            "arousal_delta": float(signal.arousal_delta or 0.0),
+            "coherence_delta": float(signal.coherence_delta or 0.0),
+            "novelty_delta": float(signal.novelty_delta or 0.0),
+            "expires_at": expires_at,
+        }
+    )
+
+
+def _apply_signal_deltas(phi_stats: Dict[str, float]) -> Dict[str, float]:
+    now = time.time()
+    active = [s for s in _ACTIVE_SIGNALS if s.get("expires_at", 0) > now]
+    # prune expired
+    _ACTIVE_SIGNALS[:] = active
+    if not active:
+        return phi_stats
+
+    total_delta = {"valence": 0.0, "arousal": 0.0, "coherence": 0.0, "novelty": 0.0}
+    for sig in active:
+        total_delta["valence"] += sig["valence_delta"]
+        total_delta["arousal"] += sig["arousal_delta"]
+        total_delta["coherence"] += sig["coherence_delta"]
+        total_delta["novelty"] += sig["novelty_delta"]
+
+    adjusted = dict(phi_stats)
+    adjusted["valence"] = float(phi_stats.get("valence", 0.0) + total_delta["valence"])
+    adjusted["energy"] = float(phi_stats.get("energy", 0.0))
+    adjusted["coherence"] = float(phi_stats.get("coherence", 0.0) + total_delta["coherence"])
+    adjusted["novelty"] = float(phi_stats.get("novelty", 0.0) + total_delta["novelty"])
+    return adjusted
 
 
 def _coerce_epoch_ts(v: Any) -> float:
@@ -216,9 +255,22 @@ async def handle_trace(env: BaseEnvelope) -> None:
         )
 
         stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
-        novelty = float(TISSUE.calculate_novelty(stimulus))
-        TISSUE.propagate(stimulus, steps=2, learning_rate=0.1)
+        channel_key = trace.mode or "chat"
+        embedding_vec = None
+        if spark_vector:
+            try:
+                embedding_vec = np.array(spark_vector, dtype=np.float32)
+            except Exception:
+                embedding_vec = None
+        if embedding_vec is None:
+            embedding_vec = feature_vec
+
+        novelty = float(TISSUE.calculate_novelty(stimulus, channel_key=channel_key))
+        TISSUE.propagate(stimulus, steps=2, learning_rate=0.1, channel_key=channel_key, embedding=embedding_vec, distress=0.0)
         phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+        phi_stats = _apply_signal_deltas(phi_stats)
+        valence = float(phi_stats.get("valence", valence))
+        arousal = float(phi_stats.get("energy", arousal))
         TISSUE.snapshot()
 
         # --- Canonical snapshot (restart-proof + ordering-safe) ---
@@ -442,3 +494,13 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         logger.info("[%s] Spark introspection published", candidate.trace_id)
 
     await bus.close()
+
+
+async def handle_signal(env: BaseEnvelope) -> None:
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    try:
+        sig = SparkSignalV1.model_validate(payload)
+    except ValidationError:
+        logger.warning("Ignoring malformed spark.signal payload")
+        return
+    _register_signal(sig)

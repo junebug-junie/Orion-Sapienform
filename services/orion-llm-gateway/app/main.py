@@ -73,6 +73,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     body = ChatBody(
         model=typed_req.payload.model,
         messages=[m.model_dump() for m in typed_req.payload.messages],
+        raw_user_text=typed_req.payload.raw_user_text,
         options=typed_req.payload.options or {},
         profile_name=typed_req.payload.profile,
         trace_id=str(typed_req.correlation_id),

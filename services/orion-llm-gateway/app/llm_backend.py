@@ -193,6 +193,10 @@ def _get_raw_user_text(body: ChatBody) -> Optional[str]:
     Also supports a couple aliases to keep it flexible.
     """
     try:
+        if getattr(body, "raw_user_text", None):
+            raw = str(body.raw_user_text or "").strip()
+            if raw:
+                return raw
         opts = body.options or {}
         raw = (
             opts.get("raw_user_text")
@@ -207,7 +211,27 @@ def _get_raw_user_text(body: ChatBody) -> Optional[str]:
         return None
 
 
-def _spark_ingest_text(*, text: str, agent_id: str, tags: List[str]) -> Dict[str, Any]:
+def _derive_mode_tags(verb: str, text: str | None) -> List[str]:
+    verb_l = (verb or "").lower()
+    text_l = (text or "").lower()
+    tags: List[str] = []
+
+    if any(k in verb_l or k in text_l for k in ("summary", "summarize", "tl;dr")):
+        tags.append("mode:summarize")
+    if any(k in verb_l or k in text_l for k in ("analy", "analysis", "inspect", "review")):
+        tags.append("mode:analyze")
+    if any(k in verb_l or k in text_l for k in ("debug", "traceback", "stack", "error")):
+        tags.append("mode:debug")
+    if any(k in verb_l or k in text_l for k in ("plan", "goal", "roadmap", "exec", "step")):
+        tags.append("mode:plan")
+    if any(k in verb_l or k in text_l for k in ("build", "code", "implement", "write")):
+        tags.append("mode:build")
+    if not tags:
+        tags.append("mode:chat")
+    return tags
+
+
+def _spark_ingest_text(*, text: str, agent_id: str, tags: List[str], spark_vector: Optional[List[float]] = None) -> Dict[str, Any]:
     """
     Thin wrapper so we can reuse the ingest pathway consistently.
     """
@@ -216,6 +240,7 @@ def _spark_ingest_text(*, text: str, agent_id: str, tags: List[str]) -> Dict[str
         agent_id=agent_id,
         tags=tags,
         sentiment=None,
+        spark_vector=spark_vector,
     )
     return state
 
@@ -256,8 +281,15 @@ def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
             str(latest_user)[:200],
         )
 
-        tags = ["juniper", "chat", source, f"verb:{verb}", "phase:pre"]
-        state = _spark_ingest_text(text=str(latest_user), agent_id=source, tags=tags)
+        tags = ["juniper", "chat", source, f"verb:{verb}", "phase:pre", *(_derive_mode_tags(verb, latest_user))]
+        spark_vector: Optional[List[float]] = None
+        if settings.include_embeddings:
+            try:
+                spark_vector = _fetch_embedding_internal(str(latest_user))
+            except Exception as embed_err:
+                logger.warning(f"[LLM-GW Spark] Pre-ingest embedding failed: {embed_err}")
+
+        state = _spark_ingest_text(text=str(latest_user), agent_id=source, tags=tags, spark_vector=spark_vector)
 
         meta = build_collapse_mirror_meta(
             state["phi_after"],
@@ -336,8 +368,15 @@ def _spark_post_ingest_for_reply(body: ChatBody, spark_meta: Dict[str, Any], res
             str(response_text)[:200],
         )
 
-        tags = ["juniper", "chat", source, f"verb:{verb}", "assistant_reply", "phase:post"]
-        post_state = _spark_ingest_text(text=str(response_text), agent_id=source, tags=tags)
+        tags = ["juniper", "chat", source, f"verb:{verb}", "assistant_reply", "phase:post", *(_derive_mode_tags(verb, response_text))]
+        spark_vector: Optional[List[float]] = None
+        if settings.include_embeddings:
+            try:
+                spark_vector = _fetch_embedding_internal(str(response_text))
+            except Exception as embed_err:
+                logger.warning(f"[LLM-GW Spark] Post-ingest embedding failed: {embed_err}")
+
+        post_state = _spark_ingest_text(text=str(response_text), agent_id=source, tags=tags, spark_vector=spark_vector)
 
         # Bound what we store; keep full text out of telemetry by default.
         spark_meta["latest_assistant_message"] = str(response_text)[:2000]
@@ -563,6 +602,7 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
     chat_body = ChatBody(
         model=model,
         messages=[{"role": "user", "content": final_prompt}],
+        raw_user_text=body.raw_user_text or (body.context.get("user_message") if isinstance(body.context, dict) else None),
         options={},
         trace_id=body.origin_node,
         source=f"cortex:{body.service}",

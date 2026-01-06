@@ -117,3 +117,33 @@ Example (truncated):
   }
 }
 ```
+
+## 🛰️ Spark signal sanity check
+Use this tiny snippet to publish a `spark.signal.v1` frame (e.g., distress from equilibrium) and watch subscribers on `orion:spark:signal`:
+
+```bash
+python - <<'PY'
+import json, uuid, datetime, redis
+BUS_URL = "redis://100.92.216.81:6379/0"
+CHANNEL = "orion:spark:signal"
+msg = {
+    "schema": "orion.envelope",
+    "schema_version": "2.0.0",
+    "kind": "spark.signal.v1",
+    "source": {"name": "readme-signal", "node": "athena"},
+    "payload": {
+        "signal_type": "equilibrium",
+        "intensity": 0.42,
+        "valence_delta": -0.05,
+        "coherence_delta": -0.02,
+        "as_of_ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "ttl_ms": 15000,
+        "source_service": "readme-signal",
+        "source_node": "athena"
+    }
+}
+r = redis.Redis.from_url(BUS_URL)
+r.publish(CHANNEL, json.dumps(msg))
+print(f"published spark.signal.v1 to {CHANNEL}")
+PY
+```

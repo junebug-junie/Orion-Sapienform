@@ -256,10 +256,10 @@ class SparkEngine:
             signal = SparkSignalV1.model_validate(signal)
         ttl_sec = float(signal.ttl_ms or 0) / 1000.0
         expires_at = time.time() + ttl_sec
-        self._distress_level = max(self._distress_level, float(signal.intensity))
         self._pending_signals.append(
             {
                 "expires_at": expires_at,
+                "intensity": float(signal.intensity),
                 "valence_delta": float(signal.valence_delta or 0.0),
                 "arousal_delta": float(signal.arousal_delta or 0.0),
                 "coherence_delta": float(signal.coherence_delta or 0.0),
@@ -267,22 +267,31 @@ class SparkEngine:
             }
         )
 
-    def _apply_signal_deltas(self, phi: Dict[str, float]) -> Dict[str, float]:
-        if not self._pending_signals:
-            return phi
+    def _prune_signals(self) -> List[Dict[str, Any]]:
         now = time.time()
         active: List[Dict[str, Any]] = []
-        deltas = {"valence": 0.0, "arousal": 0.0, "coherence": 0.0, "novelty": 0.0}
         for sig in self._pending_signals:
             if sig.get("expires_at", 0) > now:
                 active.append(sig)
-                deltas["valence"] += sig.get("valence_delta", 0.0)
-                deltas["arousal"] += sig.get("arousal_delta", 0.0)
-                deltas["coherence"] += sig.get("coherence_delta", 0.0)
-                deltas["novelty"] += sig.get("novelty_delta", 0.0)
         self._pending_signals = active
+        return active
+
+    def _active_distress(self) -> float:
+        active = self._prune_signals()
+        if not active:
+            return 0.0
+        return max(float(sig.get("intensity", 0.0)) for sig in active)
+
+    def _apply_signal_deltas(self, phi: Dict[str, float]) -> Dict[str, float]:
+        active = self._prune_signals()
         if not active:
             return phi
+        deltas = {"valence": 0.0, "arousal": 0.0, "coherence": 0.0, "novelty": 0.0}
+        for sig in active:
+            deltas["valence"] += sig.get("valence_delta", 0.0)
+            deltas["arousal"] += sig.get("arousal_delta", 0.0)
+            deltas["coherence"] += sig.get("coherence_delta", 0.0)
+            deltas["novelty"] += sig.get("novelty_delta", 0.0)
         adjusted = dict(phi)
         adjusted["valence"] = float(adjusted.get("valence", 0.0) + deltas["valence"])
         adjusted["energy"] = float(adjusted.get("energy", 0.0))
@@ -450,6 +459,9 @@ class SparkEngine:
         if embedding_vec is None and isinstance(encoding.feature_vec, np.ndarray):
             embedding_vec = encoding.feature_vec
 
+        distress = self._active_distress()
+        self._distress_level = distress
+
         # 1. Generate stimulus from surface encoding
         stimulus = self.mapper.surface_to_stimulus(encoding, magnitude=magnitude)
 
@@ -464,7 +476,7 @@ class SparkEngine:
             steps=steps,
             channel_key=channel_key,
             embedding=embedding_vec,
-            distress=self._distress_level,
+            distress=distress,
         )
 
         # Update recent history + read back state

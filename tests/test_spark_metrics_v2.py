@@ -1,8 +1,12 @@
 import os
+import time
 import unittest
+from datetime import datetime, timezone
 import numpy as np
 
 from orion.spark.orion_tissue import OrionTissue
+from orion.spark.spark_engine import SparkEngine
+from orion.schemas.telemetry.spark_signal import SparkSignalV1
 
 
 class SparkMetricsV2Tests(unittest.TestCase):
@@ -46,6 +50,22 @@ class SparkMetricsV2Tests(unittest.TestCase):
         self.assertGreater(high_mean, low_mean)
         self.assertGreater(high_mean, 0.0)
         self.assertLessEqual(high_mean, stim.mean())
+
+    def test_distress_signal_expires(self):
+        engine = SparkEngine(H=4, W=4, C=2)
+        sig = SparkSignalV1(
+            signal_type="equilibrium",
+            intensity=0.8,
+            as_of_ts=datetime.now(timezone.utc),
+            ttl_ms=50,
+            source_service="test",
+        )
+        engine.apply_signal(sig)
+        engine.record_chat("hi", agent_id="tester", tags=["chat"])
+        self.assertGreater(engine._distress_level, 0.0)
+        time.sleep(0.1)
+        engine.record_chat("hi again", agent_id="tester", tags=["chat"])
+        self.assertEqual(engine._distress_level, 0.0)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from fastapi import APIRouter
@@ -8,7 +9,15 @@ router = APIRouter()
 
 def build_state_response(ctx) -> Dict[str, Any]:
     state = ctx.state_store.load()
-    last_alert_ts = ctx.visit_manager.last_alert_ts.isoformat() if ctx.visit_manager.last_alert_ts else None
+    
+    # FIX: Use guard instead of removed visit_manager
+    # guard.last_alert_ts is Dict[str, float] (epoch time)
+    all_alerts = ctx.guard.last_alert_ts.values()
+    latest_ts_float = max(all_alerts) if all_alerts else None
+    
+    last_alert_ts = None
+    if latest_ts_float:
+        last_alert_ts = datetime.fromtimestamp(latest_ts_float, tz=timezone.utc).isoformat()
 
     return {
         "enabled": ctx.settings.SECURITY_ENABLED,
@@ -18,7 +27,7 @@ def build_state_response(ctx) -> Dict[str, Any]:
         "updated_by": state.updated_by,
         "last_alert": {
             "ts": last_alert_ts,
-            "reason": "rate_limited_or_unknown" if last_alert_ts else None,
+            "reason": "person_presence" if last_alert_ts else None,
         },
     }
 

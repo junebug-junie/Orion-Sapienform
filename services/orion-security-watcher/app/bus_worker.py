@@ -1,13 +1,17 @@
+# services/orion-security-watcher/app/bus_worker.py
 from __future__ import annotations
 
 import logging
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import VisionEdgeArtifact
 
+# Import local notification model
+from .models import AlertPayload 
 from .context import ctx
 
 logger = logging.getLogger("orion-security-watcher.bus_worker")
@@ -36,15 +40,13 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
     # 3. Handle Alert
     if alert:
         # Enrich with snapshot if possible
-        # Artifact has inputs['image_path']
         img_path = artifact.inputs.get("image_path")
         if img_path:
             alert.snapshot_path = img_path
-            # Could also trigger legacy snapshot download if needed, but we prefer shared storage now.
 
         logger.info(f"[GUARD] Alert: {alert.summary}")
 
-        # Publish Alert
+        # Publish Alert (New Schema)
         if ctx.bus.enabled:
             alert_env = env.derive_child(
                 kind=ctx.settings.CHANNEL_VISION_GUARD_ALERT,
@@ -56,13 +58,44 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
             except Exception as e:
                 logger.error(f"Failed to publish alert: {e}")
 
-        # Notify (Legacy Email)
+        # Notify (Legacy Email) - ADAPTER LAYER
         if ctx.settings.NOTIFY_MODE == "inline":
-             # Adapt to Notifier API?
-             # Existing Notifier expects AlertPayload. We have VisionGuardAlert.
-             # I'll skip fixing legacy email for now as it's not explicitly requested in prompt constraints,
-             # but "Part D ... Emit vision.guard.alert".
-             pass
+            try:
+                # Load current security state for context
+                state = ctx.state_store.load()
+                
+                # Convert timestamp (float epoch to datetime)
+                ts_dt = datetime.fromtimestamp(alert.ts, tz=timezone.utc)
+
+                # Construct Legacy AlertPayload
+                # We map the new VisionGuardAlert fields to the old schema the notifier expects
+                legacy_payload = AlertPayload(
+                    ts=ts_dt,
+                    service=ctx.settings.SERVICE_NAME,
+                    version=ctx.settings.SERVICE_VERSION,
+                    alert_id=f"guard-{int(alert.ts)}",
+                    visit_id="guard-session", # Placeholder
+                    camera_id=alert.camera_id,
+                    armed=state.armed,
+                    mode=state.mode,
+                    humans_present=True, # Implied by alert
+                    best_identity="unknown",
+                    best_identity_conf=0.0,
+                    identity_votes={},
+                    reason=alert.summary,
+                    severity=alert.severity, # "high" matches
+                    snapshots=[], 
+                    rate_limit={}
+                )
+
+                # Capture Snapshots (using legacy notifier logic)
+                snapshots = ctx.notifier.capture_snapshots(legacy_payload)
+                
+                # Send Email
+                ctx.notifier.send_email(legacy_payload, snapshots)
+                
+            except Exception as ex:
+                logger.error(f"Failed to send notification email: {ex}", exc_info=True)
 
     # 4. Generate Signals (Periodic)
     signals = ctx.guard.generate_signals()

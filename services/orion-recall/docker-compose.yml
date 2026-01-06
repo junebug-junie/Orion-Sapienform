@@ -32,7 +32,7 @@ services:
       - RECALL_ENABLE_RDF=${RECALL_ENABLE_RDF}
 
       # Database & Stores
-      - RECALL_PG_DSN=${POSTGRES_URI}
+      - RECALL_PG_DSN=${RECALL_PG_DSN}
       - VECTOR_DB_HOST=${VECTOR_DB_HOST}
       - GRAPHDB_URL=${GRAPHDB_URL}
 

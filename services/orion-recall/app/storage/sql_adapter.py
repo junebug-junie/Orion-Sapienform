@@ -151,7 +151,7 @@ def fetch_sql_fragments(
                         kind="collapse",
                         text=txt or "(empty collapse)",
                         ts=_epoch(ts_raw),
-                        salience=0.0,  # scored later
+                        salience=0.0,
                         tags=[],
                         meta={
                             "observer": observer,
@@ -202,7 +202,7 @@ def fetch_sql_fragments(
                         kind="enrichment",
                         text=txt,
                         ts=_epoch(ts_raw),
-                        salience=float(salience or 0.0),
+                        salience=0,
                         tags=tags,
                         meta={
                             "collapse_id": collapse_id,
@@ -220,7 +220,7 @@ def fetch_sql_fragments(
             cur.execute(
                 f"""
                 SELECT
-                    trace_id,
+                    correlation_id,
                     {settings.RECALL_SQL_CHAT_TEXT_COL}      AS prompt,
                     {settings.RECALL_SQL_CHAT_RESPONSE_COL}  AS response,
                     {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at
@@ -248,7 +248,7 @@ def fetch_sql_fragments(
                         kind="chat",
                         text=text,
                         ts=_epoch(created_at),
-                        salience=0.0,
+                        salience=1,
                         tags=["dialogue"],
                         meta={},
                     )

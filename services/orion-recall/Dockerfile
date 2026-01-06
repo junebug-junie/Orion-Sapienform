@@ -34,6 +34,8 @@ COPY orion /app/orion
 # Service code
 COPY services/orion-recall /app
 
+# Use a neutral expose; runtime port comes from $PORT
 EXPOSE 8260
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8260", "--log-level", "info"]
+# IMPORTANT: use env var PORT (compose passes it)
+CMD ["/bin/sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8260} --log-level info"]

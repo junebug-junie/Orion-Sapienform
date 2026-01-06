@@ -1,5 +1,5 @@
 services:
-  orion-equilibrium-service:
+  equilibrium-service:
     build:
       context: ../..
       dockerfile: services/orion-equilibrium-service/Dockerfile
@@ -25,6 +25,7 @@ services:
       - EQUILIBRIUM_STATE_KEY=${EQUILIBRIUM_STATE_KEY}
       - CHANNEL_EQUILIBRIUM_SNAPSHOT=${CHANNEL_EQUILIBRIUM_SNAPSHOT}
       - CHANNEL_SPARK_SIGNAL=${CHANNEL_SPARK_SIGNAL}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
 
 networks:
   app-net:

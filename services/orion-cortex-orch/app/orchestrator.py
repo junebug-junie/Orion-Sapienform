@@ -204,6 +204,8 @@ def _build_plan_for_mode(req: CortexClientRequest) -> ExecutionPlan:
 def _build_context(req: CortexClientRequest) -> Dict[str, Any]:
     return {
         "messages": [m.model_dump(mode="json") for m in req.context.messages],
+        "raw_user_text": req.context.raw_user_text or None,
+        "user_message": req.context.user_message or None,
         "session_id": req.context.session_id,
         "user_id": req.context.user_id,
         "trace_id": req.context.trace_id,

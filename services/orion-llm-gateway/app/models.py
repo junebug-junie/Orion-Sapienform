@@ -25,6 +25,10 @@ class ChatBody(BaseModel):
 
     # Messages can start empty; gateway can adapt prompt → messages
     messages: List[Dict[str, Any]] = Field(default_factory=list)
+    raw_user_text: Optional[str] = Field(
+        default=None,
+        description="Canonical raw user text supplied by upstream services (pre-scaffold).",
+    )
 
     options: Optional[dict] = None
     stream: Optional[bool] = False
@@ -58,6 +62,10 @@ class ExecStepPayload(BaseModel):
     context: Dict[str, Any] = {}
     args: Dict[str, Any] = {}
     prior_step_results: List[Dict[str, Any]] = []
+    raw_user_text: Optional[str] = Field(
+        default=None,
+        description="Canonical raw user message associated with this exec step.",
+    )
 
     requires_gpu: bool = False
     requires_memory: bool = False

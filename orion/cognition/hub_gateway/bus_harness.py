@@ -114,6 +114,8 @@ def _build_request(mode: str, text: str, args: argparse.Namespace) -> CortexClie
     )
     ctx = CortexClientContext(
         messages=[LLMMessage(role="user", content=text)],
+        raw_user_text=text,
+        user_message=text,
         session_id=args.session_id,
         user_id=args.user_id,
         trace_id=args.trace_id,

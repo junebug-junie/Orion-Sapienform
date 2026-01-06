@@ -299,6 +299,7 @@ async def call_step_services(
                 request_object = ChatRequestPayload(
                     model=req_model,
                     messages=messages_payload,
+                    raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),

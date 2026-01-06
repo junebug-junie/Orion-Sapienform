@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, List, Optional
+import numpy as np
+import time
 
 from .surface_encoding import (
     SurfaceEncoding,
@@ -38,6 +40,7 @@ from .surface_encoding import (
 )
 from .signal_mapper import SignalMapper
 from .orion_tissue import OrionTissue
+from orion.schemas.telemetry.spark_signal import SparkSignalV1
 
 
 # ─────────────────────────────────────────────
@@ -167,6 +170,8 @@ class SparkEngine:
 
         # Higher-level self-state (psychology), derived from φ + events.
         self._last_self_field: Optional[SelfField] = None
+        self._distress_level: float = 0.0
+        self._pending_signals: List[Dict[str, Any]] = []
 
     # ─────────────────────────────────────────
     # Public state accessors
@@ -193,6 +198,12 @@ class SparkEngine:
         will return None.
         """
         return self._last_self_field.to_dict() if self._last_self_field else None
+
+    def set_distress_level(self, level: float) -> None:
+        """
+        Update the current distress level (0..1) from external signals (e.g., equilibrium).
+        """
+        self._distress_level = max(0.0, min(1.0, float(level)))
 
     def get_summary_for_agent(self, agent_id: str) -> Dict[str, Any]:
         """
@@ -225,6 +236,59 @@ class SparkEngine:
         self._recent_events.append(encoding)
         if len(self._recent_events) > 100:
             self._recent_events = self._recent_events[-100:]
+
+    def _channel_from_tags(self, tags: List[str] | None) -> str:
+        tags = tags or []
+        lowered = [t.lower() for t in tags]
+        if any(t.startswith("signal_type:equilibrium") or "equilibrium" in t for t in lowered):
+            return "equilibrium"
+        if any(t.startswith("verb:plan") or t.startswith("mode:plan") for t in lowered):
+            return "plan"
+        if any("system" == t or t.startswith("system") for t in lowered):
+            return "system"
+        return "chat"
+
+    def apply_signal(self, signal: SparkSignalV1 | Dict[str, Any]) -> None:
+        """
+        Register an external spark.signal.v1 input to influence the next snapshot.
+        """
+        if isinstance(signal, dict):
+            signal = SparkSignalV1.model_validate(signal)
+        ttl_sec = float(signal.ttl_ms or 0) / 1000.0
+        expires_at = time.time() + ttl_sec
+        self._distress_level = max(self._distress_level, float(signal.intensity))
+        self._pending_signals.append(
+            {
+                "expires_at": expires_at,
+                "valence_delta": float(signal.valence_delta or 0.0),
+                "arousal_delta": float(signal.arousal_delta or 0.0),
+                "coherence_delta": float(signal.coherence_delta or 0.0),
+                "novelty_delta": float(signal.novelty_delta or 0.0),
+            }
+        )
+
+    def _apply_signal_deltas(self, phi: Dict[str, float]) -> Dict[str, float]:
+        if not self._pending_signals:
+            return phi
+        now = time.time()
+        active: List[Dict[str, Any]] = []
+        deltas = {"valence": 0.0, "arousal": 0.0, "coherence": 0.0, "novelty": 0.0}
+        for sig in self._pending_signals:
+            if sig.get("expires_at", 0) > now:
+                active.append(sig)
+                deltas["valence"] += sig.get("valence_delta", 0.0)
+                deltas["arousal"] += sig.get("arousal_delta", 0.0)
+                deltas["coherence"] += sig.get("coherence_delta", 0.0)
+                deltas["novelty"] += sig.get("novelty_delta", 0.0)
+        self._pending_signals = active
+        if not active:
+            return phi
+        adjusted = dict(phi)
+        adjusted["valence"] = float(adjusted.get("valence", 0.0) + deltas["valence"])
+        adjusted["energy"] = float(adjusted.get("energy", 0.0))
+        adjusted["coherence"] = float(adjusted.get("coherence", 0.0) + deltas["coherence"])
+        adjusted["novelty"] = float(adjusted.get("novelty", 0.0) + deltas["novelty"])
+        return adjusted
 
     def _estimate_focus_from_events(self, events: List[SurfaceEncoding]) -> float:
         """
@@ -376,20 +440,36 @@ class SparkEngine:
               - "tissue_summary":  summary from OrionTissue.summarize_for("(global)")
               - "surface_encoding": encoding serialized as a dict
         """
+        channel_key = self._channel_from_tags(encoding.channel_tags)
+        embedding_vec = None
+        if encoding.spark_vector is not None:
+            try:
+                embedding_vec = np.array(encoding.spark_vector, dtype=np.float32)
+            except Exception:
+                embedding_vec = None
+        if embedding_vec is None and isinstance(encoding.feature_vec, np.ndarray):
+            embedding_vec = encoding.feature_vec
+
         # 1. Generate stimulus from surface encoding
         stimulus = self.mapper.surface_to_stimulus(encoding, magnitude=magnitude)
 
         # 2. Calculate novelty (Predictive Coding)
         # This updates the tissue's internal novelty state but does not change physics yet.
-        self.tissue.calculate_novelty(stimulus)
+        self.tissue.calculate_novelty(stimulus, channel_key=channel_key)
 
         # 3. Propagate stimulus into tissue (Learning + Physics)
         # This updates the expectation vector and then runs the tissue step.
-        self.tissue.propagate(stimulus, steps=steps)
+        self.tissue.propagate(
+            stimulus,
+            steps=steps,
+            channel_key=channel_key,
+            embedding=embedding_vec,
+            distress=self._distress_level,
+        )
 
         # Update recent history + read back state
         self._register_event(encoding)
-        phi = self.tissue.phi()
+        phi = self._apply_signal_deltas(self.tissue.phi())
         self_field = self._compute_self_field(phi, self._recent_events, biometrics=biometrics)
         self._last_self_field = self_field
 

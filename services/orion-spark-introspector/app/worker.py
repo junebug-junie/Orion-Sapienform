@@ -1,3 +1,4 @@
+# services/orion-spark-introspector/app/worker.py
 from __future__ import annotations
 
 import logging
@@ -197,7 +198,6 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
         # Broadcast to Web UI
         try:
-            # Use telem.id if available, otherwise generate new
             telemetry_id = str(getattr(telem, "id", uuid4()))
             ws_payload = {
                 "type": "tissue.update",
@@ -299,22 +299,41 @@ async def handle_candidate(env: BaseEnvelope) -> None:
             return
         introspection = _extract_introspection_text(decoded.envelope)
         if not introspection: return
+        
+        # Payload for both Bus and UI
+        final_payload = {
+            "kind": "spark_introspect",
+            "trace_id": candidate.trace_id,
+            "source": "spark-introspector",
+            "prompt": candidate.prompt,
+            "response": candidate.response,
+            "introspection": introspection,
+            "spark_meta": candidate.spark_meta,
+        }
+
+        # 1. Publish to Bus
         completed = BaseEnvelope(
             kind="legacy.message",
             source=env.source,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload={
-                "kind": "spark_introspect",
-                "trace_id": candidate.trace_id,
-                "source": "spark-introspector",
-                "prompt": candidate.prompt,
-                "response": candidate.response,
-                "introspection": introspection,
-                "spark_meta": candidate.spark_meta,
-            },
+            payload=final_payload,
         )
         await bus.publish(settings.channel_spark_candidate, completed)
+        
+        # 2. Broadcast to UI with METADATA
+        try:
+            ws_introspection = {
+                "type": "introspection.update",
+                "correlation_id": candidate.trace_id,
+                "text": introspection,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "metadata": candidate.spark_meta or {} 
+            }
+            await manager.broadcast(ws_introspection)
+        except Exception as ex:
+            logger.warning(f"Failed to broadcast introspection: {ex}")
+
         logger.info("[%s] Spark introspection published", candidate.trace_id)
     finally:
         await bus.close()

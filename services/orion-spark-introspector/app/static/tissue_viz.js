@@ -1,408 +1,219 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// --- STATE MANAGEMENT ---
+// --- STATE ---
 const state = {
-    phi: 0.0,
-    novelty: 0.0,
-    valence: 0.0,
-    arousal: 0.0,
-    targetPhi: 0.0,
-    targetNovelty: 0.0,
-    targetValence: 0.0,
-    targetArousal: 0.0,
-    lastUpdate: 0,
-    metadata: {},
-    correlationId: null
+    phi: 0.5, novelty: 0.0, valence: 0.5, arousal: 0.0,
+    targetPhi: 0.5, targetNovelty: 0.0, targetValence: 0.5, targetArousal: 0.0,
+    lastUpdate: 0, metadata: {}, correlationId: null, timestamp: null
 };
+const INTERPOLATION_SPEED = 0.05; 
 
-const INTERPOLATION_SPEED = 0.05;
+// --- DOM ---
+const elMoodValue = document.getElementById('mood-value');
+const elConnStatus = document.getElementById('conn-status');
+const elGearBtn = document.getElementById('gear-btn');
+const elSettingsMenu = document.getElementById('settings-menu');
+const elInfoToggle = document.getElementById('info-toggle-row');
+const elExplanation = document.getElementById('explanation-panel');
+const elIntrospection = document.getElementById('introspection-log');
+
+// --- UI LOGIC ---
+elGearBtn.addEventListener('click', (e) => { e.stopPropagation(); elSettingsMenu.classList.toggle('visible'); });
+document.addEventListener('click', () => { elSettingsMenu.classList.remove('visible'); });
+elInfoToggle.addEventListener('click', () => {
+    elExplanation.classList.toggle('visible');
+    elInfoToggle.innerText = elExplanation.classList.contains('visible') ? "▲ HIDE INTERNALS ▲" : "▼ SYSTEM INTERNALS EXPLANATION ▼";
+});
 
 // --- WEBSOCKET ---
 class WSClient {
-    constructor() {
-        this.ws = null;
-        this.reconnectDelay = 1000;
+    constructor() { this.ws = null; this.reconnectDelay = 1000; }
+    setConnected(isConnected) {
+        elConnStatus.innerText = isConnected ? "ONLINE" : "OFFLINE";
+        elConnStatus.style.color = isConnected ? "#0f0" : "#f00";
     }
-
     connect() {
-        // Construct URL relative to current path to support Tailscale /spark prefix
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.host;
-        // Remove '/ui' from end of pathname to get base path
-        const basePath = window.location.pathname.replace(/\/ui\/?$/, '');
-        const wsUrl = `${protocol}//${host}${basePath}/ws/tissue`;
-        
-        console.log("Connecting to WS:", wsUrl);
+        let path = window.location.pathname;
+        if (path.endsWith('/')) path = path.slice(0, -1);
+        if (path.endsWith('/ui')) path = path.slice(0, -3);
+        if (!path.startsWith('/')) path = '/' + path;
+        const wsUrl = `${protocol}//${host}${path}/ws/tissue`;
         
         this.ws = new WebSocket(wsUrl);
-        this.ws.onopen = () => {
-            console.log("Connected to Tissue Stream");
-            this.reconnectDelay = 1000;
-        };
+        this.ws.onopen = () => { this.setConnected(true); this.reconnectDelay = 1000; };
         this.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.type === "tissue.update") {
-                this.handleUpdate(data);
-            }
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === "tissue.update") { this.handleUpdate(data); }
+                else if (data.type === "introspection.update") { this.handleIntrospection(data); }
+            } catch (e) { console.error("Parse error:", e); }
         };
-        this.ws.onclose = () => {
-            console.log("Disconnected. Reconnecting in " + this.reconnectDelay + "ms");
-            setTimeout(() => this.connect(), this.reconnectDelay);
-            this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10000);
-        };
-        this.ws.onerror = (err) => {
-            console.error("WS Error", err);
-            this.ws.close();
-        };
+        this.ws.onclose = () => { this.setConnected(false); setTimeout(() => this.connect(), this.reconnectDelay); };
     }
-
     handleUpdate(data) {
+        if (!data.stats) return;
         state.targetPhi = data.stats.phi;
         state.targetNovelty = data.stats.novelty;
         state.targetValence = data.stats.valence;
         state.targetArousal = data.stats.arousal;
-        state.lastUpdate = Date.now();
         state.correlationId = data.correlation_id;
-        state.metadata = data.metadata;
-        state.telemetryId = data.telemetry_id;
         state.timestamp = data.timestamp;
-
         this.updateDOM();
     }
-
-    updateDOM() {
-        const elId = document.getElementById('val-id');
-        const elTs = document.getElementById('val-ts');
-        if(elId) elId.innerText = (state.correlationId || "NULL").substring(0, 8) + '...';
-        if(elTs) elTs.innerText = state.timestamp;
-        
-        let metaHtml = "";
-        if (state.metadata) {
-            const keys = ['source_service', 'trace_verb', 'trace_mode', 'vector_present'];
-            keys.forEach(k => {
-                if (state.metadata[k] !== undefined) {
-                    metaHtml += `<div><span style="color:#aaa">${k}:</span> <span style="color:#fff">${state.metadata[k]}</span></div>`;
+    handleIntrospection(data) {
+        if (data.text) {
+            const time = data.timestamp ? data.timestamp.split('T')[1].split('.')[0] : '';
+            const corr = data.correlation_id ? data.correlation_id.substring(0,8) : '???';
+            
+            let metaStr = "";
+            if(data.metadata) {
+                // Filter for interesting keys
+                const interesting = ['mode', 'trace_verb', 'phi_after', 'spark_valence'];
+                const parts = [];
+                for (const [k, v] of Object.entries(data.metadata)) {
+                    if (interesting.includes(k) || k.startsWith('spark_')) {
+                        let val = v;
+                        if(typeof v === 'object') val = JSON.stringify(v);
+                        parts.push(`${k}: ${val}`);
+                    }
                 }
-            });
-        }
-        const elMeta = document.getElementById('meta-panel');
-        if(elMeta) elMeta.innerHTML = metaHtml || "No Metadata";
-    }
-}
-
-// --- VISUALIZERS ---
-
-class BaseVisualizer {
-    constructor(scene, camera) {
-        this.scene = scene;
-        this.camera = camera;
-    }
-    init() {}
-    update(dt) {}
-    dispose() {}
-}
-
-// 1. Synthwave Terrain
-class SynthwaveVisualizer extends BaseVisualizer {
-    init() {
-        this.camera.position.set(0, 5, 10);
-        this.camera.lookAt(0, 0, 0);
-        
-        // Grid
-        const geometry = new THREE.PlaneGeometry(100, 100, 50, 50);
-        const material = new THREE.MeshBasicMaterial({ 
-            color: 0xff00ff, 
-            wireframe: true,
-            transparent: true,
-            opacity: 0.5
-        });
-        this.plane = new THREE.Mesh(geometry, material);
-        this.plane.rotation.x = -Math.PI / 2;
-        this.scene.add(this.plane);
-
-        // Sun
-        const sunGeom = new THREE.SphereGeometry(20, 32, 32);
-        this.sunMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-        this.sun = new THREE.Mesh(sunGeom, this.sunMat);
-        this.sun.position.set(0, 0, -50);
-        this.scene.add(this.sun);
-        
-        this.vertexStore = geometry.attributes.position.array.slice();
-    }
-
-    update(dt) {
-        const positions = this.plane.geometry.attributes.position.array;
-        const time = Date.now() * 0.001;
-        
-        const heightFactor = state.novelty * 2.0 + 0.5;
-        
-        for (let i = 0; i < positions.length; i += 3) {
-            const x = this.vertexStore[i];
-            const y = this.vertexStore[i+1];
-            const z = this.vertexStore[i+2];
-            
-            const dist = Math.sqrt(x*x + y*y);
-            const wave = Math.sin(dist * 0.5 - time * 2) * Math.cos(x * 0.2 + time);
-            
-            positions[i+2] = z + wave * heightFactor;
-        }
-        this.plane.geometry.attributes.position.needsUpdate = true;
-
-        // Color shift based on Valence
-        const r = 1.0 - state.valence;
-        const b = state.valence;
-        this.plane.material.color.setRGB(r, 0, b);
-        this.sunMat.color.setRGB(1, state.valence, 0);
-    }
-
-    dispose() {
-        this.scene.remove(this.plane);
-        this.plane.geometry.dispose();
-        this.plane.material.dispose();
-        this.scene.remove(this.sun);
-        this.sun.geometry.dispose();
-        this.sunMat.dispose();
-    }
-}
-
-// 2. Neural Nebula
-class NebulaVisualizer extends BaseVisualizer {
-    init() {
-        this.camera.position.set(0, 0, 30);
-        this.camera.lookAt(0, 0, 0);
-        
-        const count = 2000;
-        const geometry = new THREE.BufferGeometry();
-        const positions = new Float32Array(count * 3);
-        const colors = new Float32Array(count * 3);
-        
-        for(let i=0; i<count; i++) {
-            positions[i*3] = (Math.random() - 0.5) * 40;
-            positions[i*3+1] = (Math.random() - 0.5) * 40;
-            positions[i*3+2] = (Math.random() - 0.5) * 40;
-            
-            colors[i*3] = 1;
-            colors[i*3+1] = 1;
-            colors[i*3+2] = 1;
-        }
-        
-        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        
-        const material = new THREE.PointsMaterial({ 
-            size: 0.2, 
-            vertexColors: true,
-            blending: THREE.AdditiveBlending,
-            transparent: true
-        });
-        
-        this.points = new THREE.Points(geometry, material);
-        this.scene.add(this.points);
-        this.angularVelocity = 0;
-    }
-
-    update(dt) {
-        const targetSpeed = state.arousal * 0.5;
-        this.angularVelocity += (targetSpeed - this.angularVelocity) * 0.1;
-        
-        this.points.rotation.y += this.angularVelocity * dt * 5;
-        this.points.rotation.z += this.angularVelocity * dt * 2;
-        
-        const colors = this.points.geometry.attributes.color.array;
-        const r = Math.max(0.2, 1.0 - state.valence);
-        const g = Math.max(0.2, state.phi); 
-        const b = Math.max(0.2, state.valence);
-        
-        const burst = state.novelty > 0.8 && Math.random() < 0.1;
-
-        for(let i=0; i<colors.length; i+=3) {
-            if (burst && Math.random() < 0.01) {
-                    colors[i] = 1; colors[i+1] = 1; colors[i+2] = 1;
-            } else {
-                    colors[i] = colors[i] * 0.95 + r * 0.05;
-                    colors[i+1] = colors[i+1] * 0.95 + g * 0.05;
-                    colors[i+2] = colors[i+2] * 0.95 + b * 0.05;
+                if(parts.length > 0) metaStr = "\n> " + parts.join(" | ");
             }
-        }
-        this.points.geometry.attributes.color.needsUpdate = true;
-    }
 
-    dispose() {
-        this.scene.remove(this.points);
-        this.points.geometry.dispose();
-        this.points.material.dispose();
-    }
-}
-
-// 3. Bioluminescent Deep
-class BioDeepVisualizer extends BaseVisualizer {
-    init() {
-        this.camera.position.set(0, 0, 20);
-        this.camera.lookAt(0, 0, 0);
-        this.scene.fog = new THREE.FogExp2(0x000000, 0.05);
-        
-        this.creatures = [];
-        const geom = new THREE.OctahedronGeometry(0.5, 0);
-        
-        for(let i=0; i<50; i++) {
-            const mat = new THREE.MeshBasicMaterial({ 
-                color: 0x00ffaa, 
-                transparent: true, 
-                opacity: 0.6 
-            });
-            const mesh = new THREE.Mesh(geom, mat);
-            mesh.position.set(
-                (Math.random() - 0.5) * 30,
-                (Math.random() - 0.5) * 30,
-                (Math.random() - 0.5) * 30
-            );
-            mesh.userData = {
-                velocity: new THREE.Vector3(
-                    (Math.random()-0.5)*0.5,
-                    (Math.random()-0.5)*0.5,
-                    (Math.random()-0.5)*0.5
-                ),
-                offset: Math.random() * 100
-            };
-            this.scene.add(mesh);
-            this.creatures.push(mesh);
+            elIntrospection.innerText = `[${time}] ID:${corr}${metaStr}\n\n${data.text}`;
         }
     }
-
-    update(dt) {
-        const targetDensity = 0.1 - (state.phi * 0.09);
-        this.scene.fog.density = this.scene.fog.density * 0.95 + targetDensity * 0.05;
-
-        const speedMult = 1.0 + state.arousal * 3.0;
-        const flash = state.novelty > 0.7;
-
-        this.creatures.forEach(c => {
-            c.position.addScaledVector(c.userData.velocity, speedMult * dt * 5);
-            
-            if(c.position.length() > 20) c.position.multiplyScalar(-0.9);
-            
-            c.rotation.x += dt;
-            c.rotation.y += dt;
-
-            const time = Date.now() * 0.001;
-            const pulse = Math.sin(time * 2 + c.userData.offset);
-            
-            let r = 0, g = 1, b = 0.5;
-            if (flash && Math.random() < 0.1) {
-                    r=1; g=1; b=1;
-            }
-            
-            c.material.opacity = 0.3 + pulse * 0.3 + (state.phi * 0.4);
-            c.material.color.setRGB(r, g, b);
-        });
+    updateDOM() {
+        document.getElementById('val-id').innerText = (state.correlationId || "NULL").substring(0, 8) + '...';
+        document.getElementById('val-ts').innerText = state.timestamp || "-";
+        document.getElementById('val-phi').innerText = state.targetPhi.toFixed(2);
+        document.getElementById('val-novelty').innerText = state.targetNovelty.toFixed(2);
+        document.getElementById('val-valence').innerText = state.targetValence.toFixed(2);
+        document.getElementById('val-arousal').innerText = state.targetArousal.toFixed(2);
+        this.updateMoodText();
+        this.updateDiagnosticsTable();
     }
-
-    dispose() {
-        this.scene.fog = null;
-        this.creatures.forEach(c => {
-            this.scene.remove(c);
-            c.geometry.dispose();
-            c.material.dispose();
-        });
-        this.creatures = [];
+    updateMoodText() {
+        const v = state.targetValence, p = state.targetPhi, a = state.targetArousal, n = state.targetNovelty;
+        let mood = "UNKNOWN", color = "#888";
+        if (n > 0.8) { mood = "EPIPHANY DETECTED"; color = "#fff"; }
+        else if (a > 0.5) {
+            if (v > 0.5 && p > 0.5) { mood = "LUCID FLOW"; color = "#0ff"; }
+            else if (v > 0.5 && p <= 0.5) { mood = "MANIC CREATIVITY"; color = "#d0f"; }
+            else if (v <= 0.5 && p > 0.5) { mood = "CRITICAL FOCUS"; color = "#f80"; }
+            else { mood = "COGNITIVE DISSONANCE"; color = "#f00"; }
+        } else {
+            if (v > 0.5 && p > 0.5) { mood = "DEEP RESONANCE"; color = "#0af"; }
+            else if (v > 0.5 && p <= 0.5) { mood = "DAYDREAMING"; color = "#fba"; }
+            else if (v <= 0.5 && p > 0.5) { mood = "COLD ANALYSIS"; color = "#88f"; }
+            else { mood = "IDLE / STATIC"; color = "#666"; }
+        }
+        elMoodValue.innerText = `[ ${mood} ]`;
+        elMoodValue.style.color = color;
+        elMoodValue.style.textShadow = `0 0 15px ${color}`;
     }
-}
-
-// --- MANAGER ---
-class VisualizerManager {
-    constructor() {
-        this.container = document.body;
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(window.devicePixelRatio);
-        this.container.appendChild(this.renderer.domElement);
-
-        this.scene = new THREE.Scene();
-        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-        
-        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-        this.controls.enableDamping = true;
-        
-        this.clock = new THREE.Clock();
-
-        this.currentViz = null;
-        this.activeMode = 'synthwave';
-
-        window.addEventListener('resize', this.onResize.bind(this));
-        
-        this.modes = {
-            'synthwave': SynthwaveVisualizer,
-            'nebula': NebulaVisualizer,
-            'deep': BioDeepVisualizer
+    updateDiagnosticsTable() {
+        // Helper to update cells
+        const updateRow = (id, val, highLow, imp) => {
+            document.getElementById(`diag-${id}-val`).innerText = val.toFixed(2);
+            document.getElementById(`diag-${id}-state`).innerText = highLow;
+            document.getElementById(`diag-${id}-imp`).innerText = imp;
         };
         
-        this.switchMode('synthwave');
-        this.animate();
-    }
-
-    switchMode(mode) {
-        if (this.currentViz) {
-            this.currentViz.dispose();
-        }
+        // Logic for diagnostics
+        const p = state.targetPhi;
+        updateRow('phi', p, p > 0.5 ? "HIGH" : "LOW", p > 0.5 ? "Integrated / Coherent" : "Fragmented / Noisy");
         
-        // Clear scene contents
-        while(this.scene.children.length > 0){ 
-            this.scene.remove(this.scene.children[0]); 
-        }
+        const n = state.targetNovelty;
+        updateRow('nov', n, n > 0.5 ? "HIGH" : "LOW", n > 0.5 ? "Surprising / New" : "Routine / Known");
         
-        const ClassRef = this.modes[mode];
-        this.currentViz = new ClassRef(this.scene, this.camera);
-        this.currentViz.init();
-        this.activeMode = mode;
+        const v = state.targetValence;
+        updateRow('val', v, v > 0.5 ? "POS" : "NEG", v > 0.5 ? "Harmony / Flow" : "Stress / Conflict");
         
-        document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-        const btn = document.getElementById(mode === 'deep' ? 'btn-deep' : (mode === 'nebula' ? 'btn-nebula' : 'btn-synthwave'));
-        if(btn) btn.classList.add('active');
-    }
-
-    onResize() {
-        this.camera.aspect = window.innerWidth / window.innerHeight;
-        this.camera.updateProjectionMatrix();
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
-    }
-
-    animate() {
-        requestAnimationFrame(this.animate.bind(this));
-        
-        const dt = this.clock.getDelta();
-
-        state.phi += (state.targetPhi - state.phi) * INTERPOLATION_SPEED;
-        state.novelty += (state.targetNovelty - state.novelty) * INTERPOLATION_SPEED;
-        state.valence += (state.targetValence - state.valence) * INTERPOLATION_SPEED;
-        state.arousal += (state.targetArousal - state.arousal) * INTERPOLATION_SPEED;
-
-        const elPhi = document.getElementById('val-phi');
-        if(elPhi) elPhi.innerText = state.phi.toFixed(2);
-        
-        const elNov = document.getElementById('val-novelty');
-        if(elNov) elNov.innerText = state.novelty.toFixed(2);
-        
-        const elVal = document.getElementById('val-valence');
-        if(elVal) elVal.innerText = state.valence.toFixed(2);
-        
-        const elAr = document.getElementById('val-arousal');
-        if(elAr) elAr.innerText = state.arousal.toFixed(2);
-
-        this.controls.update();
-        
-        if (this.currentViz) {
-            this.currentViz.update(dt);
-        }
-
-        this.renderer.render(this.scene, this.camera);
+        const a = state.targetArousal;
+        updateRow('aro', a, a > 0.5 ? "HIGH" : "LOW", a > 0.5 ? "Active / Alert" : "Passive / Idle");
     }
 }
 
-const manager = new VisualizerManager();
-const wsClient = new WSClient();
-wsClient.connect();
+// --- VIZ ---
+class SynthwaveVisualizer {
+    constructor(scene, camera) { this.scene = scene; this.camera = camera; this.runTime = 0; }
+    init() {
+        this.camera.position.set(0, 3, 25); this.camera.lookAt(0, 4, -50);
+        this.scene.fog = new THREE.FogExp2(0x000000, 0.01);
+        const geo = new THREE.PlaneGeometry(200, 200, 128, 128);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xff00ff, wireframe: true, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending });
+        this.plane = new THREE.Mesh(geo, mat);
+        this.plane.rotation.x = -Math.PI / 2;
+        this.scene.add(this.plane);
+        
+        const sunGeo = new THREE.SphereGeometry(30, 32, 32);
+        this.sunMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, wireframe: true, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
+        this.sun = new THREE.Mesh(sunGeo, this.sunMat);
+        this.sun.position.set(0, 10, -85);
+        this.scene.add(this.sun);
+        
+        const inGeo = new THREE.SphereGeometry(14, 32, 32);
+        const inMat = new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.9 });
+        this.innerSun = new THREE.Mesh(inGeo, inMat);
+        this.sun.add(this.innerSun);
+        this.vertexStore = geo.attributes.position.array.slice();
+    }
+    update(dt) {
+        const speed = 1.0 + (state.arousal * 6.0);
+        this.runTime += dt * speed;
+        const pos = this.plane.geometry.attributes.position.array;
+        const chaos = Math.max(0.1, 1.0 - state.phi);
+        const amp = 1.0 + (state.novelty * 6.0);
+        const hue = 0.9 + (state.valence * 0.6);
+        
+        for (let i = 0; i < pos.length; i += 3) {
+            const ox = this.vertexStore[i], oy = this.vertexStore[i+1];
+            const sy = oy - this.runTime;
+            const wx = Math.sin(sy * 0.1 + this.runTime * 0.5) * 3.0 + Math.cos(sy * 0.05) * 5.0;
+            pos[i] = ox + (wx * chaos);
+            
+            let z = Math.sin(ox*0.1)*Math.cos(sy*0.1)*4.0 + Math.sin(ox*0.3+sy*0.3)*2.0 + Math.sin(ox*0.8+this.runTime)*Math.cos(sy*0.9)*(chaos*2.0);
+            const dist = Math.abs(ox);
+            let rf = 0.0;
+            if(dist > 8.0) { rf = (dist - 8.0)/15.0; if(rf>1) rf=1; }
+            pos[i+2] = z * (0.2 + (0.8*rf)) * amp;
+        }
+        this.plane.geometry.attributes.position.needsUpdate = true;
+        this.plane.material.color.setHSL(hue%1, 1, 0.5);
+        this.sunMat.color.setHSL((hue+0.1)%1, 1, 0.6);
+        this.innerSun.material.color.setHSL(hue%1, 1, 0.5);
+        this.sun.rotation.y += dt*0.1; this.sun.rotation.z -= dt*0.05;
+        this.sun.scale.setScalar(1 + Math.sin(this.runTime*2)*0.05*state.arousal);
+    }
+}
 
-document.getElementById('btn-synthwave').addEventListener('click', () => manager.switchMode('synthwave'));
-document.getElementById('btn-nebula').addEventListener('click', () => manager.switchMode('nebula'));
-document.getElementById('btn-deep').addEventListener('click', () => manager.switchMode('deep'));
+const ws = new WSClient(); ws.connect();
+const ren = new THREE.WebGLRenderer({antialias:true}); ren.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(ren.domElement);
+const scn = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+const viz = new SynthwaveVisualizer(scn, cam); viz.init();
+const clk = new THREE.Clock();
+function anim() {
+    requestAnimationFrame(anim);
+    const dt = clk.getDelta();
+    state.phi += (state.targetPhi-state.phi)*INTERPOLATION_SPEED;
+    state.novelty += (state.targetNovelty-state.novelty)*INTERPOLATION_SPEED;
+    state.valence += (state.targetValence-state.valence)*INTERPOLATION_SPEED;
+    state.arousal += (state.targetArousal-state.arousal)*INTERPOLATION_SPEED;
+    viz.update(dt);
+    ren.render(scn, cam);
+}
+window.addEventListener('resize', ()=>{ cam.aspect=window.innerWidth/window.innerHeight; cam.updateProjectionMatrix(); ren.setSize(window.innerWidth, window.innerHeight); });
+anim();
+
+// Test Pulse
+const btn = document.getElementById('btn-test-signal');
+if(btn) btn.addEventListener('click', async () => {
+    let p = window.location.pathname; if(p.endsWith('/')) p=p.slice(0,-1); if(p.endsWith('/ui')) p=p.slice(0,-3); if(!p.startsWith('/')) p='/'+p;
+    await fetch(p+'/api/test-pulse', {method:"POST"});
+});

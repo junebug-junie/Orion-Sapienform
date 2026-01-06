@@ -13,7 +13,8 @@ from uuid import uuid4
 from jinja2 import Environment
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, RecallRequestPayload, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
@@ -151,6 +152,9 @@ async def run_recall_step(
     ctx: Dict[str, Any],
     correlation_id: str,
     recall_cfg: Dict[str, Any],
+    recall_profile: str | None = None,
+    step_name: str = "recall",
+    step_order: int = -1,
     diagnostic: bool = False,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     t0 = time.time()
@@ -160,20 +164,19 @@ async def run_recall_step(
     # FIX: Define the timeout variable that was missing
     recall_timeout = float(settings.step_timeout_ms) / 1000.0
 
-    query_text = _last_user_message(ctx) or ""
+    fragment = _last_user_message(ctx) or ""
     trace_val = ctx.get("trace_id") or recall_cfg.get("trace_id") or correlation_id
-    req = RecallRequestPayload(
-        query_text=query_text,
+    req = RecallQueryV1(
+        fragment=fragment,
+        verb=str(ctx.get("verb") or recall_cfg.get("verb") or "unknown"),
+        intent=ctx.get("intent"),
         session_id=ctx.get("session_id"),
-        user_id=ctx.get("user_id"),
-        mode=str(recall_cfg.get("mode", "hybrid")),
-        time_window_days=int(recall_cfg.get("time_window_days", 90)),
-        max_items=int(recall_cfg.get("max_items", 8)),
-        packs=list(ctx.get("packs") or []),
-        trace_id=trace_val,
+        node_id=ctx.get("node_id"),
+        profile=recall_profile or recall_cfg.get("profile") or "reflect.v1",
+        reply_to=reply_channel,
     )
 
-    logs: List[str] = [f"rpc -> RecallService (mode={req.mode}, window={req.time_window_days})"]
+    logs: List[str] = [f"rpc -> RecallService (profile={req.profile})"]
     debug: Dict[str, Any] = {}
     try:
         res = await recall_client.query(
@@ -183,35 +186,25 @@ async def run_recall_step(
             reply_to=reply_channel,
             timeout_sec=recall_timeout,
         )
-        fragments = res.fragments
+        bundle = res.bundle
         debug = {
-            "count": len(fragments),
-            "mode": req.mode,
-            "time_window_days": req.time_window_days,
-            "max_items": req.max_items,
+            "count": len(bundle.items),
+            "profile": req.profile,
             "error": None,
         }
-        if getattr(res, "debug", None):
-            try:
-                debug.update(res.debug)  # type: ignore[arg-type]
-            except Exception:
-                debug["debug"] = res.debug
-
-        digest_lines = [
-            f"- {fr.get('text', '')}" for fr in fragments[:5] if isinstance(fr, dict)
-        ]
-        memory_digest = "\n".join(digest_lines)
+        memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         ctx["memory_digest"] = memory_digest
+        ctx["memory_bundle"] = bundle.model_dump(mode="json")
         ctx["memory_used"] = True
-        ctx["recall_fragments"] = fragments
-        logs.append(f"ok <- RecallService ({len(fragments)} fragments)")
+        ctx["recall_fragments"] = [i.model_dump(mode="json") for i in bundle.items]
+        logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
 
         return (
             StepExecutionResult(
                 status="success",
                 verb_name=str(ctx.get("verb") or "unknown"),
-                step_name="recall",
-                order=-1,
+                step_name=step_name,
+                order=step_order,
                 result={"RecallService": debug},
                 latency_ms=int((time.time() - t0) * 1000),
                 node=settings.node_name,
@@ -227,8 +220,8 @@ async def run_recall_step(
             StepExecutionResult(
                 status="fail",
                 verb_name=str(ctx.get("verb") or "unknown"),
-                step_name="recall",
-                order=-1,
+                step_name=step_name,
+                order=step_order,
                 result={"RecallService": debug},
                 latency_ms=int((time.time() - t0) * 1000),
                 node=settings.node_name,
@@ -284,6 +277,23 @@ async def call_step_services(
         reply_channel = f"orion-exec:result:{service}:{uuid4()}"
 
         try:
+            if service == "RecallService":
+                logs.append(f"rpc -> RecallService (reply={reply_channel}, profile={step.recall_profile})")
+                recall_step, recall_debug, memory_digest = await run_recall_step(
+                    bus,
+                    source=source,
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    recall_cfg=ctx.get("recall") or {},
+                    recall_profile=step.recall_profile,
+                    step_name=step.step_name,
+                    step_order=step.order,
+                    diagnostic=diagnostic,
+                )
+                merged_result["RecallService"] = recall_debug
+                logs.extend(recall_step.logs)
+                return recall_step
+
             if service == "LLMGatewayService":
                 # --- STRICT PATH ---
                 # 1. Build Pydantic Model

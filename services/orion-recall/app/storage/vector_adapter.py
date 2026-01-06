@@ -1,4 +1,3 @@
-# app/storage/vector_adapter.py
 from __future__ import annotations
 
 import math
@@ -6,11 +5,14 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from chromadb import HttpClient
-from chromadb.config import Settings as ChromaSettings
+try:
+    from chromadb import HttpClient  # type: ignore
+    from chromadb.config import Settings as ChromaSettings  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    HttpClient = None
+    ChromaSettings = None
 
 from app.settings import settings
-from app.types import Fragment
 
 
 def _parse_meta_ts(meta: Dict[str, Any]) -> Optional[float]:
@@ -47,6 +49,8 @@ def _get_client() -> Optional[HttpClient]:
     url = settings.RECALL_VECTOR_BASE_URL
     if not url:
         return None
+    if HttpClient is None or ChromaSettings is None:
+        return None
     parsed = urlparse(url)
     host = parsed.hostname or "localhost"
     port = parsed.port or 8000
@@ -68,11 +72,18 @@ def fetch_vector_fragments(
     query_text: str,
     time_window_days: int,
     max_items: int,
-) -> List[Fragment]:
+) -> List[Dict[str, Any]]:
+    """
+    Lightweight wrapper around the existing Chroma client used by the legacy recall pipeline.
+    Returns a list of dicts that can be converted to MemoryItems downstream.
+    """
     if not query_text:
         return []
 
-    client = _get_client()
+    try:
+        client = _get_client()
+    except Exception:
+        client = None
     if client is None:
         return []
 
@@ -81,7 +92,7 @@ def fetch_vector_fragments(
         return []
 
     since_ts = (datetime.utcnow() - timedelta(days=max(1, time_window_days))).timestamp()
-    frags: List[Fragment] = []
+    frags: List[Dict[str, Any]] = []
 
     for coll_name in collections:
         try:
@@ -117,24 +128,22 @@ def fetch_vector_fragments(
             if isinstance(dist, (int, float)) and not math.isnan(dist):
                 sim = max(0.0, 1.0 - float(dist))
 
-            sal = (sim or 0.2) * 0.9
-
             frags.append(
-                Fragment(
-                    id=str(nid),
-                    kind="association",
-                    source="vector",
-                    text=str(ntext)[:1200],
-                    ts=_parse_meta_ts(meta) or since_ts,
-                    tags=[
+                {
+                    "id": str(nid),
+                    "source": "vector",
+                    "source_ref": coll_name,
+                    "text": str(ntext)[:1200],
+                    "ts": _parse_meta_ts(meta) or since_ts,
+                    "tags": [
                         "vector-assoc",
                         f"collection:{coll_name}",
                     ]
                     + ([str(meta.get("source"))] if meta.get("source") else []),
-                    salience=sal,
-                    meta=meta,
-                )
+                    "score": sim or 0.0,
+                    "meta": meta,
+                }
             )
 
-    frags.sort(key=lambda x: x.salience, reverse=True)
+    frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     return frags[:max_items]

@@ -9,10 +9,9 @@ from orion.core.bus.bus_schemas import (
     BaseEnvelope,
     ChatRequestPayload,
     ChatResponsePayload,
-    RecallRequestPayload,
-    RecallResultPayload,
     ServiceRef,
 )
+from orion.core.contracts.recall import RecallQueryV1, RecallReplyV1
 from orion.schemas.agents.schemas import (
     AgentChainRequest,
     AgentChainResult,
@@ -90,13 +89,13 @@ class RecallClient:
     async def query(
         self,
         source: ServiceRef,
-        req: RecallRequestPayload,
+        req: RecallQueryV1,
         correlation_id: str,
         reply_to: str,
         timeout_sec: float,
-    ) -> RecallResultPayload:
+    ) -> RecallReplyV1:
         env = BaseEnvelope(
-            kind="recall.query.request",
+            kind="recall.query.v1",
             source=source,
             correlation_id=correlation_id,
             reply_to=reply_to,
@@ -116,7 +115,8 @@ class RecallClient:
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
             raise RuntimeError(f"Decode failed: {decoded.error}")
-        return RecallResultPayload.model_validate(decoded.envelope.payload)
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        return RecallReplyV1.model_validate(payload)
 
 
 class PlannerReactClient:

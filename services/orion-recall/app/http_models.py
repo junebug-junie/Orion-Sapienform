@@ -21,5 +21,5 @@ class RecallRequestBody(BaseModel):
 
 
 class RecallResponseBody(BaseModel):
-    fragments: List[Dict[str, Any]]
+    bundle: Dict[str, Any]
     debug: Dict[str, Any] = Field(default_factory=dict)

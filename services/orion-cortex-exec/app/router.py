@@ -113,7 +113,9 @@ class PlanRunner:
                 recall_cfg=recall_cfg,
             )
 
-        needs_memory = recall_enabled
+        has_inline_recall = any("RecallService" in s.services or getattr(s, "recall_profile", None) for s in plan.steps)
+
+        needs_memory = recall_enabled and not has_inline_recall
         if needs_memory:
             recall_step, recall_debug, _ = await run_recall_step(
                 bus,
@@ -121,6 +123,7 @@ class PlanRunner:
                 ctx=ctx,
                 correlation_id=correlation_id,
                 recall_cfg=recall_cfg,
+                recall_profile=recall_cfg.get("profile"),
                 diagnostic=diagnostic,
             )
             step_results.append(recall_step)
@@ -144,12 +147,13 @@ class PlanRunner:
                     )
 
         else:
-            recall_debug = {"skipped": "disabled_by_client"}
-            ctx["memory_used"] = False
-            logger.info(
-                "Recall skipped by client directive",
-                extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg, "diagnostic": diagnostic},
-            )
+            if not has_inline_recall:
+                recall_debug = {"skipped": "disabled_by_client"}
+                ctx["memory_used"] = False
+                logger.info(
+                    "Recall skipped by client directive",
+                    extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg, "diagnostic": diagnostic},
+                )
 
         for step in sorted(plan.steps, key=lambda s: s.order):
             step_res = await call_step_services(
@@ -161,6 +165,10 @@ class PlanRunner:
                 diagnostic=diagnostic,
             )
             step_results.append(step_res)
+            if isinstance(step_res.result, dict) and "RecallService" in step_res.result:
+                recall_debug = step_res.result.get("RecallService", {})
+                memory_used = step_res.status == "success"
+                ctx["memory_used"] = memory_used
 
             if step_res.status != "success":
                 overall_status = "partial" if len(step_results) > 1 else "fail"

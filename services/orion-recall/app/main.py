@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,20 +7,20 @@ from fastapi import FastAPI
 from orion.core.bus.bus_service_chassis import Rabbit
 
 from .http_models import RecallRequestBody, RecallResponseBody
-from .pipeline import run_recall_pipeline
-from .types import PhiContext, RecallQuery
-from .service import chassis_cfg, handle
+from .service import chassis_cfg
 from .settings import settings
+from .worker import handle_recall
+from orion.core.contracts.recall import RecallQueryV1
+from .worker import process_recall
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Rabbit start_background doesn't take stop_event in latest chassis, it stores tasks.
-    # But checking Rabbit implementation:
-    # async def start_background(self, stop_event: Optional[asyncio.Event] = None) -> None:
-    # It DOES accept stop_event optionally, but generally we rely on .stop()
-
-    rabbit = Rabbit(chassis_cfg(), request_channel=settings.RECALL_BUS_INTAKE, handler=handle)
+    rabbit = Rabbit(
+        chassis_cfg(),
+        request_channel=settings.RECALL_BUS_INTAKE,
+        handler=lambda env: handle_recall(env, bus=rabbit.bus),
+    )
     await rabbit.start_background()
 
     yield
@@ -34,34 +33,12 @@ app = FastAPI(title="Orion Recall", version=settings.SERVICE_VERSION, lifespan=l
 
 @app.post("/recall", response_model=RecallResponseBody)
 async def recall_endpoint(body: RecallRequestBody):
-    q = RecallQuery(
-        query_text=body.query_text,
-        max_items=body.max_items,
-        time_window_days=body.time_window_days,
-        mode=body.mode,
-        tags=body.tags,
-        phi=PhiContext(**(body.phi or {})) if body.phi else None,
-        trace_id=body.trace_id,
+    q = RecallQueryV1(
+        fragment=body.query_text,
         session_id=body.session_id,
-        user_id=body.user_id,
-        packs=body.packs,
+        verb="http.reflect",
+        intent=None,
+        profile=settings.RECALL_DEFAULT_PROFILE,
     )
-    result = run_recall_pipeline(q)
-    return RecallResponseBody(
-        fragments=[
-            {
-                "id": fr.id,
-                "kind": fr.kind,
-                "source": fr.source,
-                "text": fr.text,
-                "ts": fr.ts,
-                "tags": fr.tags,
-                "salience": fr.salience,
-                "valence": fr.valence,
-                "arousal": fr.arousal,
-                "meta": fr.meta,
-            }
-            for fr in result.fragments
-        ],
-        debug=result.debug,
-    )
+    bundle, _ = await process_recall(q, corr_id="http")
+    return {"bundle": bundle}

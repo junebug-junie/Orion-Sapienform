@@ -1,0 +1,9 @@
+profile: assist.light.v1
+vector_top_k: 6
+rdf_top_k: 0
+max_per_source: 3
+max_total_items: 8
+time_decay_half_life_hours: 24
+render_budget_tokens: 180
+enable_query_expansion: true
+enable_sql_timeline: false

@@ -35,6 +35,7 @@ class ExecutionStep(BaseModel):
     requires_gpu: bool = False
     requires_memory: bool = False
     timeout_ms: int = 120000
+    recall_profile: Optional[str] = None
 
 
 class ExecutionPlan(BaseModel):

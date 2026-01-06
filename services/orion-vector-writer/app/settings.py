@@ -18,8 +18,7 @@ class Settings(BaseSettings):
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
-        default='["orion:memory:vector:upsert"]',
-        default='["orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
+        default='["orion:memory:vector:upsert", "orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
     VECTOR_WRITER_CHAT_HISTORY_CHANNEL: str = Field(
@@ -33,16 +32,21 @@ class Settings(BaseSettings):
     def SUBSCRIBE_CHANNELS(self) -> List[str]:
         """Helper to parse the subscription channels from env var."""
         val = self.VECTOR_WRITER_SUBSCRIBE_CHANNELS
+        channels: List[str]
         if isinstance(val, list):
             channels = list(val)
-        try:
-            channels = json.loads(val) if not isinstance(val, list) else channels
-        except json.JSONDecodeError:
-            channels = [x.strip() for x in val.split(",") if x.strip()]
+        else:
+            try:
+                channels = json.loads(val)
+            except json.JSONDecodeError:
+                channels = [x.strip() for x in val.split(",") if x.strip()]
 
         # Ensure chat history channel is always included for ingestion
         if self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL not in channels:
             channels.append(self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL)
+        # Ensure canonical memory upsert channel is always present
+        if "orion:memory:vector:upsert" not in channels:
+            channels.append("orion:memory:vector:upsert")
         return channels
 
     # Chroma / Vector DB Configuration

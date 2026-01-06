@@ -8,7 +8,9 @@ from .v1 import (
     PadEventV1,
     PadRpcRequestV1,
     PadRpcResponseV1,
+    StateBuckets,
     StateFrameV1,
+    StateSummary,
     TensorBlobV1,
 )
 
@@ -21,6 +23,8 @@ __all__ = [
     "KIND_PAD_RPC_RESPONSE_V1",
     "PadEventV1",
     "StateFrameV1",
+    "StateBuckets",
+    "StateSummary",
     "TensorBlobV1",
     "PadRpcRequestV1",
     "PadRpcResponseV1",

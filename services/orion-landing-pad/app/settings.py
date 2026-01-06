@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     shutdown_grace_sec: float = Field(10.0, alias="SHUTDOWN_GRACE_SEC")
     health_channel: str = Field("system.health", alias="HEALTH_CHANNEL")
     error_channel: str = Field("system.error", alias="ERROR_CHANNEL")
+
+    @field_validator("pad_input_allowlist_patterns", "pad_input_denylist_patterns", mode="before")
+    @classmethod
+    def _split_patterns(cls, v: List[str] | str | None) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        # Accept comma-separated env strings
+        parts = [p.strip() for p in str(v).split(",") if p.strip()]
+        return parts
 
     def merged_redis_url(self) -> str:
         return self.redis_url or self.orion_bus_url

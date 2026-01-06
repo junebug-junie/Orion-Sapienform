@@ -82,6 +82,7 @@ class LandingPadService:
     async def start(self) -> None:
         logger.info("Starting landing pad service")
         await self.bus.connect()
+        self.stats.set_queue_depth(0)
         await self.ingest_loop.start()
         await self.rpc.start()
         self._tasks.append(asyncio.create_task(self._queue_worker(), name="pad-queue-worker"))

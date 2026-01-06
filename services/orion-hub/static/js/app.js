@@ -1,5 +1,7 @@
+// services/orion-hub/static/js/app.js
+
 // ───────────────────────────────────────────────────────────────
-// Global State (Keep these outside so they persist)
+// Global State
 // ───────────────────────────────────────────────────────────────
 const API_BASE_URL = window.location.origin;
 const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
@@ -14,10 +16,7 @@ let animationFrameId;
 let audioQueue = [];
 let isPlayingAudio = false;
 let orionState = 'idle';
-let liveMicAnalyser;
-let liveMicSource;
 let particles = [];
-let baseParticleCount = 200;
 let visionIsFloating = false;
 let currentMode = "brain";
 let selectedPacks = [];
@@ -25,13 +24,10 @@ let selectedVerbs = [];
 let orionSessionId = null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
 
-// ───────────────────────────────────────────────────────────────
-// Main Initialization (Waits for HTML to load)
-// ───────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
 
-  // --- 1. Element References (Scoped locally) ---
+  // --- 1. Element References ---
   const recordButton = document.getElementById('recordButton');
   const interruptButton = document.getElementById('interruptButton');
   const statusDiv = document.getElementById('status');
@@ -46,14 +42,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const speedValue = document.getElementById('speedValue');
   const tempControl = document.getElementById('tempControl');
   const tempValue = document.getElementById('tempValue');
-  const styleControl = document.getElementById('styleControl');
-  const colorControl = document.getElementById('colorControl');
   const contextControl = document.getElementById('contextControl');
   const contextValue = document.getElementById('contextValue');
   const clearButton = document.getElementById('clearButton');
   const copyButton = document.getElementById('copyButton');
 
-  // Settings Panel
+  // Settings
   const settingsToggle = document.getElementById('settingsToggle');
   const settingsPanel = document.getElementById('settingsPanel');
   const settingsClose = document.getElementById('settingsClose');
@@ -62,6 +56,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const visualizerCanvas = document.getElementById('visualizer');
   const canvasCtx = visualizerCanvas ? visualizerCanvas.getContext('2d') : null;
   const visualizerContainer = document.getElementById('visualizerContainer');
+  
+  // NOTE: stateVisualizer was replaced by an iframe in the HTML. 
+  // We check for its existence to prevent crashes.
   const stateVisualizerCanvas = document.getElementById('stateVisualizer');
   const stateCtx = stateVisualizerCanvas ? stateVisualizerCanvas.getContext('2d') : null;
   const stateVisualizerContainer = document.getElementById('stateVisualizerContainer');
@@ -90,9 +87,38 @@ document.addEventListener("DOMContentLoaded", () => {
   const verbList = document.getElementById('verbList');
   const clearVerbsBtn = document.getElementById('clearVerbs');
 
-  // --- 2. Event Listeners ---
+  // --- 2. Helpers ---
 
-  // Recording
+  function updateStatus(msg) { 
+      if (statusDiv) {
+          statusDiv.textContent = msg; 
+          // Visual cue for disconnected state
+          if(msg.includes("Disconnected") || msg.includes("Error")) {
+              statusDiv.classList.add("text-red-400");
+          } else {
+              statusDiv.classList.remove("text-red-400");
+          }
+      }
+  }
+
+  function updateStatusBasedOnState() {
+    if (orionState === 'idle') updateStatus('Ready.');
+    else if (orionState === 'speaking') updateStatus('Speaking...');
+    else if (orionState === 'processing') updateStatus('Processing...');
+  }
+
+  function appendMessage(sender, text, colorClass = 'text-white') {
+    if (!conversationDiv) return;
+    const div = document.createElement('div');
+    const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
+    div.innerHTML = `<p class="font-bold ${color}">${sender}</p><p class="${colorClass}">${text}</p>`;
+    div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
+    conversationDiv.appendChild(div);
+    conversationDiv.scrollTop = conversationDiv.scrollHeight;
+  }
+
+  // --- 3. Event Listeners ---
+
   if (recordButton) {
     recordButton.addEventListener('mousedown', startRecording);
     recordButton.addEventListener('mouseup', stopRecording);
@@ -100,17 +126,16 @@ document.addEventListener("DOMContentLoaded", () => {
     recordButton.addEventListener('touchend', stopRecording);
   }
 
-  // Send Message
-  if (sendButton) {
-    sendButton.addEventListener('click', sendTextMessage);
-  }
+  if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (chatInput) {
     chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') sendTextMessage();
+      if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault(); 
+          sendTextMessage();
+      }
     });
   }
 
-  // Interrupt
   if (interruptButton) {
     interruptButton.addEventListener('click', () => {
       if (currentAudioSource) currentAudioSource.stop();
@@ -121,37 +146,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Controls UI Updates
-  if (tempControl && tempValue) {
-    tempControl.addEventListener('input', () => tempValue.textContent = parseFloat(tempControl.value).toFixed(1));
-  }
-  if (contextControl && contextValue) {
-    contextControl.addEventListener('input', () => contextValue.textContent = contextControl.value);
-  }
-  if (speedControl && speedValue) {
-    speedControl.addEventListener('input', () => {
-      const actualSpeed = parseFloat(speedControl.value);
-      const minSpeed = 0.97, maxSpeed = 1.2;
-      speedValue.textContent = ((actualSpeed - minSpeed) / (maxSpeed - minSpeed)).toFixed(2);
-      if (currentAudioSource) currentAudioSource.playbackRate.value = actualSpeed;
-    });
-  }
-
-  // Chat Utils
-  if (clearButton && conversationDiv) {
-    clearButton.addEventListener('click', () => conversationDiv.innerHTML = '');
-  }
-  if (copyButton && conversationDiv) {
-    copyButton.addEventListener('click', () => {
-      const text = conversationDiv.innerText;
-      navigator.clipboard.writeText(text).then(() => {
-        updateStatus('Conversation copied!');
-        setTimeout(() => updateStatusBasedOnState(), 2000);
-      });
-    });
-  }
-
-  // Settings Panel Toggle
+  // UI Toggles
   if (settingsToggle && settingsPanel) {
     settingsToggle.addEventListener('click', () => {
       settingsPanel.classList.toggle('translate-x-full');
@@ -165,7 +160,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Mode Toggles
+  if (clearButton && conversationDiv) clearButton.addEventListener('click', () => conversationDiv.innerHTML = '');
+  if (copyButton && conversationDiv) {
+    copyButton.addEventListener('click', () => {
+      navigator.clipboard.writeText(conversationDiv.innerText);
+      const originalText = copyButton.textContent;
+      copyButton.textContent = "Copied!";
+      setTimeout(() => copyButton.textContent = originalText, 1500);
+    });
+  }
+
+  // Mode Switching
   const modeButtons = document.querySelectorAll('.mode-btn');
   modeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -176,60 +181,54 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       btn.classList.add('bg-indigo-600', 'text-white');
       btn.classList.remove('bg-gray-700', 'text-gray-200');
-
-      if (currentMode === 'brain') updateStatus('Brain mode: Press mic to speak or type.');
-      else if (currentMode === 'agent') updateStatus('Agentic mode: Type to run tools.');
-      else updateStatus('Council mode: Consult the swarm.');
+      updateStatus(`Switched to ${currentMode} mode.`);
     });
   });
 
-  // Load Cognition Library (Packs & Verbs)
+  // --- 4. Logic Functions ---
+
   async function loadCognitionLibrary() {
       try {
           const res = await fetch(`${API_BASE_URL}/api/cognition/library`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
           cognitionLibrary = await res.json();
           renderPackButtons();
           renderVerbList();
       } catch (e) {
-          console.error("Failed to load cognition library:", e);
-          if (packContainer) packContainer.innerHTML = '<span class="text-red-400">Failed to load packs</span>';
+          console.error("Failed to load packs:", e);
+          if (packContainer) packContainer.innerHTML = '<span class="text-red-400 text-xs">Error loading packs</span>';
       }
   }
 
   function renderPackButtons() {
       if (!packContainer) return;
       packContainer.innerHTML = '';
-
       const packs = Object.keys(cognitionLibrary.packs || {});
+      
       if (packs.length === 0) {
-          packContainer.innerHTML = '<span class="text-gray-500">No packs found.</span>';
+          packContainer.innerHTML = '<span class="text-gray-500 text-xs">No packs available.</span>';
           return;
       }
 
-      // Default packs (legacy hardcoded ones, or logic to select defaults)
       const defaults = ['executive_pack'];
-
       packs.forEach(packName => {
           const btn = document.createElement('button');
-          btn.className = `pack-btn inline-flex items-center px-3 py-1 rounded-full text-gray-200 bg-gray-700 hover:bg-gray-600`;
+          btn.className = `pack-btn inline-flex items-center px-2 py-1 rounded text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors border border-gray-600`;
           btn.textContent = cognitionLibrary.packs[packName].label || packName;
           btn.dataset.pack = packName;
 
-          // Auto-select defaults if new session
           if (defaults.includes(packName) && !selectedPacks.includes(packName)) {
                selectedPacks.push(packName);
           }
 
           if (selectedPacks.includes(packName)) {
-               btn.classList.remove('bg-gray-700', 'text-gray-200');
-               btn.classList.add('bg-emerald-600', 'text-white');
+               btn.classList.remove('bg-gray-700', 'text-gray-300');
+               btn.classList.add('bg-emerald-700', 'text-white', 'border-emerald-500');
           }
 
           btn.addEventListener('click', () => togglePack(packName));
           packContainer.appendChild(btn);
       });
-
-      // Update verb list after rendering packs (initial state)
       renderVerbList();
   }
 
@@ -237,56 +236,28 @@ document.addEventListener("DOMContentLoaded", () => {
       const idx = selectedPacks.indexOf(packName);
       if (idx >= 0) selectedPacks.splice(idx, 1);
       else selectedPacks.push(packName);
-
-      // Re-render buttons style
-      const btns = document.querySelectorAll('.pack-btn');
-      btns.forEach(btn => {
+      
+      // Update styling
+      document.querySelectorAll('.pack-btn').forEach(btn => {
           if (selectedPacks.includes(btn.dataset.pack)) {
-              btn.classList.remove('bg-gray-700', 'text-gray-200');
-              btn.classList.add('bg-emerald-600', 'text-white');
+              btn.classList.remove('bg-gray-700', 'text-gray-300');
+              btn.classList.add('bg-emerald-700', 'text-white', 'border-emerald-500');
           } else {
-              btn.classList.remove('bg-emerald-600', 'text-white');
-              btn.classList.add('bg-gray-700', 'text-gray-200');
+              btn.classList.remove('bg-emerald-700', 'text-white', 'border-emerald-500');
+              btn.classList.add('bg-gray-700', 'text-gray-300');
           }
       });
-
-      // Update Available Verbs based on Packs
       renderVerbList();
-  }
-
-  // Verbs UI Logic
-  if (verbSelectTrigger) {
-      verbSelectTrigger.addEventListener('click', (e) => {
-          e.stopPropagation();
-          verbDropdown.classList.toggle('hidden');
-      });
-      document.addEventListener('click', (e) => {
-          if (!verbDropdown.contains(e.target) && e.target !== verbSelectTrigger && !verbSelectTrigger.contains(e.target)) {
-              verbDropdown.classList.add('hidden');
-          }
-      });
-  }
-
-  if (clearVerbsBtn) {
-      clearVerbsBtn.addEventListener('click', () => {
-          selectedVerbs = [];
-          renderVerbList(); // Refresh checkboxes
-          updateVerbLabel();
-      });
   }
 
   function renderVerbList() {
       if (!verbList) return;
       verbList.innerHTML = '';
-
-      // Determine which verbs to show
       let availableVerbs = [];
 
       if (selectedPacks.length === 0) {
-          // No packs -> show all verbs
           availableVerbs = cognitionLibrary.verbs || [];
       } else {
-          // Packs selected -> union of verbs in those packs
           const verbSet = new Set();
           selectedPacks.forEach(p => {
               const pVerbs = cognitionLibrary.map[p] || [];
@@ -295,49 +266,38 @@ document.addEventListener("DOMContentLoaded", () => {
           availableVerbs = Array.from(verbSet).sort();
       }
 
-      // Filter out selectedVerbs that are no longer available?
-      // User requested "one way validation... if you choose packs, only those verbs... otherwise all".
-      // If a verb was selected but now hidden, we should probably unselect it or keep it hidden.
-      // Let's keep it in selectedVerbs but it won't be visible.
-
       if (availableVerbs.length === 0) {
-          verbList.innerHTML = '<span class="text-gray-500 col-span-2 text-xs p-2">No verbs found.</span>';
+          verbList.innerHTML = '<span class="text-gray-500 text-xs p-2">No verbs found.</span>';
           return;
       }
 
       availableVerbs.forEach(verb => {
           const div = document.createElement('div');
-          div.className = "flex items-center gap-2 p-1 hover:bg-gray-700 rounded";
-
+          div.className = "flex items-center gap-2 p-1 hover:bg-gray-700 rounded cursor-pointer";
           const cb = document.createElement('input');
           cb.type = "checkbox";
           cb.className = "form-checkbox h-3 w-3 text-red-600 bg-gray-600 border-gray-500 rounded focus:ring-red-500";
           cb.checked = selectedVerbs.includes(verb);
-          cb.addEventListener('change', () => toggleVerb(verb));
+          
+          const toggle = () => {
+              const idx = selectedVerbs.indexOf(verb);
+              if (idx >= 0) selectedVerbs.splice(idx, 1);
+              else selectedVerbs.push(verb);
+              cb.checked = selectedVerbs.includes(verb);
+              updateVerbLabel();
+          };
+
+          cb.addEventListener('change', toggle);
+          div.addEventListener('click', (e) => { if(e.target !== cb) toggle(); });
 
           const span = document.createElement('span');
           span.textContent = verb;
           span.className = "text-xs text-gray-300";
-
+          
           div.appendChild(cb);
           div.appendChild(span);
-          div.addEventListener('click', (e) => {
-               if (e.target !== cb) {
-                   cb.checked = !cb.checked;
-                   toggleVerb(verb);
-               }
-          });
-
           verbList.appendChild(div);
       });
-
-      updateVerbLabel();
-  }
-
-  function toggleVerb(verb) {
-      const idx = selectedVerbs.indexOf(verb);
-      if (idx >= 0) selectedVerbs.splice(idx, 1);
-      else selectedVerbs.push(verb);
       updateVerbLabel();
   }
 
@@ -347,209 +307,62 @@ document.addEventListener("DOMContentLoaded", () => {
           verbSelectLabel.textContent = "All verbs available";
           verbSelectLabel.className = "text-gray-400 italic";
       } else {
-          verbSelectLabel.textContent = `${selectedVerbs.length} selected`;
+          verbSelectLabel.textContent = `${selectedVerbs.length} verbs selected`;
           verbSelectLabel.className = "text-white font-semibold";
       }
   }
 
+  // Verbs Dropdown
+  if (verbSelectTrigger) {
+      verbSelectTrigger.addEventListener('click', (e) => {
+          e.stopPropagation();
+          verbDropdown.classList.toggle('hidden');
+      });
+      document.addEventListener('click', (e) => {
+          if (verbDropdown && !verbDropdown.classList.contains('hidden')) {
+              if (!verbDropdown.contains(e.target) && !verbSelectTrigger.contains(e.target)) {
+                  verbDropdown.classList.add('hidden');
+              }
+          }
+      });
+  }
 
-  // Vision UI Logic
-  function updateVisionUi() {
-    if (!visionDockedContainer || !visionFloatingContainer) return;
-    const value = visionSourceSelect ? visionSourceSelect.value : "";
-    let endpoint = null;
-    if (value === "gopro-1") endpoint = VISION_EDGE_BASE + "/stream.mjpg";
-    else if (value === "simulated") endpoint = "/static/img/vision-simulated.gif";
+  // --- WebSocket ---
+  function setupWebSocket() {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${proto}//${window.location.host}/ws`;
+    
+    console.log(`[WS] Connecting to ${wsUrl}...`);
+    socket = new WebSocket(wsUrl);
 
-    const updateImg = (container) => {
-      let img = container.querySelector("img[data-role='vision-feed']");
-      if (!img) {
-        img = document.createElement("img");
-        img.dataset.role = "vision-feed";
-        img.className = "w-full h-full object-cover";
-        container.appendChild(img);
-      }
-      img.src = endpoint + "?ts=" + Date.now();
-      const ph = container.querySelector("#visionPlaceholder");
-      if (ph) ph.remove();
+    socket.onopen = () => {
+        console.log("[WS] Connected");
+        updateStatus('Connected.');
     };
 
-    if (!endpoint) {
-      visionFloatingContainer.classList.add("hidden");
-      visionDockedContainer.classList.remove("opacity-30");
-      if (visionPopoutButton) visionPopoutButton.textContent = "Pop Out";
-      return;
-    }
-
-    updateImg(visionDockedContainer);
-    if (visionIsFloating) {
-      visionFloatingContainer.classList.remove("hidden");
-      visionDockedContainer.classList.add("opacity-30");
-      if (visionPopoutButton) visionPopoutButton.textContent = "Dock";
-      const target = visionFloatingContainer.querySelector(".flex-1") || visionFloatingContainer;
-      updateImg(target);
-    } else {
-      visionFloatingContainer.classList.add("hidden");
-      visionDockedContainer.classList.remove("opacity-30");
-      if (visionPopoutButton) visionPopoutButton.textContent = "Pop Out";
-    }
-  }
-
-  if (visionPopoutButton) visionPopoutButton.addEventListener("click", () => {
-    visionIsFloating = !visionIsFloating;
-    updateVisionUi();
-  });
-  if (visionCloseFloatingButton) visionCloseFloatingButton.addEventListener("click", () => {
-    visionIsFloating = false;
-    updateVisionUi();
-  });
-  if (visionSourceSelect) visionSourceSelect.addEventListener("change", () => {
-    visionIsFloating = false;
-    updateVisionUi();
-  });
-  updateVisionUi();
-
-  // Collapse UI Logic
-  function setCollapseMode(mode) {
-    if (!collapseModeGuided || !collapseModeRaw) return;
-    if (mode === 'guided') {
-      collapseGuidedSection.classList.remove('hidden');
-      collapseRawSection.classList.add('hidden');
-      collapseModeGuided.classList.add('bg-gray-700', 'text-gray-100');
-      collapseModeGuided.classList.remove('text-gray-300');
-      collapseModeRaw.classList.remove('bg-gray-700', 'text-gray-100');
-      collapseModeRaw.classList.add('text-gray-300');
-    } else {
-      collapseGuidedSection.classList.add('hidden');
-      collapseRawSection.classList.remove('hidden');
-      collapseModeRaw.classList.add('bg-gray-700', 'text-gray-100');
-      collapseModeRaw.classList.remove('text-gray-300');
-      collapseModeGuided.classList.remove('bg-gray-700', 'text-gray-100');
-      collapseModeGuided.classList.add('text-gray-300');
-    }
-  }
-
-  if (collapseModeGuided) collapseModeGuided.addEventListener('click', () => setCollapseMode('guided'));
-  if (collapseModeRaw) collapseModeRaw.addEventListener('click', () => setCollapseMode('raw'));
-  setCollapseMode('guided');
-
-  // Tooltip
-  if (collapseTooltipToggle) {
-    collapseTooltipToggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      collapseTooltip.classList.toggle('hidden');
-    });
-    document.addEventListener('click', (e) => {
-      if (collapseTooltip && !collapseTooltip.classList.contains('hidden') && !collapseTooltip.contains(e.target) && e.target !== collapseTooltipToggle) {
-        collapseTooltip.classList.add('hidden');
-      }
-    });
-  }
-
-  // Load Schema
-  async function loadCollapseTemplate() {
-    const input = document.getElementById("collapseInput");
-    if (!input) return;
-    try {
-      const res = await fetch(`${API_BASE_URL}/schema/collapse`);
-      await res.json();
-      input.value = JSON.stringify({
-        observer: "DEMO",
-        trigger: "UI test",
-        observer_state: ["neutral"],
-        type: "test",
-        summary: "Test entry",
-        environment: "dev"
-      }, null, 2);
-    } catch (e) { console.error(e); }
-  }
-  loadCollapseTemplate();
-
-  // Submit Logic
-  const handleCollapseSubmit = async (payload) => {
-    if (!collapseStatus) return;
-    try {
-      const res = await fetch(`${API_BASE_URL}/submit-collapse`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        collapseStatus.textContent = "✅ Submitted";
-        collapseStatus.className = "text-sm text-green-400";
-      } else {
-        collapseStatus.textContent = `❌ Failed: ${data.error || 'Unknown'}`;
-        collapseStatus.className = "text-sm text-red-400";
-      }
-    } catch (err) {
-      collapseStatus.textContent = `❌ Error: ${err.message}`;
-      collapseStatus.className = "text-sm text-red-400";
-    }
-    collapseStatus.classList.remove('hidden');
-    setTimeout(() => collapseStatus.classList.add('hidden'), 3000);
-  };
-
-  const collapseSubmit = document.getElementById("collapseSubmit");
-  if (collapseSubmit) {
-    collapseSubmit.addEventListener("click", () => {
-      const input = document.getElementById("collapseInput");
+    socket.onmessage = (e) => {
       try {
-        handleCollapseSubmit(JSON.parse(input.value));
-      } catch (e) { alert("Invalid JSON"); }
-    });
-  }
+          const d = JSON.parse(e.data);
+          if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
+          if (d.llm_response) appendMessage('Orion', d.llm_response);
+          if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
+          if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
+          if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
+      } catch (err) {
+          console.error("WS Parse Error", err);
+      }
+    };
 
-  const collapseGuidedSubmit = document.getElementById("collapseGuidedSubmit");
-  if (collapseGuidedSubmit) {
-    collapseGuidedSubmit.addEventListener("click", () => {
-      const getVal = (id) => (document.getElementById(id)?.value || "").trim();
-      const payload = {
-        observer: getVal("collapseObserverInput") || "DEMO",
-        trigger: getVal("collapseTriggerInput"),
-        observer_state: getVal("collapseObserverStateInput").split(',').map(s => s.trim()).filter(Boolean),
-        field_resonance: getVal("collapseFieldResonanceInput"),
-        type: getVal("collapseTypeInput"),
-        emergent_entity: getVal("collapseEntityInput"),
-        summary: getVal("collapseSummaryInput"),
-        mantra: getVal("collapseMantraInput"),
-        causal_echo: getVal("collapseCausalEchoInput"),
-        environment: getVal("collapseEnvironmentInput")
-      };
-      handleCollapseSubmit(payload);
-    });
-  }
+    socket.onclose = (e) => {
+        console.warn("[WS] Closed", e.code, e.reason);
+        updateStatus('Disconnected. Reconnecting...');
+        setTimeout(setupWebSocket, 2000);
+    };
 
-  // --- 3. Start Core Services ---
-  (async () => {
-    await initSession();
-    await loadCognitionLibrary(); // Load packs/verbs
-    setupWebSocket();
-    setAllCanvasSizes();
-    if (stateVisualizerCanvas && stateVisualizerCanvas.width > 0) {
-      createParticles();
-      drawOrionState();
-    }
-  })();
-
-  // --- 4. Helpers that need scope access ---
-
-  function updateStatus(msg) { if (statusDiv) statusDiv.textContent = msg; }
-
-  function updateStatusBasedOnState() {
-    if (orionState === 'idle') updateStatus('Ready.');
-    else if (orionState === 'speaking') updateStatus('Speaking...');
-    else if (orionState === 'processing') updateStatus('Processing...');
-  }
-
-  function appendMessage(sender, text, colorClass = 'text-white') {
-    if (!conversationDiv) return;
-    const div = document.createElement('div');
-    const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
-    div.innerHTML = `<p class="font-bold ${color}">${sender}</p><p class="${colorClass}">${text}</p>`;
-    div.className = "mb-2";
-    conversationDiv.appendChild(div);
-    conversationDiv.scrollTop = conversationDiv.scrollHeight;
+    socket.onerror = (err) => {
+        console.error("[WS] Error", err);
+        updateStatus('Connection Error.');
+    };
   }
 
   function sendTextMessage() {
@@ -558,7 +371,6 @@ document.addEventListener("DOMContentLoaded", () => {
     appendMessage('You', text);
     chatInput.value = '';
 
-    // Construct payload with Verbs and Packs
     const payload = {
        text_input: text,
        mode: currentMode,
@@ -566,48 +378,30 @@ document.addEventListener("DOMContentLoaded", () => {
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        use_recall: recallToggle ? recallToggle.checked : false,
        packs: selectedPacks,
-       verbs: selectedVerbs, // Send user selection
+       verbs: selectedVerbs,
     };
 
-    if (currentMode === 'brain') {
-      if (socket && socket.readyState === WebSocket.OPEN) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(payload));
-        updateStatus('Sent to Brain...');
-      } else {
-        appendMessage('System', 'WebSocket disconnected', 'text-red-400');
-      }
+        updateStatus('Sent...');
     } else {
-      // Agentic/Council via HTTP
-      const label = currentMode === 'agent' ? 'Agent' : 'Council';
-      updateStatus(`${label} thinking...`);
-      fetch(`${API_BASE_URL}/api/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Orion-Session-Id': orionSessionId || ''
-        },
-        body: JSON.stringify({
-          mode: currentMode,
-          messages: [{role: 'user', content: text}],
-          use_recall: recallToggle ? recallToggle.checked : false,
-          packs: selectedPacks,
-          verbs: selectedVerbs
+        appendMessage('System', 'WebSocket not connected. Trying HTTP fallback...', 'text-yellow-400');
+        // Fallback to HTTP if WS is down
+        fetch(`${API_BASE_URL}/api/chat`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({messages:[{role:'user', content:text}], ...payload})
         })
-      })
-      .then(r => r.json())
-      .then(d => {
-        const reply = d.text || (d.raw && d.raw.text) || JSON.stringify(d);
-        appendMessage(label, reply, 'text-indigo-200');
-        updateStatus('Ready.');
-      })
-      .catch(e => {
-        appendMessage('System', e.message, 'text-red-400');
-        updateStatus('Error.');
-      });
+        .then(r => r.json())
+        .then(d => {
+            if(d.text) appendMessage('Orion', d.text);
+            else if(d.error) appendMessage('System', d.error, 'text-red-400');
+        })
+        .catch(e => appendMessage('System', "HTTP Failed: " + e.message, 'text-red-400'));
     }
   }
 
-  // Recording Logic
+  // --- Audio ---
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -624,11 +418,11 @@ document.addEventListener("DOMContentLoaded", () => {
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
-               use_recall: recallToggle ? recallToggle.checked : false,
-               packs: selectedPacks,
-               verbs: selectedVerbs
+               use_recall: recallToggle ? recallToggle.checked : false
              }));
              updateStatus('Audio sent.');
+           } else {
+               updateStatus('Offline. Cannot send audio.');
            }
         };
         stream.getTracks().forEach(t => t.stop());
@@ -636,7 +430,7 @@ document.addEventListener("DOMContentLoaded", () => {
       mediaRecorder.start();
       updateStatus('Recording...');
       recordButton.classList.add('pulse');
-    } catch (e) { console.error(e); updateStatus('Mic Error'); }
+    } catch (e) { console.error(e); updateStatus('Mic Access Denied'); }
   }
 
   function stopRecording() {
@@ -646,21 +440,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // WebSocket Setup
-  function setupWebSocket() {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    socket = new WebSocket(`${proto}//${window.location.host}/ws`);
-    socket.onopen = () => updateStatus('Connected.');
-    socket.onmessage = (e) => {
-      const d = JSON.parse(e.data);
-      if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-      if (d.llm_response) appendMessage('Orion', d.llm_response);
-      if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
-      if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
-    };
-  }
-
-  // Audio Playback
   function processAudioQueue() {
     if (isPlayingAudio || !audioQueue.length) return;
     isPlayingAudio = true;
@@ -668,75 +447,55 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function playAudio(b64) {
-    const bin = atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for(let i=0; i<bin.length; i++) arr[i] = bin.charCodeAt(i);
-    const buf = await audioContext.decodeAudioData(arr.buffer);
-    const src = audioContext.createBufferSource();
-    src.buffer = buf;
-    const gain = audioContext.createGain();
-    src.connect(gain);
-    gain.connect(audioContext.destination);
+    try {
+        const bin = atob(b64);
+        const arr = new Uint8Array(bin.length);
+        for(let i=0; i<bin.length; i++) arr[i] = bin.charCodeAt(i);
+        const buf = await audioContext.decodeAudioData(arr.buffer);
+        const src = audioContext.createBufferSource();
+        src.buffer = buf;
+        const gain = audioContext.createGain();
+        src.connect(gain);
+        gain.connect(audioContext.destination);
+        
+        analyser = audioContext.createAnalyser();
+        src.connect(analyser);
+        drawVisualizer();
 
-    // Viz
-    analyser = audioContext.createAnalyser();
-    src.connect(analyser);
-    drawVisualizer();
-
-    src.start(0);
-    currentAudioSource = src;
-    src.onended = () => {
-      isPlayingAudio = false;
-      cancelAnimationFrame(animationFrameId);
-      processAudioQueue();
-    };
+        src.start(0);
+        currentAudioSource = src;
+        src.onended = () => {
+          isPlayingAudio = false;
+          cancelAnimationFrame(animationFrameId);
+          // Clear canvas
+          if(canvasCtx) canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+          processAudioQueue();
+        };
+    } catch(e) {
+        console.error("Audio Playback Error", e);
+        isPlayingAudio = false;
+        processAudioQueue();
+    }
   }
 
-  // Viz Loop
   function drawVisualizer() {
     if (!analyser || !canvasCtx) return;
     const bufLen = analyser.frequencyBinCount;
     const data = new Uint8Array(bufLen);
     analyser.getByteFrequencyData(data);
-    canvasCtx.fillStyle = '#1f2937';
-    canvasCtx.fillRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+    canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
     const barW = (visualizerCanvas.width / bufLen) * 2.5;
     let x = 0;
     for(let i=0; i<bufLen; i++) {
-      const h = data[i] / 2;
-      canvasCtx.fillStyle = `rgb(${h+50}, 100, 150)`;
+      const h = (data[i] / 255) * visualizerCanvas.height;
+      canvasCtx.fillStyle = `rgb(${h+100}, 100, 200)`;
       canvasCtx.fillRect(x, visualizerCanvas.height - h, barW, h);
       x += barW + 1;
     }
     animationFrameId = requestAnimationFrame(drawVisualizer);
   }
 
-  // Particles
-  function createParticles() {
-    particles = Array.from({length: 100}, () => ({
-      x: Math.random()*stateVisualizerCanvas.width,
-      y: Math.random()*stateVisualizerCanvas.height,
-      vx: (Math.random()-0.5)*2,
-      vy: (Math.random()-0.5)*2
-    }));
-  }
-
-  function drawOrionState() {
-    if(!stateCtx) return;
-    stateCtx.clearRect(0,0,stateVisualizerCanvas.width, stateVisualizerCanvas.height);
-    particles.forEach(p => {
-      p.x += p.vx; p.y += p.vy;
-      if(p.x<0||p.x>stateVisualizerCanvas.width) p.vx*=-1;
-      if(p.y<0||p.y>stateVisualizerCanvas.height) p.vy*=-1;
-      stateCtx.fillStyle = 'rgba(147, 197, 253, 0.5)';
-      stateCtx.beginPath();
-      stateCtx.arc(p.x, p.y, 2, 0, Math.PI*2);
-      stateCtx.fill();
-    });
-    requestAnimationFrame(drawOrionState);
-  }
-
-  // --- Session Init ---
+  // --- Session & Init ---
   async function initSession() {
     try {
        const sid = localStorage.getItem('orion_sid');
@@ -749,17 +508,73 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch(e) { console.warn("Session init fail", e); }
   }
 
-  // Canvas Resize
   function setAllCanvasSizes() {
-    if (visualizerCanvas) {
+    if (visualizerCanvas && visualizerContainer) {
       visualizerCanvas.width = visualizerContainer.clientWidth;
       visualizerCanvas.height = visualizerContainer.clientHeight;
     }
-    if (stateVisualizerCanvas) {
-      stateVisualizerCanvas.width = stateVisualizerContainer.clientWidth;
-      stateVisualizerCanvas.height = stateVisualizerContainer.clientHeight;
-    }
+    // Note: State visualizer is now an iframe, so no canvas resize logic needed for it.
   }
-  window.addEventListener('resize', setAllCanvasSizes);
+
+  // --- Boot Sequence ---
+  (async () => {
+      // 1. Session
+      await initSession();
+      // 2. Library (Safe)
+      await loadCognitionLibrary();
+      // 3. WS
+      setupWebSocket();
+      // 4. UI
+      setAllCanvasSizes();
+      window.addEventListener('resize', setAllCanvasSizes);
+      
+      // Vision UI Init
+      function updateVisionUi() {
+        if (!visionDockedContainer || !visionFloatingContainer) return;
+        const value = visionSourceSelect ? visionSourceSelect.value : "";
+        
+        // Simple visibility toggles based on source selection
+        const hasSource = value !== 'none';
+        if (!hasSource) {
+            visionFloatingContainer.classList.add("hidden");
+            // Show placeholder
+            visionDockedContainer.innerHTML = '<div id="visionPlaceholder" class="text-gray-400 text-sm text-center px-4">Vision service stub.</div>';
+            return;
+        }
+
+        let endpoint = value === "gopro-1" ? `${VISION_EDGE_BASE}/stream.mjpg` : "/static/img/vision-simulated.gif";
+        // prevent caching
+        if(value === "gopro-1") endpoint += "?t=" + Date.now();
+
+        const imgHtml = `<img src="${endpoint}" class="w-full h-full object-cover">`;
+        
+        if (visionIsFloating) {
+            visionFloatingContainer.classList.remove("hidden");
+            visionFloatingContainer.querySelector('.flex-1').innerHTML = imgHtml;
+            visionDockedContainer.innerHTML = `<div class="text-gray-500 text-xs">Viewing in Pop-out</div>`;
+            if (visionPopoutButton) visionPopoutButton.textContent = "Dock";
+        } else {
+            visionFloatingContainer.classList.add("hidden");
+            visionDockedContainer.innerHTML = imgHtml;
+            if (visionPopoutButton) visionPopoutButton.textContent = "Pop Out";
+        }
+      }
+
+      if (visionPopoutButton) visionPopoutButton.addEventListener("click", () => {
+        visionIsFloating = !visionIsFloating;
+        updateVisionUi();
+      });
+      if (visionCloseFloatingButton) visionCloseFloatingButton.addEventListener("click", () => {
+        visionIsFloating = false;
+        updateVisionUi();
+      });
+      if (visionSourceSelect) visionSourceSelect.addEventListener("change", () => {
+        visionIsFloating = false;
+        updateVisionUi();
+      });
+      
+      // Initial call
+      updateVisionUi();
+  })();
 
 });

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Boolean, Text, JSON
+from sqlalchemy import Column, String, Boolean, Text, JSON, DateTime
 from app.db import Base
 
 class CognitionTraceSQL(Base):
@@ -9,7 +9,10 @@ class CognitionTraceSQL(Base):
     verb = Column(String, nullable=False)
     final_text = Column(Text, nullable=True)
 
-    timestamp = Column(Float, nullable=False)
+    # Stored as TIMESTAMPTZ in Postgres.
+    # The SQL writer worker will coerce float epoch seconds and ISO8601
+    # strings into timezone-aware datetimes before insertion.
+    timestamp = Column(DateTime(timezone=True), nullable=False)
     source_service = Column(String, nullable=True)
     source_node = Column(String, nullable=True)
 

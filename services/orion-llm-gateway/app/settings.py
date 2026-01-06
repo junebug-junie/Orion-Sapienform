@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # Embedding endpoint (optional, defaults to llama.cpp chat host)
     llamacpp_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_EMBEDDING_URL")
 
+    # If false, the gateway will NOT attempt a secondary embedding call.
+    # If true, and the backend response did not already include an embedding/vector,
+    # the gateway will try to fetch one from `llamacpp_embedding_url`.
+    include_embeddings: bool = Field(False, alias="ORION_LLM_INCLUDE_EMBEDDINGS")
+
     # Timeout knobs (shared across backends)
     connect_timeout_sec: float = Field(10.0, alias="CONNECT_TIMEOUT_SEC")
     read_timeout_sec: float = Field(60.0, alias="READ_TIMEOUT_SEC")

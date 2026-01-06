@@ -1,6 +1,6 @@
 # Orion Vector Writer
 
-The **Vector Writer** service subscribes to bus channels containing text-heavy payloads (chats, collapse entries, documents), generates embeddings (via `orion-vllm` or internal encoder), and persists them into the Vector DB (ChromaDB/Qdrant) for semantic recall.
+The **Vector Writer** service subscribes to vector upsert envelopes and persists them into the Vector DB (ChromaDB/Qdrant) for semantic recall. It is a **pure sink**: embeddings must be precomputed upstream (for example by `orion-chat-memory` or an embedding host) and provided in the payload.
 
 ## Contracts
 
@@ -9,9 +9,7 @@ Configured via `VECTOR_WRITER_SUBSCRIBE_CHANNELS` (list).
 
 | Default Channel | Kind(s) | Description |
 | :--- | :--- | :--- |
-| `orion:collapse:triage` | `collapse.mirror` | Embeds collapse summaries/triggers. |
-| `orion:chat:message` | `chat.message` | Embeds chat messages. |
-| `orion:rag:doc` | `rag.document` | Embeds ingested documents. |
+| `orion:memory:vector:upsert` | `memory.vector.upsert.v1` | Writes pre-embedded documents into the vector store. |
 
 ### Published Channels
 | Channel | Env Var | Kind | Description |

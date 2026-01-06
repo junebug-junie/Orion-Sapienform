@@ -18,8 +18,15 @@ class Settings(BaseSettings):
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
-        default='["orion:collapse:sql-write", "orion:chat:history:log", "orion:rag:ingest", "orion:cognition:trace"]',
+        default='["orion:memory:vector:upsert"]',
+        default='["orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
+    )
+    VECTOR_WRITER_CHAT_HISTORY_CHANNEL: str = Field(
+        default="orion:chat:history:log", alias="VECTOR_WRITER_CHAT_HISTORY_CHANNEL"
+    )
+    VECTOR_WRITER_CHAT_COLLECTION: str = Field(
+        default="orion_chat", alias="VECTOR_WRITER_CHAT_COLLECTION"
     )
 
     @property
@@ -27,11 +34,16 @@ class Settings(BaseSettings):
         """Helper to parse the subscription channels from env var."""
         val = self.VECTOR_WRITER_SUBSCRIBE_CHANNELS
         if isinstance(val, list):
-            return val
+            channels = list(val)
         try:
-            return json.loads(val)
+            channels = json.loads(val) if not isinstance(val, list) else channels
         except json.JSONDecodeError:
-            return [x.strip() for x in val.split(",") if x.strip()]
+            channels = [x.strip() for x in val.split(",") if x.strip()]
+
+        # Ensure chat history channel is always included for ingestion
+        if self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL not in channels:
+            channels.append(self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL)
+        return channels
 
     # Chroma / Vector DB Configuration
     CHROMA_HOST: str = Field(default="orion-vector-db", alias="VECTOR_DB_HOST")
@@ -39,9 +51,6 @@ class Settings(BaseSettings):
 
     # Capture the collection from .env. Defaults to 'orion_general' if missing.
     CHROMA_COLLECTION_DEFAULT: str = Field(default="orion_general", alias="VECTOR_DB_COLLECTION")
-
-    # Embedding
-    EMBEDDING_MODEL_NAME: str = Field(default="all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
 
     class Config:
         env_file = ".env"

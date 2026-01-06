@@ -61,6 +61,8 @@ async def chat(req: CortexChatRequest, response: Response):
     # Context
     context = CortexClientContext(
         messages=messages,
+        raw_user_text=req.prompt,
+        user_message=req.prompt,
         session_id=req.session_id or "gateway-session",
         user_id=req.user_id or "gateway-user",
         trace_id=req.trace_id,

@@ -1,19 +1,21 @@
 import logging
-import os
-import json
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 from fastapi import FastAPI
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from sentence_transformers import SentenceTransformer
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.schemas.vector.schemas import VectorWriteRequest
+from orion.schemas.vector.schemas import VectorDocumentUpsertV1, VectorWriteRequest
 
+from app.chat_history import (
+    CHAT_HISTORY_COLLECTION,
+    CHAT_HISTORY_MESSAGE_KIND,
+    chat_history_envelope_to_request,
+)
 from app.settings import settings
 
 # Setup Logger
@@ -25,7 +27,6 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 
 # --- Global Resources ---
 chroma_client: Optional[chromadb.HttpClient] = None
-embedding_model: Optional[SentenceTransformer] = None
 hunter: Optional[Hunter] = None
 
 # --- Configuration ---
@@ -41,8 +42,8 @@ def _cfg() -> ChassisConfig:
     )
 
 def _setup_resources():
-    """Initialize ChromaDB connection and load ML models."""
-    global chroma_client, embedding_model
+    """Initialize ChromaDB connection."""
+    global chroma_client
     
     logger.info(f"🔌 Connecting to ChromaDB at {settings.CHROMA_HOST}:{settings.CHROMA_PORT}...")
     try:
@@ -57,19 +58,20 @@ def _setup_resources():
     except Exception as e:
         logger.error(f"❌ Failed to connect to ChromaDB: {e}")
         # We don't raise here to allow the service to start, but writes will fail.
-
-    logger.info(f"🧠 Loading embedding model: {settings.EMBEDDING_MODEL_NAME}...")
-    try:
-        embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
-        logger.info("✅ Model loaded.")
-    except Exception as e:
-        logger.error(f"❌ Failed to load embedding model: {e}")
-        raise e
+        chroma_client = None
 
 def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     """
     Adapts various incoming kinds to a unified VectorWriteRequest.
     """
+    chat_req = chat_history_envelope_to_request(
+        env,
+        channel=settings.VECTOR_WRITER_CHAT_HISTORY_CHANNEL,
+        collection_name=settings.VECTOR_WRITER_CHAT_COLLECTION or CHAT_HISTORY_COLLECTION,
+    )
+    if chat_req:
+        return chat_req
+
     kind = env.kind
     payload = env.payload
 
@@ -168,20 +170,67 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     )
 
 
+def _to_upsert(req: VectorWriteRequest, env: BaseEnvelope) -> VectorDocumentUpsertV1:
+    """
+    Normalize legacy VectorWriteRequest to the new VectorDocumentUpsertV1.
+    """
+    vector = req.vector or []
+    return VectorDocumentUpsertV1(
+        doc_id=req.id,
+        kind=req.kind,
+        text=req.content,
+        metadata=req.metadata,
+        collection=req.collection_name,
+        embedding=vector,
+        embedding_dim=len(vector) if vector else None,
+        embedding_model=None,
+    )
+
 # --- Bus Handler ---
 async def handle_envelope(env: BaseEnvelope) -> None:
     """
-    Receives messages from the bus, vectorizes the content, and upserts to ChromaDB.
+    Receives upsert envelopes and writes them to ChromaDB using provided embeddings.
     """
-    if not chroma_client or not embedding_model:
+    if not chroma_client:
         logger.warning("Skipping vector write: Resources not initialized.")
         return
 
     try:
-        req = normalize_to_request(env)
-        if not req:
-            # logger.debug(f"Skipping {env.kind}: No valid content found.")
+        req: Optional[VectorDocumentUpsertV1]
+        if env.kind == "memory.vector.upsert.v1":
+            try:
+                payload_dict = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+                req = VectorDocumentUpsertV1.model_validate(payload_dict)
+            except Exception as e:
+                logger.warning(f"Invalid upsert payload: {e}")
+                return
+        else:
+            legacy_req = normalize_to_request(env)
+            if not legacy_req:
+                return
+            req = _to_upsert(legacy_req, env)
+
+        if not req.embedding:
+            logger.warning(f"Skipping {req.kind}: no embedding supplied for id={req.doc_id}")
             return
+
+        meta = dict(req.metadata)
+        if req.embedding_model:
+            meta["embedding_model"] = req.embedding_model
+        if req.embedding_dim is not None:
+            meta["embedding_dim"] = req.embedding_dim
+        if req.latent_ref:
+            meta["latent_ref"] = req.latent_ref
+        if req.latent_summary:
+            meta["latent_summary"] = req.latent_summary
+        if env.kind == CHAT_HISTORY_MESSAGE_KIND:
+            logger.info(
+                "Chat history ingest id=%s role=%s session=%s correlation_id=%s",
+                req.id,
+                req.metadata.get("role"),
+                req.metadata.get("session_id"),
+                getattr(env, "correlation_id", None),
+            )
 
         # 3. Generate Embedding (if not provided)
         vector_list = req.vector
@@ -190,18 +239,18 @@ async def handle_envelope(env: BaseEnvelope) -> None:
             vector = await asyncio.to_thread(embedding_model.encode, req.content)
             vector_list = vector.tolist()
 
-        # 4. Upsert to Chroma
-        collection = chroma_client.get_or_create_collection(name=req.collection_name or "orion_general")
+        collection_name = req.collection or settings.CHROMA_COLLECTION_DEFAULT
+        collection = chroma_client.get_or_create_collection(name=collection_name)
         
         await asyncio.to_thread(
             collection.upsert,
-            ids=[req.id],
-            embeddings=[vector_list],
-            documents=[req.content],
-            metadatas=[req.metadata]
+            ids=[req.doc_id],
+            embeddings=[req.embedding],
+            documents=[req.text],
+            metadatas=[meta]
         )
         
-        logger.info(f"✨ Vectorized & stored {req.kind} -> {req.collection_name} (id={req.id})")
+        logger.info(f"✨ Stored {req.kind} -> {collection_name} (id={req.doc_id})")
 
     except Exception as e:
         logger.exception(f"Error processing {env.kind}: {e}")
@@ -235,10 +284,10 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
+    bus_connected = bool(hunter and hunter.bus and getattr(hunter.bus, "_redis", None))
     return {
         "status": "ok",
         "service": settings.SERVICE_NAME,
         "chroma_connected": chroma_client is not None,
-        "model_loaded": embedding_model is not None,
-        "bus_connected": hunter.bus.is_connected if hunter and hunter.bus else False
+        "bus_connected": bus_connected,
     }

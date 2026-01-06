@@ -176,6 +176,13 @@ class ChatRequestPayload(BaseModel):
     model: Optional[str] = None
     profile: Optional[str] = None
     messages: List[LLMMessage]
+    raw_user_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Canonical raw user utterance for Spark/telemetry. "
+            "Must reflect the human input (pre-scaffold) when available."
+        ),
+    )
     options: Dict[str, Any] = Field(default_factory=dict)
 
     # Optional provenance

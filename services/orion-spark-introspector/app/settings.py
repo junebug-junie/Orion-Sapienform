@@ -37,6 +37,9 @@ class Settings(BaseSettings):
         alias="CHANNEL_SPARK_STATE_SNAPSHOT",
     )
 
+    # Spark signals (normalized distress/equilibrium)
+    channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
+
     # Freshness semantics (for read-model)
     spark_state_valid_for_ms: int = Field(15000, alias="SPARK_STATE_VALID_FOR_MS")
 

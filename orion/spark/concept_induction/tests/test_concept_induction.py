@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import tempfile
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ from orion.spark.concept_induction.embedder import EmbeddingClient
 from orion.spark.concept_induction.extractor import SpacyConceptExtractor
 from orion.spark.concept_induction.inducer import ConceptInducer, WindowEvent
 from orion.spark.concept_induction.settings import ConceptSettings
+from orion.spark.concept_induction.store import LocalProfileStore
 
 
 def _env_with_text(text: str) -> BaseEnvelope:
@@ -64,6 +67,25 @@ class ConceptInductionTests(unittest.TestCase):
         self.assertTrue(result.profile.concepts)
         result2 = asyncio.run(inducer.run(subject="relationship", window=window))
         self.assertGreaterEqual(result2.profile.revision, result.profile.revision)
+
+    def test_store_round_trip_without_hash_field(self):
+        settings = ConceptSettings()
+        with tempfile.TemporaryDirectory() as td:
+            store_path = Path(td) / "store.json"
+            store = LocalProfileStore(store_path)
+            inducer = ConceptInducer(settings, store_loader=store.load, store_saver=store.save)
+            now = datetime.now(timezone.utc)
+            window = [
+                WindowEvent(text="Orion reflected with Juniper about the lake.", timestamp=now, envelope=_env_with_text("x")),
+            ]
+            result = asyncio.run(inducer.run(subject="orion", window=window))
+            self.assertTrue(result.profile.concepts)
+            # ensure we saved and can reload without extra fields breaking validation
+            reloaded = store.load("orion")
+            self.assertIsNotNone(reloaded)
+            self.assertEqual(reloaded.subject, "orion")
+            # hash is stored separately
+            self.assertEqual(store.load_hash("orion"), store.load_hash("orion"))
 
 
 if __name__ == "__main__":

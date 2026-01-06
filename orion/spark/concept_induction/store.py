@@ -27,22 +27,30 @@ class LocalProfileStore:
 
     def load(self, subject: str) -> Optional[ConceptProfile]:
         data = self._load_raw()
-        if subject not in data:
+        profiles = data.get("profiles") or data
+        if subject not in profiles:
             return None
         try:
-            return ConceptProfile.model_validate(data[subject])
+            raw = dict(profiles[subject])
+            raw.pop("_hash", None)
+            return ConceptProfile.model_validate(raw)
         except Exception:
             return None
 
     def save(self, subject: str, profile: ConceptProfile, profile_hash: str) -> None:
         data = self._load_raw()
+        data.setdefault("profiles", {})
+        data.setdefault("_hashes", {})
+
         serialized = profile.model_dump(mode="json")
-        serialized["_hash"] = profile_hash
-        data[subject] = serialized
+        data["profiles"][subject] = serialized
+        data["_hashes"][subject] = profile_hash
         self._save_raw(data)
 
     def load_hash(self, subject: str) -> Optional[str]:
         data = self._load_raw()
+        if "_hashes" in data:
+            return data.get("_hashes", {}).get(subject)
         if subject in data:
             return data[subject].get("_hash")
         return None

@@ -146,12 +146,32 @@ class SignalMapper:
             S[x, row, 0] += float(w[i]) * magnitude
 
         # 3) Tag-based bumps.
-        cx = (x0 + x1) // 2
-        cy = (y0 + y1) // 2
+        #
+        # v0.1 upgrade:
+        #   - Never ignore unknown tags: hash them into a stable channel.
+        #   - Spread bumps across the region so different tags don't all
+        #     collapse into the same center cell.
+        dx = max(1, x1 - x0)
+        dy = max(1, y1 - y0)
+
         for tag in encoding.channel_tags:
+            seed = abs(hash(tag)) & 0xFFFFFFFF
+
+            # Prefer explicit mapping; otherwise hash into a non-valence channel.
             ch = self.tag_to_channel.get(tag)
-            if ch is None or ch >= self.C:
+            if ch is None:
+                if self.C >= 3:
+                    ch = 2 + (seed % (self.C - 2))
+                else:
+                    ch = seed % max(1, self.C)
+
+            if ch >= self.C:
                 continue
-            S[cx, cy, ch] += magnitude
+
+            # Stable location per tag within the modality region
+            rx = x0 + (seed % dx)
+            ry = y0 + ((seed >> 8) % dy)
+
+            S[rx, ry, ch] += magnitude
 
         return S

@@ -1,3 +1,4 @@
+name: perceive_vision_events.yaml
 description: "Analyze an image through the vision pipeline (Host -> Window -> Council) to generate cognitive events."
 steps:
   - step: call_host

@@ -145,6 +145,22 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if isinstance(error_payload, str):
             error_payload = {"message": error_payload}
 
+        # ENRICHMENT: Extract executed verbs from steps to populate metadata
+        # This fixes the issue where everything looks like 'chat_general'
+        executed_verbs = []
+        for s in steps:
+            if s.verb_name and s.verb_name not in ["planner_react", "council_checkpoint", "agent_chain"]:
+                executed_verbs.append(s.verb_name)
+        
+        # Determine the "primary" verb (the most specific one executed)
+        primary_verb = executed_verbs[-1] if executed_verbs else req.verb
+
+        # Merge into metadata
+        final_meta = result_payload.get("metadata") or result_payload.get("spark_meta") or {}
+        if isinstance(final_meta, dict):
+            final_meta["trace_verb"] = primary_verb
+            final_meta["executed_verbs"] = executed_verbs
+
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success"),
             mode=req.mode,
@@ -156,6 +172,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             steps=steps,
             error=error_payload,
             correlation_id=str(env.correlation_id),
+            metadata=final_meta,
         )
 
         return CortexOrchResult(

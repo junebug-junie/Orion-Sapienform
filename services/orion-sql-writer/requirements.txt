@@ -6,3 +6,5 @@ SQLAlchemy==2.0.43
 redis[hiredis]==5.0.7
 psycopg2-binary==2.9.9
 loguru>=0.7
+#numpy>=2.4
+#scipy>=1.6

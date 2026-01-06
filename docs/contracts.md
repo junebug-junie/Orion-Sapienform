@@ -70,6 +70,28 @@ This registry maps logical flows to specific channels, message kinds, and payloa
 | **Dream Trigger** | `orion:dream:trigger` | `dream.trigger` | `orion.schemas.dream.DreamRequest` |
 | **TTS Request** | `orion:tts:intake` | `tts.synthesize.request` | `orion.schemas.tts.TTSRequestPayload` |
 
+### Landing Pad (pad.\* contracts)
+
+* **Intake:** pattern-subscribe on `PAD_INPUT_ALLOWLIST_PATTERNS` (defaults: `orion:telemetry:*`, `orion:cortex:*`) with denylist guard on `orion:pad:*`.
+* **Outputs (all Titanium envelopes):**
+  * `PAD_OUTPUT_EVENT_CHANNEL` → `orion.pad.event.v1` (`PadEventV1`)
+  * `PAD_OUTPUT_FRAME_CHANNEL` → `orion.pad.frame.v1` (`StateFrameV1`)
+  * `PAD_OUTPUT_SIGNAL_CHANNEL` → `orion.pad.signal.v1` (pulse-level signals)
+  * `PAD_OUTPUT_STATS_CHANNEL` → `orion.pad.stats.v1` (ingest/window stats)
+* **RPC:** `PAD_RPC_REQUEST_CHANNEL` uses `orion.pad.rpc.request.v1` / `orion.pad.rpc.response.v1`.
+
+### Equilibrium + Spark Signalization
+
+* **Heartbeats in:** `CHANNEL_SYSTEM_HEALTH` (`system.health.v1` preferred, legacy `system.health` still accepted).
+* **Outputs:** `CHANNEL_EQUILIBRIUM_SNAPSHOT` → `equilibrium.snapshot.v1` (payload `EquilibriumSnapshotV1`); `CHANNEL_SPARK_SIGNAL` → `spark.signal.v1` (`SparkSignalV1`, `signal_type="equilibrium"`).
+* **Persistence:** redis hash key `EQUILIBRIUM_STATE_KEY` stores last-seen records for restart safety.
+
+### Vector + Recall Interop
+
+* **Vector ingestion:** `VECTOR_WRITER_SUBSCRIBE_CHANNELS` (defaults include `orion:memory:vector:upsert`) carry `memory.vector.upsert.v1` with payload `VectorDocumentUpsertV1`. Embeddings are provided upstream; the writer is a sink only.
+* **Chat history ingestion:** `orion:chat:history:log` flows normalize to vector upserts (collection `orion_chat`).
+* **Recall RPC:** `recall.query.request` → `recall.query.result` uses `RecallRequestPayload` / `RecallResultPayload`. Keep `raw_user_text` populated in `ChatRequestPayload` to preserve telemetry lineage.
+
 ---
 
 ## 3. Neural Projection (Spark)

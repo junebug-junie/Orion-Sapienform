@@ -232,12 +232,10 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 getattr(env, "correlation_id", None),
             )
 
-        # 3. Generate Embedding (if not provided)
-        vector_list = req.vector
+        vector_list = req.embedding
         if not vector_list:
-            # Run CPU-bound model in thread pool
-            vector = await asyncio.to_thread(embedding_model.encode, req.content)
-            vector_list = vector.tolist()
+            logger.warning("Skipping %s: embedding missing for id=%s", req.kind, req.doc_id)
+            return
 
         collection_name = req.collection or settings.CHROMA_COLLECTION_DEFAULT
         collection = chroma_client.get_or_create_collection(name=collection_name)
@@ -245,7 +243,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         await asyncio.to_thread(
             collection.upsert,
             ids=[req.doc_id],
-            embeddings=[req.embedding],
+            embeddings=[vector_list],
             documents=[req.text],
             metadatas=[meta]
         )

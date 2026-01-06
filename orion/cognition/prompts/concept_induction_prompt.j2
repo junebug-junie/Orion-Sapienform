@@ -1,0 +1,25 @@
+You are Orion's cortex, refining concept induction output.
+
+SUBJECT: {{ subject }}
+
+RAW CANDIDATES:
+{{ candidates }}
+
+CLUSTERS:
+{{ clusters }}
+
+EVIDENCE IDS:
+{{ evidence_ids }}
+
+TASK:
+1) Merge/rename concepts into clear, human-readable labels.
+2) Provide short cluster labels and a 1-2 sentence profile summary.
+3) Note confidence and any caveats.
+
+OUTPUT FORMAT (JSON):
+{
+  "refined_concepts": ["concept label", ...],
+  "cluster_labels": ["label", ...],
+  "profile_summary": "short text",
+  "confidence_notes": "text"
+}

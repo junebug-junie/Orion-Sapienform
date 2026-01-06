@@ -1,0 +1,46 @@
+services:
+  orion-spark-concept-induction:
+    build:
+      context: ../..
+      dockerfile: services/orion-spark-concept-induction/Dockerfile
+    container_name: ${PROJECT}-spark-concept-induction
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+      - BUS_INTAKE_CHANNELS=${BUS_INTAKE_CHANNELS}
+      - BUS_PROFILE_OUT=${BUS_PROFILE_OUT}
+      - BUS_DELTA_OUT=${BUS_DELTA_OUT}
+      - BUS_VECTOR_OUT=${BUS_VECTOR_OUT}
+      - BUS_RDF_OUT=${BUS_RDF_OUT}
+      - BUS_SQL_OUT=${BUS_SQL_OUT}
+      - CONCEPT_WINDOW_MAX_EVENTS=${CONCEPT_WINDOW_MAX_EVENTS}
+      - CONCEPT_WINDOW_MAX_MINUTES=${CONCEPT_WINDOW_MAX_MINUTES}
+      - CONCEPT_SUBJECTS=${CONCEPT_SUBJECTS}
+      - SPACY_MODEL=${SPACY_MODEL}
+      - CONCEPT_MAX_CANDIDATES=${CONCEPT_MAX_CANDIDATES}
+      - EMBEDDINGS_BASE_URL=${EMBEDDINGS_BASE_URL}
+      - EMBEDDINGS_TIMEOUT_SEC=${EMBEDDINGS_TIMEOUT_SEC}
+      - CONCEPT_CLUSTER_THRESHOLD=${CONCEPT_CLUSTER_THRESHOLD}
+      - USE_CORTEX_ORCH=${USE_CORTEX_ORCH}
+      - CORTEX_ORCH_VERB=${CORTEX_ORCH_VERB}
+      - CORTEX_ORCH_REQUEST_CHANNEL=${CORTEX_ORCH_REQUEST_CHANNEL}
+      - CORTEX_ORCH_RESULT_PREFIX=${CORTEX_ORCH_RESULT_PREFIX}
+      - CORTEX_TIMEOUT_SEC=${CORTEX_TIMEOUT_SEC}
+      - CONCEPT_STORE_PATH=${CONCEPT_STORE_PATH}
+    volumes:
+      - /mnt/storage-lukewarm/orion/concepts:/data
+    env_file:
+      - .env
+    ports:
+      - "8500:8500"
+
+networks:
+  app-net:
+    external: true

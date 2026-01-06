@@ -15,12 +15,11 @@
       class="fixed top-4 right-4 z-40 bg-gray-900/80 hover:bg-gray-800 text-gray-200 rounded-full p-2 shadow-lg border border-gray-700"
       aria-label="Open settings"
     >
-      <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3" />
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path
-          d="M19.4 15a1.78 1.78 0 0 0 .38 2l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.78 1.78 0 0 0-2-.38 1.78 1.78 0 0 0-1 1.62V21a2 2 0 0 1-4 0v-.09A1.78 1.78 0 0 0 8 19.29a1.78 1.78 0 0 0-2 .38l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.78 1.78 0 0 0 .38-2 1.78 1.78 0 0 0-1.62-1H2a2 2 0 0 1 0-4h.09A1.78 1.78 0 0 0 3.71 8a1.78 1.78 0 0 0-.38-2l-.06-.06a2 2 0 1 1 2.83-2.83l-.06.06a1.78 1.78 0 0 0 2 .38h.06A1.78 1.78 0 0 0 9.91 2H10a2 2 0 0 1 4 0v.09A1.78 1.78 0 0 0 15 3.71a1.78 1.78 0 0 0 2-.38l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.78 1.78 0 0 0-.38 2 1.78 1.78 0 0 0 1.62 1H22a2 2 0 0 1 0 4h-.09a1.78 1.78 0 0 0-1.62 1Z"
-        />
+          d="M12 1v2m0 18v2m11-11h-2M3 12H1m18.364-6.364-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0-1.414-1.414M7.05 7.05 5.636 5.636" />
+        <circle cx="12" cy="12" r="3" />
       </svg>
     </button>
 
@@ -29,7 +28,7 @@
       <div class="w-full md:w-2/3 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4">
         <h2 class="text-xl font-bold text-white mb-1">Cognitive EKG</h2>
 
-        <div id="stateVisualizerContainer" class="w-full h-[55rem] bg-black rounded-lg overflow-hidden border border-gray-800 shadow-inner">
+        <div id="stateVisualizerContainer" class="w-full h-[55rem] bg-gray-800/50 rounded-lg overflow-hidden border border-gray-800 shadow-inner">
           <iframe src="/spark/ui" class="w-full h-full border-0" title="Orion Cognitive EKG"></iframe>
         </div>
 
@@ -38,27 +37,27 @@
               <canvas id="visualizer" class="w-full h-full"></canvas>
             </div>
 
-            <div id="biometricsPanel" class="w-full bg-gray-800/50 rounded-lg p-3 space-y-2 h-28 overflow-y-auto border border-gray-800">
-              <div class="flex items-center justify-between border-b border-gray-700 pb-1 mb-1">
-                <h3 class="text-sm font-semibold text-gray-300">Biometrics</h3>
-                <span class="text-[10px] uppercase tracking-wide text-gray-500">stub</span>
+            <div id="biometricsPanel" class="w-full h-28 bg-gray-800/50 rounded-lg border border-gray-800 p-3 flex flex-col justify-between">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-gray-400">Biometrics (stub)</span>
+                <span class="text-xs text-gray-500 italic">Loading...</span>
               </div>
-              <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <div class="flex justify-between">
-                  <span class="text-gray-400">Arousal</span>
-                  <span id="biometricsArousal" class="text-gray-200 font-mono">—</span>
+              <div class="flex items-center justify-between text-sm">
+                <div class="flex flex-col">
+                  <span class="text-[10px] uppercase tracking-wide text-gray-500">HR</span>
+                  <span id="bioHr" class="font-semibold text-gray-100">--</span>
                 </div>
-                <div class="flex justify-between">
-                  <span class="text-gray-400">Valence</span>
-                  <span id="biometricsValence" class="text-gray-200 font-mono">—</span>
+                <div class="flex flex-col">
+                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Stress</span>
+                  <span id="bioStress" class="font-semibold text-gray-100">--</span>
                 </div>
-                <div class="flex justify-between">
-                  <span class="text-gray-400">Load</span>
-                  <span id="biometricsLoad" class="text-gray-200 font-mono">—</span>
+                <div class="flex flex-col">
+                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Temp</span>
+                  <span id="bioTemp" class="font-semibold text-gray-100">--</span>
                 </div>
-                <div class="flex justify-between">
-                  <span class="text-gray-400">State</span>
-                  <span id="biometricsTag" class="text-gray-200 font-mono">idle</span>
+                <div class="flex flex-col">
+                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Hydration</span>
+                  <span id="bioHydration" class="font-semibold text-gray-100">--</span>
                 </div>
               </div>
             </div>
@@ -66,233 +65,210 @@
       </div>
 
       <div class="w-full md:w-1/3 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4">
-        <div class="text-center pb-2 border-b border-gray-800">
-          <h1 class="text-2xl font-bold text-white">Orion Hub</h1>
-          <p id="status" class="text-gray-400 text-xs mt-1">Press and hold to speak</p>
+        <div class="flex items-center justify-between border-b border-gray-700 pb-1 mb-1">
+          <h3 class="text-lg font-semibold text-white">Oríon + Juniper</h3>
+          <div class="flex items-center gap-2">
+            <span id="status" class="text-xs text-gray-400">Ready.</span>
+            <button id="interruptButton" class="hidden text-xs bg-red-700 hover:bg-red-600 text-white rounded-lg px-3 py-1 border border-red-500">Interrupt</button>
+          </div>
         </div>
 
-        <div class="flex justify-center items-center py-2 relative">
-          <button
-            id="recordButton"
-            class="bg-red-600 hover:bg-red-700 text-white rounded-full w-24 h-24 flex items-center justify-center transition-transform transform focus:outline-none focus:ring-4 focus:ring-red-500/50 shadow-lg"
-          >
-            <svg id="micIcon" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-              <line x1="12" x2="12" y1="19" y2="22"></line>
-            </svg>
+        <div id="conversation" class="flex-1 bg-gray-950/60 border border-gray-800 rounded-xl p-3 overflow-y-auto space-y-3"></div>
+
+        <div class="flex items-center gap-2">
+          <button id="recordButton" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700" title="Hold to talk">
+            🎙️
           </button>
-          <button
-            id="interruptButton"
-            class="hidden absolute bg-gray-600 hover:bg-gray-700 text-white rounded-full w-16 h-16 flex items-center justify-center transition-opacity focus:outline-none focus:ring-4 focus:ring-gray-500/50 shadow-lg"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="6" y="6" width="12" height="12"></rect>
-            </svg>
-          </button>
+
+          <textarea
+            id="chatInput"
+            class="flex-1 bg-gray-800 text-gray-100 rounded-lg px-3 py-2 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm resize-none h-10"
+            placeholder="Type message..."
+          ></textarea>
+          <button id="sendButton" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-4 py-2 font-semibold">Send</button>
         </div>
 
-        <div class="space-y-3">
-          <div class="relative">
-            <textarea
-              id="chatInput"
-              rows="3"
-              class="w-full bg-gray-700 text-white rounded-lg p-3 pr-16 focus:outline-none focus:ring-2 focus:ring-red-500 resize-none text-sm shadow-inner"
-              placeholder="Type message..."
-            ></textarea>
-            <button
-              id="sendButton"
-              class="absolute inset-y-0 right-0 flex items-center justify-center px-4 text-white bg-red-600 hover:bg-red-700 rounded-r-lg text-sm font-medium"
-            >
-              Send
-            </button>
-          </div>
-
-          <div class="flex items-center justify-between bg-gray-800 p-2 rounded-lg text-xs">
-             <div class="flex items-center gap-2">
-                 <span class="uppercase text-gray-500 font-bold text-[10px]">Mode</span>
-                 <div class="flex gap-1">
-                    <button class="mode-btn px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 transition-colors" data-mode="brain">Brain</button>
-                    <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors" data-mode="agent">Agent</button>
-                    <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
-                 </div>
-             </div>
-             <div class="flex items-center gap-2 border-l border-gray-600 pl-2">
-                 <input type="checkbox" id="recallToggle" class="form-checkbox h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-500">
-                 <label for="recallToggle" class="text-gray-400 cursor-pointer select-none hover:text-white">Recall</label>
-             </div>
-          </div>
-
-          <div class="space-y-2">
-             <div class="flex flex-col gap-1 text-[11px] bg-gray-800 p-2 rounded-lg">
-                <span class="text-gray-500 font-bold uppercase text-[10px]">Active Packs</span>
-                <div class="flex flex-wrap gap-1" id="packContainer">
-                   <span class="text-gray-500 italic">Loading...</span>
-                </div>
-             </div>
-
-             <div class="relative text-[11px]">
-                 <div id="verbSelectTrigger" class="bg-gray-700 hover:bg-gray-600 transition-colors text-white rounded-lg p-2 cursor-pointer flex justify-between items-center text-xs shadow-sm border border-gray-600">
-                    <span id="verbSelectLabel">All verbs available</span>
-                    <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                 </div>
-                 <div id="verbDropdown" class="hidden absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-20 max-h-40 overflow-y-auto p-2">
-                     <div id="verbList" class="grid grid-cols-1 gap-1">
-                         </div>
-                 </div>
-             </div>
-          </div>
-        </div>
-
-        <div class="flex-grow flex flex-col min-h-0 border-t border-gray-800 pt-2">
-          <div
-            id="conversation"
-            class="space-y-3 flex-grow overflow-y-auto p-3 bg-gray-800/30 rounded-lg text-sm border border-gray-800/50"
-          >
+        <div class="flex items-center justify-between bg-gray-800 p-2 rounded-lg text-xs">
+          <div class="flex items-center gap-2">
+            <span class="uppercase text-gray-500 font-bold text-[10px]">Mode</span>
+            <div class="flex gap-1">
+              <button class="mode-btn px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 transition-colors" data-mode="brain">Brain</button>
+              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="agent">Agent</button>
+              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
             </div>
-          
-          <div class="flex justify-between items-center mt-3 pt-2 border-t border-gray-800">
-            <div class="flex gap-3">
-              <button id="copyButton" class="text-xs text-gray-500 hover:text-white transition-colors">Copy</button>
-              <button id="clearButton" class="text-xs text-gray-500 hover:text-white transition-colors">Clear</button>
+          </div>
+
+          <div class="flex items-center gap-2 border-l border-gray-600 pl-2">
+            <div class="flex items-center space-x-2">
+              <label for="recallToggle" class="text-xs text-gray-400">Recall</label>
+              <input type="checkbox" id="recallToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
             </div>
             <div class="flex items-center space-x-2">
               <label for="textToSpeechToggle" class="text-xs text-gray-400">TTS</label>
-              <input type="checkbox" id="textToSpeechToggle" class="form-checkbox h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-600" checked />
+              <input type="checkbox" id="textToSpeechToggle" class="h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-600" checked />
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Cognition Packs</div>
+          </div>
+          <div id="packContainer" class="flex flex-wrap gap-2"></div>
+
+          <div class="flex items-center justify-between pt-2 border-t border-gray-700">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Verb Routing</div>
+
+            <div class="flex items-center gap-2">
+              <button id="clearButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Clear</button>
+              <button id="copyButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Copy</button>
+            </div>
+          </div>
+
+          <div class="relative">
+            <button id="verbSelectTrigger" class="w-full flex items-center justify-between bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700">
+              <span id="verbSelectLabel" class="text-sm text-gray-300">Select verbs…</span>
+              <span class="text-gray-400">▾</span>
+            </button>
+
+            <div id="verbDropdown" class="hidden absolute mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-20">
+              <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Available Verbs</div>
+                <button id="clearVerbs" class="text-[10px] text-gray-400 hover:text-white">Clear</button>
+              </div>
+              <div id="verbList" class="max-h-56 overflow-y-auto p-2 space-y-1"></div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
-      <div class="flex items-center justify-between">
-        <h2 class="text-xl font-bold text-white">Orion's Vision</h2>
-        <div class="flex items-center space-x-2">
-          <select
-            id="visionSource"
-            class="bg-gray-800 text-gray-200 text-xs rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500"
-          >
-            <option value="none">No source selected</option>
-            <option value="gopro-1">Eye-Ball-1</option>
-            <option value="simulated">Simulated Feed</option>
-          </select>
-          <button id="visionPopoutButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Pop Out</button>
+    <div class="w-full flex flex-col lg:flex-row gap-6 items-stretch">
+      <div class="w-full lg:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xl font-bold text-white">Orion's Vision</h2>
+          <div class="flex items-center space-x-2">
+            <select id="visionSource" class="bg-gray-800 text-gray-200 text-xs rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500">
+              <option value="none">No source selected</option>
+              <option value="gopro-1">Eye-Ball-1</option>
+              <option value="simulated">Simulated Feed</option>
+            </select>
+            <button id="visionPopoutButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Pop Out</button>
+          </div>
         </div>
-      </div>
-      <div id="visionDockedContainer" class="relative mt-2 rounded-lg bg-gray-800/50 overflow-hidden h-[28rem] flex items-center justify-center">
-        <div id="visionPlaceholder" class="text-gray-400 text-sm text-center px-4">
-          Vision service stub.
+        <div id="visionDockedContainer" class="relative mt-2 rounded-lg bg-gray-800/50 overflow-hidden h-[28rem] flex items-center justify-center">
+          <div id="visionPlaceholder" class="text-gray-400 text-sm text-center px-4">
+            Vision service stub.
+          </div>
         </div>
       </div>
 
-      <!-- Pop-out container (used by app.js) -->
+      <!-- ✅ ADDED: Vision pop-out container (hidden; does not change layout) -->
       <div id="visionFloatingContainer" class="hidden fixed inset-0 z-50 bg-black/80 p-4">
         <div class="bg-gray-900 rounded-2xl h-full w-full flex flex-col border border-gray-700 overflow-hidden">
           <div class="flex items-center justify-between p-2 border-b border-gray-800">
             <div class="text-xs text-gray-400">Vision Pop-out</div>
-            <button id="visionCloseFloating" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Close</button>
+            <button id="visionCloseFloating" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">
+              Close
+            </button>
           </div>
           <div class="flex-1 bg-black"></div>
         </div>
       </div>
-    </div>
 
-    <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <h2 class="text-xl font-bold text-white">Collapse Mirror</h2>
-          <button id="collapseTooltipToggle" class="flex items-center justify-center w-5 h-5 rounded-full border border-gray-500 text-[10px] text-gray-300 hover:text-white">?</button>
-        </div>
-        <div class="inline-flex rounded-lg bg-gray-800/80 p-1 text-xs">
-          <button id="collapseModeGuided" class="px-3 py-1 rounded-md bg-gray-700 text-gray-100">Guided Form</button>
-          <button id="collapseModeRaw" class="px-3 py-1 rounded-md text-gray-300 hover:text-white">Raw JSON</button>
-        </div>
-      </div>
-
-      <div id="collapseTooltip" class="hidden text-xs text-gray-300 bg-gray-800/60 border border-gray-700 rounded-lg p-3">
-        <p class="mb-2">A Collapse Mirror entry is a structured self-log. The guided form maps to the required schema fields.</p>
-        <ul class="list-disc list-inside space-y-1 text-gray-400">
-          <li><span class="text-gray-200">observer</span>: who is logging (e.g., Juniper / Oríon)</li>
-          <li><span class="text-gray-200">trigger</span>: what caused the moment</li>
-          <li><span class="text-gray-200">observer_state</span>: list of internal states</li>
-          <li><span class="text-gray-200">field_resonance</span>: atmosphere / emotional field</li>
-          <li><span class="text-gray-200">type</span>: snapshot | causally_dense | note | noop</li>
-          <li><span class="text-gray-200">emergent_entity</span>: what "showed up"</li>
-          <li><span class="text-gray-200">summary</span>: short narrative</li>
-          <li><span class="text-gray-200">mantra</span>: compact anchor phrase</li>
-        </ul>
-      </div>
-
-      <div id="collapseGuidedSection" class="space-y-3">
-        <p class="text-xs text-gray-400">Use this form to submit a Collapse entry.</p>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Observer</label>
-            <input id="collapseObserver" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Juniper" value="Juniper" />
+      <!-- ✅ UPDATED: Collapse Mirror (keeps placement; adds required DOM + fields) -->
+      <div class="w-full lg:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <h2 class="text-xl font-bold text-white">Collapse Mirror</h2>
+            <button id="collapseTooltipToggle" class="flex items-center justify-center w-5 h-5 rounded-full border border-gray-500 text-[10px] text-gray-300 hover:text-white">?</button>
           </div>
-          <div>
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Type</label>
-            <select id="collapseType" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600">
-              <option value="snapshot" selected>snapshot</option>
-              <option value="causally_dense">causally_dense</option>
-              <option value="note">note</option>
-              <option value="noop">noop</option>
-            </select>
-          </div>
-
-          <div class="md:col-span-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Trigger</label>
-            <input id="collapseTrigger" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="What happened?" />
-          </div>
-
-          <div class="md:col-span-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Observer State (one per line)</label>
-            <textarea id="collapseObserverState" rows="2" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="excited\nfocused"></textarea>
-          </div>
-
-          <div>
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Field Resonance</label>
-            <input id="collapseFieldResonance" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="electric / tender / chaotic" />
-          </div>
-          <div>
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Emergent Entity</label>
-            <input id="collapseEmergentEntity" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Oríon / Juniper / The Mirror" />
-          </div>
-
-          <div class="md:col-span-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Summary</label>
-            <textarea id="collapseSummary" rows="3" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Short narrative..."></textarea>
-          </div>
-
-          <div class="md:col-span-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Mantra</label>
-            <input id="collapseMantra" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="A compact anchor phrase" />
-          </div>
-
-          <div class="md:col-span-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Causal Echo (optional)</label>
-            <textarea id="collapseCausalEcho" rows="2" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Optional causal echo..."></textarea>
+          <div class="inline-flex rounded-lg bg-gray-800/80 p-1 text-xs">
+            <button id="collapseModeGuided" class="px-3 py-1 rounded-md bg-gray-700 text-gray-100">Guided Form</button>
+            <button id="collapseModeRaw" class="px-3 py-1 rounded-md text-gray-300 hover:text-white">Raw JSON</button>
           </div>
         </div>
 
-        <button id="collapseGuidedSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm">Submit Guided Collapse</button>
-      </div>
+        <div id="collapseTooltip" class="hidden text-xs text-gray-300 bg-gray-800/60 border border-gray-700 rounded-lg p-3">
+          <p class="mb-2">Quick schema: observer, trigger, observer_state[], field_resonance, type, emergent_entity, summary, mantra, causal_echo.</p>
+        </div>
 
-      <div id="collapseRawSection" class="hidden space-y-3">
-        <p class="text-xs text-gray-400">Paste a raw JSON payload matching the CollapseMirrorEntry schema.</p>
-        <textarea id="collapseRawJson" rows="10" class="w-full bg-gray-700 text-white rounded-lg p-3 text-xs font-mono border border-gray-600" spellcheck="false"></textarea>
-        <button id="collapseRawSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm">Submit Raw Collapse</button>
-      </div>
+        <div id="collapseGuidedSection" class="space-y-3">
+          <p class="text-xs text-gray-400">Use this form to submit a Collapse entry.</p>
 
-      <div id="collapseStatus" class="text-xs text-gray-400"></div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Observer</label>
+              <input id="collapseObserver" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Juniper" value="Juniper" />
+            </div>
+
+            <div>
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Type</label>
+              <select id="collapseType" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600">
+                <option value="snapshot" selected>snapshot</option>
+                <option value="causally_dense">causally_dense</option>
+                <option value="note">note</option>
+                <option value="noop">noop</option>
+              </select>
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Trigger</label>
+              <input id="collapseTrigger" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="What happened?" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Observer State (one per line)</label>
+              <textarea id="collapseObserverState" rows="2" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="excited&#10;focused"></textarea>
+            </div>
+
+            <div>
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Field Resonance</label>
+              <input id="collapseFieldResonance" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="electric / tender / chaotic" />
+            </div>
+
+            <div>
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Emergent Entity</label>
+              <input id="collapseEmergentEntity" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Oríon / Juniper / The Mirror" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Summary</label>
+              <textarea id="collapseSummary" rows="3" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Short narrative..."></textarea>
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Mantra</label>
+              <input id="collapseMantra" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="A compact anchor phrase" />
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Causal Echo (optional)</label>
+              <textarea id="collapseCausalEcho" rows="2" class="w-full bg-gray-700 text-white rounded-lg p-2 text-sm border border-gray-600" placeholder="Optional causal echo..."></textarea>
+            </div>
+          </div>
+
+          <button id="collapseGuidedSubmit" type="button" class="w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm">
+            Submit Guided Collapse
+          </button>
+        </div>
+
+        <div id="collapseRawSection" class="hidden space-y-3">
+          <p class="text-xs text-gray-400">Paste a raw JSON payload matching the CollapseMirrorEntry schema.</p>
+          <textarea id="collapseRawJson" rows="10" class="w-full bg-gray-700 text-white rounded-lg p-3 text-xs font-mono border border-gray-600" spellcheck="false"></textarea>
+          <button id="collapseRawSubmit" type="button" class="w-full bg-red-600 hover:bg-red-700 text-white rounded-lg py-2 text-sm">
+            Submit Raw Collapse
+          </button>
+        </div>
+
+        <div id="collapseStatus" class="text-xs text-gray-400"></div>
+      </div>
     </div>
   </div>
 
-  <div id="settingsPanel" class="fixed inset-y-0 right-0 w-full md:w-96 bg-gray-900 shadow-2xl transform translate-x-full transition-transform duration-300 z-30 flex flex-col">
+  <div id="settingsPanel" class="fixed inset-y-0 right-0 w-full sm:w-[420px] bg-gray-950 border-l border-gray-800 transform translate-x-full transition-transform duration-300 z-30 flex flex-col">
      </div>
   
-  <script src="/static/js/app.js?v=1.0.25" defer></script>
+  <script src="/static/js/app.js?v=1.0.27" defer></script>
 </body>
 </html>

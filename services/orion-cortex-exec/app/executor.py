@@ -183,15 +183,36 @@ async def call_step_services(
                 # --- STRICT PATH ---
                 # 1. Build Pydantic Model
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
-                messages_payload = ctx.get("messages")
 
-                if not messages_payload:
-                    content = prompt or " "
-                    messages_payload = [{"role": "user", "content": content}]
+                raw_msgs = ctx.get("messages") or []
+                normalized: List[Dict[str, Any]] = []
+
+                if isinstance(raw_msgs, list):
+                    for m in raw_msgs:
+                        if isinstance(m, dict):
+                            normalized.append(m)
+                        elif isinstance(m, LLMMessage):
+                            normalized.append(m.model_dump(mode="json"))
+                        elif hasattr(m, "model_dump"):
+                            normalized.append(m.model_dump(mode="json"))
+
+                # ALWAYS inject the rendered step prompt as system message
+                # so the verb's prompt_template actually governs the LLM hop.
+                if prompt and str(prompt).strip():
+                    sys_msg = {"role": "system", "content": str(prompt)}
+
+                    if normalized and normalized[0].get("role") == "system":
+                        normalized[0] = sys_msg
+                    else:
+                        normalized = [sys_msg] + normalized
+
+                if not normalized:
+                    content = (prompt or " ").strip() or " "
+                    normalized = [{"role": "user", "content": content}]
 
                 request_object = ChatRequestPayload(
                     model=req_model,
-                    messages=messages_payload,
+                    messages=normalized,
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),

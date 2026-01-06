@@ -16,7 +16,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./templates:/app/templates
-      - /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
+      - ./static:/app/static
+      #- /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
     environment:
       # Core service identity
       - PROJECT=${PROJECT}

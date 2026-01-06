@@ -230,6 +230,54 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 if "node" not in data_to_process and env.source and env.source.node:
                     data_to_process["node"] = env.source.node
 
+
+                # Normalize Spark state snapshots into SparkTelemetryPayload shape for DB writes.
+                # New producer publishes spark.state.snapshot.v1 with a snapshot payload:
+                #   { snapshot_ts, phi: {coherence, novelty, ...}, valid_for_ms, ... }
+                # But SparkTelemetryPayload expects scalar phi/novelty + timestamp.
+                if env.kind == "spark.state.snapshot.v1":
+                    # Detect "snapshot-style" payload: has snapshot_ts + phi dict.
+                    try:
+                        _phi = data_to_process.get("phi")
+                        _snap_ts = data_to_process.get("snapshot_ts") or data_to_process.get("ts")
+                        if isinstance(_phi, dict) and _snap_ts and "timestamp" not in data_to_process:
+                            snap = data_to_process.copy()
+
+                            # Compute a timestamp for the telemetry row.
+                            # Prefer snapshot_ts; else fallback to envelope timestamp; else now.
+                            ts = _snap_ts
+                            if not ts and getattr(env, "timestamp", None):
+                                ts = env.timestamp.isoformat()
+                            if not ts:
+                                ts = datetime.utcnow().isoformat() + "Z"
+
+                            meta = snap.get("metadata") or {}
+                            if not isinstance(meta, dict):
+                                meta = {"raw_metadata": meta}
+
+                            # Embed the full snapshot for restart-proof hydration/debug.
+                            meta.setdefault("spark_state_snapshot", snap)
+
+                            data_to_process = {
+                                "source_service": snap.get("source_service") or (env.source.name if env.source else None),
+                                "source_node": snap.get("source_node") or (env.source.node if env.source else None),
+                                "phi": _phi.get("coherence"),
+                                "novelty": _phi.get("novelty"),
+                                "trace_mode": snap.get("trace_mode"),
+                                "trace_verb": snap.get("trace_verb"),
+                                "timestamp": ts,
+                                "metadata": meta,
+                            }
+
+                            # Preserve any provided correlation_id (will be injected later if missing).
+                            if "correlation_id" in snap:
+                                data_to_process["correlation_id"] = snap.get("correlation_id")
+                            elif getattr(env, "correlation_id", None):
+                                data_to_process["correlation_id"] = str(env.correlation_id)
+
+                    except Exception as _ex:
+                        logger.warning(f"Failed to normalize spark.state.snapshot.v1 payload: {_ex}")
+
                 if "correlation_id" not in data_to_process:
                      is_ad_hoc = len(env.causality_chain) == 0
                      if not is_ad_hoc and env.correlation_id:

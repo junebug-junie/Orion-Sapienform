@@ -18,25 +18,24 @@ max_recursion_depth: 2
 
 services:
   - LLMGatewayService
-  - VectorMemoryService
-  - RDFMemoryService
+  - RecallService
 
 prompt_template: reflection_prompt.j2
 
 plan:
   - name: gather_related_memory
     description: >
-      Retrieve RDF and vector-based memories related to the fragment or query.
+      Retrieve relevant memory using the canonical RecallService.
     order: 0
     services:
-      - VectorMemoryService
-      - RDFMemoryService
+      - RecallService
+    recall_profile: reflect.v1
     requires_gpu: false
     requires_memory: true
 
   - name: compose_reflection_prompt
     description: >
-      Build a reflection prompt using templates + retrieved memory.
+      Build a reflection prompt using templates + retrieved memory bundle.
     order: 1
     prompt_template: reflection_prompt.j2
     services:
@@ -54,4 +53,3 @@ plan:
     requires_memory: false
 
 safety_rules: []
-

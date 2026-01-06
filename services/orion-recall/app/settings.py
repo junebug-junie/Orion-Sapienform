@@ -2,6 +2,7 @@
 from __future__ import annotations
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+from pydantic import AliasChoices
 
 class Settings(BaseSettings):
     # Pydantic / Settings config
@@ -21,10 +22,10 @@ class Settings(BaseSettings):
     ORION_BUS_ENABLED: bool = True
     ORION_BUS_URL: str = "redis://100.92.216.81:6379/0"
 
-    # These channels are for Rabbit usage
-    RECALL_BUS_INTAKE: str = "orion-exec:request:RecallService"
-    CHANNEL_RECALL_REQUEST: str = "orion-exec:request:RecallService"
-    CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = "orion-exec:result:RecallService"
+    # Titanium bus events
+    RECALL_BUS_INTAKE: str = "recall.query.v1"
+    RECALL_BUS_REPLY_DEFAULT: str = "recall.reply.v1"
+    RECALL_BUS_TELEMETRY: str = "recall.decision.v1"
 
     # ── Chassis / Runtime ─────────────────────────────────────────────
     HEARTBEAT_INTERVAL_SEC: float = 10.0
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     RECALL_DEFAULT_MAX_ITEMS: int = 16
     RECALL_DEFAULT_TIME_WINDOW_DAYS: int = 30
     RECALL_DEFAULT_MODE: str = "hybrid"  # short_term | deep | hybrid
+    RECALL_DEFAULT_PROFILE: str = "reflect.v1"
 
     # ── Source Toggles ────────────────────────────────────────────────
     RECALL_ENABLE_SQL_CHAT: bool = True
@@ -44,7 +46,10 @@ class Settings(BaseSettings):
     RECALL_ENABLE_RDF: bool = False
 
     # ── Postgres / SQL ────────────────────────────────────────────────
-    RECALL_PG_DSN: str = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
+    RECALL_PG_DSN: str = Field(
+        default="postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
+        validation_alias=AliasChoices("RECALL_PG_DSN", "POSTGRES_URI", "POSTGRES_DSN"),
+    )
 
     # Chat history
     RECALL_SQL_CHAT_TABLE: str = "chat_history_log"
@@ -94,7 +99,20 @@ class Settings(BaseSettings):
     # ── RDF / GraphDB (optional, recall-specific) ─────────────────────
     RECALL_RDF_ENDPOINT_URL: str = "http://orion-athena-graphdb:7200/repositories/collapse"
     RECALL_RDF_TIMEOUT_SEC: float = 5.0
+    RECALL_RDF_USER: str = "admin"
+    RECALL_RDF_PASS: str = "admin"
     RECALL_RDF_ENABLE_SUMMARIES: bool = False
+
+    # ── SQL timeline knobs ─────────────────────────────────────────────
+    RECALL_ENABLE_SQL_TIMELINE: bool = True
+    RECALL_SQL_SINCE_MINUTES: int = 180
+    RECALL_SQL_TOP_K: int = 10
+    RECALL_SQL_TIMELINE_TABLE: str = "collapse_mirror"
+    RECALL_SQL_TIMELINE_TS_COL: str = "timestamp"
+    RECALL_SQL_TIMELINE_TEXT_COL: str = "summary"
+    RECALL_SQL_TIMELINE_SESSION_COL: str = "observer"
+    RECALL_SQL_TIMELINE_NODE_COL: str = "observer_state"
+    RECALL_SQL_TIMELINE_TAGS_COL: str = "tags"
 
     # ── Future tensor / ranker toggles ────────────────────────────────
     RECALL_TENSOR_RANKER_ENABLED: bool = False

@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from uuid import uuid4
 from typing import Any, Awaitable, Callable, Optional, List, Union
 
-from loguru import logger
+try:
+    from loguru import logger  # type: ignore
+except Exception:  # pragma: no cover - fallback when loguru is unavailable
+    import logging
+    logger = logging.getLogger("orion.bus")
 from pydantic import BaseModel, ConfigDict, Field
 
 from .async_service import OrionBusAsync

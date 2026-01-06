@@ -1,24 +1,19 @@
-# app/storage/rdf_adapater.py
 from __future__ import annotations
 
 import requests
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from app.settings import settings
-from app.types import Fragment
 
 
 def fetch_rdf_fragments(
     *,
     query_text: str,
     max_items: int = 8,
-) -> List[Fragment]:
+) -> List[Dict[str, str]]:
     """
-    Lightweight GraphDB search.
-
-    NOTE: This is a generic "contains text anywhere" search – since your
-    schema is custom, this is intentionally conservative and is disabled
-    by default (RECALL_ENABLE_RDF=false).
+    Minimal GraphDB lookup used for recall fusion.
+    Returns a list of dicts that can be transformed downstream.
     """
     if not query_text:
         return []
@@ -71,20 +66,21 @@ def fetch_rdf_fragments(
             continue
         by_subject.setdefault(s, []).append(str(o))
 
-    frags: List[Fragment] = []
+    frags: List[Dict[str, str]] = []
     for s, texts in by_subject.items():
         text = " ".join(texts)[:1500]
         frags.append(
-            Fragment(
-                id=s,
-                kind="rdf",
-                source="rdf",
-                text=text,
-                ts=0.0,
-                tags=["rdf"],
-                salience=0.6,
-                meta={"subject": s},
-            )
+            {
+                "id": s,
+                "source": "rdf",
+                "source_ref": "graphdb",
+                "uri": s,
+                "text": text,
+                "ts": 0.0,
+                "tags": ["rdf"],
+                "score": 0.6,
+                "meta": {"subject": s},
+            }
         )
 
     return frags[:max_items]

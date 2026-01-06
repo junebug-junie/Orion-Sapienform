@@ -1,10 +1,10 @@
+
 import cv2, threading, time
-import logging
 from typing import Optional
 from .settings import get_settings
 
 settings = get_settings()
-logger = logging.getLogger("orion-vision-edge.capture_source")
+
 
 class CameraSource:
     def __init__(self, source: str):
@@ -18,13 +18,7 @@ class CameraSource:
         self.fps = settings.FPS
 
     def start(self):
-        logger.info(f"Opening camera source: {self.source}")
         self.cap = cv2.VideoCapture(self.source)
-        if not self.cap.isOpened():
-            logger.error(f"Failed to open camera source: {self.source}")
-        else:
-            logger.info("Camera source opened successfully.")
-            
         if self.width:
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         if self.height:
@@ -37,24 +31,12 @@ class CameraSource:
 
     def _run(self):
         interval = 1.0 / max(self.fps, 1)
-        retry_count = 0
         while not self._stop.is_set():
-            if not self.cap or not self.cap.isOpened():
-                time.sleep(1)
-                continue
-                
             ok, frame = self.cap.read()
             if ok:
                 self.last_frame = frame
-                if retry_count > 0:
-                    logger.info("Camera stream recovered.")
-                    retry_count = 0
             else:
-                retry_count += 1
-                if retry_count % 20 == 1: # Log occasionally
-                    logger.warning(f"Failed to read frame from camera (attempt {retry_count}).")
                 time.sleep(0.25)
-            
             # regulate loop speed roughly
             time.sleep(interval * 0.5)
 
@@ -68,6 +50,15 @@ class CameraSource:
         if self.cap:
             try:
                 self.cap.release()
-                logger.info("Camera released.")
-            except Exception as e:
-                logger.warning(f"Error releasing camera: {e}")
+            except Exception:
+                pass
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        if self.cap:
+            try:
+                self.cap.release()
+            except Exception:
+                pass

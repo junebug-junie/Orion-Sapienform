@@ -1,27 +1,23 @@
-import uuid
-
-from sqlalchemy import Column, DateTime, Float, JSON, String
-
+from sqlalchemy import Column, String, Float, JSON, DateTime
+from sqlalchemy.sql import func
 from app.db import Base
-
 
 class SparkTelemetrySQL(Base):
     __tablename__ = "spark_telemetry"
 
-    # NOTE: We want each telemetry row to be uniquely addressable. We keep
-    # correlation_id as an indexed foreign key / join key back to the trace.
-    telemetry_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-
-    correlation_id = Column(String, index=True, nullable=False)
-
-    phi = Column(Float)
-    novelty = Column(Float)
-    trace_mode = Column(String)
-    trace_verb = Column(String)
-    stimulus_summary = Column(String)
-
-    # "metadata" is a reserved attribute name on SQLAlchemy Declarative Base.
-    # We map the DB column name -> python attribute name via "metadata_".
-    metadata_ = Column("metadata", JSON)
-
-    timestamp = Column(DateTime(timezone=True))
+    # Use correlation_id as primary key (one telemetry point per trace)
+    correlation_id = Column(String, primary_key=True)
+    
+    # Core Metrics
+    phi = Column(Float, nullable=True)
+    novelty = Column(Float, nullable=True)
+    
+    # Context
+    trace_mode = Column(String, nullable=True)
+    trace_verb = Column(String, nullable=True)
+    stimulus_summary = Column(String, nullable=True)
+    
+    # Full stats (valence, energy, etc)
+    metadata_ = Column("metadata", JSON, nullable=True)
+    
+    timestamp = Column(DateTime, server_default=func.now())

@@ -44,7 +44,5 @@ COPY orion /app/orion
 # Copy this service's code
 COPY services/orion-spark-introspector /app
 
-EXPOSE 8444
-
 # No HTTP server here; it's a worker, so no EXPOSE needed
-CMD ["python", "-m", "app.main", "--host", "0.0.0.0", "--port", "8444"]
+CMD ["python", "-m", "app.main"]

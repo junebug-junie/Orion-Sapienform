@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     # --- Core Service Identity ---
     PROJECT: str = Field(default="orion-janus", env="PROJECT")
     SERVICE_NAME: str = Field(default="hub", env="SERVICE_NAME")
-    NODE_NAME: str = Field(default="athena", env="ORION_NODE_NAME")
     SERVICE_VERSION: str = Field(default="0.3.0", env="SERVICE_VERSION")
     HUB_PORT: int = Field(default=8080, env="HUB_PORT")
 
@@ -69,8 +68,6 @@ class Settings(BaseSettings):
 
     CHANNEL_COLLAPSE_INTAKE: str = Field(..., env="CHANNEL_COLLAPSE_INTAKE")
     CHANNEL_COLLAPSE_TRIAGE: str = Field(..., env="CHANNEL_COLLAPSE_TRIAGE")
-
-    PUBLISH_CHAT_HISTORY_LOG: bool = Field(default=True, env="PUBLISH_CHAT_HISTORY_LOG")
 
     CHANNEL_CHAT_HISTORY_LOG: str = Field(
         "orion:chat:history:log",

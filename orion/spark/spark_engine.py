@@ -347,10 +347,8 @@ class SparkEngine:
         self,
         encoding: SurfaceEncoding,
         *,
-        agent_id: str = "(global)",
         magnitude: float = 1.0,
         steps: int = 2,
-        biometrics: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
         Inject a pre-built SurfaceEncoding into the tissue.
@@ -390,10 +388,10 @@ class SparkEngine:
         # Update recent history + read back state
         self._register_event(encoding)
         phi = self.tissue.phi()
-        self_field = self._compute_self_field(phi, self._recent_events, biometrics=biometrics)
+        self_field = self._compute_self_field(phi, self._recent_events)
         self._last_self_field = self_field
 
-        summary = self.tissue.summarize_for(agent_id=agent_id)
+        summary = self.tissue.summarize_for(agent_id="(global)")
 
         return {
             "phi": phi,
@@ -407,7 +405,6 @@ class SparkEngine:
         message: str,
         *,
         agent_id: str,
-        source: str = "juniper",
         tags: Optional[List[str]] = None,
         sentiment: Optional[float] = None,
         spark_vector: Optional[List[float]] = None,
@@ -448,20 +445,28 @@ class SparkEngine:
         """
         encoding = encode_chat_to_surface(
             message,
-            source=source,
+            source="juniper",  # TODO: make configurable if needed
             tags=tags,
             sentiment=sentiment,
             spark_vector=spark_vector,
         )
 
-        # NOTE: Route through ingest_surface so novelty + predictive coding
-        # (expectation update) never gets bypassed.
-        return self.ingest_surface(
-            encoding,
-            agent_id=agent_id,
-            magnitude=magnitude,
-            steps=steps,
-        )
+        self.tissue.inject_surface(encoding, self.mapper, magnitude=magnitude, steps=steps)
+
+        # Track event + derive φ and SelfField
+        self._register_event(encoding)
+        phi = self.tissue.phi()
+        self_field = self._compute_self_field(phi, self._recent_events)
+        self._last_self_field = self_field
+
+        summary = self.tissue.summarize_for(agent_id=agent_id)
+
+        return {
+            "phi": phi,
+            "self_field": self_field.to_dict(),
+            "tissue_summary": summary,
+            "surface_encoding": asdict(encoding),
+        }
 
     def record_biometrics(
         self,
@@ -514,17 +519,23 @@ class SparkEngine:
             tags=tags,
         )
 
-        biometrics_norm = {
+        self.tissue.inject_surface(encoding, self.mapper, magnitude=magnitude, steps=steps)
+
+        # Track event + derive φ and SelfField
+        self._register_event(encoding)
+        phi = self.tissue.phi()
+        biometrics = {
             "cpu_util_norm": cpu_util,
             "gpu_util_norm": gpu_util,
         }
+        self_field = self._compute_self_field(phi, self._recent_events, biometrics=biometrics)
+        self._last_self_field = self_field
 
-        # NOTE: Route through ingest_surface so novelty + predictive coding
-        # (expectation update) never gets bypassed.
-        return self.ingest_surface(
-            encoding,
-            agent_id="biometrics",
-            magnitude=magnitude,
-            steps=steps,
-            biometrics=biometrics_norm,
-        )
+        summary = self.tissue.summarize_for(agent_id="biometrics")
+
+        return {
+            "phi": phi,
+            "self_field": self_field.to_dict(),
+            "tissue_summary": summary,
+            "surface_encoding": asdict(encoding),
+        }

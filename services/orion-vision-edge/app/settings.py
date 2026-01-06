@@ -23,70 +23,71 @@ class Settings(BaseSettings):
     )
 
     # --- Service metadata ---
-    SERVICE_NAME: str = Field("vision-edge", alias="SERVICE_NAME")
-    SERVICE_VERSION: str = Field("0.2.0", alias="SERVICE_VERSION")
+    SERVICE_NAME: str = "vision-edge"
+    SERVICE_VERSION: str = "0.2.0"
 
     # --- Camera source ---
-    SOURCE: str = Field(..., alias="SOURCE") # e.g. rtsp://USER:PASS@host:554/Preview_01_sub
-    STREAM_ID: str = Field("cam0", alias="STREAM_ID")
+    SOURCE: str  # e.g. rtsp://USER:PASS@host:554/Preview_01_sub
+    STREAM_ID: str = "cam0"
 
-    WIDTH: int = Field(640, alias="WIDTH")
-    HEIGHT: int = Field(360, alias="HEIGHT")
-    FPS: int = Field(15, alias="FPS")
+    WIDTH: int = 640
+    HEIGHT: int = 360
+    FPS: int = 15
 
     # Storage for "Pointer" architecture (shared frame paths)
-    FRAME_STORAGE_DIR: str = Field("/mnt/frames", alias="FRAME_STORAGE_DIR")
-    FRAME_RETENTION_SECONDS: int = Field(60, alias="FRAME_RETENTION_SECONDS")
+    FRAME_STORAGE_DIR: str = "/mnt/frames"
+    FRAME_RETENTION_SECONDS: int = 60
 
     # --- Detectors & sampling ---
-    DETECTORS: str = Field("motion,face,yolo,presence", alias="DETECTORS")
-    DETECT_EVERY_N_FRAMES: int = Field(10, alias="DETECT_EVERY_N_FRAMES")
+    DETECTORS: str = "motion,face,yolo,presence"
+    DETECT_EVERY_N_FRAMES: int = 10
 
     # Motion
-    MOTION_MIN_AREA: int = Field(2000, alias="MOTION_MIN_AREA")
+    MOTION_MIN_AREA: int = 2000
 
     # Face
-    FACE_CASCADE_PATH: str = Field("/app/haar/haarcascade_frontalface_default.xml", alias="FACE_CASCADE_PATH")
-    FACE_SCALE_FACTOR: float = Field(1.1, alias="FACE_SCALE_FACTOR")
-    FACE_MIN_NEIGHBORS: int = Field(5, alias="FACE_MIN_NEIGHBORS")
-    FACE_MIN_SIZE: str = Field("30,30", alias="FACE_MIN_SIZE")
+    FACE_CASCADE_PATH: str = "/app/haar/haarcascade_frontalface_default.xml"
+    FACE_SCALE_FACTOR: float = 1.1
+    FACE_MIN_NEIGHBORS: int = 5
+    FACE_MIN_SIZE: str = "30,30"  # parsed into tuple below
 
     # Presence
-    ENABLE_PRESENCE: bool = Field(True, alias="ENABLE_PRESENCE")
-    PRESENCE_TIMEOUT: int = Field(60, alias="PRESENCE_TIMEOUT")
-    PRESENCE_LABEL: str = Field("Juniper", alias="PRESENCE_LABEL")
+    ENABLE_PRESENCE: bool = True
+    PRESENCE_TIMEOUT: int = 60
+    PRESENCE_LABEL: str = "Juniper"
 
     # YOLO
-    ENABLE_YOLO: bool = Field(True, alias="ENABLE_YOLO")
-    YOLO_MODEL: str = Field("yolov8n.pt", alias="YOLO_MODEL")
-    YOLO_CLASSES: str = Field("person", alias="YOLO_CLASSES")
-    YOLO_CONF: float = Field(0.25, alias="YOLO_CONF")
-    YOLO_CONF_THRES: float = Field(0.25, alias="YOLO_CONF_THRES")
-    YOLO_IOU_THRES: float = Field(0.45, alias="YOLO_IOU_THRES")
-    YOLO_IMG_SIZE: int = Field(640, alias="YOLO_IMG_SIZE")
-    YOLO_DEVICE: str = Field("0", alias="YOLO_DEVICE")
-    YOLO_PERSON_RETRY_THRESHOLD: float = Field(0.15, alias="YOLO_PERSON_RETRY_THRESHOLD")
+    ENABLE_YOLO: bool = True
+    YOLO_MODEL: str = "yolov8n.pt"
+    YOLO_CLASSES: str = "person"  # comma-separated
+    YOLO_CONF: float = 0.25
+    YOLO_CONF_THRES: float = 0.25 # explicit new var
+    YOLO_IOU_THRES: float = 0.45
+    YOLO_IMG_SIZE: int = 640
+    YOLO_DEVICE: str = "0"  # "0", "1", "cuda:0", "cpu", etc.
+    YOLO_PERSON_RETRY_THRESHOLD: float = 0.15 # for "person-centric" retry
 
     # Debug / Telemetry
-    EDGE_DEBUG_SAVE_FRAMES: bool = Field(False, alias="EDGE_DEBUG_SAVE_FRAMES")
-    EDGE_DEBUG_DIR: str = Field("/mnt/debug", alias="EDGE_DEBUG_DIR")
-    EDGE_DEBUG_SAMPLE_RATE: int = Field(100, alias="EDGE_DEBUG_SAMPLE_RATE")
+    EDGE_DEBUG_SAVE_FRAMES: bool = False
+    EDGE_DEBUG_DIR: str = "/mnt/debug"
+    EDGE_DEBUG_SAMPLE_RATE: int = 100 # save 1 in N
 
     # UI / JPEG
-    ENABLE_UI: bool = Field(True, alias="ENABLE_UI")
-    ANNOTATE: bool = Field(True, alias="ANNOTATE")
-    JPEG_QUALITY: int = Field(90, alias="JPEG_QUALITY")
+    ENABLE_UI: bool = True
+    ANNOTATE: bool = True  # draw boxes / labels on frames
+    JPEG_QUALITY: int = 90
 
-    # --- Bus integration ---
-    ORION_BUS_ENABLED: bool = Field(True, alias="ORION_BUS_ENABLED")
-    ORION_BUS_URL: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    # --- Bus integration (bus-first, no brain HTTP) ---
+    ORION_BUS_ENABLED: bool = True
+    ORION_BUS_URL: str = "redis://100.92.216.81:6379/0"
 
     # --- Bus Channels
-    VISION_EVENTS_PUBLISH_RAW: str = Field("orion:vision:edge:raw", alias="VISION_EVENTS_PUBLISH_RAW")
-    VISION_EVENTS_SUBSCRIBE_RAW: str = Field("orion:vision:edge:raw", alias="VISION_EVENTS_SUBSCRIBE_RAW")
-    CHANNEL_VISION_FRAMES: str = Field("vision.frames", alias="CHANNEL_VISION_FRAMES")
-    CHANNEL_VISION_ARTIFACTS: str = Field("vision.artifacts", alias="CHANNEL_VISION_ARTIFACTS")
-    VISION_EVENTS_PUBLISH_NOTABLE: str = Field("orion:vision:edge:event:notable", alias="VISION_EVENTS_PUBLISH_NOTABLE")
+    VISION_EVENTS_PUBLISH_RAW: str = "orion:vision:edge:raw" # Deprecated but kept for legacy consumers
+    CHANNEL_VISION_FRAMES: str = "vision.frames" # Pointer channel
+    CHANNEL_VISION_ARTIFACTS: str = "vision.artifacts" # Edge Artifact channel
+    VISION_EVENTS_PUBLISH_NOTABLE: str = "orion:vision:edge:event:notable"
+
+    # ------ helpers / derived properties ------
 
     @property
     def detector_names(self) -> List[str]:
@@ -94,6 +95,7 @@ class Settings(BaseSettings):
 
     @property
     def face_min_size_tuple(self) -> Tuple[int, int]:
+        # we keep raw FACE_MIN_SIZE for env parity, and expose parsed tuple here
         x, y = self.FACE_MIN_SIZE.split(",")
         return int(x), int(y)
 

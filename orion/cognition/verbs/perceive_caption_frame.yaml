@@ -1,4 +1,3 @@
-name: perceive_caption_frame
 description: "Generate a caption for an image frame."
 steps:
   - step: call_host

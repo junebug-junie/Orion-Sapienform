@@ -98,44 +98,25 @@ async def mjpeg_stream():
 
 
 @router.get("/events")
-async def sse_events():
+def sse_events():
     """
     Developer/debug SSE endpoint.
 
     Streams messages from the configured raw vision channel.
     """
     if not settings.ORION_BUS_ENABLED:
-        async def disabled_gen():
+        def disabled_gen():
             yield "data: {\"error\": \"bus disabled\"}\n\n"
         return StreamingResponse(disabled_gen(), media_type="text/event-stream")
 
-    async def event_gen():
-        # Using the async bus subscription
-        async with bus.subscribe(settings.VISION_EVENTS_SUBSCRIBE_RAW) as pubsub:
-            async for msg in bus.iter_messages(pubsub):
-                data = msg.get("data", {})
-                # 'data' here is bytes if not decoded by iter_messages? 
-                # bus.iter_messages returns raw redis messages usually {type, pattern, channel, data}
-                # data is usually bytes or string.
-                # If we want to show payload, we decode it.
-                # But SSE usually sends string.
-                try:
-                    # Try to decode if bytes
-                    if isinstance(data, bytes):
-                        data = data.decode('utf-8')
-                    # If it's json string, we send it as is or wrapped?
-                    # The original code did: json.dumps(data).
-                    # If it's a JSON string already, we might double encode.
-                    # Let's try to parse and dump to be safe?
-                    try:
-                        obj = json.loads(data)
-                        payload = json.dumps(obj)
-                    except:
-                        payload = json.dumps({"raw": str(data)})
-                except Exception:
-                     payload = json.dumps({"error": "decode failed"})
-
-                yield f"data: {payload}\n\n"
+    def event_gen():
+        for msg in bus.subscribe(settings.VISION_EVENTS_SUBSCRIBE_RAW):
+            data = msg.get("data", {})
+            try:
+                payload = json.dumps(data)
+            except TypeError:
+                payload = json.dumps({"raw": str(data)})
+            yield f"data: {payload}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
@@ -156,7 +137,6 @@ async def detect_upload(file: UploadFile = File(...)):
     if frame is None:
         return JSONResponse({"error": "invalid image"}, status_code=400)
 
-    # Use the refactored function
     annotated, detections = run_detectors_on_frame(frame)
 
     jpg_bytes = encode_jpeg(annotated)
@@ -169,12 +149,7 @@ async def detect_upload(file: UploadFile = File(...)):
         "image_b64": jpg_b64,
     }
 
-    if detections and settings.ORION_BUS_ENABLED:
-        # OrionBusAsync.publish takes (channel, message). Message can be dict (legacy) or Envelope.
-        # It auto-encodes.
-        try:
-             await bus.publish("vision.detect.upload", payload)
-        except Exception as e:
-             pass # Log error
+    if detections:
+        bus.publish("vision.detect.upload", payload)
 
     return JSONResponse(payload)

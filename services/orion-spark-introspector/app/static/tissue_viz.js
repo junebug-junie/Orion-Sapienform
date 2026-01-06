@@ -16,7 +16,6 @@ const elGearBtn = document.getElementById('gear-btn');
 const elSettingsMenu = document.getElementById('settings-menu');
 const elInfoToggle = document.getElementById('info-toggle-row');
 const elExplanation = document.getElementById('explanation-panel');
-const elIntrospection = document.getElementById('introspection-log');
 
 // --- UI LOGIC ---
 elGearBtn.addEventListener('click', (e) => { e.stopPropagation(); elSettingsMenu.classList.toggle('visible'); });
@@ -48,7 +47,6 @@ class WSClient {
             try {
                 const data = JSON.parse(event.data);
                 if (data.type === "tissue.update") { this.handleUpdate(data); }
-                else if (data.type === "introspection.update") { this.handleIntrospection(data); }
             } catch (e) { console.error("Parse error:", e); }
         };
         this.ws.onclose = () => { this.setConnected(false); setTimeout(() => this.connect(), this.reconnectDelay); };
@@ -62,29 +60,6 @@ class WSClient {
         state.correlationId = data.correlation_id;
         state.timestamp = data.timestamp;
         this.updateDOM();
-    }
-    handleIntrospection(data) {
-        if (data.text) {
-            const time = data.timestamp ? data.timestamp.split('T')[1].split('.')[0] : '';
-            const corr = data.correlation_id ? data.correlation_id.substring(0,8) : '???';
-            
-            let metaStr = "";
-            if(data.metadata) {
-                // Filter for interesting keys
-                const interesting = ['mode', 'trace_verb', 'phi_after', 'spark_valence'];
-                const parts = [];
-                for (const [k, v] of Object.entries(data.metadata)) {
-                    if (interesting.includes(k) || k.startsWith('spark_')) {
-                        let val = v;
-                        if(typeof v === 'object') val = JSON.stringify(v);
-                        parts.push(`${k}: ${val}`);
-                    }
-                }
-                if(parts.length > 0) metaStr = "\n> " + parts.join(" | ");
-            }
-
-            elIntrospection.innerText = `[${time}] ID:${corr}${metaStr}\n\n${data.text}`;
-        }
     }
     updateDOM() {
         document.getElementById('val-id').innerText = (state.correlationId || "NULL").substring(0, 8) + '...';

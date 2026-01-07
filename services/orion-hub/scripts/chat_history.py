@@ -27,16 +27,19 @@ def build_chat_history_envelope(
     """
     Construct a versioned chat history envelope with Orion's canonical bus schema.
     """
-    payload = ChatHistoryMessageV1(
-        message_id=message_id,
-        session_id=session_id,
-        role=role,
-        speaker=speaker,
-        content=content,
-        model=model,
-        provider=provider,
-        tags=tags or [],
-    )
+    payload_kwargs = {
+        "session_id": session_id,
+        "role": role,
+        "speaker": speaker,
+        "content": content,
+        "model": model,
+        "provider": provider,
+        "tags": tags or [],
+    }
+    if message_id:
+        payload_kwargs["message_id"] = message_id
+
+    payload = ChatHistoryMessageV1(**payload_kwargs)
 
     return ChatHistoryMessageEnvelope(
         correlation_id=correlation_id or uuid4(),

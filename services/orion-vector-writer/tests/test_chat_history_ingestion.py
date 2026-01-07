@@ -3,7 +3,9 @@ from pathlib import Path
 from uuid import uuid4
 
 # Ensure service-local imports resolve
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+here = Path(__file__).resolve()
+sys.path.append(str(here.parents[1]))  # services/orion-vector-writer
+sys.path.append(str(here.parents[3]))  # repo root for `orion` package
 
 from app.chat_history import (
     CHAT_HISTORY_COLLECTION,
@@ -81,3 +83,4 @@ def test_chat_history_envelope_normalizes_to_vector_request():
     assert req.metadata["role"] == "user"
     assert req.metadata["speaker"] == "test-user"
     assert req.metadata["source_channel"] == "orion:chat:history:log"
+

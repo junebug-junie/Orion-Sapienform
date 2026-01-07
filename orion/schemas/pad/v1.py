@@ -53,7 +53,8 @@ class PadEventV1(BaseModel):
 class TensorBlobV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    schema: Literal["orion.pad.tensor.v1"] = "orion.pad.tensor.v1"
+    # Use schema_ with an alias to avoid shadowing Pydantic's internal 'schema' attribute
+    schema_: Literal["orion.pad.tensor.v1"] = Field("orion.pad.tensor.v1", alias="schema")
     dim: int
     vector_b64: str
     features: Dict[str, Any] = Field(default_factory=dict)

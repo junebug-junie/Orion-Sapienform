@@ -18,14 +18,14 @@ class Settings(BaseSettings):
     orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
-    pad_input_allowlist_patterns: List[str] = Field(
+    pad_input_allowlist_patterns: List[str] | str = Field(
         default_factory=lambda: [
             "orion:telemetry:*",
             "orion:cortex:*",
         ],
         alias="PAD_INPUT_ALLOWLIST_PATTERNS",
     )
-    pad_input_denylist_patterns: List[str] = Field(
+    pad_input_denylist_patterns: List[str] | str = Field(
         default_factory=lambda: ["orion:pad:*"],
         alias="PAD_INPUT_DENYLIST_PATTERNS",
     )

@@ -217,7 +217,8 @@ class OrionTissue:
         self.last_novelty_per_channel[channel_key] = novelty
         return novelty
 
-    def _coherence_from_embedding(self, channel_key: str, embedding: Optional[np.ndarray] = None) -> float:
+
+def _coherence_from_embedding(self, channel_key: str, embedding: Optional[np.ndarray] = None) -> float:
         """
         Hybrid coherence:
           - If an embedding is provided (spark_vector or feature_vec), compute 1 - cosine_distance
@@ -230,12 +231,20 @@ class OrionTissue:
 
         if emb is not None and emb.size > 0:
             expected = self._get_embedding_expectation(channel_key, dim=emb.shape[0])
-            try:
-                dist = float(distance.cosine(emb, expected))
-                if np.isnan(dist):
+
+            emb_norm = np.linalg.norm(emb)
+            exp_norm = np.linalg.norm(expected)
+
+            if emb_norm == 0 or exp_norm == 0:
+                dist = 1.0  # Max distance if either is zero (undefined direction)
+            else:
+                try:
+                    dist = float(distance.cosine(emb, expected))
+                    if np.isnan(dist):
+                        dist = 1.0
+                except Exception:
                     dist = 1.0
-            except Exception:
-                dist = 1.0
+
             coherence = 1.0 - max(0.0, min(1.0, dist))
         else:
             variance = float(self.T.var())
@@ -244,6 +253,7 @@ class OrionTissue:
         self.last_coherence_per_channel[channel_key] = coherence
         self._channel_stats(self.coherence_stats, channel_key).add(coherence)
         return coherence
+
 
     def propagate(
         self,

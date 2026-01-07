@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field, ConfigDict
+from uuid import UUID
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 
@@ -8,7 +9,7 @@ class RawChat(BaseModel):
     """
     model_config = ConfigDict(extra="ignore")
 
-    id: str
+    id: UUID = Field(validation_alias=AliasChoices("message_id", "id"))
     session_id: str
     user_id: Optional[str] = None
     role: str # "user" or "assistant"

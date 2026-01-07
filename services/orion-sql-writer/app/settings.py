@@ -37,7 +37,8 @@ class Settings(BaseSettings):
             "orion:telemetry:biometrics",
             "orion:spark:introspection:log", # legacy?
             "orion:spark:telemetry",
-            "orion:cognition:trace"
+            "orion:cognition:trace",
+            "chat.history.message.v1"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
             "tags.enriched": "CollapseEnrichment",
             "chat.history": "ChatHistoryLogSQL",
             "chat.log": "ChatHistoryLogSQL",
+            "chat.history.message.v1": "ChatMessageSQL",
             "dream.log": "Dream",
             "biometrics.telemetry": "BiometricsTelemetry",
             "spark.introspection.log": "SparkIntrospectionLogSQL",

@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import List
 
 import asyncpg
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 
@@ -30,17 +31,16 @@ async def _fetch_rollups(window: int, hours: int) -> List[asyncpg.Record]:
         await conn.close()
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await journaler.start_background()
+    try:
+        yield
+    finally:
+        await journaler.stop()
 
 
-@app.on_event("startup")
-async def _startup() -> None:
-    asyncio.create_task(journaler.start())
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await journaler.stop()
+app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/rollups")

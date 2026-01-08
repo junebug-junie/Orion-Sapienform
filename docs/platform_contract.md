@@ -399,6 +399,8 @@ Every service should contain:
 * `app/main.py` (FastAPI or worker entrypoint)
 * `Dockerfile`
 * `.env with .env_example`
+* each .env must have the following knobs: ORION_BUS_ENABLED=true
+ORION_BUS_ENFORCE_CATALOG=false
 
 Optionally:
 

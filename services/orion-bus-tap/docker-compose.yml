@@ -1,0 +1,26 @@
+services:
+  orion-bus-tap:
+    build:
+      context: ../..
+      dockerfile: services/orion-bus-tap/Dockerfile
+    container_name: ${PROJECT:-orion}-bus-tap
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: ${SERVICE_NAME:-orion-bus-tap}
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      NODE_NAME: ${NODE_NAME:-unknown}
+      INSTANCE_ID: ${INSTANCE_ID:-local}
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      TAP_PATTERN: ${TAP_PATTERN:-orion:*}
+      UI_BIND_HOST: ${UI_BIND_HOST:-0.0.0.0}
+      UI_BIND_PORT: ${UI_BIND_PORT:-8101}
+    ports:
+      - "${UI_BIND_PORT:-8101}:${UI_BIND_PORT:-8101}"
+    restart: unless-stopped
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

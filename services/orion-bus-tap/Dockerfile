@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir fastapi uvicorn redis loguru pydantic-settings
 COPY services/orion-bus-tap/app ./app
 COPY services/orion-bus-tap/static ./static
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8101"]
+CMD ["sh", "-c", "uvicorn app.main:app --host ${UI_BIND_HOST:-0.0.0.0} --port ${UI_BIND_PORT:-8101}"]

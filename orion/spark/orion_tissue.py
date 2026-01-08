@@ -218,7 +218,7 @@ class OrionTissue:
         return novelty
 
 
-def _coherence_from_embedding(self, channel_key: str, embedding: Optional[np.ndarray] = None) -> float:
+    def _coherence_from_embedding(self, channel_key: str, embedding: Optional[np.ndarray] = None) -> float:
         """
         Hybrid coherence:
           - If an embedding is provided (spark_vector or feature_vec), compute 1 - cosine_distance

@@ -11,7 +11,7 @@ from pydantic import Field, ValidationError
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 
-from .orchestrator import call_cortex_exec
+from .orchestrator import call_verb_runtime
 from .settings import get_settings
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
@@ -124,18 +124,19 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     # 3. Execution
     try:
-        s = get_settings()
-
-        result_payload = await call_cortex_exec(
+        verb_result = await call_verb_runtime(
             svc.bus,
             source=sref,
-            exec_request_channel=s.channel_exec_request,
-            exec_result_prefix=s.channel_exec_result_prefix,
             client_request=req,
             correlation_id=str(env.correlation_id),
+            causality_chain=env.causality_chain,
+            trace=env.trace,
             timeout_sec=float(req.options.get("timeout_sec", 900.0)),
         )
 
+        result_payload = verb_result.output if isinstance(verb_result.output, dict) else {}
+        if "result" in result_payload and isinstance(result_payload.get("result"), dict):
+            result_payload = result_payload["result"]
         steps = [
             StepExecutionResult.model_validate(s) if not isinstance(s, StepExecutionResult) else s
             for s in (result_payload.get("steps") or [])
@@ -144,6 +145,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         error_payload = result_payload.get("error")
         if isinstance(error_payload, str):
             error_payload = {"message": error_payload}
+
+        if not verb_result.ok:
+            error_payload = error_payload or {"message": verb_result.error or "verb_failed"}
 
         # ENRICHMENT: Extract executed verbs from steps to populate metadata
         # This fixes the issue where everything looks like 'chat_general'
@@ -162,7 +166,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             final_meta["executed_verbs"] = executed_verbs
 
         client_result = CortexClientResult(
-            ok=(result_payload.get("status") == "success"),
+            ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
             verb=req.verb,
             status=result_payload.get("status") or "fail",

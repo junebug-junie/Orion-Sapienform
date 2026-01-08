@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices
 
 
 class VerbEffectV1(BaseModel):
@@ -10,7 +10,11 @@ class VerbEffectV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    kind: str = Field(..., description="Effect type identifier")
+    kind: str = Field(
+        ...,
+        description="Effect type identifier",
+        validation_alias=AliasChoices("kind", "type"),
+    )
     payload: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -20,11 +24,23 @@ class VerbRequestV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    verb: str = Field(..., description="Registered verb trigger name")
+    trigger: str = Field(
+        ...,
+        description="Registered verb trigger name",
+        validation_alias=AliasChoices("trigger", "verb"),
+    )
+    schema_id: Optional[str] = Field(
+        None,
+        description="Schema identifier for the payload model",
+    )
     payload: Dict[str, Any] = Field(default_factory=dict)
     request_id: Optional[str] = None
     caller: Optional[str] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def verb(self) -> str:
+        return self.trigger
 
 
 class VerbResultV1(BaseModel):

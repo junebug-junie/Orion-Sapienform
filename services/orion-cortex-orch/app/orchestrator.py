@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -13,6 +14,7 @@ import orion  # used to locate installed package path for cognition/verbs
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.verbs import VerbRequestV1, VerbResultV1
 from orion.schemas.cortex.schemas import (
     ExecutionPlan,
     ExecutionStep,
@@ -273,6 +275,17 @@ async def _maybe_fetch_state(bus: OrionBusAsync, *, source: ServiceRef, correlat
         return None
 
 
+def build_plan_request(client_request: CortexClientRequest, correlation_id: str) -> PlanExecutionRequest:
+    plan = _build_plan_for_mode(client_request)
+    context = _build_context(client_request)
+
+    # Attach latest Orion state (Spark) as a read-model artifact
+    context.setdefault("metadata", {})["orion_state_pending"] = True
+
+    args = _plan_args(client_request, correlation_id)
+    return PlanExecutionRequest(plan=plan, args=args, context=context)
+
+
 async def call_cortex_exec(
     bus: OrionBusAsync,
     *,
@@ -283,21 +296,20 @@ async def call_cortex_exec(
     correlation_id: str,
     timeout_sec: float = 900.0,
 ) -> Dict[str, Any]:
-    plan = _build_plan_for_mode(client_request)
-    context = _build_context(client_request)
+    request_object = build_plan_request(client_request, correlation_id)
 
-    # Attach latest Orion state (Spark) as a read-model artifact
     state_reply = await _maybe_fetch_state(bus, source=source, correlation_id=correlation_id)
     if state_reply is not None:
-        context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")
+        request_object.context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")
+        request_object.context["metadata"].pop("orion_state_pending", None)
     else:
-        context.setdefault("metadata", {})["orion_state"] = StateLatestReply(
+        request_object.context.setdefault("metadata", {})["orion_state"] = StateLatestReply(
             ok=False,
             status="missing",
             note="state_service_unavailable",
         ).model_dump(mode="json")
+        request_object.context["metadata"].pop("orion_state_pending", None)
 
-    args = _plan_args(client_request, correlation_id)
     diagnostic = _diagnostic_enabled(client_request)
 
     logger.info(
@@ -306,12 +318,10 @@ async def call_cortex_exec(
             "correlation_id": correlation_id,
             "mode": client_request.mode,
             "verb": client_request.verb,
-            "step_count": len(plan.steps),
-            "steps": [s.step_name for s in plan.steps],
+            "step_count": len(request_object.plan.steps),
+            "steps": [s.step_name for s in request_object.plan.steps],
         },
     )
-
-    request_object = PlanExecutionRequest(plan=plan, args=args, context=context)
 
     client = CortexExecClient(
         bus,
@@ -327,3 +337,91 @@ async def call_cortex_exec(
         correlation_id=correlation_id,
         timeout_sec=timeout_sec,
     )
+
+
+def build_verb_request(
+    *,
+    client_request: CortexClientRequest,
+    plan_request: PlanExecutionRequest,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None = None,
+    trace: dict | None = None,
+) -> tuple[VerbRequestV1, BaseEnvelope]:
+    request_id = str(uuid4())
+    verb_request = VerbRequestV1(
+        trigger="legacy.plan",
+        schema_id=plan_request.__class__.__name__,
+        payload=plan_request.model_dump(mode="json"),
+        request_id=request_id,
+        caller=source.name,
+        meta={
+            "verb": client_request.verb,
+            "mode": client_request.mode,
+            "origin": "cortex-orch",
+        },
+    )
+
+    envelope = BaseEnvelope(
+        kind="verb.request",
+        source=source,
+        correlation_id=correlation_id,
+        causality_chain=list(causality_chain or []),
+        trace=dict(trace or {}),
+        payload=verb_request.model_dump(mode="json"),
+    )
+    return verb_request, envelope
+
+
+async def call_verb_runtime(
+    bus: OrionBusAsync,
+    *,
+    source: ServiceRef,
+    client_request: CortexClientRequest,
+    correlation_id: str,
+    causality_chain: list | None = None,
+    trace: dict | None = None,
+    timeout_sec: float = 900.0,
+) -> VerbResultV1:
+    plan_request = build_plan_request(client_request, correlation_id)
+    state_reply = await _maybe_fetch_state(bus, source=source, correlation_id=correlation_id)
+    if state_reply is not None:
+        plan_request.context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")
+        plan_request.context["metadata"].pop("orion_state_pending", None)
+    else:
+        plan_request.context.setdefault("metadata", {})["orion_state"] = StateLatestReply(
+            ok=False,
+            status="missing",
+            note="state_service_unavailable",
+        ).model_dump(mode="json")
+        plan_request.context["metadata"].pop("orion_state_pending", None)
+
+    verb_request, envelope = build_verb_request(
+        client_request=client_request,
+        plan_request=plan_request,
+        source=source,
+        correlation_id=correlation_id,
+        causality_chain=causality_chain,
+        trace=trace,
+    )
+
+    async def _wait_for_result() -> VerbResultV1:
+        async with bus.subscribe("orion:verb:result") as pubsub:
+            await bus.publish("orion:verb:request", envelope)
+            async for msg in bus.iter_messages(pubsub):
+                decoded = bus.codec.decode(msg.get("data"))
+                if not decoded.ok or decoded.envelope is None:
+                    continue
+                payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+                try:
+                    result = VerbResultV1.model_validate(payload)
+                except Exception:
+                    continue
+                if result.request_id == verb_request.request_id:
+                    return result
+        raise RuntimeError("Verb result subscription closed without a match.")
+
+    try:
+        return await asyncio.wait_for(_wait_for_result(), timeout=timeout_sec)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"RPC timeout waiting on orion:verb:result ({verb_request.request_id})") from exc

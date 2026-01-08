@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     # Bus
     ORION_BUS_URL: str = "redis://localhost:6379/0"
+    ORION_BUS_ENFORCE_CATALOG: bool = False
 
     # Channels
     CHANNEL_RETINA_PUB: str = "orion:vision:frames"

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # ── Orion Bus ─────────────────────────────────────────────────────
     ORION_BUS_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("ORION_BUS_ENABLED"))
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, validation_alias=AliasChoices("ORION_BUS_ENFORCE_CATALOG"))
     ORION_BUS_URL: str = Field(
         default="redis://127.0.0.1:6379/0",
         validation_alias=AliasChoices("ORION_BUS_URL", "REDIS_URL"),

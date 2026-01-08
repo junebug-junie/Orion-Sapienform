@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # --- Orion bus ---
     orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
 
     # --- Council channels (bus) ---
     channel_intake: str = Field("orion-exec:request:CouncilService", alias="CHANNEL_COUNCIL_INTAKE")

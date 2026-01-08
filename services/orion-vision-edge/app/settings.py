@@ -79,6 +79,7 @@ class Settings(BaseSettings):
 
     # --- Bus integration ---
     ORION_BUS_ENABLED: bool = Field(True, alias="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_BUS_URL: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # --- Bus Channels

@@ -66,4 +66,3 @@ def listener_worker():
 
     except Exception as e:
         logger.exception("💥 Listener fatal error: %s", e)
-

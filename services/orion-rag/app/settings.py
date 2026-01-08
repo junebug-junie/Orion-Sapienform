@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     # --- Orion Bus Integration ---
     ORION_BUS_ENABLED: bool = Field(..., env="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, env="ORION_BUS_ENFORCE_CATALOG")
     ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
 
     # --- Bus Channels ---
@@ -34,4 +35,3 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 settings = Settings()
-

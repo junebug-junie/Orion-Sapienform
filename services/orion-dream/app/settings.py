@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # --- Redis ---
     ORION_BUS_URL: str = Field(default="redis://redis:6379/0")
     ORION_BUS_ENABLED: bool = Field(default=True)
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False)
 
     # --- Channels ---
     CHANNEL_DREAM_TRIGGER: str = Field(default="orion:dream:trigger")

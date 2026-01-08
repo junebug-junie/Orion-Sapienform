@@ -39,6 +39,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CORTEX_EXEC_RESULT_PREFIX", "EXEC_RESULT_PREFIX"),
     )
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
+    orion_verb_backdoor_enabled: bool = Field(False, alias="ORION_VERB_BACKDOOR_ENABLED")
 
     # Latest Orion state (Spark) read-model service
     orion_state_enabled: bool = Field(True, alias="ORION_STATE_ENABLED")

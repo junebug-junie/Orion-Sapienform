@@ -22,6 +22,11 @@ from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from .router import PlanRouter
 from .settings import settings
 from .verb_adapters import LegacyPlanVerb  # noqa: F401 - register verb adapter
+from .collapse_verbs import (  # noqa: F401 - register collapse verbs
+    LogCollapseMirrorVerb,
+    EnrichCollapseMirrorVerb,
+    ScoreCausalDensityVerb,
+)
 
 logger = logging.getLogger("orion.cortex.exec.main")
 

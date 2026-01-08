@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # Bus
     orion_bus_url: str = Field("redis://localhost:6379/0", env="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, env="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, env="ORION_BUS_ENFORCE_CATALOG")
 
     # Channels
     channel_tts_intake: str = Field(

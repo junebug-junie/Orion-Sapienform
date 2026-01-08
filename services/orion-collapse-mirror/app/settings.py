@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # === Bus Configuration ===
     ORION_BUS_URL: str = Field(default="redis://orion-bus-core:6379/0", env="ORION_BUS_URL")
     ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, env="ORION_BUS_ENFORCE_CATALOG")
 
     # === Exec-step request prefix (so this service can act as a Cortex step target) ===
     EXEC_REQUEST_PREFIX: str = Field(default="orion-exec:request", env="EXEC_REQUEST_PREFIX")

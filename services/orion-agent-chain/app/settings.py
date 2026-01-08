@@ -29,6 +29,7 @@ class AgentChainSettings(BaseSettings):
 
     # --- Orion bus / Redis ---
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     orion_bus_url: str = Field(
         "redis://100.92.216.81:6379/0",
         alias="ORION_BUS_URL",

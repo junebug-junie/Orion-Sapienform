@@ -40,6 +40,7 @@ services:
 
       # Orion Bus / Redis
       ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG}
       VOIP_BUS_COMMAND_CHANNEL: ${VOIP_BUS_COMMAND_CHANNEL:-orion:voip:command}
       VOIP_BUS_STATUS_CHANNEL: ${VOIP_BUS_STATUS_CHANNEL:-orion:voip:status}
 

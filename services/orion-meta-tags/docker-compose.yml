@@ -9,6 +9,7 @@ services:
       - app-net
     environment:
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - SPA_MODEL=${SPA_MODEL}
       - SERVICE_NAME=${SERVICE_NAME}

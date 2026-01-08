@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # Orion Bus config
     # ─────────────────────────────────────────────
     ORION_BUS_ENABLED: bool = Field(default=True)
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False)
     ORION_BUS_URL: str = Field(default="redis://localhost:6379/0")
 
     # ─────────────────────────────────────────────

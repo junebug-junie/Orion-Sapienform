@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # === ORION BUS (Shared Core) ===
     ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
     ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, env="ORION_BUS_ENFORCE_CATALOG")
 
     # === LISTENER CHANNELS ===
     # Enqueue (Direct writes)

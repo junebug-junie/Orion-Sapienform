@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Optional
 
 from redis import asyncio as aioredis
 
 from .codec import OrionCodec
+from .enforce import enforcer
 from .bus_schemas import BaseEnvelope
 
 logger = logging.getLogger("orion.bus.async")
@@ -19,11 +21,21 @@ class OrionBusAsync:
     Async Redis bus client.
     """
 
-    def __init__(self, url: str, *, enabled: bool = True, codec: Optional[OrionCodec] = None):
+    def __init__(
+        self,
+        url: str,
+        *,
+        enabled: bool = True,
+        codec: Optional[OrionCodec] = None,
+        enforce_catalog: bool | None = None,
+    ):
         self.url = url
         self.enabled = enabled
         self.codec = codec or OrionCodec()
         self._redis: Optional[aioredis.Redis] = None
+        if enforce_catalog is None:
+            enforce_catalog = os.getenv("ORION_BUS_ENFORCE_CATALOG", "false").lower() == "true"
+        enforcer.enforce = enforce_catalog
 
     async def connect(self) -> None:
         if not self.enabled:
@@ -46,6 +58,7 @@ class OrionBusAsync:
     async def publish(self, channel: str, msg: BaseEnvelope | Dict[str, Any]) -> None:
         if not self.enabled:
             return
+        enforcer.validate(channel)
         data = self.codec.encode(msg)  # bytes
         await self.redis.publish(channel, data)
 

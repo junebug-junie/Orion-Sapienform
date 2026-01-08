@@ -38,10 +38,39 @@ services:
     networks:
       - app-net
 
+  orion-bus-tap:
+    build:
+      context: ../..
+      dockerfile: services/orion-bus-tap/Dockerfile
+    container_name: ${PROJECT:-orion}-bus-tap
+    environment:
+      ORION_BUS_URL: ${REDIS_URL}
+      TAP_PATTERN: ${ORION_TAP_PATTERN:-orion:*}
+    ports:
+      - "8101:8101"
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  orion-bus-mirror:
+    build:
+      context: ../..
+      dockerfile: services/orion-bus-mirror/Dockerfile
+    container_name: ${PROJECT:-orion}-bus-mirror
+    environment:
+      ORION_BUS_URL: ${REDIS_URL}
+      MIRROR_PATTERN: ${ORION_MIRROR_PATTERN:-orion:*}
+      MIRROR_SQLITE_PATH: ${MIRROR_SQLITE_PATH:-/data/bus_mirror.sqlite}
+      MIRROR_PARQUET_DIR: ${MIRROR_PARQUET_DIR:-/data/parquet}
+    volumes:
+      - ${TELEMETRY_ROOT}/${PROJECT}/bus/mirror:/data
+    restart: unless-stopped
+    networks:
+      - app-net
+
 # ───────────────────────────────────────────────────────────────
 # Shared Network
 # ───────────────────────────────────────────────────────────────
 networks:
   app-net:
     external: true
-

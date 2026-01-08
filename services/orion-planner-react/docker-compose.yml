@@ -20,6 +20,7 @@ services:
 
       # Orion Bus
       - ORION_BUS_URL=${ORION_BUS_URL:-${ORION_BUS_URL}}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
 
       # LLM Gateway & exec (bus-first)

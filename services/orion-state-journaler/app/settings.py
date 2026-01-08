@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
 
     channel_spark_state_snapshot: str = Field("orion:spark:state:snapshot", alias="CHANNEL_SPARK_STATE_SNAPSHOT")
     channel_equilibrium_snapshot: str = Field("orion:equilibrium:snapshot", alias="CHANNEL_EQUILIBRIUM_SNAPSHOT")

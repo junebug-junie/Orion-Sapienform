@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # Bus / Redis (Titanium)
     orion_bus_url: str = Field("redis://orion-redis:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
 
     # Input stream: Spark snapshots (real-time)
     channel_spark_state_snapshot: str = Field(

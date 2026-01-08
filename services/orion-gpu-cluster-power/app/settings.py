@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # Orion bus
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     orion_bus_url: AnyUrl | None = Field(None, alias="ORION_BUS_URL")
 
     # Bus channels

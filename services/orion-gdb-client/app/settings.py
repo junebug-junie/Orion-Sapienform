@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # === Orion Bus ===
     ORION_BUS_URL: str = Field(default="redis://orion-janus-bus-core:6379/0", env="ORION_BUS_URL")
     ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, env="ORION_BUS_ENFORCE_CATALOG")
 
     # This service now listens on two channels to handle both raw and enriched data.
     CHANNEL_COLLAPSE_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_COLLAPSE_TRIAGE")

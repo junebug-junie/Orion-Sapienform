@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # Bus
     ORION_BUS_ENABLED: bool = True
+    ORION_BUS_ENFORCE_CATALOG: bool = False
     ORION_BUS_URL: str = "redis://localhost:6379/0"
 
     # Channels

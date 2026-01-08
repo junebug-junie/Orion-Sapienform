@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Bus
     ORION_BUS_URL: str = Field(default="redis://orion-redis:6379/0")
     ORION_BUS_ENABLED: bool = Field(default=True)
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False)
 
     # Channels
     TELEMETRY_PUBLISH_CHANNEL: str = Field(default="orion:biometrics:telemetry")

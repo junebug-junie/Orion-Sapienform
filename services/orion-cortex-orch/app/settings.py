@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # Bus config
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
 
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CORTEX_EXEC_RESULT_PREFIX", "EXEC_RESULT_PREFIX"),
     )
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
+    orion_verb_backdoor_enabled: bool = Field(False, alias="ORION_VERB_BACKDOOR_ENABLED")
 
     # Latest Orion state (Spark) read-model service
     orion_state_enabled: bool = Field(True, alias="ORION_STATE_ENABLED")

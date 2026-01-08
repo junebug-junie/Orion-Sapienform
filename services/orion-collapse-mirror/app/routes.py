@@ -2,13 +2,14 @@ from fastapi import APIRouter
 from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
+from orion.collapse import create_entry_from_v2
 from app.settings import settings
 
 router = APIRouter()
 
 @router.post("/log/collapse")
-async def log_collapse(entry: CollapseMirrorEntry):
+async def log_collapse(entry: CollapseMirrorEntryV2):
     """
     Accepts raw collapse entries from the Hub/UI and publishes them
     to the intake channel for asynchronous enrichment.
@@ -24,8 +25,9 @@ async def log_collapse(entry: CollapseMirrorEntry):
         await bus.connect()
 
         try:
-            payload = entry.model_dump()
-            temp_id = f"collapse_{uuid4().hex}"
+            normalized = create_entry_from_v2(entry, source_service=settings.SERVICE_NAME, source_node=settings.NODE_NAME)
+            payload = normalized.model_dump(mode="json")
+            temp_id = normalized.event_id or f"collapse_{uuid4().hex}"
             # payload["id"] = temp_id  # If we want to inject ID here, but usually schema defines it or backend does.
 
             # Wrap in envelope

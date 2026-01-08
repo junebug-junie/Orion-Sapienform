@@ -5,6 +5,7 @@ Core execution engine for cortex-exec.
 Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Tuple
@@ -17,6 +18,8 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMess
 from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
+from orion.core.verbs import VerbRequestV1, VerbResultV1
+from orion.schemas.collapse_mirror import find_collapse_entry
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 
 from .settings import settings
@@ -424,6 +427,70 @@ async def call_step_services(
                 payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
                 merged_result[service] = payload
                 logs.append("ok <- CouncilService")
+
+            elif service == "VerbRequestService":
+                candidate = None
+                if isinstance(ctx.get("collapse_entry"), dict):
+                    candidate = ctx.get("collapse_entry")
+                elif isinstance(ctx.get("collapse_json"), str):
+                    try:
+                        import json
+
+                        candidate = json.loads(ctx.get("collapse_json"))
+                    except Exception:
+                        candidate = None
+
+                if not candidate:
+                    candidate = find_collapse_entry(ctx.get("prior_step_results"))
+
+                if not isinstance(candidate, dict):
+                    merged_result[service] = {"ok": False, "reason": "no_collapse_entry"}
+                    logs.append("skip <- VerbRequestService (no entry)")
+                elif str(candidate.get("type", "")).strip().lower() == "noop":
+                    merged_result[service] = {"ok": True, "reason": "noop"}
+                    logs.append("skip <- VerbRequestService (noop)")
+                else:
+                    request_id = str(uuid4())
+                    verb_request = VerbRequestV1(
+                        trigger="orion.collapse.log",
+                        schema_id="CollapseMirrorEntryV1",
+                        payload=candidate,
+                        request_id=request_id,
+                        caller=str(source.name),
+                        meta={"origin": "cortex-exec"},
+                    )
+
+                    envelope = BaseEnvelope(
+                        kind="verb.request",
+                        source=source,
+                        correlation_id=correlation_id,
+                        payload=verb_request.model_dump(mode="json"),
+                    )
+
+                    async def _wait_for_result() -> VerbResultV1:
+                        async with bus.subscribe("orion:verb:result") as pubsub:
+                            await bus.publish("orion:verb:request", envelope)
+                            async for msg in bus.iter_messages(pubsub):
+                                decoded = bus.codec.decode(msg.get("data"))
+                                if not decoded.ok or decoded.envelope is None:
+                                    continue
+                                payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+                                try:
+                                    result = VerbResultV1.model_validate(payload)
+                                except Exception:
+                                    continue
+                                if result.request_id == request_id:
+                                    return result
+                        raise RuntimeError("Verb result subscription closed without a match.")
+
+                    logs.append(f"rpc -> VerbRequestService verb=orion.collapse.log request_id={request_id}")
+                    try:
+                        verb_result = await asyncio.wait_for(_wait_for_result(), timeout=effective_timeout)
+                    except asyncio.TimeoutError as exc:
+                        raise TimeoutError(f"VerbRequestService timeout for {request_id}") from exc
+
+                    merged_result[service] = verb_result.model_dump(mode="json")
+                    logs.append("ok <- VerbRequestService")
 
             else:
                 logs.append(f"skip <- {service} (generic path not implemented in example)")

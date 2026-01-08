@@ -10,7 +10,8 @@ from pydantic import ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
-from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
+from orion.collapse import create_entry_from_v2
 
 from .settings import settings
 
@@ -39,8 +40,8 @@ def _cfg() -> ChassisConfig:
     )
 
 
-def _wrap_entry_for_triage(entry: CollapseMirrorEntry) -> Dict[str, Any]:
-    collapse_id = f"collapse_{uuid4().hex}"
+def _wrap_entry_for_triage(entry: CollapseMirrorEntryV2) -> Dict[str, Any]:
+    collapse_id = entry.event_id or f"collapse_{uuid4().hex}"
     
     # Get the data from the entry
     data = entry.model_dump(mode="json")
@@ -72,9 +73,7 @@ async def handle_intake(env: BaseEnvelope) -> None:
         return
 
     try:
-        entry = CollapseMirrorEntry.model_validate(payload)
-        # Apply defaults (generates timestamp and environment if missing)
-        entry.with_defaults()
+        entry = create_entry_from_v2(payload, source_service=settings.SERVICE_NAME, source_node=settings.NODE_NAME)
     except ValidationError as ve:
         logger.warning("[collapse-mirror] intake schema failed; dropping: %s", ve)
         return
@@ -168,9 +167,7 @@ async def handle_exec_step(env: BaseEnvelope) -> BaseEnvelope:
         candidate.setdefault("mantra", "void")
 
     try:
-        entry = CollapseMirrorEntry.model_validate(candidate)
-        # Apply defaults here too
-        entry.with_defaults()
+        entry = create_entry_from_v2(candidate, source_service=settings.SERVICE_NAME, source_node=settings.NODE_NAME)
     except Exception as e:
         return BaseEnvelope(
             kind="collapse_mirror.exec_step.result",

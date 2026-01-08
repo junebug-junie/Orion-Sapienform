@@ -20,3 +20,45 @@ channels:
     consumer_services: ["orion-rdf-writer", "orion-sql-writer", "orion-vector-writer"]
     stability: "stable"
     since: "2026-01-08"
+  - name: "orion:collapse:intake"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-cortex-exec", "orion-collapse-mirror"]
+    consumer_services: ["orion-collapse-mirror"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion:collapse:triage"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-collapse-mirror"]
+    consumer_services: ["orion-meta-tags", "orion-vector-writer", "orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion:collapse:sql-write"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-collapse-mirror"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion:collapse:events"
+    kind: "event"
+    schema_id: "CollapseMirrorEventV1"
+    producer_services: ["orion-collapse-mirror", "orion-cortex-exec"]
+    consumer_services: ["orion-timeline", "orion-athena-spark-introspector"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion:collapse:enrich"
+    kind: "event"
+    schema_id: "CollapseMirrorEventV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-collapse-mirror"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion:collapse:scored"
+    kind: "event"
+    schema_id: "CollapseMirrorEventV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-collapse-mirror"]
+    stability: "experimental"
+    since: "2026-01-08"

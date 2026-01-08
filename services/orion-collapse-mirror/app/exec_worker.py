@@ -4,11 +4,11 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from app.settings import settings
-from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
+from orion.collapse import create_entry_from_v2
 
 logger = logging.getLogger("orion-collapse-mirror.exec-worker")
 
@@ -108,20 +108,8 @@ def _extract_candidate_from_prior(prior_step_results: Any) -> Tuple[Optional[dic
     return None, "no_json_found"
 
 
-def _fill_defaults(entry: CollapseMirrorEntry) -> CollapseMirrorEntry:
-    """
-    Prefer schema helper if present; else fill the same defaults as Hub.
-    """
-    if hasattr(entry, "with_defaults") and callable(getattr(entry, "with_defaults")):
-        return entry.with_defaults()
-
-    payload = entry.model_dump(mode="json")
-    if not payload.get("timestamp"):
-        payload["timestamp"] = datetime.now(timezone.utc).isoformat()
-    if not payload.get("environment"):
-        import os
-        payload["environment"] = os.getenv("CHRONICLE_ENVIRONMENT", "dev")
-    return CollapseMirrorEntry.model_validate(payload)
+def _fill_defaults(entry: CollapseMirrorEntryV2) -> CollapseMirrorEntryV2:
+    return entry.with_defaults()
 
 
 def _extract_candidate(exec_payload: Dict[str, Any]) -> Tuple[Optional[dict], str]:
@@ -202,7 +190,7 @@ def _handle_exec_step(bus, envelope: Dict[str, Any]) -> Dict[str, Any]:
                 candidate[k] = v
 
     try:
-        entry = CollapseMirrorEntry.model_validate(candidate)
+        entry = create_entry_from_v2(candidate, source_service=settings.SERVICE_NAME, source_node=settings.NODE_NAME)
         entry = _fill_defaults(entry)
     except Exception as e:
         return {

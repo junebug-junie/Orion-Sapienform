@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     grace_multiplier: float = Field(3.0, alias="EQUILIBRIUM_GRACE_MULTIPLIER")
     publish_interval_sec: float = Field(15.0, alias="EQUILIBRIUM_PUBLISH_INTERVAL_SEC")
     windows_sec: List[int] = Field(default_factory=lambda: [60, 300, 3600], alias="EQUILIBRIUM_WINDOWS_SEC")
+    collapse_mirror_interval_sec: float = Field(15.0, alias="EQUILIBRIUM_COLLAPSE_MIRROR_INTERVAL_SEC")
 
     redis_state_key: str = Field("equilibrium:state", alias="EQUILIBRIUM_STATE_KEY")
     channel_equilibrium_snapshot: str = Field("orion:equilibrium:snapshot", alias="CHANNEL_EQUILIBRIUM_SNAPSHOT")

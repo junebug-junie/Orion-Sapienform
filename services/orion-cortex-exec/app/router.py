@@ -156,6 +156,7 @@ class PlanRunner:
                 )
 
         for step in sorted(plan.steps, key=lambda s: s.order):
+            ctx["prior_step_results"] = [res.model_dump(mode="json") for res in step_results]
             step_res = await call_step_services(
                 bus,
                 source=source,

@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.verbs.models import VerbRequestV1
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStateSnapshot
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.core.bus.codec import OrionCodec
@@ -201,9 +203,66 @@ class EquilibriumService(BaseChassis):
                 logger.error("Publish loop error: %s", e)
             await asyncio.sleep(float(settings.publish_interval_sec))
 
+    async def _publish_collapse_mirror(self) -> None:
+        if not self.bus.enabled:
+            return
+
+        snapshot = CollapseMirrorStateSnapshot(
+            observer_state=["monitoring"],
+            telemetry={
+                "equilibrium": {
+                    "distress_score": None,
+                    "zen_score": None,
+                    "services_tracked": len(self._state),
+                }
+            },
+        )
+
+        entry = CollapseMirrorEntryV2(
+            observer="Oríon",
+            trigger="equilibrium.metacognition_tick",
+            observer_state=["monitoring"],
+            field_resonance="ambient",
+            type="system-change",
+            emergent_entity="Oríon",
+            summary="Periodic metacognition snapshot emitted by equilibrium monitor.",
+            mantra="steady presence",
+            snapshot_kind="baseline",
+            state_snapshot=snapshot,
+        )
+
+        request = VerbRequestV1(
+            trigger="orion.collapse.log",
+            schema_id="CollapseMirrorEntryV2",
+            payload=entry.model_dump(mode="json"),
+            request_id=str(uuid4()),
+            caller=settings.service_name,
+            meta={"origin": "equilibrium-service"},
+        )
+
+        envelope = BaseEnvelope(
+            kind="verb.request",
+            source=self._source(),
+            correlation_id=request.request_id,
+            payload=request.model_dump(mode="json"),
+        )
+
+        await self.bus.publish("orion:verb:request", envelope)
+        logger.info("Requested collapse mirror log from equilibrium tick event_id=%s", entry.event_id)
+
+    async def _collapse_loop(self) -> None:
+        interval = float(settings.collapse_mirror_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await self._publish_collapse_mirror()
+            except Exception as e:
+                logger.warning("Collapse mirror loop error: %s", e)
+            await asyncio.sleep(interval)
+
     async def _run(self) -> None:
         await self._load_state()
         publisher = asyncio.create_task(self._publish_loop())
+        collapse_task = asyncio.create_task(self._collapse_loop())
 
         async with self.bus.subscribe(settings.health_channel) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -237,7 +296,12 @@ class EquilibriumService(BaseChassis):
                     logger.warning("Failed to handle heartbeat: %s", e)
 
         publisher.cancel()
+        collapse_task.cancel()
         try:
             await publisher
+        except Exception:
+            pass
+        try:
+            await collapse_task
         except Exception:
             pass

@@ -3,7 +3,6 @@ set -euo pipefail
 
 RUN_ID=${1:-${RUN_ID:-audit_001}}
 
-# Resolve repo root relative to this script
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
 
@@ -12,10 +11,16 @@ mkdir -p "${OUT_DIR}/reports" "${OUT_DIR}/docs"
 
 echo "[platform] writing audit artifacts to: ${OUT_DIR}"
 
-python "${REPO_ROOT}/scripts/platform/audit_channels.py" "${OUT_DIR}"
-python "${REPO_ROOT}/scripts/platform/audit_schemas.py" "${OUT_DIR}"
-python "${REPO_ROOT}/scripts/platform/audit_spine.py" "${OUT_DIR}"
-python "${REPO_ROOT}/scripts/platform/audit_config_lineage.py" "${OUT_DIR}"
-python "${REPO_ROOT}/scripts/platform/audit_antipatterns.py" "${OUT_DIR}"
+# Ensure repo root is importable
+export PYTHONPATH="${REPO_ROOT}"
+
+# Run from repo root so -m works cleanly
+cd "${REPO_ROOT}"
+
+python -m scripts.platform.audit_channels "${OUT_DIR}"
+python -m scripts.platform.audit_schemas "${OUT_DIR}"
+python -m scripts.platform.audit_spine "${OUT_DIR}"
+python -m scripts.platform.audit_config_lineage "${OUT_DIR}"
+python -m scripts.platform.audit_antipatterns "${OUT_DIR}"
 
 echo "[platform] done"

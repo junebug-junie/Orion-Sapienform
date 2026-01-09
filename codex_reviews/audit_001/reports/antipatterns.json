@@ -1,0 +1,151 @@
+{
+  "findings": [
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-recall/app/worker.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-cortex-exec/app/collapse_verbs.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-cortex-exec/app/main.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-meta-tags/app/main.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-collapse-mirror/app/bus_runtime.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-collapse-mirror/app/exec_worker.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\bfrom\\s+redis\\b",
+      "file": "services/orion-state-service/app/store.py",
+      "severity": "major",
+      "type": "raw_redis_import_or_client"
+    },
+    {
+      "detail": "\\bfrom\\s+redis\\b",
+      "file": "services/orion-state-service/app/main.py",
+      "severity": "major",
+      "type": "raw_redis_import_or_client"
+    },
+    {
+      "detail": "\\bfrom\\s+redis\\b",
+      "file": "services/orion-landing-pad/app/service.py",
+      "severity": "major",
+      "type": "raw_redis_import_or_client"
+    },
+    {
+      "detail": "\\bfrom\\s+redis\\b",
+      "file": "services/orion-landing-pad/app/store/redis_store.py",
+      "severity": "major",
+      "type": "raw_redis_import_or_client"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-cortex-orch/app/conversation_front.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-hub/scripts/chat_history.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-security-watcher/app/bus_worker.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-security-watcher/app/routers/debug.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-security-watcher/app/routers/test.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-chat-memory/app/main.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-vision-edge/app/capture_worker.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-vision-edge/app/detector_worker.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-agent-council/app/publisher.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-equilibrium-service/app/service.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "\\.publish\\(",
+      "file": "services/orion-biometrics/app/main.py",
+      "severity": "minor",
+      "type": "raw_pubsub_call_suspect"
+    },
+    {
+      "detail": "publish(..., json.dumps(...))",
+      "file": "orion/core/bus/telemetry.py",
+      "severity": "major",
+      "type": "publish_json_dumps"
+    },
+    {
+      "detail": "\\bfrom\\s+redis\\b",
+      "file": "orion/core/bus/async_service.py",
+      "severity": "major",
+      "type": "raw_redis_import_or_client"
+    },
+    {
+      "detail": "publish(..., json.dumps(...))",
+      "file": "scripts/platform/audit_antipatterns.py",
+      "severity": "major",
+      "type": "publish_json_dumps"
+    }
+  ],
+  "summary": {
+    "count": 24
+  }
+}

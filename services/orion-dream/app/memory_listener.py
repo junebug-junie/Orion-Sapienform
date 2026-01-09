@@ -1,5 +1,10 @@
-import asyncio, json, uuid, time
-from redis import asyncio as aioredis
+import asyncio
+import json
+import time
+import uuid
+
+from orion.core.bus.async_service import OrionBusAsync
+
 from .settings import settings
 
 PUBSUB_CHANNELS = [
@@ -34,45 +39,41 @@ def _norm_payload(raw: dict) -> dict:
     out.setdefault("kind", out.get("kind", "event"))
     return out
 
-async def _pubsub_loop(r):
-    pubsub = r.pubsub()
-    await pubsub.subscribe(*PUBSUB_CHANNELS)
-    print(f"[listener] Subscribed to Pub/Sub: {PUBSUB_CHANNELS}")
-    async for msg in pubsub.listen():
-        if msg["type"] != "message":
-            continue
-        try:
-            data = msg["data"]
-            if isinstance(data, (bytes, bytearray)):
-                data = data.decode("utf-8", "ignore")
-            raw = json.loads(data) if data and data.strip().startswith("{") else {"raw": data}
-            frag = _norm_payload(raw)
-            await r.xadd(BUFFER, {"payload": json.dumps(frag)}, maxlen=5000)
-        except Exception as e:
-            print(f"❌ Pub/Sub normalize error: {e}")
+async def _pubsub_loop(bus: OrionBusAsync) -> None:
+    async with bus.subscribe(*PUBSUB_CHANNELS) as pubsub:
+        print(f"[listener] Subscribed to Pub/Sub: {PUBSUB_CHANNELS}")
+        async for msg in bus.iter_messages(pubsub):
+            try:
+                decoded = bus.codec.decode(msg.get("data", b""))
+                raw = decoded.envelope.payload if decoded.ok else decoded.raw
+                frag = _norm_payload(raw if isinstance(raw, dict) else {"raw": raw})
+                await bus.redis.xadd(BUFFER, {"payload": json.dumps(frag)}, maxlen=5000)
+            except Exception as e:
+                print(f"❌ Pub/Sub normalize error: {e}")
 
-async def _stream_loop(r):
+async def _stream_loop(bus: OrionBusAsync) -> None:
     if not STREAMS:
         return
     last_ids = {s: "$" for s in STREAMS}
     print(f"[listener] XREAD streams: {STREAMS}")
     while True:
         try:
-            results = await r.xread(last_ids, block=5000, count=10)
+            results = await bus.redis.xread(last_ids, block=5000, count=10)
             for stream_name, messages in results:
                 for msg_id, data in messages:
                     payload = {k.decode(): v.decode() for k, v in data.items()}
                     raw = json.loads(payload.get("payload")) if "payload" in payload else payload
                     frag = _norm_payload(raw)
-                    await r.xadd(BUFFER, {"payload": json.dumps(frag)}, maxlen=5000)
+                    await bus.redis.xadd(BUFFER, {"payload": json.dumps(frag)}, maxlen=5000)
                     last_ids[stream_name.decode()] = msg_id
         except Exception as e:
             print(f"❌ Stream mirror error: {e}")
             await asyncio.sleep(1)
 
 async def mirror_to_buffer():
-    r = aioredis.from_url(settings.ORION_BUS_URL)
-    await asyncio.gather(_pubsub_loop(r), _stream_loop(r))
+    bus = OrionBusAsync(settings.ORION_BUS_URL)
+    await bus.connect()
+    await asyncio.gather(_pubsub_loop(bus), _stream_loop(bus))
 
 if __name__ == "__main__":
     asyncio.run(mirror_to_buffer())

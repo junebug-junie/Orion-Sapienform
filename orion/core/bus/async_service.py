@@ -7,11 +7,13 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Optional
 
+from pydantic import ValidationError
 from redis import asyncio as aioredis
 
+from orion.schemas.registry import resolve as resolve_schema_id
+from .bus_schemas import BaseEnvelope
 from .codec import OrionCodec
 from .enforce import enforcer
-from .bus_schemas import BaseEnvelope
 
 logger = logging.getLogger("orion.bus.async")
 
@@ -59,8 +61,35 @@ class OrionBusAsync:
         if not self.enabled:
             return
         enforcer.validate(channel)
+        self._validate_payload(channel, msg)
         data = self.codec.encode(msg)  # bytes
         await self.redis.publish(channel, data)
+
+    def _validate_payload(self, channel: str, msg: BaseEnvelope | Dict[str, Any]) -> None:
+        entry = enforcer.entry_for(channel)
+        if not entry:
+            return
+        schema_id = entry.get("schema_id")
+        if not schema_id:
+            return
+        payload = None
+        if isinstance(msg, BaseEnvelope):
+            payload = msg.payload
+        elif isinstance(msg, dict) and msg.get("schema") == "orion.envelope":
+            try:
+                env = BaseEnvelope.model_validate(msg)
+            except ValidationError as exc:
+                raise ValueError(f"Envelope validation failed for channel {channel}") from exc
+            payload = env.payload
+        if payload is None:
+            return
+        model = resolve_schema_id(schema_id)
+        try:
+            model.model_validate(payload)
+        except ValidationError as exc:
+            raise ValueError(
+                f"Payload validation failed for channel {channel} (schema_id={schema_id})"
+            ) from exc
 
     @asynccontextmanager
     async def subscribe(self, *channels: str, patterns: bool = False) -> AsyncIterator[aioredis.client.PubSub]:

@@ -19,7 +19,7 @@ async def main():
     bus = OrionBusAsync(url=args.url)
     await bus.connect()
 
-    request_channel = "orion-exec:request:VisionHostService"
+request_channel = "orion:exec:request:VisionHostService"
     reply_channel = f"orion:vision:reply:{uuid.uuid4()}"
     correlation_id = str(uuid.uuid4())
 

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     ORION_BUS_URL: str = "redis://localhost:6379/0"
 
     # Channels
-    CHANNEL_VISIONHOST_INTAKE: str = "orion-exec:request:VisionHostService"
+    CHANNEL_VISIONHOST_INTAKE: str = "orion:exec:request:VisionHostService"
     CHANNEL_VISIONHOST_REPLY_PREFIX: str = "orion:vision:reply"
     CHANNEL_VISIONHOST_PUB: str = "orion:vision:artifacts"
 

@@ -39,11 +39,11 @@ class Settings(BaseSettings):
 
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(
-        default="orion-cortex-gateway:request",
+        default="orion:cortex:gateway:request",
         alias="CORTEX_GATEWAY_REQUEST_CHANNEL",
     )
     CORTEX_GATEWAY_RESULT_PREFIX: str = Field(
-        default="orion-cortex-gateway:result",
+        default="orion:cortex:gateway:result",
         alias="CORTEX_GATEWAY_RESULT_PREFIX",
     )
 
@@ -79,24 +79,24 @@ class Settings(BaseSettings):
 
     # --- Legacy LLM/Exec/Orch Integration ---
     LLM_GATEWAY_SERVICE_NAME: str = Field(default="LLMGatewayService", alias="LLM_GATEWAY_SERVICE_NAME")
-    EXEC_REQUEST_PREFIX: str = Field(default="orion-exec:request", alias="EXEC_REQUEST_PREFIX")
-    CHANNEL_LLM_INTAKE: str = Field(default="orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    EXEC_REQUEST_PREFIX: str = Field(default="orion:exec:request", alias="EXEC_REQUEST_PREFIX")
+    CHANNEL_LLM_INTAKE: str = Field(default="orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
     CHANNEL_LLM_REPLY_PREFIX: str = Field(default="orion:llm:reply:", alias="CHANNEL_LLM_REPLY_PREFIX")
-    CORTEX_ORCH_REQUEST_CHANNEL: str = Field(default="orion-cortex:request", alias="CORTEX_REQUEST_CHANNEL")
-    CORTEX_ORCH_RESULT_PREFIX: str = Field(default="orion-cortex:result", alias="CORTEX_RESULT_PREFIX")
+    CORTEX_ORCH_REQUEST_CHANNEL: str = Field(default="orion:cortex:request", alias="CORTEX_REQUEST_CHANNEL")
+    CORTEX_ORCH_RESULT_PREFIX: str = Field(default="orion:cortex:result", alias="CORTEX_RESULT_PREFIX")
     CHANNEL_AGENT_CHAIN_INTAKE: str = Field(
-        default="orion-exec:request:AgentChainService",
+        default="orion:exec:request:AgentChainService",
         alias="AGENT_CHAIN_REQUEST_CHANNEL",
     )
     CHANNEL_AGENT_CHAIN_REPLY_PREFIX: str = Field(
-        default="orion-exec:result:AgentChainService",
+        default="orion:exec:result:AgentChainService",
         alias="AGENT_CHAIN_RESULT_PREFIX",
     )
 
     # --- Legacy Recall Integration ---
-    CHANNEL_RECALL_REQUEST: str = Field(default="orion-exec:request:RecallService", alias="CHANNEL_RECALL_REQUEST")
+    CHANNEL_RECALL_REQUEST: str = Field(default="orion:exec:request:RecallService", alias="CHANNEL_RECALL_REQUEST")
     CHANNEL_RECALL_DEFAULT_REPLY_PREFIX: str = Field(
-        default="orion-exec:result:RecallService",
+        default="orion:exec:result:RecallService",
         alias="CHANNEL_RECALL_DEFAULT_REPLY_PREFIX",
     )
     RECALL_DEFAULT_MAX_ITEMS: int = Field(default=16, alias="RECALL_DEFAULT_MAX_ITEMS")

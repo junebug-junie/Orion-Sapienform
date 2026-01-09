@@ -237,7 +237,7 @@ def start_collapse_mirror_exec_worker(bus) -> None:
     Threaded worker: blocking subscribe to EXEC_REQUEST_PREFIX:CollapseMirrorService.
     Must not run on the FastAPI event loop.
     """
-    exec_request_prefix = getattr(settings, "EXEC_REQUEST_PREFIX", None) or "orion-exec:request"
+    exec_request_prefix = getattr(settings, "EXEC_REQUEST_PREFIX", None) or "orion:exec:request"
     listen_channel = f"{exec_request_prefix}:CollapseMirrorService"
 
     def _loop():

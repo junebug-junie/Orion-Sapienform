@@ -39,7 +39,7 @@ class ChassisConfig:
 
     # system channels (stable defaults)
     health_channel: str = "orion:system:health"
-    error_channel: str = "system.error"
+    error_channel: str = "orion:system:error"
 
 
 class BaseChassis:

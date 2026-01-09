@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="ORION_HEARTBEAT_INTERVAL_SEC")
     health_channel: str = Field("orion:system:health", alias="ORION_HEALTH_CHANNEL")
-    error_channel: str = Field("system.error", alias="ORION_ERROR_CHANNEL")
+    error_channel: str = Field("orion:system:error", alias="ORION_ERROR_CHANNEL")
     shutdown_grace_sec: float = Field(10.0, alias="ORION_SHUTDOWN_GRACE_SEC")
 
     # Routing
@@ -39,7 +39,6 @@ class Settings(BaseSettings):
             "orion:spark:introspection:log", # legacy?
             "orion:spark:telemetry",
             "orion:cognition:trace",
-            "chat.history.message.v1"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

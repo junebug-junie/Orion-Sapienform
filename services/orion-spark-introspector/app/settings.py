@@ -52,7 +52,7 @@ class Settings(BaseSettings):
 
     # RPC to Cortex-Orch (Spark -> Cortex-Orch)
     channel_cortex_request: str = Field(
-        "orion-cortex:request",
+        "orion:cortex:request",
         validation_alias=AliasChoices("CORTEX_REQUEST_CHANNEL", "CORTEX_ORCH_REQUEST_CHANNEL", "ORCH_REQUEST_CHANNEL"),
     )
 

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     CHANNEL_SCRIBE_PUB: str = "orion:vision:scribe:pub"
 
     # Cortex Exec
-    CHANNEL_SCRIBE_REQUEST: str = "orion-exec:request:VisionScribeService"
+    CHANNEL_SCRIBE_REQUEST: str = "orion:exec:request:VisionScribeService"
 
     CHANNEL_SQL_WRITE: str = "orion:collapse:sql-write"
     CHANNEL_RDF_ENQUEUE: str = "orion:rdf-collapse:enqueue"

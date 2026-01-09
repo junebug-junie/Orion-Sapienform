@@ -27,7 +27,7 @@ class Settings(BaseSettings):
         description="Service label used on exec bus (e.g. LLMGatewayService)",
     )
     exec_request_prefix: str = Field(
-        "orion-exec:request",
+        "orion:exec:request",
         alias="EXEC_REQUEST_PREFIX",
         description="Exec bus intake prefix for all cognitive services",
     )
@@ -39,23 +39,23 @@ class Settings(BaseSettings):
 
     # Cortex Orchestrator (orch bus)
     cortex_request_channel: str = Field(
-        "orion-cortex:request",
+        "orion:cortex:request",
         alias="CORTEX_REQUEST_CHANNEL",
         description="Bus channel where Cortex-Orch listens for orchestrate_verb",
     )
     cortex_result_prefix: str = Field(
-        "orion-cortex:result",
+        "orion:cortex:result",
         alias="CORTEX_RESULT_PREFIX",
         description="Result prefix for Cortex-Orch RPC replies",
     )
 
     # Service Request Channels
     planner_request_channel: str = Field(
-        "orion-exec:request:PlannerReactService",
+        "orion:exec:request:PlannerReactService",
         alias="PLANNER_REQUEST_CHANNEL",
     )
     planner_result_prefix: str = Field(
-        "orion-exec:result:PlannerReactService",
+        "orion:exec:result:PlannerReactService",
         alias="PLANNER_RESULT_PREFIX",
     )
 

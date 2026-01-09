@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     CHANNEL_DREAM_STATUS: str = Field(default="orion:dream:status")
     CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake") # Legacy
 
-    CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion-cortex-gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
+    CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion:cortex:gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
     CHANNEL_DREAM_REPLY_PREFIX: str = Field(default="orion:dream:reply", alias="DREAM_REPLY_PREFIX")
     DREAM_VERB: str = Field(default="dream_simple", alias="DREAM_VERB")
 
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # --- Chassis Defaults ---
     HEARTBEAT_INTERVAL_SEC: float = 10.0
     ORION_HEALTH_CHANNEL: str = "orion:system:health"
-    ERROR_CHANNEL: str = "system.error"
+    ERROR_CHANNEL: str = "orion:system:error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 
 settings = Settings()

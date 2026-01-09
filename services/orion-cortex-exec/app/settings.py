@@ -17,20 +17,20 @@ class Settings(BaseSettings):
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # Intake channel (hub or orch -> exec)
-    channel_exec_request: str = Field("orion-cortex-exec:request", alias="CHANNEL_EXEC_REQUEST")
+    channel_exec_request: str = Field("orion:cortex:exec:request", alias="CHANNEL_EXEC_REQUEST")
 
     # Downstream routing (exec -> step services)
-    exec_request_prefix: str = Field("orion-exec:request", alias="EXEC_REQUEST_PREFIX")
-    exec_result_prefix: str = Field("orion-exec:result", alias="EXEC_RESULT_PREFIX")
+    exec_request_prefix: str = Field("orion:exec:request", alias="EXEC_REQUEST_PREFIX")
+    exec_result_prefix: str = Field("orion:exec:result", alias="EXEC_RESULT_PREFIX")
 
     # CHANGED: 8000 -> 60000 (60s). LLMs need time.
     step_timeout_ms: int = Field(60000, alias="STEP_TIMEOUT_MS")
 
-    # CHANGED: "orion-llm:intake" -> "orion-exec:request:LLMGatewayService"
-    channel_llm_intake: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
-    channel_recall_intake: str = Field("recall.query.v1", alias="CHANNEL_RECALL_INTAKE")
-    channel_agent_chain_intake: str = Field("orion-exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
-    channel_planner_intake: str = Field("orion-exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
+    # CHANGED: "orion-llm:intake" -> "orion:exec:request:LLMGatewayService"
+    channel_llm_intake: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    channel_recall_intake: str = Field("orion:exec:request:RecallService", alias="CHANNEL_RECALL_INTAKE")
+    channel_agent_chain_intake: str = Field("orion:exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
+    channel_planner_intake: str = Field("orion:exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")

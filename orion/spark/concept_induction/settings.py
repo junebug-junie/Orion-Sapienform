@@ -71,10 +71,10 @@ class ConceptSettings(BaseSettings):
     use_cortex_orch: bool = Field(False, alias="USE_CORTEX_ORCH")
     cortex_orch_verb: str = Field("concept_induction", alias="CORTEX_ORCH_VERB")
     cortex_request_channel: str = Field(
-        "orion-cortex:request", alias="CORTEX_ORCH_REQUEST_CHANNEL"
+        "orion:cortex:request", alias="CORTEX_ORCH_REQUEST_CHANNEL"
     )
     cortex_result_prefix: str = Field(
-        "orion-cortex:result", alias="CORTEX_ORCH_RESULT_PREFIX"
+        "orion:cortex:result", alias="CORTEX_ORCH_RESULT_PREFIX"
     )
     cortex_timeout_sec: float = Field(12.0, alias="CORTEX_TIMEOUT_SEC")
 

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, env="ORION_BUS_ENFORCE_CATALOG")
 
     # === Exec-step request prefix (so this service can act as a Cortex step target) ===
-    EXEC_REQUEST_PREFIX: str = Field(default="orion-exec:request", env="EXEC_REQUEST_PREFIX")
+    EXEC_REQUEST_PREFIX: str = Field(default="orion:exec:request", env="EXEC_REQUEST_PREFIX")
 
     # === Bus Channels ===
     CHANNEL_COLLAPSE_INTAKE: str = Field(default="orion:collapse:intake", env="CHANNEL_COLLAPSE_INTAKE")
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # === Chassis Telemetry / Reliability ===
     HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, env="HEARTBEAT_INTERVAL_SEC")
     ORION_HEALTH_CHANNEL: str = Field(default="orion:system:health", env="ORION_HEALTH_CHANNEL")
-    ERROR_CHANNEL: str = Field(default="system.error", env="ERROR_CHANNEL")
+    ERROR_CHANNEL: str = Field(default="orion:system:error", env="ERROR_CHANNEL")
     SHUTDOWN_GRACE_SEC: float = Field(default=10.0, env="SHUTDOWN_GRACE_SEC")
 
     # === Environment ===

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_HEALTH_CHANNEL: str = "orion:system:health"
-    ERROR_CHANNEL: str = "system.error"
+    ERROR_CHANNEL: str = "orion:system:error"
 
     # Inbound channels
     CHAT_MEMORY_INPUT_CHANNELS: Union[str, List[str]] = Field(

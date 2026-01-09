@@ -234,7 +234,7 @@ The envelope format is global infrastructure. Changes require:
 Every bus payload must map to a Pydantic model.
 
 * `schema_id` should match the model name (or a stable alias).
-* Models live in discoverable modules under shared service modules.
+* Models live in discoverable modules under shared service modules or within the service folder in app/models.py.
 
 ### 7.2 Versioning
 

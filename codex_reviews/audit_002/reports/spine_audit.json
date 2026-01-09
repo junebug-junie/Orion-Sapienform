@@ -1,0 +1,62 @@
+{
+  "spine_violations": [],
+  "summary": {
+    "spine_violations": 0,
+    "verb_request_emitters": 2,
+    "verb_runtime_usages": 4
+  },
+  "verb_request_consumers": [],
+  "verb_request_emitters": [
+    {
+      "file": "services/orion-cortex-orch/app/orchestrator.py",
+      "line": 261,
+      "service_guess": "orion-cortex-orch"
+    },
+    {
+      "file": "services/orion-cortex-orch/app/orchestrator.py",
+      "line": 454,
+      "service_guess": "orion-cortex-orch"
+    }
+  ],
+  "verb_result_consumers": [
+    {
+      "file": "services/orion-cortex-orch/app/orchestrator.py",
+      "line": 453,
+      "service_guess": "orion-cortex-orch"
+    }
+  ],
+  "verb_result_emitters": [
+    {
+      "file": "services/orion-cortex-exec/app/main.py",
+      "line": 235,
+      "service_guess": "orion-cortex-exec"
+    },
+    {
+      "file": "services/orion-cortex-exec/app/main.py",
+      "line": 222,
+      "service_guess": "orion-cortex-exec"
+    }
+  ],
+  "verb_runtime_usages": [
+    {
+      "context": "from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime",
+      "file": "services/orion-cortex-exec/app/main.py",
+      "line": 18
+    },
+    {
+      "context": "usage",
+      "file": "services/orion-cortex-exec/app/main.py",
+      "line": 80
+    },
+    {
+      "context": "usage",
+      "file": "services/orion-cortex-exec/app/main.py",
+      "line": 244
+    },
+    {
+      "context": "from .runtime import VerbRuntime",
+      "file": "orion/core/verbs/__init__.py",
+      "line": 4
+    }
+  ]
+}

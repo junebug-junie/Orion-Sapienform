@@ -1,0 +1,4 @@
+## service to exclude from auto rebuilding
+# one service per line
+orion-vision-edge
+orion-security-watcher

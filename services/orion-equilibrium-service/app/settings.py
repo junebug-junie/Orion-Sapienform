@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
-    health_channel: str = Field("system.health", alias="CHANNEL_SYSTEM_HEALTH")
+    health_channel: str = Field("orion:system:health", alias="ORION_HEALTH_CHANNEL")
 
     expected_services_raw: Optional[str] = Field(None, alias="EQUILIBRIUM_EXPECTED_SERVICES")
     expected_services_path: Optional[Path] = Field(None, alias="EQUILIBRIUM_EXPECTED_SERVICES_PATH")

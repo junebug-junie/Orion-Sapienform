@@ -1,33 +1,16 @@
 # services/orion-llamacpp-neural-host/app/main.py
 import logging
-import os
 from typing import List, Optional, Dict, Any, Union
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from llama_cpp import Llama
+
+from app.settings import settings
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("neural-host")
-
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        extra="ignore"
-    )
-
-    # Model configuration
-    model_path: str = Field(..., env="LLAMACPP_MODEL_PATH")
-    n_gpu_layers: int = Field(-1, env="LLAMACPP_N_GPU_LAYERS")
-    n_ctx: int = Field(2048, env="LLAMACPP_CTX_SIZE")
-
-    # Server configuration
-    host: str = Field("0.0.0.0", env="LLAMACPP_HOST")
-    port: int = Field(8005, env="LLAMACPP_PORT")
-
-settings = Settings()
 
 app = FastAPI(title="Orion Neural Host")
 

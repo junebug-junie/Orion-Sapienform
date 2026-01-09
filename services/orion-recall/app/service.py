@@ -35,7 +35,7 @@ def chassis_cfg() -> ChassisConfig:
         bus_url=settings.ORION_BUS_URL,
         bus_enabled=bool(settings.ORION_BUS_ENABLED),
         heartbeat_interval_sec=float(getattr(settings, "HEARTBEAT_INTERVAL_SEC", 10.0)),
-        health_channel=getattr(settings, "HEALTH_CHANNEL", "system.health"),
+        health_channel=getattr(settings, "ORION_HEALTH_CHANNEL", "orion:system:health"),
         error_channel=getattr(settings, "ERROR_CHANNEL", "system.error"),
         shutdown_timeout_sec=float(getattr(settings, "SHUTDOWN_GRACE_SEC", 10.0)),
     )

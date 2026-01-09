@@ -5,7 +5,6 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
@@ -266,18 +265,6 @@ class EquilibriumService(BaseChassis):
                 try:
                     if env.kind == "system.health.v1":
                         heartbeat = SystemHealthV1.model_validate(payload_dict)
-                    elif env.kind == "system.health":
-                        heartbeat = SystemHealthV1(
-                            service=payload_dict.get("service"),
-                            node=payload_dict.get("node"),
-                            version=payload_dict.get("version"),
-                            instance=None,
-                            boot_id=str(payload_dict.get("boot_id") or uuid4()),
-                            status=payload_dict.get("status") or "ok",
-                            last_seen_ts=_utcnow(),
-                            heartbeat_interval_sec=float(payload_dict.get("heartbeat_interval_sec") or settings.heartbeat_interval_sec),
-                            details=payload_dict.get("details") or {},
-                        )
                     else:
                         continue
                     self._evaluate_state(heartbeat)

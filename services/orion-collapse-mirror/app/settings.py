@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # === Chassis Telemetry / Reliability ===
     HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, env="HEARTBEAT_INTERVAL_SEC")
-    HEALTH_CHANNEL: str = Field(default="system.health", env="HEALTH_CHANNEL")
+    ORION_HEALTH_CHANNEL: str = Field(default="orion:system:health", env="ORION_HEALTH_CHANNEL")
     ERROR_CHANNEL: str = Field(default="system.error", env="ERROR_CHANNEL")
     SHUTDOWN_GRACE_SEC: float = Field(default=10.0, env="SHUTDOWN_GRACE_SEC")
 

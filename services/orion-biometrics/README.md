@@ -15,7 +15,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | Variable | Default (Settings) | Description |
 | :--- | :--- | :--- |
 | `TELEMETRY_PUBLISH_CHANNEL` | `orion:biometrics:telemetry` | Publish channel. (Recommended: `orion:telemetry:biometrics`) |
-| `HEALTH_CHANNEL` | `system.health` | Health check channel. |
+| `ORION_HEALTH_CHANNEL` | `orion:system:health` | Health check channel. |
 
 ## Running & Testing
 

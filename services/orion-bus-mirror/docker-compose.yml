@@ -1,0 +1,23 @@
+services:
+  orion-bus-mirror:
+    build:
+      context: ../..
+      dockerfile: services/orion-bus-mirror/Dockerfile
+    container_name: ${PROJECT:-orion}-bus-mirror
+    env_file:
+      - .env
+    environment:
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG:-true}
+      MIRROR_PATTERN: ${MIRROR_PATTERN:-orion:*}
+      MIRROR_SQLITE_PATH: ${MIRROR_SQLITE_PATH:-/data/bus_mirror.sqlite}
+      MIRROR_PARQUET_DIR: ${MIRROR_PARQUET_DIR:-/data/parquet}
+    volumes:
+      - "${MIRROR_DATA_DIR:-./data}:/data"
+    restart: unless-stopped
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

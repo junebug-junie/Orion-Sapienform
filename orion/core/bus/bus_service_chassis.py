@@ -14,7 +14,6 @@ try:
 except Exception:  # pragma: no cover - fallback when loguru is unavailable
     import logging
     logger = logging.getLogger("orion.bus")
-from pydantic import BaseModel, ConfigDict, Field
 
 from .async_service import OrionBusAsync
 from .bus_schemas import BaseEnvelope, ErrorInfo, ServiceRef
@@ -39,17 +38,8 @@ class ChassisConfig:
     shutdown_timeout_sec: float = 10.0
 
     # system channels (stable defaults)
-    health_channel: str = "system.health"
+    health_channel: str = "orion:system:health"
     error_channel: str = "system.error"
-
-
-class _SystemHealthPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    status: str = "ok"
-    service: str
-    node: str
-    version: str
-    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class BaseChassis:
@@ -132,16 +122,6 @@ class BaseChassis:
             try:
                 node = self.cfg.node_name or "unknown"
                 now = datetime.now(timezone.utc)
-                env = BaseEnvelope(
-                    kind="system.health",
-                    source=self._source(),
-                    payload=_SystemHealthPayload(
-                        service=self.cfg.service_name,
-                        node=node,
-                        version=self.cfg.service_version,
-                        details={},
-                    ).model_dump(mode="json"),
-                )
                 v1_payload = SystemHealthV1(
                     service=self.cfg.service_name,
                     node=node,
@@ -158,7 +138,6 @@ class BaseChassis:
                     source=self._source(),
                     payload=v1_payload.model_dump(mode="json"),
                 )
-                await self.bus.publish(self.cfg.health_channel, env)
                 await self.bus.publish(self.cfg.health_channel, v1_env)
             except Exception as e:
                 logger.warning(f"Heartbeat publish failed: {e}")

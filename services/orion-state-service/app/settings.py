@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
-    health_channel: str = Field("system.health", alias="ORION_HEALTH_CHANNEL")
+    health_channel: str = Field("orion:system:health", alias="ORION_HEALTH_CHANNEL")
     error_channel: str = Field("system.error", alias="ORION_ERROR_CHANNEL")
     shutdown_grace_sec: float = Field(10.0, alias="ORION_SHUTDOWN_GRACE_SEC")
 

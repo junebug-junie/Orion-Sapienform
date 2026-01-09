@@ -24,7 +24,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `SQL_WRITER_SUBSCRIBE_CHANNELS` | (See above) | List of channels to subscribe to. |
 | `SQL_WRITER_ROUTE_MAP_JSON` | (See above) | JSON mapping of `kind` → `ModelName`. |
 | `POSTGRES_URI` | ... | Database connection string. |
-| `ORION_HEALTH_CHANNEL` | `system.health` | Health check channel. |
+| `ORION_HEALTH_CHANNEL` | `orion:system:health` | Health check channel. |
 
 ## Running & Testing
 

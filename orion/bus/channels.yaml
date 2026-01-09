@@ -142,8 +142,7 @@ channels:
   - name: "orion:system:health"
     kind: "telemetry"
     schema_id: "SystemHealthV1"
-    producer_services: ["orion-equilibrium-service"]
+    producer_services: ["*"]
     consumer_services: ["orion-cortex-orch", "orion-hub", "orion-equilibrium-service"]
     stability: "stable"
     since: "2026-01-08"
-

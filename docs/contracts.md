@@ -82,9 +82,17 @@ This registry maps logical flows to specific channels, message kinds, and payloa
 
 ### Equilibrium + Spark Signalization
 
-* **Heartbeats in:** `CHANNEL_SYSTEM_HEALTH` (`system.health.v1` preferred, legacy `system.health` still accepted).
+* **Heartbeats in:** `ORION_HEALTH_CHANNEL` (topic `orion:system:health`, kind `system.health.v1`).
 * **Outputs:** `CHANNEL_EQUILIBRIUM_SNAPSHOT` → `equilibrium.snapshot.v1` (payload `EquilibriumSnapshotV1`); `CHANNEL_SPARK_SIGNAL` → `spark.signal.v1` (`SparkSignalV1`, `signal_type="equilibrium"`).
 * **Persistence:** redis hash key `EQUILIBRIUM_STATE_KEY` stores last-seen records for restart safety.
+
+### Channel vs Envelope Kind
+
+* **Channel/topic**: Redis Pub/Sub topic. Must start with `orion:` for all Orion services.
+* **Kind**: envelope message type + version (e.g., `system.health.v1`).
+* **Canonical health example**:
+  * topic: `orion:system:health`
+  * kind: `system.health.v1`
 
 ### Vector + Recall Interop
 
@@ -175,5 +183,5 @@ python scripts/bus_harness.py tap
 ### Adding a New Service
 1.  Define schemas in `orion/schemas/<service>.py`.
 2.  Add config in `settings.py` and `docker-compose.yml`.
-3.  Implement `Service` using `orion.core.bus.service.OrionBus` (or `async_service`).
+3.  Implement `Service` using `orion.core.bus.async_service.OrionBusAsync`.
 4.  Update this contract document.

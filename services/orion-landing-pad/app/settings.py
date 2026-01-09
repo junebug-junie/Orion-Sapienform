@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     shutdown_grace_sec: float = Field(10.0, alias="SHUTDOWN_GRACE_SEC")
-    health_channel: str = Field("system.health", alias="HEALTH_CHANNEL")
+    health_channel: str = Field("orion:system:health", alias="ORION_HEALTH_CHANNEL")
     error_channel: str = Field("system.error", alias="ERROR_CHANNEL")
 
     @field_validator("pad_input_allowlist_patterns", "pad_input_denylist_patterns", mode="before")

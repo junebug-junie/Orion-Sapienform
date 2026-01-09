@@ -26,7 +26,7 @@ RUN pip3 install --no-cache-dir --upgrade pip
 COPY services/orion-voip-endpoint/requirements.txt ./requirements.txt
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Shared Orion package (so we can import orion.core.bus.service)
+# Shared Orion package (so we can import orion.core.bus.async_service)
 COPY orion /app/orion
 
 # VoIP service code

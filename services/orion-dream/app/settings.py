@@ -61,7 +61,7 @@ class Settings(BaseSettings):
 
     # --- Chassis Defaults ---
     HEARTBEAT_INTERVAL_SEC: float = 10.0
-    HEALTH_CHANNEL: str = "system.health"
+    ORION_HEALTH_CHANNEL: str = "orion:system:health"
     ERROR_CHANNEL: str = "system.error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 

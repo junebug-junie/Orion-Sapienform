@@ -52,7 +52,7 @@ class Settings(BaseSettings):
 
     # ── Chassis / Runtime ─────────────────────────────────────────────
     HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, validation_alias=AliasChoices("HEARTBEAT_INTERVAL_SEC"))
-    HEALTH_CHANNEL: str = Field(default="system.health", validation_alias=AliasChoices("HEALTH_CHANNEL"))
+    ORION_HEALTH_CHANNEL: str = Field(default="orion:system:health", validation_alias=AliasChoices("ORION_HEALTH_CHANNEL"))
     ERROR_CHANNEL: str = Field(default="system.error", validation_alias=AliasChoices("ERROR_CHANNEL"))
     SHUTDOWN_GRACE_SEC: float = Field(default=10.0, validation_alias=AliasChoices("SHUTDOWN_GRACE_SEC"))
 

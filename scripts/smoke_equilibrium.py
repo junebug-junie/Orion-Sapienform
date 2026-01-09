@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Smoke test: publish system.health.v1 heartbeats and confirm the equilibrium
-service emits equilibrium.snapshot.v1 and spark.signal.v1.
+Smoke test: publish system.health.v1 heartbeats to orion:system:health and confirm
+the equilibrium service emits equilibrium.snapshot.v1 and spark.signal.v1.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from orion.schemas.telemetry.system_health import SystemHealthV1
 
 
 BUS_URL = os.getenv("ORION_BUS_URL", "redis://localhost:6379/0")
-HEALTH_CHANNEL = os.getenv("CHANNEL_SYSTEM_HEALTH", "system.health")
+HEALTH_CHANNEL = os.getenv("ORION_HEALTH_CHANNEL", "orion:system:health")
 SNAPSHOT_CHANNEL = os.getenv("CHANNEL_EQUILIBRIUM_SNAPSHOT", "orion:equilibrium:snapshot")
 SPARK_SIGNAL_CHANNEL = os.getenv("CHANNEL_SPARK_SIGNAL", "orion:spark:signal")
 TIMEOUT_SEC = float(os.getenv("EQUILIBRIUM_SMOKE_TIMEOUT_SEC", "30"))

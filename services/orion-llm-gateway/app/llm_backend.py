@@ -1,4 +1,5 @@
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Coroutine
+import asyncio
 import logging
 import time
 import json
@@ -6,7 +7,7 @@ import json
 import httpx
 from httpx import HTTPStatusError
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
 
 from .models import ChatBody, GenerateBody, ExecStepPayload, EmbeddingsBody
 from .settings import settings
@@ -18,6 +19,15 @@ from orion.spark.integration import (
 )
 
 logger = logging.getLogger("orion-llm-gateway.backend")
+
+
+def _run_async(coro: asyncio.Future | Coroutine[Any, Any, Any]) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coro)
+        return
+    loop.create_task(coro)
 
 # ─────────────────────────────────────────────
 # 1. Configuration & Profile Loading
@@ -324,22 +334,27 @@ def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_t
         delta = abs((phi_after.get("valence", 0) - phi_before.get("valence", 0)))
 
         if delta > 0.05 or self_field.get("uncertainty", 0) > 0.3:
-            bus = OrionBus(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
-            if bus.enabled:
-                bus.publish(
-                    settings.channel_spark_introspect_candidate,
-                    {
-                        "event": "spark_introspect_candidate",
-                        "trace_id": body.trace_id or "gw",
-                        "source": getattr(body, "source", "gw"),
-                        "kind": "chat",
-                        "prompt": spark_meta.get("latest_user_message"),
-                        "response": response_text,
-                        "spark_meta": spark_meta,
-                    },
-                )
+            payload = {
+                "event": "spark_introspect_candidate",
+                "trace_id": body.trace_id or "gw",
+                "source": getattr(body, "source", "gw"),
+                "kind": "chat",
+                "prompt": spark_meta.get("latest_user_message"),
+                "response": response_text,
+                "spark_meta": spark_meta,
+            }
+            _run_async(_publish_spark_introspect(payload))
     except Exception as e:
         logger.error(f"[LLM-GW Spark] Publish failed: {e}")
+
+
+async def _publish_spark_introspect(payload: Dict[str, Any]) -> None:
+    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
+    await bus.connect()
+    try:
+        await bus.publish(settings.channel_spark_introspect_candidate, payload)
+    finally:
+        await bus.close()
 
 
 def _spark_post_ingest_for_reply(body: ChatBody, spark_meta: Dict[str, Any], response_text: str) -> None:

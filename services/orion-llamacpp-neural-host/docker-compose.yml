@@ -13,22 +13,22 @@ services:
 
     environment:
       # Model path inside the container (mapped volume)
-      - LLAMACPP_MODEL_PATH=/models/model.gguf
+      - LLAMACPP_MODEL_PATH=${LLAMACPP_MODEL_PATH}
       # Use the same cache dir env var as the standard host
       - LLM_CACHE_DIR=${LLM_CACHE_DIR}
 
       # Configuration
-      - LLAMACPP_N_GPU_LAYERS=${LLAMACPP_N_GPU_LAYERS:- -1}
+      - LLAMACPP_N_GPU_LAYERS=${LLAMACPP_N_GPU_LAYERS:-1}
       - LLAMACPP_CTX_SIZE=${LLAMACPP_CTX_SIZE:-2048}
-      - LLAMACPP_HOST=0.0.0.0
-      - LLAMACPP_PORT=8005
+      - LLAMACPP_HOST=${LLAMACPP_HOST:-0.0.0.0}
+      - LLAMACPP_PORT=${LLAMACPP_PORT:-8005}
 
     volumes:
       # Mount the cache directory to /models
       - "${LLM_CACHE_DIR}:/models"
 
     ports:
-      - "8005:8005"
+      - "${LLAMACPP_PORT:-8005}:${LLAMACPP_PORT:-8005}"
 
     networks:
       - app-net

@@ -1,16 +1,19 @@
 # scripts/test_llm_gateway_chat.py
 
+import asyncio
 import uuid
 import time
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
 
 
-def main():
-    bus = OrionBus()
-    if not bus.enabled:
-        print("Bus not enabled / not connected")
-        return
+def main() -> None:
+    asyncio.run(_main_async())
+
+
+async def _main_async() -> None:
+    bus = OrionBusAsync("redis://localhost:6379/0")
+    await bus.connect()
 
     corr_id = str(uuid.uuid4())
     reply_channel = f"orion:llm:reply:test:{corr_id}"
@@ -43,13 +46,16 @@ def main():
     }
 
     print(f"Publishing chat request with correlation_id={corr_id}")
-    bus.publish("orion-exec:request:LLMGatewayService", envelope)
+    await bus.publish("orion-exec:request:LLMGatewayService", envelope)
 
     print(f"Subscribing to reply_channel={reply_channel}")
-    for msg in bus.raw_subscribe(reply_channel):
-        data = msg["data"]
-        print("Got reply:", data)
-        break
+    async with bus.subscribe(reply_channel) as pubsub:
+        async for msg in bus.iter_messages(pubsub):
+            data = msg["data"]
+            print("Got reply:", data)
+            break
+
+    await bus.close()
 
 
 if __name__ == "__main__":

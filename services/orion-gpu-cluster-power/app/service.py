@@ -6,7 +6,7 @@ from typing import Optional
 import httpx
 
 from .settings import Settings, settings
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
 
 logger = logging.getLogger("gpu-cluster-power.service")
 
@@ -21,7 +21,7 @@ class PsuService:
 
     def __init__(self, cfg: Settings):
         self.settings = cfg
-        self.bus: Optional[OrionBus] = None
+        self.bus: Optional[OrionBusAsync] = None
 
     # ------- Bus state -------
 
@@ -38,15 +38,12 @@ class PsuService:
             logger.info("OrionBus disabled via settings; skipping init")
             return
 
-        self.bus = OrionBus(
-            url=None,
+        self.bus = OrionBusAsync(
+            url=self.settings.orion_bus_url,
             enabled=self.settings.orion_bus_enabled,
         )
-
-        if not self.bus.enabled:
-            logger.warning("OrionBus failed to enable; running HTTP-only.")
-        else:
-            logger.info("OrionBus initialized for PSU proxy at %s", self.bus.url)
+        await self.bus.connect()
+        logger.info("OrionBusAsync initialized for PSU proxy at %s", self.bus.url)
 
     # ------- HTTP helpers -------
 
@@ -73,7 +70,7 @@ class PsuService:
 
         try:
             # OrionBus.publish(channel: str, message: dict)
-            self.bus.publish(self.settings.bus_channel_psu_events, payload)
+            await self.bus.publish(self.settings.bus_channel_psu_events, payload)
         except Exception as e:
             logger.warning("Failed to publish PSU event: %s", e)
 

@@ -23,7 +23,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- | :--- |
 | `VECTOR_WRITER_SUBSCRIBE_CHANNELS` | (See above) | List of input channels. |
 | `PUBLISH_CHANNEL_VECTOR_CONFIRM` | `orion:vector:confirm` | Confirmation channel. |
-| `HEALTH_CHANNEL` | `system.health` | Health check channel. |
+| `ORION_HEALTH_CHANNEL` | `orion:system:health` | Health check channel. |
 
 ## Running & Testing
 

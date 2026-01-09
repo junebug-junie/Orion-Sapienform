@@ -23,7 +23,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- | :--- |
 | `CHANNEL_COLLAPSE_INTAKE` | `orion:collapse:intake` | Ingestion channel. |
 | `CHANNEL_COLLAPSE_TRIAGE` | `orion:collapse:triage` | Triage/Fanout channel. |
-| `HEALTH_CHANNEL` | `system.health` | Health check channel. |
+| `ORION_HEALTH_CHANNEL` | `orion:system:health` | Health check channel. |
 | `ERROR_CHANNEL` | `system.error` | Error reporting channel. |
 
 ## Running & Testing

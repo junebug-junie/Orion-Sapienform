@@ -6,7 +6,7 @@ The equilibrium service normalizes system heartbeat signals into a distress/zen 
 
 ```mermaid
 flowchart TD
-    HB[system.health / system.health.v1] --> EQ[orion-equilibrium-service]
+    HB[orion:system:health (system.health.v1)] --> EQ[orion-equilibrium-service]
     EQ -->|equilibrium.snapshot.v1| SNAP[orion:equilibrium:snapshot channel]
     EQ -->|spark.signal.v1 (equilibrium)| SIG[orion:spark:signal channel]
     SIG -->|bias φ| SPARK[Spark ingestors\n(gateway + introspector)]
@@ -26,15 +26,24 @@ flowchart TD
 - `EQUILIBRIUM_WINDOWS_SEC`: rolling uptime windows (e.g., `60,300,3600` seconds).
 
 ## Verification steps
-1. **Heartbeat ingestion**
-   - Publish a synthetic heartbeat:
+1. **Quick runtime check**
+   - Confirm the async bus import works:
      ```bash
-     redis-cli -u "$ORION_BUS_URL" PUBLISH system.health.v1 \
+     python -c "from orion.core.bus.async_service import OrionBusAsync; print('ok')"
+     ```
+2. **Heartbeat ingestion**
+   - Terminal A: subscribe to the health channel:
+     ```bash
+     redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:system:health
+     ```
+   - Terminal B: publish a synthetic heartbeat:
+     ```bash
+     redis-cli -u "$ORION_BUS_URL" PUBLISH orion:system:health \
        '{"schema":"orion.envelope","kind":"system.health.v1","source":{"name":"probe"},"payload":{"service":"probe","node":"athena","version":"1.0.0","boot_id":"demo","status":"ok","last_seen_ts":"'$(date -Iseconds)'","heartbeat_interval_sec":5}}'
      ```
-   - Observe `equilibrium.snapshot.v1` on `orion:equilibrium:snapshot`.
-2. **Spark signal impact**
+   - Confirm equilibrium logs show ingestion and updated snapshot timing.
+3. **Spark signal impact**
    - Subscribe to `orion:spark:signal` and confirm `spark.signal.v1` frames include `signal_type: equilibrium` and the computed `intensity`.
    - Spark introspector snapshots (`spark.state.snapshot.v1`) should reflect the deltas (valence/coherence bias) in subsequent φ values.
-3. **Rollup visibility**
+4. **Rollup visibility**
    - Call `GET /rollups?window=300&hours=24` on `state-journaler` to see averaged φ + distress rollups for dashboards.

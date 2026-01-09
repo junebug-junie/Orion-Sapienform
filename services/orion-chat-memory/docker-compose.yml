@@ -1,11 +1,11 @@
 version: "3.9"
 
 services:
-  orion-chat-memory:
+  chat-memory:
     build:
       context: ../..
       dockerfile: services/orion-chat-memory/Dockerfile
-    container_name: ${PROJECT:-orion}-chat-memory
+    container_name: orion-${NODE_NAME}-chat-memory
     restart: unless-stopped
     environment:
       - SERVICE_NAME=${SERVICE_NAME}

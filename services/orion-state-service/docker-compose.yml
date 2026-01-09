@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-state-service/Dockerfile
-    container_name: ${PROJECT}-state-service
+    container_name: orion-${NODE_NAME}-state-service
     restart: unless-stopped
     networks:
       - app-net

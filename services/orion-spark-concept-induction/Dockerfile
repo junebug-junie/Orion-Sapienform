@@ -20,6 +20,6 @@ COPY services/orion-spark-concept-induction /app
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
-EXPOSE 8500
+EXPOSE 8510
 
 CMD ["python", "-m", "app.main"]

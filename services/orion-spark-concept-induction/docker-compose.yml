@@ -1,9 +1,9 @@
 services:
-  orion-spark-concept-induction:
+  spark-concept-induction:
     build:
       context: ../..
       dockerfile: services/orion-spark-concept-induction/Dockerfile
-    container_name: ${PROJECT}-spark-concept-induction
+    container_name: orion-${NODE_NAME}-spark-concept-induction
     restart: unless-stopped
     networks:
       - app-net
@@ -40,7 +40,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8500:8500"
+      - "8510:8510"
 
 networks:
   app-net:

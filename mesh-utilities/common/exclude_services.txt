@@ -1,4 +1,14 @@
 ## service to exclude from auto rebuilding
 # one service per line
+orion-llamacpp-neural-host
 orion-vision-edge
 orion-security-watcher
+orion-vllm-host
+orion-vision-council
+orion-vision-host
+orion-vision-retina
+orion-vision-scribe
+orion-vision-window
+orion-rag
+orion-ollama-host
+orion-voip-endpoint-voip-endpoint

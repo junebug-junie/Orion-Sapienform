@@ -1,5 +1,6 @@
-fastapi
-loguru
-pydantic
-pydantic-settings
-uvicorn
+fastapi==0.111.0
+loguru==0.7.2
+pydantic==2.7.1
+pydantic-settings==2.3.0
+uvicorn==0.30.0
+redis==5.0.4

@@ -162,7 +162,7 @@ async def run_recall_step(
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     t0 = time.time()
     recall_client = RecallClient(bus)
-    reply_channel = f"orion-exec:result:RecallService:{uuid4()}"
+    reply_channel = f"orion:exec:result:RecallService:{uuid4()}"
 
     # FIX: Define the timeout variable that was missing
     recall_timeout = float(settings.step_timeout_ms) / 1000.0
@@ -277,7 +277,7 @@ async def call_step_services(
     agent_client = AgentChainClient(bus)
 
     for service in step.services:
-        reply_channel = f"orion-exec:result:{service}:{uuid4()}"
+        reply_channel = f"orion:exec:result:{service}:{uuid4()}"
 
         try:
             if service == "RecallService":

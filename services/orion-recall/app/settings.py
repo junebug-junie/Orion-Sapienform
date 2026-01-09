@@ -38,22 +38,22 @@ class Settings(BaseSettings):
 
     # RPC intake + reply + telemetry
     RECALL_BUS_INTAKE: str = Field(
-        default="orion-exec:request:RecallService",
+        default="orion:exec:request:RecallService",
         validation_alias=AliasChoices("RECALL_BUS_INTAKE", "CHANNEL_RECALL_REQUEST"),
     )
     RECALL_BUS_REPLY_DEFAULT: str = Field(
-        default="orion-exec:result:RecallService",
+        default="orion:exec:result:RecallService",
         validation_alias=AliasChoices("RECALL_BUS_REPLY_DEFAULT", "CHANNEL_RECALL_DEFAULT_REPLY_PREFIX"),
     )
     RECALL_BUS_TELEMETRY: str = Field(
-        default="recall.decision.v1",
+        default="orion:recall:telemetry",
         validation_alias=AliasChoices("RECALL_BUS_TELEMETRY"),
     )
 
     # ── Chassis / Runtime ─────────────────────────────────────────────
     HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, validation_alias=AliasChoices("HEARTBEAT_INTERVAL_SEC"))
     ORION_HEALTH_CHANNEL: str = Field(default="orion:system:health", validation_alias=AliasChoices("ORION_HEALTH_CHANNEL"))
-    ERROR_CHANNEL: str = Field(default="system.error", validation_alias=AliasChoices("ERROR_CHANNEL"))
+    ERROR_CHANNEL: str = Field(default="orion:system:error", validation_alias=AliasChoices("ERROR_CHANNEL"))
     SHUTDOWN_GRACE_SEC: float = Field(default=10.0, validation_alias=AliasChoices("SHUTDOWN_GRACE_SEC"))
 
     # ── Default Recall Behavior ───────────────────────────────────────

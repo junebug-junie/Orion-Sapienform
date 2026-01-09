@@ -16,6 +16,9 @@ from .context import ctx
 
 logger = logging.getLogger("orion-security-watcher.bus_worker")
 
+VISION_GUARD_ALERT_KIND = "vision.guard.alert.v1"
+VISION_GUARD_SIGNAL_KIND = "vision.guard.signal.v1"
+
 
 def _source(ctx) -> ServiceRef:
     return ServiceRef(
@@ -49,7 +52,7 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
         # Publish Alert (New Schema)
         if ctx.bus.enabled:
             alert_env = env.derive_child(
-                kind=ctx.settings.CHANNEL_VISION_GUARD_ALERT,
+                kind=VISION_GUARD_ALERT_KIND,
                 source=_source(ctx),
                 payload=alert
             )
@@ -102,7 +105,7 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
     for sig in signals:
         if ctx.bus.enabled:
             sig_env = env.derive_child(
-                kind=ctx.settings.CHANNEL_VISION_GUARD_SIGNAL,
+                kind=VISION_GUARD_SIGNAL_KIND,
                 source=_source(ctx),
                 payload=sig
             )

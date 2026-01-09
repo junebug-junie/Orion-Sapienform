@@ -41,6 +41,10 @@ except ImportError:  # pragma: no cover - fallback for test harness pathing
 
 logger = logging.getLogger("orion-recall.worker")
 
+RECALL_REQUEST_KIND = "recall.query.v1"
+RECALL_REPLY_KIND = "recall.reply.v1"
+RECALL_TELEMETRY_KIND = "recall.decision.v1"
+
 
 def _source() -> ServiceRef:
     return ServiceRef(
@@ -244,7 +248,7 @@ async def process_recall(q: RecallQueryV1, *, corr_id: str) -> Tuple[MemoryBundl
 
 def build_reply_envelope(bundle: MemoryBundleV1, env: BaseEnvelope) -> BaseEnvelope:
     return BaseEnvelope(
-        kind=settings.RECALL_BUS_REPLY_DEFAULT,
+        kind=RECALL_REPLY_KIND,
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain,
@@ -255,7 +259,7 @@ def build_reply_envelope(bundle: MemoryBundleV1, env: BaseEnvelope) -> BaseEnvel
 
 def telemetry_envelope(decision: RecallDecisionV1, env: BaseEnvelope) -> BaseEnvelope:
     return BaseEnvelope(
-        kind=settings.RECALL_BUS_TELEMETRY,
+        kind=RECALL_TELEMETRY_KIND,
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain,
@@ -264,9 +268,9 @@ def telemetry_envelope(decision: RecallDecisionV1, env: BaseEnvelope) -> BaseEnv
 
 
 async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
-    if env.kind not in {settings.RECALL_BUS_INTAKE, "recall.query.request", "recall.query.v1"}:
+    if env.kind not in {RECALL_REQUEST_KIND, "recall.query.request"}:
         return BaseEnvelope(
-            kind=settings.RECALL_BUS_REPLY_DEFAULT,
+            kind=RECALL_REPLY_KIND,
             source=_source(),
             correlation_id=env.correlation_id,
             payload={"error": f"unsupported_kind:{env.kind}"},
@@ -277,7 +281,7 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
         q = RecallQueryV1.model_validate(payload_obj)
     except ValidationError as ve:
         return BaseEnvelope(
-            kind=settings.RECALL_BUS_REPLY_DEFAULT,
+            kind=RECALL_REPLY_KIND,
             source=_source(),
             correlation_id=env.correlation_id,
             payload={"error": "validation_failed", "details": ve.errors()},

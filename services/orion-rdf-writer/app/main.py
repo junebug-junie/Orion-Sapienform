@@ -23,7 +23,7 @@ def _cfg() -> ChassisConfig:
         bus_url=settings.ORION_BUS_URL,
         bus_enabled=settings.ORION_BUS_ENABLED,
         health_channel="orion:system:health",
-        error_channel="system.error",
+        error_channel="orion:system:error",
     )
 
 # Global reference to keep the hunter alive

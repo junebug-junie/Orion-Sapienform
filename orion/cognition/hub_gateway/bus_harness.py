@@ -152,13 +152,13 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         p.add_argument("--bus-url", default=os.getenv("ORION_BUS_URL", "redis://100.92.216.81:6379/0"))
         p.add_argument(
             "--channel",
-            default=os.getenv("ORCH_REQUEST_CHANNEL", os.getenv("CORTEX_REQUEST_CHANNEL", "orion-cortex:request")),
-            help="Request channel for cortex-orch (defaults to ORCH_REQUEST_CHANNEL/CORTEX_REQUEST_CHANNEL env or orion-cortex:request)",
+            default=os.getenv("ORCH_REQUEST_CHANNEL", os.getenv("CORTEX_REQUEST_CHANNEL", "orion:cortex:request")),
+            help="Request channel for cortex-orch (defaults to ORCH_REQUEST_CHANNEL/CORTEX_REQUEST_CHANNEL env or orion:cortex:request)",
         )
         p.add_argument(
             "--reply-prefix",
-            default=os.getenv("ORCH_RESULT_PREFIX", "orion-cortex:result"),
-            help="Reply channel prefix (defaults to ORCH_RESULT_PREFIX env or orion-cortex:result)",
+            default=os.getenv("ORCH_RESULT_PREFIX", "orion:cortex:result"),
+            help="Reply channel prefix (defaults to ORCH_RESULT_PREFIX env or orion:cortex:result)",
         )
         p.add_argument("--service-name", default="bus-harness")
         p.add_argument("--service-version", default="0.0.1")

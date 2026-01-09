@@ -17,7 +17,7 @@ async def main():
     await bus.connect()
 
     # Test Window RPC
-    req_channel = "orion-exec:request:VisionWindowService"
+    req_channel = "orion:exec:request:VisionWindowService"
     reply_channel = f"orion:vision:test:{uuid.uuid4()}"
     corr_id = str(uuid.uuid4())
 

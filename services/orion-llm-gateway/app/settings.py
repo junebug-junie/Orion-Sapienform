@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # Intake from other services
-    channel_llm_intake: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    channel_llm_intake: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
 
     # Spark
     channel_spark_introspect_candidate: str = Field(

@@ -18,11 +18,11 @@ class Settings(BaseSettings):
 
     # RPC config (Gateway -> Orch)
     channel_cortex_request: str = Field(
-        "orion-cortex:request",
+        "orion:cortex:request",
         validation_alias=AliasChoices("CORTEX_REQUEST_CHANNEL", "ORCH_REQUEST_CHANNEL"),
     )
     channel_cortex_result_prefix: str = Field(
-        "orion-cortex:result",
+        "orion:cortex:result",
         validation_alias=AliasChoices("CORTEX_RESULT_PREFIX", "ORCH_RESULT_PREFIX"),
     )
 
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # Bus Intake (Gateway <- Client)
     channel_gateway_request: str = Field(
-        "orion-cortex-gateway:request",
+        "orion:cortex:gateway:request",
         alias="CORTEX_GATEWAY_REQUEST_CHANNEL"
     )
 

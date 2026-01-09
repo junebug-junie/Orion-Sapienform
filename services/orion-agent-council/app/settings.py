@@ -15,14 +15,14 @@ class Settings(BaseSettings):
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
 
     # --- Council channels (bus) ---
-    channel_intake: str = Field("orion-exec:request:CouncilService", alias="CHANNEL_COUNCIL_INTAKE")
-    channel_reply_prefix: str = Field("orion-exec:result:CouncilService", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
+    channel_intake: str = Field("orion:exec:request:CouncilService", alias="CHANNEL_COUNCIL_INTAKE")
+    channel_reply_prefix: str = Field("orion:exec:result:CouncilService", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
 
     # --- LLM Gateway routing (bus) ---
     llm_service_name: str = Field("LLMGateway", alias="LLM_GATEWAY_SERVICE_NAME")
 
     #  These fields must exist for .env variables to take effect!
-    llm_intake_channel: str = Field("orion-exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    llm_intake_channel: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
     llm_reply_prefix: str = Field("orion:llm:reply", alias="CHANNEL_LLM_REPLY_PREFIX")
 
     council_llm_timeout_sec: float = Field(10.0, alias="COUNCIL_LLM_TIMEOUT_SEC")

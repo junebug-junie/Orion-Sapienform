@@ -19,6 +19,12 @@ from .utils import draw_boxes
 
 logger = logging.getLogger("orion-vision-edge.detector")
 
+VISION_EDGE_ARTIFACT_KIND = "vision.edge.artifact.v1"
+VISION_EDGE_RAW_KIND = "vision.edge.raw.v1"
+VISION_EDGE_NOTABLE_KIND = "vision.edge.notable.v1"
+VISION_EDGE_HEALTH_KIND = "vision.edge.health.v1"
+VISION_EDGE_ERROR_KIND = "vision.edge.error.v1"
+
 def _load_image(path: str) -> np.ndarray:
     if not os.path.exists(path):
         return None
@@ -195,11 +201,11 @@ async def run_detector_loop():
                 
                 # Publish Health
                 health_env = env.derive_child(
-                    kind="vision.edge.health",
+                    kind=VISION_EDGE_HEALTH_KIND,
                     source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
                     payload=health_payload
                 )
-                await bus.publish("vision.edge.health", health_env)
+                await bus.publish(settings.CHANNEL_VISION_EDGE_HEALTH, health_env)
             except Exception as e:
                 logger.warning(f"Health check failed: {e}")
             
@@ -234,7 +240,7 @@ async def run_detector_loop():
                 )
                 
                 out_env = env.derive_child(
-                    kind=settings.CHANNEL_VISION_ARTIFACTS,
+                    kind=VISION_EDGE_ARTIFACT_KIND,
                     source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
                     payload=artifact
                 )
@@ -244,7 +250,7 @@ async def run_detector_loop():
                 # Also publish to raw events channel for UI
                 if settings.VISION_EVENTS_PUBLISH_RAW and settings.VISION_EVENTS_PUBLISH_RAW != settings.CHANNEL_VISION_ARTIFACTS:
                      raw_env = env.derive_child(
-                        kind=settings.VISION_EVENTS_PUBLISH_RAW,
+                        kind=VISION_EDGE_RAW_KIND,
                         source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
                         payload=artifact
                     )
@@ -259,8 +265,8 @@ async def run_detector_loop():
                     message=str(e)
                 )
                 err_env = env.derive_child(
-                    kind="vision.edge.error",
+                    kind=VISION_EDGE_ERROR_KIND,
                     source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
                     payload=err_payload
                 )
-                await bus.publish("vision.edge.error", err_env)
+                await bus.publish(settings.CHANNEL_VISION_EDGE_ERROR, err_env)

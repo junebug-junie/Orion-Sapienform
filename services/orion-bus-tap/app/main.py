@@ -1,11 +1,11 @@
-import json
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-from redis.asyncio import Redis
+
+from orion.core.bus.async_service import OrionBusAsync
 
 from app.settings import settings
 
@@ -20,35 +20,30 @@ async def index() -> FileResponse:
     return FileResponse(static_dir / "index.html")
 
 
-def _parse_envelope(payload: str | bytes) -> dict:
-    if isinstance(payload, bytes):
-        payload = payload.decode("utf-8", errors="replace")
-    try:
-        return json.loads(payload)
-    except json.JSONDecodeError:
-        return {"raw": payload}
+def _decode_envelope(bus: OrionBusAsync, payload: bytes | str) -> dict:
+    decoded = bus.codec.decode(payload)
+    if decoded.ok:
+        return decoded.envelope.model_dump(by_alias=True, mode="json")
+    return {"error": decoded.error, "raw": decoded.raw}
 
 
 @app.websocket("/ws/tap")
 async def tap_socket(websocket: WebSocket) -> None:
     await websocket.accept()
-    redis = Redis.from_url(settings.ORION_BUS_URL, decode_responses=True)
-    pubsub = redis.pubsub()
+    bus = OrionBusAsync(settings.ORION_BUS_URL)
+    await bus.connect()
 
-    await pubsub.psubscribe(settings.TAP_PATTERN)
     logger.info("Bus tap connected: {} pattern={}", settings.ORION_BUS_URL, settings.TAP_PATTERN)
 
     try:
-        async for message in pubsub.listen():
-            if message is None:
-                continue
-            if message.get("type") != "pmessage":
-                continue
-            channel = message.get("channel")
-            envelope = _parse_envelope(message.get("data", ""))
-            await websocket.send_json({"channel": channel, "envelope": envelope})
+        async with bus.subscribe(settings.TAP_PATTERN, patterns=True) as pubsub:
+            async for message in bus.iter_messages(pubsub):
+                channel = message.get("channel")
+                if isinstance(channel, bytes):
+                    channel = channel.decode("utf-8", errors="replace")
+                envelope = _decode_envelope(bus, message.get("data", b""))
+                await websocket.send_json({"channel": channel, "envelope": envelope})
     except WebSocketDisconnect:
         logger.info("Bus tap websocket disconnected")
     finally:
-        await pubsub.close()
-        await redis.close()
+        await bus.close()

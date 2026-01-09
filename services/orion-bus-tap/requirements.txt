@@ -1,0 +1,5 @@
+fastapi
+loguru
+pydantic
+pydantic-settings
+uvicorn

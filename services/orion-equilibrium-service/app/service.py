@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.core.verbs.models import VerbRequestV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStateSnapshot
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -231,24 +230,14 @@ class EquilibriumService(BaseChassis):
             state_snapshot=snapshot,
         )
 
-        request = VerbRequestV1(
-            trigger="orion.collapse.log",
-            schema_id="CollapseMirrorEntryV2",
-            payload=entry.model_dump(mode="json"),
-            request_id=str(uuid4()),
-            caller=settings.service_name,
-            meta={"origin": "equilibrium-service"},
-        )
-
         envelope = BaseEnvelope(
-            kind="verb.request",
+            kind="equilibrium.collapse.snapshot",
             source=self._source(),
-            correlation_id=request.request_id,
-            payload=request.model_dump(mode="json"),
+            payload=entry.model_dump(mode="json"),
         )
 
-        await self.bus.publish("orion:verb:request", envelope)
-        logger.info("Requested collapse mirror log from equilibrium tick event_id=%s", entry.event_id)
+        await self.bus.publish("orion:event:equilibrium:snapshot", envelope)
+        logger.info("Published equilibrium collapse snapshot event_id=%s", entry.event_id)
 
     async def _collapse_loop(self) -> None:
         interval = float(settings.collapse_mirror_interval_sec)

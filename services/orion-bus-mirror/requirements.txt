@@ -1,0 +1,4 @@
+aiosqlite
+loguru
+pydantic
+pydantic-settings

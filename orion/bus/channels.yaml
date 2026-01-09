@@ -62,3 +62,80 @@ channels:
     consumer_services: ["orion-collapse-mirror"]
     stability: "experimental"
     since: "2026-01-08"
+  - name: "orion:event:equilibrium:snapshot"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion-conversation:request"
+    kind: "request"
+    schema_id: "ChatTurnPayload"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion-conversation:result"
+    kind: "result"
+    schema_id: "ChatTurnResult"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion-exec:request:LLMGatewayService"
+    kind: "request"
+    schema_id: "ChatRequestPayload"
+    producer_services:
+      [
+        "orion-cortex-exec",
+        "orion-agent-council",
+        "orion-planner-react",
+        "orion-vision-council",
+        "orion-hub",
+      ]
+    consumer_services: ["orion-llm-gateway"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion-exec:request:RecallService"
+    kind: "request"
+    schema_id: "RecallRequestPayload"
+    producer_services: ["orion-cortex-exec", "orion-hub"]
+    consumer_services: ["orion-recall"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion-exec:result:RecallService"
+    kind: "result"
+    schema_id: "RecallResultPayload"
+    producer_services: ["orion-recall"]
+    consumer_services: ["orion-cortex-exec", "orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "orion.spark.candidate"
+    kind: "event"
+    schema_id: "SparkCandidatePayload"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-spark-introspector"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "vision.detect.upload"
+    kind: "event"
+    schema_id: "Event"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-edge"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "vision.edge.health"
+    kind: "telemetry"
+    schema_id: "VisionEdgeHealth"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-edge"]
+    stability: "experimental"
+    since: "2026-01-08"
+  - name: "vision.edge.error"
+    kind: "telemetry"
+    schema_id: "VisionEdgeError"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-edge"]
+    stability: "experimental"
+    since: "2026-01-08"

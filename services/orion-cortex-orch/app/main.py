@@ -9,14 +9,15 @@ import json
 from pydantic import Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 
-from .orchestrator import call_verb_runtime
+from .orchestrator import call_verb_runtime, dispatch_equilibrium_snapshot
 from .settings import get_settings
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 logger = logging.getLogger("orion.cortex.orch")
+EQUILIBRIUM_EVENT_CHANNEL = "orion:event:equilibrium:snapshot"
 
 
 class CortexOrchRequest(BaseEnvelope):
@@ -207,6 +208,22 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
 
 svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
+equilibrium_hunter: Hunter
+
+
+async def _handle_equilibrium_event(env: BaseEnvelope) -> None:
+    await dispatch_equilibrium_snapshot(
+        equilibrium_hunter.bus,
+        source=_source(),
+        env=env,
+    )
+
+
+equilibrium_hunter = Hunter(
+    _cfg(),
+    handler=_handle_equilibrium_event,
+    patterns=[EQUILIBRIUM_EVENT_CHANNEL],
+)
 
 
 async def main() -> None:
@@ -218,7 +235,7 @@ async def main() -> None:
         s.channel_exec_request,
         s.orion_bus_url,
     )
-    await svc.start()
+    await asyncio.gather(svc.start(), equilibrium_hunter.start())
 
 
 if __name__ == "__main__":

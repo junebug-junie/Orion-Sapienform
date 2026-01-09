@@ -15,6 +15,7 @@ import orion  # used to locate installed package path for cognition/verbs
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs import VerbRequestV1, VerbResultV1
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.schemas import (
     ExecutionPlan,
     ExecutionStep,
@@ -216,6 +217,49 @@ def _build_context(req: CortexClientRequest) -> Dict[str, Any]:
         "mode": req.mode,
         "diagnostic": _diagnostic_enabled(req),
     }
+
+
+async def dispatch_equilibrium_snapshot(
+    bus: OrionBusAsync,
+    *,
+    source: ServiceRef,
+    env: BaseEnvelope,
+) -> None:
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    try:
+        entry = CollapseMirrorEntryV2.model_validate(payload)
+    except Exception as exc:
+        logger.warning("Equilibrium snapshot payload invalid: %s", exc)
+        return
+
+    if str(entry.type or "").strip().lower() == "noop":
+        logger.info("Equilibrium snapshot ignored (noop) event_id=%s", entry.event_id)
+        return
+
+    request_id = str(uuid4())
+    verb_request = VerbRequestV1(
+        trigger="orion.collapse.log",
+        schema_id="CollapseMirrorEntryV2",
+        payload=entry.model_dump(mode="json"),
+        request_id=request_id,
+        caller=source.name,
+        meta={
+            "origin": "equilibrium-service",
+            "event_id": entry.event_id,
+        },
+    )
+
+    envelope = BaseEnvelope(
+        kind="verb.request",
+        source=source,
+        correlation_id=env.correlation_id,
+        causality_chain=list(env.causality_chain),
+        trace=dict(env.trace),
+        payload=verb_request.model_dump(mode="json"),
+    )
+
+    await bus.publish("orion:verb:request", envelope)
+    logger.info("Equilibrium snapshot routed to verb request event_id=%s", entry.event_id)
 
 
 def _diagnostic_enabled(req: CortexClientRequest) -> bool:

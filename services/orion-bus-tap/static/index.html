@@ -1,97 +1,498 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Orion Bus Tap</title>
-  <style>
-    body {
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      margin: 0;
-      padding: 24px;
-      background: #0f172a;
-      color: #e2e8f0;
-    }
-    h1 {
-      margin: 0 0 16px;
-      font-size: 20px;
-      font-weight: 600;
-    }
-    #status {
-      margin-bottom: 12px;
-      font-size: 14px;
-      color: #94a3b8;
-    }
-    #messages {
-      border: 1px solid #1e293b;
-      border-radius: 8px;
-      padding: 12px;
-      height: 70vh;
-      overflow-y: auto;
-      background: #020617;
-    }
-    .message {
-      padding: 10px;
-      border-bottom: 1px solid #1e293b;
-    }
-    .message:last-child {
-      border-bottom: none;
-    }
-    .channel {
-      font-size: 12px;
-      color: #38bdf8;
-      margin-bottom: 4px;
-    }
-    pre {
-      margin: 0;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 12px;
-      color: #f8fafc;
-    }
-  </style>
-</head>
-<body>
-  <h1>Orion Bus Tap</h1>
-  <div id="status">Connecting...</div>
-  <div id="messages"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <script>
-    const statusEl = document.getElementById('status');
-    const messagesEl = document.getElementById('messages');
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsUrl = `${protocol}://${window.location.host}/ws/tap`;
-    const socket = new WebSocket(wsUrl);
+    <!-- Cache-buster / build id.
+         Bump this when you redeploy if you want an easy "what build am I seeing?" check.
+         Also used as ?v=... on websocket URL. -->
+    <meta name="orion-tap-build" content="2026.01.10.01" />
 
-    socket.addEventListener('open', () => {
-      statusEl.textContent = `Connected to ${wsUrl}`;
-    });
+    <title>Orion Bus Tap</title>
 
-    socket.addEventListener('close', () => {
-      statusEl.textContent = 'Disconnected';
-    });
+    <!-- These meta tags are best-effort; real cache control should come from server headers.
+         Still useful in some environments. -->
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
 
-    socket.addEventListener('error', () => {
-      statusEl.textContent = 'WebSocket error';
-    });
+    <style>
+      :root {
+        --bg: #0b0f19;
+        --panel: #111827;
+        --panel2: #0f172a;
+        --text: #e5e7eb;
+        --muted: #94a3b8;
+        --ok: #22c55e;
+        --warn: #f59e0b;
+        --bad: #ef4444;
+        --border: rgba(148, 163, 184, 0.18);
+      }
 
-    socket.addEventListener('message', (event) => {
-      const payload = JSON.parse(event.data);
-      const item = document.createElement('div');
-      item.className = 'message';
+      html, body {
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+          "Segoe UI Emoji";
+      }
 
-      const channel = document.createElement('div');
-      channel.className = 'channel';
-      channel.textContent = payload.channel;
+      .wrap {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 18px 16px 40px;
+      }
 
-      const envelope = document.createElement('pre');
-      envelope.textContent = JSON.stringify(payload.envelope, null, 2);
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--panel), var(--panel2));
+        border-radius: 14px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      }
 
-      item.appendChild(channel);
-      item.appendChild(envelope);
-      messagesEl.appendChild(item);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    });
-  </script>
-</body>
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.2px;
+      }
+
+      .sub {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 14px;
+        align-items: center;
+        justify-content: flex-end;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .badge {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.75);
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: var(--bad);
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+      }
+      .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15); }
+      .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15); }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .panel {
+        border: 1px solid var(--border);
+        background: rgba(17, 24, 39, 0.6);
+        border-radius: 14px;
+        overflow: hidden;
+      }
+
+      .panelHead {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(15, 23, 42, 0.7);
+      }
+
+      .panelHead .title {
+        font-size: 14px;
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .controls {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+      }
+
+      button {
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: rgba(15, 23, 42, 0.9);
+        color: var(--text);
+        padding: 7px 10px;
+        border-radius: 10px;
+        font-size: 13px;
+      }
+      button:hover { filter: brightness(1.08); }
+      button:active { transform: translateY(1px); }
+
+      input[type="text"] {
+        width: min(520px, 70vw);
+        border: 1px solid var(--border);
+        background: rgba(2, 6, 23, 0.7);
+        color: var(--text);
+        padding: 8px 10px;
+        border-radius: 10px;
+        font-size: 13px;
+        outline: none;
+      }
+      input[type="text"]::placeholder { color: rgba(148,163,184,0.75); }
+
+      .body {
+        padding: 12px 14px 14px;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+        margin-bottom: 10px;
+      }
+
+      #messages {
+        height: calc(100vh - 250px);
+        min-height: 420px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        background: rgba(2, 6, 23, 0.55);
+        border-radius: 12px;
+        padding: 10px;
+      }
+
+      .msg {
+        padding: 10px 10px;
+        margin: 0 0 10px 0;
+        border: 1px solid rgba(148,163,184,0.14);
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.45);
+      }
+
+      .msgTop {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      .chan {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        color: #a5b4fc;
+      }
+
+      .ts {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.35;
+        color: #e2e8f0;
+      }
+
+      .footer {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Orion Bus Tap</h1>
+        <div class="sub">
+          <span class="badge">
+            <span id="dot" class="dot"></span>
+            <span id="status">Disconnected</span>
+          </span>
+          <span class="badge">
+            Build: <span id="build"></span>
+          </span>
+          <span class="badge">
+            WS: <span id="wsTarget" style="font-family: ui-monospace, monospace;"></span>
+          </span>
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="panel">
+          <div class="panelHead">
+            <div class="title">Stream</div>
+            <div class="controls">
+              <input id="filter" type="text" placeholder="Filter by channel (substring match), e.g. spark:introspect" />
+              <button id="clear">Clear</button>
+              <button id="reconnect">Reconnect</button>
+            </div>
+          </div>
+          <div class="body">
+            <div class="hint">
+              If you’re serving this UI at <code>/tap</code>, the WS endpoint may be under <code>/tap/ws/tap</code>.
+              This page will try both <code>{mount}/ws/tap</code> and <code>/ws/tap</code> automatically.
+            </div>
+            <div id="messages"></div>
+            <div class="footer" id="footer"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      // ----------------------------
+      // Build / cache-buster
+      // ----------------------------
+      const META_BUILD =
+        document.querySelector('meta[name="orion-tap-build"]')?.getAttribute('content') || 'dev';
+      // Optional override if you later inject a global from the server:
+      const BUILD_ID = window.__ORION_TAP_BUILD__ || META_BUILD;
+
+      // Use BUILD_ID to cache-bust websocket URL (and any future fetches).
+      const CACHE_BUSTER = encodeURIComponent(BUILD_ID);
+
+      // ----------------------------
+      // DOM
+      // ----------------------------
+      const dotEl = document.getElementById('dot');
+      const statusEl = document.getElementById('status');
+      const buildEl = document.getElementById('build');
+      const wsTargetEl = document.getElementById('wsTarget');
+      const messagesEl = document.getElementById('messages');
+      const footerEl = document.getElementById('footer');
+      const filterEl = document.getElementById('filter');
+      const clearBtn = document.getElementById('clear');
+      const reconnectBtn = document.getElementById('reconnect');
+
+      buildEl.textContent = BUILD_ID;
+
+      // ----------------------------
+      // Helpers
+      // ----------------------------
+      function setStatus(state, text) {
+        // state: "ok" | "warn" | "bad"
+        dotEl.classList.remove('ok', 'warn');
+        if (state === 'ok') dotEl.classList.add('ok');
+        else if (state === 'warn') dotEl.classList.add('warn');
+        statusEl.textContent = text;
+      }
+
+      function nowIso() {
+        return new Date().toISOString();
+      }
+
+      function appendMessage(channel, envelope) {
+        const filter = (filterEl.value || '').trim().toLowerCase();
+        const channelStr = String(channel || '');
+        if (filter && !channelStr.toLowerCase().includes(filter)) return;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'msg';
+
+        const top = document.createElement('div');
+        top.className = 'msgTop';
+
+        const chan = document.createElement('div');
+        chan.className = 'chan';
+        chan.textContent = channelStr || '(no channel)';
+
+        const ts = document.createElement('div');
+        ts.className = 'ts';
+        ts.textContent = nowIso();
+
+        top.appendChild(chan);
+        top.appendChild(ts);
+
+        const pre = document.createElement('pre');
+        try {
+          pre.textContent = JSON.stringify(envelope, null, 2);
+        } catch {
+          pre.textContent = String(envelope);
+        }
+
+        wrap.appendChild(top);
+        wrap.appendChild(pre);
+
+        messagesEl.appendChild(wrap);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      // Derive a mount-aware base path.
+      // Examples:
+      //   /               => base ""
+      //   /tap            => base "/tap"
+      //   /tap/           => base "/tap"
+      //   /tap/index.html => base "/tap"
+      function computeBasePath() {
+        let p = window.location.pathname || '/';
+        if (p === '/' || p === '') return '';
+        // remove trailing slash
+        if (p.endsWith('/')) p = p.slice(0, -1);
+
+        // if last segment looks like a file (contains a dot), drop it
+        const lastSlash = p.lastIndexOf('/');
+        const lastSeg = p.slice(lastSlash + 1);
+        if (lastSeg.includes('.')) {
+          p = p.slice(0, lastSlash);
+          if (p === '') return '';
+        }
+
+        return p;
+      }
+
+      function wsOrigin() {
+        return (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.host;
+      }
+
+      function unique(arr) {
+        return [...new Set(arr)];
+      }
+
+      // ----------------------------
+      // WebSocket + reconnect
+      // ----------------------------
+      let socket = null;
+      let reconnectTimer = null;
+      let candidateIndex = 0;
+      let reconnectAttempt = 0;
+
+      function buildCandidates() {
+        const basePath = computeBasePath(); // "" or "/tap"
+        const origin = wsOrigin();
+
+        const candidates = unique([
+          `${origin}${basePath}/ws/tap?v=${CACHE_BUSTER}`, // prefix-aware (works with tailscale serve --set-path=/tap)
+          `${origin}/ws/tap?v=${CACHE_BUSTER}`,           // non-prefixed (works if served at /)
+        ]);
+
+        return { basePath, candidates };
+      }
+
+      function teardownSocket() {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (socket) {
+          try { socket.close(); } catch {}
+          socket = null;
+        }
+      }
+
+      function scheduleReconnect(candidates) {
+        reconnectAttempt += 1;
+        // backoff: 0.5s, 1s, 2s, 4s, 8s, max 10s
+        const delay = Math.min(10000, 500 * Math.pow(2, Math.min(5, reconnectAttempt)));
+        setStatus('warn', `Disconnected — retrying in ${(delay / 1000).toFixed(1)}s`);
+        footerEl.textContent = `reconnectAttempt=${reconnectAttempt}, nextDelayMs=${delay}, build=${BUILD_ID}`;
+        reconnectTimer = setTimeout(() => connect(candidates), delay);
+      }
+
+      function connect(candidates) {
+        teardownSocket();
+
+        if (!candidates || candidates.length === 0) {
+          setStatus('bad', 'Disconnected (no candidates)');
+          return;
+        }
+
+        // rotate through candidates
+        if (candidateIndex >= candidates.length) candidateIndex = 0;
+        const wsUrl = candidates[candidateIndex++];
+        wsTargetEl.textContent = wsUrl;
+
+        setStatus('warn', `Connecting…`);
+        footerEl.textContent = `Trying ${wsUrl}`;
+
+        socket = new WebSocket(wsUrl);
+
+        socket.addEventListener('open', () => {
+          reconnectAttempt = 0;
+          setStatus('ok', 'Connected');
+          footerEl.textContent = `Connected: ${wsUrl}`;
+        });
+
+        socket.addEventListener('message', (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            // Expected shape: { channel: "...", envelope: {...} }
+            appendMessage(payload.channel, payload.envelope ?? payload);
+          } catch (e) {
+            appendMessage('raw', event.data);
+          }
+        });
+
+        socket.addEventListener('error', () => {
+          // allow close handler to decide what to do
+          footerEl.textContent = `WebSocket error on ${wsUrl}`;
+        });
+
+        socket.addEventListener('close', () => {
+          // If first candidate fails, try next immediately; otherwise backoff.
+          if (candidateIndex < candidates.length) {
+            setStatus('warn', `Disconnected — trying alternate path…`);
+            footerEl.textContent = `Switching candidate (${candidateIndex}/${candidates.length})`;
+            return connect(candidates);
+          }
+          scheduleReconnect(candidates);
+        });
+      }
+
+      // ----------------------------
+      // UI events
+      // ----------------------------
+      clearBtn.addEventListener('click', () => {
+        messagesEl.innerHTML = '';
+      });
+
+      reconnectBtn.addEventListener('click', () => {
+        const { candidates } = buildCandidates();
+        candidateIndex = 0;
+        reconnectAttempt = 0;
+        connect(candidates);
+      });
+
+      filterEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          // just a convenience to visually show filter is "applied"
+          footerEl.textContent = `filter="${(filterEl.value || '').trim()}"`;
+        }
+      });
+
+      // ----------------------------
+      // Boot
+      // ----------------------------
+      (function boot() {
+        const { basePath, candidates } = buildCandidates();
+        footerEl.textContent = `basePath="${basePath || '/'}", candidates=${JSON.stringify(candidates)}, build=${BUILD_ID}`;
+        connect(candidates);
+      })();
+    </script>
+  </body>
 </html>

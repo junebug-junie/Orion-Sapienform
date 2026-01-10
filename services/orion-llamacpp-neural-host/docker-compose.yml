@@ -18,11 +18,13 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://redis:6379/0}
       - NODE_NAME=${NODE_NAME:-unknown}
       - INSTANCE_ID=${INSTANCE_ID:-default}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
 
       # --- Profiles & Selection ---
       - LLM_PROFILE_NAME=${LLM_PROFILE_NAME}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
 
       # --- Overrides (Optional) ---
       - LLAMACPP_MODEL_PATH_OVERRIDE=${LLAMACPP_MODEL_PATH_OVERRIDE}
@@ -33,17 +35,21 @@ services:
       - LLAMACPP_THREADS_OVERRIDE=${LLAMACPP_THREADS_OVERRIDE}
       - LLAMACPP_N_PARALLEL_OVERRIDE=${LLAMACPP_N_PARALLEL_OVERRIDE}
       - LLAMACPP_BATCH_SIZE_OVERRIDE=${LLAMACPP_BATCH_SIZE_OVERRIDE}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
-
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${CUDA_VISIBLE_DEVICES_OVERRIDE}
+      
       # Deprecated but kept for compatibility during migration if needed
       - LLAMACPP_PORT=${LLAMACPP_PORT:-8005}
+      
+      # Behavior
+      - ENSURE_MODEL_DOWNLOAD=${ENSURE_MODEL_DOWNLOAD}
+      - WAIT_FOR_MODEL_SECONDS=${WAIT_FOR_MODEL_SECONDS}
 
     volumes:
       # Mount the cache directory to /models
       - "${LLM_CACHE_DIR}:/models"
 
     ports:
-      - "${LLAMACPP_PORT:-8005}:${LLAMACPP_PORT:-8005}"
+      - "${LLAMACPP_HOST_PORT:-8005}:${LLAMACPP_PORT:-8005}"
 
     networks:
       - app-net

@@ -11,6 +11,7 @@ import spacy
 # 1. Use the existing Chassis components
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
 from .settings import settings
 from .models import EventIn, Enrichment
 
@@ -29,6 +30,31 @@ except OSError:
 
 # Global Chassis Reference
 meta_tagger: Hunter = None
+meta_tagger_rpc: Rabbit = None
+
+
+async def handle_meta_tags_rpc(env: BaseEnvelope) -> BaseEnvelope:
+    raw = env.payload if isinstance(env.payload, dict) else {}
+    # reuse EventIn to normalize text
+    in_payload = EventIn(**raw)
+
+    doc = nlp(in_payload.text or "")
+    tags = [ent.text for ent in doc.ents]
+    entities = [ent.label_ for ent in doc.ents]
+
+    out = {
+        "id": in_payload.id,
+        "tags": tags,
+        "entities": entities,
+    }
+
+    return BaseEnvelope(
+        kind="meta_tags.result.v1",
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        correlation_id=env.correlation_id,
+        payload=out,
+    )
+
 
 async def handle_triage_event(envelope: BaseEnvelope):
     """
@@ -135,13 +161,20 @@ heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
         pattern=settings.CHANNEL_EVENTS_TRIAGE
     )
 
-    logger.info("Starting Meta-Tags Service...")
+    meta_tagger_rpc = Rabbit(
+        config,
+        request_channel="orion:exec:request:MetaTagsService",
+        handler=handle_meta_tags_rpc,
+    )
+    await meta_tagger_rpc.start_background()
     await meta_tagger.start_background()
-    
+    logger.info("Tagger starting...")
+
     yield
-    
+
     logger.info("Shutting down...")
     await meta_tagger.stop()
+    await meta_tagger_rpc.stop()
 
 app = FastAPI(
     title="Orion Meta-Tags",

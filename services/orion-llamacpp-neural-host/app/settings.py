@@ -25,11 +25,12 @@ class Settings(BaseSettings):
     # Identity
     service_name: str = Field("neural-host", env="SERVICE_NAME")
     service_version: str = Field("0.1.0", env="SERVICE_VERSION")
-
+    
     # Bus / Heartbeat
     bus_url: str = Field("redis://redis:6379/0", env="ORION_BUS_URL")
     node_name: str = Field("unknown", env="NODE_NAME")
     instance_id: str = Field("default", env="INSTANCE_ID")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
 
     # Profiles
     llm_profiles_config_path: Path = Field(
@@ -57,7 +58,11 @@ class Settings(BaseSettings):
     llamacpp_batch_size_override: Optional[int] = Field(None, env="LLAMACPP_BATCH_SIZE_OVERRIDE")
 
     # CUDA override
-    cuda_visible_devices_override: Optional[str] = Field(None, env="CUDA_VISIBLE_DEVICES")
+    cuda_visible_devices_override: Optional[str] = Field(None, env="CUDA_VISIBLE_DEVICES_OVERRIDE")
+
+    # Behavior
+    ensure_model_download: bool = Field(True, env="ENSURE_MODEL_DOWNLOAD")
+    wait_for_model_seconds: int = Field(0, env="WAIT_FOR_MODEL_SECONDS")
 
     _registry: Optional[LLMProfileRegistry] = None
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStateSnapshot
+from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.core.bus.codec import OrionCodec
@@ -201,51 +201,50 @@ class EquilibriumService(BaseChassis):
                 logger.error("Publish loop error: %s", e)
             await asyncio.sleep(float(settings.publish_interval_sec))
 
-    async def _publish_collapse_mirror(self) -> None:
+    async def _publish_metacognition_tick(self) -> None:
         if not self.bus.enabled:
             return
 
-        snapshot = CollapseMirrorStateSnapshot(
-            observer_state=["monitoring"],
-            telemetry={
+        now = _utcnow()
+
+        # if you want real scores here, reuse the logic from _publish_snapshot()
+        # (or store last distress/zen from _publish_snapshot and reuse it)
+        services_tracked = len(self._state)
+
+        tick = MetacognitionTickV1(
+            generated_at=now,
+            source_service=settings.service_name,
+            source_node=settings.node_name,
+            distress_score=None,
+            zen_score=None,
+            services_tracked=services_tracked,
+            snapshot={
                 "equilibrium": {
-                    "distress_score": None,
-                    "zen_score": None,
-                    "services_tracked": len(self._state),
+                    "services_tracked": services_tracked,
                 }
             },
         )
 
-        entry = CollapseMirrorEntryV2(
-            observer="Oríon",
-            trigger="equilibrium.metacognition_tick",
-            observer_state=["monitoring"],
-            field_resonance="ambient",
-            type="system-change",
-            emergent_entity="Oríon",
-            summary="Periodic metacognition snapshot emitted by equilibrium monitor.",
-            mantra="steady presence",
-            snapshot_kind="baseline",
-            state_snapshot=snapshot,
-        )
-
-        envelope = BaseEnvelope(
-            kind="equilibrium.collapse.snapshot",
+        env = BaseEnvelope(
+            kind="metacognition.tick.v1",
             source=self._source(),
-            payload=entry.model_dump(mode="json"),
+            correlation_id=tick.tick_id,   # IMPORTANT: no more None corr_id
+            payload=tick.model_dump(mode="json"),
         )
 
-        await self.bus.publish("orion:event:equilibrium:snapshot", envelope)
-        logger.info("Published equilibrium collapse snapshot event_id=%s", entry.event_id)
+        await self.bus.publish("orion:metacognition:tick", env)
+        logger.info("Published metacognition tick tick_id=%s", tick.tick_id)
+
 
     async def _collapse_loop(self) -> None:
         interval = float(settings.collapse_mirror_interval_sec)
         while not self._stop.is_set():
             try:
-                await self._publish_collapse_mirror()
+                await self._publish_metacognition_tick()
             except Exception as e:
-                logger.warning("Collapse mirror loop error: %s", e)
+                logger.warning("Metacognition tick loop error: %s", e)
             await asyncio.sleep(interval)
+
 
     async def _run(self) -> None:
         await self._load_state()

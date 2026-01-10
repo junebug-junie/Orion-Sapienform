@@ -15,7 +15,7 @@ from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult, CortexChatRequest, CortexChatResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
-from orion.schemas.chat_history import ChatHistoryMessageV1
+from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.schemas.telemetry.biometrics import BiometricsPayload
@@ -25,6 +25,8 @@ from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPa
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1
+from orion.schemas.telemetry.metacognition import MetacognitionTickV1, MetacognitionEnrichedV1
+from orion.schemas.telemetry.meta_tags import MetaTagsRequestV1, MetaTagsResultV1
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionCouncilRequestPayload,
@@ -58,7 +60,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallDecisionV1": RecallDecisionV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
-    "CollapseMirrorEntryV2": CollapseMirrorEntryV2,
+    "CollapseMirrorEntryV2": CollapseMirrorEntryV2, # leagcy
+    "MetacognitionTickV1": MetacognitionTickV1,
+    "MetacognitionEnrichedV1": MetacognitionEnrichedV1,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
@@ -86,6 +90,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CortexChatRequest": CortexChatRequest,
     "CortexChatResult": CortexChatResult,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,
+    "ChatHistoryTurnV1": ChatHistoryTurnV1,
     "VectorWriteRequest": VectorWriteRequest,
     "ConceptProfile": ConceptProfile,
     "ConceptProfileDelta": ConceptProfileDelta,
@@ -94,6 +99,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StateFrameV1": StateFrameV1,
     "PadRpcRequestV1": PadRpcRequestV1,
     "PadRpcResponseV1": PadRpcResponseV1,
+    "MetaTagsRequestV1": MetaTagsRequestV1,
+    "MetaTagsResultV1": MetaTagsResultV1,
 }
 
 

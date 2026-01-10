@@ -17,7 +17,7 @@ from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResu
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 logger = logging.getLogger("orion.cortex.orch")
-EQUILIBRIUM_EVENT_CHANNEL = "orion:event:equilibrium:snapshot"
+METACOGNITION_TICK_CHANNEL = "orion:metacognition:tick"
 
 
 class CortexOrchRequest(BaseEnvelope):
@@ -211,18 +211,17 @@ svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, hand
 equilibrium_hunter: Hunter
 
 
-async def _handle_equilibrium_event(env: BaseEnvelope) -> None:
-    await dispatch_equilibrium_snapshot(
+async def _handle_metacognition_tick(env: BaseEnvelope) -> None:
+    await dispatch_metacognition_tick(
         equilibrium_hunter.bus,
         source=_source(),
         env=env,
     )
 
-
 equilibrium_hunter = Hunter(
     _cfg(),
-    handler=_handle_equilibrium_event,
-    patterns=[EQUILIBRIUM_EVENT_CHANNEL],
+    handler=_handle_metacognition_tick,
+    patterns=[METACOGNITION_TICK_CHANNEL],
 )
 
 

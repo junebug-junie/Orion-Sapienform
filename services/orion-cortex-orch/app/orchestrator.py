@@ -26,6 +26,9 @@ from .clients import CortexExecClient, StateServiceClient
 from .settings import get_settings
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
+from orion.schemas.telemetry.metacognition import MetacognitionTickV1, MetacognitionEnrichedV1
+from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionRequest, PlanExecutionArgs
+
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -217,6 +220,107 @@ def _build_context(req: CortexClientRequest) -> Dict[str, Any]:
         "mode": req.mode,
         "diagnostic": _diagnostic_enabled(req),
     }
+
+
+async def dispatch_metacognition_tick(
+    bus: OrionBusAsync,
+    *,
+    source: ServiceRef,
+    env: BaseEnvelope,
+) -> None:
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    try:
+        tick = MetacognitionTickV1.model_validate(payload)
+    except Exception as exc:
+        logger.warning("Metacognition tick invalid: %s", exc)
+        return
+
+    # 1-step plan: MetaTagsService (LLM can be inserted later)
+    plan = ExecutionPlan(
+        verb_name="metacognition.enrich",
+        label="metacognition.enrich",
+        description="Enrich metacognition tick via MetaTagsService (LLM later)",
+        category="telemetry",
+        priority="low",
+        steps=[
+            ExecutionStep(
+                verb_name="metacognition.enrich",
+                step_name="meta_tags",
+                description="Extract tags/entities from metacognition tick",
+                order=0,
+                services=["MetaTagsService"],
+                prompt_template=None,
+                requires_gpu=False,
+                requires_memory=False,
+                timeout_ms=60000,
+            )
+        ],
+    )
+
+    req = PlanExecutionRequest(
+        plan=plan,
+        args=PlanExecutionArgs(
+            request_id=tick.tick_id,
+            trigger_source="cortex-orch",
+            extra={"tick_id": tick.tick_id},
+        ),
+        context={
+            "verb": "metacognition.enrich",
+            "metacognition_tick": tick.model_dump(mode="json"),
+        },
+    )
+
+    # Send to cortex-exec
+    settings = get_settings()
+    client = CortexExecClient(
+        bus,
+        request_channel=settings.channel_exec_request,
+        result_prefix=settings.channel_exec_result_prefix,
+    )
+    result = await client.execute_plan(
+        source=source,
+        req=req,
+        correlation_id=tick.tick_id,
+        timeout_sec=90.0,
+    )
+
+    # Expect MetaTagsService to put tags/entities in step[0].result["MetaTagsService"] or similar
+    tags: list[str] = []
+    entities: list[str] = []
+    try:
+        steps = result.get("steps") or []
+        if steps and isinstance(steps[0], dict):
+            step_result = steps[0].get("result") or {}
+            mt = step_result.get("MetaTagsService") or step_result.get("meta_tags") or step_result
+            if isinstance(mt, dict):
+                tags = list(mt.get("tags") or [])
+                entities = list(mt.get("entities") or [])
+    except Exception:
+        pass
+
+    enriched = MetacognitionEnrichedV1(
+        tick_id=tick.tick_id,
+        generated_at=tick.generated_at,
+        source_service=tick.source_service,
+        source_node=tick.source_node,
+        distress_score=tick.distress_score,
+        zen_score=tick.zen_score,
+        services_tracked=tick.services_tracked,
+        tags=tags,
+        entities=entities,
+        raw_tick=tick.model_dump(mode="json"),
+    )
+
+    out_env = BaseEnvelope(
+        kind="metacognition.enriched.v1",
+        source=source,
+        correlation_id=tick.tick_id,
+        payload=enriched.model_dump(mode="json"),
+    )
+
+    await bus.publish("orion:metacognition:enriched", out_env)
+    logger.info("Published metacognition enriched tick_id=%s tags=%d", tick.tick_id, len(tags))
+
 
 
 async def dispatch_equilibrium_snapshot(

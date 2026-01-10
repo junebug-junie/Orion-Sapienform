@@ -9,6 +9,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from orion.core.bus.bus_schemas import Envelope, ServiceRef
 
 CHAT_HISTORY_MESSAGE_KIND = "chat.history.message.v1"
+CHAT_HISTORY_TURN_KIND = "chat.history"
 ChatRole = Literal["user", "assistant", "system", "tool"]
 
 
@@ -100,3 +101,26 @@ class ChatHistoryMessageEnvelope(Envelope[ChatHistoryMessageV1]):
 
     kind: Literal[CHAT_HISTORY_MESSAGE_KIND] = Field(CHAT_HISTORY_MESSAGE_KIND)
     payload: ChatHistoryMessageV1
+
+class ChatHistoryTurnV1(BaseModel):
+    """Turn-level chat history row (prompt + response) for `chat_history_log`."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    id: Optional[str] = Field(default=None, description="Primary identifier for the turn row")
+    correlation_id: Optional[str] = Field(default=None, description="Trace/correlation identifier")
+    source: str = Field(..., description="Source label (e.g. hub_ws)")
+    prompt: str = Field(..., description="User prompt")
+    response: str = Field(..., description="Assistant response")
+    user_id: Optional[str] = Field(default=None)
+    session_id: Optional[str] = Field(default=None)
+    spark_meta: Optional[Dict[str, Any]] = Field(default=None)
+
+
+class ChatHistoryTurnEnvelope(Envelope[ChatHistoryTurnV1]):
+    """Versioned Titanium envelope for turn-level chat history logging."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kind: Literal[CHAT_HISTORY_TURN_KIND] = Field(CHAT_HISTORY_TURN_KIND)
+    payload: ChatHistoryTurnV1

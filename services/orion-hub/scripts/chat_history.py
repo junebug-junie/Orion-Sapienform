@@ -5,7 +5,13 @@ from typing import Iterable, List, Optional
 from uuid import UUID, uuid4
 
 from orion.core.bus.bus_schemas import ServiceRef
-from orion.schemas.chat_history import ChatHistoryMessageEnvelope, ChatHistoryMessageV1, ChatRole
+from orion.schemas.chat_history import (
+    ChatHistoryMessageEnvelope,
+    ChatHistoryMessageV1,
+    ChatHistoryTurnEnvelope,
+    ChatHistoryTurnV1,
+    ChatRole,
+)
 
 from .settings import settings
 
@@ -69,3 +75,49 @@ async def publish_chat_history(
             await bus.publish(channel, env)
         except Exception as e:
             logger.warning("Failed to publish chat history: %s", e, exc_info=True)
+
+def build_chat_turn_envelope(
+    *,
+    prompt: str,
+    response: str,
+    session_id: Optional[str],
+    correlation_id: UUID | str | None,
+    user_id: Optional[str],
+    source_label: str = "hub_ws",
+    spark_meta: Optional[dict] = None,
+    turn_id: Optional[str] = None,
+) -> ChatHistoryTurnEnvelope:
+    """Construct a turn-level chat history envelope (prompt + response)."""
+    payload = ChatHistoryTurnV1(
+        id=turn_id,
+        correlation_id=str(correlation_id) if correlation_id is not None else None,
+        source=source_label,
+        prompt=prompt,
+        response=response,
+        user_id=user_id,
+        session_id=session_id,
+        spark_meta=spark_meta,
+    )
+    return ChatHistoryTurnEnvelope(
+        correlation_id=correlation_id or uuid4(),
+        source=ServiceRef(
+            name=settings.SERVICE_NAME,
+            node=settings.NODE_NAME,
+            version=settings.SERVICE_VERSION,
+        ),
+        payload=payload,
+    )
+
+
+async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
+    """Publish a turn-level chat history envelope to the configured turn channel."""
+    if not bus or not getattr(bus, "enabled", False):
+        return
+    if not settings.PUBLISH_CHAT_HISTORY_LOG:
+        return
+
+    channel = settings.chat_history_turn_channel
+    try:
+        await bus.publish(channel, env)
+    except Exception as e:
+        logger.warning("Failed to publish chat turn history: %s", e, exc_info=True)

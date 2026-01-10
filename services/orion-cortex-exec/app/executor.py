@@ -471,6 +471,49 @@ async def call_step_services(
                         }
                         logs.append("publish -> orion:collapse:intake")
 
+
+            elif service == "MetaTagsService":
+                # pull the tick from context
+                tick = ctx.get("metacognition_tick") or {}
+                text = ""
+                if isinstance(tick, dict):
+                    # choose something stable for tagging
+                    text = (
+                        str(tick.get("snapshot") or "")
+                        or str(tick.get("summary") or "")
+                        or str(tick)
+                    )
+
+                req_payload = {
+                    "id": str(ctx.get("metacognition_tick", {}).get("tick_id") or correlation_id),
+                    "text": text,
+                    "kind": "metacognition.tick.v1",
+                    "raw": tick,
+                }
+
+                env = BaseEnvelope(
+                    kind="meta_tags.request.v1",
+                    source=source,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    payload=req_payload,
+                )
+
+                logs.append(f"rpc -> MetaTagsService (timeout={effective_timeout}s)")
+                msg = await bus.rpc_request(
+                    "orion:exec:request:MetaTagsService",
+                    env,
+                    reply_channel=reply_channel,
+                    timeout_sec=effective_timeout,
+                )
+                decoded = bus.codec.decode(msg.get("data"))
+                if not decoded.ok:
+                    raise RuntimeError(f"MetaTagsService decode failed: {decoded.error}")
+
+                merged_result["MetaTagsService"] = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+                logs.append("ok <- MetaTagsService")
+
+
             else:
                 logs.append(f"skip <- {service} (generic path not implemented in example)")
 

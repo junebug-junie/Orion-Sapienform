@@ -30,3 +30,15 @@ class MetaTagsPayload(BaseModel):
     enrichment_type: Optional[str] = None
     salience: Optional[float] = None
     ts: Optional[datetime] = None # Duplicate of timestamp, used by some writers
+
+class MetaTagsRequestV1(BaseModel):
+    id: str
+    text: str
+    kind: str | None = None
+    raw: Any | None = None
+
+
+class MetaTagsResultV1(BaseModel):
+    id: str
+    tags: List[str] = Field(default_factory=list)
+    entities: List[str] = Field(default_factory=list)

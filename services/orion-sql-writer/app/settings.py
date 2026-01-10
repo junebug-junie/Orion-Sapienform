@@ -34,6 +34,7 @@ class Settings(BaseSettings):
             "orion:tags:enriched",
             "orion:collapse:sql-write",
             "orion:chat:history:log",
+            "orion:chat:history:turn",
             "orion:dream:log",
             "orion:telemetry:biometrics",
             "orion:spark:introspection:log", # legacy?

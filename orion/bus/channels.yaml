@@ -95,7 +95,7 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:cortex:gateway:result*"
+  - name: "orion:cortex:gateway:result:*"
     kind: "result"
     schema_id: "CortexChatResult"
     producer_services: ["orion-cortex-gateway"]
@@ -343,7 +343,7 @@ channels:
   - name: "orion:spark:introspect:candidate*"
     kind: "event"
     schema_id: "SparkCandidateV1"
-    producer_services: ["orion-cortex-exec", "orion-hub", "orion-llm-gateway"]
+    producer_services: ["orion-cortex-exec", "orion-hub"]
     consumer_services: ["orion-spark-introspector"]
     stability: "experimental"
     since: "2026-01-08"
@@ -411,6 +411,23 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-08"
+
+  - name: "orion:metacognition:tick"
+    kind: "telemetry"
+    schema_id: "MetacognitionTickV1"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:metacognition:enriched"
+    kind: "telemetry"
+    schema_id: "MetacognitionEnrichedV1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer", "*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
 
   - name: "orion:vision:frames"
     kind: "event"
@@ -550,7 +567,15 @@ channels:
 
   - name: "orion:chat:history:log"
     kind: "event"
-    schema_id: "GenericPayloadV1"
+    schema_id: "ChatHistoryMessageV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:chat:history:turn"
+    kind: "event"
+    schema_id: "ChatHistoryTurnV1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-sql-writer", "orion-vector-writer"]
     stability: "experimental"
@@ -596,18 +621,34 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
-  - name: "orion:event:equilibrium:snapshot"
-    kind: "event"
-    schema_id: "CollapseMirrorEntryV2"
-    producer_services: ["orion-equilibrium-service"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-10"
-
   - name: "orion:telemetry:biometrics"
     kind: "telemetry"
     schema_id: "BiometricsPayload"
     producer_services: ["orion-biometrics"]
     consumer_services: ["orion-sql-writer", "orion-landing-pad"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:exec:request:MetaTagsService"
+    kind: "request"
+    schema_id: "MetaTagsRequestV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-meta-tags"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:exec:result:MetaTagsService"
+    kind: "result"
+    schema_id: "MetaTagsResultV1"
+    producer_services: ["orion-meta-tags"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:cognition:trace"
+    kind: "event"
+    schema_id: "CognitionTracePayload"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-spark-introspector", "orion-landing-pad", "orion-bus-tap"]
     stability: "experimental"
     since: "2026-01-10"

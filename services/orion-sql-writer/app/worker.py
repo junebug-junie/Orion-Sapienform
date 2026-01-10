@@ -303,7 +303,7 @@ def _write_row(sql_model_cls, data: dict) -> None:
                         .filter(SparkTelemetrySQL.correlation_id == corr_id)
                         .first()
                     )
-                    if telem and getattr(telem, "metadata_", None):
+                    if telem:
                         meta_blob = {
                             "phi": getattr(telem, "phi", None),
                             "novelty": getattr(telem, "novelty", None),

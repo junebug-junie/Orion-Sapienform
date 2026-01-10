@@ -203,6 +203,18 @@ def _write_row(sql_model_cls, data: dict) -> None:
         ):
             filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
 
+        # CollapseMirror uses "id" in SQL but "event_id" in V2 schema.
+        if (
+            sql_model_cls is CollapseMirror
+            and ("id" in valid_keys)
+            and not filtered_data.get("id")
+        ):
+            # Prefer event_id from payload if available (V2 schema), else generate.
+            candidate = data.get("event_id")
+            if not candidate:
+                candidate = f"collapse_{uuid.uuid4().hex}"
+            filtered_data["id"] = candidate
+
         # ---------------------------------------------------------------------
         # Standard Column Coercion
         # ---------------------------------------------------------------------

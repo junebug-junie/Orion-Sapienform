@@ -29,6 +29,17 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
     except Exception as e:
         logger.error(f"drain_queue error: {e}", exc_info=True)
 
+async def _publish_safely(bus, channel: str, envelope: Any, logger_):
+    """
+    Fire-and-forget publish helper to prevent side-effect failures
+    (writers, spark) from blocking or crashing the main chat loop.
+    """
+    try:
+        await bus.publish(channel, envelope)
+        logger_.info("Published side-effect -> %s", channel)
+    except Exception as e:
+        logger_.warning(f"Failed to publish to {channel}: {e}")
+
 async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
     if not text.strip() or not tts_client:
         return
@@ -200,17 +211,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         "spark_meta": spark_meta,
                     }
 
-                    # 1. SQL Log
+                    # 1. SQL Log (Decoupled)
                     env_sql = BaseEnvelope(
                         kind="chat.history",
                         correlation_id=trace_id,
                         source=ServiceRef(name="hub", node=settings.NODE_NAME),
                         payload=chat_row
                     )
-                    await bus.publish(settings.chat_history_channel, env_sql)
-                    logger.info("Published chat.history turn row -> %s", settings.chat_history_channel)
+                    asyncio.create_task(_publish_safely(bus, settings.chat_history_channel, env_sql, logger))
 
-                    # 2. Spark Introspection Candidate
+                    # 2. Spark Introspection Candidate (Decoupled)
                     candidate_payload = {
                         "trace_id": trace_id,
                         "source": "hub_ws",
@@ -226,10 +236,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                     # Kept the literal string to ensure it hits the default introspection channel
                     # and avoids settings attribute errors
-                    await bus.publish("orion:spark:introspect:candidate:log", env_spark)
+                    asyncio.create_task(_publish_safely(bus, "orion:spark:introspect:candidate:log", env_spark, logger))
 
                 except Exception as e:
-                    logger.warning(f"Failed to log/introspect chat: {e}")
+                    logger.warning(f"Failed to initiate log/introspect tasks: {e}")
 
                 # Publish assistant reply into chat history
                 try:

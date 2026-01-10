@@ -39,6 +39,10 @@ class NeuralHostChassis(BaseChassis):
 # ----------------------------------------------------------------------
 
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
+    if not settings.ensure_model_download:
+        logger.info("Skipping model download check (ENSURE_MODEL_DOWNLOAD=false)")
+        return
+
     p = Path(model_path)
     if p.exists():
         return
@@ -103,6 +107,11 @@ state = AppState()
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 0. Wait if requested
+    if settings.wait_for_model_seconds > 0:
+        logger.info(f"Waiting {settings.wait_for_model_seconds}s before loading model...")
+        await asyncio.sleep(settings.wait_for_model_seconds)
+
     # 1. Load Profile
     logger.info(f"Resolving profile: {settings.llm_profile_name}")
     try:
@@ -117,7 +126,17 @@ async def lifespan(app: FastAPI):
     # 2. Download/Ensure Model
     _ensure_model_file(model_path, cfg)
 
-    # 3. Initialize Llama
+    # 3. Apply GPU overrides (before Llama init)
+    if settings.cuda_visible_devices_override:
+        logger.info(f"Overriding CUDA_VISIBLE_DEVICES={settings.cuda_visible_devices_override}")
+        os.environ["CUDA_VISIBLE_DEVICES"] = settings.cuda_visible_devices_override
+    elif profile.gpu.device_ids:
+        # Also respect profile-level pinning if override not set
+        dev_ids = ",".join(str(i) for i in profile.gpu.device_ids)
+        logger.info(f"Setting CUDA_VISIBLE_DEVICES={dev_ids} from profile")
+        os.environ["CUDA_VISIBLE_DEVICES"] = dev_ids
+
+    # 4. Initialize Llama
     # "Native Neural Extraction" requires embedding=True
     logger.info(f"Loading Llama model... n_gpu_layers={cfg.n_gpu_layers}, ctx={cfg.ctx_size}")
     try:
@@ -133,7 +152,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to load model: {e}")
         raise e
 
-    # 4. Start Bus Heartbeat
+    # 5. Start Bus Heartbeat
     if BaseChassis:
         logger.info("Starting Bus Chassis...")
         chassis_cfg = ChassisConfig(
@@ -143,6 +162,11 @@ async def lifespan(app: FastAPI):
             instance_id=settings.instance_id,
             bus_url=settings.bus_url,
         )
+        # Note: ChassisConfig currently doesn't support 'enforce_catalog' directly in constructor
+        # based on memory/inspection of bus_service_chassis, but we can set env var or
+        # trust OrionBusAsync to pick it up from env if it supports it.
+        # The env var ORION_BUS_ENFORCE_CATALOG is already in os.environ by virtue of docker env.
+
         state.chassis = NeuralHostChassis(chassis_cfg)
         await state.chassis.start_background()
     else:

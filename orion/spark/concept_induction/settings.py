@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import json
 from typing import List
 
-from pydantic import Field, AliasChoices
+from pydantic import Field, AliasChoices, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -53,7 +54,7 @@ class ConceptSettings(BaseSettings):
     # Windowing
     window_max_events: int = Field(200, alias="CONCEPT_WINDOW_MAX_EVENTS")
     window_max_minutes: int = Field(360, alias="CONCEPT_WINDOW_MAX_MINUTES")
-    subjects: List[str] = Field(
+    subjects: List[str] | str = Field(
         default_factory=lambda: ["orion", "juniper", "relationship"],
         alias="CONCEPT_SUBJECTS",
     )
@@ -91,6 +92,27 @@ class ConceptSettings(BaseSettings):
         env_file_encoding = "utf-8"
         extra = "ignore"
         populate_by_name = True
+
+
+    @field_validator("subjects", mode="before")
+    @classmethod
+    def _parse_subjects(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return None
+            if raw.startswith("["):
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    pass
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return v
+
 
 
 @lru_cache(maxsize=1)

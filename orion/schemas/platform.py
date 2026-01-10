@@ -19,8 +19,9 @@ class CoreEventV1(BaseModel):
     meta: Optional[Dict[str, Any]] = None
 
 
+
 class SystemErrorV1(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    error: str
+    error: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)

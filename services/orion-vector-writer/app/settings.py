@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
-        default='["orion:memory:vector:upsert", "orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
+        default='["orion:memory:vector:upsert", "orion:vector:write", "orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
     VECTOR_WRITER_CHAT_HISTORY_CHANNEL: str = Field(

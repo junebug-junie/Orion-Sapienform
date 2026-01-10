@@ -11,4 +11,16 @@ orion-vision-scribe
 orion-vision-window
 orion-rag
 orion-ollama-host
-orion-voip-endpoint-voip-endpoint
+orion-voip-endpoint
+voip-endopoint
+
+# for testing
+orion-landing-pad
+orion-llamacpp-host
+orion-agent-chain
+orion-agent-council
+orion-meta-tags    
+orion-planner-react
+orion-power-guard 
+orion-recall               
+orion-gpu-cluster-power

@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Optional
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from redis import asyncio as aioredis
 
 from orion.schemas.registry import resolve as resolve_schema_id
@@ -81,6 +81,10 @@ class OrionBusAsync:
             except ValidationError as exc:
                 raise ValueError(f"Envelope validation failed for channel {channel}") from exc
             payload = env.payload
+        # Normalize Pydantic payload objects to dicts so channel-level schema validation
+        # can be applied consistently (e.g., GenericPayloadV1 wildcard channels).
+        if isinstance(payload, BaseModel):
+            payload = payload.model_dump()
         if payload is None:
             return
         model = resolve_schema_id(schema_id)

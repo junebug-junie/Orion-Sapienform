@@ -85,7 +85,7 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
         return None
 
     # If it's already a direct vector write request
-    if kind == "vector.write.request":
+    if kind in ("vector.write", "vector.write.request"):
         try:
             return VectorWriteRequest.model_validate(payload)
         except Exception:
@@ -226,7 +226,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         if env.kind == CHAT_HISTORY_MESSAGE_KIND:
             logger.info(
                 "Chat history ingest id=%s role=%s session=%s correlation_id=%s",
-                req.id,
+                req.doc_id,
                 req.metadata.get("role"),
                 req.metadata.get("session_id"),
                 getattr(env, "correlation_id", None),

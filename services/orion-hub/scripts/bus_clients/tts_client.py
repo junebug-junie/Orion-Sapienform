@@ -29,7 +29,7 @@ class TTSClient:
             source=self._source,
             correlation_id=correlation_id,
             reply_to=reply_to,
-            payload=request,
+            payload=request.model_dump(mode="json"),
         )
 
         logger.info(f"[{correlation_id}] Sending TTS request to {settings.TTS_REQUEST_CHANNEL}")
@@ -76,7 +76,7 @@ class TTSClient:
             source=self._source,
             correlation_id=correlation_id,
             reply_to=reply_to,
-            payload=request,
+            payload=request.model_dump(mode="json"),
         )
 
         logger.info(f"[{correlation_id}] Sending STT request to {settings.STT_REQUEST_CHANNEL}")

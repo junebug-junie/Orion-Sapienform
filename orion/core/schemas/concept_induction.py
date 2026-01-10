@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -62,7 +62,7 @@ class ConceptItem(BaseModel):
         default=None, description="Reference to embedding vector or store key."
     )
     evidence: List[ConceptEvidenceRef] = Field(default_factory=list)
-    metadata: Dict[str, str] = Field(
+    metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Algorithm parameters or notes."
     )
 
@@ -77,7 +77,7 @@ class ConceptCluster(BaseModel):
     summary: str = ""
     concept_ids: List[str] = Field(default_factory=list)
     cohesion_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    metadata: Dict[str, str] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class StateEstimate(BaseModel):
@@ -115,7 +115,7 @@ class ConceptProfile(BaseModel):
     concepts: List[ConceptItem] = Field(default_factory=list)
     clusters: List[ConceptCluster] = Field(default_factory=list)
     state_estimate: Optional[StateEstimate] = None
-    metadata: Dict[str, str] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("created_at", "window_start", "window_end")
     @classmethod
@@ -139,4 +139,12 @@ class ConceptProfileDelta(BaseModel):
     updated: List[str] = Field(default_factory=list)
     rationale: str = ""
     evidence: List[ConceptEvidenceRef] = Field(default_factory=list)
-    metadata: Dict[str, str] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+ConceptEvidenceRef.model_rebuild()
+ConceptItem.model_rebuild()
+ConceptCluster.model_rebuild()
+StateEstimate.model_rebuild()
+ConceptProfile.model_rebuild()
+ConceptProfileDelta.model_rebuild()

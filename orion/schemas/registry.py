@@ -11,15 +11,24 @@ from orion.core.bus.bus_schemas import (
     RecallResultPayload,
 )
 from orion.core.contracts.recall import RecallDecisionV1
+from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
+from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
-from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
+from orion.schemas.cortex.contracts import (
+    CortexChatRequest,
+    CortexChatResult,
+    CortexClientRequest,
+    CortexClientResult,
+)
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
+from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1
+from orion.schemas.vector.schemas import VectorDocumentUpsertV1, VectorWriteRequest
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionCouncilRequestPayload,
@@ -38,31 +47,64 @@ from orion.schemas.vision import (
     VisionWindowResultPayload,
 )
 
-
 _REGISTRY: Dict[str, Type[BaseModel]] = {
+    # Core / platform
     "GenericPayloadV1": GenericPayloadV1,
     "CoreEventV1": CoreEventV1,
     "SystemErrorV1": SystemErrorV1,
+
+    # Verbs
     "VerbRequestV1": VerbRequestV1,
     "VerbResultV1": VerbResultV1,
     "VerbEffectV1": VerbEffectV1,
+
+    # Chat + LLM
     "ChatRequestPayload": ChatRequestPayload,
     "ChatResultPayload": ChatResultPayload,
+    "ChatHistoryMessageV1": ChatHistoryMessageV1,
+
+    # Cortex Gateway / Client
+    "CortexChatRequest": CortexChatRequest,
+    "CortexChatResult": CortexChatResult,
+    "CortexClientRequest": CortexClientRequest,
+    "CortexClientResult": CortexClientResult,
+
+    # Recall
     "RecallRequestPayload": RecallRequestPayload,
     "RecallResultPayload": RecallResultPayload,
     "RecallDecisionV1": RecallDecisionV1,
-    "CortexClientRequest": CortexClientRequest,
-    "CortexClientResult": CortexClientResult,
+
+    # Collapse Mirror
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,
+
+    # Spark
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
+
+    # Concept induction artifacts
+    "ConceptProfile": ConceptProfile,
+    "ConceptProfileDelta": ConceptProfileDelta,
+
+    # State service
+    "StateGetLatestRequest": StateGetLatestRequest,
+    "StateLatestReply": StateLatestReply,
+
+    # System health / equilibrium
     "SystemHealthV1": SystemHealthV1,
     "EquilibriumSnapshotV1": EquilibriumSnapshotV1,
+
+    # RDF writer
     "RdfWriteRequest": RdfWriteRequest,
     "RdfWriteResult": RdfWriteResult,
     "RdfBuildRequest": RdfBuildRequest,
+
+    # Vector writer
+    "VectorWriteRequest": VectorWriteRequest,
+    "VectorDocumentUpsertV1": VectorDocumentUpsertV1,
+
+    # Vision
     "VisionFramePointerPayload": VisionFramePointerPayload,
     "VisionArtifactPayload": VisionArtifactPayload,
     "VisionEdgeArtifact": VisionEdgeArtifact,

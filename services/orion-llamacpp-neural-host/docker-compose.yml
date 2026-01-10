@@ -12,15 +12,30 @@ services:
     restart: unless-stopped
 
     environment:
-      # Model path inside the container (mapped volume)
-      - LLAMACPP_MODEL_PATH=${LLAMACPP_MODEL_PATH}
-      # Use the same cache dir env var as the standard host
-      - LLM_CACHE_DIR=${LLM_CACHE_DIR}
+      # --- Identity & Bus ---
+      - SERVICE_NAME=${SERVICE_NAME:-orion-llamacpp-neural-host}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://redis:6379/0}
+      - NODE_NAME=${NODE_NAME:-unknown}
+      - INSTANCE_ID=${INSTANCE_ID:-default}
 
-      # Configuration
-      - LLAMACPP_N_GPU_LAYERS=${LLAMACPP_N_GPU_LAYERS:-1}
-      - LLAMACPP_CTX_SIZE=${LLAMACPP_CTX_SIZE:-2048}
-      - LLAMACPP_HOST=${LLAMACPP_HOST:-0.0.0.0}
+      # --- Profiles & Selection ---
+      - LLM_PROFILE_NAME=${LLM_PROFILE_NAME}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - HF_TOKEN=${HF_TOKEN}
+
+      # --- Overrides (Optional) ---
+      - LLAMACPP_MODEL_PATH_OVERRIDE=${LLAMACPP_MODEL_PATH_OVERRIDE}
+      - LLAMACPP_HOST_OVERRIDE=${LLAMACPP_HOST_OVERRIDE}
+      - LLAMACPP_PORT_OVERRIDE=${LLAMACPP_PORT_OVERRIDE}
+      - LLAMACPP_CTX_SIZE_OVERRIDE=${LLAMACPP_CTX_SIZE_OVERRIDE}
+      - LLAMACPP_N_GPU_LAYERS_OVERRIDE=${LLAMACPP_N_GPU_LAYERS_OVERRIDE}
+      - LLAMACPP_THREADS_OVERRIDE=${LLAMACPP_THREADS_OVERRIDE}
+      - LLAMACPP_N_PARALLEL_OVERRIDE=${LLAMACPP_N_PARALLEL_OVERRIDE}
+      - LLAMACPP_BATCH_SIZE_OVERRIDE=${LLAMACPP_BATCH_SIZE_OVERRIDE}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
+
+      # Deprecated but kept for compatibility during migration if needed
       - LLAMACPP_PORT=${LLAMACPP_PORT:-8005}
 
     volumes:

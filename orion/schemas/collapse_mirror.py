@@ -155,7 +155,17 @@ class CollapseMirrorEntryV2(BaseModel):
             return data
         if isinstance(data, CollapseMirrorEntryV1):
             return v1_to_v2(data).model_dump(mode="json")
+        # IMPORTANT: avoid infinite recursion.
+        #
+        # When constructing V2 from a dict, pydantic runs this validator *before* model
+        # creation. Our v1_to_v2() helper constructs a CollapseMirrorEntryV2(...), which
+        # also runs this validator. If we treat *any* dict that contains the V1 keys as
+        # "V1", then a V2-shaped dict will re-enter this conversion path and recurse.
         if isinstance(data, dict) and V1_REQUIRED_KEYS.issubset(data.keys()):
+            # If the dict already looks like V2, keep it as-is.
+            v2_markers = {"event_id", "snapshot_kind", "state_snapshot", "numeric_sisters", "causal_density"}
+            if any(k in data for k in v2_markers):
+                return data
             return v1_to_v2(CollapseMirrorEntryV1.model_validate(data)).model_dump(mode="json")
         return data
 

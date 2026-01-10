@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -30,7 +33,14 @@ from .store.redis_store import PadStore
 class LandingPadService:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.bus = OrionBusAsync(settings.orion_bus_url, enabled=settings.orion_bus_enabled)
+        self.bus = OrionBusAsync(
+            settings.orion_bus_url,
+            enabled=settings.orion_bus_enabled,
+            enforce_catalog=settings.orion_bus_enforce_catalog,
+        )
+        # Stable identifiers for heartbeat telemetry
+        self._boot_id = os.getenv("ORION_BOOT_ID") or uuid.uuid4().hex
+        self._instance_id = os.getenv("INSTANCE_ID") or uuid.uuid4().hex
         self.queue = BoundedPadQueue(maxsize=settings.pad_max_queue_size, drop_policy=settings.pad_queue_drop_policy)
         self.stats = PadStatsTracker(tick_seconds=settings.pad_stats_tick_sec)
 
@@ -157,9 +167,22 @@ class LandingPadService:
         while not self._stop.is_set():
             try:
                 env = BaseEnvelope(
-                    kind=self.settings.health_channel,
+                    kind="system.health.v1",
                     source=self._source(),
-                    payload={"status": "ok", "service": self.settings.app_name, "node": self.settings.node_name},
+                    payload={
+                        "service": self.settings.app_name,
+                        "node": self.settings.node_name,
+                        "version": self.settings.service_version,
+                        "instance": self._instance_id,
+                        "boot_id": self._boot_id,
+                        "status": "ok",
+                        "last_seen_ts": datetime.now(timezone.utc),
+                        "heartbeat_interval_sec": float(self.settings.heartbeat_interval_sec),
+                        "details": {
+                            "queue_depth": self.queue.depth(),
+                            "salience_min": self.settings.pad_min_salience,
+                        },
+                    },
                 )
                 await self.bus.publish(self.settings.health_channel, env)
             except Exception as exc:

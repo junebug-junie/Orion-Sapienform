@@ -481,5 +481,5 @@ async def handle_envelope(env: BaseEnvelope) -> None:
 
 
 def build_hunter() -> Hunter:
-    patterns = settings.sql_writer_subscribe_channels
+    patterns = settings.effective_subscribe_channels
     return Hunter(_cfg(), patterns=patterns, handler=handle_envelope)

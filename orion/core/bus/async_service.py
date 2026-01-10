@@ -81,12 +81,13 @@ class OrionBusAsync:
             except ValidationError as exc:
                 raise ValueError(f"Envelope validation failed for channel {channel}") from exc
             payload = env.payload
-        # Normalize Pydantic payload objects to dicts so channel-level schema validation
-        # can be applied consistently (e.g., GenericPayloadV1 wildcard channels).
-        if isinstance(payload, BaseModel):
-            payload = payload.model_dump()
         if payload is None:
             return
+        # Boundary rule: payloads on the bus must be JSON-ish.
+        # If a producer passes a Pydantic model, normalize to a dict before validation.
+        if isinstance(payload, BaseModel):
+            payload = payload.model_dump(mode="json")
+
         model = resolve_schema_id(schema_id)
         try:
             model.model_validate(payload)

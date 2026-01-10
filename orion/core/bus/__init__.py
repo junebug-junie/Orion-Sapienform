@@ -6,9 +6,9 @@ __all__ = ["OrionBusAsync"]
 
 
 def __getattr__(name: str) -> Any:
-    # Avoid import-time circular dependencies by lazily importing the bus.
+    # Lazy import to avoid circular imports during schema/registry initialization.
     if name == "OrionBusAsync":
-        from .async_service import OrionBusAsync  # local import
+        from .async_service import OrionBusAsync  # noqa: WPS433 (import inside function)
 
         return OrionBusAsync
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    raise AttributeError(name)

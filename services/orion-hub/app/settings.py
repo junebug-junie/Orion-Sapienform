@@ -69,9 +69,23 @@ class Settings(BaseSettings):
     CHAT_HISTORY_LOG_CHANNEL: str | None = Field(default=None, alias="CHAT_HISTORY_LOG_CHANNEL")
     CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", alias="CHANNEL_CHAT_HISTORY_LOG")
 
+    # Turn-level (prompt/response) logging for SQL (chat_history_log)
+    CHAT_HISTORY_TURN_CHANNEL: str | None = Field(default=None, alias="CHAT_HISTORY_TURN_CHANNEL")
+    CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", alias="CHANNEL_CHAT_HISTORY_TURN")
+
+    # Spark introspection candidate channel (drives spark-introspector UI)
+    CHANNEL_SPARK_INTROSPECT_CANDIDATE: str = Field(
+        default="orion:spark:introspect:candidate:log",
+        alias="CHANNEL_SPARK_INTROSPECT_CANDIDATE",
+    )
+
     @property
     def chat_history_channel(self) -> str:
         return self.CHAT_HISTORY_LOG_CHANNEL or self.CHANNEL_CHAT_HISTORY_LOG
+
+    @property
+    def chat_history_turn_channel(self) -> str:
+        return self.CHAT_HISTORY_TURN_CHANNEL or self.CHANNEL_CHAT_HISTORY_TURN
 
     # --- Legacy Agent Council Integration ---
     CHANNEL_COUNCIL_INTAKE: str = Field(default="orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")

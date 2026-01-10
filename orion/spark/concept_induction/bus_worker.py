@@ -33,7 +33,12 @@ class ConceptWorker:
 
     def __init__(self, cfg: ConceptSettings) -> None:
         self.cfg = cfg
-        self.bus = OrionBusAsync(cfg.orion_bus_url, enabled=cfg.orion_bus_enabled)
+        # Respect per-service enforcement config (do not rely solely on global env var).
+        self.bus = OrionBusAsync(
+            cfg.orion_bus_url,
+            enabled=cfg.orion_bus_enabled,
+            enforce_catalog=cfg.orion_bus_enforce_catalog,
+        )
         self.store = LocalProfileStore(cfg.store_path)
         self.last_run: Dict[str, datetime] = {}
         service_ref = _service_ref(cfg)

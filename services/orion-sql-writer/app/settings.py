@@ -69,6 +69,16 @@ class Settings(BaseSettings):
         except Exception:
             return {}
 
+    @property
+    def effective_subscribe_channels(self) -> List[str]:
+        """Back-compat alias.
+
+        Some refactor branches referenced `effective_subscribe_channels`.
+        We keep env as source of truth and simply expose the configured list.
+        """
+        return list(self.sql_writer_subscribe_channels)
+
+
     # DB
     # Ensure default matches prod environment (Postgres), not SQLite.
     postgres_uri: str = Field("postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney", alias="POSTGRES_URI")

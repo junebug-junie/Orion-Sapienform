@@ -399,34 +399,37 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     reply_channel = f"orion:spark:introspector:reply:{candidate.trace_id}"
     prompt = _build_llm_prompt(candidate)
 
+    # Build a strict CortexClientRequest (Titanium) instead of the legacy orchestrate payload.
+    from orion.core.bus.bus_schemas import LLMMessage
+    from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest
+
+    ctx = CortexClientContext(
+        messages=[LLMMessage(role="user", content=prompt)],
+        raw_user_text=prompt,
+        user_message=prompt,
+        trace_id=candidate.trace_id,
+        metadata={
+            "spark_meta": candidate.spark_meta or {},
+            "spark_source": candidate.source or "spark-introspector",
+        },
+    )
+
+    client_req = CortexClientRequest(
+        mode="brain",
+        verb_name="chat_general",
+        packs=["executive_pack"],
+        context=ctx,
+        options={"source": "spark-introspector", "purpose": "introspect"},
+        recall={"enabled": False, "required": False},
+    )
+
     req = BaseEnvelope(
-        kind="cortex.orchestrate.request",
+        kind="cortex.orch.request",
         source=env.source,
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain,
         reply_to=reply_channel,
-        payload={
-            "trace_id": candidate.trace_id,
-            "verb_name": "spark_introspect",
-            "context": {
-                "trace_id": candidate.trace_id,
-                "source": candidate.source,
-                "spark_meta": candidate.spark_meta,
-                "prompt": candidate.prompt,
-                "response": candidate.response,
-            },
-            "steps": [
-                {
-                    "verb_name": "spark_introspect",
-                    "step_name": "reflect_on_candidate",
-                    "order": 0,
-                    "services": ["LLMGatewayService"],
-                    "prompt_template": prompt,
-                    "requires_gpu": False,
-                    "requires_memory": False,
-                }
-            ],
-        },
+        payload=client_req.model_dump(mode="json"),
     )
 
     codec = OrionCodec()

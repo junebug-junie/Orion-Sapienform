@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from uuid import uuid4
 from typing import List, Optional
 
 from pydantic import Field, field_validator
@@ -12,6 +13,8 @@ class Settings(BaseSettings):
     app_name: str = Field("orion-landing-pad", alias="APP_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
     node_name: str = Field("unknown", alias="NODE_NAME")
+    instance_id: Optional[str] = Field(None, alias="INSTANCE_ID")
+    boot_id: str = Field(default_factory=lambda: str(uuid4()), alias="BOOT_ID")
     port: int = Field(8370, alias="PORT")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

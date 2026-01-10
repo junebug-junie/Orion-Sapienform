@@ -13,7 +13,6 @@ from scripts.settings import settings
 from scripts.chat_history import build_chat_history_envelope, publish_chat_history
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
-from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
 
 logger = logging.getLogger("orion-hub.ws")
@@ -172,7 +171,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "mode": mode,
             })
 
-            # Trigger Spark introspection candidate (best effort)
+            # Log to SQL (Best Effort) & Trigger Introspection
             if bus:
                 try:
                     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -190,21 +189,43 @@ async def websocket_endpoint(websocket: WebSocket):
                         **(gateway_meta if isinstance(gateway_meta, dict) else {}),
                     }
 
-                    candidate = SparkCandidateV1(
-                        trace_id=trace_id,
-                        source="hub_ws",
-                        prompt=transcript,
-                        response=orion_response_text,
-                        spark_meta=spark_meta,
-                    )
+                    chat_row = {
+                        "id": trace_id,
+                        "correlation_id": trace_id,
+                        "source": "hub_ws",
+                        "prompt": transcript,
+                        "response": orion_response_text,
+                        "user_id": data.get("user_id"),
+                        "session_id": data.get("session_id"),
+                        "spark_meta": spark_meta,
+                    }
 
-                    env_spark = BaseEnvelope(
-                        kind="spark.candidate.v1",
+                    # 1. SQL Log
+                    env_sql = BaseEnvelope(
+                        kind="chat.history",
                         correlation_id=trace_id,
-                        source=ServiceRef(name=settings.SERVICE_NAME, node=settings.NODE_NAME),
-                        payload=candidate.model_dump(mode="json"),
+                        source=ServiceRef(name="hub", node=settings.NODE_NAME),
+                        payload=chat_row
                     )
-                    # Canonical candidate channel used by spark-introspector
+                    await bus.publish(settings.chat_history_channel, env_sql)
+                    logger.info("Published chat.history turn row -> %s", settings.chat_history_channel)
+
+                    # 2. Spark Introspection Candidate
+                    candidate_payload = {
+                        "trace_id": trace_id,
+                        "source": "hub_ws",
+                        "prompt": transcript,
+                        "response": orion_response_text,
+                        "spark_meta": spark_meta
+                    }
+                    env_spark = BaseEnvelope(
+                        kind="spark.candidate",
+                        correlation_id=trace_id,
+                        source=ServiceRef(name="hub", node=settings.NODE_NAME),
+                        payload=candidate_payload
+                    )
+                    # Kept the literal string to ensure it hits the default introspection channel
+                    # and avoids settings attribute errors
                     await bus.publish("orion:spark:introspect:candidate:log", env_spark)
 
                 except Exception as e:

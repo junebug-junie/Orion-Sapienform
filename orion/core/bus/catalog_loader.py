@@ -8,11 +8,27 @@ import yaml
 
 logger = logging.getLogger("orion.bus.catalog")
 
-CATALOG_PATH = Path(__file__).resolve().parents[2] / "bus" / "channels.yaml"
+# Historically the repo has used both filenames:
+#   - orion/bus/channels.yaml  (plural)
+#   - orion/bus/channel.yaml   (singular)
+# We accept either so the catalog can't silently disappear.
+_BUS_DIR = Path(__file__).resolve().parents[2] / "bus"
+CATALOG_CANDIDATES = [
+    _BUS_DIR / "channels.yaml",
+    _BUS_DIR / "channel.yaml",
+]
 
 
 def load_channel_catalog(path: Path | None = None) -> Dict[str, Dict[str, Any]]:
-    target = path or CATALOG_PATH
+    target = path
+    if target is None:
+        for candidate in CATALOG_CANDIDATES:
+            if candidate.exists():
+                target = candidate
+                break
+        else:
+            target = CATALOG_CANDIDATES[0]
+
     if not target.exists():
         logger.warning("Channel catalog not found at %s", target)
         return {}

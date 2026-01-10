@@ -258,26 +258,22 @@ def _spark_ingest_text(*, text: str, agent_id: str, tags: List[str], spark_vecto
 def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
     try:
         messages = body.messages or []
-        if not messages:
-            return {}
-
-        source = getattr(body, "source", "llm-gateway")
         verb = getattr(body, "verb", None) or "unknown"
+        source = getattr(body, "source", "juniper") or "juniper"
 
-        # Prefer canonical raw user text if provided (prevents encoding mega-prompts).
         raw_user_text = _get_raw_user_text(body)
-        latest_user = raw_user_text
+        latest_user: Optional[str] = None
 
-        # Fallback: Find last user message in message list
-        if not latest_user:
+        if raw_user_text:
+            latest_user = raw_user_text
+        else:
+            # Infer last user message from message list
             for m in reversed(messages):
                 if (m.get("role") or "").lower() == "user":
                     latest_user = m.get("content")
                     break
-
-        # Fallback: last message content
-        if not latest_user:
-            latest_user = messages[-1].get("content")
+            if not latest_user and messages:
+                latest_user = messages[-1].get("content")
 
         if not latest_user:
             return {}
@@ -334,12 +330,12 @@ def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_t
         delta = abs((phi_after.get("valence", 0) - phi_before.get("valence", 0)))
 
         if delta > 0.05 or self_field.get("uncertainty", 0) > 0.3:
+            # IMPORTANT: Titanium boundary.
+            # This payload will be wrapped in a Titanium envelope in _publish_spark_introspect().
             payload = {
-                "event": "spark_introspect_candidate",
                 "trace_id": body.trace_id or "gw",
                 "source": getattr(body, "source", "gw"),
-                "kind": "chat",
-                "prompt": spark_meta.get("latest_user_message"),
+                "prompt": spark_meta.get("latest_user_message") or "",
                 "response": response_text,
                 "spark_meta": spark_meta,
             }
@@ -349,10 +345,45 @@ def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_t
 
 
 async def _publish_spark_introspect(payload: Dict[str, Any]) -> None:
+    """Publish Spark introspection candidates as Titanium envelopes.
+
+    Prior behavior published a raw dict on the channel, which bypassed strict
+    payload validation (because the bus validator only inspects BaseEnvelope payloads).
+    This function enforces the Titanium boundary by:
+      1) validating payload as SparkCandidateV1 (schema registry)
+      2) wrapping in BaseEnvelope (orion.envelope)
+      3) publishing to the cataloged channel
+    """
+    import uuid
+
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
+
+    # Validate + normalize to the schema declared in orion/bus/channels.yaml
+    candidate = SparkCandidateV1.model_validate(payload)
+
+    # correlation_id: prefer trace_id if it's a UUID; otherwise generate a new one
+    try:
+        corr_id = uuid.UUID(str(candidate.trace_id))
+    except Exception:
+        corr_id = uuid.uuid4()
+
+    env = BaseEnvelope(
+        kind="spark.candidate",
+        source=ServiceRef(
+            name=settings.service_name,
+            node=settings.node_name,
+            version=settings.service_version,
+            instance=None,
+        ),
+        correlation_id=corr_id,
+        payload=candidate.model_dump(mode="json"),
+    )
+
     bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
     await bus.connect()
     try:
-        await bus.publish(settings.channel_spark_introspect_candidate, payload)
+        await bus.publish(settings.channel_spark_introspect_candidate, env)
     finally:
         await bus.close()
 
@@ -391,262 +422,208 @@ def _spark_post_ingest_for_reply(body: ChatBody, spark_meta: Dict[str, Any], res
             except Exception as embed_err:
                 logger.warning(f"[LLM-GW Spark] Post-ingest embedding failed: {embed_err}")
 
-        post_state = _spark_ingest_text(text=str(response_text), agent_id=source, tags=tags, spark_vector=spark_vector)
+        state = _spark_ingest_text(text=str(response_text), agent_id=source, tags=tags, spark_vector=spark_vector)
 
-        # Bound what we store; keep full text out of telemetry by default.
-        spark_meta["latest_assistant_message"] = str(response_text)[:2000]
-        spark_meta["phi_post_before"] = post_state.get("phi_before")
-        spark_meta["phi_post_after"] = post_state.get("phi_after")
-        spark_meta["spark_phase_post"] = True
+        # add post-phase meta keys (do not overwrite pre phase)
+        spark_meta.update(
+            {
+                "phi_post_before": state.get("phi_before"),
+                "phi_post_after": state.get("phi_after"),
+                "spark_phase_post": True,
+            }
+        )
     except Exception as e:
-        logger.warning(f"[LLM-GW Spark] Post-ingest failed: {e}")
+        logger.warning(f"[LLM-GW Spark] Post ingestion failed: {e}")
 
 
 # ─────────────────────────────────────────────
-# 4. Core HTTP Execution (Unified)
+# 4. Embeddings Endpoint (Optional)
 # ─────────────────────────────────────────────
 
 def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
     """
-    Internal helper to fetch embeddings for generated text.
-    Uses llamacpp embedding lobe by default if configured, otherwise falls back to vLLM.
-    """
-    # Prefer dedicated embedding lobe
-    url = None
-    if settings.llamacpp_embedding_url:
-        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
-    elif settings.llamacpp_url:
-        # Fallback to standard host for embeddings if neural host not configured
-        url = f"{settings.llamacpp_url.rstrip('/')}/v1/embeddings"
-    elif settings.vllm_url:
-        url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
+    If include_embeddings is enabled, fetch an embedding/state vector for `text`.
+    Uses llama.cpp embedding endpoint if configured.
 
+    NOTE: This is best-effort and must never break core chat functionality.
+    """
+    url = settings.llamacpp_embedding_url or settings.llamacpp_url
     if not url:
         return None
 
+    req = {"input": text}
     try:
-        # Use a generic model name or specific if known.
-        # For llama-server embeddings, model name is often ignored or can be anything.
-        payload = {"model": "default", "input": text}
-
         with _common_http_client() as client:
-            r = client.post(url, json=payload)
+            r = client.post(f"{url.rstrip('/')}/v1/embeddings", json=req)
             r.raise_for_status()
             data = r.json()
-            # Standard OpenAI format: data: [{embedding: [...]}]
-            if "data" in data and len(data["data"]) > 0:
-                return data["data"][0]["embedding"]
-    except Exception as e:
-        logger.warning(f"[LLM-GW] Embedding fetch failed: {e}")
+            # OpenAI style: {"data":[{"embedding":[...]}]}
+            d = data.get("data") or []
+            if d and isinstance(d[0], dict) and isinstance(d[0].get("embedding"), list):
+                emb = d[0]["embedding"]
+                if emb and all(isinstance(x, (int, float)) for x in emb):
+                    return [float(x) for x in emb]
+            # fallback: sometimes server returns "embedding" directly
+            emb = data.get("embedding")
+            if isinstance(emb, list) and emb and all(isinstance(x, (int, float)) for x in emb):
+                return [float(x) for x in emb]
+    except Exception:
+        return None
 
     return None
 
 
-def _execute_openai_chat(
-    body: ChatBody,
-    model: str,
-    base_url: str,
-    backend_name: str,
-) -> Dict[str, Any]:
+# ─────────────────────────────────────────────
+# 5. Core LLM Methods
+# ─────────────────────────────────────────────
+
+def chat(body: ChatBody) -> Dict[str, Any]:
     """
-    Unified logic for both vLLM and llama.cpp since they share the OpenAI API shape.
+    Main chat entrypoint: routes to configured backend, returns OpenAI-compatible payload.
+    Adds Spark meta and publishes introspect candidates when thresholds are crossed.
     """
-    if not base_url:
-        err = f"{backend_name} URL not configured"
-        logger.error(f"[LLM-GW] {err}")
-        return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {}}
+    profile = _select_profile(body.profile)
+    backend = _pick_backend(body.options, profile)
 
-    # 1. Spark Ingestion (pre-LLM)
-    spark_meta = _spark_ingest_for_body(body)
+    # Spark pre-ingest (user side)
+    spark_meta: Dict[str, Any] = _spark_ingest_for_body(body)
 
-    # 2. Prepare Payload
-    url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    opts = body.options or {}
+    model = _resolve_model(body.model, profile)
+    if backend == "vllm":
+        model = _normalize_model_for_vllm(model)
 
+    # Build request for backend
+    options = body.options or {}
     payload = {
         "model": model,
         "messages": body.messages,
+        "temperature": float(options.get("temperature", getattr(profile, "temperature", 0.7) if profile else 0.7)),
+        "max_tokens": int(options.get("max_tokens", getattr(profile, "max_tokens", 1024) if profile else 1024)),
         "stream": False,
-        "temperature": opts.get("temperature"),
-        "top_p": opts.get("top_p"),
-        "max_tokens": opts.get("max_tokens"),
-        "stop": opts.get("stop"),
-        "presence_penalty": opts.get("presence_penalty"),
-        "frequency_penalty": opts.get("frequency_penalty"),
     }
-    # Clean None values
-    payload = {k: v for k, v in payload.items() if v is not None}
 
-    # 3. Execute
-    logger.info(f"[LLM-GW] {backend_name} req model={model} msgs={len(body.messages or [])} url={url}")
+    # Route
+    if backend == "vllm":
+        url = settings.vllm_url
+        if not url:
+            raise RuntimeError("vLLM backend selected but ORION_LLM_VLLM_URL is not set.")
+        endpoint = f"{url.rstrip('/')}/v1/chat/completions"
+    else:
+        url = settings.llamacpp_url
+        if not url:
+            raise RuntimeError("llama.cpp backend selected but ORION_LLM_LLAMACPP_URL is not set.")
+        endpoint = f"{url.rstrip('/')}/v1/chat/completions"
 
+    # Execute
+    t0 = time.time()
+    raw_llm: Dict[str, Any] = {}
     try:
         with _common_http_client() as client:
-            r = client.post(url, json=payload)
+            resp = client.post(endpoint, json=payload)
+            resp.raise_for_status()
+            raw_llm = resp.json()
+    except HTTPStatusError as http_err:
+        logger.error(f"[LLM-GW] HTTP error calling backend: {http_err}")
+        raise
+    except Exception as err:
+        logger.error(f"[LLM-GW] Backend call failed: {err}")
+        raise
 
-            if r.status_code == 404:
-                return {
-                    "text": f"[Error: {backend_name} 404 Not Found at {url}]",
-                    "spark_meta": spark_meta,
-                    "raw": {},
-                }
+    # Normalize output
+    text = _extract_text_from_openai_response(raw_llm)
+    duration_ms = int((time.time() - t0) * 1000)
 
-            r.raise_for_status()
-            raw_data = r.json()
-            text = _extract_text_from_openai_response(raw_data)
+    # Try to extract vector from LLM response; if not present, optionally fetch
+    spark_vector = _extract_vector_from_openai_response(raw_llm)
+    if spark_vector is None and settings.include_embeddings:
+        try:
+            spark_vector = _fetch_embedding_internal(text)
+        except Exception:
+            spark_vector = None
 
-            # 3b. Spark Post-Ingest (assistant reply)
-            _spark_post_ingest_for_reply(body, spark_meta, text)
+    # Spark post-ingest (assistant reply side)
+    _spark_post_ingest_for_reply(body, spark_meta, text)
 
-            # Post-processing: embed/state vector (if present)
-            spark_vector = _extract_vector_from_openai_response(raw_data)
+    # Maybe publish introspection candidate
+    if text:
+        _maybe_publish_spark_introspect(body, spark_meta, text)
 
-            # Case B: Standard Host (Reflective)
-            # If the backend didn't include a vector, optionally do a secondary
-            # embedding call (useful for a *separate* "embeds-on" gateway instance).
-            if settings.include_embeddings and (not spark_vector) and text:
-                spark_vector = _fetch_embedding_internal(text)
-
-            # Post-processing: Spark Introspect
-            _maybe_publish_spark_introspect(body, spark_meta, text)
-
-            return {
-                "text": text,
-                "spark_meta": spark_meta,
-                "spark_vector": spark_vector,
-                "raw": raw_data,
+    # Emit result
+    return {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+                "index": 0,
             }
-
-    except httpx.TimeoutException:
-        logger.error(f"[LLM-GW] {backend_name} TIMEOUT on {url}")
-        return {
-            "text": f"[Error: {backend_name} timed out after waiting]",
-            "spark_meta": spark_meta,
-            "raw": {},
-        }
-    except Exception as e:
-        logger.error(f"[LLM-GW] {backend_name} error: {e}", exc_info=True)
-        return {
-            "text": f"[Error: {backend_name} failed: {str(e)}]",
-            "spark_meta": spark_meta,
-            "raw": {},
-        }
+        ],
+        "model": model,
+        "usage": {"duration_ms": duration_ms},
+        "spark_meta": spark_meta,
+        "spark_vector": spark_vector,
+        "raw_llm": raw_llm,
+    }
 
 
-# ─────────────────────────────────────────────
-# 5. Public Entrypoints
-# ─────────────────────────────────────────────
-
-def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
-    profile = _select_profile(body.profile_name)
+def generate(body: GenerateBody) -> Dict[str, Any]:
+    """
+    Text-completion style generation. Kept for compatibility.
+    """
+    profile = _select_profile(body.profile)
     backend = _pick_backend(body.options, profile)
-    model = _resolve_model(body.model, profile)
 
-    # Normalize aliases if vLLM, harmless if llama.cpp
+    model = _resolve_model(body.model, profile)
     if backend == "vllm":
         model = _normalize_model_for_vllm(model)
-        base_url = settings.vllm_url
+
+    prompt = body.prompt or ""
+    options = body.options or {}
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "temperature": float(options.get("temperature", getattr(profile, "temperature", 0.7) if profile else 0.7)),
+        "max_tokens": int(options.get("max_tokens", getattr(profile, "max_tokens", 1024) if profile else 1024)),
+        "stream": False,
+    }
+
+    if backend == "vllm":
+        url = settings.vllm_url
+        if not url:
+            raise RuntimeError("vLLM backend selected but ORION_LLM_VLLM_URL is not set.")
+        endpoint = f"{url.rstrip('/')}/v1/completions"
     else:
-        base_url = settings.llamacpp_url
-
-    return _execute_openai_chat(body, model, base_url, backend)
-
-
-def run_llm_generate(body: GenerateBody) -> str:
-    """Wrapper to make Generate look like Chat"""
-    chat_body = ChatBody(
-        messages=[{"role": "user", "content": body.prompt}],
-        options=body.options,
-        trace_id=body.trace_id,
-        user_id=body.user_id,
-        session_id=body.session_id,
-        source=body.source,
-        verb=body.verb,
-        profile_name=body.profile_name,
-        # Pass through model implicitly via main logic
-        model=body.model,
-    )
-    result = run_llm_chat(chat_body)
-    return result.get("text") or ""
-
-
-def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
-    # Embeddings logic is distinct enough to keep separate for now
-    url = None
-    if settings.llamacpp_embedding_url:
-        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
-    elif settings.vllm_url:
-        url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
-
-    if not url:
-        raise RuntimeError("No embedding URL configured (vLLM or LlamaCpp Embedding Lobe)")
-
-    profile = _select_profile(body.profile_name)
-    model = _resolve_model(body.model, profile)
-    model = _normalize_model_for_vllm(model)
-
-    payload = {"model": model, "input": body.input}
-    if body.options:
-        payload.update(body.options)
+        url = settings.llamacpp_url
+        if not url:
+            raise RuntimeError("llama.cpp backend selected but ORION_LLM_LLAMACPP_URL is not set.")
+        endpoint = f"{url.rstrip('/')}/v1/completions"
 
     with _common_http_client() as client:
-        r = client.post(url, json=payload)
+        r = client.post(endpoint, json=payload)
         r.raise_for_status()
         return r.json()
 
 
-def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
-    t0 = time.time()
-
-    # 1. Build Prompt
-    if body.prompt:
-        final_prompt = body.prompt
-    else:
-        ctx_json = json.dumps(body.context or {}, indent=2, ensure_ascii=False)
-        prior_json = json.dumps(body.prior_step_results or [], indent=2, ensure_ascii=False)
-        final_prompt = f"{body.prompt_template or ''}\n\n# Context\n{ctx_json}\n\n# Prior Results\n{prior_json}\n"
-
-    # 2. Resolve Config
-    profile = _select_profile(getattr(body, "profile_name", None))
-    backend = _pick_backend({}, profile)
-    model = _resolve_model(None, profile)
-    if backend == "vllm":
-        model = _normalize_model_for_vllm(model)
-
-    # 3. Execute via Chat Interface
-    chat_body = ChatBody(
-        model=model,
-        messages=[{"role": "user", "content": final_prompt}],
-        raw_user_text=body.raw_user_text or (body.context.get("user_message") if isinstance(body.context, dict) else None),
-        options={},
-        trace_id=body.origin_node,
-        source=f"cortex:{body.service}",
-        verb=body.verb,
-        profile_name=getattr(body, "profile_name", None),
+def exec_step(payload: ExecStepPayload) -> Dict[str, Any]:
+    """
+    Execute a single step from cortex-exec that targets the LLM gateway.
+    """
+    body = ChatBody(
+        model=payload.model,
+        profile=payload.profile,
+        messages=payload.messages,
+        options=payload.options or {},
+        trace_id=payload.trace_id,
+        source=payload.source or "cortex-exec",
+        verb=payload.verb or "exec_step",
+        raw_user_text=payload.raw_user_text,
     )
+    return chat(body)
 
-    if backend == "llamacpp":
-        result = _execute_openai_chat(chat_body, model, settings.llamacpp_url, "llamacpp")
-    else:
-        result = _execute_openai_chat(chat_body, model, settings.vllm_url, "vllm")
 
-    elapsed_ms = int((time.time() - t0) * 1000)
-
-    # 4. Log (WITH FIXED ARGUMENTS)
-    logger.info(
-        "[LLM-GW] exec_step verb=%s step=%s service=%s elapsed_ms=%d backend=%s model=%s",
-        body.verb,
-        body.step,
-        body.service,
-        elapsed_ms,
-        backend,
-        model,
-    )
-
-    return {
-        "prompt": final_prompt,
-        "llm_output": result.get("text") or "",
-        "spark_meta": result.get("spark_meta"),
-        "spark_vector": result.get("spark_vector"),
-        "raw_llm": result.get("raw_llm") or result.get("raw"),
-    }
+def embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
+    """
+    Expose embeddings endpoint for callers that want explicit vectors.
+    """
+    vec = _fetch_embedding_internal(body.input)
+    return {"embedding": vec or []}

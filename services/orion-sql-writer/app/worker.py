@@ -174,6 +174,34 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
     return _json_sanitize(out)
 
 
+def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge Spark-related metadata blobs without clobbering hub-provided keys.
+
+    KEEP / IMPORTANT:
+    This function enforces the "Bi-Directional Metadata Sync" intent:
+      - If Hub writes spark_meta first, later SparkTelemetry should *enrich* it.
+      - If SparkTelemetry arrives first, later Hub writes should merge it.
+
+    Rule:
+      - Preserve existing keys unless the update provides a non-null value.
+      - Always JSON-sanitize the result.
+    """
+    base: Dict[str, Any]
+    if isinstance(existing, dict):
+        base = deepcopy(existing)
+    elif existing is None:
+        base = {}
+    else:
+        base = {"raw_existing": str(existing)}
+
+    for k, v in (updates or {}).items():
+        if v is None:
+            continue
+        base[k] = v
+
+    return _json_sanitize(base)
+
+
 def _write_row(sql_model_cls, data: dict) -> None:
     sess = get_session()
     try:
@@ -281,13 +309,23 @@ def _write_row(sql_model_cls, data: dict) -> None:
                 # Side effect: attempt to populate ChatHistoryLog.spark_meta (minimal + safe)
                 try:
                     meta_for_chat = _spark_meta_minimal(filtered_data)
-                    stmt = (
-                        update(ChatHistoryLogSQL)
-                        .where(ChatHistoryLogSQL.correlation_id == corr_id)
-                        .values(spark_meta=meta_for_chat)
+
+                    # IMPORTANT: Do NOT overwrite hub-provided spark_meta.
+                    # Merge telemetry-derived fields into any existing spark_meta.
+                    existing_chat = (
+                        sess.query(ChatHistoryLogSQL)
+                        .filter(ChatHistoryLogSQL.correlation_id == corr_id)
+                        .first()
                     )
-                    sess.execute(stmt)
-                    sess.commit()
+                    if existing_chat is not None:
+                        merged = _merge_spark_meta(getattr(existing_chat, "spark_meta", None), meta_for_chat)
+                        stmt = (
+                            update(ChatHistoryLogSQL)
+                            .where(ChatHistoryLogSQL.correlation_id == corr_id)
+                            .values(spark_meta=merged)
+                        )
+                        sess.execute(stmt)
+                        sess.commit()
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
 
@@ -295,6 +333,10 @@ def _write_row(sql_model_cls, data: dict) -> None:
 
         # Path B: Writing Chat Log -> Check if SparkTelemetry arrived first
         if sql_model_cls is ChatHistoryLogSQL:
+            # Normalize/defang spark_meta if present (avoid circular references / non-JSON types)
+            if "spark_meta" in valid_keys and filtered_data.get("spark_meta") is not None:
+                filtered_data["spark_meta"] = _json_sanitize(deepcopy(filtered_data.get("spark_meta")))
+
             corr_id = filtered_data.get("correlation_id")
             if corr_id:
                 try:
@@ -314,7 +356,10 @@ def _write_row(sql_model_cls, data: dict) -> None:
                             "node": getattr(telem, "node", None),
                             "metadata": getattr(telem, "metadata_", None),
                         }
-                        filtered_data["spark_meta"] = _json_sanitize(meta_blob)
+                        filtered_data["spark_meta"] = _merge_spark_meta(
+                            filtered_data.get("spark_meta"),
+                            _json_sanitize(meta_blob),
+                        )
                         logger.info(f"Merged existing SparkTelemetry into ChatLog for {corr_id}")
                 except Exception as ex:
                     logger.warning(f"Failed to merge existing telemetry into chat log: {ex}")

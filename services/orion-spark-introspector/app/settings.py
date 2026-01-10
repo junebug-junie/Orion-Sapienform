@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Consume candidates (legacy dict payloads and/or envelopes)
     channel_spark_candidate: str = Field(
-        "orion:spark:introspect:candidate:log",
+        "orion:spark:introspect:candidate*",
         validation_alias=AliasChoices("CHANNEL_SPARK_INTROSPECT_CANDIDATE", "SPARK_CANDIDATE_CHANNEL"),
     )
 

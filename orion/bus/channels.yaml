@@ -89,7 +89,7 @@ channels:
 
   - name: "orion:cortex:gateway:request"
     kind: "request"
-    schema_id: "CortexClientRequest"
+    schema_id: "CortexChatRequest"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-cortex-gateway"]
     stability: "experimental"
@@ -97,7 +97,7 @@ channels:
 
   - name: "orion:cortex:gateway:result*"
     kind: "result"
-    schema_id: "CortexClientResult"
+    schema_id: "CortexChatResult"
     producer_services: ["orion-cortex-gateway"]
     consumer_services: ["orion-hub"]
     stability: "experimental"

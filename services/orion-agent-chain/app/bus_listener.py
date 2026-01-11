@@ -4,8 +4,11 @@ import asyncio
 import logging
 from typing import Any, Dict
 
+from datetime import datetime, timezone
+from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.telemetry.system_health import SystemHealthV1
 from .settings import settings
 from .api import execute_agent_chain
 from orion.schemas.agents.schemas import AgentChainRequest
@@ -23,12 +26,47 @@ def start_agent_chain_bus_listener() -> None:
 
     loop.create_task(_async_bus_worker())
 
+async def _heartbeat_loop(bus: OrionBusAsync) -> None:
+    boot_id = str(uuid4())
+    instance_id = str(uuid4())
+    logger.info(f"Starting heartbeat loop (boot_id={boot_id})")
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            health = SystemHealthV1(
+                service=settings.service_name,
+                node=getattr(settings, "node_name", "unknown"),
+                version=settings.service_version,
+                instance=instance_id,
+                boot_id=boot_id,
+                status="ok",
+                last_seen_ts=now,
+                heartbeat_interval_sec=10.0,
+                details={}
+            )
+            env = BaseEnvelope(
+                kind="system.health.v1",
+                source=_source(),
+                payload=health.model_dump(mode="json"),
+            )
+            # Default health channel if not in settings, but it usually is orion:system:health
+            channel = getattr(settings, "orion_health_channel", "orion:system:health")
+            await bus.publish(channel, env)
+        except Exception as e:
+            logger.warning(f"Heartbeat failed: {e}")
+
+        await asyncio.sleep(10.0)
+
 async def _async_bus_worker() -> None:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     request_channel = settings.agent_chain_request_channel
 
     logger.info("[agent-chain] Connecting Async Bus on %s", request_channel)
     await bus.connect()
+
+    # Start Heartbeat
+    asyncio.create_task(_heartbeat_loop(bus))
 
     # Use Context Manager correctly
     async with bus.subscribe(request_channel) as pubsub:

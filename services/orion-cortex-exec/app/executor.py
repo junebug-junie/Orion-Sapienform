@@ -21,6 +21,11 @@ from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
+from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
+from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
+from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
@@ -280,6 +285,79 @@ async def call_step_services(
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
 
         try:
+            if service == "MetacogContextService":
+                # Special step: populate context from trigger
+                logs.append("exec -> MetacogContextService")
+                trigger_data = ctx.get("args", {}).get("trigger", {})
+                try:
+                    trigger = MetacogTriggerV1.model_validate(trigger_data)
+                except Exception:
+                    trigger = MetacogTriggerV1(trigger_kind="unknown", reason="deserialization_failed")
+
+                # Default summary components
+                pad_summary = "unknown"
+                spark_summary = "unknown"
+                trace_summary = "unknown"
+
+                # 1. Fetch Landing Pad Frame/Signal via RPC (if trigger suggests or always)
+                if True:  # Always try to get latest pad snapshot
+                    # PadRpcRequestV1 expects 'request_id' and 'reply_channel' in the model
+                    # Also 'method' must be one of the literal values
+                    pad_req = PadRpcRequestV1(
+                        request_id=correlation_id,
+                        reply_channel=reply_channel,
+                        method="get_latest_frame",  # Using a valid literal
+                        args={}
+                    )
+                    pad_env = BaseEnvelope(
+                        kind="orion.pad.rpc.request",
+                        source=source,
+                        correlation_id=correlation_id,
+                        reply_to=reply_channel,
+                        payload=pad_req.model_dump(mode="json"),
+                    )
+                    try:
+                        # short timeout for pad
+                        pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=2.0)
+                        pad_dec = bus.codec.decode(pad_msg.get("data"))
+                        if pad_dec.ok:
+                            pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
+                            pad_summary = str(pad_res.result)
+                    except Exception as e:
+                        pad_summary = f"error: {e}"
+
+                # 2. Fetch Spark State via RPC
+                if True:
+                    # Generic state request
+                    state_env = BaseEnvelope(
+                        kind="orion.state.request",
+                        source=source,
+                        correlation_id=correlation_id,
+                        reply_to=reply_channel,
+                        payload={"request_type": "latest_snapshot"},
+                    )
+                    try:
+                        state_msg = await bus.rpc_request("orion:state:request", state_env, reply_channel=reply_channel, timeout_sec=2.0)
+                        state_dec = bus.codec.decode(state_msg.get("data"))
+                        if state_dec.ok:
+                            spark_summary = str(state_dec.envelope.payload)
+                    except Exception as e:
+                        spark_summary = f"error: {e}"
+
+                # 3. Assemble Context
+                summary_text = (
+                    f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
+                    f"Pressure: {trigger.pressure}\n"
+                    f"Landing Pad: {pad_summary}\n"
+                    f"Spark State: {spark_summary}\n"
+                )
+
+                ctx["trigger"] = trigger.model_dump(mode="json")
+                ctx["context_summary"] = summary_text
+                merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
+                logs.append("ok <- MetacogContextService")
+                continue
+
             if service == "RecallService":
                 logs.append(f"rpc -> RecallService (reply={reply_channel}, profile={step.recall_profile})")
                 recall_step, recall_debug, memory_digest = await run_recall_step(

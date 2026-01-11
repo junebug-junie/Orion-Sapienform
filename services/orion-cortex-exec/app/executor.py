@@ -19,16 +19,18 @@ from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
+from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .trace_cache import get_trace_cache
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -332,7 +334,7 @@ async def call_step_services(
                     parsed["epistemic_status"] = "observed"
 
                     # Normalize
-                    entry = CollapseMirrorEntryV2.model_validate(parsed) # uses validators to fix defaults
+                    entry = normalize_collapse_entry(parsed)
 
                     # Store for next step
                     ctx["collapse_entry"] = entry.model_dump(mode="json")
@@ -500,28 +502,44 @@ async def call_step_services(
 
                 # 2. Fetch Spark State via RPC
                 if True:
-                    # Generic state request
+                    state_req = StateGetLatestRequest(scope="global")
                     state_env = BaseEnvelope(
                         kind="orion.state.request",
                         source=source,
                         correlation_id=correlation_id,
                         reply_to=reply_channel,
-                        payload={"request_type": "latest_snapshot"},
+                        payload=state_req.model_dump(mode="json"),
                     )
                     try:
                         state_msg = await bus.rpc_request("orion:state:request", state_env, reply_channel=reply_channel, timeout_sec=2.0)
                         state_dec = bus.codec.decode(state_msg.get("data"))
                         if state_dec.ok:
-                            spark_summary = str(state_dec.envelope.payload)
+                            state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
+                            if state_res.ok and state_res.snapshot:
+                                spark_summary = str(state_res.snapshot.model_dump(mode="json"))
+                            else:
+                                spark_summary = f"stale/missing (status={state_res.status})"
                     except Exception as e:
                         spark_summary = f"error: {e}"
 
-                # 3. Assemble Context
+                # 3. Recent Traces
+                recent_traces = get_trace_cache().get_recent(5)
+                trace_summary = ""
+                if recent_traces:
+                    trace_summary = "\n".join([
+                        f"- [{t.mode}] {t.verb}: {t.final_text[:100]}..."
+                        for t in recent_traces
+                    ])
+                else:
+                    trace_summary = "None available."
+
+                # 4. Assemble Context
                 summary_text = (
                     f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
                     f"Pressure: {trigger.pressure}\n"
                     f"Landing Pad: {pad_summary}\n"
                     f"Spark State: {spark_summary}\n"
+                    f"Recent Traces:\n{trace_summary}\n"
                 )
 
                 ctx["trigger"] = trigger.model_dump(mode="json")

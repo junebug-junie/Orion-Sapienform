@@ -21,6 +21,7 @@ from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from .router import PlanRouter
 from .settings import settings
+from .trace_cache import get_trace_cache
 from .verb_adapters import LegacyPlanVerb  # noqa: F401 - register verb adapter
 from .collapse_verbs import (  # noqa: F401 - register collapse verbs
     LogCollapseMirrorVerb,
@@ -77,6 +78,7 @@ def _source() -> ServiceRef:
 router = PlanRouter()
 svc: Rabbit | None = None
 verb_listener: Hunter | None = None
+trace_listener: Hunter | None = None
 verb_runtime: VerbRuntime | None = None
 
 
@@ -204,6 +206,30 @@ def _derive_envelope(env: BaseEnvelope, *, kind: str, payload: dict) -> BaseEnve
     )
 
 
+async def handle_trace(env: BaseEnvelope) -> None:
+    # Cache recent traces for metacognition context
+    try:
+        raw = env.payload if isinstance(env.payload, dict) else {}
+        # Best effort parsing
+        try:
+            trace = CognitionTracePayload.model_validate(raw)
+        except Exception:
+            # Fallback for untyped or partial payloads
+            trace = CognitionTracePayload(
+                correlation_id=str(env.correlation_id),
+                mode="unknown",
+                verb="unknown",
+                final_text=str(raw.get("final_text") or ""),
+                steps=[],
+                timestamp=time.time(),
+                source_service=env.source.name,
+                source_node=env.source.node,
+            )
+        get_trace_cache().append(trace)
+    except Exception as e:
+        logger.warning(f"Failed to cache trace: {e}")
+
+
 async def handle_verb_request(env: BaseEnvelope) -> None:
     assert svc is not None, "Rabbit service not initialized"
     assert verb_runtime is not None, "Verb runtime not initialized"
@@ -249,6 +275,7 @@ verb_runtime = VerbRuntime(
     allow_backdoor=settings.orion_verb_backdoor_enabled,
 )
 verb_listener = Hunter(_cfg(), handler=handle_verb_request, patterns=["orion:verb:request"])
+trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition:trace"])
 
 
 async def main() -> None:
@@ -259,7 +286,9 @@ async def main() -> None:
         settings.orion_bus_url,
     )
     assert verb_listener is not None, "Verb listener not initialized"
+    assert trace_listener is not None, "Trace listener not initialized"
     await verb_listener.start_background()
+    await trace_listener.start_background()
     await svc.start()
 
 

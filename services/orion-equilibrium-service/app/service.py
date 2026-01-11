@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Tuple
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
@@ -123,16 +123,19 @@ class EquilibriumService(BaseChassis):
             details=record.get("details") or {},
         )
 
-    async def _publish_snapshot(self) -> None:
+    def _calculate_metrics(self) -> Tuple[float, float, List[EquilibriumServiceState]]:
+        """Shared logic to calculate current distress/zen and build state list."""
         now = _utcnow()
         states: List[EquilibriumServiceState] = []
+        
+        # 1. Build states from observed heartbeats
         for key, rec in list(self._state.items()):
             try:
                 states.append(self._build_service_state(rec, now))
-            except Exception as e:
-                logger.warning("Failed to build state for %s: %s", key, e)
+            except Exception:
+                continue
 
-        # Ensure expected services are present even if never seen
+        # 2. Force expected services if missing
         for svc in self.expected_services:
             if not any(s.service == svc for s in states):
                 states.append(
@@ -147,9 +150,21 @@ class EquilibriumService(BaseChassis):
                     )
                 )
 
-        distress_components = [1.0 - s.uptime_pct.get(str(min(settings.windows_sec)), 1.0) for s in states] or [0.0]
-        distress_score = float(sum(distress_components) / len(distress_components))
+        # 3. Calculate Scores
+        # Use the smallest window (usually 60s) for immediate distress
+        smallest_window = str(min(settings.windows_sec)) if settings.windows_sec else "60"
+        
+        distress_components = [1.0 - s.uptime_pct.get(smallest_window, 1.0) for s in states] or [0.0]
+        distress_score = float(sum(distress_components) / len(distress_components)) if distress_components else 0.0
         zen_score = max(0.0, 1.0 - distress_score)
+
+        return distress_score, zen_score, states
+
+    async def _publish_snapshot(self) -> None:
+        now = _utcnow()
+        
+        # Use shared calculation
+        distress_score, zen_score, states = self._calculate_metrics()
 
         snapshot = EquilibriumSnapshotV1(
             source_service=settings.service_name,
@@ -193,30 +208,22 @@ class EquilibriumService(BaseChassis):
         except Exception as e:
             logger.error("Failed to publish equilibrium snapshot: %s", e)
 
-    async def _publish_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await self._publish_snapshot()
-            except Exception as e:
-                logger.error("Publish loop error: %s", e)
-            await asyncio.sleep(float(settings.publish_interval_sec))
-
     async def _publish_metacognition_tick(self) -> None:
         if not self.bus.enabled:
             return
 
         now = _utcnow()
-
-        # if you want real scores here, reuse the logic from _publish_snapshot()
-        # (or store last distress/zen from _publish_snapshot and reuse it)
+        
+        # Use shared calculation (ignore the detailed states list here)
+        distress_score, zen_score, _ = self._calculate_metrics()
         services_tracked = len(self._state)
 
         tick = MetacognitionTickV1(
             generated_at=now,
             source_service=settings.service_name,
             source_node=settings.node_name,
-            distress_score=None,
-            zen_score=None,
+            distress_score=distress_score,  # Freshly calculated, never None (unless 0.0)
+            zen_score=zen_score,            # Freshly calculated
             services_tracked=services_tracked,
             snapshot={
                 "equilibrium": {
@@ -228,13 +235,20 @@ class EquilibriumService(BaseChassis):
         env = BaseEnvelope(
             kind="metacognition.tick.v1",
             source=self._source(),
-            correlation_id=tick.tick_id,   # IMPORTANT: no more None corr_id
+            correlation_id=tick.tick_id,  # CRITICAL: Bind envelope to tick ID
             payload=tick.model_dump(mode="json"),
         )
 
         await self.bus.publish("orion:metacognition:tick", env)
-        logger.info("Published metacognition tick tick_id=%s", tick.tick_id)
+        logger.info("Published metacognition tick tick_id=%s distress=%.3f", tick.tick_id, distress_score)
 
+    async def _publish_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self._publish_snapshot()
+            except Exception as e:
+                logger.error("Publish loop error: %s", e)
+            await asyncio.sleep(float(settings.publish_interval_sec))
 
     async def _collapse_loop(self) -> None:
         interval = float(settings.collapse_mirror_interval_sec)
@@ -244,7 +258,6 @@ class EquilibriumService(BaseChassis):
             except Exception as e:
                 logger.warning("Metacognition tick loop error: %s", e)
             await asyncio.sleep(interval)
-
 
     async def _run(self) -> None:
         await self._load_state()

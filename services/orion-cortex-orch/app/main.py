@@ -11,7 +11,8 @@ from pydantic import Field, ValidationError
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 
-from .orchestrator import call_verb_runtime, dispatch_equilibrium_snapshot
+from .orchestrator import call_verb_runtime, dispatch_metacognition_tick
+
 from .settings import get_settings
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult

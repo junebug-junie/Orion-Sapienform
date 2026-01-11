@@ -19,7 +19,6 @@ orion-landing-pad
 orion-llamacpp-host
 orion-agent-chain
 orion-agent-council
-orion-meta-tags    
 orion-planner-react
 orion-power-guard 
 orion-recall               

@@ -6,7 +6,7 @@ import logging
 import uuid
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from sqlalchemy import inspect, update
 from sqlalchemy.types import DateTime, String
@@ -29,13 +29,13 @@ from app.models import (
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope
 
-# Import shared schemas
+# Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload
 from orion.schemas.telemetry.dream import DreamRequest
-from orion.schemas.chat import RawChat
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.schemas.chat_history import ChatHistoryMessageV1
 
 try:
     from orion.schemas.telemetry.spark import SparkTelemetryPayload
@@ -44,13 +44,12 @@ except ImportError:
 
 logger = logging.getLogger("sql-writer")
 
-# Map string keys from settings to actual classes
-# We map: (SQL Model, Pydantic Schema)
+# Map: route_key -> (SQLAlchemy model, Pydantic schema model)
 MODEL_MAP = {
     "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
     "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
-    "ChatMessageSQL": (ChatMessageSQL, RawChat),
+    "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),  # matches chat.history.message.v1 payload
     "Dream": (Dream, DreamRequest),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
@@ -83,19 +82,7 @@ def _coerce_payload(model_cls, payload: Any):
     return payload
 
 
-# -----------------------------------------------------------------------------
-# KEEP: JSON safety helpers
-# -----------------------------------------------------------------------------
 def _json_sanitize(obj: Any, *, _seen: Optional[set[int]] = None, _depth: int = 0, _max_depth: int = 20) -> Any:
-    """
-    KEEP / IMPORTANT:
-    This prevents (builtins.ValueError) Circular reference detected when:
-      - Spark snapshots embed metadata that embeds the snapshot again
-      - Fallback logs try to store raw payloads that include self-references
-      - Chat spark_meta back-population accidentally includes cyclic dicts
-
-    It also forces the payload into JSON-serializable primitives.
-    """
     if _seen is None:
         _seen = set()
 
@@ -110,52 +97,39 @@ def _json_sanitize(obj: Any, *, _seen: Optional[set[int]] = None, _depth: int = 
         return "__cycle__"
     _seen.add(oid)
 
-    # pydantic models
     if hasattr(obj, "model_dump"):
         try:
             return _json_sanitize(obj.model_dump(mode="json"), _seen=_seen, _depth=_depth + 1, _max_depth=_max_depth)
         except Exception:
             return str(obj)
 
-    # dict-like
     if isinstance(obj, dict):
         out: dict = {}
         for k, v in obj.items():
-            # keys must be strings in JSON
             kk = k if isinstance(k, str) else str(k)
             out[kk] = _json_sanitize(v, _seen=_seen, _depth=_depth + 1, _max_depth=_max_depth)
         return out
 
-    # list/tuple/set
     if isinstance(obj, (list, tuple, set)):
         return [
             _json_sanitize(v, _seen=_seen, _depth=_depth + 1, _max_depth=_max_depth)
             for v in list(obj)
         ]
 
-    # datetime
     if isinstance(obj, datetime):
         return obj.isoformat()
 
-    # uuid
     if isinstance(obj, uuid.UUID):
         return str(obj)
 
-    # fallback
     return str(obj)
 
 
 def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    KEEP / IMPORTANT:
-    ChatHistoryLog.spark_meta is a convenience cache, not a full telemetry mirror.
-    Do NOT shove the entire snapshot/metadata in here (that creates cycles + bloat).
-    """
     meta = row.get("metadata_") or row.get("metadata") or {}
     if not isinstance(meta, dict):
         meta = {"raw_metadata": str(meta)}
 
-    # strip heavyweight/cyclic fields if present
     meta = dict(meta)
     meta.pop("spark_state_snapshot", None)
 
@@ -175,17 +149,6 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge Spark-related metadata blobs without clobbering hub-provided keys.
-
-    KEEP / IMPORTANT:
-    This function enforces the "Bi-Directional Metadata Sync" intent:
-      - If Hub writes spark_meta first, later SparkTelemetry should *enrich* it.
-      - If SparkTelemetry arrives first, later Hub writes should merge it.
-
-    Rule:
-      - Preserve existing keys unless the update provides a non-null value.
-      - Always JSON-sanitize the result.
-    """
     base: Dict[str, Any]
     if isinstance(existing, dict):
         base = deepcopy(existing)
@@ -202,13 +165,55 @@ def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
     return _json_sanitize(base)
 
 
+def _safe_set(obj: Any, field: str, value: Any) -> None:
+    if hasattr(obj, field):
+        setattr(obj, field, value)
+
+
+def _ensure_chat_history_from_message(
+    sess,
+    correlation_id: str,
+    session_id: str | None,
+    role: str,
+    content: str,
+) -> None:
+    if not correlation_id:
+        return
+    rid = str(correlation_id)
+
+    existing = (
+        sess.query(ChatHistoryLogSQL)
+        .filter(ChatHistoryLogSQL.id == rid)
+        .first()
+    )
+
+    if existing is None:
+        existing = ChatHistoryLogSQL(
+            id=rid,
+            correlation_id=rid,
+        )
+        _safe_set(existing, "session_id", session_id)
+        _safe_set(existing, "prompt", "")
+        _safe_set(existing, "response", "")
+        _safe_set(existing, "spark_meta", None)
+        sess.add(existing)
+
+    if role == "user":
+        if hasattr(existing, "prompt") and not (existing.prompt or "").strip():
+            existing.prompt = content
+    elif role == "assistant":
+        if hasattr(existing, "response") and not (existing.response or "").strip():
+            existing.response = content
+
+    if session_id and hasattr(existing, "session_id") and not getattr(existing, "session_id", None):
+        existing.session_id = session_id
+
+
 def _write_row(sql_model_cls, data: dict) -> None:
     sess = get_session()
     try:
         mapper = inspect(sql_model_cls)
 
-        # Accept either ORM attribute keys (e.g. "metadata_") OR raw DB column names
-        # (e.g. "metadata") coming from upstream payloads.
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)
 
@@ -222,28 +227,23 @@ def _write_row(sql_model_cls, data: dict) -> None:
         if "telemetry_id" in valid_keys and not filtered_data.get("telemetry_id"):
             filtered_data["telemetry_id"] = str(uuid.uuid4())
 
+        # IMPORTANT: chat_message.id is NOT NULL and may not auto-generate.
+        # Use message_id from payload for idempotency; otherwise generate a UUID.
+        if sql_model_cls is ChatMessageSQL and "id" in valid_keys and not filtered_data.get("id"):
+            mid = data.get("message_id") or data.get("id")
+            filtered_data["id"] = str(mid) if mid else str(uuid.uuid4())
+
         # chat_history_log uses a non-null string PK named "id".
-        # If upstream omits it, use correlation_id (for idempotency) or a new uuid.
-        if (
-            sql_model_cls is ChatHistoryLogSQL
-            and ("id" in valid_keys)
-            and not filtered_data.get("id")
-        ):
+        if sql_model_cls is ChatHistoryLogSQL and ("id" in valid_keys) and not filtered_data.get("id"):
             filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
 
-        # ---------------------------------------------------------------------
-        # Standard Column Coercion
-        # ---------------------------------------------------------------------
+        # Standard coercion
         for col in mapper.columns:
             key = col.key
             if key in filtered_data:
                 val = filtered_data[key]
-
-                # Coerce UUID -> String
                 if isinstance(col.type, String) and isinstance(val, uuid.UUID):
                     filtered_data[key] = str(val)
-
-                # Coerce DateTime
                 if isinstance(col.type, DateTime):
                     if isinstance(val, str):
                         try:
@@ -260,9 +260,8 @@ def _write_row(sql_model_cls, data: dict) -> None:
         # 🔄 STRATEGY: Bi-Directional Metadata Sync (Handling Async Races)
         # ---------------------------------------------------------------------
 
-        # Path A: Writing SparkTelemetry -> update ChatLog.spark_meta if present
+        # Path A: Writing SparkTelemetry -> update ChatHistoryLog.spark_meta if present
         if sql_model_cls is SparkTelemetrySQL:
-            # Normalize metadata_ input and make it JSON-safe
             if "metadata_" in valid_keys:
                 raw_meta = filtered_data.get("metadata_")
                 if raw_meta is None:
@@ -273,9 +272,6 @@ def _write_row(sql_model_cls, data: dict) -> None:
 
             corr_id = filtered_data.get("correlation_id")
             if corr_id:
-                # IMPORTANT:
-                # DB PK is correlation_id (per your screenshot). ORM may not be.
-                # Do explicit upsert-by-correlation_id to avoid UniqueViolation.
                 existing = (
                     sess.query(SparkTelemetrySQL)
                     .filter(SparkTelemetrySQL.correlation_id == corr_id)
@@ -283,12 +279,20 @@ def _write_row(sql_model_cls, data: dict) -> None:
                 )
 
                 if existing:
-                    # Update “latest known” telemetry for this correlation_id
-                    for k in ("phi", "novelty", "trace_mode", "trace_verb", "stimulus_summary", "timestamp", "source_service", "source_node", "node"):
+                    for k in (
+                        "phi",
+                        "novelty",
+                        "trace_mode",
+                        "trace_verb",
+                        "stimulus_summary",
+                        "timestamp",
+                        "source_service",
+                        "source_node",
+                        "node",
+                    ):
                         if k in filtered_data and filtered_data.get(k) is not None:
                             setattr(existing, k, filtered_data.get(k))
 
-                    # Merge metadata dicts (telemetry wins)
                     try:
                         ex_meta = getattr(existing, "metadata_", None)
                     except Exception:
@@ -302,16 +306,13 @@ def _write_row(sql_model_cls, data: dict) -> None:
 
                     sess.commit()
                 else:
-                    # Fresh insert
                     sess.add(SparkTelemetrySQL(**filtered_data))
                     sess.commit()
 
-                # Side effect: attempt to populate ChatHistoryLog.spark_meta (minimal + safe)
+                # Side effect: populate ChatHistoryLog.spark_meta (merge, never overwrite)
                 try:
                     meta_for_chat = _spark_meta_minimal(filtered_data)
 
-                    # IMPORTANT: Do NOT overwrite hub-provided spark_meta.
-                    # Merge telemetry-derived fields into any existing spark_meta.
                     existing_chat = (
                         sess.query(ChatHistoryLogSQL)
                         .filter(ChatHistoryLogSQL.correlation_id == corr_id)
@@ -329,42 +330,27 @@ def _write_row(sql_model_cls, data: dict) -> None:
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
 
-                return  # done (we already committed)
+                return  # done
 
-        # Path B: Writing Chat Log -> Check if SparkTelemetry arrived first
-        if sql_model_cls is ChatHistoryLogSQL:
-            # Normalize/defang spark_meta if present (avoid circular references / non-JSON types)
-            if "spark_meta" in valid_keys and filtered_data.get("spark_meta") is not None:
-                filtered_data["spark_meta"] = _json_sanitize(deepcopy(filtered_data.get("spark_meta")))
-
-            corr_id = filtered_data.get("correlation_id")
-            if corr_id:
-                try:
-                    telem = (
-                        sess.query(SparkTelemetrySQL)
-                        .filter(SparkTelemetrySQL.correlation_id == corr_id)
-                        .first()
+        # Side-effect: chat.history.message.v1 -> turn-level ChatHistoryLogSQL
+        if sql_model_cls is ChatMessageSQL:
+            try:
+                corr_id = data.get("correlation_id")  # comes from extra_fields (envelope correlation_id)
+                session_id = filtered_data.get("session_id") or data.get("session_id")
+                role = (filtered_data.get("role") or "").lower()
+                content = filtered_data.get("content")
+                if corr_id and role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                    _ensure_chat_history_from_message(
+                        sess=sess,
+                        correlation_id=str(corr_id),
+                        session_id=str(session_id) if session_id else None,
+                        role=role,
+                        content=content,
                     )
-                    if telem and getattr(telem, "metadata_", None):
-                        meta_blob = {
-                            "phi": getattr(telem, "phi", None),
-                            "novelty": getattr(telem, "novelty", None),
-                            "trace_mode": getattr(telem, "trace_mode", None),
-                            "trace_verb": getattr(telem, "trace_verb", None),
-                            "timestamp": getattr(telem, "timestamp", None),
-                            "stimulus_summary": getattr(telem, "stimulus_summary", None),
-                            "node": getattr(telem, "node", None),
-                            "metadata": getattr(telem, "metadata_", None),
-                        }
-                        filtered_data["spark_meta"] = _merge_spark_meta(
-                            filtered_data.get("spark_meta"),
-                            _json_sanitize(meta_blob),
-                        )
-                        logger.info(f"Merged existing SparkTelemetry into ChatLog for {corr_id}")
-                except Exception as ex:
-                    logger.warning(f"Failed to merge existing telemetry into chat log: {ex}")
+            except Exception as ex:
+                logger.warning(f"Failed to upsert chat_history_log from chat_message: {ex}")
 
-        # Default behavior for all other models
+        # Default behavior
         sess.merge(sql_model_cls(**filtered_data))
         sess.commit()
 
@@ -400,20 +386,20 @@ def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = N
 
 
 async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str, Any] = None) -> None:
+    if schema_cls:
+        obj = _coerce_payload(schema_cls, payload)
+        data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
+    else:
+        data = payload if isinstance(payload, dict) else {}
+
+    if extra_fields:
+        data.update(extra_fields)
+
     try:
-        if schema_cls:
-            obj = _coerce_payload(schema_cls, payload)
-            data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
-        else:
-            data = payload if isinstance(payload, dict) else {}
-
-        if extra_fields:
-            data.update(extra_fields)
-
         await asyncio.to_thread(_write_row, sql_model_cls, data)
     except Exception as e:
         logger.error(f"Failed to write to primary table: {e}")
-        raise e
+        raise
 
 
 async def handle_envelope(env: BaseEnvelope) -> None:
@@ -423,106 +409,66 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         sql_model, schema_model = MODEL_MAP[route_key]
         try:
             data_to_process = env.payload
+            extra_sql_fields: Dict[str, Any] = {}
+
+            # CRITICAL: preserve envelope correlation_id for chat.history.message.v1
+            # (payload schema does not include it, so it must be carried via extra_fields).
+            if env.kind == "chat.history.message.v1" and getattr(env, "correlation_id", None):
+                extra_sql_fields["correlation_id"] = str(env.correlation_id)
+
             if isinstance(data_to_process, dict):
                 data_to_process = data_to_process.copy()
 
                 if "node" not in data_to_process and env.source and env.source.node:
                     data_to_process["node"] = env.source.node
 
-                # Normalize Spark state snapshots into SparkTelemetryPayload shape for DB writes.
-                # Producer publishes spark.state.snapshot.v1 with payload:
-                #   { snapshot_ts, phi: {coherence, novelty, ...}, valid_for_ms, ... }
-                # SparkTelemetry expects scalar phi/novelty + timestamp + metadata.
-                if env.kind == "spark.state.snapshot.v1":
-                    try:
-                        _phi = data_to_process.get("phi")
-                        _snap_ts = data_to_process.get("snapshot_ts") or data_to_process.get("ts")
-
-                        # snapshot-style: phi is a dict and we have some timestamp notion
-                        if isinstance(_phi, dict) and _snap_ts:
-                            # KEEP / IMPORTANT: Avoid circular reference by NOT embedding "metadata" inside snapshot copy
-                            snap = deepcopy(data_to_process)
-
-                            # Timestamp
-                            ts = _snap_ts
-                            if not ts and getattr(env, "timestamp", None):
-                                ts = env.timestamp.isoformat()
-                            if not ts:
-                                ts = datetime.utcnow().isoformat() + "Z"
-
-                            raw_meta = snap.get("metadata") or {}
-                            if not isinstance(raw_meta, dict):
-                                raw_meta = {"raw_metadata": raw_meta}
-
-                            meta = deepcopy(raw_meta)
-
-                            # Acyclic snapshot copy: remove metadata before embedding
-                            snap_no_meta = dict(snap)
-                            snap_no_meta.pop("metadata", None)
-                            meta.setdefault("spark_state_snapshot", snap_no_meta)
-
-                            meta = _json_sanitize(meta)
-
-                            # Extract scalar metrics
-                            # NOTE: If producer ever renames keys, keep these fallbacks.
-                            coherence = _phi.get("coherence")
-                            novelty = _phi.get("novelty")
-                            if novelty is None and isinstance(snap.get("novelty"), (int, float)):
-                                novelty = snap.get("novelty")
-                            if coherence is None and isinstance(snap.get("coherence"), (int, float)):
-                                coherence = snap.get("coherence")
-
-                            data_to_process = {
-                                "source_service": snap.get("source_service") or (env.source.name if env.source else None),
-                                "source_node": snap.get("source_node") or (env.source.node if env.source else None),
-                                "phi": coherence,
-                                "novelty": novelty,
-                                "trace_mode": snap.get("trace_mode"),
-                                "trace_verb": snap.get("trace_verb"),
-                                "stimulus_summary": snap.get("stimulus_summary"),
-                                "timestamp": ts,
-                                "metadata": meta,
-                            }
-
-                            # Preserve correlation_id
-                            if "correlation_id" in snap:
-                                data_to_process["correlation_id"] = snap.get("correlation_id")
-                            elif getattr(env, "correlation_id", None):
-                                data_to_process["correlation_id"] = str(env.correlation_id)
-
-                    except Exception as _ex:
-                        logger.warning(f"Failed to normalize spark.state.snapshot.v1 payload: {_ex}")
-
-                if "correlation_id" not in data_to_process:
-                    is_ad_hoc = len(env.causality_chain) == 0
-                    if not is_ad_hoc and env.correlation_id:
-                        data_to_process["correlation_id"] = str(env.correlation_id)
-
                 if "source_message_id" not in data_to_process and env.id:
                     data_to_process["source_message_id"] = str(env.id)
 
-            extra_sql_fields = {}
+            # Minimal guard to stop NOT NULL id spam for collapse_mirror
+            if sql_model is CollapseMirror and isinstance(data_to_process, dict):
+                base_id = (
+                    data_to_process.get("id")
+                    or data_to_process.get("event_id")
+                    or data_to_process.get("correlation_id")
+                    or (str(env.correlation_id) if getattr(env, "correlation_id", None) else None)
+                    or (str(env.id) if getattr(env, "id", None) else None)
+                )
+                if not base_id:
+                    base_id = str(uuid.uuid4())
 
-            if route_key == "CollapseMirror":
-                if isinstance(data_to_process, dict) and not data_to_process.get("id"):
-                    extra_sql_fields["id"] = str(env.id)
+                if not data_to_process.get("id"):
+                    extra_sql_fields["id"] = base_id
+                if not data_to_process.get("correlation_id"):
+                    extra_sql_fields["correlation_id"] = base_id
 
-            if route_key == "CollapseEnrichment":
+            if sql_model is CollapseEnrichment and isinstance(data_to_process, dict):
                 extra_sql_fields["id"] = str(uuid.uuid4())
-                if isinstance(data_to_process, dict):
-                    target_id = data_to_process.get("id") or data_to_process.get("collapse_id")
-                    if target_id:
-                        extra_sql_fields["collapse_id"] = target_id
+                target_id = data_to_process.get("id") or data_to_process.get("collapse_id")
+                if target_id:
+                    extra_sql_fields["collapse_id"] = target_id
 
             await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
             logger.info(f"Written {env.kind} -> {sql_model.__tablename__}")
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")
-            await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, str(e))
+            await asyncio.to_thread(
+                _write_fallback,
+                env.kind,
+                str(getattr(env, "correlation_id", "") or ""),
+                env.payload,
+                str(e),
+            )
     else:
         logger.warning(f"Unknown kind {env.kind}, writing to fallback log.")
-        await asyncio.to_thread(_write_fallback, env.kind, str(env.correlation_id), env.payload, "Unknown kind")
+        await asyncio.to_thread(
+            _write_fallback,
+            env.kind,
+            str(getattr(env, "correlation_id", "") or ""),
+            env.payload,
+            "Unknown kind",
+        )
 
 
 def build_hunter() -> Hunter:

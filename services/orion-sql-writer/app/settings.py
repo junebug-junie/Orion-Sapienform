@@ -40,6 +40,8 @@ class Settings(BaseSettings):
             "orion:spark:introspection:log", # legacy?
             "orion:spark:telemetry",
             "orion:cognition:trace",
+            "orion:metacognition:tick",
+            "orion:metacognition:enriched"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -58,7 +60,11 @@ class Settings(BaseSettings):
             "spark.introspection.log": "SparkIntrospectionLogSQL",
             "spark.introspection": "SparkIntrospectionLogSQL",
             "spark.telemetry": "SparkTelemetrySQL",
-            "cognition.trace": "CognitionTraceSQL"
+            "cognition.trace": "CognitionTraceSQL",
+            "metacognition.tick.v1":"MetacognitionTickSQL",
+            "metacognition.enriched.v1":"MetacognitionEnrichedSQL"
+
+
         }),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
     )

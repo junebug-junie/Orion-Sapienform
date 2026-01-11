@@ -472,20 +472,25 @@ async def call_step_services(
                         logs.append("publish -> orion:collapse:intake")
 
 
-            elif service == "MetaTagsService":
-                # pull the tick from context
+            if service == "MetaTagsService":
+                # Pull metacognition tick from context
                 tick = ctx.get("metacognition_tick") or {}
+                if not isinstance(tick, dict):
+                    tick = {"raw": str(tick)}
+
+                # Build something taggable (keep simple for now)
                 text = ""
-                if isinstance(tick, dict):
-                    # choose something stable for tagging
-                    text = (
-                        str(tick.get("snapshot") or "")
-                        or str(tick.get("summary") or "")
-                        or str(tick)
-                    )
+                for k in ("summary", "mantra", "trigger"):
+                    v = tick.get(k)
+                    if isinstance(v, str) and v.strip():
+                        text += v.strip() + "\n"
+                if not text.strip():
+                    text = str(tick)
+
+                req_id = str(tick.get("tick_id") or tick.get("event_id") or correlation_id)
 
                 req_payload = {
-                    "id": str(ctx.get("metacognition_tick", {}).get("tick_id") or correlation_id),
+                    "id": req_id,
                     "text": text,
                     "kind": "metacognition.tick.v1",
                     "raw": tick,
@@ -499,19 +504,23 @@ async def call_step_services(
                     payload=req_payload,
                 )
 
-                logs.append(f"rpc -> MetaTagsService (timeout={effective_timeout}s)")
+                logs.append(f"rpc -> MetaTagsService (reply={reply_channel})")
                 msg = await bus.rpc_request(
                     "orion:exec:request:MetaTagsService",
                     env,
                     reply_channel=reply_channel,
                     timeout_sec=effective_timeout,
                 )
+
                 decoded = bus.codec.decode(msg.get("data"))
-                if not decoded.ok:
+                if not decoded.ok or not decoded.envelope:
                     raise RuntimeError(f"MetaTagsService decode failed: {decoded.error}")
 
-                merged_result["MetaTagsService"] = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+                merged_result["MetaTagsService"] = (
+                    decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {"raw": str(decoded.envelope.payload)}
+                )
                 logs.append("ok <- MetaTagsService")
+                continue
 
 
             else:

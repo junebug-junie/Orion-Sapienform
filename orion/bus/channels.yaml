@@ -652,3 +652,11 @@ channels:
     consumer_services: ["orion-spark-introspector", "orion-landing-pad", "orion-bus-tap"]
     stability: "experimental"
     since: "2026-01-10"
+
+  - name: "orion:spark:introspector:reply:*"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-spark-introspector"]
+    stability: "experimental"
+    since: "2026-01-10"

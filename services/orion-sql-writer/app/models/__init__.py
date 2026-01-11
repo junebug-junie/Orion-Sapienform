@@ -8,6 +8,8 @@ from .spark_introspection_log import SparkIntrospectionLogSQL
 from .spark_telemetry import SparkTelemetrySQL
 from .fallback_log import BusFallbackLog
 from .cognition_trace import CognitionTraceSQL
+from .metacognition_tick import MetacognitionTickSQL
+from . metacognition_enriched import MetacognitionEnrichedSQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -20,4 +22,6 @@ __all__ = [
     "SparkTelemetrySQL",
     "BusFallbackLog",
     "CognitionTraceSQL",
+    "MetacognitionTickSQL",
+    "MetacognitionEnrichedSQL"
 ]

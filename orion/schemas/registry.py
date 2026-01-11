@@ -21,6 +21,7 @@ from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileD
 from orion.schemas.telemetry.biometrics import BiometricsPayload
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
+from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -63,6 +64,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2, # leagcy
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacognitionEnrichedV1": MetacognitionEnrichedV1,
+    "CognitionTracePayload": CognitionTracePayload,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
     "SparkStateSnapshotV1": SparkStateSnapshotV1,

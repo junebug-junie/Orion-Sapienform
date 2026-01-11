@@ -249,8 +249,8 @@ class EquilibriumService(BaseChassis):
             generated_at=now,
             source_service=settings.service_name,
             source_node=settings.node_name,
-            distress_score=distress_score,  # Freshly calculated, never None (unless 0.0)
-            zen_score=zen_score,            # Freshly calculated
+            distress_score=distress_score,
+            zen_score=zen_score,
             services_tracked=services_tracked,
             snapshot={
                 "equilibrium": {
@@ -259,10 +259,13 @@ class EquilibriumService(BaseChassis):
             },
         )
 
+        # Populate correlation_id in payload for persistence
+        tick.correlation_id = tick.tick_id
+
         env = BaseEnvelope(
             kind="metacognition.tick.v1",
             source=self._source(),
-            correlation_id=tick.tick_id,  # CRITICAL: Bind envelope to tick ID
+            correlation_id=tick.tick_id,
             payload=tick.model_dump(mode="json"),
         )
 

@@ -1,0 +1,25 @@
+name: log_orion_metacognition
+kind: task
+timeout_ms: 120000
+steps:
+  - name: collect_metacog_context
+    services:
+      - MetacogContextService
+    timeout_ms: 30000
+
+  - name: draft_entry
+    prompt_template: "{{ prompt_templates.log_orion_metacognition_draft }}"
+    services:
+      - MetacogDraftService
+    timeout_ms: 45000
+
+  - name: enrich_entry
+    prompt_template: "{{ prompt_templates.log_orion_metacognition_enrich }}"
+    services:
+      - MetacogEnrichService
+    timeout_ms: 45000
+
+  - name: publish_to_sql_writer
+    services:
+      - MetacogPublishService
+    timeout_ms: 10000

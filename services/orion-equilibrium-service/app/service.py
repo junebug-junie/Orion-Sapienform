@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Tuple
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
+from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from orion.core.verbs.models import VerbRequestV1
 from orion.core.bus.codec import OrionCodec
 
 from .settings import settings
@@ -39,6 +41,7 @@ class EquilibriumService(BaseChassis):
         self.codec = OrionCodec()
         self._state: Dict[str, Dict[str, Any]] = {}
         self.expected_services = settings.expected_services()
+        self._last_metacog_trigger_ts: float = 0.0
 
     async def _load_state(self) -> None:
         try:
@@ -128,12 +131,36 @@ class EquilibriumService(BaseChassis):
         now = _utcnow()
         states: List[EquilibriumServiceState] = []
         
+        retention = float(settings.state_retention_sec)
+        keys_to_purge = []
+
         # 1. Build states from observed heartbeats
         for key, rec in list(self._state.items()):
             try:
+                # Check for staleness
+                last_seen = rec.get("last_seen_ts")
+                if not isinstance(last_seen, datetime):
+                     try:
+                         last_seen = datetime.fromisoformat(str(last_seen))
+                     except Exception:
+                         last_seen = now
+
+                delta_sec = (now - last_seen).total_seconds()
+                if delta_sec > retention:
+                    keys_to_purge.append(key)
+                    continue
+
                 states.append(self._build_service_state(rec, now))
             except Exception:
                 continue
+
+        # Prune ghosts
+        if keys_to_purge:
+            for k in keys_to_purge:
+                self._state.pop(k, None)
+            # Async prune from Redis (fire and forget)
+            asyncio.create_task(self.bus.redis.hdel(settings.redis_state_key, *keys_to_purge))
+            logger.info("Pruned %d stale services from equilibrium state", len(keys_to_purge))
 
         # 2. Force expected services if missing
         for svc in self.expected_services:
@@ -222,8 +249,8 @@ class EquilibriumService(BaseChassis):
             generated_at=now,
             source_service=settings.service_name,
             source_node=settings.node_name,
-            distress_score=distress_score,  # Freshly calculated, never None (unless 0.0)
-            zen_score=zen_score,            # Freshly calculated
+            distress_score=distress_score,
+            zen_score=zen_score,
             services_tracked=services_tracked,
             snapshot={
                 "equilibrium": {
@@ -232,15 +259,60 @@ class EquilibriumService(BaseChassis):
             },
         )
 
+        # Populate correlation_id in payload for persistence
+        tick.correlation_id = tick.tick_id
+
         env = BaseEnvelope(
             kind="metacognition.tick.v1",
             source=self._source(),
-            correlation_id=tick.tick_id,  # CRITICAL: Bind envelope to tick ID
+            correlation_id=tick.tick_id,
             payload=tick.model_dump(mode="json"),
         )
 
         await self.bus.publish("orion:metacognition:tick", env)
         logger.info("Published metacognition tick tick_id=%s distress=%.3f", tick.tick_id, distress_score)
+
+    async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> None:
+        now_ts = datetime.now().timestamp()
+
+        # Simple cooldown check
+        if (now_ts - self._last_metacog_trigger_ts) < settings.metacog_cooldown_sec:
+            logger.info("Metacog trigger skipped due to cooldown (%s)", trigger.trigger_kind)
+            return
+
+        self._last_metacog_trigger_ts = now_ts
+
+        # 1. Publish Trigger Event (for observability)
+        env = BaseEnvelope(
+            kind="equilibrium.metacog.trigger",
+            source=self._source(),
+            payload=trigger.model_dump(mode="json"),
+        )
+        try:
+            await self.bus.publish(settings.channel_metacog_trigger, env)
+        except Exception as e:
+            logger.error("Failed to publish metacog trigger: %s", e)
+            return
+
+        # 2. Publish Verb Request (to execute)
+        verb_req = VerbRequestV1(
+            verb="log_orion_metacognition",
+            args={
+                "trigger": trigger.model_dump(mode="json"),
+                "window_sec": trigger.window_sec,
+            },
+            control={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
+        )
+        verb_env = BaseEnvelope(
+            kind="verb.request.v1",
+            source=self._source(),
+            payload=verb_req.model_dump(mode="json"),
+        )
+        try:
+            await self.bus.publish(settings.channel_cortex_orch_request, verb_env)
+            logger.info("Triggered metacognition routine: %s", trigger.trigger_kind)
+        except Exception as e:
+            logger.error("Failed to publish metacog verb request: %s", e)
 
     async def _publish_loop(self) -> None:
         while not self._stop.is_set():
@@ -259,15 +331,47 @@ class EquilibriumService(BaseChassis):
                 logger.warning("Metacognition tick loop error: %s", e)
             await asyncio.sleep(interval)
 
+    async def _metacog_baseline_loop(self) -> None:
+        if not settings.metacog_enable:
+            return
+
+        interval = float(settings.metacog_baseline_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.sleep(interval)
+                distress, zen, _ = self._calculate_metrics()
+                trigger = MetacogTriggerV1(
+                    trigger_kind="baseline",
+                    reason="scheduled_check",
+                    zen_state="zen" if zen > 0.5 else "not_zen",
+                    pressure=distress,
+                )
+                await self._publish_metacog_trigger(trigger)
+            except Exception as e:
+                logger.error("Metacog baseline loop error: %s", e)
+
     async def _run(self) -> None:
         await self._load_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
+        metacog_task = asyncio.create_task(self._metacog_baseline_loop())
 
-        async with self.bus.subscribe(settings.health_channel) as pubsub:
+        # Build list of channels to subscribe to
+        channels = [settings.health_channel]
+        if settings.metacog_enable:
+            channels.append(settings.channel_collapse_mirror_user_event)
+            channels.append(settings.channel_pad_signal)
+
+        async with self.bus.subscribe(*channels) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
                 if self._stop.is_set():
                     break
+
+                channel = msg.get("channel")
+                # aioredis returns channel as bytes or str depending on decoding
+                if hasattr(channel, "decode"):
+                    channel = channel.decode("utf-8")
+
                 decoded = self.codec.decode(msg.get("data"))
                 if not decoded.ok:
                     continue
@@ -275,21 +379,57 @@ class EquilibriumService(BaseChassis):
                 payload_dict = env.payload if isinstance(env.payload, dict) else {}
 
                 try:
-                    if env.kind == "system.health.v1":
-                        heartbeat = SystemHealthV1.model_validate(payload_dict)
-                    else:
-                        continue
-                    self._evaluate_state(heartbeat)
+                    # Health Heartbeats
+                    if channel == settings.health_channel:
+                        if env.kind == "system.health.v1":
+                            heartbeat = SystemHealthV1.model_validate(payload_dict)
+                            self._evaluate_state(heartbeat)
+
+                    # Metacog Triggers (only if enabled)
+                    elif settings.metacog_enable:
+                        distress, zen, _ = self._calculate_metrics()
+
+                        if channel == settings.channel_pad_signal:
+                            # Landing Pad Signal
+                            # We look for "salience" or similar in generic payload
+                            salience = 0.0
+                            if isinstance(payload_dict, dict):
+                                salience = float(payload_dict.get("salience", 0.0))
+
+                            if salience >= settings.metacog_pad_pulse_threshold:
+                                trigger = MetacogTriggerV1(
+                                    trigger_kind="pulse",
+                                    reason=f"pad_signal_high:{salience:.2f}",
+                                    zen_state="zen" if zen > 0.5 else "not_zen",
+                                    pressure=distress,
+                                    signal_refs=[str(env.correlation_id or "unknown")],
+                                    upstream=payload_dict
+                                )
+                                await self._publish_metacog_trigger(trigger)
+
+                        elif channel == settings.channel_collapse_mirror_user_event:
+                            # User manually triggered collapse
+                            # This is a "dense" event
+
+                            # CRITICAL: Prevent infinite feedback loops
+                            observer = str(payload_dict.get("observer") or "").lower()
+                            if observer == "orion":
+                                continue
+
+                            trigger = MetacogTriggerV1(
+                                trigger_kind="manual",
+                                reason="user_collapse_event",
+                                zen_state="zen" if zen > 0.5 else "not_zen",
+                                pressure=distress,
+                                upstream={"event_id": payload_dict.get("event_id")}
+                            )
+                            await self._publish_metacog_trigger(trigger)
+
                 except Exception as e:
-                    logger.warning("Failed to handle heartbeat: %s", e)
+                    logger.warning("Failed to process message on %s: %s", channel, e)
 
         publisher.cancel()
         collapse_task.cancel()
-        try:
-            await publisher
-        except Exception:
-            pass
-        try:
-            await collapse_task
-        except Exception:
-            pass
+        metacog_task.cancel()
+
+        await asyncio.gather(publisher, collapse_task, metacog_task, return_exceptions=True)

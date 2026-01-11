@@ -13,6 +13,7 @@ from orion.schemas.vision import (
     VisionEdgeArtifact, VisionObject, VisionEdgeHealth, 
     VisionFramePointerPayload, VisionEdgeError
 )
+from orion.schemas.telemetry.system_health import SystemHealthV1
 
 from .context import settings, bus, detectors
 from .utils import draw_boxes
@@ -206,6 +207,28 @@ async def run_detector_loop():
                     payload=health_payload
                 )
                 await bus.publish(settings.CHANNEL_VISION_EDGE_HEALTH, health_env)
+
+                # Standard System Health (for Equilibrium)
+                sys_health = SystemHealthV1(
+                    service=settings.SERVICE_NAME,
+                    node="unknown", # edge usually unknown/dynamic or settings.DEVICE
+                    version=settings.SERVICE_VERSION,
+                    instance=settings.SOURCE,
+                    boot_id=str(uuid.uuid4()), # We should ideally persist this but per-frame random is acceptable for liveliness
+                    status="ok" if health_payload.ok else "error",
+                    last_seen_ts=datetime.now(timezone.utc),
+                    heartbeat_interval_sec=1.0 / settings.FPS if settings.FPS else 10.0,
+                    details={"camera": settings.SOURCE, "fps": health_payload.fps}
+                )
+                sys_env = BaseEnvelope(
+                    kind="system.health.v1",
+                    source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                    payload=sys_health.model_dump(mode="json"),
+                )
+                # Hardcoded channel or need to add to settings? settings.py usually has common ones.
+                # Assuming "orion:system:health" standard.
+                await bus.publish("orion:system:health", sys_env)
+
             except Exception as e:
                 logger.warning(f"Health check failed: {e}")
             

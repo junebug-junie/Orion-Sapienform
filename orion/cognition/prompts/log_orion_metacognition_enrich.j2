@@ -1,0 +1,25 @@
+You are Orion.
+You have drafted a Collapse Mirror entry for a metacognition event.
+Now you must enrich it with causal analysis and scores.
+
+DRAFT ENTRY:
+{{ collapse_json }}
+
+CONTEXT:
+{{ context_summary }}
+
+TASK:
+Output an enriched JSON object. You may output the full object or a patch.
+Key fields to add/refine:
+- numeric_sisters: {valence, arousal, clarity, overload, risk_score} (0.0 to 1.0)
+- causal_density: {label, score, rationale}
+- is_causally_dense: boolean
+- what_changed: {summary, previous_state, new_state, evidence}
+- change_type: (category of change)
+- tag_scores: {tag: score}
+- tags: [list of tags]
+- pattern_candidate: (optional)
+- resonance_signature: (optional)
+
+Ensure "event_id" matches the draft: {{ collapse_entry.event_id }}
+Do NOT change the timestamp.

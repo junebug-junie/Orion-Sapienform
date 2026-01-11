@@ -131,12 +131,36 @@ class EquilibriumService(BaseChassis):
         now = _utcnow()
         states: List[EquilibriumServiceState] = []
         
+        retention = float(settings.state_retention_sec)
+        keys_to_purge = []
+
         # 1. Build states from observed heartbeats
         for key, rec in list(self._state.items()):
             try:
+                # Check for staleness
+                last_seen = rec.get("last_seen_ts")
+                if not isinstance(last_seen, datetime):
+                     try:
+                         last_seen = datetime.fromisoformat(str(last_seen))
+                     except Exception:
+                         last_seen = now
+
+                delta_sec = (now - last_seen).total_seconds()
+                if delta_sec > retention:
+                    keys_to_purge.append(key)
+                    continue
+
                 states.append(self._build_service_state(rec, now))
             except Exception:
                 continue
+
+        # Prune ghosts
+        if keys_to_purge:
+            for k in keys_to_purge:
+                self._state.pop(k, None)
+            # Async prune from Redis (fire and forget)
+            asyncio.create_task(self.bus.redis.hdel(settings.redis_state_key, *keys_to_purge))
+            logger.info("Pruned %d stale services from equilibrium state", len(keys_to_purge))
 
         # 2. Force expected services if missing
         for svc in self.expected_services:

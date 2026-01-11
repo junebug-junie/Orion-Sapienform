@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     redis_state_key: str = Field("equilibrium:state", alias="EQUILIBRIUM_STATE_KEY")
     channel_equilibrium_snapshot: str = Field("orion:equilibrium:snapshot", alias="CHANNEL_EQUILIBRIUM_SNAPSHOT")
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
+    state_retention_sec: float = Field(3600.0, alias="EQUILIBRIUM_STATE_RETENTION_SEC")
 
     # Metacognition
     metacog_enable: bool = Field(False, alias="EQUILIBRIUM_METACOG_ENABLE")

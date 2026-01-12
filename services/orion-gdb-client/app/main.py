@@ -4,6 +4,10 @@ from app.settings import settings
 from app.gdb_client import wait_for_graphdb, ensure_repo_exists
 from app.listener import listener_worker
 from app.utils import logger
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.telemetry.system_health import SystemHealthV1
+import asyncio
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
@@ -30,8 +34,43 @@ def startup_event():
         )
         t.start()
         logger.info("Listener thread started.")
+
+        # Start Heartbeat Thread
+        hb_thread = threading.Thread(target=heartbeat_worker_thread, daemon=True, name="heartbeat")
+        hb_thread.start()
     else:
         logger.warning("⚠️ OrionBus disabled — listener will not start.")
+
+def heartbeat_worker_thread():
+    """Synchronous worker for heartbeats."""
+
+    async def _run():
+        bus = OrionBusAsync(settings.ORION_BUS_URL)
+        await bus.connect()
+        try:
+            while True:
+                try:
+                    payload = SystemHealthV1(
+                        service=settings.SERVICE_NAME,
+                        version=settings.SERVICE_VERSION,
+                        node="gdb-node",
+                        status="ok"
+                    ).model_dump(mode="json")
+
+                    await bus.publish("orion:system:health", BaseEnvelope(
+                        kind="system.health.v1",
+                        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                        payload=payload
+                    ))
+                except Exception as e:
+                    logger.warning(f"Heartbeat failed: {e}")
+
+                await asyncio.sleep(30)
+        finally:
+            await bus.close()
+
+    # Create a new loop for this thread
+    asyncio.run(_run())
 
 
 @app.on_event("shutdown")

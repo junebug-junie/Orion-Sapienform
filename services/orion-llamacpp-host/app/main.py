@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -11,6 +11,10 @@ from huggingface_hub import hf_hub_download
 
 from .settings import settings
 from .profiles import LLMProfile, LlamaCppConfig
+
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.telemetry.system_health import SystemHealthV1
 
 logger = logging.getLogger("llamacpp-host")
 
@@ -132,12 +136,44 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         str(cfg.n_parallel),
         "--batch-size",
         str(cfg.batch_size),
+        "--embedding", # As per memory
     ]
 
     return cmd, env
 
+# [NEW] Heartbeat Coroutine
+async def heartbeat_loop(settings):
+    # Initialize a local bus just for this script
+    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=True)
+    await bus.connect()
 
-def main() -> None:
+    logger.info("Heartbeat loop started.")
+    try:
+        while True:
+            try:
+                payload = SystemHealthV1(
+                    service=settings.service_name,
+                    version=settings.service_version,
+                    node="llamacpp-node",
+                    status="ok"
+                ).model_dump(mode="json")
+
+                await bus.publish("orion:system:health", BaseEnvelope(
+                    kind="system.health.v1",
+                    source=ServiceRef(name=settings.service_name, version=settings.service_version),
+                    payload=payload
+                ))
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+
+            await asyncio.sleep(30)
+    except asyncio.CancelledError:
+        logger.info("Heartbeat loop stopping...")
+    finally:
+        await bus.close()
+
+# [MODIFIED] Main Entrypoint
+async def _main_async():
     logging.basicConfig(
         level=logging.INFO,
         format="[LLAMACPP] %(levelname)s - %(name)s - %(message)s",
@@ -154,8 +190,30 @@ def main() -> None:
     cmd, env = build_llama_server_cmd_and_env(profile)
     logger.info("Launching llama-server: %s", " ".join(cmd))
 
-    subprocess.run(cmd, check=True, env=env)
+    # Start the heartbeat in background
+    hb_task = asyncio.create_task(heartbeat_loop(settings))
 
+    # Create subprocess
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        env=env,
+        stdout=None, # Inherit
+        stderr=None
+    )
+
+    try:
+        # Wait for the server process to exit
+        await process.wait()
+    finally:
+        # Clean up heartbeat
+        hb_task.cancel()
+        await hb_task
+
+def main():
+    try:
+        asyncio.run(_main_async())
+    except KeyboardInterrupt:
+        pass
 
 if __name__ == "__main__":
     main()

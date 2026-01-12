@@ -114,6 +114,7 @@ class CollapseMirrorEntryV2(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     event_id: str = Field(default_factory=lambda: f"collapse_{uuid4().hex}")
+    id: Optional[str] = None
     timestamp: str = Field(default_factory=_utc_now_iso)
     environment: Optional[str] = None
 
@@ -181,7 +182,7 @@ class CollapseMirrorEntryV2(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _fill_defaults(self) -> "CollapseMirrorEntryV2":
+    def _fill_defaults_and_sync_ids(self) -> "CollapseMirrorEntryV2":
         if not self.timestamp:
             self.timestamp = _utc_now_iso()
         if not self.environment:
@@ -199,12 +200,25 @@ class CollapseMirrorEntryV2(BaseModel):
             self.state_snapshot.observer_state = list(self.observer_state)
         if not self.state_snapshot.field_resonance:
             self.state_snapshot.field_resonance = self.field_resonance
+
+        # Ensure ID/Event_ID sync
         if not self.event_id:
             self.event_id = f"collapse_{uuid4().hex}"
+
+        if self.event_id and not self.id:
+            self.id = self.event_id
+        elif self.id and not self.event_id:
+            self.event_id = self.id
+        # If both are present but different, current logic keeps them as is,
+        # but typically event_id is the authoritative one.
+        # However, to be safe, we can enforce id = event_id if event_id is present.
+        if self.event_id and self.id != self.event_id:
+            self.id = self.event_id
+
         return self
 
     def with_defaults(self) -> "CollapseMirrorEntryV2":
-        return self._fill_defaults()
+        return self._fill_defaults_and_sync_ids()
 
     @field_validator("pattern_candidate", mode="before")
     @classmethod
@@ -226,6 +240,7 @@ def v1_to_v2(v1: CollapseMirrorEntryV1) -> CollapseMirrorEntryV2:
 
     return CollapseMirrorEntryV2(
         event_id=v1.id or f"collapse_{uuid4().hex}",
+        id=v1.id, # Pass explicit ID if present
         observer=v1.observer,
         trigger=v1.trigger,
         observer_state=observer_state_list,

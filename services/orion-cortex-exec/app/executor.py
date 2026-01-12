@@ -19,11 +19,18 @@ from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
+from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
+from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
+from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
+from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .trace_cache import get_trace_cache
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -280,6 +287,267 @@ async def call_step_services(
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
 
         try:
+            if service == "MetacogDraftService":
+                logs.append("exec -> MetacogDraftService (LLM + Parse)")
+
+                # 1. Call LLM
+                req_model = ctx.get("model") or ctx.get("llm_model") or None
+                messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+
+                request_object = ChatRequestPayload(
+                    model=req_model,
+                    messages=messages_payload,
+                    raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                    options={
+                        "temperature": 0.8, # Creative
+                        "max_tokens": 1024,
+                        "stream": False,
+                    }
+                )
+
+                llm_res = await llm_client.chat(
+                    source=source,
+                    req=request_object,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    timeout_sec=effective_timeout,
+                )
+
+                # 2. Parse & Normalize
+                try:
+                    raw_content = str(llm_res.choices[0].message.content) if llm_res.choices else ""
+                    parsed = find_collapse_entry(raw_content)
+                    if not parsed and "{" in raw_content:
+                        # Fallback try parsing raw content as json if find failed
+                        try:
+                            import json
+                            parsed = json.loads(raw_content)
+                        except Exception:
+                            pass
+
+                    if not parsed:
+                         raise ValueError("No JSON found in LLM response")
+
+                    # Force fields
+                    parsed["observer"] = "orion"
+                    parsed["visibility"] = "internal"
+                    parsed["epistemic_status"] = "observed"
+
+                    # Normalize
+                    entry = normalize_collapse_entry(parsed)
+
+                    # Store for next step
+                    ctx["collapse_entry"] = entry.model_dump(mode="json")
+                    ctx["collapse_json"] = raw_content
+                    merged_result[service] = {"ok": True, "event_id": entry.event_id}
+                    logs.append("ok <- MetacogDraftService")
+
+                except Exception as e:
+                    logs.append(f"error <- MetacogDraftService parsing: {e}")
+                    merged_result[service] = {"ok": False, "error": str(e)}
+
+                continue
+
+            if service == "MetacogEnrichService":
+                logs.append("exec -> MetacogEnrichService (LLM + Merge)")
+
+                # 1. Call LLM
+                req_model = ctx.get("model") or ctx.get("llm_model") or None
+                messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+
+                request_object = ChatRequestPayload(
+                    model=req_model,
+                    messages=messages_payload,
+                    raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                    options={
+                        "temperature": 0.5, # Analytical
+                        "max_tokens": 1024,
+                        "stream": False,
+                    }
+                )
+
+                llm_res = await llm_client.chat(
+                    source=source,
+                    req=request_object,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    timeout_sec=effective_timeout,
+                )
+
+                # 2. Parse & Merge
+                try:
+                    raw_content = str(llm_res.choices[0].message.content) if llm_res.choices else ""
+                    # We expect a JSON object that is either a full entry or a patch
+                    patch = find_collapse_entry(raw_content)
+                    if not patch:
+                        # Try parsing directly
+                        try:
+                            import json
+                            patch = json.loads(raw_content)
+                        except Exception:
+                            pass
+
+                    if not patch:
+                         # If parsing fails, use the draft as fallback
+                         logger.warning("MetacogEnrichService failed to parse JSON, using draft.")
+                         patch = {}
+
+                    # Retrieve draft
+                    draft_data = ctx.get("collapse_entry")
+                    if not draft_data:
+                         raise ValueError("No draft entry found in context")
+
+                    draft = CollapseMirrorEntryV2.model_validate(draft_data)
+
+                    # Merge logic (simple overlay of enrichment fields)
+                    # We trust Pydantic's update/copy or just manual dict update for safety
+                    final_dict = draft.model_dump(mode="json")
+
+                    # Update allowed enrichment fields
+                    for k in ["numeric_sisters", "causal_density", "is_causally_dense",
+                              "what_changed", "change_type", "tag_scores", "tags",
+                              "pattern_candidate", "resonance_signature"]:
+                        if k in patch and patch[k] is not None:
+                            final_dict[k] = patch[k]
+
+                    # Re-validate
+                    final_entry = CollapseMirrorEntryV2.model_validate(final_dict)
+
+                    ctx["final_entry"] = final_entry.model_dump(mode="json")
+                    merged_result[service] = {"ok": True, "event_id": final_entry.event_id}
+                    logs.append("ok <- MetacogEnrichService")
+
+                except Exception as e:
+                    logs.append(f"error <- MetacogEnrichService: {e}")
+                    merged_result[service] = {"ok": False, "error": str(e)}
+
+                continue
+
+            if service == "MetacogPublishService":
+                logs.append("exec -> MetacogPublishService")
+
+                final_data = ctx.get("final_entry") or ctx.get("collapse_entry")
+                if not final_data:
+                    logs.append("skip <- MetacogPublishService (no entry)")
+                    merged_result[service] = {"ok": False, "reason": "no_entry"}
+                    continue
+
+                try:
+                    entry = CollapseMirrorEntryV2.model_validate(final_data)
+
+                    # Publish to Intake (Mirror)
+                    env = BaseEnvelope(
+                        kind="orion.collapse.mirror.entry.v2", # Matches schema ID logic usually, or channel kind?
+                        # Registry says: schema_id="CollapseMirrorEntryV2"
+                        # Channel says: kind="event", schema_id="CollapseMirrorEntryV2"
+                        # Envelope kind is usually the channel name suffix or a specific event kind.
+                        # For "orion:collapse:intake", the channel kind is "event".
+                        # Let's use "collapse.mirror.entry.v2" as a safe kind string.
+                        kind="collapse.mirror.entry.v2",
+                        source=source,
+                        correlation_id=correlation_id,
+                        payload=entry.model_dump(mode="json"),
+                    )
+
+                    await bus.publish("orion:collapse:intake", env)
+                    merged_result[service] = {"ok": True, "published": True, "event_id": entry.event_id}
+                    logs.append("ok <- MetacogPublishService")
+
+                except Exception as e:
+                    logs.append(f"error <- MetacogPublishService: {e}")
+                    merged_result[service] = {"ok": False, "error": str(e)}
+
+                continue
+
+            if service == "MetacogContextService":
+                # Special step: populate context from trigger
+                logs.append("exec -> MetacogContextService")
+                trigger_data = ctx.get("args", {}).get("trigger", {})
+                try:
+                    trigger = MetacogTriggerV1.model_validate(trigger_data)
+                except Exception:
+                    trigger = MetacogTriggerV1(trigger_kind="unknown", reason="deserialization_failed")
+
+                # Default summary components
+                pad_summary = "unknown"
+                spark_summary = "unknown"
+                trace_summary = "unknown"
+
+                # 1. Fetch Landing Pad Frame/Signal via RPC (if trigger suggests or always)
+                if True:  # Always try to get latest pad snapshot
+                    # PadRpcRequestV1 expects 'request_id' and 'reply_channel' in the model
+                    # Also 'method' must be one of the literal values
+                    pad_req = PadRpcRequestV1(
+                        request_id=correlation_id,
+                        reply_channel=reply_channel,
+                        method="get_latest_frame",  # Using a valid literal
+                        args={}
+                    )
+                    pad_env = BaseEnvelope(
+                        kind="orion.pad.rpc.request",
+                        source=source,
+                        correlation_id=correlation_id,
+                        reply_to=reply_channel,
+                        payload=pad_req.model_dump(mode="json"),
+                    )
+                    try:
+                        # short timeout for pad
+                        pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=2.0)
+                        pad_dec = bus.codec.decode(pad_msg.get("data"))
+                        if pad_dec.ok:
+                            pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
+                            pad_summary = str(pad_res.result)
+                    except Exception as e:
+                        pad_summary = f"error: {e}"
+
+                # 2. Fetch Spark State via RPC
+                if True:
+                    state_req = StateGetLatestRequest(scope="global")
+                    state_env = BaseEnvelope(
+                        kind="orion.state.request",
+                        source=source,
+                        correlation_id=correlation_id,
+                        reply_to=reply_channel,
+                        payload=state_req.model_dump(mode="json"),
+                    )
+                    try:
+                        state_msg = await bus.rpc_request("orion:state:request", state_env, reply_channel=reply_channel, timeout_sec=2.0)
+                        state_dec = bus.codec.decode(state_msg.get("data"))
+                        if state_dec.ok:
+                            state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
+                            if state_res.ok and state_res.snapshot:
+                                spark_summary = str(state_res.snapshot.model_dump(mode="json"))
+                            else:
+                                spark_summary = f"stale/missing (status={state_res.status})"
+                    except Exception as e:
+                        spark_summary = f"error: {e}"
+
+                # 3. Recent Traces
+                recent_traces = get_trace_cache().get_recent(5)
+                trace_summary = ""
+                if recent_traces:
+                    trace_summary = "\n".join([
+                        f"- [{t.mode}] {t.verb}: {t.final_text[:100]}..."
+                        for t in recent_traces
+                    ])
+                else:
+                    trace_summary = "None available."
+
+                # 4. Assemble Context
+                summary_text = (
+                    f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
+                    f"Pressure: {trigger.pressure}\n"
+                    f"Landing Pad: {pad_summary}\n"
+                    f"Spark State: {spark_summary}\n"
+                    f"Recent Traces:\n{trace_summary}\n"
+                )
+
+                ctx["trigger"] = trigger.model_dump(mode="json")
+                ctx["context_summary"] = summary_text
+                merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
+                logs.append("ok <- MetacogContextService")
+                continue
+
             if service == "RecallService":
                 logs.append(f"rpc -> RecallService (reply={reply_channel}, profile={step.recall_profile})")
                 recall_step, recall_debug, memory_digest = await run_recall_step(

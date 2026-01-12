@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     redis_state_key: str = Field("equilibrium:state", alias="EQUILIBRIUM_STATE_KEY")
     channel_equilibrium_snapshot: str = Field("orion:equilibrium:snapshot", alias="CHANNEL_EQUILIBRIUM_SNAPSHOT")
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
+    state_retention_sec: float = Field(3600.0, alias="EQUILIBRIUM_STATE_RETENTION_SEC")
+
+    # Metacognition
+    metacog_enable: bool = Field(False, alias="EQUILIBRIUM_METACOG_ENABLE")
+    metacog_baseline_interval_sec: float = Field(60.0, alias="EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC")
+    metacog_cooldown_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_COOLDOWN_SEC")
+    metacog_pad_pulse_threshold: float = Field(0.8, alias="EQUILIBRIUM_METACOG_PAD_PULSE_THRESHOLD")
+
+    channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
+    channel_cortex_orch_request: str = Field("orion:verb:request", alias="CHANNEL_CORTEX_ORCH_REQUEST")
+    channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
+    channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
 
     class Config:
         env_file = ".env"

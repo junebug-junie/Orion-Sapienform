@@ -26,7 +26,6 @@ from app.models import (
     BusFallbackLog,
     CognitionTraceSQL,
     MetacognitionTickSQL,
-    MetacognitionEnrichedSQL,
     MetacogTriggerSQL
 )
 
@@ -40,10 +39,7 @@ from orion.schemas.telemetry.biometrics import BiometricsPayload
 from orion.schemas.telemetry.dream import DreamRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
-from orion.schemas.telemetry.metacognition import (
-    MetacognitionTickV1,
-    MetacognitionEnrichedV1,
-)
+from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 try:
@@ -65,7 +61,6 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SparkIntrospectionLogSQL": (SparkIntrospectionLogSQL, None),
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
-    "MetacognitionEnrichedSQL": (MetacognitionEnrichedSQL, MetacognitionEnrichedV1),
     "MetacogTriggerSQL": (MetacogTriggerSQL, MetacogTriggerV1),
 }
 

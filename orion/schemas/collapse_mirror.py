@@ -86,7 +86,18 @@ class CollapseMirrorWhatChanged(BaseModel):
     summary: Optional[str] = None
     previous_state: Optional[str] = None
     new_state: Optional[str] = None
-    evidence: Optional[str] = None
+    evidence: List[str] = Field(default_factory=list)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _normalize_evidence(cls, v: Any) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, list):
+            return [str(x) for x in v if str(x)]
+        return [str(v)]
 
 
 class CollapseMirrorStateSnapshot(BaseModel):

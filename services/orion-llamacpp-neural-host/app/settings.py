@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     # Identity
     service_name: str = Field("neural-host", env="SERVICE_NAME")
     service_version: str = Field("0.1.0", env="SERVICE_VERSION")
-    
+
     # Bus / Heartbeat
-    bus_url: str = Field("redis://redis:6379/0", env="ORION_BUS_URL")
+    bus_url: str = Field("redis://100.92.216.81:6379/0", env="ORION_BUS_URL")
     node_name: str = Field("unknown", env="NODE_NAME")
     instance_id: str = Field("default", env="INSTANCE_ID")
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")

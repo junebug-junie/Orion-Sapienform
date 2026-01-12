@@ -66,7 +66,12 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
             try:
                 # Load current security state for context
                 state = ctx.state_store.load()
-                
+
+                # Check if system is armed
+                if not state.armed:
+                    logger.info(f"[GUARD] System disarmed. Suppressing notification for alert {alert.summary}")
+                    return
+
                 # Convert timestamp (float epoch to datetime)
                 ts_dt = datetime.fromtimestamp(alert.ts, tz=timezone.utc)
 

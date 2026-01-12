@@ -354,6 +354,124 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
     logger.info("Emitted candidate-derived spark.telemetry trace_id=%s phi=%s novelty=%s", trace_id, phi, novelty)
 
 
+async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
+    """Propagates the candidate prompt/response as a stimulus to the Orion Tissue."""
+    
+    # Defaults for a generic chat interaction
+    valence = 0.5
+    arousal = 0.6  # Slightly higher arousal for direct interaction
+    dominance = 0.5
+    
+    # Attempt to extract richer signal from metadata if available
+    if c.spark_meta:
+        # Example: if Cortex passed back sentiment or other metrics
+        pass
+
+    # Construct a waveform for the EKG
+    wave_len = 64
+    x = np.linspace(-3, 3, wave_len)
+    waveform = (np.exp(-x**2) * arousal).astype(np.float32)
+
+    feat_dim = 32
+    feature_vec = np.zeros(feat_dim, dtype=np.float32)
+    feature_vec[0] = float(valence)
+    feature_vec[1] = float(arousal)
+    feature_vec[2] = float(dominance)
+
+    # Create encoding
+    encoding = SurfaceEncoding(
+        event_id=c.trace_id,
+        modality="text",
+        timestamp=time.time(),
+        source=c.source or "hub",
+        channel_tags=["chat", "candidate"],
+        waveform=waveform,
+        feature_vec=feature_vec,
+        spark_vector=None, # Hub candidates usually don't have the vector yet
+        meta={
+            "trace_id": c.trace_id,
+            "len_prompt": str(len(c.prompt)),
+            "len_response": str(len(c.response))
+        },
+    )
+
+    # Propagate to Tissue
+    stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
+    
+    # Calculate novelty & propagate
+    novelty = float(TISSUE.calculate_novelty(stimulus, channel_key="chat"))
+    TISSUE.propagate(
+        stimulus, 
+        steps=2, 
+        learning_rate=0.1, 
+        channel_key="chat", 
+        embedding=feature_vec, 
+        distress=0.0
+    )
+    
+    # Snapshot & Broadcast to UI
+    phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+    phi_stats = _apply_signal_deltas(phi_stats)
+    
+    # Update defaults with actual tissue state
+    valence = float(phi_stats.get("valence", valence))
+    arousal = float(phi_stats.get("energy", arousal))
+    
+    TISSUE.snapshot()
+    
+    seq = _next_seq()
+    snap = SparkStateSnapshotV1(
+        source_service=settings.service_name,
+        source_node=settings.node_name,
+        producer_boot_id=_PRODUCER_BOOT_ID,
+        seq=seq,
+        snapshot_ts=datetime.now(timezone.utc),
+        valid_for_ms=int(settings.spark_state_valid_for_ms),
+        correlation_id=c.trace_id,
+        trace_mode="chat",
+        trace_verb="candidate",
+        phi=phi_stats,
+        valence=valence,
+        arousal=arousal,
+        dominance=dominance,
+        vector_present=False,
+        metadata={
+            "stimulus_summary": (c.prompt or "")[:50],
+            "trigger": "spark.candidate"
+        },
+    )
+
+    # Broadcast to Web UI via WebSocket
+    try:
+        telemetry_id = str(uuid4())
+        ws_payload = {
+            "type": "tissue.update",
+            "telemetry_id": telemetry_id,
+            "correlation_id": c.trace_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stats": {
+                "phi": float(phi_stats.get("coherence", 0.0)),
+                "novelty": novelty,
+                "valence": valence,
+                "arousal": arousal,
+            },
+            "grid": [], # grid is optional/expensive
+            "metadata": snap.metadata,
+        }
+        await manager.broadcast(ws_payload)
+    except Exception as e:
+        logger.warning("Failed to broadcast candidate tissue update: %s", e)
+
+    # Optionally publish state snapshot to bus if enabled
+    if _pub_bus and _pub_bus.enabled:
+        snap_env = SparkStateSnapshotEnvelope(
+            source=_svc_ref(),
+            correlation_id=c.trace_id,
+            payload=snap,
+        )
+        await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
+
+
 async def handle_trace(env: BaseEnvelope) -> None:
     """Consume cognition.trace events, update Tissue, and emit:
     1) spark.telemetry (durable)
@@ -575,6 +693,20 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         await _emit_candidate_telemetry(env, candidate)
     except Exception as ex:
         logger.warning("Candidate telemetry emit failed: %s", ex)
+
+
+    # -------------------------------------------------------------------------
+    # Update Tissue (EKG) from Candidate Stimulus
+    # -------------------------------------------------------------------------
+    # Only update tissue on the initial pass (before introspection exists)
+    # to prevents double-counting the event.
+    if not candidate.introspection:
+        try:
+            await _update_tissue_from_candidate(candidate)
+        except Exception as e:
+            logger.error(f"Failed to update tissue from candidate {trace_id}: {e}")
+    # -------------------------------------------------------------------------
+
 
     # 2) If already introspected (or candidate already contains introspection), stop.
     if candidate.introspection:

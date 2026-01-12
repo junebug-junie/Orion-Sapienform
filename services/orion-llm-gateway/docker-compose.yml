@@ -35,6 +35,7 @@ services:
       # Backend endpoints (Ollama is required today; others optional)
       - ORION_LLM_VLLM_URL=${ORION_LLM_VLLM_URL:-}
       - ORION_LLM_LLAMACPP_URL=${ORION_LLM_LLAMACPP_URL:-}
+      - ORION_LLM_LLAMACPP_EMBEDDING_URL=http://orion-llamacpp-neural-host:8005
 
       # Timeouts
       - CONNECT_TIMEOUT_SEC=${CONNECT_TIMEOUT_SEC}

@@ -7,6 +7,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.telemetry.system_health import SystemHealthV1
 from .settings import settings
 from .api import router as planner_router
 
@@ -15,6 +18,39 @@ from .bus_listener import start_planner_bus_listener_background
 
 logger = logging.getLogger("planner-react.main")
 
+async def heartbeat_loop(settings):
+    """Publishes a heartbeat every 30 seconds."""
+    # Initialize a local bus just for this loop
+    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
+    if bus.enabled:
+        await bus.connect()
+
+    logger.info("Heartbeat loop started.")
+    try:
+        while True:
+            if bus.enabled:
+                try:
+                    payload = SystemHealthV1(
+                        service=settings.service_name,
+                        version=settings.service_version,
+                        node="planner-react-node",
+                        status="ok"
+                    ).model_dump(mode="json")
+
+                    await bus.publish("orion:system:health", BaseEnvelope(
+                        kind="system.health.v1",
+                        source=ServiceRef(name=settings.service_name, version=settings.service_version),
+                        payload=payload
+                    ))
+                except Exception as e:
+                    logger.warning(f"Heartbeat failed: {e}")
+
+            await asyncio.sleep(30)
+    except asyncio.CancelledError:
+        logger.info("Heartbeat loop stopping...")
+    finally:
+        if bus.enabled:
+            await bus.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,10 +63,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Failed to start bus listener: %s", e)
 
+    heartbeat_task = asyncio.create_task(heartbeat_loop(settings))
+
     yield
 
     # SHUTDOWN
     logger.info("Shutting down Planner React...")
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(

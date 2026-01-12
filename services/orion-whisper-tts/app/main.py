@@ -8,6 +8,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.telemetry.system_health import SystemHealthV1
+
 from .settings import settings
 from .tts_worker import listener_worker
 
@@ -22,11 +25,38 @@ app = FastAPI(title="Orion Whisper/TTS Service")
 # Global bus instance
 bus: Optional[OrionBusAsync] = None
 listener_task: Optional[asyncio.Task] = None
+heartbeat_task: Optional[asyncio.Task] = None
+
+
+async def heartbeat_loop(bus_instance: OrionBusAsync):
+    """Publishes a heartbeat every 30 seconds."""
+    logger.info("Heartbeat loop started.")
+    try:
+        while True:
+            try:
+                payload = SystemHealthV1(
+                    service=settings.service_name,
+                    version=settings.service_version,
+                    node="whisper-node",
+                    status="ok"
+                ).model_dump(mode="json")
+
+                await bus_instance.publish("orion:system:health", BaseEnvelope(
+                    kind="system.health.v1",
+                    source=ServiceRef(name=settings.service_name, version=settings.service_version),
+                    payload=payload
+                ))
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+
+            await asyncio.sleep(30)
+    except asyncio.CancelledError:
+        logger.info("Heartbeat loop stopping...")
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global bus, listener_task
+    global bus, listener_task, heartbeat_task
     logger.info(
         "Starting Whisper/TTS service %s v%s",
         settings.service_name,
@@ -41,17 +71,25 @@ async def startup() -> None:
 
     # Start the bus listener as an async task
     listener_task = asyncio.create_task(listener_worker(bus))
+    heartbeat_task = asyncio.create_task(heartbeat_loop(bus))
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global bus, listener_task
+    global bus, listener_task, heartbeat_task
     logger.info("Shutting down Whisper/TTS service...")
 
     if listener_task:
         listener_task.cancel()
         try:
             await listener_task
+        except asyncio.CancelledError:
+            pass
+
+    if heartbeat_task:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
         except asyncio.CancelledError:
             pass
 

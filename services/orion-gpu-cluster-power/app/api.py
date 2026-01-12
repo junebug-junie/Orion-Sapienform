@@ -6,6 +6,9 @@ from fastapi import FastAPI, APIRouter, Header, HTTPException, Depends, Request
 from .settings import settings, Settings
 from .service import PsuService
 from .bus import start_command_listener_background
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.telemetry.system_health import SystemHealthV1
+import asyncio
 
 logger = logging.getLogger("orion-psu-proxy.api")
 
@@ -80,6 +83,47 @@ def create_app() -> FastAPI:
         await psu_service.init_bus()
         if psu_service.bus_enabled:
             start_command_listener_background(psu_service)
+
+            # Start Heartbeat
+            app.state.heartbeat_task = asyncio.create_task(heartbeat_loop(psu_service))
+
         logger.info("Orion PSU Proxy startup complete.")
 
+    @app.on_event("shutdown")
+    async def on_shutdown():
+        if hasattr(app.state, "heartbeat_task") and app.state.heartbeat_task:
+            app.state.heartbeat_task.cancel()
+            try:
+                await app.state.heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+        if psu_service.bus:
+            await psu_service.bus.close()
+
     return app
+
+async def heartbeat_loop(service: PsuService):
+    """Publishes a heartbeat every 30 seconds."""
+    logger.info("Heartbeat loop started.")
+    try:
+        while True:
+            try:
+                payload = SystemHealthV1(
+                    service=service.settings.service_name,
+                    version=service.settings.service_version,
+                    node="psu-node",
+                    status="ok"
+                ).model_dump(mode="json")
+
+                await service.bus.publish("orion:system:health", BaseEnvelope(
+                    kind="system.health.v1",
+                    source=ServiceRef(name=service.settings.service_name, version=service.settings.service_version),
+                    payload=payload
+                ))
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+
+            await asyncio.sleep(30)
+    except asyncio.CancelledError:
+        logger.info("Heartbeat loop stopping...")

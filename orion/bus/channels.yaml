@@ -428,14 +428,6 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
-  - name: "orion:metacognition:enriched"
-    kind: "telemetry"
-    schema_id: "MetacognitionEnrichedV1"
-    producer_services: ["orion-cortex-orch"]
-    consumer_services: ["orion-sql-writer", "orion-vector-writer", "*"]
-    stability: "deperecated"
-    since: "2026-01-11"
-
 
   - name: "orion:vision:frames"
     kind: "event"

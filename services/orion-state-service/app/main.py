@@ -79,7 +79,13 @@ async def _handle_snapshot(env: BaseEnvelope) -> None:
     if env.kind != "spark.state.snapshot.v1":
         return
 
-    payload_obj = env.payload if isinstance(env.payload, dict) else {}
+    # Handle typed payload (if registry deserialized it) or raw dict
+    payload_obj = env.payload
+    if hasattr(payload_obj, "model_dump"):
+        payload_obj = payload_obj.model_dump(mode="json")
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+
     try:
         snap = SparkStateSnapshotV1.model_validate(payload_obj)
     except Exception as e:
@@ -124,7 +130,7 @@ async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
 
     # --- FIX: Accept the correct schema kind ---
     # We now strictly look for "state.get_latest.v1" (plus legacy fallback)
-    valid_kinds = ("state.get_latest.v1", "legacy.message")
+    valid_kinds = ("state.get_latest.v1", "orion.state.request", "StateGetLatestRequest", "legacy.message")
     
     if env.kind not in valid_kinds:
         out = StateLatestReply(ok=False, status="missing", note=f"unsupported_kind:{env.kind}")
@@ -136,7 +142,13 @@ async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
             payload=out.model_dump(mode="json"),
         )
 
-    payload_obj = env.payload if isinstance(env.payload, dict) else {}
+    # Handle typed payload (if registry deserialized it) or raw dict
+    payload_obj = env.payload
+    if hasattr(payload_obj, "model_dump"):
+        payload_obj = payload_obj.model_dump(mode="json")
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+
     if env.kind == "legacy.message" and isinstance(payload_obj.get("payload"), dict):
         payload_obj = payload_obj.get("payload") or {}
 

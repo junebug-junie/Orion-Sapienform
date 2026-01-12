@@ -105,9 +105,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PadRpcResponseV1": PadRpcResponseV1,
     "MetaTagsRequestV1": MetaTagsRequestV1,
     "MetaTagsResultV1": MetaTagsResultV1,
-    "state.get_latest.v1": StateGetLatestRequest,
     "StateGetLatestRequest": StateGetLatestRequest,
-    "state.latest.reply.v1": StateLatestReply,
     "StateLatestReply": StateLatestReply,
 }
 

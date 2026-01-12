@@ -284,7 +284,7 @@ class EquilibriumService(BaseChassis):
 
         # 1. Publish Trigger Event (for observability)
         env = BaseEnvelope(
-            kind="equilibrium.metacog.trigger",
+            kind="orion.metacog.trigger.v1",
             source=self._source(),
             payload=trigger.model_dump(mode="json"),
         )

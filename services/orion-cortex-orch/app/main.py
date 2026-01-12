@@ -11,14 +11,17 @@ from pydantic import Field, ValidationError
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 
-from .orchestrator import call_verb_runtime, dispatch_metacognition_tick
-
+# REMOVED: dispatch_metacognition_tick
+from .orchestrator import call_verb_runtime, dispatch_metacog_trigger
 from .settings import get_settings
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 logger = logging.getLogger("orion.cortex.orch")
-METACOGNITION_TICK_CHANNEL = "orion:metacognition:tick"
+
+# Channels
+# We only listen for the trigger now. The SQL Writer handles the ticks independently.
+METACOGNITION_TRIGGER_CHANNEL = "orion:equilibrium:metacog:trigger"
 
 
 class CortexOrchRequest(BaseEnvelope):
@@ -152,7 +155,6 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             error_payload = error_payload or {"message": verb_result.error or "verb_failed"}
 
         # ENRICHMENT: Extract executed verbs from steps to populate metadata
-        # This fixes the issue where everything looks like 'chat_general'
         executed_verbs = []
         for s in steps:
             if s.verb_name and s.verb_name not in ["planner_react", "council_checkpoint", "agent_chain"]:
@@ -205,24 +207,36 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 steps=[],
                 error={"message": str(e), "type": type(e).__name__},
                 correlation_id=str(env.correlation_id),
-           ).model_dump(mode="json"),
+            ).model_dump(mode="json"),
         )
 
 svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
 equilibrium_hunter: Hunter
 
 
-async def _handle_metacognition_tick(env: BaseEnvelope) -> None:
-    await dispatch_metacognition_tick(
-        equilibrium_hunter.bus,
-        source=_source(),
-        env=env,
-    )
+async def _handle_equilibrium_envelope(env: BaseEnvelope) -> None:
+    """
+    Routes events from Equilibrium.
+    Now only handles Triggers (for Collapse Mirror).
+    Ticks are ignored here (logged directly by SQL Writer).
+    """
+    if env.kind == "orion.metacog.trigger.v1":
+        await dispatch_metacog_trigger(
+            equilibrium_hunter.bus,
+            source=_source(),
+            env=env,
+        )
+        return
+
+    # Pass on any legacy kinds or ticks
+    pass
 
 equilibrium_hunter = Hunter(
     _cfg(),
-    handler=_handle_metacognition_tick,
-    patterns=[METACOGNITION_TICK_CHANNEL],
+    handler=_handle_equilibrium_envelope,
+    patterns=[
+        METACOGNITION_TRIGGER_CHANNEL, 
+    ],
 )
 
 

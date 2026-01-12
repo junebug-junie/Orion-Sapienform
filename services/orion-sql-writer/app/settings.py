@@ -41,7 +41,8 @@ class Settings(BaseSettings):
             "orion:spark:telemetry",
             "orion:cognition:trace",
             "orion:metacognition:tick",
-            "orion:metacognition:enriched"
+            "orion:equilibrium:metacog:trigger"
+            #"orion:metacognition:enriched"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
     sql_writer_route_map_json: str = Field(
         default=json.dumps({
             "collapse.mirror": "CollapseMirror",
+            "collapse.mirror.entry.v2": "CollapseMirror",
             "collapse.enrichment": "CollapseEnrichment",
             "tags.enriched": "CollapseEnrichment",
             "chat.history": "ChatHistoryLogSQL",
@@ -62,8 +64,8 @@ class Settings(BaseSettings):
             "spark.telemetry": "SparkTelemetrySQL",
             "cognition.trace": "CognitionTraceSQL",
             "metacognition.tick.v1":"MetacognitionTickSQL",
-            "metacognition.enriched.v1":"MetacognitionEnrichedSQL"
-
+            #"metacognition.enriched.v1":"MetacognitionEnrichedSQL",
+            "orion.metacog.trigger.v1": "MetacogTriggerSQL"
 
         }),
         alias="SQL_WRITER_ROUTE_MAP_JSON"

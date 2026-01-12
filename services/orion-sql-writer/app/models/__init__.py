@@ -10,6 +10,7 @@ from .fallback_log import BusFallbackLog
 from .cognition_trace import CognitionTraceSQL
 from .metacognition_tick import MetacognitionTickSQL
 from . metacognition_enriched import MetacognitionEnrichedSQL
+from .metacog_trigger import MetacogTriggerSQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -23,5 +24,6 @@ __all__ = [
     "BusFallbackLog",
     "CognitionTraceSQL",
     "MetacognitionTickSQL",
-    "MetacognitionEnrichedSQL"
+    "MetacognitionEnrichedSQL",
+    "MetacogTriggerSQL"
 ]

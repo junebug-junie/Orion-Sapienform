@@ -27,6 +27,7 @@ from app.models import (
     CognitionTraceSQL,
     MetacognitionTickSQL,
     MetacognitionEnrichedSQL,
+    MetacogTriggerSQL
 )
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -41,8 +42,9 @@ from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.telemetry.metacognition import (
     MetacognitionTickV1,
-    MetacognitionEnrichedV1
+    MetacognitionEnrichedV1,
 )
+from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 try:
     from orion.schemas.telemetry.spark import SparkTelemetryPayload
@@ -64,6 +66,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
     "MetacognitionEnrichedSQL": (MetacognitionEnrichedSQL, MetacognitionEnrichedV1),
+    "MetacogTriggerSQL": (MetacogTriggerSQL, MetacogTriggerV1),
 }
 
 

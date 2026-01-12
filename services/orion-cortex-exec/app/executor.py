@@ -1,3 +1,4 @@
+# services/orion-cortex-exec/app/executor.py
 from __future__ import annotations
 
 """
@@ -274,8 +275,8 @@ async def call_step_services(
     # Calculate Timeout from Step Definition (default to 60s if missing)
     # The YAML says 60000ms, so we convert to 60.0s
     step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
-    
-    # FIX: Define effective_timeout so the loop below can use it
+
+    # Define effective_timeout so the loop below can use it
     effective_timeout = step_timeout_sec
 
     # Instantiate Clients
@@ -435,23 +436,22 @@ async def call_step_services(
                 try:
                     entry = CollapseMirrorEntryV2.model_validate(final_data)
 
-                    # Publish to Intake (Mirror)
+                    # Publish to SQL Writer (Bypass User Intake)
                     env = BaseEnvelope(
-                        #kind="orion.collapse.mirror.entry.v2", # Matches schema ID logic usually, or channel kind?
-                        # Registry says: schema_id="CollapseMirrorEntryV2"
-                        # Channel says: kind="event", schema_id="CollapseMirrorEntryV2"
-                        # Envelope kind is usually the channel name suffix or a specific event kind.
-                        # For "orion:collapse:intake", the channel kind is "event".
-                        # Let's use "collapse.mirror.entry.v2" as a safe kind string.
                         kind="collapse.mirror.entry.v2",
                         source=source,
                         correlation_id=correlation_id,
                         payload=entry.model_dump(mode="json"),
                     )
 
-                    await bus.publish("orion:collapse:intake", env)
-                    merged_result[service] = {"ok": True, "published": True, "event_id": entry.event_id}
-                    logs.append("ok <- MetacogPublishService")
+                    await bus.publish("orion:collapse:sql-write", env)
+                    merged_result[service] = {
+                        "ok": True, 
+                        "published": True, 
+                        "channel": "orion:collapse:sql-write", 
+                        "event_id": entry.event_id
+                    }
+                    logs.append("ok <- MetacogPublishService (SQL)")
 
                 except Exception as e:
                     logs.append(f"error <- MetacogPublishService: {e}")
@@ -740,7 +740,7 @@ async def call_step_services(
                         logs.append("publish -> orion:collapse:intake")
 
 
-            if service == "MetaTagsService":
+            elif service == "MetaTagsService":
                 # Pull metacognition tick from context
                 tick = ctx.get("metacognition_tick") or {}
                 if not isinstance(tick, dict):

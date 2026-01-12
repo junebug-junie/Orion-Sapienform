@@ -26,7 +26,7 @@ from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
-from orion.schemas.telemetry.metacognition import MetacognitionTickV1, MetacognitionEnrichedV1
+from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.meta_tags import MetaTagsRequestV1, MetaTagsResultV1
 from orion.schemas.vision import (
@@ -65,7 +65,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
-    "MetacognitionEnrichedV1": MetacognitionEnrichedV1,
     "MetacogTriggerV1": MetacogTriggerV1,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,

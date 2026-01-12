@@ -7,6 +7,7 @@ Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
 """
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Dict, List, Tuple
@@ -38,8 +39,22 @@ logger = logging.getLogger("orion.cortex.exec")
 
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
+    
+    # [FIX] Defensive coding: Prevent Jinja crash on missing globals
+    render_ctx = ctx.copy()
+    defaults = {
+        "prompt_templates": {},
+        "collapse_entry": {"event_id": "unknown_missing_draft"},
+        "collapse_json": "{}", 
+        "trigger": {"trigger_kind": "unknown", "reason": "unknown", "pressure": 0.0, "zen_state": "unknown"},
+        "context_summary": "Context missing."
+    }
+    for k, v in defaults.items():
+        if k not in render_ctx:
+            render_ctx[k] = v
+        
     tmpl = env.from_string(template_str or "")
-    return tmpl.render(**ctx)
+    return tmpl.render(**render_ctx)
 
 
 def _last_user_message(ctx: Dict[str, Any]) -> str:
@@ -61,13 +76,6 @@ def _last_user_message(ctx: Dict[str, Any]) -> str:
 
 
 def _json_sanitize(obj: Any, *, _seen: set[int] | None = None, _depth: int = 0, _max_depth: int = 10) -> Any:
-    """
-    Best-effort JSON-safe conversion with circular reference protection.
-
-    # KEEP / IMPORTANT:
-    This is NOT for "pretty serialization". It's for safety when objects or
-    accidental backrefs leak into payloads. If we see a cycle, we replace it.
-    """
     if _seen is None:
         _seen = set()
 
@@ -111,19 +119,6 @@ def _build_hop_messages(
     prompt: str,
     ctx_messages: Any,
 ) -> List[Dict[str, Any]]:
-    """
-    Build the message list for downstream LLM-like services.
-
-    # KEEP / IMPORTANT:
-    Step execution (prompt_template) is the lynchpin of Orion's architecture.
-    The rendered step prompt MUST be injected as a SYSTEM message on every hop.
-
-    # KEEP / IMPORTANT (DUAL PATHWAY):
-    DO NOT mutate ctx["messages"].
-    DO NOT prepend the system prompt into ctx.
-    This function returns a NEW list of NEW dicts for the outbound hop only.
-    This preserves the race-safe/persistence-safe pathway used by Spark + SQL-writer.
-    """
     normalized: List[Dict[str, Any]] = []
 
     raw_msgs = ctx_messages or []
@@ -141,8 +136,6 @@ def _build_hop_messages(
 
     if prompt and str(prompt).strip():
         sys_msg = {"role": "system", "content": str(prompt)}
-
-        # Replace upstream system rather than stacking multiple system messages.
         if normalized and isinstance(normalized[0], dict) and normalized[0].get("role") == "system":
             normalized[0] = sys_msg
         else:
@@ -154,6 +147,54 @@ def _build_hop_messages(
 
     return normalized
 
+
+def _extract_llm_text(res: Any) -> str:
+    """Safely extract text content from various LLM result shapes."""
+    if not res:
+        return ""
+    
+    if hasattr(res, "choices") and res.choices:
+        try:
+            return str(res.choices[0].message.content)
+        except (AttributeError, IndexError):
+            pass
+
+    if hasattr(res, "content") and res.content:
+        return str(res.content)
+
+    if hasattr(res, "message") and res.message:
+        if hasattr(res.message, "content"):
+            return str(res.message.content)
+        if isinstance(res.message, dict):
+            return str(res.message.get("content", ""))
+
+    if hasattr(res, "model_dump"):
+        try:
+            d = res.model_dump(mode="json")
+            if "content" in d: return str(d["content"])
+            if "choices" in d and d["choices"]: return str(d["choices"][0]["message"]["content"])
+        except Exception:
+            pass
+
+    return str(res)
+
+
+def _loose_json_extract(text: str) -> Dict[str, Any] | None:
+    """
+    Fallback extraction when strict find_collapse_entry fails.
+    Finds the first outer { and last } and tries to parse.
+    """
+    if not text:
+        return None
+    try:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1:
+            json_str = text[start : end + 1]
+            return json.loads(json_str)
+    except Exception:
+        pass
+    return None
 
 
 async def run_recall_step(
@@ -172,7 +213,6 @@ async def run_recall_step(
     recall_client = RecallClient(bus)
     reply_channel = f"orion:exec:result:RecallService:{uuid4()}"
 
-    # FIX: Define the timeout variable that was missing
     recall_timeout = float(settings.step_timeout_ms) / 1000.0
 
     fragment = _last_user_message(ctx) or ""
@@ -256,30 +296,19 @@ async def call_step_services(
     t0 = time.time()
     logs: List[str] = []
     merged_result: Dict[str, Any] = {}
-    # Optional embedding vector returned by some LLM backends (e.g. the
-    # llama.cpp neural host). Keep it at the step level so downstream
-    # consumers (Spark introspector, vector writers, etc.) don't need to
-    # know how each service nests its result payload.
     spark_vector: list[float] | None = None
 
-    # DEBUG: Log Context Keys to prove data is present
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     logger.info(f"Context Keys available: {list(ctx.keys())}")
 
     prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
-    # DEBUG: Log Rendered Prompt (Truncated)
     debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
     logger.info(f"Rendered Prompt: {debug_prompt!r}")
 
-    # Calculate Timeout from Step Definition (default to 60s if missing)
-    # The YAML says 60000ms, so we convert to 60.0s
     step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
-
-    # Define effective_timeout so the loop below can use it
     effective_timeout = step_timeout_sec
 
-    # Instantiate Clients
     llm_client = LLMGatewayClient(bus)
     planner_client = PlannerReactClient(bus)
     agent_client = AgentChainClient(bus)
@@ -291,7 +320,6 @@ async def call_step_services(
             if service == "MetacogDraftService":
                 logs.append("exec -> MetacogDraftService (LLM + Parse)")
 
-                # 1. Call LLM
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
@@ -300,7 +328,7 @@ async def call_step_services(
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     options={
-                        "temperature": 0.8, # Creative
+                        "temperature": 0.8,
                         "max_tokens": 1024,
                         "stream": False,
                     }
@@ -314,36 +342,34 @@ async def call_step_services(
                     timeout_sec=effective_timeout,
                 )
 
-                # 2. Parse & Normalize
                 try:
-                    raw_content = str(llm_res.choices[0].message.content) if llm_res.choices else ""
+                    raw_content = _extract_llm_text(llm_res)
+                    
+                    # 1. Try strict find (enforces V1 keys)
                     parsed = find_collapse_entry(raw_content)
-                    if not parsed and "{" in raw_content:
-                        # Fallback try parsing raw content as json if find failed
-                        try:
-                            import json
-                            parsed = json.loads(raw_content)
-                        except Exception:
-                            pass
+                    
+                    # 2. Fallback: Loose extraction (find first balanced {})
+                    if not parsed:
+                        parsed = _loose_json_extract(raw_content)
 
                     if not parsed:
+                         # Log the specific failure for debugging
+                         logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
                          raise ValueError("No JSON found in LLM response")
 
-                    # Force fields
                     parsed["observer"] = "orion"
                     parsed["visibility"] = "internal"
                     parsed["epistemic_status"] = "observed"
 
-                    # Normalize
                     entry = normalize_collapse_entry(parsed)
 
-                    # Store for next step
                     ctx["collapse_entry"] = entry.model_dump(mode="json")
                     ctx["collapse_json"] = raw_content
                     merged_result[service] = {"ok": True, "event_id": entry.event_id}
                     logs.append("ok <- MetacogDraftService")
 
                 except Exception as e:
+                    logger.error(f"MetacogDraftService FAILED: {e}")
                     logs.append(f"error <- MetacogDraftService parsing: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
 
@@ -352,7 +378,6 @@ async def call_step_services(
             if service == "MetacogEnrichService":
                 logs.append("exec -> MetacogEnrichService (LLM + Merge)")
 
-                # 1. Call LLM
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
@@ -361,7 +386,7 @@ async def call_step_services(
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     options={
-                        "temperature": 0.5, # Analytical
+                        "temperature": 0.5,
                         "max_tokens": 1024,
                         "stream": False,
                     }
@@ -375,43 +400,42 @@ async def call_step_services(
                     timeout_sec=effective_timeout,
                 )
 
-                # 2. Parse & Merge
                 try:
-                    raw_content = str(llm_res.choices[0].message.content) if llm_res.choices else ""
-                    # We expect a JSON object that is either a full entry or a patch
+                    raw_content = _extract_llm_text(llm_res)
+
+                    # 1. Try strict find
                     patch = find_collapse_entry(raw_content)
+
+                    # 2. Fallback: Loose extract
                     if not patch:
-                        # Try parsing directly
-                        try:
-                            import json
-                            patch = json.loads(raw_content)
-                        except Exception:
-                            pass
+                        patch = _loose_json_extract(raw_content)
 
                     if not patch:
-                         # If parsing fails, use the draft as fallback
-                         logger.warning("MetacogEnrichService failed to parse JSON, using draft.")
+                         logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
                          patch = {}
 
-                    # Retrieve draft
                     draft_data = ctx.get("collapse_entry")
                     if not draft_data:
                          raise ValueError("No draft entry found in context")
 
                     draft = CollapseMirrorEntryV2.model_validate(draft_data)
-
-                    # Merge logic (simple overlay of enrichment fields)
-                    # We trust Pydantic's update/copy or just manual dict update for safety
                     final_dict = draft.model_dump(mode="json")
 
-                    # Update allowed enrichment fields
                     for k in ["numeric_sisters", "causal_density", "is_causally_dense",
                               "what_changed", "change_type", "tag_scores", "tags",
                               "pattern_candidate", "resonance_signature"]:
                         if k in patch and patch[k] is not None:
                             final_dict[k] = patch[k]
 
-                    # Re-validate
+                    # Coerce resonance_signature to string if LLM returned an object
+                    rs = final_dict.get("resonance_signature")
+                    if rs is not None and not isinstance(rs, str):
+                        import json
+                        try:
+                            final_dict["resonance_signature"] = json.dumps(rs)
+                        except Exception:
+                            final_dict["resonance_signature"] = str(rs)
+
                     final_entry = CollapseMirrorEntryV2.model_validate(final_dict)
 
                     ctx["final_entry"] = final_entry.model_dump(mode="json")
@@ -419,6 +443,7 @@ async def call_step_services(
                     logs.append("ok <- MetacogEnrichService")
 
                 except Exception as e:
+                    logger.error(f"MetacogEnrichService FAILED: {e}")
                     logs.append(f"error <- MetacogEnrichService: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
 
@@ -436,7 +461,6 @@ async def call_step_services(
                 try:
                     entry = CollapseMirrorEntryV2.model_validate(final_data)
 
-                    # Publish to SQL Writer (Bypass User Intake)
                     env = BaseEnvelope(
                         kind="collapse.mirror.entry.v2",
                         source=source,
@@ -454,33 +478,31 @@ async def call_step_services(
                     logs.append("ok <- MetacogPublishService (SQL)")
 
                 except Exception as e:
+                    logger.error(f"MetacogPublishService FAILED: {e}")
                     logs.append(f"error <- MetacogPublishService: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
 
                 continue
 
             if service == "MetacogContextService":
-                # Special step: populate context from trigger
                 logs.append("exec -> MetacogContextService")
-                trigger_data = ctx.get("args", {}).get("trigger", {})
+                
+                trigger_data = ctx.get("trigger") or ctx.get("args", {}).get("trigger", {})
+                
                 try:
                     trigger = MetacogTriggerV1.model_validate(trigger_data)
                 except Exception:
                     trigger = MetacogTriggerV1(trigger_kind="unknown", reason="deserialization_failed")
 
-                # Default summary components
                 pad_summary = "unknown"
                 spark_summary = "unknown"
                 trace_summary = "unknown"
 
-                # 1. Fetch Landing Pad Frame/Signal via RPC (if trigger suggests or always)
-                if True:  # Always try to get latest pad snapshot
-                    # PadRpcRequestV1 expects 'request_id' and 'reply_channel' in the model
-                    # Also 'method' must be one of the literal values
+                if True:
                     pad_req = PadRpcRequestV1(
                         request_id=correlation_id,
                         reply_channel=reply_channel,
-                        method="get_latest_frame",  # Using a valid literal
+                        method="get_latest_frame",
                         args={}
                     )
                     pad_env = BaseEnvelope(
@@ -491,7 +513,6 @@ async def call_step_services(
                         payload=pad_req.model_dump(mode="json"),
                     )
                     try:
-                        # short timeout for pad
                         pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=2.0)
                         pad_dec = bus.codec.decode(pad_msg.get("data"))
                         if pad_dec.ok:
@@ -500,7 +521,6 @@ async def call_step_services(
                     except Exception as e:
                         pad_summary = f"error: {e}"
 
-                # 2. Fetch Spark State via RPC
                 if True:
                     state_req = StateGetLatestRequest(scope="global")
                     state_env = BaseEnvelope(
@@ -522,18 +542,15 @@ async def call_step_services(
                     except Exception as e:
                         spark_summary = f"error: {e}"
 
-                # 3. Recent Traces
                 recent_traces = get_trace_cache().get_recent(5)
-                trace_summary = ""
                 if recent_traces:
                     trace_summary = "\n".join([
-                        f"- [{t.mode}] {t.verb}: {t.final_text[:100]}..."
+                        f"- [{t.mode}] {t.verb}: {(t.final_text or '')[:100]}..."
                         for t in recent_traces
                     ])
                 else:
                     trace_summary = "None available."
 
-                # 4. Assemble Context
                 summary_text = (
                     f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
                     f"Pressure: {trigger.pressure}\n"
@@ -566,12 +583,7 @@ async def call_step_services(
                 return recall_step
 
             if service == "LLMGatewayService":
-                # --- STRICT PATH ---
-                # 1. Build Pydantic Model
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
-
-                # KEEP / IMPORTANT:
-                # Step prompt_template MUST govern this hop even if ctx["messages"] exists.
                 messages_payload = _build_hop_messages(
                     prompt=prompt,
                     ctx_messages=ctx.get("messages"),
@@ -584,11 +596,10 @@ async def call_step_services(
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),
-                        "stream": False,  # Keep this fix!
+                        "stream": False,
                     }
                 )
 
-                # 2. Delegate to Client WITH TIMEOUT
                 logs.append(f"rpc -> LLMGateway via client (timeout={effective_timeout}s)")
                 result_object = await llm_client.chat(
                     source=source,
@@ -598,11 +609,8 @@ async def call_step_services(
                     timeout_sec=effective_timeout,
                 )
 
-                # Explicitly dump to dict for storage in result payload
                 merged_result[service] = result_object.model_dump(mode="json")
 
-                # Capture optional embedding vector if present. Some backends
-                # don't return it ("vec=no"), others do ("vec=yes").
                 if spark_vector is None:
                     try:
                         _sv = getattr(result_object, "spark_vector", None)
@@ -613,8 +621,6 @@ async def call_step_services(
                 logs.append(f"ok <- {service}")
 
             elif service == "AgentChainService":
-                # KEEP / IMPORTANT:
-                # Agent chain must also receive the step prompt_template as a system message.
                 hop_msgs = _build_hop_messages(
                     prompt=prompt,
                     ctx_messages=ctx.get("messages"),
@@ -660,7 +666,6 @@ async def call_step_services(
                 )
                 merged_result[service] = planner_res.model_dump(mode="json")
                 logs.append("ok <- PlannerReactService")
-                # expose planner trace to downstream agent chain calls
                 ctx.setdefault("planner_trace", planner_res.model_dump(mode="json"))
 
 
@@ -703,7 +708,6 @@ async def call_step_services(
                 elif isinstance(ctx.get("collapse_json"), str):
                     try:
                         import json
-
                         candidate = json.loads(ctx.get("collapse_json"))
                     except Exception:
                         candidate = None
@@ -741,12 +745,10 @@ async def call_step_services(
 
 
             elif service == "MetaTagsService":
-                # Pull metacognition tick from context
                 tick = ctx.get("metacognition_tick") or {}
                 if not isinstance(tick, dict):
                     tick = {"raw": str(tick)}
 
-                # Build something taggable (keep simple for now)
                 text = ""
                 for k in ("summary", "mantra", "trigger"):
                     v = tick.get(k)
@@ -789,7 +791,6 @@ async def call_step_services(
                 )
                 logs.append("ok <- MetaTagsService")
                 continue
-
 
             else:
                 logs.append(f"skip <- {service} (generic path not implemented in example)")

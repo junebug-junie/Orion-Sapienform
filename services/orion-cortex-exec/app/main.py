@@ -168,11 +168,11 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             }
         )
 
-        # UPDATED: Use the typed envelope
+        # Use the typed envelope
         trace_envelope = CognitionTraceEnvelope(
             source=_source(),
             correlation_id=corr_id,
-            causality_chain=env.causality_chain, # Propagate causality
+            causality_chain=env.causality_chain,
             payload=trace_payload
         )
 
@@ -181,6 +181,22 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     except Exception as e:
         logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)
+        return CortexExecResult(
+            source=_source(),
+            correlation_id=corr_id,
+            causality_chain=env.causality_chain,
+            payload=CortexExecResultPayload(ok=False, result={"error": str(e)}),
+        )
+
+
+    if env.reply_to:
+        manual_result = CortexExecResult(
+            source=_source(),
+            correlation_id=corr_id,
+            causality_chain=env.causality_chain,
+            payload=CortexExecResultPayload(ok=True, result=res.model_dump(mode="json")),
+        )
+        await svc.bus.publish(env.reply_to, manual_result)
 
     return CortexExecResult(
         source=_source(),

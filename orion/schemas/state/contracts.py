@@ -21,6 +21,7 @@ class StateGetLatestRequest(BaseModel):
     node: Optional[str] = Field(None, description="required when scope='node'")
     kind: Literal["state.get_latest.v1"] = "state.get_latest.v1"
 
+
 class StateLatestReply(BaseModel):
     """RPC reply payload from the state read-model service."""
 
@@ -31,8 +32,9 @@ class StateLatestReply(BaseModel):
     status: FreshnessStatus
     as_of_ts: Optional[datetime] = None
     age_ms: Optional[int] = None
+    kind: Literal["state.latest.reply.v1"] = "state.latest.reply.v1"
 
-    # The canonical snapshot when present
+# The canonical snapshot when present
     snapshot: Optional[SparkStateSnapshotV1] = None
 
     # Diagnostics / hints (stable keys)

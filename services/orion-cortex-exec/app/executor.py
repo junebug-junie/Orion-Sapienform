@@ -524,7 +524,7 @@ async def call_step_services(
                 if True:
                     state_req = StateGetLatestRequest(scope="global")
                     state_env = BaseEnvelope(
-                        kind="orion.state.request",
+                        kind="state.get_latest.v1",
                         source=source,
                         correlation_id=correlation_id,
                         reply_to=reply_channel,

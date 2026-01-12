@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     )
 
     # How long to wait for Cortex-Orch RPC reply
-    cortex_timeout_sec: float = Field(15.0, alias="CORTEX_TIMEOUT_SEC")
+    cortex_timeout_sec: float = Field(120.0, alias="CORTEX_TIMEOUT_SEC")
 
     # Web UI
     port: int = Field(8444, alias="PORT")

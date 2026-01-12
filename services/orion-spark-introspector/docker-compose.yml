@@ -37,7 +37,7 @@ services:
       ORION_TISSUE_SNAPSHOT_PATH: ${ORION_TISSUE_SNAPSHOT_PATH:-/mnt/storage-lukewarm/orion/spark/tissue-brain.npy}
 
       # Cortex timeouts
-      CORTEX_TIMEOUT_SEC: ${CORTEX_TIMEOUT_SEC:-15}
+      CORTEX_TIMEOUT_SEC: ${CORTEX_TIMEOUT_SEC:-120}
 
     ports:
       - "${PORT:-8444}:${PORT:-8444}"

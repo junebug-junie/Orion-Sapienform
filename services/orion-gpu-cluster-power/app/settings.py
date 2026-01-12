@@ -1,7 +1,7 @@
 # services/orion-psu-proxy/app/settings.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyUrl, Field
+from pydantic import AnyUrl, Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -42,5 +42,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("orion_bus_url", mode="after")
+    @classmethod
+    def stringify_url(cls, v):
+       return str(v)
 
 settings = Settings()

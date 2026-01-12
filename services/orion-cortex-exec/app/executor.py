@@ -437,7 +437,7 @@ async def call_step_services(
 
                     # Publish to Intake (Mirror)
                     env = BaseEnvelope(
-                        kind="orion.collapse.mirror.entry.v2", # Matches schema ID logic usually, or channel kind?
+                        #kind="orion.collapse.mirror.entry.v2", # Matches schema ID logic usually, or channel kind?
                         # Registry says: schema_id="CollapseMirrorEntryV2"
                         # Channel says: kind="event", schema_id="CollapseMirrorEntryV2"
                         # Envelope kind is usually the channel name suffix or a specific event kind.

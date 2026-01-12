@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────
     ORION_BUS_ENABLED: bool = Field(default=True)
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False)
-    ORION_BUS_URL: str = Field(default="redis://localhost:6379/0")
+    ORION_BUS_URL: str = Field(default="redis://100.92.216.81:6379/0")
 
     # ─────────────────────────────────────────────
     # Node / UPS identity

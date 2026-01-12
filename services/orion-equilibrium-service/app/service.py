@@ -130,7 +130,7 @@ class EquilibriumService(BaseChassis):
         """Shared logic to calculate current distress/zen and build state list."""
         now = _utcnow()
         states: List[EquilibriumServiceState] = []
-        
+
         retention = float(settings.state_retention_sec)
         keys_to_purge = []
 
@@ -180,7 +180,7 @@ class EquilibriumService(BaseChassis):
         # 3. Calculate Scores
         # Use the smallest window (usually 60s) for immediate distress
         smallest_window = str(min(settings.windows_sec)) if settings.windows_sec else "60"
-        
+
         distress_components = [1.0 - s.uptime_pct.get(smallest_window, 1.0) for s in states] or [0.0]
         distress_score = float(sum(distress_components) / len(distress_components)) if distress_components else 0.0
         zen_score = max(0.0, 1.0 - distress_score)
@@ -189,7 +189,7 @@ class EquilibriumService(BaseChassis):
 
     async def _publish_snapshot(self) -> None:
         now = _utcnow()
-        
+
         # Use shared calculation
         distress_score, zen_score, states = self._calculate_metrics()
 
@@ -240,7 +240,7 @@ class EquilibriumService(BaseChassis):
             return
 
         now = _utcnow()
-        
+ 
         # Use shared calculation (ignore the detailed states list here)
         distress_score, zen_score, _ = self._calculate_metrics()
         services_tracked = len(self._state)
@@ -297,11 +297,11 @@ class EquilibriumService(BaseChassis):
         # 2. Publish Verb Request (to execute)
         verb_req = VerbRequestV1(
             verb="log_orion_metacognition",
-            args={
+            payload={
                 "trigger": trigger.model_dump(mode="json"),
                 "window_sec": trigger.window_sec,
             },
-            control={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
+            meta={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
         )
         verb_env = BaseEnvelope(
             kind="verb.request.v1",

@@ -19,7 +19,7 @@ class StateGetLatestRequest(BaseModel):
 
     scope: StateScope = Field("global", description="global or per-node")
     node: Optional[str] = Field(None, description="required when scope='node'")
-
+    kind: Literal["state.get_latest.v1"] = "state.get_latest.v1"
 
 class StateLatestReply(BaseModel):
     """RPC reply payload from the state read-model service."""

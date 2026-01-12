@@ -206,7 +206,17 @@ class CollapseMirrorEntryV2(BaseModel):
     def with_defaults(self) -> "CollapseMirrorEntryV2":
         return self._fill_defaults()
 
+    @field_validator("pattern_candidate", mode="before")
+    @classmethod
+    def _normalize_pattern_candidate(cls, v: Any) -> Optional[str]:
+        if v is None:
+            return None
 
+        # If we receive a rich object (dict), serialize it to JSON
+        # so we can store it in the SQL VARCHAR column without crashing.
+        if isinstance(v, dict):
+            return json.dumps(v)
+        return str(v)
 def v1_to_v2(v1: CollapseMirrorEntryV1) -> CollapseMirrorEntryV2:
     observer_state = v1.observer_state
     if isinstance(observer_state, str):

@@ -8,6 +8,7 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.schemas import PlanExecutionRequest
+from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
 logger = logging.getLogger("orion.cortex.orch.clients")
 
@@ -31,13 +32,13 @@ class CortexExecClient:
         Sends a typed PlanExecutionRequest, returns the raw result dict from Exec.
         """
         reply_channel = f"{self.result_prefix}:{uuid4()}"
-        
+
         # 1. STRICT: Convert Pydantic -> JSON
         # This ensures we never send a malformed plan
         payload_json = req.model_dump(mode="json")
 
         env = BaseEnvelope(
-            kind="cortex.exec.request",
+            kind=req.kind,
             source=source,
             correlation_id=correlation_id,
             reply_to=reply_channel,
@@ -75,9 +76,6 @@ class CortexExecClient:
         return decoded.envelope.model_dump(mode="json")
 
 
-from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
-
-
 class StateServiceClient:
     """
     Strict, typed client for requesting the latest Orion state (Spark snapshot)
@@ -99,7 +97,7 @@ class StateServiceClient:
         reply_channel = f"{self.result_prefix}:{uuid4()}"
 
         env = BaseEnvelope(
-            kind="state.get_latest.v1",
+            kind=req.kind,
             source=source,
             correlation_id=correlation_id,
             reply_to=reply_channel,

@@ -11,6 +11,7 @@ from loguru import logger
 from redis.asyncio import Redis
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
+# ADDED: BaseEnvelope needed for manual replies
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
@@ -21,6 +22,8 @@ from .store import StateStore
 from .pg import fetch_recent_spark_telemetry_metadata
 
 STORE: Optional[StateStore] = None
+# ADDED: Global reference to Rabbit chassis for RPC replies
+RABBIT: Optional[Rabbit] = None
 
 
 def _source() -> ServiceRef:
@@ -69,7 +72,7 @@ async def _hydrate_from_postgres(store: StateStore) -> int:
 
 
 async def _handle_snapshot(env: BaseEnvelope) -> None:
-    global STORE
+    global STORE, RABBIT
     if STORE is None:
         return
 
@@ -93,6 +96,19 @@ async def _handle_snapshot(env: BaseEnvelope) -> None:
             snap.snapshot_ts.isoformat(),
         )
 
+    # --- FIX: Send ACK to prevent RPC timeouts ---
+    # If the sender provided a reply_to address, they are waiting for us.
+    if env.reply_to and RABBIT:
+        ack_payload = {"ok": True, "seq": snap.seq, "node": snap.source_node}
+        ack_env = BaseEnvelope(
+            kind="spark.state.snapshot.ack",
+            source=_source(),
+            correlation_id=env.correlation_id,
+            payload=ack_payload
+        )
+        # Fire and forget the reply
+        await RABBIT.send_reply(ack_env, env.reply_to)
+
 
 async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
     global STORE
@@ -106,8 +122,11 @@ async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
             payload=out.model_dump(mode="json"),
         )
 
-    # strict kind
-    if env.kind not in ("state.get_latest.v1", "legacy.message"):
+    # --- FIX: Accept the correct schema kind ---
+    # We now strictly look for "state.get_latest.v1" (plus legacy fallback)
+    valid_kinds = ("state.get_latest.v1", "legacy.message")
+    
+    if env.kind not in valid_kinds:
         out = StateLatestReply(ok=False, status="missing", note=f"unsupported_kind:{env.kind}")
         return BaseEnvelope(
             kind="state.latest.reply.v1",
@@ -145,7 +164,7 @@ async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global STORE
+    global STORE, RABBIT
 
     # Cache redis (shared with bus, but dedicated client)
     redis = Redis.from_url(settings.cache_redis_url, decode_responses=False)
@@ -165,6 +184,9 @@ async def lifespan(app: FastAPI):
     # 3) Start chassis workers
     hunter = Hunter(_cfg(), patterns=[settings.channel_spark_state_snapshot], handler=_handle_snapshot)
     rabbit = Rabbit(_cfg(), request_channel=settings.state_request_channel, handler=_handle_get_latest)
+
+    # --- FIX: Set global reference so _handle_snapshot can reply ---
+    RABBIT = rabbit
 
     stop = asyncio.Event()
     hunter_task = asyncio.create_task(hunter.start_background(stop))

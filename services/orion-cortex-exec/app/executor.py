@@ -464,7 +464,6 @@ async def call_step_services(
                     # Coerce resonance_signature to string if LLM returned an object
                     rs = final_dict.get("resonance_signature")
                     if rs is not None and not isinstance(rs, str):
-                        import json
                         try:
                             final_dict["resonance_signature"] = json.dumps(rs)
                         except Exception:
@@ -547,7 +546,7 @@ async def call_step_services(
                         payload=pad_req.model_dump(mode="json"),
                     )
                     try:
-                        pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=2.0)
+                        pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=60)
                         pad_dec = bus.codec.decode(pad_msg.get("data"))
                         if pad_dec.ok:
                             pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
@@ -741,7 +740,6 @@ async def call_step_services(
                     candidate = ctx.get("collapse_entry")
                 elif isinstance(ctx.get("collapse_json"), str):
                     try:
-                        import json
                         candidate = json.loads(ctx.get("collapse_json"))
                     except Exception:
                         candidate = None

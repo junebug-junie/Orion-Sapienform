@@ -10,6 +10,7 @@ from orion.core.bus.bus_schemas import (
     ChatRequestPayload,
     ChatResponsePayload,
     ServiceRef,
+    RecallRequestPayload
 )
 from orion.core.contracts.recall import RecallQueryV1, RecallReplyV1
 from orion.schemas.agents.schemas import (
@@ -94,13 +95,22 @@ class RecallClient:
         reply_to: str,
         timeout_sec: float,
     ) -> RecallReplyV1:
+
+        payload_model = RecallRequestPayload(
+            text=req.fragment,       # Map internal 'fragment' to bus 'text'
+            session_id=req.session_id,
+            # 'verb' and 'intent' are stripped as they are not part of the public recall schema
+            # User defaults to None if not provided
+        )
+
         env = BaseEnvelope(
             kind="recall.query.v1",
             source=source,
             correlation_id=correlation_id,
             reply_to=reply_to,
-            payload=req.model_dump(mode="json"),
+            payload=payload_model.model_dump(mode="json", by_alias=True), # Sends {"text": "...", ...}
         )
+
         logger.info(
             "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
             self.channel,
@@ -109,14 +119,22 @@ class RecallClient:
             reply_to,
             timeout_sec,
         )
+
         msg = await self.bus.rpc_request(
-            self.channel, env, reply_channel=reply_to, timeout_sec=timeout_sec
+            self.channel,
+            env,
+            reply_channel=reply_to,
+            timeout_sec=timeout_sec,
         )
+
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
-            raise RuntimeError(f"Decode failed: {decoded.error}")
-        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
-        return RecallReplyV1.model_validate(payload)
+            raise RuntimeError(f"RecallService decode failed: {decoded.error}")
+
+        # Note: If the service returns a standard payload, validation typically happens here.
+        # Assuming RecallReplyV1 aligns with the response or needs similar adaptation.
+        payload_data = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        return RecallReplyV1.model_validate(payload_data)
 
 
 class PlannerReactClient:

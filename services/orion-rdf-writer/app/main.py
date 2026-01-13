@@ -22,8 +22,8 @@ def _cfg() -> ChassisConfig:
         node_name=settings.NODE_NAME,
         bus_url=settings.ORION_BUS_URL,
         bus_enabled=settings.ORION_BUS_ENABLED,
-        health_channel="system.health",
-        error_channel="system.error",
+        health_channel="orion:system:health",
+        error_channel="orion:system:error",
     )
 
 # Global reference to keep the hunter alive

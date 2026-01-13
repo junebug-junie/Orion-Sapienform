@@ -1,0 +1,28 @@
+# orion/cognition/verbs/log_orion_metacognition.yaml
+name: log_orion_metacognition
+kind: task
+timeout_ms: 180000
+steps:
+  - name: collect_metacog_context
+    services:
+      - MetacogContextService
+    timeout_ms: 30000
+
+  - name: draft_entry
+    # CHANGED: Point directly to the file so Orchestrator loads it
+    prompt_template: log_orion_metacognition_draft.j2
+    services:
+      - MetacogDraftService
+    timeout_ms: 90000
+
+  - name: enrich_entry
+    # CHANGED: Point directly to the file so Orchestrator loads it
+    prompt_template: log_orion_metacognition_enrich.j2
+    services:
+      - MetacogEnrichService
+    timeout_ms: 90000
+
+  - name: publish_to_sql_writer
+    services:
+      - MetacogPublishService
+    timeout_ms: 10000

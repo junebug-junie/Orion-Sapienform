@@ -2,6 +2,6 @@ pydantic==2.9.2
 pydantic-settings==2.7.1
 redis==5.0.8
 orjson==3.10.7
-
+pyyaml==6.0.3
 # SNMP client (Python 3.12 compatible, no asyncore)
 puresnmp==2.0.0

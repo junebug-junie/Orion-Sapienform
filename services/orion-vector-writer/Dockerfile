@@ -24,10 +24,6 @@ COPY services/orion-vector-writer/app ./app
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
-# Pre-download the embedding model into the container image
-# This prevents a long download time when the container starts.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
-
 EXPOSE 8301
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8301"]

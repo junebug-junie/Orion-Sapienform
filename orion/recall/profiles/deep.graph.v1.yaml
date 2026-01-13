@@ -1,0 +1,11 @@
+profile: deep.graph.v1
+vector_top_k: 8
+rdf_top_k: 12
+max_per_source: 5
+max_total_items: 14
+time_decay_half_life_hours: 168
+render_budget_tokens: 320
+enable_query_expansion: true
+enable_sql_timeline: true
+sql_since_minutes: 720
+sql_top_k: 12

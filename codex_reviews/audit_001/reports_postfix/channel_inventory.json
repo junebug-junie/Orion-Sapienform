@@ -1,0 +1,278 @@
+[
+  {
+    "channel": "${CORTEX_GATEWAY_REQUEST_CHANNEL:-orion-cortex-gateway:request}",
+    "files": [
+      "services/orion-cortex-gateway/docker-compose.yml:24"
+    ],
+    "service_guess": [
+      "orion-cortex-gateway"
+    ],
+    "usage": [
+      "yaml"
+    ]
+  },
+  {
+    "channel": "${CORTEX_LOG_CHANNEL}",
+    "files": [
+      "services/orion-cortex-exec/docker-compose.yml:31"
+    ],
+    "service_guess": [
+      "orion-cortex-exec"
+    ],
+    "usage": [
+      "yaml"
+    ]
+  },
+  {
+    "channel": "${CORTEX_REQUEST_CHANNEL:-orion-cortex:request}",
+    "files": [
+      "services/orion-spark-introspector/docker-compose.yml:31"
+    ],
+    "service_guess": [
+      "orion-spark-introspector"
+    ],
+    "usage": [
+      "yaml"
+    ]
+  },
+  {
+    "channel": "${ORCH_REQUEST_CHANNEL:-orion-cortex:request}",
+    "files": [
+      "services/orion-cortex-gateway/docker-compose.yml:21",
+      "services/orion-cortex-orch/docker-compose.yml:35"
+    ],
+    "service_guess": [
+      "orion-cortex-gateway",
+      "orion-cortex-orch"
+    ],
+    "usage": [
+      "yaml"
+    ]
+  },
+  {
+    "channel": "${STATE_REQUEST_CHANNEL:-orion-state:request}",
+    "files": [
+      "services/orion-cortex-orch/docker-compose.yml:25"
+    ],
+    "service_guess": [
+      "orion-cortex-orch"
+    ],
+    "usage": [
+      "yaml"
+    ]
+  },
+  {
+    "channel": "${VOIP_BUS_COMMAND_CHANNEL:-orion:voip:command}",
+    "files": [
+      "services/orion-voip-endpoint/docker-compose.yml:44"
+    ],
+    "service_guess": [
+      "orion-voip-endpoint"
+    ],
+    "usage": [
+      "yaml"
+    ]
+  },
+  {
+    "channel": "${VOIP_BUS_STATUS_CHANNEL:-orion:voip:status}",
+    "files": [
+      "services/orion-voip-endpoint/docker-compose.yml:45"
+    ],
+    "service_guess": [
+      "orion-voip-endpoint"
+    ],
+    "usage": [
+      "yaml"
+    ]
+  },
+  {
+    "channel": "orion-conversation:request",
+    "files": [
+      "services/orion-cortex-orch/app/conversation_front.py:19"
+    ],
+    "service_guess": [
+      "orion-cortex-orch"
+    ],
+    "usage": [
+      "const"
+    ]
+  },
+  {
+    "channel": "orion-exec:request:LLMGatewayService",
+    "files": [
+      "services/orion-llm-gateway/tests/test_llm_chat.py:46"
+    ],
+    "service_guess": [
+      "orion-llm-gateway"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "orion-exec:request:RecallService",
+    "files": [
+      "scripts/test_recall_harness.py:48"
+    ],
+    "service_guess": [
+      "core"
+    ],
+    "usage": [
+      "const"
+    ]
+  },
+  {
+    "channel": "orion-exec:result:RecallService",
+    "files": [
+      "scripts/test_recall_harness.py:49"
+    ],
+    "service_guess": [
+      "core"
+    ],
+    "usage": [
+      "const"
+    ]
+  },
+  {
+    "channel": "orion.spark.candidate",
+    "files": [
+      "services/orion-hub/scripts/websocket_handler.py:228"
+    ],
+    "service_guess": [
+      "orion-hub"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "orion:*",
+    "files": [
+      "orion/cognition/hub_gateway/bus_harness.py:91"
+    ],
+    "service_guess": [
+      "core"
+    ],
+    "usage": [
+      "subscribe"
+    ]
+  },
+  {
+    "channel": "orion:collapse:events",
+    "files": [
+      "services/orion-cortex-exec/app/collapse_verbs.py:111",
+      "services/orion-cortex-exec/app/collapse_verbs.py:166"
+    ],
+    "service_guess": [
+      "orion-cortex-exec"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "orion:collapse:intake",
+    "files": [
+      "services/orion-cortex-exec/app/collapse_verbs.py:63",
+      "services/orion-cortex-exec/app/executor.py:465"
+    ],
+    "service_guess": [
+      "orion-cortex-exec"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "orion:collapse:sql-write",
+    "files": [
+      "services/orion-collapse-mirror/app/bus_runtime.py:108"
+    ],
+    "service_guess": [
+      "orion-collapse-mirror"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "orion:event:equilibrium:snapshot",
+    "files": [
+      "services/orion-cortex-orch/app/main.py:20",
+      "services/orion-equilibrium-service/app/service.py:239"
+    ],
+    "service_guess": [
+      "orion-cortex-orch",
+      "orion-equilibrium-service"
+    ],
+    "usage": [
+      "const",
+      "publish"
+    ]
+  },
+  {
+    "channel": "orion:verb:request",
+    "files": [
+      "services/orion-cortex-orch/app/orchestrator.py:261",
+      "services/orion-cortex-orch/app/orchestrator.py:454"
+    ],
+    "service_guess": [
+      "orion-cortex-orch"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "orion:verb:result",
+    "files": [
+      "services/orion-cortex-exec/app/main.py:222",
+      "services/orion-cortex-exec/app/main.py:235",
+      "services/orion-cortex-orch/app/orchestrator.py:453"
+    ],
+    "service_guess": [
+      "orion-cortex-exec",
+      "orion-cortex-orch"
+    ],
+    "usage": [
+      "publish",
+      "subscribe"
+    ]
+  },
+  {
+    "channel": "vision.detect.upload",
+    "files": [
+      "services/orion-vision-edge/app/routes.py:176"
+    ],
+    "service_guess": [
+      "orion-vision-edge"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "vision.edge.error",
+    "files": [
+      "services/orion-vision-edge/app/detector_worker.py:266"
+    ],
+    "service_guess": [
+      "orion-vision-edge"
+    ],
+    "usage": [
+      "publish"
+    ]
+  },
+  {
+    "channel": "vision.edge.health",
+    "files": [
+      "services/orion-vision-edge/app/detector_worker.py:202"
+    ],
+    "service_guess": [
+      "orion-vision-edge"
+    ],
+    "usage": [
+      "publish"
+    ]
+  }
+]

@@ -1,0 +1,662 @@
+channels:
+  - name: "orion:verb:request"
+    kind: "request"
+    schema_id: "VerbRequestV1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "stable"
+    since: "2026-01-08"
+
+  - name: "orion:verb:result"
+    kind: "result"
+    schema_id: "VerbResultV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-cortex-orch", "orion-hub"]
+    stability: "stable"
+    since: "2026-01-08"
+
+  - name: "orion:effect:*"
+    kind: "event"
+    schema_id: "VerbEffectV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "orion-vector-writer"]
+    stability: "stable"
+    since: "2026-01-08"
+
+  - name: "orion:core:events"
+    kind: "event"
+    schema_id: "CoreEventV1"
+    producer_services: ["*"]
+    consumer_services: ["*"]
+    stability: "stable"
+    since: "2026-01-08"
+
+  - name: "orion:system:health"
+    kind: "telemetry"
+    schema_id: "SystemHealthV1"
+    producer_services: ["*"]
+    consumer_services: ["orion-cortex-orch", "orion-hub", "orion-equilibrium-service"]
+    stability: "stable"
+    since: "2026-01-08"
+
+  - name: "orion:system:error"
+    kind: "event"
+    schema_id: "SystemErrorV1"
+    producer_services: ["*"]
+    consumer_services: ["*"]
+    stability: "stable"
+    since: "2026-01-08"
+
+  - name: "orion:conversation:request"
+    kind: "request"
+    schema_id: "ChatRequestPayload"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:conversation:result"
+    kind: "result"
+    schema_id: "ChatResultPayload"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:cortex:request"
+    kind: "request"
+    schema_id: "CortexClientRequest"
+    producer_services: ["orion-hub", "orion-cortex-gateway"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:cortex:result"
+    kind: "result"
+    schema_id: "CortexClientResult"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-hub", "orion-cortex-gateway"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:cortex:result*"
+    kind: "result"
+    schema_id: "CortexClientResult"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-hub", "orion-cortex-gateway"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:cortex:gateway:request"
+    kind: "request"
+    schema_id: "CortexChatRequest"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-cortex-gateway"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:cortex:gateway:result:*"
+    kind: "result"
+    schema_id: "CortexChatResult"
+    producer_services: ["orion-cortex-gateway"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:cortex:exec:request"
+    kind: "request"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:LLMGatewayService"
+    kind: "request"
+    schema_id: "ChatRequestPayload"
+    producer_services:
+      - "orion-cortex-exec"
+      - "orion-agent-council"
+      - "orion-planner-react"
+      - "orion-vision-council"
+      - "orion-hub"
+    consumer_services: ["orion-llm-gateway"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:LLMGatewayService"
+    kind: "result"
+    schema_id: "ChatResultPayload"
+    producer_services: ["orion-llm-gateway"]
+    consumer_services: ["orion-cortex-exec", "orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:*"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["*"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:RecallService"
+    kind: "request"
+    schema_id: "RecallRequestPayload"
+    producer_services: ["orion-cortex-exec", "orion-hub"]
+    consumer_services: ["orion-recall"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:RecallService"
+    kind: "result"
+    schema_id: "RecallResultPayload"
+    producer_services: ["orion-recall"]
+    consumer_services: ["orion-cortex-exec", "orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:PlannerReactService"
+    kind: "request"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-agent-chain", "orion-cortex-exec", "orion-hub"]
+    consumer_services: ["orion-planner-react"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:PlannerReactService"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-planner-react"]
+    consumer_services: ["orion-agent-chain", "orion-cortex-exec", "orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:AgentChainService"
+    kind: "request"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-agent-chain"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:CouncilService"
+    kind: "request"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-agent-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:AgentChainService"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-agent-chain"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:llm:reply*"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-llm-gateway"]
+    consumer_services: ["orion-hub", "orion-agent-council", "orion-planner-react"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:agent-council:intake"
+    kind: "request"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-hub", "orion-cortex-exec"]
+    consumer_services: ["orion-agent-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:agent-council:reply*"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-agent-council"]
+    consumer_services: ["orion-hub", "orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:council:reply*"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-vision-council"]
+    consumer_services: ["orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:VisionWindowService"
+    kind: "request"
+    schema_id: "VisionWindowRequestPayload"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:VisionWindowService"
+    kind: "result"
+    schema_id: "VisionWindowResultPayload"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:VisionCouncilService"
+    kind: "request"
+    schema_id: "VisionCouncilRequestPayload"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:VisionCouncilService"
+    kind: "result"
+    schema_id: "VisionCouncilResultPayload"
+    producer_services: ["orion-vision-council"]
+    consumer_services: ["orion-vision-window"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:VisionScribeService"
+    kind: "request"
+    schema_id: "VisionScribeRequestPayload"
+    producer_services: ["orion-vision-council"]
+    consumer_services: ["orion-vision-scribe"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:VisionScribeService"
+    kind: "result"
+    schema_id: "VisionScribeResultPayload"
+    producer_services: ["orion-vision-scribe"]
+    consumer_services: ["orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:request:VisionHostService"
+    kind: "request"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-vision-host"]
+    consumer_services: ["orion-vision-host"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:collapse:intake"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-cortex-exec", "orion-collapse-mirror"]
+    consumer_services: ["orion-collapse-mirror"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:collapse:triage"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-collapse-mirror"]
+    consumer_services: ["orion-meta-tags", "orion-vector-writer", "orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:collapse:sql-write"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-collapse-mirror"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:collapse:events"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-collapse-mirror", "orion-cortex-exec"]
+    consumer_services: ["orion-timeline", "orion-athena-spark-introspector"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:collapse:enrich"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-collapse-mirror"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:collapse:scored"
+    kind: "event"
+    schema_id: "CollapseMirrorEntryV2"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-collapse-mirror"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:equilibrium:snapshot"
+    kind: "event"
+    schema_id: "EquilibriumSnapshotV1"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:spark:introspect:candidate*"
+    kind: "event"
+    schema_id: "SparkCandidateV1"
+    producer_services: ["orion-cortex-exec", "orion-hub"]
+    consumer_services: ["orion-spark-introspector"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:spark:signal"
+    kind: "telemetry"
+    schema_id: "SparkSignalV1"
+    producer_services: ["*"]
+    consumer_services: ["orion-spark-introspector", "orion-state-service"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:spark:state:snapshot"
+    kind: "telemetry"
+    schema_id: "SparkStateSnapshotV1"
+    producer_services: ["orion-spark-introspector", "orion-equilibrium-service"]
+    consumer_services: ["orion-state-service", "orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:spark:telemetry"
+    kind: "telemetry"
+    schema_id: "SparkTelemetryPayload"
+    producer_services: ["orion-spark-introspector"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:rdf:enqueue"
+    kind: "request"
+    schema_id: "RdfWriteRequest"
+    producer_services: ["orion-cortex-exec", "orion-vision-scribe"]
+    consumer_services: ["orion-rdf-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:rdf:confirm"
+    kind: "result"
+    schema_id: "RdfWriteResult"
+    producer_services: ["orion-rdf-writer"]
+    consumer_services: ["orion-cortex-exec", "orion-vision-scribe"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:rdf:error"
+    kind: "event"
+    schema_id: "SystemErrorV1"
+    producer_services: ["orion-rdf-writer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:rdf:worker"
+    kind: "request"
+    schema_id: "RdfBuildRequest"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-rdf-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:recall:telemetry"
+    kind: "telemetry"
+    schema_id: "RecallDecisionV1"
+    producer_services: ["orion-recall"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:metacognition:tick"
+    kind: "telemetry"
+    schema_id: "MetacognitionTickV1"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:equilibrium:metacog:trigger"
+    kind: "event"
+    schema_id: "MetacogTriggerV1"
+    producer_services: ["orion-equilibrium-service"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+
+  - name: "orion:vision:frames"
+    kind: "event"
+    schema_id: "VisionFramePointerPayload"
+    producer_services: ["orion-vision-edge", "orion-vision-retina"]
+    consumer_services: ["orion-vision-edge"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:detect:upload"
+    kind: "event"
+    schema_id: "VisionFramePointerPayload"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-edge"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:artifacts"
+    kind: "event"
+    schema_id: "VisionArtifactPayload"
+    producer_services: ["orion-vision-edge", "orion-vision-host"]
+    consumer_services: ["orion-security-watcher", "orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:edge:raw"
+    kind: "event"
+    schema_id: "VisionEdgeArtifact"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-security-watcher"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:edge:event:notable"
+    kind: "event"
+    schema_id: "VisionEventPayload"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:edge:health"
+    kind: "telemetry"
+    schema_id: "VisionEdgeHealth"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-edge"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:edge:error"
+    kind: "telemetry"
+    schema_id: "VisionEdgeError"
+    producer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-edge"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:events"
+    kind: "event"
+    schema_id: "VisionEventPayload"
+    producer_services: ["orion-vision-council"]
+    consumer_services: ["orion-vision-scribe"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:windows"
+    kind: "event"
+    schema_id: "VisionWindowPayload"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-vision-council"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:guard:signal"
+    kind: "event"
+    schema_id: "VisionGuardSignal"
+    producer_services: ["orion-security-watcher"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:vision:guard:alert"
+    kind: "event"
+    schema_id: "VisionGuardAlert"
+    producer_services: ["orion-security-watcher"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:pad:event"
+    kind: "event"
+    schema_id: "PadEventV1"
+    producer_services: ["orion-landing-pad"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:pad:frame"
+    kind: "event"
+    schema_id: "StateFrameV1"
+    producer_services: ["orion-landing-pad"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:pad:signal"
+    kind: "event"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-landing-pad"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:pad:stats"
+    kind: "telemetry"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-landing-pad"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:pad:rpc:request"
+    kind: "request"
+    schema_id: "PadRpcRequestV1"
+    producer_services: ["*"]
+    consumer_services: ["orion-landing-pad"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:pad:rpc:reply:*"
+    kind: "result"
+    schema_id: "PadRpcResponseV1"
+    producer_services: ["orion-landing-pad"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:chat:history:log"
+    kind: "event"
+    schema_id: "ChatHistoryMessageV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:chat:history:turn"
+    kind: "event"
+    schema_id: "ChatHistoryTurnV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:spark:concepts:profile"
+    kind: "event"
+    schema_id: "ConceptProfile"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-vector-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:spark:concepts:delta"
+    kind: "event"
+    schema_id: "ConceptProfileDelta"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-vector-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:vector:write"
+    kind: "event"
+    schema_id: "VectorWriteRequest"
+    producer_services: ["*"]
+    consumer_services: ["orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:state:request"
+    kind: "request"
+    schema_id: "StateGetLatestRequest"
+    producer_services: ["*"]
+    consumer_services: ["orion-state-service"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:state:reply:*"
+    kind: "result"
+    schema_id: "StateLatestReply"
+    producer_services: ["orion-state-service"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:telemetry:biometrics"
+    kind: "telemetry"
+    schema_id: "BiometricsPayload"
+    producer_services: ["orion-biometrics"]
+    consumer_services: ["orion-sql-writer", "orion-landing-pad"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:exec:request:MetaTagsService"
+    kind: "request"
+    schema_id: "MetaTagsRequestV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-meta-tags"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:exec:result:MetaTagsService"
+    kind: "result"
+    schema_id: "MetaTagsResultV1"
+    producer_services: ["orion-meta-tags"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:cognition:trace"
+    kind: "event"
+    schema_id: "CognitionTracePayload"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-spark-introspector", "orion-landing-pad", "orion-bus-tap"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:spark:introspector:reply:*"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-spark-introspector"]
+    stability: "experimental"
+    since: "2026-01-10"

@@ -12,26 +12,43 @@ class Settings(BaseSettings):
     # Bus
     ORION_BUS_URL: str = Field(..., alias="ORION_BUS_URL")
     ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
-    HEALTH_CHANNEL: str = "system.health"
-    ERROR_CHANNEL: str = "system.error"
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, alias="ORION_BUS_ENFORCE_CATALOG")
+    ORION_HEALTH_CHANNEL: str = "orion:system:health"
+    ERROR_CHANNEL: str = "orion:system:error"
 
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
-        default='["orion:collapse:sql-write", "orion:chat:history:log", "orion:rag:ingest", "orion:cognition:trace"]',
+        default='["orion:memory:vector:upsert", "orion:vector:write", "orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
+    )
+    VECTOR_WRITER_CHAT_HISTORY_CHANNEL: str = Field(
+        default="orion:chat:history:log", alias="VECTOR_WRITER_CHAT_HISTORY_CHANNEL"
+    )
+    VECTOR_WRITER_CHAT_COLLECTION: str = Field(
+        default="orion_chat", alias="VECTOR_WRITER_CHAT_COLLECTION"
     )
 
     @property
     def SUBSCRIBE_CHANNELS(self) -> List[str]:
         """Helper to parse the subscription channels from env var."""
         val = self.VECTOR_WRITER_SUBSCRIBE_CHANNELS
+        channels: List[str]
         if isinstance(val, list):
-            return val
-        try:
-            return json.loads(val)
-        except json.JSONDecodeError:
-            return [x.strip() for x in val.split(",") if x.strip()]
+            channels = list(val)
+        else:
+            try:
+                channels = json.loads(val)
+            except json.JSONDecodeError:
+                channels = [x.strip() for x in val.split(",") if x.strip()]
+
+        # Ensure chat history channel is always included for ingestion
+        if self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL not in channels:
+            channels.append(self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL)
+        # Ensure canonical memory upsert channel is always present
+        if "orion:memory:vector:upsert" not in channels:
+            channels.append("orion:memory:vector:upsert")
+        return channels
 
     # Chroma / Vector DB Configuration
     CHROMA_HOST: str = Field(default="orion-vector-db", alias="VECTOR_DB_HOST")
@@ -39,9 +56,6 @@ class Settings(BaseSettings):
 
     # Capture the collection from .env. Defaults to 'orion_general' if missing.
     CHROMA_COLLECTION_DEFAULT: str = Field(default="orion_general", alias="VECTOR_DB_COLLECTION")
-
-    # Embedding
-    EMBEDDING_MODEL_NAME: str = Field(default="all-MiniLM-L6-v2", alias="EMBEDDING_MODEL")
 
     class Config:
         env_file = ".env"

@@ -13,6 +13,7 @@ services:
       SERVICE_VERSION: ${SERVICE_VERSION}
 
       ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
+      ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG}
       ORION_BUS_URL: ${ORION_BUS_URL}
 
       POWER_GUARD_NODE_NAME: ${POWER_GUARD_NODE_NAME}
@@ -35,6 +36,10 @@ services:
     volumes:
       # Mount the host's private key into the container, read-only
       - /root/.ssh/powerguard_shutdown:/etc/powerguard/ssh_key:ro
+
+    # if using connection via USB mode
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     networks:
       - app-net

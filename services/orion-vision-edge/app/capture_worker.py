@@ -13,6 +13,8 @@ from .context import settings, bus, camera
 
 logger = logging.getLogger("orion-vision-edge.capture")
 
+VISION_FRAME_POINTER_KIND = "vision.edge.frame.v1"
+
 def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
@@ -88,7 +90,7 @@ async def capture_loop():
         )
         
         env = BaseEnvelope(
-            kind=settings.CHANNEL_VISION_FRAMES, 
+            kind=VISION_FRAME_POINTER_KIND, 
             source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=payload.model_dump(mode="json"),
         )

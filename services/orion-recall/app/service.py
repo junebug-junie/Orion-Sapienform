@@ -26,6 +26,9 @@ from .settings import settings
 
 logger = logging.getLogger("orion-recall")
 
+RECALL_REQUEST_KIND = "recall.query.v1"
+RECALL_REPLY_KIND = "recall.reply.v1"
+
 
 def chassis_cfg() -> ChassisConfig:
     return ChassisConfig(
@@ -35,8 +38,8 @@ def chassis_cfg() -> ChassisConfig:
         bus_url=settings.ORION_BUS_URL,
         bus_enabled=bool(settings.ORION_BUS_ENABLED),
         heartbeat_interval_sec=float(getattr(settings, "HEARTBEAT_INTERVAL_SEC", 10.0)),
-        health_channel=getattr(settings, "HEALTH_CHANNEL", "system.health"),
-        error_channel=getattr(settings, "ERROR_CHANNEL", "system.error"),
+        health_channel=getattr(settings, "ORION_HEALTH_CHANNEL", "orion:system:health"),
+        error_channel=getattr(settings, "ERROR_CHANNEL", "orion:system:error"),
         shutdown_timeout_sec=float(getattr(settings, "SHUTDOWN_GRACE_SEC", 10.0)),
     )
 
@@ -67,9 +70,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     """Rabbit handler: validate envelope, run recall, return typed result envelope."""
 
     # Strict kind check
-    if env.kind not in ("recall.query.request", "legacy.message"):
+    if env.kind not in (RECALL_REQUEST_KIND, "recall.query.request", "legacy.message"):
         return BaseEnvelope(
-            kind="recall.query.result",
+            kind=RECALL_REPLY_KIND,
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
@@ -84,7 +87,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         req_payload = RecallRequestPayload.model_validate(payload_obj)
     except ValidationError as ve:
          return BaseEnvelope(
-            kind="recall.query.result",
+            kind=RECALL_REPLY_KIND,
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
@@ -111,7 +114,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     ]
 
     out = BaseEnvelope(
-        kind="recall.query.result",
+        kind=RECALL_REPLY_KIND,
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain,

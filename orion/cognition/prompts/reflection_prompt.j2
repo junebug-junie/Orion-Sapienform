@@ -5,7 +5,7 @@ TARGET FRAGMENT
 {{ fragment | default("No explicit fragment was provided.") }}
 
 RELATED MEMORY (OPTIONAL)
-{{ related_memory | default("No additional memory context provided.") }}
+{{ memory_bundle.rendered | default("No additional memory context provided.") }}
 
 INSTRUCTIONS
 1. Treat the fragment as a moment worth pausing on.

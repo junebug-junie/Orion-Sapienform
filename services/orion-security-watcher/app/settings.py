@@ -10,15 +10,16 @@ class Settings(BaseSettings):
 
     # Orion bus
     ORION_BUS_ENABLED: bool = Field(True, alias="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_BUS_URL: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # Vision events
     VISION_EVENTS_SUBSCRIBE_RAW: str = Field("orion:vision:edge:raw", alias="VISION_EVENTS_SUBSCRIBE_RAW")
-    CHANNEL_VISION_ARTIFACTS: str = Field("vision.artifacts", alias="CHANNEL_VISION_ARTIFACTS")
+    CHANNEL_VISION_ARTIFACTS: str = Field("orion:vision:artifacts", alias="CHANNEL_VISION_ARTIFACTS")
 
     # Guard Output Channels
-    CHANNEL_VISION_GUARD_SIGNAL: str = Field("vision.guard.signal", alias="CHANNEL_VISION_GUARD_SIGNAL")
-    CHANNEL_VISION_GUARD_ALERT: str = Field("vision.guard.alert", alias="CHANNEL_VISION_GUARD_ALERT")
+    CHANNEL_VISION_GUARD_SIGNAL: str = Field("orion:vision:guard:signal", alias="CHANNEL_VISION_GUARD_SIGNAL")
+    CHANNEL_VISION_GUARD_ALERT: str = Field("orion:vision:guard:alert", alias="CHANNEL_VISION_GUARD_ALERT")
 
     # Guard Logic Config
     GUARD_WINDOW_SECONDS: int = Field(30, alias="GUARD_WINDOW_SECONDS")

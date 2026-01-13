@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # === Orion Bus Configuration ===
     ORION_BUS_URL: str = Field(default="redis://orion-janus-bus-core:6379/0", env="ORION_BUS_URL")
     ORION_BUS_ENABLED: bool = Field(default=True, env="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, env="ORION_BUS_ENFORCE_CATALOG")
 
     # === Channel Routing ===
     CHANNEL_EVENTS_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_EVENTS_TRIAGE")
@@ -35,8 +36,8 @@ class Settings(BaseSettings):
 
     # Chassis Defaults
     HEARTBEAT_INTERVAL_SEC: float = 10.0
-    HEALTH_CHANNEL: str = "system.health"
-    ERROR_CHANNEL: str = "system.error"
+    ORION_HEALTH_CHANNEL: str = "orion:system:health"
+    ERROR_CHANNEL: str = "orion:system:error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 
 settings = Settings()

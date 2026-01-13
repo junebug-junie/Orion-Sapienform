@@ -3,6 +3,7 @@ services:
     build: .
     environment:
       - ORION_BUS_URL=redis://redis:6379/0
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - CHANNEL_SCRIBE_INTAKE=orion:vision:events
       - CHANNEL_SCRIBE_REQUEST=orion-exec:request:VisionScribeService
     volumes:

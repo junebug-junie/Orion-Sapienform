@@ -18,7 +18,7 @@ from orion.core.bus.codec import OrionCodec
 
 from .conn_manager import manager
 from .settings import settings
-from .worker import handle_candidate, handle_trace, set_publisher_bus
+from .worker import handle_candidate, handle_signal, handle_trace, set_publisher_bus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("orion-spark-introspector")
@@ -47,10 +47,12 @@ async def lifespan(app: FastAPI):
     async def multiplexer(env):
         if env.kind == "cognition.trace":
             await handle_trace(env)
+        elif env.kind == "spark.signal.v1":
+            await handle_signal(env)
         else:
             await handle_candidate(env)
 
-    patterns = [settings.channel_spark_candidate, settings.channel_cognition_trace_pub]
+    patterns = [settings.channel_spark_candidate, settings.channel_cognition_trace_pub, settings.channel_spark_signal]
 
     svc = Hunter(
         _cfg(),

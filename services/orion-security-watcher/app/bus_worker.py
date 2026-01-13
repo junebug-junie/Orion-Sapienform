@@ -16,6 +16,9 @@ from .context import ctx
 
 logger = logging.getLogger("orion-security-watcher.bus_worker")
 
+VISION_GUARD_ALERT_KIND = "vision.guard.alert.v1"
+VISION_GUARD_SIGNAL_KIND = "vision.guard.signal.v1"
+
 
 def _source(ctx) -> ServiceRef:
     return ServiceRef(
@@ -49,7 +52,7 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
         # Publish Alert (New Schema)
         if ctx.bus.enabled:
             alert_env = env.derive_child(
-                kind=ctx.settings.CHANNEL_VISION_GUARD_ALERT,
+                kind=VISION_GUARD_ALERT_KIND,
                 source=_source(ctx),
                 payload=alert
             )
@@ -63,7 +66,12 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
             try:
                 # Load current security state for context
                 state = ctx.state_store.load()
-                
+
+                # Check if system is armed
+                if not state.armed:
+                    logger.info(f"[GUARD] System disarmed. Suppressing notification for alert {alert.summary}")
+                    return
+
                 # Convert timestamp (float epoch to datetime)
                 ts_dt = datetime.fromtimestamp(alert.ts, tz=timezone.utc)
 
@@ -102,7 +110,7 @@ async def _handle_envelope(ctx, env: BaseEnvelope) -> None:
     for sig in signals:
         if ctx.bus.enabled:
             sig_env = env.derive_child(
-                kind=ctx.settings.CHANNEL_VISION_GUARD_SIGNAL,
+                kind=VISION_GUARD_SIGNAL_KIND,
                 source=_source(ctx),
                 payload=sig
             )

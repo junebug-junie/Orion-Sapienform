@@ -1,7 +1,7 @@
 # orion/schemas/cortex/schemas.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 # ─────────────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ class ExecutionStep(BaseModel):
     requires_gpu: bool = False
     requires_memory: bool = False
     timeout_ms: int = 120000
+    recall_profile: Optional[str] = None
 
 
 class ExecutionPlan(BaseModel):
@@ -72,6 +73,7 @@ class PlanExecutionArgs(BaseModel):
 class PlanExecutionRequest(BaseModel):
     """The Payload Contract."""
     plan: ExecutionPlan
+    kind: Literal["cortex.exec.request"] = "cortex.exec.request"
     args: PlanExecutionArgs = Field(default_factory=PlanExecutionArgs)
     context: Dict[str, Any] = Field(default_factory=dict)
 

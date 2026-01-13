@@ -79,14 +79,17 @@ class Settings(BaseSettings):
 
     # --- Bus integration ---
     ORION_BUS_ENABLED: bool = Field(True, alias="ORION_BUS_ENABLED")
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_BUS_URL: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # --- Bus Channels
     VISION_EVENTS_PUBLISH_RAW: str = Field("orion:vision:edge:raw", alias="VISION_EVENTS_PUBLISH_RAW")
     VISION_EVENTS_SUBSCRIBE_RAW: str = Field("orion:vision:edge:raw", alias="VISION_EVENTS_SUBSCRIBE_RAW")
-    CHANNEL_VISION_FRAMES: str = Field("vision.frames", alias="CHANNEL_VISION_FRAMES")
-    CHANNEL_VISION_ARTIFACTS: str = Field("vision.artifacts", alias="CHANNEL_VISION_ARTIFACTS")
+    CHANNEL_VISION_FRAMES: str = Field("orion:vision:frames", alias="CHANNEL_VISION_FRAMES")
+    CHANNEL_VISION_ARTIFACTS: str = Field("orion:vision:artifacts", alias="CHANNEL_VISION_ARTIFACTS")
     VISION_EVENTS_PUBLISH_NOTABLE: str = Field("orion:vision:edge:event:notable", alias="VISION_EVENTS_PUBLISH_NOTABLE")
+    CHANNEL_VISION_EDGE_HEALTH: str = Field("orion:vision:edge:health", alias="CHANNEL_VISION_EDGE_HEALTH")
+    CHANNEL_VISION_EDGE_ERROR: str = Field("orion:vision:edge:error", alias="CHANNEL_VISION_EDGE_ERROR")
 
     @property
     def detector_names(self) -> List[str]:

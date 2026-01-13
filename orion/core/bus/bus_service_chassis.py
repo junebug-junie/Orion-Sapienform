@@ -7,12 +7,17 @@ import traceback
 from dataclasses import dataclass
 from uuid import uuid4
 from typing import Any, Awaitable, Callable, Optional, List, Union
+from datetime import datetime, timezone
 
-from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
+try:
+    from loguru import logger  # type: ignore
+except Exception:  # pragma: no cover - fallback when loguru is unavailable
+    import logging
+    logger = logging.getLogger("orion.bus")
 
 from .async_service import OrionBusAsync
 from .bus_schemas import BaseEnvelope, ErrorInfo, ServiceRef
+from orion.schemas.telemetry.system_health import SystemHealthV1
 
 
 Handler = Callable[[BaseEnvelope], Awaitable[BaseEnvelope | None]]
@@ -23,6 +28,7 @@ class ChassisConfig:
     service_name: str
     service_version: str
     node_name: str
+    instance_id: Optional[str] = None
     bus_url: str = "redis://100.92.216.81:6379/0"
     bus_enabled: bool = True
 
@@ -32,17 +38,8 @@ class ChassisConfig:
     shutdown_timeout_sec: float = 10.0
 
     # system channels (stable defaults)
-    health_channel: str = "system.health"
-    error_channel: str = "system.error"
-
-
-class _SystemHealthPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    status: str = "ok"
-    service: str
-    node: str
-    version: str
-    details: dict[str, Any] = Field(default_factory=dict)
+    health_channel: str = "orion:system:health"
+    error_channel: str = "orion:system:error"
 
 
 class BaseChassis:
@@ -56,13 +53,19 @@ class BaseChassis:
     def __init__(self, cfg: ChassisConfig):
         self.cfg = cfg
         self.bus = OrionBusAsync(cfg.bus_url, enabled=cfg.bus_enabled)
+        self.boot_id = str(uuid4())
 
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self._started = False
 
     def _source(self) -> ServiceRef:
-        return ServiceRef(name=self.cfg.service_name, version=self.cfg.service_version, node=self.cfg.node_name)
+        return ServiceRef(
+            name=self.cfg.service_name,
+            version=self.cfg.service_version,
+            node=self.cfg.node_name,
+            instance=self.cfg.instance_id,
+        )
 
     async def start(self) -> None:
         if self._started:
@@ -118,17 +121,24 @@ class BaseChassis:
         while not self._stop.is_set():
             try:
                 node = self.cfg.node_name or "unknown"
-                env = BaseEnvelope(
-                    kind="system.health",
-                    source=self._source(),
-                    payload=_SystemHealthPayload(
-                        service=self.cfg.service_name,
-                        node=node,
-                        version=self.cfg.service_version,
-                        details={},
-                    ).model_dump(mode="json"),
+                now = datetime.now(timezone.utc)
+                v1_payload = SystemHealthV1(
+                    service=self.cfg.service_name,
+                    node=node,
+                    version=self.cfg.service_version,
+                    instance=self.cfg.instance_id,
+                    boot_id=self.boot_id,
+                    status="ok",
+                    last_seen_ts=now,
+                    heartbeat_interval_sec=float(self.cfg.heartbeat_interval_sec or 10.0),
+                    details={},
                 )
-                await self.bus.publish(self.cfg.health_channel, env)
+                v1_env = BaseEnvelope(
+                    kind="system.health.v1",
+                    source=self._source(),
+                    payload=v1_payload.model_dump(mode="json"),
+                )
+                await self.bus.publish(self.cfg.health_channel, v1_env)
             except Exception as e:
                 logger.warning(f"Heartbeat publish failed: {e}")
             await asyncio.sleep(float(self.cfg.heartbeat_interval_sec or 10.0))

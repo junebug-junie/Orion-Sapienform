@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Bus
     ORION_BUS_URL: str = Field(default="redis://orion-redis:6379/0")
     ORION_BUS_ENABLED: bool = Field(default=True)
+    ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False)
 
     # Channels
     TELEMETRY_PUBLISH_CHANNEL: str = Field(default="orion:biometrics:telemetry")
@@ -27,8 +28,8 @@ class Settings(BaseSettings):
 
     # Chassis Defaults
     HEARTBEAT_INTERVAL_SEC: float = 10.0
-    HEALTH_CHANNEL: str = "system.health"
-    ERROR_CHANNEL: str = "system.error"
+    ORION_HEALTH_CHANNEL: str = "orion:system:health"
+    ERROR_CHANNEL: str = "orion:system:error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 
 settings = Settings()

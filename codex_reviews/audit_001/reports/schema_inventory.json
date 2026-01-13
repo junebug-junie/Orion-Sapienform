@@ -1,0 +1,131 @@
+[
+  {
+    "files": [
+      "services/orion-vision-scribe/app/main.py:210"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "<dynamic>"
+  },
+  {
+    "files": [
+      "services/orion-vision-council/app/main.py:209"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "cortex.chat.request"
+  },
+  {
+    "files": [
+      "services/orion-vision-host/app/main.py:373"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "http"
+  },
+  {
+    "files": [
+      "services/orion-vision-host/app/main.py:274"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.artifact"
+  },
+  {
+    "files": [
+      "services/orion-vision-council/app/main.py:103"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.council.result"
+  },
+  {
+    "files": [
+      "services/orion-vision-council/app/main.py:118",
+      "services/orion-vision-council/app/main.py:144"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.event.bundle"
+  },
+  {
+    "files": [
+      "services/orion-vision-retina/app/main.py:77"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.frame.pointer"
+  },
+  {
+    "files": [
+      "services/orion-vision-scribe/app/main.py:129",
+      "services/orion-vision-scribe/app/main.py:153"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.scribe.ack"
+  },
+  {
+    "files": [
+      "services/orion-vision-scribe/app/main.py:114"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.scribe.result"
+  },
+  {
+    "files": [
+      "services/orion-vision-host/scripts/publish_test_task.py:35"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.task.request"
+  },
+  {
+    "files": [
+      "services/orion-vision-host/app/main.py:200"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.task.result"
+  },
+  {
+    "files": [
+      "services/orion-vision-window/app/main.py:162",
+      "services/orion-vision-window/app/main.py:219"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.window"
+  },
+  {
+    "files": [
+      "services/orion-vision-host/scripts/verify_cortex_vision.py:40"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.window.request"
+  },
+  {
+    "files": [
+      "services/orion-vision-window/app/main.py:147"
+    ],
+    "model_locations": [],
+    "model_resolves": false,
+    "notes": [],
+    "schema_id": "vision.window.result"
+  }
+]

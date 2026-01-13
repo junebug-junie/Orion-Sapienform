@@ -1,0 +1,81 @@
+{
+  "catalog_entries": [
+    "orion-conversation:request",
+    "orion-conversation:result",
+    "orion-exec:request:LLMGatewayService",
+    "orion-exec:request:RecallService",
+    "orion-exec:result:RecallService",
+    "orion.spark.candidate",
+    "orion:collapse:enrich",
+    "orion:collapse:events",
+    "orion:collapse:intake",
+    "orion:collapse:scored",
+    "orion:collapse:sql-write",
+    "orion:collapse:triage",
+    "orion:effect:*",
+    "orion:event:equilibrium:snapshot",
+    "orion:system:health",
+    "orion:verb:request",
+    "orion:verb:result",
+    "vision.detect.upload",
+    "vision.edge.error",
+    "vision.edge.health"
+  ],
+  "catalog_unused_channels": [
+    "orion-conversation:result",
+    "orion:collapse:enrich",
+    "orion:collapse:scored",
+    "orion:collapse:triage",
+    "orion:effect:*",
+    "orion:system:health"
+  ],
+  "channels_missing_roles": [],
+  "found_channels": [
+    "${CORTEX_GATEWAY_REQUEST_CHANNEL:-orion-cortex-gateway:request}",
+    "${CORTEX_LOG_CHANNEL}",
+    "${CORTEX_REQUEST_CHANNEL:-orion-cortex:request}",
+    "${ORCH_REQUEST_CHANNEL:-orion-cortex:request}",
+    "${STATE_REQUEST_CHANNEL:-orion-state:request}",
+    "${VOIP_BUS_COMMAND_CHANNEL:-orion:voip:command}",
+    "${VOIP_BUS_STATUS_CHANNEL:-orion:voip:status}",
+    "orion-conversation:request",
+    "orion-exec:request:LLMGatewayService",
+    "orion-exec:request:RecallService",
+    "orion-exec:result:RecallService",
+    "orion.spark.candidate",
+    "orion:*",
+    "orion:collapse:events",
+    "orion:collapse:intake",
+    "orion:collapse:sql-write",
+    "orion:event:equilibrium:snapshot",
+    "orion:verb:request",
+    "orion:verb:result",
+    "vision.detect.upload",
+    "vision.edge.error",
+    "vision.edge.health"
+  ],
+  "pattern_subscriptions": [
+    {
+      "files": [
+        "orion/cognition/hub_gateway/bus_harness.py:91"
+      ],
+      "pattern": "orion:*",
+      "risk_note": "pattern subscription or prefix"
+    }
+  ],
+  "summary": {
+    "catalog_count": 20,
+    "found_count": 22,
+    "unknown_count": 8
+  },
+  "unknown_channels": [
+    "${CORTEX_GATEWAY_REQUEST_CHANNEL:-orion-cortex-gateway:request}",
+    "${CORTEX_LOG_CHANNEL}",
+    "${CORTEX_REQUEST_CHANNEL:-orion-cortex:request}",
+    "${ORCH_REQUEST_CHANNEL:-orion-cortex:request}",
+    "${STATE_REQUEST_CHANNEL:-orion-state:request}",
+    "${VOIP_BUS_COMMAND_CHANNEL:-orion:voip:command}",
+    "${VOIP_BUS_STATUS_CHANNEL:-orion:voip:status}",
+    "orion:*"
+  ]
+}

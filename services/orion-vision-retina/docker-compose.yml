@@ -3,6 +3,7 @@ services:
     build: .
     environment:
       - ORION_BUS_URL=redis://redis:6379/0
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - CHANNEL_RETINA_PUB=orion:vision:frames
     volumes:
       - ./app:/app/app

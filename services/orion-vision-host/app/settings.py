@@ -20,10 +20,11 @@ class Settings(BaseSettings):
 
     # Bus
     ORION_BUS_ENABLED: bool = True
+    ORION_BUS_ENFORCE_CATALOG: bool = False
     ORION_BUS_URL: str = "redis://localhost:6379/0"
 
     # Channels
-    CHANNEL_VISIONHOST_INTAKE: str = "orion-exec:request:VisionHostService"
+    CHANNEL_VISIONHOST_INTAKE: str = "orion:exec:request:VisionHostService"
     CHANNEL_VISIONHOST_REPLY_PREFIX: str = "orion:vision:reply"
     CHANNEL_VISIONHOST_PUB: str = "orion:vision:artifacts"
 

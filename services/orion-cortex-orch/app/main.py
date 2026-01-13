@@ -9,14 +9,19 @@ import json
 from pydantic import Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 
-from .orchestrator import call_cortex_exec
+# REMOVED: dispatch_metacognition_tick
+from .orchestrator import call_verb_runtime, dispatch_metacog_trigger
 from .settings import get_settings
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 logger = logging.getLogger("orion.cortex.orch")
+
+# Channels
+# We only listen for the trigger now. The SQL Writer handles the ticks independently.
+METACOGNITION_TRIGGER_CHANNEL = "orion:equilibrium:metacog:trigger"
 
 
 class CortexOrchRequest(BaseEnvelope):
@@ -124,18 +129,19 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     # 3. Execution
     try:
-        s = get_settings()
-
-        result_payload = await call_cortex_exec(
+        verb_result = await call_verb_runtime(
             svc.bus,
             source=sref,
-            exec_request_channel=s.channel_exec_request,
-            exec_result_prefix=s.channel_exec_result_prefix,
             client_request=req,
             correlation_id=str(env.correlation_id),
+            causality_chain=env.causality_chain,
+            trace=env.trace,
             timeout_sec=float(req.options.get("timeout_sec", 900.0)),
         )
 
+        result_payload = verb_result.output if isinstance(verb_result.output, dict) else {}
+        if "result" in result_payload and isinstance(result_payload.get("result"), dict):
+            result_payload = result_payload["result"]
         steps = [
             StepExecutionResult.model_validate(s) if not isinstance(s, StepExecutionResult) else s
             for s in (result_payload.get("steps") or [])
@@ -145,8 +151,10 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if isinstance(error_payload, str):
             error_payload = {"message": error_payload}
 
+        if not verb_result.ok:
+            error_payload = error_payload or {"message": verb_result.error or "verb_failed"}
+
         # ENRICHMENT: Extract executed verbs from steps to populate metadata
-        # This fixes the issue where everything looks like 'chat_general'
         executed_verbs = []
         for s in steps:
             if s.verb_name and s.verb_name not in ["planner_react", "council_checkpoint", "agent_chain"]:
@@ -162,7 +170,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             final_meta["executed_verbs"] = executed_verbs
 
         client_result = CortexClientResult(
-            ok=(result_payload.get("status") == "success"),
+            ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
             verb=req.verb,
             status=result_payload.get("status") or "fail",
@@ -199,10 +207,37 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 steps=[],
                 error={"message": str(e), "type": type(e).__name__},
                 correlation_id=str(env.correlation_id),
-           ).model_dump(mode="json"),
+            ).model_dump(mode="json"),
         )
 
 svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
+equilibrium_hunter: Hunter
+
+
+async def _handle_equilibrium_envelope(env: BaseEnvelope) -> None:
+    """
+    Routes events from Equilibrium.
+    Now only handles Triggers (for Collapse Mirror).
+    Ticks are ignored here (logged directly by SQL Writer).
+    """
+    if env.kind == "orion.metacog.trigger.v1":
+        await dispatch_metacog_trigger(
+            equilibrium_hunter.bus,
+            source=_source(),
+            env=env,
+        )
+        return
+
+    # Pass on any legacy kinds or ticks
+    pass
+
+equilibrium_hunter = Hunter(
+    _cfg(),
+    handler=_handle_equilibrium_envelope,
+    patterns=[
+        METACOGNITION_TRIGGER_CHANNEL, 
+    ],
+)
 
 
 async def main() -> None:
@@ -214,7 +249,7 @@ async def main() -> None:
         s.channel_exec_request,
         s.orion_bus_url,
     )
-    await svc.start()
+    await asyncio.gather(svc.start(), equilibrium_hunter.start())
 
 
 if __name__ == "__main__":

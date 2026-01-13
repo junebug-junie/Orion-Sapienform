@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Optional
 
+from pydantic import BaseModel, ValidationError
 from redis import asyncio as aioredis
 
-from .codec import OrionCodec
+from orion.schemas.registry import resolve as resolve_schema_id
 from .bus_schemas import BaseEnvelope
+from .codec import OrionCodec
+from .enforce import enforcer
 
 logger = logging.getLogger("orion.bus.async")
 
@@ -19,11 +23,21 @@ class OrionBusAsync:
     Async Redis bus client.
     """
 
-    def __init__(self, url: str, *, enabled: bool = True, codec: Optional[OrionCodec] = None):
+    def __init__(
+        self,
+        url: str,
+        *,
+        enabled: bool = True,
+        codec: Optional[OrionCodec] = None,
+        enforce_catalog: bool | None = None,
+    ):
         self.url = url
         self.enabled = enabled
         self.codec = codec or OrionCodec()
         self._redis: Optional[aioredis.Redis] = None
+        if enforce_catalog is None:
+            enforce_catalog = os.getenv("ORION_BUS_ENFORCE_CATALOG", "false").lower() == "true"
+        enforcer.enforce = enforce_catalog
 
     async def connect(self) -> None:
         if not self.enabled:
@@ -46,8 +60,41 @@ class OrionBusAsync:
     async def publish(self, channel: str, msg: BaseEnvelope | Dict[str, Any]) -> None:
         if not self.enabled:
             return
+        enforcer.validate(channel)
+        self._validate_payload(channel, msg)
         data = self.codec.encode(msg)  # bytes
         await self.redis.publish(channel, data)
+
+    def _validate_payload(self, channel: str, msg: BaseEnvelope | Dict[str, Any]) -> None:
+        entry = enforcer.entry_for(channel)
+        if not entry:
+            return
+        schema_id = entry.get("schema_id")
+        if not schema_id:
+            return
+        payload = None
+        if isinstance(msg, BaseEnvelope):
+            payload = msg.payload
+        elif isinstance(msg, dict) and msg.get("schema") == "orion.envelope":
+            try:
+                env = BaseEnvelope.model_validate(msg)
+            except ValidationError as exc:
+                raise ValueError(f"Envelope validation failed for channel {channel}") from exc
+            payload = env.payload
+        if payload is None:
+            return
+        # Boundary rule: payloads on the bus must be JSON-ish.
+        # If a producer passes a Pydantic model, normalize to a dict before validation.
+        if isinstance(payload, BaseModel):
+            payload = payload.model_dump(mode="json")
+
+        model = resolve_schema_id(schema_id)
+        try:
+            model.model_validate(payload)
+        except ValidationError as exc:
+            raise ValueError(
+                f"Payload validation failed for channel {channel} (schema_id={schema_id})"
+            ) from exc
 
     @asynccontextmanager
     async def subscribe(self, *channels: str, patterns: bool = False) -> AsyncIterator[aioredis.client.PubSub]:

@@ -1,9 +1,10 @@
+import asyncio
 import os
 import sys
 import threading
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional, Coroutine
 
-from orion.core.bus.service import OrionBus
+from orion.core.bus.async_service import OrionBusAsync
 
 from .settings import Settings
 
@@ -12,7 +13,16 @@ SERVICE_NAME = os.getenv("ORION_SERVICE_NAME", "orion-voip-endpoint")
 NODE_NAME = os.getenv("ORION_NODE_NAME", "athena")
 
 
-def init_bus(settings: Settings) -> Optional[OrionBus]:
+def _run_async(coro: Coroutine[Any, Any, Any]) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coro)
+        return
+    loop.create_task(coro)
+
+
+def init_bus(settings: Settings) -> Optional[OrionBusAsync]:
     """
     Initialize OrionBus from settings.bus_redis_url (VOIP_BUS_REDIS_URL).
     """
@@ -20,15 +30,12 @@ def init_bus(settings: Settings) -> Optional[OrionBus]:
         print("[VOIP] No bus_redis_url configured; bus disabled", flush=True)
         return None
 
-    bus = OrionBus(url=str(settings.bus_redis_url))
-    if not bus.enabled:
-        print("[VOIP] OrionBus disabled after init", flush=True)
-        return None
-
+    bus = OrionBusAsync(url=str(settings.bus_redis_url))
+    _run_async(bus.connect())
     return bus
 
 
-def make_bus_publish(bus: Optional[OrionBus], settings: Settings) -> Callable[[str], None]:
+def make_bus_publish(bus: Optional[OrionBusAsync], settings: Settings) -> Callable[[str], None]:
     """
     Return a small helper that publishes structured events to VOIP_BUS_STATUS_CHANNEL.
     """
@@ -45,16 +52,19 @@ def make_bus_publish(bus: Optional[OrionBus], settings: Settings) -> Callable[[s
             "tailscale_host_ip": str(settings.tailscale_host_ip),
             **extra,
         }
-        try:
-            bus.publish(settings.bus_status_channel, payload)
-        except Exception as e:
-            print(f"[VOIP] Bus publish error: {e}", flush=True)
+        async def _publish() -> None:
+            try:
+                await bus.publish(settings.bus_status_channel, payload)
+            except Exception as e:
+                print(f"[VOIP] Bus publish error: {e}", flush=True)
+
+        _run_async(_publish())
 
     return bus_publish
 
 
-def bus_listener_loop(
-    bus: OrionBus,
+async def bus_listener_loop(
+    bus: OrionBusAsync,
     settings: Settings,
     bus_publish: Callable[[str], None],
     action_handlers: Dict[str, Callable[[], Any]],
@@ -73,26 +83,39 @@ def bus_listener_loop(
     )
 
     try:
-        for msg in bus.raw_subscribe(channel):
-            data = msg.get("data") or {}
-            action = data.get("action")
-            print(f"[VOIP] Bus command received: {action} payload={data}", flush=True)
+        async with bus.subscribe(channel) as pubsub:
+            async for msg in bus.iter_messages(pubsub):
+                data = msg.get("data") or {}
+                if isinstance(data, (bytes, bytearray)):
+                    try:
+                        data = data.decode("utf-8", "ignore")
+                    except Exception:
+                        data = {}
+                if isinstance(data, str):
+                    try:
+                        import json
 
-            try:
-                handler = action_handlers.get(action)
-                if handler is None:
-                    bus_publish("unknown_command", action=action, raw=data)
-                    continue
-                handler()
-            except Exception as e:
-                bus_publish("command_error", action=action, error=str(e))
+                        data = json.loads(data)
+                    except Exception:
+                        data = {}
+                action = data.get("action")
+                print(f"[VOIP] Bus command received: {action} payload={data}", flush=True)
+
+                try:
+                    handler = action_handlers.get(action)
+                    if handler is None:
+                        bus_publish("unknown_command", action=action, raw=data)
+                        continue
+                    handler()
+                except Exception as e:
+                    bus_publish("command_error", action=action, error=str(e))
     except Exception as e:
         print(f"[VOIP] Bus listener crashed: {e}", flush=True)
         bus_publish("listener_crashed", error=str(e))
 
 
 def start_bus_listener_thread(
-    bus: Optional[OrionBus],
+    bus: Optional[OrionBusAsync],
     settings: Settings,
     bus_publish: Callable[[str], None],
     action_handlers: Dict[str, Callable[[], Any]],
@@ -105,8 +128,7 @@ def start_bus_listener_thread(
         return
 
     t = threading.Thread(
-        target=bus_listener_loop,
-        args=(bus, settings, bus_publish, action_handlers),
+        target=lambda: asyncio.run(bus_listener_loop(bus, settings, bus_publish, action_handlers)),
         daemon=True,
     )
     t.start()

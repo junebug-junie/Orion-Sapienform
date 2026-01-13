@@ -9,13 +9,14 @@ class Settings(BaseSettings):
 
     # Bus
     ORION_BUS_URL: str = "redis://localhost:6379/0"
+    ORION_BUS_ENFORCE_CATALOG: bool = False
 
     # Channels
     CHANNEL_SCRIBE_INTAKE: str = "orion:vision:events"
     CHANNEL_SCRIBE_PUB: str = "orion:vision:scribe:pub"
 
     # Cortex Exec
-    CHANNEL_SCRIBE_REQUEST: str = "orion-exec:request:VisionScribeService"
+    CHANNEL_SCRIBE_REQUEST: str = "orion:exec:request:VisionScribeService"
 
     CHANNEL_SQL_WRITE: str = "orion:collapse:sql-write"
     CHANNEL_RDF_ENQUEUE: str = "orion:rdf-collapse:enqueue"

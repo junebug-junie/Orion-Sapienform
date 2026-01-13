@@ -1,0 +1,36 @@
+services:
+  state-service:
+    build:
+      context: ../..
+      dockerfile: services/orion-state-service/Dockerfile
+    container_name: orion-${NODE_NAME}-state-service
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${PORT}:${PORT}"
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - PORT=${PORT}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      - CHANNEL_SPARK_STATE_SNAPSHOT=${CHANNEL_SPARK_STATE_SNAPSHOT}
+      - STATE_REQUEST_CHANNEL=${STATE_REQUEST_CHANNEL}
+
+      - CACHE_REDIS_URL=${CACHE_REDIS_URL}
+      - STATE_CACHE_PREFIX=${STATE_CACHE_PREFIX}
+      - PRIMARY_STATE_NODE=${PRIMARY_STATE_NODE}
+
+      - POSTGRES_URI=${POSTGRES_URI}
+      - SPARK_TELEMETRY_TABLE=${SPARK_TELEMETRY_TABLE}
+      - HYDRATE_LIMIT=${HYDRATE_LIMIT}
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

@@ -9,13 +9,14 @@ class Settings(BaseSettings):
 
     # Bus
     ORION_BUS_URL: str = "redis://localhost:6379/0"
+    ORION_BUS_ENFORCE_CATALOG: bool = False
 
     # Channels
     CHANNEL_WINDOW_INTAKE: str = "orion:vision:artifacts"
     CHANNEL_WINDOW_PUB: str = "orion:vision:windows"
 
     # Cortex Exec
-    CHANNEL_WINDOW_REQUEST: str = "orion-exec:request:VisionWindowService"
+    CHANNEL_WINDOW_REQUEST: str = "orion:exec:request:VisionWindowService"
 
     # Config
     WINDOW_SIZE_SEC: float = 30.0

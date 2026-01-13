@@ -18,12 +18,13 @@ class Settings(BaseSettings):
 
     # Bus
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="ORION_HEARTBEAT_INTERVAL_SEC")
-    health_channel: str = Field("system.health", alias="ORION_HEALTH_CHANNEL")
-    error_channel: str = Field("system.error", alias="ORION_ERROR_CHANNEL")
+    health_channel: str = Field("orion:system:health", alias="ORION_HEALTH_CHANNEL")
+    error_channel: str = Field("orion:system:error", alias="ORION_ERROR_CHANNEL")
     shutdown_grace_sec: float = Field(10.0, alias="ORION_SHUTDOWN_GRACE_SEC")
 
     # Routing
@@ -33,11 +34,15 @@ class Settings(BaseSettings):
             "orion:tags:enriched",
             "orion:collapse:sql-write",
             "orion:chat:history:log",
+            "orion:chat:history:turn",
             "orion:dream:log",
             "orion:telemetry:biometrics",
             "orion:spark:introspection:log", # legacy?
             "orion:spark:telemetry",
-            "orion:cognition:trace"
+            "orion:cognition:trace",
+            "orion:metacognition:tick",
+            "orion:equilibrium:metacog:trigger"
+            #"orion:metacognition:enriched"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -46,15 +51,22 @@ class Settings(BaseSettings):
     sql_writer_route_map_json: str = Field(
         default=json.dumps({
             "collapse.mirror": "CollapseMirror",
+            "collapse.mirror.entry.v2": "CollapseMirror",
             "collapse.enrichment": "CollapseEnrichment",
             "tags.enriched": "CollapseEnrichment",
             "chat.history": "ChatHistoryLogSQL",
             "chat.log": "ChatHistoryLogSQL",
+            "chat.history.message.v1": "ChatMessageSQL",
             "dream.log": "Dream",
             "biometrics.telemetry": "BiometricsTelemetry",
             "spark.introspection.log": "SparkIntrospectionLogSQL",
             "spark.introspection": "SparkIntrospectionLogSQL",
-            "cognition.trace": "CognitionTraceSQL"
+            "spark.telemetry": "SparkTelemetrySQL",
+            "cognition.trace": "CognitionTraceSQL",
+            "metacognition.tick.v1":"MetacognitionTickSQL",
+            #"metacognition.enriched.v1":"MetacognitionEnrichedSQL",
+            "orion.metacog.trigger.v1": "MetacogTriggerSQL"
+
         }),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
     )
@@ -65,6 +77,16 @@ class Settings(BaseSettings):
             return json.loads(self.sql_writer_route_map_json)
         except Exception:
             return {}
+
+    @property
+    def effective_subscribe_channels(self) -> List[str]:
+        """Back-compat alias.
+
+        Some refactor branches referenced `effective_subscribe_channels`.
+        We keep env as source of truth and simply expose the configured list.
+        """
+        return list(self.sql_writer_subscribe_channels)
+
 
     # DB
     # Ensure default matches prod environment (Postgres), not SQLite.

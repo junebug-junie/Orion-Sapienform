@@ -2,8 +2,5 @@ fastapi==0.111.0
 uvicorn[standard]==0.29.0
 pydantic-settings==2.3.4
 redis==5.0.7
-numpy<2.0
+numpy==1.26.4
 chromadb==0.4.24
-sentence-transformers==3.0.1
-langchain-text-splitters~=0.2.0
-loguru>0.7

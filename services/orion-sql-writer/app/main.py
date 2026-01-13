@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
     if settings.orion_bus_enabled:
         svc = build_hunter()
         logger.info("🚀 starting Hunter")
+        logger.info("🧲 sql-writer subscribing to channels: %s", settings.effective_subscribe_channels)
         task = asyncio.create_task(svc.start())
     else:
         logger.warning("Bus disabled; writer will be idle.")

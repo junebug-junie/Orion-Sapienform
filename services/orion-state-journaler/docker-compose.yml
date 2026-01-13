@@ -1,0 +1,35 @@
+services:
+  state-journaler:
+    build:
+      context: ../..
+      dockerfile: services/orion-state-journaler/Dockerfile
+    container_name: ${PROJECT}-state-journaler
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${JOURNALER_PORT}:${JOURNALER_PORT}"
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - PORT=${JOURNALER_PORT}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+
+      - CHANNEL_SPARK_STATE_SNAPSHOT=${CHANNEL_SPARK_STATE_SNAPSHOT}
+      - CHANNEL_EQUILIBRIUM_SNAPSHOT=${CHANNEL_EQUILIBRIUM_SNAPSHOT}
+
+      - POSTGRES_URI=${POSTGRES_URI}
+      - SPARK_ROLLUP_TABLE=${SPARK_ROLLUP_TABLE}
+      - ROLLUP_WINDOWS_SEC=${ROLLUP_WINDOWS_SEC}
+      - ROLLUP_INTERVAL_SEC=${ROLLUP_INTERVAL_SEC}
+      - ROLLUP_RETENTION_HOURS=${ROLLUP_RETENTION_HOURS}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

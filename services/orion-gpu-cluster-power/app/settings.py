@@ -1,7 +1,7 @@
 # services/orion-psu-proxy/app/settings.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyUrl, Field
+from pydantic import AnyUrl, Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # Orion bus
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     orion_bus_url: AnyUrl | None = Field(None, alias="ORION_BUS_URL")
 
     # Bus channels
@@ -41,5 +42,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("orion_bus_url", mode="after")
+    @classmethod
+    def stringify_url(cls, v):
+       return str(v)
 
 settings = Settings()

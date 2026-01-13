@@ -1,0 +1,547 @@
+{
+  "__pycache__": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": false,
+    "env_example_exists": false,
+    "missing_items": [
+      ".env_example",
+      "Dockerfile",
+      "requirements.txt",
+      "app/settings.py",
+      "compose service stanza"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": false
+  },
+  "graphdb": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": false,
+    "missing_items": [
+      ".env_example",
+      "requirements.txt",
+      "app/settings.py"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": false
+  },
+  "orion-agent-chain": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-agent-council": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-biometrics": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-bus": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": false,
+    "env_example_exists": true,
+    "missing_items": [
+      "Dockerfile",
+      "requirements.txt",
+      "app/settings.py",
+      "compose service stanza"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": false
+  },
+  "orion-bus-mirror": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-bus-tap": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-chat-memory": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-collapse-mirror": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-cortex-exec": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-cortex-gateway": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-cortex-orch": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-dream": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-equilibrium-service": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-gdb-client": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-gpu-cluster-power": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-hub": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-landing-pad": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-llamaccp": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": false,
+    "env_example_exists": false,
+    "missing_items": [
+      ".env_example",
+      "Dockerfile",
+      "requirements.txt",
+      "app/settings.py",
+      "compose service stanza"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": false
+  },
+  "orion-llamacpp-host": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-llamacpp-neural-host": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "requirements.txt"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": true
+  },
+  "orion-llm-gateway": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-meta-tags": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-ollama-host": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-planner-react": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-power-guard": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-rag": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-rdf-writer": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-recall": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-security-watcher": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-spark-concept-induction": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-spark-introspector": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-sql-db": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": false,
+    "env_example_exists": true,
+    "missing_items": [
+      "Dockerfile",
+      "requirements.txt",
+      "app/settings.py"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": false
+  },
+  "orion-sql-writer": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-state-journaler": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-state-service": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vector-db": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": false,
+    "env_example_exists": true,
+    "missing_items": [
+      "Dockerfile",
+      "requirements.txt",
+      "app/settings.py",
+      "compose service stanza"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": false
+  },
+  "orion-vector-writer": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vision-council": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vision-edge": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vision-host": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vision-retina": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vision-scribe": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vision-window": {
+    "compose_has_environment_block": true,
+    "compose_mentions_service": true,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-vllm": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": false,
+    "env_example_exists": false,
+    "missing_items": [
+      ".env_example",
+      "Dockerfile",
+      "requirements.txt",
+      "app/settings.py",
+      "compose service stanza"
+    ],
+    "requirements_exists": false,
+    "settings_py_exists": false
+  },
+  "orion-vllm-host": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-voip-endpoint": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  },
+  "orion-whisper-tts": {
+    "compose_has_environment_block": false,
+    "compose_mentions_service": false,
+    "dockerfile_exists": true,
+    "env_example_exists": true,
+    "missing_items": [
+      "compose service stanza"
+    ],
+    "requirements_exists": true,
+    "settings_py_exists": true
+  }
+}

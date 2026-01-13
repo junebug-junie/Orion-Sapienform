@@ -6,7 +6,7 @@
 services:
   bus-core:
     image: redis:7-alpine
-    container_name: ${PROJECT:-orion}-bus-core
+    container_name: orion-${PROJECT}-bus-core
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -22,11 +22,10 @@ services:
       app-net:
         aliases:
           - bus-core
-          - ${PROJECT:-orion}-bus-core
 
   bus-exporter:
     image: oliver006/redis_exporter:latest
-    container_name: ${PROJECT:-orion}-bus-exporter
+    container_name: orion-${PROJECT}-bus-exporter
     environment:
       - REDIS_ADDR=redis://bus-core:6379
     ports:
@@ -44,4 +43,3 @@ services:
 networks:
   app-net:
     external: true
-

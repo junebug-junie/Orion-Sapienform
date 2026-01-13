@@ -79,16 +79,27 @@ class BaseEnvelope(BaseModel):
 
     # Message identity
     id: UUID = Field(default_factory=uuid4, description="Unique message id.")
-    correlation_id: UUID = Field(default_factory=uuid4, description="Stable id for a request/flow.")
+    correlation_id: UUID = Field(
+        default_factory=uuid4,
+        description="Stable id for a request/flow.",
+        validation_alias=AliasChoices("correlation_id", "corr_id"),
+    )
 
-    kind: str = Field(..., description="Canonical message kind (e.g. 'llm.chat.request').")
+    kind: str = Field(
+        ...,
+        description="Canonical message kind (e.g. 'llm.chat.request').",
+        validation_alias=AliasChoices("kind", "event"),
+    )
 
     # Conjourney lineage
     causality_chain: List[CausalityLink] = Field(default_factory=list)
 
     # Producer identity + timing
-    source: ServiceRef
-    created_at: datetime = Field(default_factory=utcnow)
+    source: ServiceRef = Field(..., validation_alias=AliasChoices("source", "service"))
+    created_at: datetime = Field(default_factory=utcnow, validation_alias=AliasChoices("created_at", "ts"))
+
+    ttl_ms: Optional[int] = Field(None, description="Optional time-to-live in milliseconds for the message.")
+    trace: Dict[str, Any] = Field(default_factory=dict, description="Opaque tracing metadata (baggage/span ids).")
 
     # Optional RPC return address
     reply_to: Optional[str] = Field(
@@ -165,6 +176,13 @@ class ChatRequestPayload(BaseModel):
     model: Optional[str] = None
     profile: Optional[str] = None
     messages: List[LLMMessage]
+    raw_user_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Canonical raw user utterance for Spark/telemetry. "
+            "Must reflect the human input (pre-scaffold) when available."
+        ),
+    )
     options: Dict[str, Any] = Field(default_factory=dict)
 
     # Optional provenance

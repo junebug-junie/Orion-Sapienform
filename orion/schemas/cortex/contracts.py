@@ -24,6 +24,14 @@ class CortexClientContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     messages: List[LLMMessage]
+    raw_user_text: Optional[str] = Field(
+        default=None,
+        description="Canonical user utterance (pre-scaffold) for telemetry + Spark.",
+    )
+    user_message: Optional[str] = Field(
+        default=None,
+        description="Latest user-visible message, if convenient to pass explicitly.",
+    )
     session_id: Optional[str] = None
     user_id: Optional[str] = None
     trace_id: Optional[str] = None

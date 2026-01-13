@@ -29,6 +29,7 @@ class PadRpcServer:
 
     async def start(self) -> None:
         self._stop.clear()
+        logger.info("Starting pad RPC listener channel=%s", self.settings.pad_rpc_request_channel)
         self._task = asyncio.create_task(self._run(), name="pad-rpc")
 
     async def stop(self) -> None:
@@ -56,6 +57,7 @@ class PadRpcServer:
                     continue
                 env = decoded.envelope
                 if env.kind != KIND_PAD_RPC_REQUEST_V1:
+                    logger.debug("Ignoring RPC message kind=%s", env.kind)
                     continue
                 await self._handle_request(env)
 

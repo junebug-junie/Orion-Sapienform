@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 import os
-from typing import Any, Dict, List, Optional, Union
+import re
+from typing import Any, Dict, List, Optional, Sequence, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,6 +23,88 @@ V1_REQUIRED_KEYS = {
     "timestamp",
     "environment",
 }
+
+V2_MIN_REQUIRED_KEYS = {
+    "observer",
+    "trigger",
+    "type",
+    "emergent_entity",
+    "summary",
+    "mantra",
+}
+
+
+def _normalize_token(token: str) -> str:
+    cleaned = " ".join(token.strip().split())
+    cleaned = cleaned.replace("_ ", "_").replace(" _", "_")
+    return cleaned
+
+
+def _parse_string_set_like(value: str) -> List[str]:
+    if not value:
+        return []
+
+    raw = value.strip()
+
+    if raw.startswith("["):
+        try:
+            loaded = json.loads(raw)
+            if isinstance(loaded, list):
+                return [_normalize_token(str(item)) for item in loaded if str(item).strip()]
+        except Exception:
+            pass
+
+    if raw.startswith("{") and raw.endswith("}"):
+        raw = raw[1:-1]
+
+    if "," in raw or "\n" in raw:
+        parts = re.split(r"[,\n]+", raw)
+    else:
+        parts = [raw]
+
+    normalized: List[str] = []
+    for part in parts:
+        cleaned = part.strip().strip("\"").strip("'")
+        if cleaned:
+            normalized.append(_normalize_token(cleaned))
+
+    return normalized
+
+
+def _normalize_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+
+    items: List[str] = []
+
+    if isinstance(value, str):
+        items = _parse_string_set_like(value)
+    elif isinstance(value, Sequence):
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                items.extend(_parse_string_set_like(item))
+            else:
+                items.append(_normalize_token(str(item)))
+    else:
+        items = [_normalize_token(str(value))]
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+
+    return deduped
+
+
+def _is_v2_shape(data: Dict[str, Any]) -> bool:
+    return V2_MIN_REQUIRED_KEYS.issubset(data.keys())
 
 
 def _utc_now_iso() -> str:
@@ -47,11 +130,7 @@ class CollapseMirrorEntryV1(BaseModel):
     @field_validator("observer_state", mode="before")
     @classmethod
     def _normalize_observer_state(cls, v: Any) -> List[str]:
-        if v is None:
-            return []
-        if isinstance(v, list):
-            return [str(x) for x in v if str(x)]
-        return [str(v)]
+        return _normalize_string_list(v)
 
 
 class CollapseMirrorConstraints(BaseModel):
@@ -109,6 +188,16 @@ class CollapseMirrorStateSnapshot(BaseModel):
     tags: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
 
+    @field_validator("observer_state", mode="before")
+    @classmethod
+    def _normalize_observer_state(cls, v: Any) -> List[str]:
+        return _normalize_string_list(v)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> List[str]:
+        return _normalize_string_list(v)
+
 
 class CollapseMirrorEntryV2(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -154,11 +243,12 @@ class CollapseMirrorEntryV2(BaseModel):
     @field_validator("observer_state", mode="before")
     @classmethod
     def _normalize_observer_state(cls, v: Any) -> List[str]:
-        if v is None:
-            return []
-        if isinstance(v, list):
-            return [str(x) for x in v if str(x)]
-        return [str(v)]
+        return _normalize_string_list(v)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> List[str]:
+        return _normalize_string_list(v)
 
     @model_validator(mode="before")
     @classmethod
@@ -176,7 +266,7 @@ class CollapseMirrorEntryV2(BaseModel):
         if isinstance(data, dict) and V1_REQUIRED_KEYS.issubset(data.keys()):
             # If the dict already looks like V2, keep it as-is.
             v2_markers = {"event_id", "snapshot_kind", "state_snapshot", "numeric_sisters", "causal_density"}
-            if any(k in data for k in v2_markers):
+            if _is_v2_shape(data) or any(k in data for k in v2_markers):
                 return data
             return v1_to_v2(CollapseMirrorEntryV1.model_validate(data)).model_dump(mode="json")
         return data
@@ -200,6 +290,8 @@ class CollapseMirrorEntryV2(BaseModel):
             self.state_snapshot.observer_state = list(self.observer_state)
         if not self.state_snapshot.field_resonance:
             self.state_snapshot.field_resonance = self.field_resonance
+        if not self.state_snapshot.tags and self.tags:
+            self.state_snapshot.tags = list(self.tags)
         if not self.event_id:
             self.event_id = f"collapse_{uuid4().hex}"
         if self.event_id and not self.id:
@@ -225,7 +317,16 @@ class CollapseMirrorEntryV2(BaseModel):
 
         # If we receive a rich object (dict), serialize it to JSON
         # so we can store it in the SQL VARCHAR column without crashing.
-        if isinstance(v, dict):
+        if isinstance(v, (dict, list)):
+            return json.dumps(v)
+        return str(v)
+
+    @field_validator("resonance_signature", mode="before")
+    @classmethod
+    def _normalize_resonance_signature(cls, v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        if isinstance(v, (dict, list)):
             return json.dumps(v)
         return str(v)
 
@@ -273,7 +374,7 @@ def normalize_collapse_entry(payload: Any) -> CollapseMirrorEntryV2:
         return payload.with_defaults()
     if isinstance(payload, CollapseMirrorEntryV1):
         return v1_to_v2(payload).with_defaults()
-    if isinstance(payload, dict) and V1_REQUIRED_KEYS.issubset(payload.keys()):
+    if isinstance(payload, dict) and V1_REQUIRED_KEYS.issubset(payload.keys()) and not _is_v2_shape(payload):
         return v1_to_v2(CollapseMirrorEntryV1.model_validate(payload)).with_defaults()
     return CollapseMirrorEntryV2.model_validate(payload).with_defaults()
 
@@ -343,12 +444,14 @@ def find_collapse_entry(prior_step_results: Any) -> Optional[Dict[str, Any]]:
     if prior_step_results is None:
         return None
 
-    if isinstance(prior_step_results, dict) and V1_REQUIRED_KEYS.issubset(prior_step_results.keys()):
+    if isinstance(prior_step_results, dict) and (
+        _is_v2_shape(prior_step_results) or V1_REQUIRED_KEYS.issubset(prior_step_results.keys())
+    ):
         return prior_step_results
 
     for s in _find_any_string(prior_step_results):
         obj = _extract_first_json_object(s)
-        if isinstance(obj, dict) and V1_REQUIRED_KEYS.issubset(obj.keys()):
+        if isinstance(obj, dict) and (_is_v2_shape(obj) or V1_REQUIRED_KEYS.issubset(obj.keys())):
             return obj
 
     if isinstance(prior_step_results, dict):

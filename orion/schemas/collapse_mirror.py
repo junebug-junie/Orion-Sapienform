@@ -264,17 +264,6 @@ class CollapseMirrorEntryV2(BaseModel):
     def _normalize_tags(cls, v: Any) -> List[str]:
         return _normalize_string_list(v)
 
-    @field_validator("what_changed", mode="before")
-    @classmethod
-    def _normalize_what_changed(cls, v: Any) -> Optional[CollapseMirrorWhatChanged | Dict[str, Any]]:
-        if v is None:
-            return None
-        if isinstance(v, CollapseMirrorWhatChanged):
-            return v
-        if isinstance(v, str):
-            return {"summary": v}
-        return v
-
     @model_validator(mode="before")
     @classmethod
     def _coerce_v1(cls, data: Any) -> Any:

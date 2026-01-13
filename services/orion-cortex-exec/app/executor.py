@@ -545,13 +545,6 @@ async def call_step_services(
                         reply_to=reply_channel,
                         payload=pad_req.model_dump(mode="json"),
                     )
-                    logger.info(
-                        "LandingPad RPC emit corr=%s reply=%s channel=%s kind=%s timeout=60s",
-                        correlation_id,
-                        reply_channel,
-                        "orion:pad:rpc:request",
-                        KIND_PAD_RPC_REQUEST_V1,
-                    )
                     pad_started = time.perf_counter()
                     try:
                         pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=60)

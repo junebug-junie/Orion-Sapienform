@@ -57,11 +57,7 @@ class PadRpcServer:
                     continue
                 env = decoded.envelope
                 if env.kind != KIND_PAD_RPC_REQUEST_V1:
-                    logger.debug(
-                        "Ignoring RPC message kind=%s expected=%s",
-                        env.kind,
-                        KIND_PAD_RPC_REQUEST_V1,
-                    )
+                    logger.debug("Ignoring RPC message kind=%s", env.kind)
                     continue
                 await self._handle_request(env)
 

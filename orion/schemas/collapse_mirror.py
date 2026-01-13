@@ -158,6 +158,20 @@ class CollapseMirrorCausalDensity(BaseModel):
     score: float = 0.0
     rationale: Optional[str] = None
 
+    @field_validator("label", mode="before")
+    @classmethod
+    def _normalize_label(cls, v: Any) -> str:
+        if v is None:
+            return "ambient"
+        return str(v)
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def _normalize_score(cls, v: Any) -> float:
+        if v is None:
+            return 0.0
+        return float(v)
+
 
 class CollapseMirrorWhatChanged(BaseModel):
     model_config = ConfigDict(extra="ignore")

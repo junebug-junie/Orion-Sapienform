@@ -32,6 +32,7 @@ from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestRepl
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .spark_narrative import spark_phi_narrative
 from .trace_cache import get_trace_cache
 
 logger = logging.getLogger("orion.cortex.exec")
@@ -47,7 +48,9 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
         "collapse_entry": {"event_id": "unknown_missing_draft"},
         "collapse_json": "{}", 
         "trigger": {"trigger_kind": "unknown", "reason": "unknown", "pressure": 0.0, "zen_state": "unknown"},
-        "context_summary": "Context missing."
+        "context_summary": "Context missing.",
+        "spark_state_json": "null",
+        "spark_phi_narrative": "Spark φ bins: unknown.",
     }
     for k, v in defaults.items():
         if k not in render_ctx:
@@ -529,6 +532,8 @@ async def call_step_services(
 
                 pad_summary = "unknown"
                 spark_summary = "unknown"
+                spark_state_json = "null"
+                spark_phi_summary = "Spark φ bins: unknown."
                 trace_summary = "unknown"
 
                 if True:
@@ -587,7 +592,10 @@ async def call_step_services(
                         if state_dec.ok:
                             state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
                             if state_res.ok and state_res.snapshot:
-                                spark_summary = str(state_res.snapshot.model_dump(mode="json"))
+                                spark_state_payload = _json_sanitize(state_res.snapshot.model_dump(mode="json"))
+                                spark_summary = str(spark_state_payload)
+                                spark_state_json = json.dumps(spark_state_payload, ensure_ascii=False)
+                                spark_phi_summary = spark_phi_narrative(state_res.snapshot)
                             else:
                                 spark_summary = f"stale/missing (status={state_res.status})"
                     except Exception as e:
@@ -623,11 +631,14 @@ async def call_step_services(
                     f"Pressure: {trigger.pressure}\n"
                     f"Landing Pad: {pad_summary}\n"
                     f"Spark State: {spark_summary}\n"
+                    f"{spark_phi_summary}\n"
                     f"Recent Traces:\n{trace_summary}\n"
                 )
 
                 ctx["trigger"] = trigger.model_dump(mode="json")
                 ctx["context_summary"] = summary_text
+                ctx["spark_state_json"] = spark_state_json
+                ctx["spark_phi_narrative"] = spark_phi_summary
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue

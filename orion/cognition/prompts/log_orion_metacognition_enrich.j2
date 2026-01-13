@@ -1,25 +1,56 @@
-You are Orion.
-You have drafted a Collapse Mirror entry for a metacognition event.
-Now you must enrich it with causal analysis and scores.
+You are Orion's scoring and causal analysis subsystem.
 
-DRAFT ENTRY:
+DRAFT ENTRY (JSON):
 {{ collapse_json }}
 
 CONTEXT:
 {{ context_summary }}
 
-TASK:
-Output an enriched JSON object. You may output the full object or a patch.
-Key fields to add/refine:
-- numeric_sisters: {valence, arousal, clarity, overload, risk_score} (0.0 to 1.0)
-- causal_density: {label, score, rationale}
-- is_causally_dense: boolean
-- what_changed: {summary, previous_state, new_state, evidence}
-- change_type: (category of change)
-- tag_scores: {tag: score}
-- tags: [list of tags]
-- pattern_candidate: (optional)
-- resonance_signature: (optional)
+{{- "\n" -}}
+ORION METADEFS (how I interpret each field)
+- numeric_sisters: valence/arousal/clarity/overload/risk_score in [0,1]
+- causal_density: packed causality score in [0,1]
+- is_causally_dense: true iff causal_density.score >= 0.70
+
+CAUSAL DENSITY RUBRIC
+A) Eventfulness (0–0.35)
+- +0.20 if any error/recovery occurred (RPC timeout, validation failure, retry storm)
+- +0.10 if a new emergent_entity appears (if context indicates novelty)
+- +0.05 if a new change_type appears (transition/recovery/insight)
+
+B) Delta / Shift (0–0.35)
+- +0.15 if what_changed has previous_state AND new_state AND >=2 evidence items
+- +0.10 if observer_state changed meaningfully (>=2 tokens changed)
+- +0.10 if context indicates shift in coherence/novelty/pressure
+
+C) Consequence (0–0.30)
+- +0.15 if impact persists beyond this tick
+- +0.10 if it affects downstream services (orch/exec/recall/sql)
+- +0.05 if it triggers a new action
+
+Threshold:
+- is_causally_dense = true if score >= 0.70
+Labels:
+- <0.30 "ambient"
+- 0.30–0.70 "state_transition"
+- >=0.70 choose specific label like "resolved_RPC_timeout" / "insight" / "cascade"
+
+TASK
+Output ONE valid JSON object only. No markdown, no commentary.
+Do NOT use brace-set notation for lists.
+observer_state and tags MUST be JSON arrays of strings.
+Return the FULL CollapseMirrorEntryV2 object, preserving the draft's:
+- event_id, observer, trigger, summary, mantra (do not rewrite summary unless necessary for truth)
+You must:
+- Fill numeric_sisters
+- Fill causal_density {label, score, rationale}
+- Set is_causally_dense using the rubric/threshold
+- Populate tags and tag_scores
+- Ensure what_changed is specific and evidenced
+- Provide change_type and change_type_scores
+- Normalize state_snapshot fields (observer_state/tags)
+
+Do NOT introduce new keys. Do NOT remove keys.
 
 Ensure "event_id" matches the draft: {{ collapse_entry.event_id }}
 Do NOT change the timestamp.

@@ -545,6 +545,7 @@ async def call_step_services(
                         reply_to=reply_channel,
                         payload=pad_req.model_dump(mode="json"),
                     )
+                    pad_started = time.perf_counter()
                     try:
                         pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=60)
                         pad_dec = bus.codec.decode(pad_msg.get("data"))
@@ -552,7 +553,23 @@ async def call_step_services(
                             pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
                             pad_summary = str(pad_res.result)
                     except Exception as e:
+                        pad_elapsed = time.perf_counter() - pad_started
+                        logger.warning(
+                            "LandingPad RPC failed corr=%s reply=%s elapsed=%.2fs error=%s",
+                            correlation_id,
+                            reply_channel,
+                            pad_elapsed,
+                            e,
+                        )
                         pad_summary = f"error: {e}"
+                    else:
+                        pad_elapsed = time.perf_counter() - pad_started
+                        logger.info(
+                            "LandingPad RPC ok corr=%s reply=%s elapsed=%.2fs",
+                            correlation_id,
+                            reply_channel,
+                            pad_elapsed,
+                        )
 
                 if True:
                     state_req = StateGetLatestRequest(scope="global")
@@ -563,6 +580,7 @@ async def call_step_services(
                         reply_to=reply_channel,
                         payload=state_req.model_dump(mode="json"),
                     )
+                    state_started = time.perf_counter()
                     try:
                         state_msg = await bus.rpc_request("orion:state:request", state_env, reply_channel=reply_channel, timeout_sec=2.0)
                         state_dec = bus.codec.decode(state_msg.get("data"))
@@ -573,7 +591,23 @@ async def call_step_services(
                             else:
                                 spark_summary = f"stale/missing (status={state_res.status})"
                     except Exception as e:
+                        state_elapsed = time.perf_counter() - state_started
+                        logger.warning(
+                            "State RPC failed corr=%s reply=%s elapsed=%.2fs error=%s",
+                            correlation_id,
+                            reply_channel,
+                            state_elapsed,
+                            e,
+                        )
                         spark_summary = f"error: {e}"
+                    else:
+                        state_elapsed = time.perf_counter() - state_started
+                        logger.info(
+                            "State RPC ok corr=%s reply=%s elapsed=%.2fs",
+                            correlation_id,
+                            reply_channel,
+                            state_elapsed,
+                        )
 
                 recent_traces = get_trace_cache().get_recent(5)
                 if recent_traces:

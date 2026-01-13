@@ -1,0 +1,12 @@
+name: introspect_spark
+kind: task
+# Short timeout because this is a background feeling, not a complex thought
+timeout_ms: 300000
+steps:
+  - name: generate_introspection
+    # Point to the new file
+    prompt_template: introspect_spark.j2
+    # Use the standard gateway service
+    services:
+      - LLMGatewayService
+    timeout_ms: 250000

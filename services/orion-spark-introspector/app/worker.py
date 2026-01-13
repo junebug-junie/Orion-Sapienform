@@ -712,10 +712,11 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     if candidate.introspection:
         return
 
-    # (keep existing introspection flow unchanged)
     reply_channel = f"orion:spark:introspector:reply:{candidate.trace_id}"
-    prompt = _build_llm_prompt(candidate)
 
+    # [DEPRECATED]
+    # prompt = _build_llm_prompt(candidate)
+    prompt = "Analyze the state shift."
     from orion.core.bus.bus_schemas import LLMMessage
     from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest
 
@@ -725,6 +726,8 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         user_message=prompt,
         trace_id=candidate.trace_id,
         metadata={
+            "prompt": candidate.prompt,
+            "response": candidate.response,
             "spark_meta": candidate.spark_meta or {},
             "spark_source": candidate.source or "spark-introspector",
         },
@@ -732,8 +735,8 @@ async def handle_candidate(env: BaseEnvelope) -> None:
 
     client_req = CortexClientRequest(
         mode="brain",
-        verb_name="chat_general",
-        packs=["executive_pack"],
+        verb_name="introspect_spark",
+        packs=[],
         context=ctx,
         options={"source": "spark-introspector", "purpose": "introspect"},
         recall={"enabled": False, "required": False},

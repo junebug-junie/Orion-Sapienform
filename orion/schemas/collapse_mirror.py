@@ -114,6 +114,7 @@ class CollapseMirrorEntryV2(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     event_id: str = Field(default_factory=lambda: f"collapse_{uuid4().hex}")
+    id: Optional[str] = None
     timestamp: str = Field(default_factory=_utc_now_iso)
     environment: Optional[str] = None
 
@@ -201,6 +202,16 @@ class CollapseMirrorEntryV2(BaseModel):
             self.state_snapshot.field_resonance = self.field_resonance
         if not self.event_id:
             self.event_id = f"collapse_{uuid4().hex}"
+        if self.event_id and not self.id:
+            self.id = self.event_id
+        elif self.id and not self.event_id:
+            self.event_id = self.id
+        # If both are present but different, current logic keeps them as is,
+        # but typically event_id is the authoritative one.
+        # However, to be safe, we can enforce id = event_id if event_id is present.
+        if self.event_id and self.id != self.event_id:
+            self.id = self.event_id
+
         return self
 
     def with_defaults(self) -> "CollapseMirrorEntryV2":
@@ -217,6 +228,8 @@ class CollapseMirrorEntryV2(BaseModel):
         if isinstance(v, dict):
             return json.dumps(v)
         return str(v)
+
+
 def v1_to_v2(v1: CollapseMirrorEntryV1) -> CollapseMirrorEntryV2:
     observer_state = v1.observer_state
     if isinstance(observer_state, str):
@@ -226,6 +239,7 @@ def v1_to_v2(v1: CollapseMirrorEntryV1) -> CollapseMirrorEntryV2:
 
     return CollapseMirrorEntryV2(
         event_id=v1.id or f"collapse_{uuid4().hex}",
+        id=v1.id, # Pass explicit ID if present
         observer=v1.observer,
         trigger=v1.trigger,
         observer_state=observer_state_list,

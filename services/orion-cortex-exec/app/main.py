@@ -196,7 +196,28 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             causality_chain=env.causality_chain,
             payload=CortexExecResultPayload(ok=True, result=res.model_dump(mode="json")),
         )
-        await svc.bus.publish(env.reply_to, manual_result)
+        publish_started = time.perf_counter()
+        try:
+            await svc.bus.publish(env.reply_to, manual_result)
+        except Exception as exc:
+            elapsed = time.perf_counter() - publish_started
+            logger.warning(
+                "Exec result publish failed corr=%s reply=%s elapsed=%.2fs error=%s",
+                corr_id,
+                env.reply_to,
+                elapsed,
+                exc,
+            )
+        else:
+            elapsed = time.perf_counter() - publish_started
+            logger.info(
+                "Exec result published corr=%s reply=%s elapsed=%.2fs",
+                corr_id,
+                env.reply_to,
+                elapsed,
+            )
+    else:
+        logger.warning("Exec result missing reply_to corr=%s", corr_id)
 
     return CortexExecResult(
         source=_source(),

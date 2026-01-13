@@ -25,13 +25,14 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, normalize_colla
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
-from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
+from orion.schemas.pad.v1 import KIND_PAD_RPC_REQUEST_V1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .spark_narrative import spark_phi_narrative
 from .trace_cache import get_trace_cache
 
 logger = logging.getLogger("orion.cortex.exec")
@@ -47,7 +48,9 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
         "collapse_entry": {"event_id": "unknown_missing_draft"},
         "collapse_json": "{}", 
         "trigger": {"trigger_kind": "unknown", "reason": "unknown", "pressure": 0.0, "zen_state": "unknown"},
-        "context_summary": "Context missing."
+        "context_summary": "Context missing.",
+        "spark_state_json": "null",
+        "spark_phi_narrative": "Spark φ bins: unknown.",
     }
     for k, v in defaults.items():
         if k not in render_ctx:
@@ -529,6 +532,8 @@ async def call_step_services(
 
                 pad_summary = "unknown"
                 spark_summary = "unknown"
+                spark_state_json = "null"
+                spark_phi_summary = "Spark φ bins: unknown."
                 trace_summary = "unknown"
 
                 if True:
@@ -539,12 +544,20 @@ async def call_step_services(
                         args={}
                     )
                     pad_env = BaseEnvelope(
-                        kind="orion.pad.rpc.request",
+                        kind=KIND_PAD_RPC_REQUEST_V1,
                         source=source,
                         correlation_id=correlation_id,
                         reply_to=reply_channel,
                         payload=pad_req.model_dump(mode="json"),
                     )
+                    logger.info(
+                        "LandingPad RPC emit corr=%s reply=%s channel=%s kind=%s timeout=60s",
+                        correlation_id,
+                        reply_channel,
+                        "orion:pad:rpc:request",
+                        KIND_PAD_RPC_REQUEST_V1,
+                    )
+                    pad_started = time.perf_counter()
                     try:
                         pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=60)
                         pad_dec = bus.codec.decode(pad_msg.get("data"))
@@ -552,7 +565,23 @@ async def call_step_services(
                             pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
                             pad_summary = str(pad_res.result)
                     except Exception as e:
+                        pad_elapsed = time.perf_counter() - pad_started
+                        logger.warning(
+                            "LandingPad RPC failed corr=%s reply=%s elapsed=%.2fs error=%s",
+                            correlation_id,
+                            reply_channel,
+                            pad_elapsed,
+                            e,
+                        )
                         pad_summary = f"error: {e}"
+                    else:
+                        pad_elapsed = time.perf_counter() - pad_started
+                        logger.info(
+                            "LandingPad RPC ok corr=%s reply=%s elapsed=%.2fs",
+                            correlation_id,
+                            reply_channel,
+                            pad_elapsed,
+                        )
 
                 if True:
                     state_req = StateGetLatestRequest(scope="global")
@@ -563,17 +592,37 @@ async def call_step_services(
                         reply_to=reply_channel,
                         payload=state_req.model_dump(mode="json"),
                     )
+                    state_started = time.perf_counter()
                     try:
                         state_msg = await bus.rpc_request("orion:state:request", state_env, reply_channel=reply_channel, timeout_sec=2.0)
                         state_dec = bus.codec.decode(state_msg.get("data"))
                         if state_dec.ok:
                             state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
                             if state_res.ok and state_res.snapshot:
-                                spark_summary = str(state_res.snapshot.model_dump(mode="json"))
+                                spark_state_payload = _json_sanitize(state_res.snapshot.model_dump(mode="json"))
+                                spark_summary = str(spark_state_payload)
+                                spark_state_json = json.dumps(spark_state_payload, ensure_ascii=False)
+                                spark_phi_summary = spark_phi_narrative(state_res.snapshot)
                             else:
                                 spark_summary = f"stale/missing (status={state_res.status})"
                     except Exception as e:
+                        state_elapsed = time.perf_counter() - state_started
+                        logger.warning(
+                            "State RPC failed corr=%s reply=%s elapsed=%.2fs error=%s",
+                            correlation_id,
+                            reply_channel,
+                            state_elapsed,
+                            e,
+                        )
                         spark_summary = f"error: {e}"
+                    else:
+                        state_elapsed = time.perf_counter() - state_started
+                        logger.info(
+                            "State RPC ok corr=%s reply=%s elapsed=%.2fs",
+                            correlation_id,
+                            reply_channel,
+                            state_elapsed,
+                        )
 
                 recent_traces = get_trace_cache().get_recent(5)
                 if recent_traces:
@@ -589,11 +638,14 @@ async def call_step_services(
                     f"Pressure: {trigger.pressure}\n"
                     f"Landing Pad: {pad_summary}\n"
                     f"Spark State: {spark_summary}\n"
+                    f"{spark_phi_summary}\n"
                     f"Recent Traces:\n{trace_summary}\n"
                 )
 
                 ctx["trigger"] = trigger.model_dump(mode="json")
                 ctx["context_summary"] = summary_text
+                ctx["spark_state_json"] = spark_state_json
+                ctx["spark_phi_narrative"] = spark_phi_summary
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue

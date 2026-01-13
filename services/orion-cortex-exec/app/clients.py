@@ -1,6 +1,7 @@
 # services/orion-cortex-exec/app/clients.py
 from __future__ import annotations
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from pydantic import ValidationError
@@ -65,12 +66,34 @@ class LLMGatewayClient:
             reply_to,
             rpc_timeout,
         )
-
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=rpc_timeout  # <--- PASSED HERE
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_to,
-            timeout_sec=rpc_timeout  # <--- PASSED HERE
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
 
         decoded = self.bus.codec.decode(msg.get("data"))
@@ -119,12 +142,34 @@ class RecallClient:
             reply_to,
             timeout_sec,
         )
-
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=timeout_sec,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_to,
-            timeout_sec=timeout_sec,
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
 
         decoded = self.bus.codec.decode(msg.get("data"))
@@ -169,11 +214,34 @@ class PlannerReactClient:
             reply_to,
             rpc_timeout,
         )
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=rpc_timeout,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_to,
-            timeout_sec=rpc_timeout,
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
@@ -214,11 +282,34 @@ class AgentChainClient:
             reply_to,
             rpc_timeout,
         )
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=rpc_timeout,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_to,
-            timeout_sec=rpc_timeout,
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
@@ -260,11 +351,34 @@ class CouncilClient:
             reply_channel,
             rpc_timeout,
         )
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_channel,
+                timeout_sec=rpc_timeout,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_channel,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_channel,
-            timeout_sec=rpc_timeout,
+            env.kind,
+            correlation_id,
+            reply_channel,
+            elapsed,
         )
 
         decoded = self.bus.codec.decode(msg.get("data"))

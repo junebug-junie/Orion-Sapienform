@@ -21,7 +21,7 @@ from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, normalize_collapse_entry
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -197,6 +197,39 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     return None
 
 
+def _parse_llm_json(text: str) -> Dict[str, Any] | None:
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            return parsed[0]
+    except Exception:
+        pass
+    return _loose_json_extract(text)
+
+
+def _seed_collapse_defaults(payload: Dict[str, Any], *, trigger_kind: str | None) -> Dict[str, Any]:
+    defaults = {
+        "observer": "orion",
+        "trigger": trigger_kind or "unknown",
+        "type": "idle",
+        "emergent_entity": "Unknown",
+        "summary": "Metacognition draft unavailable.",
+        "mantra": "Observe and adapt.",
+        "snapshot_kind": "baseline",
+        "epistemic_status": "observed",
+        "visibility": "internal",
+        "redaction_level": "low",
+    }
+    for key, value in defaults.items():
+        if not payload.get(key):
+            payload[key] = value
+    return payload
+
+
 async def run_recall_step(
     bus: OrionBusAsync,
     *,
@@ -345,26 +378,30 @@ async def call_step_services(
                 try:
                     raw_content = _extract_llm_text(llm_res)
                     
-                    # 1. Try strict find (enforces V1 keys)
-                    parsed = find_collapse_entry(raw_content)
-                    
-                    # 2. Fallback: Loose extraction (find first balanced {})
-                    if not parsed:
-                        parsed = _loose_json_extract(raw_content)
+                    parsed = _parse_llm_json(raw_content)
 
                     if not parsed:
-                         # Log the specific failure for debugging
-                         logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
-                         raise ValueError("No JSON found in LLM response")
+                        logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
+                        parsed = {}
 
+                    if not isinstance(parsed, dict):
+                        raise ValueError("LLM response did not contain a JSON object")
+
+                    trigger_kind = None
+                    trigger_data = ctx.get("trigger")
+                    if isinstance(trigger_data, dict):
+                        trigger_kind = str(trigger_data.get("trigger_kind") or "") or None
+
+                    parsed = _seed_collapse_defaults(parsed, trigger_kind=trigger_kind)
                     parsed["observer"] = "orion"
                     parsed["visibility"] = "internal"
                     parsed["epistemic_status"] = "observed"
+                    parsed["redaction_level"] = "low"
 
                     entry = normalize_collapse_entry(parsed)
 
                     ctx["collapse_entry"] = entry.model_dump(mode="json")
-                    ctx["collapse_json"] = raw_content
+                    ctx["collapse_json"] = json.dumps(entry.model_dump(mode="json"))
                     merged_result[service] = {"ok": True, "event_id": entry.event_id}
                     logs.append("ok <- MetacogDraftService")
 
@@ -403,16 +440,11 @@ async def call_step_services(
                 try:
                     raw_content = _extract_llm_text(llm_res)
 
-                    # 1. Try strict find
-                    patch = find_collapse_entry(raw_content)
-
-                    # 2. Fallback: Loose extract
-                    if not patch:
-                        patch = _loose_json_extract(raw_content)
+                    patch = _parse_llm_json(raw_content)
 
                     if not patch:
-                         logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
-                         patch = {}
+                        logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
+                        patch = {}
 
                     draft_data = ctx.get("collapse_entry")
                     if not draft_data:
@@ -422,8 +454,10 @@ async def call_step_services(
                     final_dict = draft.model_dump(mode="json")
 
                     for k in ["numeric_sisters", "causal_density", "is_causally_dense",
-                              "what_changed", "change_type", "tag_scores", "tags",
-                              "pattern_candidate", "resonance_signature"]:
+                              "what_changed_summary", "what_changed", "change_type",
+                              "change_type_scores", "tag_scores", "tags", "state_snapshot",
+                              "pattern_candidate", "resonance_signature", "redaction_level",
+                              "source_service", "source_node", "visibility", "epistemic_status"]:
                         if k in patch and patch[k] is not None:
                             final_dict[k] = patch[k]
 

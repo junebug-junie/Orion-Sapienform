@@ -19,4 +19,8 @@ class MetacogTriggerV1(BaseModel):
     frame_refs: List[str] = Field(default_factory=list)
     signal_refs: List[str] = Field(default_factory=list)
     upstream: Dict[str, Any] = Field(default_factory=dict, description="Compact summary of upstream trigger event")
+    recall_enabled: Optional[bool] = Field(
+        default=None,
+        description="Override for downstream recall usage (true/false), None to use defaults.",
+    )
     timestamp: str = Field(default_factory=_utc_now_iso)

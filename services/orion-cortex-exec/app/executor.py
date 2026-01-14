@@ -647,9 +647,10 @@ async def call_step_services(
                 trace_summary = "unknown"
 
                 # Landing Pad
+                pad_reply_channel = f"orion:exec:result:PadRpc:{uuid4()}"
                 pad_req = PadRpcRequestV1(
                     request_id=correlation_id,
-                    reply_channel=reply_channel,
+                    reply_channel=pad_reply_channel,
                     method="get_latest_frame",
                     args={},
                 )
@@ -657,14 +658,14 @@ async def call_step_services(
                     kind="orion.pad.rpc.request",
                     source=source,
                     correlation_id=correlation_id,
-                    reply_to=reply_channel,
+                    reply_to=pad_reply_channel,
                     payload=pad_req.model_dump(mode="json"),
                 )
                 try:
                     pad_msg = await bus.rpc_request(
                         "orion:pad:rpc:request",
                         pad_env,
-                        reply_channel=reply_channel,
+                        reply_channel=pad_reply_channel,
                         timeout_sec=2.0,
                     )
                     pad_dec = bus.codec.decode(pad_msg.get("data"))
@@ -672,22 +673,24 @@ async def call_step_services(
                         pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
                         pad_summary = str(pad_res.result)
                 except Exception as e:
+                    logger.warning("MetacogContextService pad RPC failed: %s", e)
                     pad_summary = f"error: {e}"
 
                 # Spark (State Service)
+                state_reply_channel = f"orion:exec:result:StateService:{uuid4()}"
                 state_req = StateGetLatestRequest(scope="global")
                 state_env = BaseEnvelope(
                     kind="state.get_latest.v1",
                     source=source,
                     correlation_id=correlation_id,
-                    reply_to=reply_channel,
+                    reply_to=state_reply_channel,
                     payload=state_req.model_dump(mode="json"),
                 )
                 try:
                     state_msg = await bus.rpc_request(
                         "orion:state:request",
                         state_env,
-                        reply_channel=reply_channel,
+                        reply_channel=state_reply_channel,
                         timeout_sec=2.0,
                     )
                     state_dec = bus.codec.decode(state_msg.get("data"))
@@ -725,6 +728,7 @@ async def call_step_services(
                         else:
                             spark_line = f"stale/missing (status={state_res.status})"
                 except Exception as e:
+                    logger.warning("MetacogContextService state RPC failed: %s", e)
                     spark_line = f"error: {e}"
 
                 # Recent Traces

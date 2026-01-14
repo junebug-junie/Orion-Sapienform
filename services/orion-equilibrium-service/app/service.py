@@ -294,25 +294,26 @@ class EquilibriumService(BaseChassis):
             logger.error("Failed to publish metacog trigger: %s", e)
             return
 
-        # 2. Publish Verb Request (to execute)
-        verb_req = VerbRequestV1(
-            verb="log_orion_metacognition",
-            payload={
-                "trigger": trigger.model_dump(mode="json"),
-                "window_sec": trigger.window_sec,
-            },
-            meta={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
-        )
-        verb_env = BaseEnvelope(
-            kind="verb.request.v1",
-            source=self._source(),
-            payload=verb_req.model_dump(mode="json"),
-        )
-        try:
-            await self.bus.publish(settings.channel_cortex_orch_request, verb_env)
-            logger.info("Triggered metacognition routine: %s", trigger.trigger_kind)
-        except Exception as e:
-            logger.error("Failed to publish metacog verb request: %s", e)
+        if settings.metacog_publish_verb_request:
+            # 2. Publish Verb Request (legacy direct execution)
+            verb_req = VerbRequestV1(
+                verb="log_orion_metacognition",
+                payload={
+                    "trigger": trigger.model_dump(mode="json"),
+                    "window_sec": trigger.window_sec,
+                },
+                meta={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
+            )
+            verb_env = BaseEnvelope(
+                kind="verb.request.v1",
+                source=self._source(),
+                payload=verb_req.model_dump(mode="json"),
+            )
+            try:
+                await self.bus.publish(settings.channel_cortex_orch_request, verb_env)
+                logger.info("Triggered metacognition routine: %s", trigger.trigger_kind)
+            except Exception as e:
+                logger.error("Failed to publish metacog verb request: %s", e)
 
     async def _publish_loop(self) -> None:
         while not self._stop.is_set():
@@ -345,6 +346,7 @@ class EquilibriumService(BaseChassis):
                     reason="scheduled_check",
                     zen_state="zen" if zen > 0.5 else "not_zen",
                     pressure=distress,
+                    recall_enabled=settings.metacog_recall_enabled,
                 )
                 await self._publish_metacog_trigger(trigger)
             except Exception as e:
@@ -403,7 +405,8 @@ class EquilibriumService(BaseChassis):
                                     zen_state="zen" if zen > 0.5 else "not_zen",
                                     pressure=distress,
                                     signal_refs=[str(env.correlation_id or "unknown")],
-                                    upstream=payload_dict
+                                    upstream=payload_dict,
+                                    recall_enabled=settings.metacog_recall_enabled,
                                 )
                                 await self._publish_metacog_trigger(trigger)
 
@@ -421,7 +424,8 @@ class EquilibriumService(BaseChassis):
                                 reason="user_collapse_event",
                                 zen_state="zen" if zen > 0.5 else "not_zen",
                                 pressure=distress,
-                                upstream={"event_id": payload_dict.get("event_id")}
+                                upstream={"event_id": payload_dict.get("event_id")},
+                                recall_enabled=settings.metacog_recall_enabled,
                             )
                             await self._publish_metacog_trigger(trigger)
 

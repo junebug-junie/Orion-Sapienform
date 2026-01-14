@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, List, Tuple
 
+import yaml
+import orion
 from pydantic import BaseModel
 
 from orion.core.verbs.base import BaseVerb, VerbContext
@@ -14,6 +18,25 @@ from .router import PlanRouter
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.verb_adapters")
+VERBS_DIR = Path(orion.__file__).resolve().parent / "cognition" / "verbs"
+
+
+@lru_cache(maxsize=128)
+def _load_verb_recall_profile(verb_name: str | None) -> str | None:
+    if not verb_name:
+        return None
+    path = VERBS_DIR / f"{verb_name}.yaml"
+    if not path.exists():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.warning("Failed to parse verb yaml for recall profile: %s", path)
+        return None
+    profile = data.get("recall_profile")
+    if isinstance(profile, str):
+        profile = profile.strip()
+    return profile or None
 
 
 class LegacyPlanOutput(BaseModel):
@@ -59,6 +82,15 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
             "user_id": payload.args.user_id,
             "trigger_source": payload.args.trigger_source,
         }
+        recall_cfg = ctx_payload.get("recall")
+        if not isinstance(recall_cfg, dict):
+            recall_cfg = {}
+
+        verb_name = payload.plan.verb_name or ctx.meta.get("verb")
+        recall_profile = _load_verb_recall_profile(verb_name)
+        if recall_profile and not recall_cfg.get("profile"):
+            recall_cfg = {**recall_cfg, "profile": recall_profile}
+            ctx_payload["recall"] = recall_cfg
 
         diagnostic = False
         try:

@@ -486,8 +486,6 @@ async def dispatch_metacog_trigger(
         logger.warning("Metacog trigger invalid: %s", exc)
         return
 
-    logger.info("Received metacog trigger kind=%s pressure=%.2f", trigger.trigger_kind, trigger.pressure)
-
     # Use the envelope's correlation_id, since the trigger payload doesn't carry it
     # Pydantic might parse correlation_id as a UUID object, so forced cast to str()
     correlation_id = str(env.correlation_id) if env.correlation_id else str(uuid4())
@@ -525,12 +523,12 @@ async def dispatch_metacog_trigger(
         result_prefix=settings.channel_exec_result_prefix,
     )
 
-    # Fire and forget (or await if you want to hold the thread)
-    # Using a longer timeout since this verb takes time (timeout_ms=120000 in yaml)
+    rpc_timeout = float(plan.timeout_ms) / 1000.0
+
     await client.execute_plan(
         source=source,
         req=req,
         correlation_id=correlation_id,
-        timeout_sec=120.0,
+        timeout_sec=rpc_timeout,
     )
-    logger.info("Dispatched log_orion_metacognition for trigger %s", correlation_id)
+    logger.info("Dispatched log_orion_metacognition for trigger %s (timeout=%.1fs)", correlation_id, rpc_timeout)

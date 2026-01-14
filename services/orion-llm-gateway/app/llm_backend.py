@@ -509,6 +509,11 @@ def _execute_openai_chat(
         "presence_penalty": opts.get("presence_penalty"),
         "frequency_penalty": opts.get("frequency_penalty"),
     }
+    response_format = opts.get("response_format")
+    if response_format and backend_name == "vllm":
+        payload["response_format"] = response_format
+    elif opts.get("return_json") and backend_name == "vllm":
+        payload["response_format"] = {"type": "json_object"}
     # Clean None values
     payload = {k: v for k, v in payload.items() if v is not None}
 

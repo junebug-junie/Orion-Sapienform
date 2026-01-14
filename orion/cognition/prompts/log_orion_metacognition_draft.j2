@@ -73,16 +73,18 @@ SELF-CHECK BEFORE OUTPUT
 
 TASK
 Output ONE valid JSON object only. No markdown, no commentary.
+Use strict JSON: double-quoted strings, no trailing commas, no code fences.
 Do NOT use brace-set notation for lists (forbidden).
 observer_state and tags MUST be JSON arrays of strings.
 
-Return the FULL object with stable keys below.
+Return the FULL object with stable keys below (match schema exactly; include every key shown).
 Textual/narrative fields must be filled.
 Scoring fields may be null/empty (they will be filled by the enricher).
 
 JSON SHAPE (fill narrative; keep scores null/empty):
 {
   "event_id": "<uuid-or-stable-id>",
+  "id": "<same-as-event_id-or-null>",
   "observer": "orion",
   "trigger": "{{ trigger.trigger_kind }}",
   "observer_state": ["<token>", "<token>"],
@@ -92,6 +94,8 @@ JSON SHAPE (fill narrative; keep scores null/empty):
   "summary": "<1-2 sentences>",
   "mantra": "<short phrase <= 70 chars>",
   "causal_echo": "<string or null>",
+  "timestamp": "<ISO-8601 timestamp string or null>",
+  "environment": "<string or null>",
 
   "snapshot_kind": "baseline",
   "what_changed_summary": "<delta-only short string>",

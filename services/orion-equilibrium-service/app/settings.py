@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     metacog_baseline_interval_sec: float = Field(60.0, alias="EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC")
     metacog_cooldown_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_COOLDOWN_SEC")
     metacog_pad_pulse_threshold: float = Field(0.8, alias="EQUILIBRIUM_METACOG_PAD_PULSE_THRESHOLD")
+    metacog_recall_enabled: bool = Field(
+        False,
+        alias="EQUILIBRIUM_METACOG_RECALL_ENABLED",
+    )
 
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
     channel_cortex_orch_request: str = Field("orion:verb:request", alias="CHANNEL_CORTEX_ORCH_REQUEST")

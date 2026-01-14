@@ -345,6 +345,7 @@ class EquilibriumService(BaseChassis):
                     reason="scheduled_check",
                     zen_state="zen" if zen > 0.5 else "not_zen",
                     pressure=distress,
+                    recall_enabled=settings.metacog_recall_enabled,
                 )
                 await self._publish_metacog_trigger(trigger)
             except Exception as e:
@@ -403,7 +404,8 @@ class EquilibriumService(BaseChassis):
                                     zen_state="zen" if zen > 0.5 else "not_zen",
                                     pressure=distress,
                                     signal_refs=[str(env.correlation_id or "unknown")],
-                                    upstream=payload_dict
+                                    upstream=payload_dict,
+                                    recall_enabled=settings.metacog_recall_enabled,
                                 )
                                 await self._publish_metacog_trigger(trigger)
 
@@ -421,7 +423,8 @@ class EquilibriumService(BaseChassis):
                                 reason="user_collapse_event",
                                 zen_state="zen" if zen > 0.5 else "not_zen",
                                 pressure=distress,
-                                upstream={"event_id": payload_dict.get("event_id")}
+                                upstream={"event_id": payload_dict.get("event_id")},
+                                recall_enabled=settings.metacog_recall_enabled,
                             )
                             await self._publish_metacog_trigger(trigger)
 

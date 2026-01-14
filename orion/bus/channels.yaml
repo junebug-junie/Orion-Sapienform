@@ -142,7 +142,7 @@ channels:
 
   - name: "orion:exec:request:RecallService"
     kind: "request"
-    schema_id: "RecallRequestPayload"
+    schema_id: "RecallQueryV1"
     producer_services: ["orion-cortex-exec", "orion-hub"]
     consumer_services: ["orion-recall"]
     stability: "experimental"
@@ -150,7 +150,7 @@ channels:
 
   - name: "orion:exec:result:RecallService"
     kind: "result"
-    schema_id: "RecallResultPayload"
+    schema_id: "RecallReplyV1"
     producer_services: ["orion-recall"]
     consumer_services: ["orion-cortex-exec", "orion-hub"]
     stability: "experimental"

@@ -233,6 +233,34 @@ def _seed_collapse_defaults(payload: Dict[str, Any], *, trigger_kind: str | None
     return payload
 
 
+def _fallback_collapse_payload(*, trigger_kind: str | None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    payload = _seed_collapse_defaults(payload, trigger_kind=trigger_kind)
+    payload.update(
+        {
+            "observer_state": ["draft_unavailable"],
+            "field_resonance": "signal_missing",
+            "what_changed_summary": "draft_missing",
+            "what_changed": {
+                "summary": "draft_missing",
+                "previous_state": None,
+                "new_state": None,
+                "evidence": ["draft_missing"],
+            },
+            "change_type": "deadband",
+            "tags": [],
+            "state_snapshot": {
+                "observer_state": ["draft_unavailable"],
+                "field_resonance": "signal_missing",
+                "tags": [],
+                "telemetry": {},
+                "notes": "draft_missing",
+            },
+        }
+    )
+    return payload
+
+
 async def run_recall_step(
     bus: OrionBusAsync,
     *,
@@ -367,6 +395,7 @@ async def call_step_services(
                         "temperature": 0.8,
                         "max_tokens": 1024,
                         "stream": False,
+                        "return_json": True,
                     }
                 )
 
@@ -379,21 +408,24 @@ async def call_step_services(
                 )
 
                 try:
-                    raw_content = _extract_llm_text(llm_res)
-                    
-                    parsed = _parse_llm_json(raw_content)
-
-                    if not parsed:
-                        logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
-                        parsed = {}
-
-                    if not isinstance(parsed, dict):
-                        raise ValueError("LLM response did not contain a JSON object")
-
                     trigger_kind = None
                     trigger_data = ctx.get("trigger")
                     if isinstance(trigger_data, dict):
                         trigger_kind = str(trigger_data.get("trigger_kind") or "") or None
+
+                    raw_content = _extract_llm_text(llm_res)
+
+                    parsed = _parse_llm_json(raw_content)
+
+                    if not parsed:
+                        logger.warning(
+                            "MetacogDraftService: No JSON found. Falling back to defaults. Raw Content: %r",
+                            raw_content,
+                        )
+                        parsed = _fallback_collapse_payload(trigger_kind=trigger_kind)
+
+                    if not isinstance(parsed, dict):
+                        raise ValueError("LLM response did not contain a JSON object")
 
                     parsed = _seed_collapse_defaults(parsed, trigger_kind=trigger_kind)
                     parsed["observer"] = "orion"
@@ -429,6 +461,7 @@ async def call_step_services(
                         "temperature": 0.5,
                         "max_tokens": 1024,
                         "stream": False,
+                        "return_json": True,
                     }
                 )
 

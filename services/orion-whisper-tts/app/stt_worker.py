@@ -41,7 +41,7 @@ async def stt_listener_worker(bus: OrionBusAsync) -> None:
 
             envelope = decoded.envelope
             correlation_id = str(envelope.correlation_id)
-            result_channel = f"orion:stt:result:{correlation_id}"
+            result_channel = envelope.reply_to or f"orion:stt:result:{correlation_id}"
 
             try:
                 request = STTRequestPayload.model_validate(envelope.payload)

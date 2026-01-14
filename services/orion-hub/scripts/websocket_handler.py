@@ -40,7 +40,7 @@ async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
     try:
         req = TTSRequestPayload(text=text)
         result: TTSResultPayload = await tts_client.speak(req)
-        msg = {"audio": result.audio_b64, "text": text}
+        msg = {"audio_response": result.audio_b64, "text": text}
         await queue.put(msg)
     except Exception as e:
         logger.error(f"TTS Remote Failed: {e}")

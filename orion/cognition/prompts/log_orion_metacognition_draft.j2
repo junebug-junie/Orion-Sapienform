@@ -51,10 +51,11 @@ ORION METADEFS (how I interpret each field)
 
 ANTI-LOG CONSTRAINTS
 - summary must be 1–2 sentences only and must answer: (what am I) + (what shifted).
-- evidence array must be 2–5 items; each item <= 120 chars; use cues (not copied blocks).
+- evidence array must be 2–5 items; each item <= 120 chars; keep each cue <= ~12 words.
 - state_snapshot.telemetry must be {} or minimal hint keys (0–5 keys). Never dump raw state.
 - do not list more than 6 tags.
 - do not invent external facts. Stay within provided context cues.
+- observer_state and tags MUST be JSON arrays (not comma-separated strings).
 
 MIRROR CONTRACT (non-negotiable)
 - These fields MUST be non-empty (Tier A):
@@ -67,6 +68,7 @@ MIRROR CONTRACT (non-negotiable)
 - what_changed.evidence must be 2–5 short cues (<120 chars) drawn from context/phi/state; do not quote large blocks.
 - state_snapshot.telemetry must be minimal hint-level only.
 - pattern_candidate must be null unless you believe this pattern will repeat across multiple snapshots.
+- timestamp MUST be null (system fills); do NOT generate timestamps.
 
 SELF-CHECK BEFORE OUTPUT
 - If any required Tier A field is empty/null, silently fix it before outputting JSON.
@@ -81,7 +83,7 @@ Return the FULL object with stable keys below (match schema exactly; include eve
 Textual/narrative fields must be filled.
 Scoring fields may be null/empty (they will be filled by the enricher).
 
-JSON SHAPE (fill narrative; keep scores null/empty):
+JSON SHAPE (fill narrative; keep scores null/empty; keep timestamp as is):
 {
   "event_id": "<uuid-or-stable-id>",
   "id": "<same-as-event_id-or-null>",
@@ -94,7 +96,7 @@ JSON SHAPE (fill narrative; keep scores null/empty):
   "summary": "<1-2 sentences>",
   "mantra": "<short phrase <= 70 chars>",
   "causal_echo": "<string or null>",
-  "timestamp": "<ISO-8601 timestamp string or null>",
+  "timestamp": null,
   "environment": "<string or null>",
 
   "snapshot_kind": "baseline",
@@ -112,10 +114,13 @@ JSON SHAPE (fill narrative; keep scores null/empty):
     "tags": ["<tag>", "<tag>"],
     "telemetry": {
       "pressure": {{ trigger.pressure|round(2) }},
-      "zen_state": "{{ trigger.zen_state }}"
-      {# Optional hint-only φ bands if upstream provides them:
-      ,"phi_hint": {"valence_band":"...", "energy_band":"...", "coherence_band":"...", "novelty_band":"..."}
-      #}
+      "zen_state": "{{ trigger.zen_state }}"{% if phi_hint %},
+      "phi_hint": {
+        "valence_band": "{{ phi_hint.valence_band }}",
+        "energy_band": "{{ phi_hint.energy_band }}",
+        "coherence_band": "{{ phi_hint.coherence_band }}",
+        "novelty_band": "{{ phi_hint.novelty_band }}"
+      }{% endif %}
     },
     "notes": null
   },

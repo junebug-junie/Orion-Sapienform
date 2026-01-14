@@ -21,41 +21,42 @@ from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, normalize_collapse_entry
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
-from orion.schemas.pad.v1 import KIND_PAD_RPC_REQUEST_V1, PadRpcRequestV1, PadRpcResponseV1
+from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
-from .spark_narrative import spark_phi_narrative
 from .trace_cache import get_trace_cache
+from .spark_narrative import spark_phi_hint, spark_phi_narrative
 
 logger = logging.getLogger("orion.cortex.exec")
 
 
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
-    
+
     # [FIX] Defensive coding: Prevent Jinja crash on missing globals
     render_ctx = ctx.copy()
     defaults = {
         "prompt_templates": {},
         "collapse_entry": {"event_id": "unknown_missing_draft"},
-        "collapse_json": "{}", 
+        "collapse_json": "{}",
         "trigger": {"trigger_kind": "unknown", "reason": "unknown", "pressure": 0.0, "zen_state": "unknown"},
         "context_summary": "Context missing.",
-        "spark_state_json": "null",
-        "spark_phi_narrative": "Spark φ bins: unknown.",
+        "spark_state_json": "{}",
+        "spark_phi_narrative": "",
+        "phi_hint": None,
     }
     for k, v in defaults.items():
         if k not in render_ctx:
             render_ctx[k] = v
-        
+
     tmpl = env.from_string(template_str or "")
     return tmpl.render(**render_ctx)
 
@@ -155,7 +156,7 @@ def _extract_llm_text(res: Any) -> str:
     """Safely extract text content from various LLM result shapes."""
     if not res:
         return ""
-    
+
     if hasattr(res, "choices") and res.choices:
         try:
             return str(res.choices[0].message.content)
@@ -174,8 +175,10 @@ def _extract_llm_text(res: Any) -> str:
     if hasattr(res, "model_dump"):
         try:
             d = res.model_dump(mode="json")
-            if "content" in d: return str(d["content"])
-            if "choices" in d and d["choices"]: return str(d["choices"][0]["message"]["content"])
+            if "content" in d:
+                return str(d["content"])
+            if "choices" in d and d["choices"]:
+                return str(d["choices"][0]["message"]["content"])
         except Exception:
             pass
 
@@ -198,67 +201,6 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     except Exception:
         pass
     return None
-
-
-def _parse_llm_json(text: str) -> Dict[str, Any] | None:
-    if not text:
-        return None
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
-        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-            return parsed[0]
-    except Exception:
-        pass
-    return _loose_json_extract(text)
-
-
-def _seed_collapse_defaults(payload: Dict[str, Any], *, trigger_kind: str | None) -> Dict[str, Any]:
-    defaults = {
-        "observer": "orion",
-        "trigger": trigger_kind or "unknown",
-        "type": "idle",
-        "emergent_entity": "Unknown",
-        "summary": "Metacognition draft unavailable.",
-        "mantra": "Observe and adapt.",
-        "snapshot_kind": "baseline",
-        "epistemic_status": "observed",
-        "visibility": "internal",
-        "redaction_level": "low",
-    }
-    for key, value in defaults.items():
-        if not payload.get(key):
-            payload[key] = value
-    return payload
-
-
-def _fallback_collapse_payload(*, trigger_kind: str | None) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {}
-    payload = _seed_collapse_defaults(payload, trigger_kind=trigger_kind)
-    payload.update(
-        {
-            "observer_state": ["draft_unavailable"],
-            "field_resonance": "signal_missing",
-            "what_changed_summary": "draft_missing",
-            "what_changed": {
-                "summary": "draft_missing",
-                "previous_state": None,
-                "new_state": None,
-                "evidence": ["draft_missing"],
-            },
-            "change_type": "deadband",
-            "tags": [],
-            "state_snapshot": {
-                "observer_state": ["draft_unavailable"],
-                "field_resonance": "signal_missing",
-                "tags": [],
-                "telemetry": {},
-                "notes": "draft_missing",
-            },
-        }
-    )
-    return payload
 
 
 async def run_recall_step(
@@ -365,11 +307,6 @@ async def call_step_services(
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     logger.info(f"Context Keys available: {list(ctx.keys())}")
 
-    prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
-
-    debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
-    logger.info(f"Rendered Prompt: {debug_prompt!r}")
-
     step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
     effective_timeout = step_timeout_sec
 
@@ -379,6 +316,12 @@ async def call_step_services(
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
+
+        # IMPORTANT: render prompts per-service so MetacogContextService mutations take effect
+        prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
+        if service in {"MetacogDraftService", "MetacogEnrichService"}:
+            debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
+            logger.info(f"Rendered Prompt[{service}]: {debug_prompt!r}")
 
         try:
             if service == "MetacogDraftService":
@@ -395,8 +338,7 @@ async def call_step_services(
                         "temperature": 0.8,
                         "max_tokens": 1024,
                         "stream": False,
-                        "return_json": True,
-                    }
+                    },
                 )
 
                 llm_res = await llm_client.chat(
@@ -408,35 +350,31 @@ async def call_step_services(
                 )
 
                 try:
-                    trigger_kind = None
-                    trigger_data = ctx.get("trigger")
-                    if isinstance(trigger_data, dict):
-                        trigger_kind = str(trigger_data.get("trigger_kind") or "") or None
-
                     raw_content = _extract_llm_text(llm_res)
 
-                    parsed = _parse_llm_json(raw_content)
+                    # 1) Try strict find
+                    parsed = find_collapse_entry(raw_content)
+
+                    # 2) Fallback: loose extraction
+                    if not parsed:
+                        parsed = _loose_json_extract(raw_content)
 
                     if not parsed:
-                        logger.warning(
-                            "MetacogDraftService: No JSON found. Falling back to defaults. Raw Content: %r",
-                            raw_content,
-                        )
-                        parsed = _fallback_collapse_payload(trigger_kind=trigger_kind)
+                        logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
+                        raise ValueError("No JSON found in LLM response")
 
-                    if not isinstance(parsed, dict):
-                        raise ValueError("LLM response did not contain a JSON object")
-
-                    parsed = _seed_collapse_defaults(parsed, trigger_kind=trigger_kind)
                     parsed["observer"] = "orion"
                     parsed["visibility"] = "internal"
                     parsed["epistemic_status"] = "observed"
-                    parsed["redaction_level"] = "low"
 
                     entry = normalize_collapse_entry(parsed)
 
-                    ctx["collapse_entry"] = entry.model_dump(mode="json")
-                    ctx["collapse_json"] = json.dumps(entry.model_dump(mode="json"))
+                    entry_dict = entry.model_dump(mode="json")
+                    ctx["collapse_entry"] = entry_dict
+
+                    # IMPORTANT: collapse_json should be the canonical JSON draft (not raw model text)
+                    ctx["collapse_json"] = json.dumps(entry_dict, ensure_ascii=False)
+
                     merged_result[service] = {"ok": True, "event_id": entry.event_id}
                     logs.append("ok <- MetacogDraftService")
 
@@ -461,8 +399,7 @@ async def call_step_services(
                         "temperature": 0.5,
                         "max_tokens": 1024,
                         "stream": False,
-                        "return_json": True,
-                    }
+                    },
                 )
 
                 llm_res = await llm_client.chat(
@@ -476,7 +413,12 @@ async def call_step_services(
                 try:
                     raw_content = _extract_llm_text(llm_res)
 
-                    patch = _parse_llm_json(raw_content)
+                    # 1) strict find
+                    patch = find_collapse_entry(raw_content)
+
+                    # 2) fallback loose extract
+                    if not patch:
+                        patch = _loose_json_extract(raw_content)
 
                     if not patch:
                         logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
@@ -484,16 +426,26 @@ async def call_step_services(
 
                     draft_data = ctx.get("collapse_entry")
                     if not draft_data:
-                         raise ValueError("No draft entry found in context")
+                        raise ValueError("No draft entry found in context")
 
                     draft = CollapseMirrorEntryV2.model_validate(draft_data)
                     final_dict = draft.model_dump(mode="json")
 
-                    for k in ["numeric_sisters", "causal_density", "is_causally_dense",
-                              "what_changed_summary", "what_changed", "change_type",
-                              "change_type_scores", "tag_scores", "tags", "state_snapshot",
-                              "pattern_candidate", "resonance_signature", "redaction_level",
-                              "source_service", "source_node", "visibility", "epistemic_status"]:
+                    # Allow enricher to supply these (and only these) fields
+                    for k in [
+                        "numeric_sisters",
+                        "causal_density",
+                        "is_causally_dense",
+                        "what_changed",
+                        "what_changed_summary",
+                        "change_type",
+                        "change_type_scores",
+                        "tag_scores",
+                        "tags",
+                        "state_snapshot",
+                        "pattern_candidate",
+                        "resonance_signature",
+                    ]:
                         if k in patch and patch[k] is not None:
                             final_dict[k] = patch[k]
 
@@ -539,10 +491,10 @@ async def call_step_services(
 
                     await bus.publish("orion:collapse:sql-write", env)
                     merged_result[service] = {
-                        "ok": True, 
-                        "published": True, 
-                        "channel": "orion:collapse:sql-write", 
-                        "event_id": entry.event_id
+                        "ok": True,
+                        "published": True,
+                        "channel": "orion:collapse:sql-write",
+                        "event_id": entry.event_id,
                     }
                     logs.append("ok <- MetacogPublishService (SQL)")
 
@@ -555,123 +507,123 @@ async def call_step_services(
 
             if service == "MetacogContextService":
                 logs.append("exec -> MetacogContextService")
-                
+
                 trigger_data = ctx.get("trigger") or ctx.get("args", {}).get("trigger", {})
-                
+
                 try:
                     trigger = MetacogTriggerV1.model_validate(trigger_data)
                 except Exception:
                     trigger = MetacogTriggerV1(trigger_kind="unknown", reason="deserialization_failed")
 
                 pad_summary = "unknown"
-                spark_summary = "unknown"
-                spark_state_json = "null"
-                spark_phi_summary = "Spark φ bins: unknown."
+                spark_line = "unknown"
                 trace_summary = "unknown"
 
-                if True:
-                    pad_req = PadRpcRequestV1(
-                        request_id=correlation_id,
+                # Landing Pad
+                pad_req = PadRpcRequestV1(
+                    request_id=correlation_id,
+                    reply_channel=reply_channel,
+                    method="get_latest_frame",
+                    args={},
+                )
+                pad_env = BaseEnvelope(
+                    kind="orion.pad.rpc.request",
+                    source=source,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    payload=pad_req.model_dump(mode="json"),
+                )
+                try:
+                    pad_msg = await bus.rpc_request(
+                        "orion:pad:rpc:request",
+                        pad_env,
                         reply_channel=reply_channel,
-                        method="get_latest_frame",
-                        args={}
+                        timeout_sec=2.0,
                     )
-                    pad_env = BaseEnvelope(
-                        kind=KIND_PAD_RPC_REQUEST_V1,
-                        source=source,
-                        correlation_id=correlation_id,
-                        reply_to=reply_channel,
-                        payload=pad_req.model_dump(mode="json"),
-                    )
-                    pad_started = time.perf_counter()
-                    try:
-                        pad_msg = await bus.rpc_request("orion:pad:rpc:request", pad_env, reply_channel=reply_channel, timeout_sec=60)
-                        pad_dec = bus.codec.decode(pad_msg.get("data"))
-                        if pad_dec.ok:
-                            pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
-                            pad_summary = str(pad_res.result)
-                    except Exception as e:
-                        pad_elapsed = time.perf_counter() - pad_started
-                        logger.warning(
-                            "LandingPad RPC failed corr=%s reply=%s elapsed=%.2fs error=%s",
-                            correlation_id,
-                            reply_channel,
-                            pad_elapsed,
-                            e,
-                        )
-                        pad_summary = f"error: {e}"
-                    else:
-                        pad_elapsed = time.perf_counter() - pad_started
-                        logger.info(
-                            "LandingPad RPC ok corr=%s reply=%s elapsed=%.2fs",
-                            correlation_id,
-                            reply_channel,
-                            pad_elapsed,
-                        )
+                    pad_dec = bus.codec.decode(pad_msg.get("data"))
+                    if pad_dec.ok:
+                        pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
+                        pad_summary = str(pad_res.result)
+                except Exception as e:
+                    pad_summary = f"error: {e}"
 
-                if True:
-                    state_req = StateGetLatestRequest(scope="global")
-                    state_env = BaseEnvelope(
-                        kind="state.get_latest.v1",
-                        source=source,
-                        correlation_id=correlation_id,
-                        reply_to=reply_channel,
-                        payload=state_req.model_dump(mode="json"),
+                # Spark (State Service)
+                state_req = StateGetLatestRequest(scope="global")
+                state_env = BaseEnvelope(
+                    kind="state.get_latest.v1",
+                    source=source,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    payload=state_req.model_dump(mode="json"),
+                )
+                try:
+                    state_msg = await bus.rpc_request(
+                        "orion:state:request",
+                        state_env,
+                        reply_channel=reply_channel,
+                        timeout_sec=2.0,
                     )
-                    state_started = time.perf_counter()
-                    try:
-                        state_msg = await bus.rpc_request("orion:state:request", state_env, reply_channel=reply_channel, timeout_sec=2.0)
-                        state_dec = bus.codec.decode(state_msg.get("data"))
-                        if state_dec.ok:
-                            state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
-                            if state_res.ok and state_res.snapshot:
-                                spark_state_payload = _json_sanitize(state_res.snapshot.model_dump(mode="json"))
-                                spark_summary = str(spark_state_payload)
-                                spark_state_json = json.dumps(spark_state_payload, ensure_ascii=False)
-                                spark_phi_summary = spark_phi_narrative(state_res.snapshot)
-                            else:
-                                spark_summary = f"stale/missing (status={state_res.status})"
-                    except Exception as e:
-                        state_elapsed = time.perf_counter() - state_started
-                        logger.warning(
-                            "State RPC failed corr=%s reply=%s elapsed=%.2fs error=%s",
-                            correlation_id,
-                            reply_channel,
-                            state_elapsed,
-                            e,
-                        )
-                        spark_summary = f"error: {e}"
-                    else:
-                        state_elapsed = time.perf_counter() - state_started
-                        logger.info(
-                            "State RPC ok corr=%s reply=%s elapsed=%.2fs",
-                            correlation_id,
-                            reply_channel,
-                            state_elapsed,
-                        )
+                    state_dec = bus.codec.decode(state_msg.get("data"))
+                    if state_dec.ok:
+                        state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
+                        if state_res.ok and state_res.snapshot:
+                            snap_obj = state_res.snapshot
 
+                            spark_snap: SparkStateSnapshotV1 | None = None
+                            try:
+                                if isinstance(snap_obj, SparkStateSnapshotV1):
+                                    spark_snap = snap_obj
+                                elif isinstance(snap_obj, dict):
+                                    spark_snap = SparkStateSnapshotV1.model_validate(snap_obj)
+                                elif hasattr(snap_obj, "model_dump"):
+                                    spark_snap = SparkStateSnapshotV1.model_validate(snap_obj.model_dump(mode="json"))
+                            except Exception as exc:
+                                spark_snap = None
+                                spark_line = f"snapshot_unparseable: {exc}"
+
+                            if spark_snap:
+                                # Provide prompt-ready vars
+                                phi_hint = spark_phi_hint(spark_snap)
+                                ctx["phi_hint"] = phi_hint
+                                ctx["spark_phi_narrative"] = spark_phi_narrative(spark_snap)
+                                ctx["spark_state_json"] = spark_snap.model_dump_json()
+
+                                spark_line = (
+                                    f"φ={phi_hint.get('valence_band','?')}-{phi_hint.get('valence_dir','?')}, "
+                                    f"energy={phi_hint.get('energy_band','?')}, "
+                                    f"clarity={phi_hint.get('coherence_band','?')}, "
+                                    f"overload={phi_hint.get('novelty_band','?')} "
+                                    f"(seq={spark_snap.seq}, ts={spark_snap.snapshot_ts})"
+                                )
+                        else:
+                            spark_line = f"stale/missing (status={state_res.status})"
+                except Exception as e:
+                    spark_line = f"error: {e}"
+
+                # Recent Traces
                 recent_traces = get_trace_cache().get_recent(5)
                 if recent_traces:
-                    trace_summary = "\n".join([
-                        f"- [{t.mode}] {t.verb}: {(t.final_text or '')[:100]}..."
-                        for t in recent_traces
-                    ])
+                    trace_summary = "\n".join(
+                        [f"- [{t.mode}] {t.verb}: {(t.final_text or '')[:100]}..." for t in recent_traces]
+                    )
                 else:
                     trace_summary = "None available."
+
+                # Keep context_summary human-readable (spark JSON is separate in spark_state_json)
+                pad_short = pad_summary
+                if isinstance(pad_short, str) and len(pad_short) > 500:
+                    pad_short = pad_short[:500] + "...(truncated)"
 
                 summary_text = (
                     f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
                     f"Pressure: {trigger.pressure}\n"
-                    f"Landing Pad: {pad_summary}\n"
-                    f"Spark State: {spark_summary}\n"
-                    f"{spark_phi_summary}\n"
+                    f"Landing Pad: {pad_short}\n"
+                    f"Spark: {spark_line}\n"
                     f"Recent Traces:\n{trace_summary}\n"
                 )
 
                 ctx["trigger"] = trigger.model_dump(mode="json")
                 ctx["context_summary"] = summary_text
-                ctx["spark_state_json"] = spark_state_json
-                ctx["spark_phi_narrative"] = spark_phi_summary
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue
@@ -695,10 +647,7 @@ async def call_step_services(
 
             if service == "LLMGatewayService":
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
-                messages_payload = _build_hop_messages(
-                    prompt=prompt,
-                    ctx_messages=ctx.get("messages"),
-                )
+                messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 request_object = ChatRequestPayload(
                     model=req_model,
@@ -708,7 +657,7 @@ async def call_step_services(
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),
                         "stream": False,
-                    }
+                    },
                 )
 
                 logs.append(f"rpc -> LLMGateway via client (timeout={effective_timeout}s)")
@@ -732,20 +681,14 @@ async def call_step_services(
                 logs.append(f"ok <- {service}")
 
             elif service == "AgentChainService":
-                hop_msgs = _build_hop_messages(
-                    prompt=prompt,
-                    ctx_messages=ctx.get("messages"),
-                )
+                hop_msgs = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 agent_req = AgentChainRequest(
                     text=_last_user_message(ctx),
                     mode=ctx.get("mode") or "agent",
                     session_id=ctx.get("session_id"),
                     user_id=ctx.get("user_id"),
-                    messages=[
-                        LLMMessage(**m) if not isinstance(m, LLMMessage) else m
-                        for m in (hop_msgs or [])
-                    ],
+                    messages=[LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (hop_msgs or [])],
                     packs=ctx.get("packs") or [],
                 )
                 logs.append(f"rpc -> AgentChainService (reply={reply_channel}, timeout={effective_timeout}s)")
@@ -778,7 +721,6 @@ async def call_step_services(
                 merged_result[service] = planner_res.model_dump(mode="json")
                 logs.append("ok <- PlannerReactService")
                 ctx.setdefault("planner_trace", planner_res.model_dump(mode="json"))
-
 
             elif service == "CouncilService":
                 council_req = DeliberationRequest(
@@ -853,7 +795,6 @@ async def call_step_services(
                         }
                         logs.append("publish -> orion:collapse:intake")
 
-
             elif service == "MetaTagsService":
                 tick = ctx.get("metacognition_tick") or {}
                 if not isinstance(tick, dict):
@@ -897,7 +838,9 @@ async def call_step_services(
                     raise RuntimeError(f"MetaTagsService decode failed: {decoded.error}")
 
                 merged_result["MetaTagsService"] = (
-                    decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {"raw": str(decoded.envelope.payload)}
+                    decoded.envelope.payload
+                    if isinstance(decoded.envelope.payload, dict)
+                    else {"raw": str(decoded.envelope.payload)}
                 )
                 logs.append("ok <- MetaTagsService")
                 continue

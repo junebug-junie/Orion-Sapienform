@@ -148,7 +148,7 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:exec:result:RecallService"
+  - name: "orion:exec:result:RecallService:*"
     kind: "result"
     schema_id: "RecallReplyV1"
     producer_services: ["orion-recall"]

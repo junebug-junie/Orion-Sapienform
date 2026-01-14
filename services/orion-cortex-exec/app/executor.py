@@ -666,7 +666,7 @@ async def call_step_services(
                         "orion:pad:rpc:request",
                         pad_env,
                         reply_channel=pad_reply_channel,
-                        timeout_sec=2.0,
+                        timeout_sec=20.0,
                     )
                     pad_dec = bus.codec.decode(pad_msg.get("data"))
                     if pad_dec.ok:
@@ -691,7 +691,7 @@ async def call_step_services(
                         "orion:state:request",
                         state_env,
                         reply_channel=state_reply_channel,
-                        timeout_sec=2.0,
+                        timeout_sec=20.0,
                     )
                     state_dec = bus.codec.decode(state_msg.get("data"))
                     if state_dec.ok:

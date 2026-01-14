@@ -15,7 +15,6 @@ orion-voip-endpoint
 voip-endopoint
 
 # for testing
-orion-landing-pad
 orion-llamacpp-host
 orion-agent-chain
 orion-agent-council
@@ -23,3 +22,8 @@ orion-planner-react
 orion-power-guard 
 orion-recall               
 orion-gpu-cluster-power
+orion-bus-mirror
+orion-bus-tap
+orion-biometrics
+orion-dream
+orion-meta-tags

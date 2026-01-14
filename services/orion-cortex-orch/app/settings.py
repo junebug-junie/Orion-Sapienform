@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     state_scope: str = Field("global", alias="STATE_SCOPE")  # global|node
     state_node: str = Field("", alias="STATE_NODE")
 
+    # Equilibrium metacog triggers
+    channel_metacog_trigger: str = Field(
+        "orion:equilibrium:metacog:trigger",
+        validation_alias=AliasChoices("CHANNEL_EQUILIBRIUM_METACOG_TRIGGER", "CHANNEL_METACOG_TRIGGER"),
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

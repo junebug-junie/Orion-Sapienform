@@ -77,6 +77,13 @@ def _expand_query(fragment: str, *, verb: str | None, intent: str | None, enable
     return [s for s in signals if s]
 
 
+def _rdf_enabled(profile: Dict[str, Any]) -> bool:
+    profile_name = str(profile.get("profile") or "")
+    return settings.RECALL_ENABLE_RDF or (
+        profile_name.startswith("deep.graph") and int(profile.get("rdf_top_k", 0)) > 0
+    )
+
+
 async def _query_backends(
     fragment: str,
     profile: Dict[str, Any],
@@ -100,7 +107,7 @@ async def _query_backends(
         except Exception as exc:
             logger.debug(f"vector backend skipped: {exc}")
 
-    if settings.RECALL_ENABLE_RDF and settings.RECALL_RDF_ENDPOINT_URL:
+    if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
         try:
             rdf = fetch_rdf_fragments(
                 query_text=fragment,

@@ -14,7 +14,7 @@ Answer the user's query: "{{ user_message }}"
 
 GUIDELINES:
 1. **Prioritize Retrieved Context**: If the answer is in the memory bundle, prioritize that over your general training data.
-2. **Cite Your Sources**: When you state a fact derived from the bundle, reference it (e.g., "" or "").
+2. **Strict Citations Required**: Every factual statement MUST end with at least one citation token copied verbatim from the `memory_bundle.rendered` list (e.g., `[rdf:graphdb]`, `[sql:timeline]`). Do not invent citations or cite anything outside the bundle.
 3. **Synthesize, Don't List**: Do not just repeat the bullet points. Weave them into a narrative.
 4. **Handle Gaps**: If the memory bundle contradicts itself or is missing key info, explicitly state: "The memory trace is fragmentary, but here is what I found..."
 5. **Technical Precision**: Use the specific file names, variable names, and service names found in the snippets.

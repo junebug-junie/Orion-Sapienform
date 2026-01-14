@@ -319,6 +319,22 @@ async def call_step_services(
 
         # IMPORTANT: render prompts per-service so MetacogContextService mutations take effect
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
+
+        # ---- DEBUG BY EYE ----
+        if service in {"MetacogDraftService", "MetacogEnrichService"}:
+            logger.info(f"[PROMPT] service={service} chars={len(prompt)}")
+            logger.info(f"[PROMPT_HEAD] {prompt[:500]!r}")
+            logger.info(f"[PROMPT_TAIL] {prompt[-500:]!r}")
+            # also useful: show which ctx keys exist
+            logger.info(f"[CTX_KEYS] {sorted(list(ctx.keys()))}")
+            # show lengths of the likely “balloon” fields
+            for k in ("context_summary", "spark_state_json", "collapse_json", "memory_digest"):
+                v = ctx.get(k)
+                if isinstance(v, str):
+                    logger.info(f"[CTX_LEN] {k}={len(v)}")
+         # ----------------------
+
+
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
             debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
             logger.info(f"Rendered Prompt[{service}]: {debug_prompt!r}")

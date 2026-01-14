@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_e
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
-from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
+from orion.schemas.pad.v1 import KIND_PAD_RPC_REQUEST_V1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
@@ -137,6 +138,23 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
         source_node=None,
     )
     return entry.with_defaults()
+
+
+def _trace_meta_from_ctx(
+    ctx: Dict[str, Any],
+    *,
+    event_id: str,
+    parent_event_id: str | None,
+    source: ServiceRef,
+) -> Dict[str, Any]:
+    trace_id = str(ctx.get("trace_id") or ctx.get("correlation_id") or "")
+    return {
+        "trace_id": trace_id,
+        "event_id": event_id,
+        "parent_event_id": parent_event_id,
+        "source_service": source.name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 
@@ -608,19 +626,33 @@ async def call_step_services(
 
                 try:
                     entry = CollapseMirrorEntryV2.model_validate(final_data)
+                    event_id = str(uuid4())
+                    trace_meta = _trace_meta_from_ctx(
+                        ctx,
+                        event_id=event_id,
+                        parent_event_id=ctx.get("parent_event_id"),
+                        source=source,
+                    )
 
                     env = BaseEnvelope(
                         kind="collapse.mirror.entry.v2",
                         source=source,
                         correlation_id=correlation_id,
+                        trace=trace_meta,
                         payload=entry.model_dump(mode="json"),
                     )
 
-                    await bus.publish("orion:collapse:sql-write", env)
+                    await bus.publish(settings.channel_collapse_sql_write, env)
+                    logger.info(
+                        "MetacogPublishService published channel=%s trace_id=%s event_id=%s",
+                        settings.channel_collapse_sql_write,
+                        trace_meta.get("trace_id"),
+                        event_id,
+                    )
                     merged_result[service] = {
                         "ok": True,
                         "published": True,
-                        "channel": "orion:collapse:sql-write",
+                        "channel": settings.channel_collapse_sql_write,
                         "event_id": entry.event_id,
                     }
                     logs.append("ok <- MetacogPublishService (SQL)")
@@ -655,7 +687,7 @@ async def call_step_services(
                     args={},
                 )
                 pad_env = BaseEnvelope(
-                    kind="orion.pad.rpc.request",
+                    kind=KIND_PAD_RPC_REQUEST_V1,
                     source=source,
                     correlation_id=correlation_id,
                     reply_to=pad_reply_channel,
@@ -663,7 +695,7 @@ async def call_step_services(
                 )
                 try:
                     pad_msg = await bus.rpc_request(
-                        "orion:pad:rpc:request",
+                        settings.channel_pad_rpc_request,
                         pad_env,
                         reply_channel=pad_reply_channel,
                         timeout_sec=20.0,
@@ -688,7 +720,7 @@ async def call_step_services(
                 )
                 try:
                     state_msg = await bus.rpc_request(
-                        "orion:state:request",
+                        settings.channel_state_request,
                         state_env,
                         reply_channel=state_reply_channel,
                         timeout_sec=20.0,
@@ -911,17 +943,31 @@ async def call_step_services(
                         merged_result[service] = {"ok": False, "reason": "invalid_collapse_entry", "error": str(exc)}
                         logs.append("skip <- VerbRequestService (invalid entry)")
                     else:
+                        event_id = str(uuid4())
+                        trace_meta = _trace_meta_from_ctx(
+                            ctx,
+                            event_id=event_id,
+                            parent_event_id=ctx.get("parent_event_id"),
+                            source=source,
+                        )
                         envelope = BaseEnvelope(
                             kind="collapse.mirror.intake",
                             source=source,
                             correlation_id=correlation_id,
+                            trace=trace_meta,
                             payload=entry.model_dump(mode="json"),
                         )
-                        await bus.publish("orion:collapse:intake", envelope)
+                        await bus.publish(settings.channel_collapse_intake, envelope)
+                        logger.info(
+                            "VerbRequestService published channel=%s trace_id=%s event_id=%s",
+                            settings.channel_collapse_intake,
+                            trace_meta.get("trace_id"),
+                            event_id,
+                        )
                         merged_result[service] = {
                             "ok": True,
                             "published": True,
-                            "channel": "orion:collapse:intake",
+                            "channel": settings.channel_collapse_intake,
                             "event_id": entry.event_id,
                         }
                         logs.append("publish -> orion:collapse:intake")

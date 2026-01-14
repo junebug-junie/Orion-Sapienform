@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import asyncio
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -219,6 +220,22 @@ def _build_context(req: CortexClientRequest) -> Dict[str, Any]:
     }
 
 
+def _trace_meta(
+    *,
+    trace_id: str,
+    event_id: str,
+    parent_event_id: str | None,
+    source_service: str,
+) -> Dict[str, Any]:
+    return {
+        "trace_id": trace_id,
+        "event_id": event_id,
+        "parent_event_id": parent_event_id,
+        "source_service": source_service,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def dispatch_equilibrium_snapshot(
     bus: OrionBusAsync,
     *,
@@ -379,6 +396,7 @@ async def call_cortex_exec(
         req=request_object,
         correlation_id=correlation_id,
         timeout_sec=timeout_sec,
+        trace=None,
     )
 
 
@@ -483,14 +501,22 @@ async def dispatch_metacog_trigger(
     try:
         trigger = MetacogTriggerV1.model_validate(payload)
     except Exception as exc:
-        logger.warning("Metacog trigger invalid: %s", exc)
+        trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+        logger.warning("Metacog trigger invalid trace_id=%s error=%s", trace_id, exc)
         return
 
     # Use the envelope's correlation_id, since the trigger payload doesn't carry it
     # Pydantic might parse correlation_id as a UUID object, so forced cast to str()
     correlation_id = str(env.correlation_id) if env.correlation_id else str(uuid4())
+    parent_event_id = (env.trace or {}).get("event_id") or str(env.id)
+    trace_id = (env.trace or {}).get("trace_id") or correlation_id
 
-    logger.info("Received metacog trigger kind=%s pressure=%.2f", trigger.trigger_kind, trigger.pressure)
+    logger.info(
+        "Received metacog trigger kind=%s pressure=%.2f trace_id=%s",
+        trigger.trigger_kind,
+        trigger.pressure,
+        trace_id,
+    )
 
     # 1. Load the "Big Mirror" Plan
     # This corresponds to your log_orion_metacognition.yaml
@@ -512,12 +538,16 @@ async def dispatch_metacog_trigger(
             extra={
                 "trigger_kind": trigger.trigger_kind,
                 "pressure": trigger.pressure,
+                "trace_id": trace_id,
+                "parent_event_id": parent_event_id,
                 **recall_override,
             },
         ),
         context={
             "trigger": trigger.model_dump(mode="json"),
             "verb": verb_name,
+            "trace_id": trace_id,
+            "parent_event_id": parent_event_id,
         },
     )
 
@@ -536,5 +566,16 @@ async def dispatch_metacog_trigger(
         req=req,
         correlation_id=correlation_id,
         timeout_sec=rpc_timeout,
+        trace=_trace_meta(
+            trace_id=trace_id,
+            event_id=str(uuid4()),
+            parent_event_id=parent_event_id,
+            source_service=source.name,
+        ),
     )
-    logger.info("Dispatched log_orion_metacognition for trigger %s (timeout=%.1fs)", correlation_id, rpc_timeout)
+    logger.info(
+        "Dispatched log_orion_metacognition trace_id=%s parent_event_id=%s timeout=%.1fs",
+        trace_id,
+        parent_event_id,
+        rpc_timeout,
+    )

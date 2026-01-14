@@ -259,10 +259,74 @@ class CollapseMirrorEntryV2(BaseModel):
     def _normalize_observer_state(cls, v: Any) -> List[str]:
         return _normalize_string_list(v)
 
+    @field_validator("state_snapshot", mode="before")
+    @classmethod
+    def _normalize_state_snapshot(cls, v: Any) -> Any:
+        if v is None:
+            return {}
+        if isinstance(v, CollapseMirrorStateSnapshot):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
+
     @field_validator("tags", mode="before")
     @classmethod
     def _normalize_tags(cls, v: Any) -> List[str]:
         return _normalize_string_list(v)
+
+    @field_validator("what_changed", mode="before")
+    @classmethod
+    def _normalize_what_changed(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, CollapseMirrorWhatChanged):
+            return v
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str) and v.strip():
+            return {"summary": v}
+        return None
+
+    @field_validator("numeric_sisters", mode="before")
+    @classmethod
+    def _normalize_numeric_sisters(cls, v: Any) -> Any:
+        if v is None:
+            return {}
+        if isinstance(v, CollapseMirrorNumericSisters):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
+
+    @field_validator("causal_density", mode="before")
+    @classmethod
+    def _normalize_causal_density(cls, v: Any) -> Any:
+        if v is None:
+            return {}
+        if isinstance(v, CollapseMirrorCausalDensity):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
+
+    @field_validator("change_type_scores", mode="before")
+    @classmethod
+    def _normalize_change_type_scores(cls, v: Any) -> Dict[str, float]:
+        if v is None or isinstance(v, list):
+            return {}
+        if isinstance(v, dict):
+            return {str(k): float(val) for k, val in v.items() if val is not None}
+        return {}
+
+    @field_validator("tag_scores", mode="before")
+    @classmethod
+    def _normalize_tag_scores(cls, v: Any) -> Dict[str, float]:
+        if v is None or isinstance(v, list):
+            return {}
+        if isinstance(v, dict):
+            return {str(k): float(val) for k, val in v.items() if val is not None}
+        return {}
 
     @model_validator(mode="before")
     @classmethod

@@ -2,19 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from pydantic import ValidationError
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-
-from orion.core.contracts.recall import (
-    MemoryBundleStatsV1,
-    MemoryBundleV1,
-    MemoryItemV1,
-    RecallQueryV1,
-    RecallReplyV1,
-)
+from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
+from orion.core.bus.bus_schemas import RecallRequestPayload
+from orion.core.contracts.recall import RecallReplyV1, MemoryBundleV1, MemoryItemV1, MemoryBundleStatsV1
 from orion.core.bus.bus_service_chassis import ChassisConfig
 
 from .pipeline import run_recall_pipeline
@@ -82,6 +76,7 @@ def _score_from_fragment(meta: Dict[str, Any], salience: float) -> float:
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     """Rabbit handler: validate envelope, run recall, return typed result envelope."""
+    start_ts = time.perf_counter()
 
     # Strict kind check
     if env.kind != RECALL_REQUEST_KIND:
@@ -90,7 +85,14 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload={"error": f"unsupported_kind:{env.kind}"},
+            payload=RecallReplyV1(
+                correlation_id=str(env.correlation_id),
+                bundle=MemoryBundleV1(
+                    rendered=f"Unsupported message kind: {env.kind}",
+                    items=[],
+                    stats=MemoryBundleStatsV1()
+                )
+            ).model_dump(mode="json"),
         )
 
     payload_obj: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
@@ -98,54 +100,55 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     try:
         req_contract = RecallQueryV1.model_validate(payload_obj)
     except ValidationError as ve:
-        return BaseEnvelope(
+         # FIXED: Return a compliant RecallReplyV1 with error info in 'rendered'
+         return BaseEnvelope(
             kind=RECALL_REPLY_KIND,
             source=_source(),
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload={"error": "validation_failed", "details": str(ve)},
+            payload=RecallReplyV1(
+                correlation_id=str(env.correlation_id),
+                bundle=MemoryBundleV1(
+                    rendered=f"Validation failed: {ve}",
+                    items=[],
+                    stats=MemoryBundleStatsV1()
+                )
+            ).model_dump(mode="json"),
         )
     profile_name = req_contract.profile or settings.RECALL_DEFAULT_PROFILE
     q = _query_from_contract(req_contract)
     started = time.perf_counter()
     result = run_recall_pipeline(q)
-    latency_ms = int((time.perf_counter() - started) * 1000)
+    latency_ms = int((time.perf_counter() - start_ts) * 1000)
 
-    backend_counts: Dict[str, int] = {}
-    items: List[MemoryItemV1] = []
+    # Map internal fragments to strict MemoryItemV1
+    items = []
     for fr in result.fragments:
-        source = str(fr.source or "unknown")
-        backend_counts[source] = backend_counts.get(source, 0) + 1
-        meta = fr.meta or {}
-        item = MemoryItemV1(
-            id=str(fr.id or ""),
-            source=source,
-            source_ref=meta.get("source_ref"),
-            uri=meta.get("uri"),
-            score=_score_from_fragment(meta, fr.salience),
-            ts=fr.ts,
-            title=meta.get("title"),
-            snippet=str(fr.text or ""),
-            tags=[str(t) for t in (fr.tags or []) if t],
-        )
-        items.append(item)
-
-    profile = get_profile(profile_name)
-    render_budget = int(profile.get("render_budget_tokens", 256))
-    rendered = render_items(items, render_budget)
-    stats = MemoryBundleStatsV1(
-        backend_counts=backend_counts,
-        latency_ms=latency_ms,
-        profile=profile.get("profile"),
-    )
-    bundle = MemoryBundleV1(rendered=rendered, items=items, stats=stats)
-    reply_payload = RecallReplyV1(bundle=bundle, correlation_id=str(env.correlation_id))
+        items.append(MemoryItemV1(
+            id=fr.id,
+            source=fr.source,
+            snippet=fr.text,  # Mapping full text to snippet as per contract
+            score=fr.salience or 0.0,
+            ts=fr.ts.timestamp() if fr.ts else None,
+            tags=fr.tags or [],
+            title=fr.meta.get("title") if fr.meta else None
+        ))
 
     out = BaseEnvelope(
         kind=RECALL_REPLY_KIND,
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain,
-        payload=reply_payload.model_dump(mode="json"),
+        payload=RecallReplyV1(
+            correlation_id=str(env.correlation_id),
+            bundle=MemoryBundleV1(
+                rendered=f"Recalled {len(items)} items",
+                items=items,
+                stats=MemoryBundleStatsV1(
+                    latency_ms=latency_ms,
+                    backend_counts=result.debug.get("counts", {}) if result.debug else {}
+                )
+            )
+        ).model_dump(mode="json"),
     )
     return out

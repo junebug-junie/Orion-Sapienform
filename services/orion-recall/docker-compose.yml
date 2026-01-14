@@ -10,7 +10,8 @@ services:
     environment:
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
-      - NODE_NAME=${NODE_NAME}
+      #- NODE_NAME=${NODE_NAME}
+      - NODE_NAME=athena-DEBUG-CONTAINER
       - PORT=${PORT}
 
       - ORION_BUS_URL=${ORION_BUS_URL}
@@ -93,7 +94,8 @@ services:
 
       - RECALL_TENSOR_RANKER_ENABLED=${RECALL_TENSOR_RANKER_ENABLED}
       - RECALL_TENSOR_RANKER_MODEL_PATH=${RECALL_TENSOR_RANKER_MODEL_PATH}
-
+    volumes:
+      - ./app:/app/app
     ports:
       - "${PORT}:${PORT}"
     healthcheck:

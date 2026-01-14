@@ -10,7 +10,7 @@ from orion.core.bus.bus_schemas import (
     RecallRequestPayload,
     RecallResultPayload,
 )
-from orion.core.contracts.recall import RecallDecisionV1, RecallQueryV1, RecallReplyV1
+from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult, CortexChatRequest, CortexChatResult
@@ -61,7 +61,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallRequestPayload": RecallRequestPayload,
     "RecallResultPayload": RecallResultPayload,
     "RecallDecisionV1": RecallDecisionV1,
-    "RecallQueryV1": RecallQueryV1,
     "RecallReplyV1": RecallReplyV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,

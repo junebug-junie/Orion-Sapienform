@@ -7,6 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+# Remove the 'scripts' folder from sys.path to prevent 'platform' shadowing
+script_dir = str(Path(__file__).resolve().parent)
+if script_dir in sys.path:
+    sys.path.remove(script_dir)
 
 from orion.cognition.hub_gateway.bus_harness import main
 

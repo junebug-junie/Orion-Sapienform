@@ -12,6 +12,8 @@ from orion.core.contracts.recall import RecallReplyV1, MemoryBundleV1, MemoryIte
 from orion.core.bus.bus_service_chassis import ChassisConfig
 
 from .pipeline import run_recall_pipeline
+from .profiles import get_profile
+from .render import render_items
 from .types import RecallQuery
 from .settings import settings
 
@@ -34,18 +36,18 @@ def chassis_cfg() -> ChassisConfig:
         shutdown_timeout_sec=float(getattr(settings, "SHUTDOWN_GRACE_SEC", 10.0)),
     )
 
-def _query_from_payload(p: RecallRequestPayload) -> RecallQuery:
+def _query_from_contract(p: RecallQueryV1) -> RecallQuery:
     return RecallQuery(
-        query_text=p.query_text,
-        max_items=int(p.max_items),
-        time_window_days=int(p.time_window_days),
-        mode=str(p.mode),
-        tags=list((p.tags or []) or (p.packs or [])),
+        query_text=p.fragment,
+        max_items=int(settings.RECALL_DEFAULT_MAX_ITEMS),
+        time_window_days=int(settings.RECALL_DEFAULT_TIME_WINDOW_DAYS),
+        mode=str(settings.RECALL_DEFAULT_MODE),
+        tags=[],
         phi=None,
-        trace_id=p.trace_id,
+        trace_id=None,
         session_id=p.session_id,
-        user_id=p.user_id,
-        packs=list(p.packs or []),
+        user_id=None,
+        packs=[],
     )
 
 
@@ -56,13 +58,28 @@ def _source() -> ServiceRef:
         node=settings.NODE_NAME,
     )
 
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _score_from_fragment(meta: Dict[str, Any], salience: float) -> float:
+    score = meta.get("score")
+    if score is None:
+        score = meta.get("similarity")
+    if score is None:
+        score = salience
+    return max(0.0, min(1.0, _coerce_float(score, 0.0)))
+
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     """Rabbit handler: validate envelope, run recall, return typed result envelope."""
     start_ts = time.perf_counter()
 
     # Strict kind check
-    if env.kind not in (RECALL_REQUEST_KIND, "recall.query.request", "legacy.message"):
+    if env.kind != RECALL_REQUEST_KIND:
         return BaseEnvelope(
             kind=RECALL_REPLY_KIND,
             source=_source(),
@@ -79,11 +96,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
 
     payload_obj: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
-    if env.kind == "legacy.message":
-        payload_obj = payload_obj.get("payload") or payload_obj
 
     try:
-        req_payload = RecallRequestPayload.model_validate(payload_obj)
+        req_contract = RecallQueryV1.model_validate(payload_obj)
     except ValidationError as ve:
          # FIXED: Return a compliant RecallReplyV1 with error info in 'rendered'
          return BaseEnvelope(
@@ -100,8 +115,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 )
             ).model_dump(mode="json"),
         )
-
-    q = _query_from_payload(req_payload)
+    profile_name = req_contract.profile or settings.RECALL_DEFAULT_PROFILE
+    q = _query_from_contract(req_contract)
+    started = time.perf_counter()
     result = run_recall_pipeline(q)
     latency_ms = int((time.perf_counter() - start_ts) * 1000)
 

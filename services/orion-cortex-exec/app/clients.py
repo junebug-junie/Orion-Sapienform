@@ -11,7 +11,6 @@ from orion.core.bus.bus_schemas import (
     ChatRequestPayload,
     ChatResponsePayload,
     ServiceRef,
-    RecallRequestPayload
 )
 from orion.core.contracts.recall import RecallQueryV1, RecallReplyV1
 from orion.schemas.agents.schemas import (
@@ -119,19 +118,12 @@ class RecallClient:
         timeout_sec: float,
     ) -> RecallReplyV1:
 
-        payload_model = RecallRequestPayload(
-            text=req.fragment,       # Map internal 'fragment' to bus 'text'
-            session_id=req.session_id,
-            # 'verb' and 'intent' are stripped as they are not part of the public recall schema
-            # User defaults to None if not provided
-        )
-
         env = BaseEnvelope(
             kind="recall.query.v1",
             source=source,
             correlation_id=correlation_id,
             reply_to=reply_to,
-            payload=payload_model.model_dump(mode="json", by_alias=True), # Sends {"text": "...", ...}
+            payload=req.model_dump(mode="json"),
         )
 
         logger.info(

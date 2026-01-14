@@ -2,10 +2,14 @@
 
 import logging
 import asyncio
+import os
+import uuid
+import time
 from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+import torch
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -27,18 +31,42 @@ bus: Optional[OrionBusAsync] = None
 listener_task: Optional[asyncio.Task] = None
 heartbeat_task: Optional[asyncio.Task] = None
 
+# Generate a unique Boot ID for this process instance
+BOOT_ID = str(uuid.uuid4())
+
+
+
+def _require_cuda_or_die() -> None:
+    if torch.version.cuda is None or not torch.backends.cuda.is_built():
+        raise RuntimeError(
+            f"FATAL: torch is not a CUDA build. torch={torch.__version__} torch.version.cuda={torch.version.cuda}"
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "FATAL: CUDA build detected but CUDA is not available at runtime. "
+            f"torch.version.cuda={torch.version.cuda} "
+            f"NVIDIA_VISIBLE_DEVICES={os.getenv('NVIDIA_VISIBLE_DEVICES')} "
+            f"CUDA_VISIBLE_DEVICES={os.getenv('CUDA_VISIBLE_DEVICES')} "
+            "Check container GPU passthrough (/dev/nvidia* should exist)."
+        )
+
+# call this during startup before spinning workers
+
 
 async def heartbeat_loop(bus_instance: OrionBusAsync):
     """Publishes a heartbeat every 30 seconds."""
-    logger.info("Heartbeat loop started.")
+    logger.info(f"Heartbeat loop started. boot_id={BOOT_ID}")
     try:
         while True:
             try:
+                # FIX: Added boot_id and last_seen_ts to satisfy SystemHealthV1 schema
                 payload = SystemHealthV1(
                     service=settings.service_name,
                     version=settings.service_version,
                     node="whisper-node",
-                    status="ok"
+                    status="ok",
+                    boot_id=BOOT_ID,
+                    last_seen_ts=time.time()
                 ).model_dump(mode="json")
 
                 await bus_instance.publish("orion:system:health", BaseEnvelope(
@@ -104,6 +132,7 @@ async def health():
             "status": "ok",
             "service": settings.service_name,
             "version": settings.service_version,
+            "boot_id": BOOT_ID,
             "bus": "connected" if (bus and bus.redis) else "disconnected",
         }
     )

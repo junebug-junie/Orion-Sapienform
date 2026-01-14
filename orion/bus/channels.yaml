@@ -661,7 +661,7 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
-- name: "orion:tts:intake"
+  - name: "orion:tts:intake"
     kind: "request"
     schema_id: "TTSRequestPayload"
     producer_services: ["orion-hub"]

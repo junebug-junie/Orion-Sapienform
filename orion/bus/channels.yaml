@@ -668,3 +668,23 @@ channels:
     consumer_services: ["orion-whisper-tts"]
     stability: "experimental"
     since: "2026-01-14"
+
+  - name: "orion:tts:result:*"
+    kind: "result"
+    schema_id: "TTSResultPayload"
+    producer_services: ["orion-whisper-tts"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-01-14"
+
+  - name: "orion:stt:intake"
+    kind: "request"
+    schema_id: "STTRequestPayload"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-whisper-tts"]
+
+  - name: "orion:stt:result:*"
+    kind: "result"
+    schema_id: "STTResultPayload"
+    producer_services: ["orion-whisper-tts"]
+    consumer_services: ["orion-hub"]

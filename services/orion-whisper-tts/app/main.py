@@ -17,6 +17,7 @@ from orion.schemas.telemetry.system_health import SystemHealthV1
 
 from .settings import settings
 from .tts_worker import listener_worker
+from .stt_worker import stt_listener_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +30,7 @@ app = FastAPI(title="Orion Whisper/TTS Service")
 # Global bus instance
 bus: Optional[OrionBusAsync] = None
 listener_task: Optional[asyncio.Task] = None
+stt_task: Optional[asyncio.Task] = None
 heartbeat_task: Optional[asyncio.Task] = None
 
 # Generate a unique Boot ID for this process instance
@@ -84,7 +86,7 @@ async def heartbeat_loop(bus_instance: OrionBusAsync):
 
 @app.on_event("startup")
 async def startup() -> None:
-    global bus, listener_task, heartbeat_task
+    global bus, listener_task, stt_task, heartbeat_task
     logger.info(
         "Starting Whisper/TTS service %s v%s",
         settings.service_name,
@@ -99,18 +101,26 @@ async def startup() -> None:
 
     # Start the bus listener as an async task
     listener_task = asyncio.create_task(listener_worker(bus))
+    stt_task = asyncio.create_task(stt_listener_worker(bus))
     heartbeat_task = asyncio.create_task(heartbeat_loop(bus))
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global bus, listener_task, heartbeat_task
+    global bus, listener_task, stt_task, heartbeat_task
     logger.info("Shutting down Whisper/TTS service...")
 
     if listener_task:
         listener_task.cancel()
         try:
             await listener_task
+        except asyncio.CancelledError:
+            pass
+
+    if stt_task:
+        stt_task.cancel()
+        try:
+            await stt_task
         except asyncio.CancelledError:
             pass
 

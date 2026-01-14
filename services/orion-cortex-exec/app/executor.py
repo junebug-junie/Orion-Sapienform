@@ -38,6 +38,108 @@ from .spark_narrative import spark_phi_hint, spark_phi_narrative
 logger = logging.getLogger("orion.cortex.exec")
 
 
+def _metacog_messages(prompt: str) -> List[Dict[str, Any]]:
+    """
+    Force "schema-mode": system prompt + explicit user instruction.
+    Avoids the model going into explanation/chat mode.
+    """
+    return [
+        {"role": "system", "content": str(prompt or "").strip() or " "},
+        {
+            "role": "user",
+            "content": (
+                "Return ONE valid JSON object only (CollapseMirrorEntryV2). "
+                "No explanation, no markdown, no extra text."
+            ),
+        },
+    ]
+
+
+def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
+    """
+    If the LLM returns non-JSON, produce a valid baseline draft so the pipeline continues.
+    """
+    trig = ctx.get("trigger") or {}
+    trigger_kind = str(trig.get("trigger_kind") or "unknown")
+    reason = str(trig.get("reason") or "unknown")
+    pressure = trig.get("pressure")
+    zen_state = str(trig.get("zen_state") or "unknown")
+
+    hint = ctx.get("phi_hint") or {}
+    vb = str(hint.get("valence_band") or "unknown")
+    vd = str(hint.get("valence_dir") or "unknown")
+    eb = str(hint.get("energy_band") or "unknown")
+    cb = str(hint.get("coherence_band") or "unknown")
+    nb = str(hint.get("novelty_band") or "unknown")
+
+    # crude but stable type guess
+    typ = "idle"
+    if cb == "low" or nb == "high":
+        typ = "turbulence"
+    elif eb in ("moderate", "high") and cb in ("medium", "high"):
+        typ = "flow"
+
+    observer_state = [
+        "metacog",
+        f"energy:{eb}",
+        f"clarity:{cb}",
+        f"overload:{nb}",
+        f"valence:{vb}",
+    ]
+
+    field_res = f"φ:{vb}-{vd}, energy:{eb}, clarity:{cb}, overload:{nb}; zen={zen_state}"
+
+    entry = CollapseMirrorEntryV2(
+        event_id=f"collapse_{uuid4().hex}",
+        id=None,
+        observer="orion",
+        trigger=trigger_kind,
+        observer_state=observer_state,
+        field_resonance=field_res,
+        type=typ,
+        emergent_entity="Fallback Baseline",
+        summary=f"Fallback mirror draft. Trigger={trigger_kind} ({reason}); {field_res}.",
+        mantra="Compress truth; keep the imprint.",
+        causal_echo=None,
+        timestamp=None,  # system fills
+        environment=None,
+        snapshot_kind="baseline",
+        what_changed_summary="fallback_generated",
+        what_changed={
+            "summary": "LLM returned non-JSON; fallback draft constructed.",
+            "previous_state": None,
+            "new_state": None,
+            "evidence": [
+                f"trigger={trigger_kind}",
+                f"pressure={pressure}",
+                f"phi={vb}-{vd} energy={eb} clarity={cb} overload={nb}",
+            ],
+        },
+        pattern_candidate=None,
+        resonance_signature=f"{typ}: Fallback Baseline | Δ:fallback_generated | →observe",
+        change_type=None,
+        change_type_scores={},
+        tag_scores={},
+        tags=[typ] if typ != "idle" else [],
+        numeric_sisters={
+            "valence": None,
+            "arousal": None,
+            "clarity": None,
+            "overload": None,
+            "risk_score": None,
+        },
+        causal_density={"label": None, "score": None, "rationale": None},
+        is_causally_dense=False,
+        epistemic_status="observed",
+        visibility="internal",
+        redaction_level="low",
+        source_service=None,
+        source_node=None,
+    )
+    return entry.with_defaults()
+
+
+
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
 
@@ -344,7 +446,8 @@ async def call_step_services(
                 logs.append("exec -> MetacogDraftService (LLM + Parse)")
 
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
-                messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                messages_payload = _metacog_messages(prompt)
+                #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 request_object = ChatRequestPayload(
                     model=req_model,
@@ -353,6 +456,7 @@ async def call_step_services(
                     options={
                         "temperature": 0.8,
                         "max_tokens": 1024,
+                        "response_format": {"type": "json_object"},
                         "stream": False,
                     },
                 )
@@ -377,7 +481,12 @@ async def call_step_services(
 
                     if not parsed:
                         logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
-                        raise ValueError("No JSON found in LLM response")
+                        entry = _fallback_metacog_draft(ctx)
+                    else:
+                        parsed["observer"] = "orion"
+                        parsed["visibility"] = "internal"
+                        parsed["epistemic_status"] = "observed"
+                        entry = normalize_collapse_entry(parsed)
 
                     parsed["observer"] = "orion"
                     parsed["visibility"] = "internal"
@@ -405,16 +514,18 @@ async def call_step_services(
                 logs.append("exec -> MetacogEnrichService (LLM + Merge)")
 
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
-                messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                messages_payload = _metacog_messages(prompt)
 
                 request_object = ChatRequestPayload(
                     model=req_model,
                     messages=messages_payload,
-                    raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                    raw_user_text="metacog_enrich",
                     options={
                         "temperature": 0.5,
                         "max_tokens": 1024,
                         "stream": False,
+                        "response_format": {"type": "json_object"}
                     },
                 )
 

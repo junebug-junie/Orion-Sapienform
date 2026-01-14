@@ -660,3 +660,11 @@ channels:
     consumer_services: ["orion-spark-introspector"]
     stability: "experimental"
     since: "2026-01-10"
+
+- name: "orion:tts:intake"
+    kind: "request"
+    schema_id: "TTSRequestPayload"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-whisper-tts"]
+    stability: "experimental"
+    since: "2026-01-14"

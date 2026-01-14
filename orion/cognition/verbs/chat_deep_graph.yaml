@@ -1,0 +1,34 @@
+name: chat_deep_graph
+label: Deep Context Chat
+description: A high-latency, high-context chat mode that retrieves deep graph and timeline history before answering. Best for architectural reviews, summarization, and "catch me up" queries.
+
+category: ExecutiveControl
+priority: medium
+
+# This is critical: We want the executor to use the heavy profile
+# The executor looks for 'recall_profile' in the metadata or args, 
+# but we can often bind it here depending on your executor implementation.
+# If executor doesn't bind profiles from verbs, you pass it as a flag.
+
+recall_profile: deep.graph.v1
+
+interruptible: true
+requires_gpu: true
+requires_memory: true
+timeout_ms: 60000
+
+services:
+  - LLMGatewayService
+  - RecallService
+
+prompt_template: chat_deep_graph.j2
+
+plan:
+  - name: deep_synthesis
+    description:
+      Synthesize a complex answer from the extended memory bundle.
+    order: 0
+    prompt_template: chat_deep_graph.j2
+    services:
+      - LLMGatewayService
+    requires_memory: true

@@ -47,7 +47,12 @@ from orion.schemas.vision import (
     VisionWindowRequestPayload,
     VisionWindowResultPayload,
 )
-
+from orion.schemas.tts import (
+    TTSRequestPayload,
+    TTSResultPayload,
+    STTRequestPayload,
+    STTResultPayload,
+)
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -109,6 +114,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetaTagsResultV1": MetaTagsResultV1,
     "StateGetLatestRequest": StateGetLatestRequest,
     "StateLatestReply": StateLatestReply,
+    "TTSRequestPayload": TTSRequestPayload,
+    "TTSResultPayload": TTSResultPayload,
+    "STTRequestPayload": STTRequestPayload,
+    "STTResultPayload": STTResultPayload,
+
 }
 
 

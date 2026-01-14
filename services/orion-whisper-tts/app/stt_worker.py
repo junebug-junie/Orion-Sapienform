@@ -6,11 +6,9 @@ import asyncio
 import logging
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.tts import STTRequestPayload, STTResultPayload
 
 from .stt import STTEngine
-from .settings import settings
 
 logger = logging.getLogger("orion-whisper-tts.stt")
 
@@ -63,25 +61,8 @@ async def stt_listener_worker(bus: OrionBusAsync) -> None:
                 text = await loop.run_in_executor(None, _transcribe)
 
                 result = STTResultPayload(text=text)
-                response_envelope = envelope.derive_child(
-                    kind="stt.transcribe.result",
-                    source=ServiceRef(
-                        name=settings.service_name,
-                        version=settings.service_version,
-                    ),
-                    payload=result,
-                    reply_to=None,
-                )
-                await bus.publish(result_channel, response_envelope)
+                await bus.publish(result_channel, result)
                 logger.info("[%s] Sent STT result (len=%d)", correlation_id, len(text))
             except Exception as exc:
                 logger.error("[%s] FAILED to transcribe STT: %s", correlation_id, exc, exc_info=True)
-                error_envelope = envelope.derive_child(
-                    kind="system.error",
-                    source=ServiceRef(
-                        name=settings.service_name,
-                        version=settings.service_version,
-                    ),
-                    payload={"error": "stt_transcription_failed", "details": str(exc)},
-                )
-                await bus.publish(result_channel, error_envelope)
+                await bus.publish(result_channel, {"error": str(exc), "ok": False})

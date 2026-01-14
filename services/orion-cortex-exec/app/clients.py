@@ -179,7 +179,14 @@ class RecallClient:
         # Note: If the service returns a standard payload, validation typically happens here.
         # Assuming RecallReplyV1 aligns with the response or needs similar adaptation.
         payload_data = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
-        return RecallReplyV1.model_validate(payload_data)
+        if payload_data.get("error"):
+            details = payload_data.get("details")
+            detail_suffix = f" ({details})" if details else ""
+            raise RuntimeError(f"RecallService error: {payload_data['error']}{detail_suffix}")
+        try:
+            return RecallReplyV1.model_validate(payload_data)
+        except ValidationError as exc:
+            raise RuntimeError(f"RecallService payload validation failed: {exc}") from exc
 
 
 class PlannerReactClient:

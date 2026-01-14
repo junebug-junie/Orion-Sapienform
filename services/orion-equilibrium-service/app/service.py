@@ -294,25 +294,26 @@ class EquilibriumService(BaseChassis):
             logger.error("Failed to publish metacog trigger: %s", e)
             return
 
-        # 2. Publish Verb Request (to execute)
-        verb_req = VerbRequestV1(
-            verb="log_orion_metacognition",
-            payload={
-                "trigger": trigger.model_dump(mode="json"),
-                "window_sec": trigger.window_sec,
-            },
-            meta={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
-        )
-        verb_env = BaseEnvelope(
-            kind="verb.request.v1",
-            source=self._source(),
-            payload=verb_req.model_dump(mode="json"),
-        )
-        try:
-            await self.bus.publish(settings.channel_cortex_orch_request, verb_env)
-            logger.info("Triggered metacognition routine: %s", trigger.trigger_kind)
-        except Exception as e:
-            logger.error("Failed to publish metacog verb request: %s", e)
+        if settings.metacog_publish_verb_request:
+            # 2. Publish Verb Request (legacy direct execution)
+            verb_req = VerbRequestV1(
+                verb="log_orion_metacognition",
+                payload={
+                    "trigger": trigger.model_dump(mode="json"),
+                    "window_sec": trigger.window_sec,
+                },
+                meta={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
+            )
+            verb_env = BaseEnvelope(
+                kind="verb.request.v1",
+                source=self._source(),
+                payload=verb_req.model_dump(mode="json"),
+            )
+            try:
+                await self.bus.publish(settings.channel_cortex_orch_request, verb_env)
+                logger.info("Triggered metacognition routine: %s", trigger.trigger_kind)
+            except Exception as e:
+                logger.error("Failed to publish metacog verb request: %s", e)
 
     async def _publish_loop(self) -> None:
         while not self._stop.is_set():

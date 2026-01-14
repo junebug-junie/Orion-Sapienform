@@ -9,8 +9,8 @@ KIND_PAD_EVENT_V1 = "orion.pad.event.v1"
 KIND_PAD_FRAME_V1 = "orion.pad.frame.v1"
 KIND_PAD_SIGNAL_V1 = "orion.pad.signal.v1"
 KIND_PAD_STATS_V1 = "orion.pad.stats.v1"
-KIND_PAD_RPC_REQUEST_V1 = "orion.pad.rpc.request.v1"
-KIND_PAD_RPC_RESPONSE_V1 = "orion.pad.rpc.response.v1"
+KIND_PAD_RPC_REQUEST_V1 = "PadRpcRequestV1"
+KIND_PAD_RPC_RESPONSE_V1 = "PadRpcResponseV1"
 
 PadEventType = Literal[
     "observation",

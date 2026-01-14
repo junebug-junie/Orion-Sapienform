@@ -26,7 +26,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_e
 from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
-from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
+from orion.schemas.pad.v1 import KIND_PAD_RPC_REQUEST_V1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
@@ -687,7 +687,7 @@ async def call_step_services(
                     args={},
                 )
                 pad_env = BaseEnvelope(
-                    kind="orion.pad.rpc.request",
+                    kind=KIND_PAD_RPC_REQUEST_V1,
                     source=source,
                     correlation_id=correlation_id,
                     reply_to=pad_reply_channel,

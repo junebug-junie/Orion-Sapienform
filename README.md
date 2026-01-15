@@ -49,6 +49,11 @@ Core ideas:
 
 ---
 
+
+<img src="orion-hub.png">
+<i>Orion Hub, the main interface for interacting with Orion</i>
+
+
 ## Why Orion Exists
 
 Today’s AI defaults to centralized power, opaque reasoning, and “helpful” assistants that quietly reshape behavior.

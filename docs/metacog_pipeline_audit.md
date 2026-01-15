@@ -126,7 +126,6 @@ Schema IDs resolve through `orion/schemas/registry.py`, e.g. `MetacogTriggerV1`,
 | Trigger published but orch silent | cortex-orch not running or wrong bus URL | `services/orion-cortex-orch/docker-compose.yml`, `.env`, logs | Align `ORION_BUS_URL` / Redis DB index; start orch |
 | Orch receives trigger but no exec request | Plan dispatch error or routing drop | `services/orion-cortex-orch/app/orchestrator.py` logs for `Dispatched log_orion_metacognition` | Verify `channel_exec_request` + `EXEC_RESULT_PREFIX` env values |
 | Exec receives request but no SQL output | Exec plan error or MetacogPublishService failure | `services/orion-cortex-exec/app/executor.py` logs for `MetacogPublishService` | Inspect downstream LLM services + ensure `orion:collapse:sql-write` subscriber exists |
-| Metacog context step hits Pad RPC timeout (20s) | **Kind mismatch**: cortex-exec sent `orion.pad.rpc.request` while landing-pad listens for `PadRpcRequestV1`; request is ignored so no reply | `services/orion-cortex-exec/app/executor.py`, `services/orion-landing-pad/app/rpc/server.py` | Use `KIND_PAD_RPC_REQUEST_V1` in cortex-exec and ensure landing-pad is on same Redis URL/channel |
 | SQL writer missing rows | SQL writer not subscribed or route map mismatch | `services/orion-sql-writer/app/settings.py` + logs | Ensure `orion:collapse:sql-write` in `SQL_WRITER_SUBSCRIBE_CHANNELS` and route map includes `collapse.mirror.entry.v2` |
 | Validation errors on bus | Envelope schema mismatch | `orion/core/bus/bus_service_chassis.py` logs; `scripts/trace_metacog.py` output | Align payload schemas with `orion/bus/channels.yaml` + registry entries |
 
@@ -149,20 +148,6 @@ Schema IDs resolve through `orion/schemas/registry.py`, e.g. `MetacogTriggerV1`,
 
 - **Legacy direct verb request**: `EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST` previously allowed publishing `VerbRequestV1` directly to `orion:verb:request`. This bypasses cortex-orch and is now explicitly disabled (should remain `false`).
 - **Legacy collapse-mirror path**: `VerbRequestService` can publish to `orion:collapse:intake` which is consumed by `orion-collapse-mirror` and then forwarded to `orion:collapse:sql-write`. The active metacog path publishes **directly** to `orion:collapse:sql-write`.
-
----
-
-## Landing Pad → Metacog Context (RPC audit)
-
-### Expected RPC flow
-
-1) **Cortex-Exec** (`MetacogContextService`) publishes a Pad RPC request to `orion:pad:rpc:request` with **kind `PadRpcRequestV1`** and a `reply_to` channel.
-2) **Landing Pad** subscribes to `PAD_RPC_REQUEST_CHANNEL` (default `orion:pad:rpc:request`) and only processes envelopes with `KIND_PAD_RPC_REQUEST_V1`.
-3) Landing Pad responds on the supplied `reply_channel`, which cortex-exec awaits (20s timeout).
-
-### Why it hits the wall at 20s
-
-The request **kind** was previously emitted as `orion.pad.rpc.request` (missing the `.v1` suffix), so the landing-pad RPC server dropped the message (`env.kind != KIND_PAD_RPC_REQUEST_V1`) and never replied. That produces the 20s timeout observed in cortex-exec logs. The fix is to send `KIND_PAD_RPC_REQUEST_V1` from cortex-exec and ensure the bus URL matches landing-pad’s bus.  
 
 ---
 

@@ -98,11 +98,13 @@ def _diagnostic_enabled(payload: PlanExecutionRequest) -> bool:
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     corr_id = str(env.correlation_id)
     logger.info(f"Incoming Exec Request: correlation_id={corr_id}")
+    trace_id = (env.trace or {}).get("trace_id") or corr_id
+    parent_event_id = (env.trace or {}).get("event_id") or (env.trace or {}).get("parent_event_id")
 
     try:
         req_env = CortexExecRequest.model_validate(env.model_dump(mode="json"))
     except ValidationError as ve:
-        logger.error(f"Validation failed: {ve}")
+        logger.error("Validation failed trace_id=%s error=%s", trace_id, ve)
         return BaseEnvelope(
             kind="cortex.exec.result",
             source=_source(),
@@ -121,6 +123,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         **(req_env.payload.args.extra or {}),
         "user_id": req_env.payload.args.user_id,
         "trigger_source": req_env.payload.args.trigger_source,
+        "trace_id": trace_id,
+        "parent_event_id": parent_event_id,
+        "correlation_id": corr_id,
     }
 
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
@@ -318,9 +323,8 @@ trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger.info(
-        "Starting cortex-exec bus listener channel=%s bus=%s",
-        settings.channel_exec_request,
-        settings.orion_bus_url,
+        f"Starting cortex-exec bus listener channel={settings.channel_exec_request} "
+        f"bus={settings.orion_bus_url}"
     )
     assert verb_listener is not None, "Verb listener not initialized"
     assert trace_listener is not None, "Trace listener not initialized"

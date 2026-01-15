@@ -62,7 +62,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         return
 
     if env.kind and env.kind not in ("agent.planner.request", "legacy.message"):
-        logger.warning("[planner-react] Unsupported kind=%s", env.kind)
+        logger.warning(f"[planner-react] Unsupported kind={env.kind}")
         return
 
     try:
@@ -90,12 +90,12 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         await bus.publish(reply_channel, out_env)
 
         logger.info(
-            "[planner-react] Finished trace=%s status=%s steps=%d",
-            trace_id, resp.status, (resp.usage.steps if resp.usage else 0)
+            f"[planner-react] Finished trace={trace_id} status={resp.status} "
+            f"steps={(resp.usage.steps if resp.usage else 0)}"
         )
 
     except Exception as e:
-        logger.error("[planner-react] Error processing %s: %s", trace_id, e)
+        logger.error(f"[planner-react] Error processing {trace_id}: {e}")
         error_resp = PlannerResponse(
             request_id=str(trace_id),
             status="error",

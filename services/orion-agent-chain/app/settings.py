@@ -67,10 +67,7 @@ class AgentChainSettings(BaseSettings):
 
 settings = AgentChainSettings()
 logger.info(
-    "Loaded orion-agent-chain settings: service=%s v%s port=%d bus=%s enabled=%s",
-    settings.service_name,
-    settings.service_version,
-    settings.port,
-    settings.orion_bus_url,
-    settings.orion_bus_enabled,
+    "Loaded orion-agent-chain settings: "
+    f"service={settings.service_name} v={settings.service_version} "
+    f"port={settings.port} bus={settings.orion_bus_url} enabled={settings.orion_bus_enabled}"
 )

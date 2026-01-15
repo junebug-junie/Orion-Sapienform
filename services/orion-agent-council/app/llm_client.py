@@ -104,7 +104,7 @@ class LLMClient:
         # Decode
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
-            logger.warning("[%s] LLMClient decode error: %s", correlation_id, decoded.error)
+            logger.warning(f"[{correlation_id}] LLMClient decode error: {decoded.error}")
             return "[AgentCouncil Error] Decode failure"
 
         resp_payload = decoded.envelope.payload or {}
@@ -115,10 +115,7 @@ class LLMClient:
             err = resp_payload.get("error")
             details = resp_payload.get("details")
             logger.error(
-                "[%s] LLMClient gateway error: %s details=%s",
-                correlation_id,
-                err,
-                details,
+                f"[{correlation_id}] LLMClient gateway error: {err} details={details}"
             )
             return f"[AgentCouncil Error] LLM Gateway error: {err} ({details})"
 
@@ -136,9 +133,7 @@ class LLMClient:
 
         if not text:
             logger.error(
-                "[%s] LLMClient EMPTY TEXT. Raw Response keys: %s", 
-                correlation_id, 
-                list(resp_payload.keys())
+                f"[{correlation_id}] LLMClient EMPTY TEXT. Raw Response keys: {list(resp_payload.keys())}"
             )
             return ""
 

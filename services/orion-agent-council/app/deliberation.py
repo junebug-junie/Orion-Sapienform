@@ -30,7 +30,7 @@ class DeliberationRouter:
         try:
             req = DeliberationRequest(**raw_payload)
         except Exception as e:
-            logger.error("DeliberationRequest parse error: %s payload=%r", e, raw_payload)
+            logger.error(f"DeliberationRequest parse error: {e} payload={raw_payload!r}")
             return
 
         pipeline = build_default_pipeline(
@@ -41,10 +41,8 @@ class DeliberationRouter:
         )
 
         logger.info(
-            "[%s] Routing council_deliberation (source=%s universe=%s)",
-            req.trace_id or "no-trace",
-            req.source or "unknown",
-            req.universe or "core",
+            f"[{req.trace_id or 'no-trace'}] Routing council_deliberation "
+            f"(source={req.source or 'unknown'} universe={req.universe or 'core'})"
         )
 
         await pipeline.run(req) # [FIX] Await async pipeline

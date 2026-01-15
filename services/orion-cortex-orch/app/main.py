@@ -21,7 +21,6 @@ logger = logging.getLogger("orion.cortex.orch")
 
 # Channels
 # We only listen for the trigger now. The SQL Writer handles the ticks independently.
-METACOGNITION_TRIGGER_CHANNEL = "orion:equilibrium:metacog:trigger"
 
 
 class CortexOrchRequest(BaseEnvelope):
@@ -107,7 +106,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
 
     except ValidationError as ve:
-        logger.warning("Validation failed: %s", ve)
+        trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+        logger.warning("Validation failed trace_id=%s error=%s", trace_id, ve)
         failure = CortexClientResult(
             ok=False,
             mode=raw_payload.get("mode") or "brain",
@@ -221,6 +221,8 @@ async def _handle_equilibrium_envelope(env: BaseEnvelope) -> None:
     Ticks are ignored here (logged directly by SQL Writer).
     """
     if env.kind == "orion.metacog.trigger.v1":
+        trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+        logger.info("Metacog trigger intake kind=%s trace_id=%s", env.kind, trace_id)
         await dispatch_metacog_trigger(
             equilibrium_hunter.bus,
             source=_source(),
@@ -235,7 +237,7 @@ equilibrium_hunter = Hunter(
     _cfg(),
     handler=_handle_equilibrium_envelope,
     patterns=[
-        METACOGNITION_TRIGGER_CHANNEL, 
+        get_settings().channel_metacog_trigger,
     ],
 )
 
@@ -244,10 +246,10 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     s = get_settings()
     logger.info(
-        "Starting Cortex Orch Service (Typed Client Version) intake=%s exec_channel=%s bus=%s",
-        s.channel_cortex_request,
-        s.channel_exec_request,
-        s.orion_bus_url,
+        "Starting Cortex Orch Service (Typed Client Version) "
+        f"intake={s.channel_cortex_request} "
+        f"exec_channel={s.channel_exec_request} "
+        f"bus={s.orion_bus_url}"
     )
     await asyncio.gather(svc.start(), equilibrium_hunter.start())
 

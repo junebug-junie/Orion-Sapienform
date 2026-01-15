@@ -100,7 +100,7 @@ This vector allows the frame to be embedded in vector databases, enabling the sy
 
 ### 5. Debug RPC Interface
 
-To support introspection, the service exposes a Remote Procedure Call (RPC) endpoint (`orion.pad.rpc.request.v1`) on the message bus. This allows other internal services to programmatically query the working memory—asking for the latest frame, specific high-salience events, or the current tensor state—without needing direct database access.
+To support introspection, the service exposes a Remote Procedure Call (RPC) endpoint (`PadRpcRequestV1`) on the message bus. This allows other internal services to programmatically query the working memory—asking for the latest frame, specific high-salience events, or the current tensor state—without needing direct database access.
 
 ---
 

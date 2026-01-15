@@ -26,7 +26,9 @@ class CortexExecClient:
         source: ServiceRef,
         req: PlanExecutionRequest,
         correlation_id: str,
-        timeout_sec: float
+        timeout_sec: float,
+        *,
+        trace: dict | None = None,
     ) -> Dict[str, Any]:
         """
         Sends a typed PlanExecutionRequest, returns the raw result dict from Exec.
@@ -42,6 +44,7 @@ class CortexExecClient:
             source=source,
             correlation_id=correlation_id,
             reply_to=reply_channel,
+            trace=dict(trace or {}),
             payload=payload_json,
         )
 

@@ -96,10 +96,8 @@ async def _handle_snapshot(env: BaseEnvelope) -> None:
     accepted = await STORE.ingest_snapshot(snap, note="bus", write_cache=True)
     if accepted:
         logger.info(
-            "Ingested spark snapshot node=%s seq=%s ts=%s",
-            snap.source_node,
-            snap.seq,
-            snap.snapshot_ts.isoformat(),
+            f"Ingested spark snapshot node={snap.source_node} "
+            f"seq={snap.seq} ts={snap.snapshot_ts.isoformat()}"
         )
 
     # --- FIX: Send ACK to prevent RPC timeouts ---

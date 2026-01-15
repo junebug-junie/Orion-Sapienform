@@ -644,10 +644,8 @@ async def call_step_services(
 
                     await bus.publish(settings.channel_collapse_sql_write, env)
                     logger.info(
-                        "MetacogPublishService published channel=%s trace_id=%s event_id=%s",
-                        settings.channel_collapse_sql_write,
-                        trace_meta.get("trace_id"),
-                        event_id,
+                        f"MetacogPublishService published channel={settings.channel_collapse_sql_write} "
+                        f"trace_id={trace_meta.get('trace_id')} event_id={event_id}"
                     )
                     merged_result[service] = {
                         "ok": True,
@@ -959,10 +957,8 @@ async def call_step_services(
                         )
                         await bus.publish(settings.channel_collapse_intake, envelope)
                         logger.info(
-                            "VerbRequestService published channel=%s trace_id=%s event_id=%s",
-                            settings.channel_collapse_intake,
-                            trace_meta.get("trace_id"),
-                            event_id,
+                            f"VerbRequestService published channel={settings.channel_collapse_intake} "
+                            f"trace_id={trace_meta.get('trace_id')} event_id={event_id}"
                         )
                         merged_result[service] = {
                             "ok": True,

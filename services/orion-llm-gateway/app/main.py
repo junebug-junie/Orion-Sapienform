@@ -111,7 +111,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[LLM-GW] %(levelname)s - %(message)s")
     cfg = _cfg()
     svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle)
-    logger.info("Rabbit listening channel=%s bus=%s", settings.channel_llm_intake, cfg.bus_url)
+    logger.info(f"Rabbit listening channel={settings.channel_llm_intake} bus={cfg.bus_url}")
     await svc.start()
 
 

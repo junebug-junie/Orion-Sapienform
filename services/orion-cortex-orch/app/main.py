@@ -246,10 +246,10 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     s = get_settings()
     logger.info(
-        "Starting Cortex Orch Service (Typed Client Version) intake=%s exec_channel=%s bus=%s",
-        s.channel_cortex_request,
-        s.channel_exec_request,
-        s.orion_bus_url,
+        "Starting Cortex Orch Service (Typed Client Version) "
+        f"intake={s.channel_cortex_request} "
+        f"exec_channel={s.channel_exec_request} "
+        f"bus={s.orion_bus_url}"
     )
     await asyncio.gather(svc.start(), equilibrium_hunter.start())
 

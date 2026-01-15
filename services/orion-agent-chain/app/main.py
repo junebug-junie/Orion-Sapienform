@@ -66,10 +66,8 @@ async def heartbeat_loop(settings):
 def on_startup() -> None:
     global heartbeat_task
     logger.info(
-        "Starting Agent Chain (service=%s v=%s, port=%d)",
-        settings.service_name,
-        settings.service_version,
-        settings.port,
+        f"Starting Agent Chain (service={settings.service_name} "
+        f"v={settings.service_version}, port={settings.port})"
     )
     start_agent_chain_bus_listener()
     heartbeat_task = asyncio.create_task(heartbeat_loop(settings))

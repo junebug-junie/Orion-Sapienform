@@ -358,7 +358,7 @@ def conversation_front_worker(bus) -> None:
         return
 
     channel = CONVERSATION_REQUEST_CHANNEL
-    logger.info("ConversationFront: starting bus worker on channel '%s'", channel)
+    logger.info(f"ConversationFront: starting bus worker on channel '{channel}'")
 
     for msg in bus.raw_subscribe(channel):
         envelope = msg.get("data") or {}
@@ -368,15 +368,12 @@ def conversation_front_worker(bus) -> None:
         reply_channel = envelope.get("reply_channel")
 
         if event != "chat_turn":
-            logger.debug(
-                "ConversationFront: ignoring event=%s on channel=%s", event, channel
-            )
+            logger.debug(f"ConversationFront: ignoring event={event} on channel={channel}")
             continue
 
         if not reply_channel:
             logger.warning(
-                "ConversationFront: received chat_turn with no reply_channel (corr_id=%s)",
-                corr_id,
+                f"ConversationFront: received chat_turn with no reply_channel (corr_id={corr_id})"
             )
             continue
 
@@ -385,9 +382,7 @@ def conversation_front_worker(bus) -> None:
             payload = ChatTurnPayload(**payload_dict)
         except Exception as e:
             logger.error(
-                "ConversationFront: invalid ChatTurnPayload (corr_id=%s): %s",
-                corr_id,
-                e,
+                f"ConversationFront: invalid ChatTurnPayload (corr_id={corr_id}): {e}",
                 exc_info=True,
             )
             bus.publish(
@@ -413,9 +408,7 @@ def conversation_front_worker(bus) -> None:
         try:
             result = handle_chat_turn(bus, payload)
         except Exception as e:
-            logger.exception(
-                "ConversationFront: unhandled error for corr_id=%s", corr_id
-            )
+            logger.exception(f"ConversationFront: unhandled error for corr_id={corr_id}")
             bus.publish(
                 reply_channel,
                 {

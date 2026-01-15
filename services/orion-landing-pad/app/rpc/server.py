@@ -29,7 +29,7 @@ class PadRpcServer:
 
     async def start(self) -> None:
         self._stop.clear()
-        logger.info("Starting pad RPC listener channel=%s", self.settings.pad_rpc_request_channel)
+        logger.info(f"Starting pad RPC listener channel={self.settings.pad_rpc_request_channel}")
         self._task = asyncio.create_task(self._run(), name="pad-rpc")
 
     async def stop(self) -> None:
@@ -53,11 +53,11 @@ class PadRpcServer:
                 if not decoded.ok or decoded.envelope is None:
                     self.stats.increment_rpc_errors()
                     if decoded.error:
-                        logger.warning("RPC decode failed error=%s", decoded.error)
+                        logger.warning(f"RPC decode failed error={decoded.error}")
                     continue
                 env = decoded.envelope
                 if env.kind != KIND_PAD_RPC_REQUEST_V1:
-                    logger.debug("Ignoring RPC message kind=%s", env.kind)
+                    logger.debug(f"Ignoring RPC message kind={env.kind}")
                     continue
                 await self._handle_request(env)
 
@@ -71,11 +71,8 @@ class PadRpcServer:
             return
         started = time.perf_counter()
         logger.info(
-            "RPC request received method=%s request_id=%s corr=%s reply=%s",
-            req.method,
-            req.request_id,
-            env.correlation_id,
-            req.reply_channel,
+            f"RPC request received method={req.method} request_id={req.request_id} "
+            f"corr={env.correlation_id} reply={req.reply_channel}"
         )
 
         handler = self._handler_for(req.method)
@@ -104,34 +101,26 @@ class PadRpcServer:
             except Exception as exc:
                 elapsed = time.perf_counter() - started
                 logger.warning(
-                    "RPC response publish failed method=%s request_id=%s corr=%s reply=%s elapsed=%.2fs error=%s",
-                    req.method,
-                    req.request_id,
-                    env.correlation_id,
-                    req.reply_channel,
-                    elapsed,
-                    exc,
+                    "RPC response publish failed "
+                    f"method={req.method} request_id={req.request_id} "
+                    f"corr={env.correlation_id} reply={req.reply_channel} "
+                    f"elapsed={elapsed:.2f}s error={exc}"
                 )
                 self.stats.increment_rpc_errors()
                 return
             elapsed = time.perf_counter() - started
             logger.info(
-                "RPC response sent method=%s request_id=%s corr=%s reply=%s elapsed=%.2fs ok=%s",
-                req.method,
-                req.request_id,
-                env.correlation_id,
-                req.reply_channel,
-                elapsed,
-                resp.ok,
+                "RPC response sent "
+                f"method={req.method} request_id={req.request_id} "
+                f"corr={env.correlation_id} reply={req.reply_channel} "
+                f"elapsed={elapsed:.2f}s ok={resp.ok}"
             )
         else:
             elapsed = time.perf_counter() - started
             logger.warning(
-                "RPC response dropped (missing reply_channel) method=%s request_id=%s corr=%s elapsed=%.2fs",
-                req.method,
-                req.request_id,
-                env.correlation_id,
-                elapsed,
+                "RPC response dropped (missing reply_channel) "
+                f"method={req.method} request_id={req.request_id} "
+                f"corr={env.correlation_id} elapsed={elapsed:.2f}s"
             )
 
     def _handler_for(self, method: str) -> Optional[Callable[[dict], asyncio.Future]]:

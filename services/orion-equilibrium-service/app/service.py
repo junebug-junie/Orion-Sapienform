@@ -300,11 +300,9 @@ class EquilibriumService(BaseChassis):
 
         await self.bus.publish(settings.channel_metacognition_tick, env)
         logger.info(
-            "Published metacognition tick tick_id=%s trace_id=%s distress=%.3f channel=%s",
-            tick.tick_id,
-            trace_meta["trace_id"],
-            distress_score,
-            settings.channel_metacognition_tick,
+            "Published metacognition tick "
+            f"tick_id={tick.tick_id} trace_id={trace_meta['trace_id']} "
+            f"distress={distress_score:.3f} channel={settings.channel_metacognition_tick}"
         )
 
     async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> None:
@@ -336,13 +334,12 @@ class EquilibriumService(BaseChassis):
         try:
             await self.bus.publish(settings.channel_metacog_trigger, env)
             logger.info(
-                "Published metacog trigger kind=%s trace_id=%s channel=%s",
-                trigger.trigger_kind,
-                trace_meta["trace_id"],
-                settings.channel_metacog_trigger,
+                "Published metacog trigger "
+                f"kind={trigger.trigger_kind} trace_id={trace_meta['trace_id']} "
+                f"channel={settings.channel_metacog_trigger}"
             )
         except Exception as e:
-            logger.error("Failed to publish metacog trigger: %s", e)
+            logger.error(f"Failed to publish metacog trigger: {e}")
             return
 
         if settings.metacog_publish_verb_request:
@@ -350,8 +347,7 @@ class EquilibriumService(BaseChassis):
             logger.error(
                 "Metacog legacy verb request is disabled (bypasses cortex-orch). "
                 "Set EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST=false and rely on "
-                "orion:equilibrium:metacog:trigger routing. trace_id=%s",
-                trace_meta["trace_id"],
+                f"orion:equilibrium:metacog:trigger routing. trace_id={trace_meta['trace_id']}"
             )
 
     async def _publish_loop(self) -> None:
@@ -359,7 +355,7 @@ class EquilibriumService(BaseChassis):
             try:
                 await self._publish_snapshot()
             except Exception as e:
-                logger.error("Publish loop error: %s", e)
+                logger.error(f"Publish loop error: {e}")
             await asyncio.sleep(float(settings.publish_interval_sec))
 
     async def _collapse_loop(self) -> None:
@@ -368,7 +364,7 @@ class EquilibriumService(BaseChassis):
             try:
                 await self._publish_metacognition_tick()
             except Exception as e:
-                logger.warning("Metacognition tick loop error: %s", e)
+                logger.warning(f"Metacognition tick loop error: {e}")
             await asyncio.sleep(interval)
 
     async def _metacog_baseline_loop(self) -> None:
@@ -389,7 +385,7 @@ class EquilibriumService(BaseChassis):
                 )
                 await self._publish_metacog_trigger(trigger)
             except Exception as e:
-                logger.error("Metacog baseline loop error: %s", e)
+                logger.error(f"Metacog baseline loop error: {e}")
 
     async def _run(self) -> None:
         await self._load_state()
@@ -415,7 +411,7 @@ class EquilibriumService(BaseChassis):
 
                 decoded = self.codec.decode(msg.get("data"))
                 if not decoded.ok:
-                    logger.warning("Equilibrium decode failed channel=%s error=%s", channel, decoded.error)
+                    logger.warning(f"Equilibrium decode failed channel={channel} error={decoded.error}")
                     continue
                 env = decoded.envelope
                 payload_dict = env.payload if isinstance(env.payload, dict) else {}

@@ -215,9 +215,7 @@ class Rabbit(BaseChassis):
                 decoded = self.bus.codec.decode(data)
                 if not decoded.ok or decoded.envelope is None:
                     logger.warning(
-                        "Rabbit decode failed channel=%s error=%s",
-                        channel,
-                        decoded.error,
+                        f"Rabbit decode failed channel={channel} error={decoded.error}"
                     )
                     await self._publish_error(
                         RuntimeError(decoded.error or "decode_failed"),
@@ -230,12 +228,8 @@ class Rabbit(BaseChassis):
                 trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
                 # [FIX] LOG RECEIPT TO PROVE WE HIT CORTEX
                 logger.info(
-                    "Rabbit request received channel=%s kind=%s schema_id=%s trace_id=%s source=%s",
-                    channel,
-                    env.kind,
-                    env.schema_id,
-                    trace_id,
-                    env.source,
+                    f"Rabbit request received channel={channel} kind={env.kind} "
+                    f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
                 )
                 try:
                     out = await self.handler(env)
@@ -295,9 +289,7 @@ class Hunter(BaseChassis):
                 decoded = self.bus.codec.decode(data)
                 if not decoded.ok or decoded.envelope is None:
                     logger.warning(
-                        "Hunter decode failed channel=%s error=%s",
-                        channel,
-                        decoded.error,
+                        f"Hunter decode failed channel={channel} error={decoded.error}"
                     )
                     await self._publish_error(
                         RuntimeError(decoded.error or "decode_failed"),
@@ -309,12 +301,8 @@ class Hunter(BaseChassis):
                 env = decoded.envelope
                 trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
                 logger.info(
-                    "Hunter intake channel=%s kind=%s schema_id=%s trace_id=%s source=%s",
-                    channel,
-                    env.kind,
-                    env.schema_id,
-                    trace_id,
-                    env.source,
+                    f"Hunter intake channel={channel} kind={env.kind} "
+                    f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
                 )
                 try:
                     await self.handler(env)

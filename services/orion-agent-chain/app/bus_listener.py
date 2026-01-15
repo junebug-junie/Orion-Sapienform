@@ -98,7 +98,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         reply_channel = payload.get("reply_channel")
 
     if env.kind and env.kind not in ("agent.chain.request", "legacy.message"):
-        logger.warning("[agent-chain] Unsupported kind=%s", env.kind)
+        logger.warning(f"[agent-chain] Unsupported kind={env.kind}")
         return
 
     trace_id = env.correlation_id or payload.get("request_id")

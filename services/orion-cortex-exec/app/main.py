@@ -323,9 +323,8 @@ trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger.info(
-        "Starting cortex-exec bus listener channel=%s bus=%s",
-        settings.channel_exec_request,
-        settings.orion_bus_url,
+        f"Starting cortex-exec bus listener channel={settings.channel_exec_request} "
+        f"bus={settings.orion_bus_url}"
     )
     assert verb_listener is not None, "Verb listener not initialized"
     assert trace_listener is not None, "Trace listener not initialized"

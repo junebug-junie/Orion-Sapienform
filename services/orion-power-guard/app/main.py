@@ -170,7 +170,7 @@ def _source(settings) -> ServiceRef:
 
 async def _publish_event(bus: OrionBusAsync, settings, channel: str, event: PowerEvent) -> None:
     if not getattr(bus, "enabled", False):
-        logger.info("Bus disabled; skipping publish for event kind=%s", event.kind)
+        logger.info(f"Bus disabled; skipping publish for event kind={event.kind}")
         return
 
     payload = event.model_dump(mode="json")
@@ -181,22 +181,20 @@ async def _publish_event(bus: OrionBusAsync, settings, channel: str, event: Powe
     )
     try:
         await bus.publish(channel, envelope)
-        logger.info("Published power event kind=%s channel=%s", event.kind, channel)
+        logger.info(f"Published power event kind={event.kind} channel={channel}")
     except Exception:
-        logger.exception(
-            "Failed to publish power event kind=%s channel=%s", event.kind, channel
-        )
+        logger.exception(f"Failed to publish power event kind={event.kind} channel={channel}")
 
 
 def _run_shutdown(cmd: str) -> None:
     import subprocess
 
-    logger.warning("Executing shutdown command: %s", cmd)
+    logger.warning(f"Executing shutdown command: {cmd}")
     try:
         subprocess.run(cmd, shell=True, check=True)
         logger.warning("Shutdown command executed successfully.")
     except subprocess.CalledProcessError as exc:
-        logger.error("Shutdown command failed: %s", exc)
+        logger.error(f"Shutdown command failed: {exc}")
     except Exception:
         logger.exception("Unexpected error while running shutdown command.")
 

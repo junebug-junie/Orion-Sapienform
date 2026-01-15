@@ -1,0 +1,57 @@
+# services/orion-llama-cola-host/docker-compose.yml
+
+services:
+  llama-cola-host:
+    build:
+      context: ../..
+      dockerfile: services/orion-llama-cola-host/Dockerfile
+    env_file:
+      - .env
+    image: llama-cola-host:0.1.0
+    container_name: ${PROJECT:-orion}-orion-llama-cola-host
+    restart: unless-stopped
+
+    environment:
+      # --- Identity & Bus ---
+      - SERVICE_NAME=${SERVICE_NAME:-llama-cola-host}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
+      - NODE_NAME=${NODE_NAME:-unknown}
+      - INSTANCE_ID=${INSTANCE_ID:-default}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+
+      # --- Profiles & Selection ---
+      - LLM_PROFILE_NAME=${LLM_PROFILE_NAME}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+
+      # --- Overrides (Optional) ---
+      - LLAMA_COLA_MODEL_PATH_OVERRIDE=${LLAMA_COLA_MODEL_PATH_OVERRIDE}
+      - LLAMA_COLA_REVISION_OVERRIDE=${LLAMA_COLA_REVISION_OVERRIDE}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${CUDA_VISIBLE_DEVICES_OVERRIDE}
+
+      # Behavior
+      - ENSURE_MODEL_DOWNLOAD=${ENSURE_MODEL_DOWNLOAD}
+      - WAIT_FOR_MODEL_SECONDS=${WAIT_FOR_MODEL_SECONDS}
+
+    volumes:
+      # Mount the cache directory to /models
+      - "${LLM_CACHE_DIR}:/models"
+
+    ports:
+      - "${LLAMA_COLA_HOST_PORT:-8005}:8005"
+
+    networks:
+      - app-net
+
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

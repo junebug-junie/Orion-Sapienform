@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     # Intake from other services
     channel_llm_intake: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    channel_embedding_generate: str = Field("orion:embedding:generate", alias="CHANNEL_EMBEDDING_GENERATE")
 
     # Spark
     channel_spark_introspect_candidate: str = Field(

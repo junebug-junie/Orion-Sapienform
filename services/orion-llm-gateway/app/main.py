@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import ValidationError
 
 # [FIX] Added ServiceRef to imports
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1
 
-from .llm_backend import run_llm_chat
-from .models import ChatBody
+from .llm_backend import run_llm_chat, run_llm_embeddings
+from .models import ChatBody, EmbeddingsBody
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
@@ -37,7 +38,7 @@ def _source() -> ServiceRef:
     )
 
 
-async def handle(env: BaseEnvelope) -> BaseEnvelope:
+async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     if env.kind not in ("llm.chat.request", "legacy.message"):
         return BaseEnvelope(
             kind="system.error",
@@ -107,12 +108,85 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     return out.model_copy(update={"reply_to": None})
 
 
+async def handle_embedding(env: BaseEnvelope) -> BaseEnvelope:
+    if env.kind != "embedding.generate.v1":
+        return BaseEnvelope(
+            kind="system.error",
+            source=_source(),
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload={"error": f"unsupported_kind:{env.kind}"},
+        )
+
+    payload_obj: Dict[str, Any]
+    if hasattr(env.payload, "model_dump"):
+        payload_obj = env.payload.model_dump(mode="json")
+    elif isinstance(env.payload, dict):
+        payload_obj = env.payload
+    else:
+        payload_obj = {}
+
+    try:
+        request = EmbeddingGenerateV1.model_validate(payload_obj)
+    except ValidationError as ve:
+        return BaseEnvelope(
+            kind="embedding.result.v1",
+            source=_source(),
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload={"error": "validation_failed", "details": ve.errors()},
+        )
+
+    body = EmbeddingsBody(
+        input=[request.text],
+        profile_name=request.embedding_profile,
+        trace_id=str(env.correlation_id),
+        source=env.source.name if env.source else None,
+    )
+    result: Dict[str, Any] = {}
+    error: Optional[str] = None
+    try:
+        result = run_llm_embeddings(body)
+    except Exception as exc:
+        error = str(exc)
+        logger.error("Embedding request failed for doc_id=%s: %s", request.doc_id, error)
+
+    embedding: list[float] = []
+    if isinstance(result, dict):
+        data = result.get("data") or []
+        if data:
+            embedding = data[0].get("embedding") or []
+
+    payload = EmbeddingResultV1(
+        doc_id=request.doc_id,
+        embedding=embedding,
+        embedding_model=(result.get("model") if isinstance(result, dict) else None),
+        embedding_dim=len(embedding) if embedding else None,
+    ).model_dump(mode="json")
+    if error:
+        payload["error"] = error
+
+    return BaseEnvelope(
+        kind="embedding.result.v1",
+        source=_source(),
+        correlation_id=env.correlation_id,
+        causality_chain=env.causality_chain,
+        payload=payload,
+    )
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[LLM-GW] %(levelname)s - %(message)s")
     cfg = _cfg()
-    svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle)
-    logger.info(f"Rabbit listening channel={settings.channel_llm_intake} bus={cfg.bus_url}")
-    await svc.start()
+    chat_svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle_chat)
+    embed_svc = Rabbit(cfg, request_channel=settings.channel_embedding_generate, handler=handle_embedding)
+    logger.info(
+        "Rabbit listening channels=%s,%s bus=%s",
+        settings.channel_llm_intake,
+        settings.channel_embedding_generate,
+        cfg.bus_url,
+    )
+    await asyncio.gather(chat_svc.start(), embed_svc.start())
 
 
 if __name__ == "__main__":

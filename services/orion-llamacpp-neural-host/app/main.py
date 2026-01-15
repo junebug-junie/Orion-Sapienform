@@ -196,6 +196,11 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     stop: Optional[Union[str, List[str]]] = None
 
+
+class EmbeddingRequest(BaseModel):
+    input: Union[str, List[str]]
+    model: Optional[str] = None
+
 # ----------------------------------------------------------------------
 # Endpoints
 # ----------------------------------------------------------------------
@@ -242,6 +247,27 @@ def create_chat_completion(request: ChatCompletionRequest):
     response["spark_vector"] = spark_vector
 
     return response
+
+
+@app.post("/v1/embeddings")
+def create_embeddings(request: EmbeddingRequest):
+    if not state.llm:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    inputs = request.input if isinstance(request.input, list) else [request.input]
+    data = []
+    for idx, text in enumerate(inputs):
+        embedding: List[float] = []
+        if text:
+            try:
+                embed_resp = state.llm.create_embedding(str(text))
+                if embed_resp and "data" in embed_resp and len(embed_resp["data"]) > 0:
+                    embedding = embed_resp["data"][0]["embedding"]
+            except Exception as e:
+                logger.error(f"Embedding failed: {e}")
+        data.append({"object": "embedding", "embedding": embedding, "index": idx})
+
+    return {"object": "list", "data": data, "model": request.model or "llamacpp"}
 
 @app.get("/health")
 def health():

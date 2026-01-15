@@ -1,0 +1,13 @@
+fastapi>=0.111.0
+uvicorn>=0.29.0
+sse-starlette>=2.1.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
+torch>=2.2.0
+transformers>=4.40.0
+deepspeed>=0.14.0
+huggingface_hub>=0.23.0
+pyyaml>=6.0
+redis>=5.0.0
+loguru>=0.7.0
+python-dotenv>=1.0.0

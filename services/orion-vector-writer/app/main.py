@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
@@ -8,8 +9,13 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
-from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.schemas.vector.schemas import VectorDocumentUpsertV1, VectorWriteRequest
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.vector.schemas import (
+    EmbeddingGenerateV1,
+    EmbeddingResultV1,
+    VectorDocumentUpsertV1,
+    VectorWriteRequest,
+)
 
 from app.chat_history import (
     CHAT_HISTORY_COLLECTION,
@@ -59,6 +65,81 @@ def _setup_resources():
         logger.error(f"❌ Failed to connect to ChromaDB: {e}")
         # We don't raise here to allow the service to start, but writes will fail.
         chroma_client = None
+
+
+async def _fetch_embedding(req: VectorDocumentUpsertV1, env: BaseEnvelope) -> Optional[EmbeddingResultV1]:
+    if not hunter or not hunter.bus.enabled:
+        logger.warning("Embedding fetch skipped: bus unavailable.")
+        return None
+
+    if not req.text:
+        return None
+
+    reply_channel = f"{settings.VECTOR_WRITER_EMBEDDING_REPLY_PREFIX}{uuid4()}"
+    correlation_id = env.correlation_id or uuid4()
+    payload = EmbeddingGenerateV1(
+        doc_id=req.doc_id,
+        text=req.text,
+        embedding_profile=settings.VECTOR_WRITER_EMBEDDING_PROFILE,
+    )
+
+    envelope = BaseEnvelope(
+        kind="embedding.generate.v1",
+        source=ServiceRef(
+            name=settings.SERVICE_NAME,
+            node=settings.NODE_NAME,
+            version=settings.SERVICE_VERSION,
+        ),
+        correlation_id=correlation_id,
+        reply_to=reply_channel,
+        payload=payload.model_dump(mode="json"),
+    )
+
+    logger.info(
+        "Embedding request doc_id=%s profile=%s channel=%s reply_channel=%s input_len=%d",
+        req.doc_id,
+        settings.VECTOR_WRITER_EMBEDDING_PROFILE,
+        settings.VECTOR_WRITER_EMBEDDING_CHANNEL,
+        reply_channel,
+        len(req.text),
+    )
+
+    try:
+        msg = await hunter.bus.rpc_request(
+            settings.VECTOR_WRITER_EMBEDDING_CHANNEL,
+            envelope,
+            reply_channel=reply_channel,
+            timeout_sec=settings.VECTOR_WRITER_EMBEDDING_TIMEOUT_SEC,
+        )
+    except Exception as exc:
+        logger.warning("Embedding request failed doc_id=%s error=%s", req.doc_id, exc)
+        return None
+
+    decoded = hunter.bus.codec.decode(msg.get("data"))
+    if not decoded.ok or not decoded.envelope:
+        logger.warning("Embedding response decode failed doc_id=%s error=%s", req.doc_id, decoded.error)
+        return None
+
+    payload_obj = decoded.envelope.payload
+    if hasattr(payload_obj, "model_dump"):
+        payload_obj = payload_obj.model_dump(mode="json")
+    if not isinstance(payload_obj, dict):
+        logger.warning("Embedding response invalid payload doc_id=%s", req.doc_id)
+        return None
+
+    try:
+        result = EmbeddingResultV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.warning("Embedding response validation failed doc_id=%s error=%s", req.doc_id, exc)
+        return None
+
+    logger.info(
+        "Embedding received doc_id=%s embedding_dim=%s model=%s",
+        result.doc_id,
+        result.embedding_dim or len(result.embedding),
+        result.embedding_model,
+    )
+    return result
 
 def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     """
@@ -210,8 +291,17 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 return
             req = _to_upsert(legacy_req, env)
 
+        if not req.embedding and settings.VECTOR_WRITER_EMBEDDINGS_ENABLED:
+            embed_result = await _fetch_embedding(req, env)
+            if embed_result and embed_result.embedding:
+                req.embedding = embed_result.embedding
+                req.embedding_model = embed_result.embedding_model
+                req.embedding_dim = embed_result.embedding_dim or len(embed_result.embedding)
+
         if not req.embedding:
-            logger.warning(f"Skipping {req.kind}: no embedding supplied for id={req.doc_id}")
+            if settings.VECTOR_WRITER_REQUIRE_EMBEDDINGS:
+                raise RuntimeError(f"Embedding missing for kind={req.kind} id={req.doc_id}")
+            logger.warning("Skipping %s: no embedding supplied for id=%s", req.kind, req.doc_id)
             return
 
         meta = dict(req.metadata)
@@ -248,7 +338,13 @@ async def handle_envelope(env: BaseEnvelope) -> None:
             metadatas=[meta]
         )
         
-        logger.info(f"✨ Stored {req.kind} -> {collection_name} (id={req.doc_id})")
+        logger.info(
+            "✨ Stored kind=%s collection=%s id=%s embedding_dim=%s",
+            req.kind,
+            collection_name,
+            req.doc_id,
+            req.embedding_dim or len(vector_list),
+        )
 
     except Exception as e:
         logger.exception(f"Error processing {env.kind}: {e}")

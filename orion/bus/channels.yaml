@@ -605,6 +605,22 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:embedding:generate"
+    kind: "request"
+    schema_id: "EmbeddingGenerateV1"
+    producer_services: ["orion-vector-writer", "orion-hub", "orion-cortex-exec", "*"]
+    consumer_services: ["orion-llm-gateway"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:embedding:result:*"
+    kind: "result"
+    schema_id: "EmbeddingResultV1"
+    producer_services: ["orion-llm-gateway"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
   - name: "orion:state:request"
     kind: "request"
     schema_id: "StateGetLatestRequest"

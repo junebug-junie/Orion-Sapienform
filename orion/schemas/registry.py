@@ -16,7 +16,11 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult, CortexChatRequest, CortexChatResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1
-from orion.schemas.vector.schemas import VectorWriteRequest
+from orion.schemas.vector.schemas import (
+    EmbeddingGenerateV1,
+    EmbeddingResultV1,
+    VectorWriteRequest,
+)
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.schemas.telemetry.biometrics import BiometricsPayload
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
@@ -103,6 +107,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistoryMessageV1": ChatHistoryMessageV1,
     "ChatHistoryTurnV1": ChatHistoryTurnV1,
     "VectorWriteRequest": VectorWriteRequest,
+    "EmbeddingGenerateV1": EmbeddingGenerateV1,
+    "EmbeddingResultV1": EmbeddingResultV1,
     "ConceptProfile": ConceptProfile,
     "ConceptProfileDelta": ConceptProfileDelta,
     "BiometricsPayload": BiometricsPayload,

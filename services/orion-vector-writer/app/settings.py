@@ -28,6 +28,24 @@ class Settings(BaseSettings):
     VECTOR_WRITER_CHAT_COLLECTION: str = Field(
         default="orion_chat", alias="VECTOR_WRITER_CHAT_COLLECTION"
     )
+    VECTOR_WRITER_EMBEDDINGS_ENABLED: bool = Field(
+        default=True, alias="VECTOR_WRITER_EMBEDDINGS_ENABLED"
+    )
+    VECTOR_WRITER_REQUIRE_EMBEDDINGS: bool = Field(
+        default=False, alias="VECTOR_WRITER_REQUIRE_EMBEDDINGS"
+    )
+    VECTOR_WRITER_EMBEDDING_CHANNEL: str = Field(
+        default="orion:embedding:generate", alias="VECTOR_WRITER_EMBEDDING_CHANNEL"
+    )
+    VECTOR_WRITER_EMBEDDING_REPLY_PREFIX: str = Field(
+        default="orion:embedding:result:", alias="VECTOR_WRITER_EMBEDDING_REPLY_PREFIX"
+    )
+    VECTOR_WRITER_EMBEDDING_PROFILE: str = Field(
+        default="default", alias="VECTOR_WRITER_EMBEDDING_PROFILE"
+    )
+    VECTOR_WRITER_EMBEDDING_TIMEOUT_SEC: float = Field(
+        default=30.0, alias="VECTOR_WRITER_EMBEDDING_TIMEOUT_SEC"
+    )
 
     @property
     def SUBSCRIBE_CHANNELS(self) -> List[str]:

@@ -1,5 +1,5 @@
 from pydantic import AliasChoices, BaseModel, Field, ConfigDict
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from datetime import datetime, timezone
 
 class VectorWriteRequest(BaseModel):
@@ -73,3 +73,19 @@ class EmbeddingResultV1(BaseModel):
     embedding_dim: Optional[int] = None
     latent_ref: Optional[str] = None
     latent_summary: Optional[Dict[str, Any]] = None
+
+
+class VectorUpsertV1(BaseModel):
+    """
+    Canonical payload for vector upsert events (semantic + latent).
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    doc_id: str
+    collection: str
+    embedding: List[float]
+    embedding_kind: Literal["semantic", "latent"]
+    embedding_model: Optional[str] = None
+    embedding_dim: Optional[int] = None
+    text: Optional[str] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)

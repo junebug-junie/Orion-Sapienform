@@ -1,0 +1,47 @@
+services:
+  vector-host:
+    build:
+      context: ../..
+      dockerfile: services/orion-vector-host/Dockerfile
+    container_name: ${PROJECT}-vector-host
+    restart: unless-stopped
+    networks:
+      - app-net
+    env_file:
+      - .env
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME:-orion-vector-host}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME:-athena}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_HEALTH_CHANNEL=${ORION_HEALTH_CHANNEL:-orion:system:health}
+      - ERROR_CHANNEL=${ERROR_CHANNEL:-orion:system:error}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+      - VECTOR_HOST_CHAT_HISTORY_CHANNEL=${VECTOR_HOST_CHAT_HISTORY_CHANNEL:-orion:chat:history:log}
+      - VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL=${VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL:-orion:embedding:generate}
+      - VECTOR_HOST_EMBEDDING_RESULT_PREFIX=${VECTOR_HOST_EMBEDDING_RESULT_PREFIX:-orion:embedding:result:}
+      - VECTOR_HOST_SEMANTIC_UPSERT_CHANNEL=${VECTOR_HOST_SEMANTIC_UPSERT_CHANNEL:-orion:vector:semantic:upsert}
+
+      - VECTOR_HOST_EMBED_ROLES=${VECTOR_HOST_EMBED_ROLES:-["user","assistant"]}
+      - VECTOR_HOST_EMBED_BACKEND=${VECTOR_HOST_EMBED_BACKEND:-vllm}
+      - VECTOR_HOST_EMBEDDING_MODEL=${VECTOR_HOST_EMBEDDING_MODEL}
+      - VECTOR_HOST_SEMANTIC_COLLECTION=${VECTOR_HOST_SEMANTIC_COLLECTION:-orion_main_store}
+
+      - ORION_LLM_VLLM_URL=${ORION_LLM_VLLM_URL:-}
+      - ORION_LLM_LLAMA_COLA_URL=${ORION_LLM_LLAMA_COLA_URL:-}
+
+      - VECTOR_HOST_EMBED_CONNECT_TIMEOUT_SEC=${VECTOR_HOST_EMBED_CONNECT_TIMEOUT_SEC:-10}
+      - VECTOR_HOST_EMBED_READ_TIMEOUT_SEC=${VECTOR_HOST_EMBED_READ_TIMEOUT_SEC:-60}
+
+    ports:
+      - "8320:8320"
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_HEALTH_CHANNEL: str = "orion:system:health"
     ERROR_CHANNEL: str = "orion:system:error"
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly

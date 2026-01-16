@@ -67,6 +67,31 @@ profiles:
         - or lower n_gpu_layers
         - or use a smaller quant from the same repo.
 
+  llama3-1-cola:
+    display_name: "Llama 3.1 CoLA – Intention Host"
+    task_type: chat
+    backend: llama-cola
+    model_id: "LAMDA-RL/Llama-3.1-CoLA-10B"
+    supports_tools: false
+    supports_embeddings: true
+    supports_vision: false
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 4096
+      max_batch_tokens: 256
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+    llama_cola:
+      model_root: "/models/cola"
+      repo_id: "LAMDA-RL/Llama-3.1-CoLA-10B"
+      host: "0.0.0.0"
+      port: 8005
+      max_new_tokens: 256
+    notes: |
+      CoLA inference host profile that returns both text and latent action paths.
+
 
   qwen2.5-32b-instruct-abliterated-gguf:
     display_name: "Qwen 2.5 32B Instruct – abliterated Q6_K (llama.cpp, Atlas)"

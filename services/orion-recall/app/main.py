@@ -67,4 +67,4 @@ async def recall_endpoint(body: RecallRequestBody):
         profile=settings.RECALL_DEFAULT_PROFILE,
     )
     bundle, _ = await process_recall(q, corr_id="http")
-    return {"bundle": bundle}
+    return {"bundle": bundle.model_dump()}

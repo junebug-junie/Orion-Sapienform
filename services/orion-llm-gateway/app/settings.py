@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     # Intake from other services
     channel_llm_intake: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    channel_embedding_generate: str = Field("orion:embedding:generate", alias="CHANNEL_EMBEDDING_GENERATE")
 
     # Spark
     channel_spark_introspect_candidate: str = Field(
@@ -37,14 +38,18 @@ class Settings(BaseSettings):
 
     # Backend endpoints
     vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
+    ollama_url: Optional[str] = Field(None, alias="ORION_LLM_OLLAMA_URL")
+    ollama_use_openai_compat: bool = Field(False, alias="ORION_LLM_OLLAMA_USE_OPENAI")
     llamacpp_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_URL")
+    llamacpp_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_EMBEDDING_URL")
+    llama_cola_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_URL")
 
     # Embedding endpoint (optional, defaults to llama.cpp chat host)
-    llamacpp_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_EMBEDDING_URL")
+    llama_cola_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_EMBEDDING_URL")
 
     # If false, the gateway will NOT attempt a secondary embedding call.
     # If true, and the backend response did not already include an embedding/vector,
-    # the gateway will try to fetch one from `llamacpp_embedding_url`.
+    # the gateway will try to fetch one from the embedding URLs (cola/llamacpp/vllm/ollama).
     include_embeddings: bool = Field(False, alias="ORION_LLM_INCLUDE_EMBEDDINGS")
 
     # Timeout knobs (shared across backends)
@@ -63,6 +68,8 @@ class Settings(BaseSettings):
     def default_embedding_url(self) -> "Settings":
         if not self.llamacpp_embedding_url and self.llamacpp_url:
             self.llamacpp_embedding_url = self.llamacpp_url
+        if not self.llama_cola_embedding_url and self.llama_cola_url:
+            self.llama_cola_embedding_url = self.llama_cola_url
         return self
 
     def load_profile_registry(self) -> LLMProfileRegistry:

@@ -1,15 +1,14 @@
-from typing import Any, Dict, Optional, List, Coroutine
+from typing import Any, Dict, Optional, List, Coroutine, Sequence
 import asyncio
 import logging
 import time
 import json
 
 import httpx
-from httpx import HTTPStatusError
 
 from orion.core.bus.async_service import OrionBusAsync
 
-from .models import ChatBody, GenerateBody, ExecStepPayload, EmbeddingsBody
+from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload, EmbeddingsBody
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 
@@ -100,12 +99,15 @@ def _extract_vector_from_openai_response(data: Dict[str, Any]) -> Optional[List[
     """
 
     def _maybe_vec(obj: Any) -> Optional[List[float]]:
-        if isinstance(obj, list) and obj and all(isinstance(x, (int, float)) for x in obj):
-            return [float(x) for x in obj]
+        if isinstance(obj, list) and obj:
+            if all(isinstance(x, (int, float)) for x in obj):
+                return [float(x) for x in obj]
+            if isinstance(obj[0], list) and obj[0] and all(isinstance(x, (int, float)) for x in obj[0]):
+                return [float(x) for x in obj[0]]
         return None
 
     # Top-level keys
-    for k in ("spark_vector", "state_embedding", "state_vector", "embedding", "embeds", "vector"):
+    for k in ("spark_vector", "state_embedding", "state_vector", "embedding", "embeds", "vector", "action_indices"):
         v = _maybe_vec(data.get(k))
         if v is not None:
             return v
@@ -114,7 +116,7 @@ def _extract_vector_from_openai_response(data: Dict[str, Any]) -> Optional[List[
     try:
         choices = data.get("choices") or []
         first = (choices[0] or {}) if choices else {}
-        for k in ("spark_vector", "state_embedding", "state_vector", "embedding", "embeds", "vector"):
+        for k in ("spark_vector", "state_embedding", "state_vector", "embedding", "embeds", "vector", "action_indices"):
             v = _maybe_vec(first.get(k))
             if v is not None:
                 return v
@@ -145,18 +147,43 @@ def _select_profile(profile_name: str | None) -> LLMProfile | None:
     return None
 
 
+def _normalize_backend_name(backend: str) -> str:
+    normalized = backend.replace("_", "-").lower()
+    if normalized == "llama-cpp":
+        return "llamacpp"
+    return normalized
+
+
 def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) -> str:
     opts = options or {}
     backend = opts.get("backend")
     if not backend and profile:
         backend = profile.backend
 
-    backend = (backend or settings.default_backend or "vllm").lower()
+    backend = _normalize_backend_name(backend or settings.default_backend or "vllm")
 
-    if backend not in ("vllm", "llamacpp"):
+    if backend not in ("vllm", "llamacpp", "ollama", "llama-cola"):
         logger.warning(f"[LLM-GW] Unknown backend '{backend}'; defaulting to vllm")
         return "vllm"
     return backend
+
+
+def _resolve_embedding_backend(backend: str) -> str:
+    # 1. If the requested backend natively supports embeddings, use it.
+    if backend in ("vllm", "llama-cola"):
+        return backend
+
+    # 2. Fallback: The backend (e.g. llamacpp) doesn't support embeddings.
+    # We must find a surrogate.
+
+    # Check if llama-cola is configured. If so, use it as the preferred fallback.
+    if settings.llama_cola_url or settings.llama_cola_embedding_url:
+        logger.warning(f"[LLM-GW] Backend '{backend}' does not support embeddings; falling back to llama-cola")
+        return "llama-cola"
+
+    # 3. Default fallback to vllm
+    logger.warning(f"[LLM-GW] Backend '{backend}' does not support embeddings; falling back to vllm")
+    return "vllm"
 
 
 def _resolve_model(body_model: str | None, profile: LLMProfile | None) -> str:
@@ -186,6 +213,20 @@ def _normalize_model_for_vllm(model: str) -> str:
         return _profile_registry.get(model).model_id
     except Exception:
         return model
+
+
+def _serialize_messages(messages: Sequence[ChatMessage] | Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
+    serialized: List[Dict[str, str]] = []
+    for msg in messages:
+        if hasattr(msg, "model_dump"):
+            dumped = msg.model_dump()
+            if dumped.get("content") is not None:
+                serialized.append({"role": dumped.get("role", "user"), "content": str(dumped["content"])})
+        elif isinstance(msg, dict):
+            content = msg.get("content")
+            if content is not None:
+                serialized.append({"role": str(msg.get("role", "user")), "content": str(content)})
+    return serialized
 
 
 # ─────────────────────────────────────────────
@@ -258,7 +299,7 @@ def _spark_ingest_text(*, text: str, agent_id: str, tags: List[str], spark_vecto
 
 def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
     try:
-        messages = body.messages or []
+        messages = _serialize_messages(body.messages or [])
         if not messages:
             return {}
 
@@ -448,13 +489,12 @@ def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
     """
     # Prefer dedicated embedding lobe
     url = None
-    if settings.llamacpp_embedding_url:
-        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
-    elif settings.llamacpp_url:
-        # Fallback to standard host for embeddings if neural host not configured
-        url = f"{settings.llamacpp_url.rstrip('/')}/v1/embeddings"
+    if settings.llama_cola_embedding_url:
+        url = f"{settings.llama_cola_embedding_url.rstrip('/')}/v1/embeddings"
     elif settings.vllm_url:
         url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
+    elif settings.ollama_url:
+        url = f"{settings.ollama_url.rstrip('/')}/api/embeddings"
 
     if not url:
         return None
@@ -475,6 +515,119 @@ def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
         logger.warning(f"[LLM-GW] Embedding fetch failed: {e}")
 
     return None
+
+
+def _extract_text_from_ollama_response(data: Dict[str, Any]) -> str:
+    if not isinstance(data, dict):
+        return ""
+    message = data.get("message") or {}
+    if isinstance(message, dict) and message.get("content") is not None:
+        return str(message["content"]).strip()
+    response = data.get("response")
+    if response is not None:
+        return str(response).strip()
+    return ""
+
+
+def _build_ollama_payload(body: ChatBody, model: str) -> Dict[str, Any]:
+    opts = body.options or {}
+    options_payload: Dict[str, Any] = {}
+
+    mapped = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "top_k": "top_k",
+        "max_tokens": "num_predict",
+        "num_predict": "num_predict",
+        "repeat_penalty": "repeat_penalty",
+        "presence_penalty": "presence_penalty",
+        "frequency_penalty": "frequency_penalty",
+        "seed": "seed",
+        "num_ctx": "num_ctx",
+        "stop": "stop",
+    }
+
+    for source_key, target_key in mapped.items():
+        val = opts.get(source_key)
+        if val is not None:
+            options_payload[target_key] = val
+
+    return {
+        "model": model,
+        "messages": _serialize_messages(body.messages or []),
+        "stream": False,
+        "options": options_payload,
+    }
+
+
+def _execute_ollama_chat(body: ChatBody, model: str, base_url: str) -> Dict[str, Any]:
+    if not base_url:
+        err = "ollama URL not configured"
+        logger.error(f"[LLM-GW] {err}")
+        return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {}}
+
+    spark_meta = _spark_ingest_for_body(body)
+    url = f"{base_url.rstrip('/')}/api/chat"
+    payload = _build_ollama_payload(body, model)
+
+    logger.info(f"[LLM-GW] ollama req model={model} msgs={len(body.messages or [])} url={url}")
+
+    try:
+        with _common_http_client() as client:
+            r = client.post(url, json=payload)
+            if r.status_code == 404:
+                return {
+                    "text": f"[Error: ollama 404 Not Found at {url}]",
+                    "spark_meta": spark_meta,
+                    "raw": {},
+                }
+            r.raise_for_status()
+            raw_data = r.json()
+            text = _extract_text_from_ollama_response(raw_data)
+
+            _spark_post_ingest_for_reply(body, spark_meta, text)
+            _maybe_publish_spark_introspect(body, spark_meta, text)
+
+            return {
+                "text": text,
+                "spark_meta": spark_meta,
+                "spark_vector": None,
+                "raw": raw_data,
+            }
+    except httpx.TimeoutException:
+        logger.error(f"[LLM-GW] ollama TIMEOUT on {url}")
+        return {
+            "text": "[Error: ollama timed out after waiting]",
+            "spark_meta": spark_meta,
+            "raw": {},
+        }
+    except Exception as e:
+        logger.error(f"[LLM-GW] ollama error: {e}", exc_info=True)
+        return {
+            "text": f"[Error: ollama failed: {str(e)}]",
+            "spark_meta": spark_meta,
+            "raw": {},
+        }
+
+
+def _execute_openai_embeddings(
+    body: EmbeddingsBody,
+    model: str,
+    base_url: Optional[str],
+    backend_name: str,
+) -> Dict[str, Any]:
+    if not base_url:
+        raise RuntimeError(f"No embedding URL configured for {backend_name}")
+
+    url = f"{base_url.rstrip('/')}/v1/embeddings"
+    payload = {"model": model, "input": body.input}
+    if body.options:
+        payload.update({k: v for k, v in body.options.items() if k != "backend"})
+
+    with _common_http_client() as client:
+        r = client.post(url, json=payload)
+        r.raise_for_status()
+        return r.json()
 
 
 def _execute_openai_chat(
@@ -500,7 +653,7 @@ def _execute_openai_chat(
 
     payload = {
         "model": model,
-        "messages": body.messages,
+        "messages": _serialize_messages(body.messages or []),
         "stream": False,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
@@ -509,6 +662,11 @@ def _execute_openai_chat(
         "presence_penalty": opts.get("presence_penalty"),
         "frequency_penalty": opts.get("frequency_penalty"),
     }
+    response_format = opts.get("response_format")
+    if response_format and backend_name == "vllm":
+        payload["response_format"] = response_format
+    elif opts.get("return_json") and backend_name == "vllm":
+        payload["response_format"] = {"type": "json_object"}
     # Clean None values
     payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -539,7 +697,7 @@ def _execute_openai_chat(
             # Case B: Standard Host (Reflective)
             # If the backend didn't include a vector, optionally do a secondary
             # embedding call (useful for a *separate* "embeds-on" gateway instance).
-            if settings.include_embeddings and (not spark_vector) and text:
+            if backend_name != "llama-cola" and settings.include_embeddings and (not spark_vector) and text:
                 spark_vector = _fetch_embedding_internal(text)
 
             # Post-processing: Spark Introspect
@@ -581,6 +739,16 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     if backend == "vllm":
         model = _normalize_model_for_vllm(model)
         base_url = settings.vllm_url
+
+    elif backend == "ollama":
+        base_url = settings.ollama_url
+        if settings.ollama_use_openai_compat:
+            return _execute_openai_chat(body, model, base_url, "ollama")
+        return _execute_ollama_chat(body, model, base_url)
+
+    elif backend == "llama-cola":
+        base_url = settings.llama_cola_url
+
     else:
         base_url = settings.llamacpp_url
 
@@ -590,7 +758,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
 def run_llm_generate(body: GenerateBody) -> str:
     """Wrapper to make Generate look like Chat"""
     chat_body = ChatBody(
-        messages=[{"role": "user", "content": body.prompt}],
+        messages=[ChatMessage(role="user", content=body.prompt)],
         options=body.options,
         trace_id=body.trace_id,
         user_id=body.user_id,
@@ -606,28 +774,21 @@ def run_llm_generate(body: GenerateBody) -> str:
 
 
 def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
-    # Embeddings logic is distinct enough to keep separate for now
-    url = None
-    if settings.llamacpp_embedding_url:
-        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
-    elif settings.vllm_url:
-        url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
 
-    if not url:
-        raise RuntimeError("No embedding URL configured (vLLM or LlamaCpp Embedding Lobe)")
+    if not settings.include_embeddings:
+        raise RuntimeError("Embeddings are disabled on this gateway instance")
 
     profile = _select_profile(body.profile_name)
+    backend = _pick_backend(body.options, profile)
+    embedding_backend = _resolve_embedding_backend(backend)
     model = _resolve_model(body.model, profile)
-    model = _normalize_model_for_vllm(model)
+    if embedding_backend == "vllm":
+        model = _normalize_model_for_vllm(model)
 
-    payload = {"model": model, "input": body.input}
-    if body.options:
-        payload.update(body.options)
+    if embedding_backend == "llama-cola":
+        return _execute_openai_embeddings(body, model, settings.llama_cola_embedding_url, "llama-cola")
 
-    with _common_http_client() as client:
-        r = client.post(url, json=payload)
-        r.raise_for_status()
-        return r.json()
+    return _execute_openai_embeddings(body, model, settings.vllm_url, "vllm")
 
 
 def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
@@ -651,7 +812,7 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
     # 3. Execute via Chat Interface
     chat_body = ChatBody(
         model=model,
-        messages=[{"role": "user", "content": final_prompt}],
+        messages=[ChatMessage(role="user", content=final_prompt)],
         raw_user_text=body.raw_user_text or (body.context.get("user_message") if isinstance(body.context, dict) else None),
         options={},
         trace_id=body.origin_node,
@@ -660,14 +821,21 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
         profile_name=getattr(body, "profile_name", None),
     )
 
-    if backend == "llamacpp":
+    if backend == "ollama":
+        result = _execute_ollama_chat(chat_body, model, settings.ollama_url)
+
+    elif backend == "llamacpp":
         result = _execute_openai_chat(chat_body, model, settings.llamacpp_url, "llamacpp")
+
+    elif backend == "llama-cola":
+        result = _execute_openai_chat(chat_body, model, settings.llama_cola_url, "llama-cola")
+
     else:
         result = _execute_openai_chat(chat_body, model, settings.vllm_url, "vllm")
 
     elapsed_ms = int((time.time() - t0) * 1000)
 
-    # 4. Log (WITH FIXED ARGUMENTS)
+    # 4. Log
     logger.info(
         "[LLM-GW] exec_step verb=%s step=%s service=%s elapsed_ms=%d backend=%s model=%s",
         body.verb,

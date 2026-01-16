@@ -30,19 +30,22 @@ services:
       # LLM gateway channels
       - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE}
       - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX}
-      - CHANNEL_INTROSPECT_CANDIDATE=orion:spark:introspect:candidate
+      - CHANNEL_SPARK_INTROSPECT_CANDIDATE=${CHANNEL_SPARK_INTROSPECT_CANDIDATE:-orion:spark:introspect:candidate}
+      - CHANNEL_EMBEDDING_GENERATE=${CHANNEL_EMBEDDING_GENERATE:-orion:embedding:generate}
 
       # Backend endpoints (Ollama is required today; others optional)
       - ORION_LLM_VLLM_URL=${ORION_LLM_VLLM_URL:-}
+      - ORION_LLM_OLLAMA_URL=${ORION_LLM_OLLAMA_URL:-}
+      - ORION_LLM_OLLAMA_USE_OPENAI=${ORION_LLM_OLLAMA_USE_OPENAI:-false}
       - ORION_LLM_LLAMACPP_URL=${ORION_LLM_LLAMACPP_URL:-}
-      - ORION_LLM_LLAMACPP_EMBEDDING_URL=http://orion-llamacpp-neural-host:8005
+      - ORION_LLM_LLAMACPP_EMBEDDING_URL=${ORION_LLM_LLAMACPP_EMBEDDING_URL:-}
+      - ORION_LLM_LLAMA_COLA_URL=${ORION_LLM_LLAMA_COLA_URL:-}
+      - ORION_LLM_LLAMA_COLA_EMBEDDING_URL=${ORION_LLM_LLAMA_COLA_EMBEDDING_URL:-}
+      - ORION_LLM_INCLUDE_EMBEDDINGS=${ORION_LLM_INCLUDE_EMBEDDINGS:-false}
 
       # Timeouts
       - CONNECT_TIMEOUT_SEC=${CONNECT_TIMEOUT_SEC}
       - READ_TIMEOUT_SEC=${READ_TIMEOUT_SEC}
-
-      # Label used in reply payloads
-      - ORION_LLM_SERVICE_NAME=${ORION_LLM_SERVICE_NAME}
 
       # ─────────────────────────────────────
       # Profiles config (new)

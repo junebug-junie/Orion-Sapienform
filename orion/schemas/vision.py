@@ -50,8 +50,8 @@ class VisionArtifactPayload(BaseModel):
 
 # Specific Edge Artifact Schema (matches VisionArtifactPayload but with stricter intent)
 class VisionEdgeArtifact(VisionArtifactPayload):
-    pass
-
+    model_fingerprints: dict
+    model_config = ConfigDict(protected_namespaces=())
 
 class VisionTaskRequestPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

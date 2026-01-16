@@ -12,6 +12,9 @@ from orion.schemas.agents.schemas import PlannerRequest, PlannerResponse
 
 logger = logging.getLogger("planner-react.bus")
 
+# Global set to hold strong references to background tasks so the GC doesn't kill them
+_background_tasks = set()
+
 def start_planner_bus_listener_background() -> None:
     if not settings.orion_bus_enabled:
         return
@@ -22,18 +25,22 @@ def start_planner_bus_listener_background() -> None:
         logger.warning("No running event loop to attach bus listener.")
         return
 
-    loop.create_task(_async_bus_worker())
+    task = loop.create_task(_async_bus_worker())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 async def _async_bus_worker() -> None:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     request_channel = settings.planner_request_channel
-    
+
     logger.info("[planner-react] Connecting Async Bus listener on %s...", request_channel)
     await bus.connect()
 
     async with bus.subscribe(request_channel) as pubsub:
         async for msg in bus.iter_messages(pubsub):
-            asyncio.create_task(_handle_request(bus, msg))
+            task = asyncio.create_task(_handle_request(bus, msg))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
 async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
     decoded = bus.codec.decode(raw_msg.get("data"))
@@ -42,11 +49,11 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
 
     env = decoded.envelope
     reply_channel = env.reply_to
-    
-    # Payload Logic: 
+
+    # Payload Logic:
     # 1. BaseEnvelope puts the data in env.payload
     payload = env.payload or {}
-    
+
     # 2. Legacy Protection: If the payload is STILL a wrapper (has 'event' and nested 'payload')
     # we unwrap it. This protects against other services (not just agent-chain) doing it wrong.
     if "payload" in payload and "event" in payload:
@@ -62,16 +69,16 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         return
 
     if env.kind and env.kind not in ("agent.planner.request", "legacy.message"):
-        logger.warning("[planner-react] Unsupported kind=%s", env.kind)
+        logger.warning(f"[planner-react] Unsupported kind={env.kind}")
         return
 
     try:
         # STRICT VALIDATION
         planner_req = PlannerRequest(**payload)
-        
+
         # EXECUTE
         resp = await run_react_loop(planner_req)
-        
+
         if resp.request_id is None:
             resp.request_id = planner_req.request_id or str(trace_id)
 
@@ -90,12 +97,12 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         await bus.publish(reply_channel, out_env)
 
         logger.info(
-            "[planner-react] Finished trace=%s status=%s steps=%d",
-            trace_id, resp.status, (resp.usage.steps if resp.usage else 0)
+            f"[planner-react] Finished trace={trace_id} status={resp.status} "
+            f"steps={(resp.usage.steps if resp.usage else 0)}"
         )
 
     except Exception as e:
-        logger.error("[planner-react] Error processing %s: %s", trace_id, e)
+        logger.error(f"[planner-react] Error processing {trace_id}: {e}")
         error_resp = PlannerResponse(
             request_id=str(trace_id),
             status="error",

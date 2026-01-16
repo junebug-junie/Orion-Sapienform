@@ -192,10 +192,8 @@ class ArbiterStage(Stage):
             judgement = BlinkJudgement(**data)
         except Exception as e:
             logger.error(
-                "[%s] ArbiterStage: JSON parse error, using fallback. error=%s raw=%r",
-                ctx.trace_id,
-                e,
-                raw[:400],
+                f"[{ctx.trace_id}] ArbiterStage: JSON parse error, using fallback. "
+                f"error={e} raw={raw[:400]!r}"
             )
             fallback_scores = BlinkScores()
             judgement = BlinkJudgement(
@@ -209,10 +207,8 @@ class ArbiterStage(Stage):
         ctx.last_judgement = judgement
 
         logger.info(
-            "[%s] ArbiterStage: overall=%.3f risk=%.3f",
-            ctx.trace_id,
-            judgement.scores.overall,
-            judgement.scores.risk,
+            f"[{ctx.trace_id}] ArbiterStage: overall={judgement.scores.overall:.3f} "
+            f"risk={judgement.scores.risk:.3f}"
         )
 
 
@@ -263,10 +259,8 @@ class AuditorStage(Stage):
             verdict = AuditVerdict(**json.loads(candidate))
         except Exception as e:
             logger.error(
-                "[%s] AuditorStage: JSON parse error, defaulting to accept. error=%s raw=%r",
-                ctx.trace_id,
-                e,
-                raw[:400],
+                f"[{ctx.trace_id}] AuditorStage: JSON parse error, defaulting to accept. "
+                f"error={e} raw={raw[:400]!r}"
             )
             verdict = AuditVerdict(
                 action="accept",
@@ -278,8 +272,5 @@ class AuditorStage(Stage):
         ctx.verdict = verdict
 
         logger.info(
-            "[%s] AuditorStage: action=%s reason=%s",
-            ctx.trace_id,
-            verdict.action,
-            verdict.reason,
+            f"[{ctx.trace_id}] AuditorStage: action={verdict.action} reason={verdict.reason}"
         )

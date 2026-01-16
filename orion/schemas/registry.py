@@ -10,13 +10,17 @@ from orion.core.bus.bus_schemas import (
     RecallRequestPayload,
     RecallResultPayload,
 )
-from orion.core.contracts.recall import RecallDecisionV1
+from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1, RecallQueryV1
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult, CortexChatRequest, CortexChatResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1
-from orion.schemas.vector.schemas import VectorWriteRequest
+from orion.schemas.vector.schemas import (
+    EmbeddingGenerateV1,
+    EmbeddingResultV1,
+    VectorWriteRequest,
+)
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.schemas.telemetry.biometrics import BiometricsPayload
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
@@ -47,7 +51,12 @@ from orion.schemas.vision import (
     VisionWindowRequestPayload,
     VisionWindowResultPayload,
 )
-
+from orion.schemas.tts import (
+    TTSRequestPayload,
+    TTSResultPayload,
+    STTRequestPayload,
+    STTResultPayload,
+)
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -61,6 +70,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallRequestPayload": RecallRequestPayload,
     "RecallResultPayload": RecallResultPayload,
     "RecallDecisionV1": RecallDecisionV1,
+    "RecallReplyV1": RecallReplyV1,
+    "RecallQueryV1": RecallQueryV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,
@@ -96,6 +107,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistoryMessageV1": ChatHistoryMessageV1,
     "ChatHistoryTurnV1": ChatHistoryTurnV1,
     "VectorWriteRequest": VectorWriteRequest,
+    "EmbeddingGenerateV1": EmbeddingGenerateV1,
+    "EmbeddingResultV1": EmbeddingResultV1,
     "ConceptProfile": ConceptProfile,
     "ConceptProfileDelta": ConceptProfileDelta,
     "BiometricsPayload": BiometricsPayload,
@@ -107,6 +120,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetaTagsResultV1": MetaTagsResultV1,
     "StateGetLatestRequest": StateGetLatestRequest,
     "StateLatestReply": StateLatestReply,
+    "TTSRequestPayload": TTSRequestPayload,
+    "TTSResultPayload": TTSResultPayload,
+    "STTRequestPayload": STTRequestPayload,
+    "STTResultPayload": STTResultPayload,
+
 }
 
 

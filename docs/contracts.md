@@ -78,7 +78,7 @@ This registry maps logical flows to specific channels, message kinds, and payloa
   * `PAD_OUTPUT_FRAME_CHANNEL` → `orion.pad.frame.v1` (`StateFrameV1`)
   * `PAD_OUTPUT_SIGNAL_CHANNEL` → `orion.pad.signal.v1` (pulse-level signals)
   * `PAD_OUTPUT_STATS_CHANNEL` → `orion.pad.stats.v1` (ingest/window stats)
-* **RPC:** `PAD_RPC_REQUEST_CHANNEL` uses `orion.pad.rpc.request.v1` / `orion.pad.rpc.response.v1`.
+* **RPC:** `PAD_RPC_REQUEST_CHANNEL` uses `PadRpcRequestV1` / `PadRpcResponseV1`.
 
 ### Equilibrium + Spark Signalization
 

@@ -1,6 +1,7 @@
 # services/orion-cortex-exec/app/clients.py
 from __future__ import annotations
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from pydantic import ValidationError
@@ -64,12 +65,34 @@ class LLMGatewayClient:
             reply_to,
             rpc_timeout,
         )
-
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=rpc_timeout  # <--- PASSED HERE
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_to,
-            timeout_sec=rpc_timeout  # <--- PASSED HERE
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
 
         decoded = self.bus.codec.decode(msg.get("data"))
@@ -94,6 +117,7 @@ class RecallClient:
         reply_to: str,
         timeout_sec: float,
     ) -> RecallReplyV1:
+
         env = BaseEnvelope(
             kind="recall.query.v1",
             source=source,
@@ -101,6 +125,7 @@ class RecallClient:
             reply_to=reply_to,
             payload=req.model_dump(mode="json"),
         )
+
         logger.info(
             "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
             self.channel,
@@ -109,14 +134,51 @@ class RecallClient:
             reply_to,
             timeout_sec,
         )
-        msg = await self.bus.rpc_request(
-            self.channel, env, reply_channel=reply_to, timeout_sec=timeout_sec
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=timeout_sec,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
+
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
-            raise RuntimeError(f"Decode failed: {decoded.error}")
-        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
-        return RecallReplyV1.model_validate(payload)
+            raise RuntimeError(f"RecallService decode failed: {decoded.error}")
+
+        # Note: If the service returns a standard payload, validation typically happens here.
+        # Assuming RecallReplyV1 aligns with the response or needs similar adaptation.
+        payload_data = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        if payload_data.get("error"):
+            details = payload_data.get("details")
+            detail_suffix = f" ({details})" if details else ""
+            raise RuntimeError(f"RecallService error: {payload_data['error']}{detail_suffix}")
+        try:
+            return RecallReplyV1.model_validate(payload_data)
+        except ValidationError as exc:
+            raise RuntimeError(f"RecallService payload validation failed: {exc}") from exc
 
 
 class PlannerReactClient:
@@ -151,11 +213,34 @@ class PlannerReactClient:
             reply_to,
             rpc_timeout,
         )
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=rpc_timeout,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_to,
-            timeout_sec=rpc_timeout,
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
@@ -196,11 +281,34 @@ class AgentChainClient:
             reply_to,
             rpc_timeout,
         )
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=rpc_timeout,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_to,
-            timeout_sec=rpc_timeout,
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
         )
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
@@ -242,11 +350,34 @@ class CouncilClient:
             reply_channel,
             rpc_timeout,
         )
-        msg = await self.bus.rpc_request(
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_channel,
+                timeout_sec=rpc_timeout,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_channel,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
             self.channel,
-            env,
-            reply_channel=reply_channel,
-            timeout_sec=rpc_timeout,
+            env.kind,
+            correlation_id,
+            reply_channel,
+            elapsed,
         )
 
         decoded = self.bus.codec.decode(msg.get("data"))

@@ -136,12 +136,11 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         str(cfg.n_parallel),
         "--batch-size",
         str(cfg.batch_size),
-        "--embedding", # As per memory
     ]
 
     return cmd, env
 
-# [NEW] Heartbeat Coroutine
+# Heartbeat Coroutine
 async def heartbeat_loop(settings):
     # Initialize a local bus just for this script
     bus = OrionBusAsync(url=settings.orion_bus_url, enabled=True)
@@ -172,7 +171,7 @@ async def heartbeat_loop(settings):
     finally:
         await bus.close()
 
-# [MODIFIED] Main Entrypoint
+#  Main Entrypoint
 async def _main_async():
     logging.basicConfig(
         level=logging.INFO,

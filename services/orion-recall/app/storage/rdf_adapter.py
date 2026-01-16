@@ -1,9 +1,59 @@
 from __future__ import annotations
 
-import requests
+import re
 from typing import Dict, List
 
+import requests
+
 from app.settings import settings
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_]{3,}")
+
+
+def _extract_keywords(query_text: str, *, max_keywords: int = 6) -> List[str]:
+    tokens = _TOKEN_RE.findall(query_text.lower())
+    seen = set()
+    keywords: List[str] = []
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        keywords.append(token)
+        if len(keywords) >= max_keywords:
+            break
+    return keywords
+
+
+def _escape_sparql(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_sparql_query(keywords: List[str], *, max_nodes: int, max_results: int) -> str:
+    filters = " || ".join(
+        f'CONTAINS(LCASE(STR(?node)), "{_escape_sparql(keyword)}") || '
+        f'CONTAINS(LCASE(STR(?o)), "{_escape_sparql(keyword)}")'
+        for keyword in keywords
+    )
+    return f"""
+    SELECT ?node ?p ?neighbor
+    WHERE {{
+      {{
+        SELECT DISTINCT ?node
+        WHERE {{
+          ?node ?p0 ?o .
+          FILTER({filters})
+        }}
+        LIMIT {max_nodes}
+      }}
+      {{
+        ?node ?p ?neighbor .
+      }} UNION {{
+        ?neighbor ?p ?node .
+      }}
+    }}
+    LIMIT {max_results}
+    """
 
 
 def fetch_rdf_fragments(
@@ -22,18 +72,17 @@ def fetch_rdf_fragments(
     if not endpoint:
         return []
 
-    q = query_text.strip().lower().replace('"', '\\"')[:80]
+    q = query_text.strip()
     if not q:
         return []
 
-    sparql = f"""
-    SELECT ?s ?p ?o
-    WHERE {{
-      ?s ?p ?o .
-      FILTER(CONTAINS(LCASE(STR(?o)), "{q}"))
-    }}
-    LIMIT {max_items}
-    """
+    keywords = _extract_keywords(q)
+    if not keywords:
+        keywords = [q[:80].lower()]
+
+    max_nodes = max(1, min(max_items, 8))
+    max_results = max_items * 4
+    sparql = _build_sparql_query(keywords, max_nodes=max_nodes, max_results=max_results)
 
     try:
         resp = requests.post(
@@ -60,15 +109,16 @@ def fetch_rdf_fragments(
     bindings = data.get("results", {}).get("bindings", [])
     by_subject: Dict[str, List[str]] = {}
     for b in bindings:
-        s = b.get("s", {}).get("value")
-        o = b.get("o", {}).get("value")
-        if not s or not o:
+        node = b.get("node", {}).get("value")
+        predicate = b.get("p", {}).get("value")
+        neighbor = b.get("neighbor", {}).get("value")
+        if not node or not predicate or not neighbor:
             continue
-        by_subject.setdefault(s, []).append(str(o))
+        by_subject.setdefault(node, []).append(f"{predicate} {neighbor}")
 
     frags: List[Dict[str, str]] = []
     for s, texts in by_subject.items():
-        text = " ".join(texts)[:1500]
+        text = " | ".join(texts)[:1500]
         frags.append(
             {
                 "id": s,

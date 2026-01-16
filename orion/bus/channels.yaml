@@ -142,15 +142,15 @@ channels:
 
   - name: "orion:exec:request:RecallService"
     kind: "request"
-    schema_id: "RecallRequestPayload"
+    schema_id: "RecallQueryV1"
     producer_services: ["orion-cortex-exec", "orion-hub"]
     consumer_services: ["orion-recall"]
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:exec:result:RecallService"
+  - name: "orion:exec:result:RecallService:*"
     kind: "result"
-    schema_id: "RecallResultPayload"
+    schema_id: "RecallReplyV1"
     producer_services: ["orion-recall"]
     consumer_services: ["orion-cortex-exec", "orion-hub"]
     stability: "experimental"
@@ -416,7 +416,7 @@ channels:
     kind: "telemetry"
     schema_id: "MetacognitionTickV1"
     producer_services: ["orion-equilibrium-service"]
-    consumer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -424,7 +424,7 @@ channels:
     kind: "event"
     schema_id: "MetacogTriggerV1"
     producer_services: ["orion-equilibrium-service"]
-    consumer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-cortex-orch", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -605,6 +605,22 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:embedding:generate"
+    kind: "request"
+    schema_id: "EmbeddingGenerateV1"
+    producer_services: ["orion-vector-writer", "orion-hub", "orion-cortex-exec", "*"]
+    consumer_services: ["orion-llm-gateway"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:embedding:result:*"
+    kind: "result"
+    schema_id: "EmbeddingResultV1"
+    producer_services: ["orion-llm-gateway"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-10"
+
   - name: "orion:state:request"
     kind: "request"
     schema_id: "StateGetLatestRequest"
@@ -660,3 +676,31 @@ channels:
     consumer_services: ["orion-spark-introspector"]
     stability: "experimental"
     since: "2026-01-10"
+
+  - name: "orion:tts:intake"
+    kind: "request"
+    schema_id: "TTSRequestPayload"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-whisper-tts"]
+    stability: "experimental"
+    since: "2026-01-14"
+
+  - name: "orion:tts:result:*"
+    kind: "result"
+    schema_id: "TTSResultPayload"
+    producer_services: ["orion-whisper-tts"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-01-14"
+
+  - name: "orion:stt:intake"
+    kind: "request"
+    schema_id: "STTRequestPayload"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-whisper-tts"]
+
+  - name: "orion:stt:result:*"
+    kind: "result"
+    schema_id: "STTResultPayload"
+    producer_services: ["orion-whisper-tts"]
+    consumer_services: ["orion-hub"]

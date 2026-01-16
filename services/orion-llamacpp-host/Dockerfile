@@ -17,6 +17,7 @@ RUN pip3 install --no-cache-dir -r /app/requirements.txt
 # Copy wrapper code
 COPY services/orion-llamacpp-host/app /app/app
 COPY config /app/config
+COPY orion /app/orion
 
 # Run wrapper (which downloads + launches llama-server)
 ENTRYPOINT ["python3", "-m", "app.main"]

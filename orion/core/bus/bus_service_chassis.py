@@ -208,8 +208,15 @@ class Rabbit(BaseChassis):
                 if data is None:
                     continue
 
+                channel = msg.get("channel")
+                if hasattr(channel, "decode"):
+                    channel = channel.decode("utf-8")
+
                 decoded = self.bus.codec.decode(data)
                 if not decoded.ok or decoded.envelope is None:
+                    logger.warning(
+                        f"Rabbit decode failed channel={channel} error={decoded.error}"
+                    )
                     await self._publish_error(
                         RuntimeError(decoded.error or "decode_failed"),
                         when="rabbit.decode",
@@ -218,8 +225,12 @@ class Rabbit(BaseChassis):
                     continue
 
                 env = decoded.envelope
+                trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
                 # [FIX] LOG RECEIPT TO PROVE WE HIT CORTEX
-                logger.info(f"Rabbit request received: kind={env.kind} source={env.source}")
+                logger.info(
+                    f"Rabbit request received channel={channel} kind={env.kind} "
+                    f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+                )
                 try:
                     out = await self.handler(env)
                     if out is not None and env.reply_to:
@@ -271,8 +282,15 @@ class Hunter(BaseChassis):
                 if data is None:
                     continue
 
+                channel = msg.get("channel")
+                if hasattr(channel, "decode"):
+                    channel = channel.decode("utf-8")
+
                 decoded = self.bus.codec.decode(data)
                 if not decoded.ok or decoded.envelope is None:
+                    logger.warning(
+                        f"Hunter decode failed channel={channel} error={decoded.error}"
+                    )
                     await self._publish_error(
                         RuntimeError(decoded.error or "decode_failed"),
                         when="hunter.decode",
@@ -281,6 +299,11 @@ class Hunter(BaseChassis):
                     continue
 
                 env = decoded.envelope
+                trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+                logger.info(
+                    f"Hunter intake channel={channel} kind={env.kind} "
+                    f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+                )
                 try:
                     await self.handler(env)
                 except Exception as e:

@@ -1,9 +1,12 @@
+# orion/schemas/collapse_mirror.py
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 import os
-from typing import Any, Dict, List, Optional, Union
+import re
+import unicodedata
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Sequence, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -23,9 +26,115 @@ V1_REQUIRED_KEYS = {
     "environment",
 }
 
+V2_MIN_REQUIRED_KEYS = {
+    "observer",
+    "trigger",
+    "type",
+    "emergent_entity",
+    "summary",
+    "mantra",
+}
+
+# Entry type → change_type (different ontology; do NOT default change_type=type)
+DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE: dict[str, str] = {
+    "idle": "deadband",
+    "flow": "stabilizing",
+    "turbulence": "escalating",
+    "glitch": "anomaly_detected",
+    "epiphany": "reorientation",
+}
+
+
+def _normalize_token(token: str) -> str:
+    cleaned = " ".join(token.strip().split())
+    cleaned = cleaned.replace("_ ", "_").replace(" _", "_")
+    return cleaned
+
+
+def _parse_string_set_like(value: str) -> List[str]:
+    if not value:
+        return []
+
+    raw = value.strip()
+
+    if raw.startswith("["):
+        try:
+            loaded = json.loads(raw)
+            if isinstance(loaded, list):
+                return [_normalize_token(str(item)) for item in loaded if str(item).strip()]
+        except Exception:
+            pass
+
+    if raw.startswith("{") and raw.endswith("}"):
+        raw = raw[1:-1]
+
+    if "," in raw or "\n" in raw:
+        parts = re.split(r"[,\n]+", raw)
+    else:
+        parts = [raw]
+
+    normalized: List[str] = []
+    for part in parts:
+        cleaned = part.strip().strip('"').strip("'")
+        if cleaned:
+            normalized.append(_normalize_token(cleaned))
+
+    return normalized
+
+
+def _normalize_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+
+    items: List[str] = []
+
+    if isinstance(value, str):
+        items = _parse_string_set_like(value)
+    elif isinstance(value, Sequence):
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                items.extend(_parse_string_set_like(item))
+            else:
+                items.append(_normalize_token(str(item)))
+    else:
+        items = [_normalize_token(str(value))]
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+
+    return deduped
+
+
+def _is_v2_shape(data: Dict[str, Any]) -> bool:
+    return V2_MIN_REQUIRED_KEYS.issubset(data.keys())
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _strip_diacritics(s: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+
+
+def _observer_is_orion(observer: Any) -> bool:
+    if observer is None:
+        return False
+    try:
+        s = str(observer).strip().lower()
+    except Exception:
+        return False
+    s = _strip_diacritics(s)
+    return s == "orion"
 
 
 class CollapseMirrorEntryV1(BaseModel):
@@ -47,11 +156,7 @@ class CollapseMirrorEntryV1(BaseModel):
     @field_validator("observer_state", mode="before")
     @classmethod
     def _normalize_observer_state(cls, v: Any) -> List[str]:
-        if v is None:
-            return []
-        if isinstance(v, list):
-            return [str(x) for x in v if str(x)]
-        return [str(v)]
+        return _normalize_string_list(v)
 
 
 class CollapseMirrorConstraints(BaseModel):
@@ -78,6 +183,20 @@ class CollapseMirrorCausalDensity(BaseModel):
     label: str = "ambient"
     score: float = 0.0
     rationale: Optional[str] = None
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _normalize_label(cls, v: Any) -> str:
+        if v is None:
+            return "ambient"
+        return str(v)
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def _normalize_score(cls, v: Any) -> float:
+        if v is None:
+            return 0.0
+        return float(v)
 
 
 class CollapseMirrorWhatChanged(BaseModel):
@@ -109,13 +228,26 @@ class CollapseMirrorStateSnapshot(BaseModel):
     tags: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
 
+    @field_validator("observer_state", mode="before")
+    @classmethod
+    def _normalize_observer_state(cls, v: Any) -> List[str]:
+        return _normalize_string_list(v)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> List[str]:
+        return _normalize_string_list(v)
+
 
 class CollapseMirrorEntryV2(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     event_id: str = Field(default_factory=lambda: f"collapse_{uuid4().hex}")
     id: Optional[str] = None
-    timestamp: str = Field(default_factory=_utc_now_iso)
+
+    # Allow LLM to emit null; we fill system-side in _fill_defaults().
+    timestamp: Optional[str] = Field(default_factory=_utc_now_iso)
+
     environment: Optional[str] = None
 
     observer: str
@@ -154,11 +286,76 @@ class CollapseMirrorEntryV2(BaseModel):
     @field_validator("observer_state", mode="before")
     @classmethod
     def _normalize_observer_state(cls, v: Any) -> List[str]:
+        return _normalize_string_list(v)
+
+    @field_validator("state_snapshot", mode="before")
+    @classmethod
+    def _normalize_state_snapshot(cls, v: Any) -> Any:
         if v is None:
-            return []
-        if isinstance(v, list):
-            return [str(x) for x in v if str(x)]
-        return [str(v)]
+            return {}
+        if isinstance(v, CollapseMirrorStateSnapshot):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> List[str]:
+        return _normalize_string_list(v)
+
+    @field_validator("what_changed", mode="before")
+    @classmethod
+    def _normalize_what_changed(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, CollapseMirrorWhatChanged):
+            return v
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str) and v.strip():
+            return {"summary": v}
+        return None
+
+    @field_validator("numeric_sisters", mode="before")
+    @classmethod
+    def _normalize_numeric_sisters(cls, v: Any) -> Any:
+        if v is None:
+            return {}
+        if isinstance(v, CollapseMirrorNumericSisters):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
+
+    @field_validator("causal_density", mode="before")
+    @classmethod
+    def _normalize_causal_density(cls, v: Any) -> Any:
+        if v is None:
+            return {}
+        if isinstance(v, CollapseMirrorCausalDensity):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
+
+    @field_validator("change_type_scores", mode="before")
+    @classmethod
+    def _normalize_change_type_scores(cls, v: Any) -> Dict[str, float]:
+        if v is None or isinstance(v, list):
+            return {}
+        if isinstance(v, dict):
+            return {str(k): float(val) for k, val in v.items() if val is not None}
+        return {}
+
+    @field_validator("tag_scores", mode="before")
+    @classmethod
+    def _normalize_tag_scores(cls, v: Any) -> Dict[str, float]:
+        if v is None or isinstance(v, list):
+            return {}
+        if isinstance(v, dict):
+            return {str(k): float(val) for k, val in v.items() if val is not None}
+        return {}
 
     @model_validator(mode="before")
     @classmethod
@@ -176,39 +373,56 @@ class CollapseMirrorEntryV2(BaseModel):
         if isinstance(data, dict) and V1_REQUIRED_KEYS.issubset(data.keys()):
             # If the dict already looks like V2, keep it as-is.
             v2_markers = {"event_id", "snapshot_kind", "state_snapshot", "numeric_sisters", "causal_density"}
-            if any(k in data for k in v2_markers):
+            if _is_v2_shape(data) or any(k in data for k in v2_markers):
                 return data
             return v1_to_v2(CollapseMirrorEntryV1.model_validate(data)).model_dump(mode="json")
         return data
 
     @model_validator(mode="after")
     def _fill_defaults(self) -> "CollapseMirrorEntryV2":
+        # timestamp: allow null/empty, always fill system-side
         if not self.timestamp:
             self.timestamp = _utc_now_iso()
+
         if not self.environment:
             self.environment = os.getenv("CHRONICLE_ENVIRONMENT", "dev")
+
         if not self.snapshot_kind:
             self.snapshot_kind = "baseline"
+
         if not self.what_changed_summary:
             self.what_changed_summary = self.summary
-        if not self.change_type:
-            self.change_type = self.type
+
+        # change_type: map entry type → change_type if missing
+        if not self.change_type and self.type:
+            self.change_type = DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE.get(self.type, "context_shift")
+
+        # tags: allow idle to remain empty if model explicitly emitted []
         if not self.tags:
-            if self.type:
+            if self.type and self.type != "idle":
                 self.tags = [self.type]
+            else:
+                self.tags = []
+
         if not self.state_snapshot.observer_state:
             self.state_snapshot.observer_state = list(self.observer_state)
+
         if not self.state_snapshot.field_resonance:
             self.state_snapshot.field_resonance = self.field_resonance
+
+        # don't force tags into state_snapshot for idle (tags empty)
+        if not self.state_snapshot.tags and self.tags:
+            self.state_snapshot.tags = list(self.tags)
+
         if not self.event_id:
             self.event_id = f"collapse_{uuid4().hex}"
+
         if self.event_id and not self.id:
             self.id = self.event_id
         elif self.id and not self.event_id:
             self.event_id = self.id
-        # If both are present but different, current logic keeps them as is,
-        # but typically event_id is the authoritative one.
-        # However, to be safe, we can enforce id = event_id if event_id is present.
+
+        # If both are present but different, keep event_id authoritative.
         if self.event_id and self.id != self.event_id:
             self.id = self.event_id
 
@@ -222,10 +436,17 @@ class CollapseMirrorEntryV2(BaseModel):
     def _normalize_pattern_candidate(cls, v: Any) -> Optional[str]:
         if v is None:
             return None
+        # If we receive a rich object (dict/list), serialize to JSON so SQL VARCHAR won't crash.
+        if isinstance(v, (dict, list)):
+            return json.dumps(v)
+        return str(v)
 
-        # If we receive a rich object (dict), serialize it to JSON
-        # so we can store it in the SQL VARCHAR column without crashing.
-        if isinstance(v, dict):
+    @field_validator("resonance_signature", mode="before")
+    @classmethod
+    def _normalize_resonance_signature(cls, v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        if isinstance(v, (dict, list)):
             return json.dumps(v)
         return str(v)
 
@@ -239,7 +460,7 @@ def v1_to_v2(v1: CollapseMirrorEntryV1) -> CollapseMirrorEntryV2:
 
     return CollapseMirrorEntryV2(
         event_id=v1.id or f"collapse_{uuid4().hex}",
-        id=v1.id, # Pass explicit ID if present
+        id=v1.id,  # Pass explicit ID if present
         observer=v1.observer,
         trigger=v1.trigger,
         observer_state=observer_state_list,
@@ -258,8 +479,8 @@ def v1_to_v2(v1: CollapseMirrorEntryV1) -> CollapseMirrorEntryV2:
             observer_state=observer_state_list,
             field_resonance=v1.field_resonance,
         ),
-        change_type=v1.type,
-        tags=[v1.type] if v1.type else [],
+        change_type=DEFAULT_CHANGE_TYPE_BY_ENTRY_TYPE.get(v1.type, "context_shift") if v1.type else "context_shift",
+        tags=[v1.type] if v1.type and v1.type != "idle" else [],
         causal_density=CollapseMirrorCausalDensity(label="ambient", score=0.0),
         is_causally_dense=False,
         epistemic_status="observed",
@@ -273,7 +494,7 @@ def normalize_collapse_entry(payload: Any) -> CollapseMirrorEntryV2:
         return payload.with_defaults()
     if isinstance(payload, CollapseMirrorEntryV1):
         return v1_to_v2(payload).with_defaults()
-    if isinstance(payload, dict) and V1_REQUIRED_KEYS.issubset(payload.keys()):
+    if isinstance(payload, dict) and V1_REQUIRED_KEYS.issubset(payload.keys()) and not _is_v2_shape(payload):
         return v1_to_v2(CollapseMirrorEntryV1.model_validate(payload)).with_defaults()
     return CollapseMirrorEntryV2.model_validate(payload).with_defaults()
 
@@ -317,7 +538,6 @@ def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
                             return obj
                     except Exception:
                         pass
-
                     break
 
     return None
@@ -339,30 +559,63 @@ def _find_any_string(obj: Any):
         return
 
 
+def _is_collapse_shape(obj: Dict[str, Any]) -> bool:
+    return _is_v2_shape(obj) or V1_REQUIRED_KEYS.issubset(obj.keys())
+
+
 def find_collapse_entry(prior_step_results: Any) -> Optional[Dict[str, Any]]:
+    """
+    Best-effort extraction of a CollapseMirror entry from nested step results.
+
+    Preference: if multiple candidates exist, prefer observer=="orion" (diacritics-insensitive).
+    """
     if prior_step_results is None:
         return None
 
-    if isinstance(prior_step_results, dict) and V1_REQUIRED_KEYS.issubset(prior_step_results.keys()):
-        return prior_step_results
+    best: Optional[Dict[str, Any]] = None
+
+    def consider(obj: Dict[str, Any]) -> None:
+        nonlocal best
+        if not _is_collapse_shape(obj):
+            return
+        # If we already have an Orion-authored candidate, keep it.
+        if best is not None and _observer_is_orion(best.get("observer")):
+            return
+        # Prefer Orion-authored.
+        if _observer_is_orion(obj.get("observer")):
+            best = obj
+            return
+        # Otherwise keep as fallback if none yet.
+        if best is None:
+            best = obj
+
+    if isinstance(prior_step_results, dict) and _is_collapse_shape(prior_step_results):
+        consider(prior_step_results)
+        return best
 
     for s in _find_any_string(prior_step_results):
         obj = _extract_first_json_object(s)
-        if isinstance(obj, dict) and V1_REQUIRED_KEYS.issubset(obj.keys()):
-            return obj
+        if isinstance(obj, dict):
+            consider(obj)
+            if best is not None and _observer_is_orion(best.get("observer")):
+                return best
 
     if isinstance(prior_step_results, dict):
         for v in prior_step_results.values():
             found = find_collapse_entry(v)
-            if found:
-                return found
+            if isinstance(found, dict):
+                consider(found)
+                if best is not None and _observer_is_orion(best.get("observer")):
+                    return best
     elif isinstance(prior_step_results, list):
         for v in prior_step_results:
             found = find_collapse_entry(v)
-            if found:
-                return found
+            if isinstance(found, dict):
+                consider(found)
+                if best is not None and _observer_is_orion(best.get("observer")):
+                    return best
 
-    return None
+    return best
 
 
 CollapseMirrorEntry = CollapseMirrorEntryV2

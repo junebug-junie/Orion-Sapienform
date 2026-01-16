@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
+from uuid import UUID, uuid4
 
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
@@ -12,7 +13,6 @@ from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
-from orion.core.verbs.models import VerbRequestV1
 from orion.core.bus.codec import OrionCodec
 
 from .settings import settings
@@ -42,6 +42,22 @@ class EquilibriumService(BaseChassis):
         self._state: Dict[str, Dict[str, Any]] = {}
         self.expected_services = settings.expected_services()
         self._last_metacog_trigger_ts: float = 0.0
+
+    def _trace_meta(
+        self,
+        *,
+        trace_id: str,
+        event_id: str,
+        parent_event_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> Dict[str, Any]:
+        return {
+            "trace_id": trace_id,
+            "event_id": event_id,
+            "parent_event_id": parent_event_id,
+            "source_service": settings.service_name,
+            "created_at": (created_at or _utcnow()).isoformat(),
+        }
 
     async def _load_state(self) -> None:
         try:
@@ -262,15 +278,32 @@ class EquilibriumService(BaseChassis):
         # Populate correlation_id in payload for persistence
         tick.correlation_id = tick.tick_id
 
+        try:
+            tick_uuid = UUID(str(tick.tick_id))
+        except ValueError:
+            tick_uuid = uuid4()
+
+        trace_meta = self._trace_meta(
+            trace_id=str(tick_uuid),
+            event_id=str(tick_uuid),
+            created_at=now,
+        )
+
         env = BaseEnvelope(
             kind="metacognition.tick.v1",
             source=self._source(),
-            correlation_id=tick.tick_id,
+            correlation_id=tick_uuid,
+            id=tick_uuid,
+            trace=trace_meta,
             payload=tick.model_dump(mode="json"),
         )
 
-        await self.bus.publish("orion:metacognition:tick", env)
-        logger.info("Published metacognition tick tick_id=%s distress=%.3f", tick.tick_id, distress_score)
+        await self.bus.publish(settings.channel_metacognition_tick, env)
+        logger.info(
+            "Published metacognition tick "
+            f"tick_id={tick.tick_id} trace_id={trace_meta['trace_id']} "
+            f"distress={distress_score:.3f} channel={settings.channel_metacognition_tick}"
+        )
 
     async def _publish_metacog_trigger(self, trigger: MetacogTriggerV1) -> None:
         now_ts = datetime.now().timestamp()
@@ -283,43 +316,46 @@ class EquilibriumService(BaseChassis):
         self._last_metacog_trigger_ts = now_ts
 
         # 1. Publish Trigger Event (for observability)
+        trace_id = uuid4()
+        event_id = uuid4()
+        trace_meta = self._trace_meta(
+            trace_id=str(trace_id),
+            event_id=str(event_id),
+            created_at=_utcnow(),
+        )
         env = BaseEnvelope(
             kind="orion.metacog.trigger.v1",
             source=self._source(),
+            correlation_id=trace_id,
+            id=event_id,
+            trace=trace_meta,
             payload=trigger.model_dump(mode="json"),
         )
         try:
             await self.bus.publish(settings.channel_metacog_trigger, env)
+            logger.info(
+                "Published metacog trigger "
+                f"kind={trigger.trigger_kind} trace_id={trace_meta['trace_id']} "
+                f"channel={settings.channel_metacog_trigger}"
+            )
         except Exception as e:
-            logger.error("Failed to publish metacog trigger: %s", e)
+            logger.error(f"Failed to publish metacog trigger: {e}")
             return
 
-        # 2. Publish Verb Request (to execute)
-        verb_req = VerbRequestV1(
-            verb="log_orion_metacognition",
-            payload={
-                "trigger": trigger.model_dump(mode="json"),
-                "window_sec": trigger.window_sec,
-            },
-            meta={"priority": "high" if trigger.trigger_kind == "dense" else "normal"},
-        )
-        verb_env = BaseEnvelope(
-            kind="verb.request.v1",
-            source=self._source(),
-            payload=verb_req.model_dump(mode="json"),
-        )
-        try:
-            await self.bus.publish(settings.channel_cortex_orch_request, verb_env)
-            logger.info("Triggered metacognition routine: %s", trigger.trigger_kind)
-        except Exception as e:
-            logger.error("Failed to publish metacog verb request: %s", e)
+        if settings.metacog_publish_verb_request:
+            # Legacy path intentionally disabled; must route through cortex-orch.
+            logger.error(
+                "Metacog legacy verb request is disabled (bypasses cortex-orch). "
+                "Set EQUILIBRIUM_METACOG_PUBLISH_VERB_REQUEST=false and rely on "
+                f"orion:equilibrium:metacog:trigger routing. trace_id={trace_meta['trace_id']}"
+            )
 
     async def _publish_loop(self) -> None:
         while not self._stop.is_set():
             try:
                 await self._publish_snapshot()
             except Exception as e:
-                logger.error("Publish loop error: %s", e)
+                logger.error(f"Publish loop error: {e}")
             await asyncio.sleep(float(settings.publish_interval_sec))
 
     async def _collapse_loop(self) -> None:
@@ -328,7 +364,7 @@ class EquilibriumService(BaseChassis):
             try:
                 await self._publish_metacognition_tick()
             except Exception as e:
-                logger.warning("Metacognition tick loop error: %s", e)
+                logger.warning(f"Metacognition tick loop error: {e}")
             await asyncio.sleep(interval)
 
     async def _metacog_baseline_loop(self) -> None:
@@ -345,10 +381,11 @@ class EquilibriumService(BaseChassis):
                     reason="scheduled_check",
                     zen_state="zen" if zen > 0.5 else "not_zen",
                     pressure=distress,
+                    recall_enabled=settings.metacog_recall_enabled,
                 )
                 await self._publish_metacog_trigger(trigger)
             except Exception as e:
-                logger.error("Metacog baseline loop error: %s", e)
+                logger.error(f"Metacog baseline loop error: {e}")
 
     async def _run(self) -> None:
         await self._load_state()
@@ -374,6 +411,7 @@ class EquilibriumService(BaseChassis):
 
                 decoded = self.codec.decode(msg.get("data"))
                 if not decoded.ok:
+                    logger.warning(f"Equilibrium decode failed channel={channel} error={decoded.error}")
                     continue
                 env = decoded.envelope
                 payload_dict = env.payload if isinstance(env.payload, dict) else {}
@@ -403,7 +441,8 @@ class EquilibriumService(BaseChassis):
                                     zen_state="zen" if zen > 0.5 else "not_zen",
                                     pressure=distress,
                                     signal_refs=[str(env.correlation_id or "unknown")],
-                                    upstream=payload_dict
+                                    upstream=payload_dict,
+                                    recall_enabled=settings.metacog_recall_enabled,
                                 )
                                 await self._publish_metacog_trigger(trigger)
 
@@ -421,7 +460,8 @@ class EquilibriumService(BaseChassis):
                                 reason="user_collapse_event",
                                 zen_state="zen" if zen > 0.5 else "not_zen",
                                 pressure=distress,
-                                upstream={"event_id": payload_dict.get("event_id")}
+                                upstream={"event_id": payload_dict.get("event_id")},
+                                recall_enabled=settings.metacog_recall_enabled,
                             )
                             await self._publish_metacog_trigger(trigger)
 

@@ -42,7 +42,6 @@ class Settings(BaseSettings):
             "orion:cognition:trace",
             "orion:metacognition:tick",
             "orion:equilibrium:metacog:trigger"
-            #"orion:metacognition:enriched"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -64,7 +63,6 @@ class Settings(BaseSettings):
             "spark.telemetry": "SparkTelemetrySQL",
             "cognition.trace": "CognitionTraceSQL",
             "metacognition.tick.v1":"MetacognitionTickSQL",
-            #"metacognition.enriched.v1":"MetacognitionEnrichedSQL",
             "orion.metacog.trigger.v1": "MetacogTriggerSQL"
 
         }),

@@ -351,7 +351,9 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
 
     await _pub_bus.publish(settings.channel_spark_telemetry, out_env)
     _CANDIDATE_TELEM_EMITTED[trace_id] = now
-    logger.info("Emitted candidate-derived spark.telemetry trace_id=%s phi=%s novelty=%s", trace_id, phi, novelty)
+    logger.info(
+        f"Emitted candidate-derived spark.telemetry trace_id={trace_id} phi={phi} novelty={novelty}"
+    )
 
 
 async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
@@ -625,7 +627,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
             }
             await manager.broadcast(ws_payload)
         except Exception as e:
-            logger.warning("Failed to broadcast tissue update: %s", e)
+            logger.warning(f"Failed to broadcast tissue update: {e}")
 
         if _pub_bus and _pub_bus.enabled:
             out_env = SparkTelemetryEnvelope(
@@ -645,17 +647,15 @@ async def handle_trace(env: BaseEnvelope) -> None:
             await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
 
             logger.info(
-                "Emitted Spark telemetry + snapshot corr_id=%s coherence=%0.3f novelty=%0.3f seq=%s",
-                corr_id,
-                telem.phi or 0.0,
-                telem.novelty or 0.0,
-                seq,
+                "Emitted Spark telemetry + snapshot "
+                f"corr_id={corr_id} coherence={(telem.phi or 0.0):0.3f} "
+                f"novelty={(telem.novelty or 0.0):0.3f} seq={seq}"
             )
         else:
             logger.error("Publisher bus not connected; skipping telemetry emit")
 
     except Exception as e:
-        logger.error("Error processing trace for tissue: %s", e, exc_info=True)
+        logger.error(f"Error processing trace for tissue: {e}", exc_info=True)
 
 
 async def handle_candidate(env: BaseEnvelope) -> None:

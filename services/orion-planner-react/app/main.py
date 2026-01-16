@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 import logging
 from contextlib import asynccontextmanager
+import uuid
 
 from fastapi import FastAPI
 
@@ -17,6 +20,9 @@ from .api import router as planner_router
 from .bus_listener import start_planner_bus_listener_background
 
 logger = logging.getLogger("planner-react.main")
+
+
+BOOT_ID = str(uuid.uuid4())
 
 async def heartbeat_loop(settings):
     """Publishes a heartbeat every 30 seconds."""
@@ -33,6 +39,8 @@ async def heartbeat_loop(settings):
                     payload = SystemHealthV1(
                         service=settings.service_name,
                         version=settings.service_version,
+                        boot_id=BOOT_ID,
+                        last_seen_ts=datetime.now(timezone.utc),
                         node="planner-react-node",
                         status="ok"
                     ).model_dump(mode="json")

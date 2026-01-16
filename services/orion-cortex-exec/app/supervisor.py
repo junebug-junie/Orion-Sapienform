@@ -304,7 +304,7 @@ class Supervisor:
         recall_debug: Dict[str, Any] = {}
 
         # Recall
-        raw_enabled = recall_cfg.get("enabled", True)
+        raw_enabled = recall_cfg.get("enabled", False)
         recall_enabled = str(raw_enabled).lower() not in {"false", "0", "no", "off"} if isinstance(raw_enabled, str) else bool(raw_enabled)
         if recall_enabled:
             recall_step, recall_debug, _ = await run_recall_step(

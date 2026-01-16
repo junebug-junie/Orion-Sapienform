@@ -36,8 +36,8 @@ services:
       - TTS_USE_GPU=${TTS_USE_GPU:-true}
 
       # GPU visibility
-      - CUDA_VISIBLE_DEVICES=${GPU_INDEX}
-      - NVIDIA_VISIBLE_DEVICES=${GPU_INDEX}
+      #- CUDA_VISIBLE_DEVICES=${GPU_INDEX}
+      #- NVIDIA_VISIBLE_DEVICES=${GPU_INDEX}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
     volumes:
@@ -50,7 +50,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: all
               capabilities: [gpu]
 
     ports:

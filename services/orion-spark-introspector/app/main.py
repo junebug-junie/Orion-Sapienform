@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
         patterns=patterns,
         handler=multiplexer,
     )
-    logger.info("Starting Spark Introspector Hunter patterns=%s", patterns)
+    logger.info(f"Starting Spark Introspector Hunter patterns={patterns}")
 
     # Run Hunter in background
     hunter_task = asyncio.create_task(svc.start())

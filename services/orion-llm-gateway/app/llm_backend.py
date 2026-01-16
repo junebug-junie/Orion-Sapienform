@@ -8,7 +8,7 @@ import httpx
 
 from orion.core.bus.async_service import OrionBusAsync
 
-from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload, EmbeddingsBody
+from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 
@@ -168,24 +168,6 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
     return backend
 
 
-def _resolve_embedding_backend(backend: str) -> str:
-    # 1. If the requested backend natively supports embeddings, use it.
-    if backend in ("vllm", "llama-cola"):
-        return backend
-
-    # 2. Fallback: The backend (e.g. llamacpp) doesn't support embeddings.
-    # We must find a surrogate.
-
-    # Check if llama-cola is configured. If so, use it as the preferred fallback.
-    if settings.llama_cola_url or settings.llama_cola_embedding_url:
-        logger.warning(f"[LLM-GW] Backend '{backend}' does not support embeddings; falling back to llama-cola")
-        return "llama-cola"
-
-    # 3. Default fallback to vllm
-    logger.warning(f"[LLM-GW] Backend '{backend}' does not support embeddings; falling back to vllm")
-    return "vllm"
-
-
 def _resolve_model(body_model: str | None, profile: LLMProfile | None) -> str:
     if body_model:
         return body_model
@@ -334,14 +316,7 @@ def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
         )
 
         tags = ["juniper", "chat", source, f"verb:{verb}", "phase:pre", *(_derive_mode_tags(verb, latest_user))]
-        spark_vector: Optional[List[float]] = None
-        if settings.include_embeddings:
-            try:
-                spark_vector = _fetch_embedding_internal(str(latest_user))
-            except Exception as embed_err:
-                logger.warning(f"[LLM-GW Spark] Pre-ingest embedding failed: {embed_err}")
-
-        state = _spark_ingest_text(text=str(latest_user), agent_id=source, tags=tags, spark_vector=spark_vector)
+        state = _spark_ingest_text(text=str(latest_user), agent_id=source, tags=tags, spark_vector=None)
 
         meta = build_collapse_mirror_meta(
             state["phi_after"],
@@ -460,14 +435,7 @@ def _spark_post_ingest_for_reply(body: ChatBody, spark_meta: Dict[str, Any], res
         )
 
         tags = ["juniper", "chat", source, f"verb:{verb}", "assistant_reply", "phase:post", *(_derive_mode_tags(verb, response_text))]
-        spark_vector: Optional[List[float]] = None
-        if settings.include_embeddings:
-            try:
-                spark_vector = _fetch_embedding_internal(str(response_text))
-            except Exception as embed_err:
-                logger.warning(f"[LLM-GW Spark] Post-ingest embedding failed: {embed_err}")
-
-        post_state = _spark_ingest_text(text=str(response_text), agent_id=source, tags=tags, spark_vector=spark_vector)
+        post_state = _spark_ingest_text(text=str(response_text), agent_id=source, tags=tags, spark_vector=None)
 
         # Bound what we store; keep full text out of telemetry by default.
         spark_meta["latest_assistant_message"] = str(response_text)[:2000]
@@ -482,39 +450,6 @@ def _spark_post_ingest_for_reply(body: ChatBody, spark_meta: Dict[str, Any], res
 # 4. Core HTTP Execution (Unified)
 # ─────────────────────────────────────────────
 
-def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
-    """
-    Internal helper to fetch embeddings for generated text.
-    Uses llamacpp embedding lobe by default if configured, otherwise falls back to vLLM.
-    """
-    # Prefer dedicated embedding lobe
-    url = None
-    if settings.llama_cola_embedding_url:
-        url = f"{settings.llama_cola_embedding_url.rstrip('/')}/v1/embeddings"
-    elif settings.vllm_url:
-        url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
-    elif settings.ollama_url:
-        url = f"{settings.ollama_url.rstrip('/')}/api/embeddings"
-
-    if not url:
-        return None
-
-    try:
-        # Use a generic model name or specific if known.
-        # For llama-server embeddings, model name is often ignored or can be anything.
-        payload = {"model": "default", "input": text}
-
-        with _common_http_client() as client:
-            r = client.post(url, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            # Standard OpenAI format: data: [{embedding: [...]}]
-            if "data" in data and len(data["data"]) > 0:
-                return data["data"][0]["embedding"]
-    except Exception as e:
-        logger.warning(f"[LLM-GW] Embedding fetch failed: {e}")
-
-    return None
 
 
 def _extract_text_from_ollama_response(data: Dict[str, Any]) -> str:
@@ -610,26 +545,6 @@ def _execute_ollama_chat(body: ChatBody, model: str, base_url: str) -> Dict[str,
         }
 
 
-def _execute_openai_embeddings(
-    body: EmbeddingsBody,
-    model: str,
-    base_url: Optional[str],
-    backend_name: str,
-) -> Dict[str, Any]:
-    if not base_url:
-        raise RuntimeError(f"No embedding URL configured for {backend_name}")
-
-    url = f"{base_url.rstrip('/')}/v1/embeddings"
-    payload = {"model": model, "input": body.input}
-    if body.options:
-        payload.update({k: v for k, v in body.options.items() if k != "backend"})
-
-    with _common_http_client() as client:
-        r = client.post(url, json=payload)
-        r.raise_for_status()
-        return r.json()
-
-
 def _execute_openai_chat(
     body: ChatBody,
     model: str,
@@ -694,12 +609,6 @@ def _execute_openai_chat(
             # Post-processing: embed/state vector (if present)
             spark_vector = _extract_vector_from_openai_response(raw_data)
 
-            # Case B: Standard Host (Reflective)
-            # If the backend didn't include a vector, optionally do a secondary
-            # embedding call (useful for a *separate* "embeds-on" gateway instance).
-            if backend_name != "llama-cola" and settings.include_embeddings and (not spark_vector) and text:
-                spark_vector = _fetch_embedding_internal(text)
-
             # Post-processing: Spark Introspect
             _maybe_publish_spark_introspect(body, spark_meta, text)
 
@@ -743,8 +652,16 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     elif backend == "ollama":
         base_url = settings.ollama_url
         if settings.ollama_use_openai_compat:
-            return _execute_openai_chat(body, model, base_url, "ollama")
-        return _execute_ollama_chat(body, model, base_url)
+            result = _execute_openai_chat(body, model, base_url, "ollama")
+            if isinstance(result, dict):
+                result["backend"] = backend
+                result["model"] = model
+            return result
+        result = _execute_ollama_chat(body, model, base_url)
+        if isinstance(result, dict):
+            result["backend"] = backend
+            result["model"] = model
+        return result
 
     elif backend == "llama-cola":
         base_url = settings.llama_cola_url
@@ -752,7 +669,11 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     else:
         base_url = settings.llamacpp_url
 
-    return _execute_openai_chat(body, model, base_url, backend)
+    result = _execute_openai_chat(body, model, base_url, backend)
+    if isinstance(result, dict):
+        result["backend"] = backend
+        result["model"] = model
+    return result
 
 
 def run_llm_generate(body: GenerateBody) -> str:
@@ -771,24 +692,6 @@ def run_llm_generate(body: GenerateBody) -> str:
     )
     result = run_llm_chat(chat_body)
     return result.get("text") or ""
-
-
-def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
-
-    if not settings.include_embeddings:
-        raise RuntimeError("Embeddings are disabled on this gateway instance")
-
-    profile = _select_profile(body.profile_name)
-    backend = _pick_backend(body.options, profile)
-    embedding_backend = _resolve_embedding_backend(backend)
-    model = _resolve_model(body.model, profile)
-    if embedding_backend == "vllm":
-        model = _normalize_model_for_vllm(model)
-
-    if embedding_backend == "llama-cola":
-        return _execute_openai_embeddings(body, model, settings.llama_cola_embedding_url, "llama-cola")
-
-    return _execute_openai_embeddings(body, model, settings.vllm_url, "vllm")
 
 
 def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:

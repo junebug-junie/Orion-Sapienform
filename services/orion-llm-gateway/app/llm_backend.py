@@ -153,7 +153,7 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
 
     backend = (backend or settings.default_backend or "vllm").lower()
 
-    if backend not in ("vllm", "llamacpp"):
+    if backend not in ("vllm", "llamacpp", "llama-cpp"):
         logger.warning(f"[LLM-GW] Unknown backend '{backend}'; defaulting to vllm")
         return "vllm"
     return backend
@@ -448,11 +448,8 @@ def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
     """
     # Prefer dedicated embedding lobe
     url = None
-    if settings.llamacpp_embedding_url:
-        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
-    elif settings.llamacpp_url:
-        # Fallback to standard host for embeddings if neural host not configured
-        url = f"{settings.llamacpp_url.rstrip('/')}/v1/embeddings"
+    if settings.llama_cola_embedding_url:
+        url = f"{settings.llama_cola_embedding_url.rstrip('/')}/v1/embedding
     elif settings.vllm_url:
         url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
 
@@ -586,6 +583,10 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     if backend == "vllm":
         model = _normalize_model_for_vllm(model)
         base_url = settings.vllm_url
+
+    elif backend == "llama-cola":
+        base_url = settings.llama_cola_url
+
     else:
         base_url = settings.llamacpp_url
 
@@ -613,13 +614,13 @@ def run_llm_generate(body: GenerateBody) -> str:
 def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
     # Embeddings logic is distinct enough to keep separate for now
     url = None
-    if settings.llamacpp_embedding_url:
+    if settings.llama_cola_embedding_url:
         url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
     elif settings.vllm_url:
         url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
 
     if not url:
-        raise RuntimeError("No embedding URL configured (vLLM or LlamaCpp Embedding Lobe)")
+        raise RuntimeError("No embedding URL configured (vLLM or Llama-Cola Embedding Lobe)")
 
     profile = _select_profile(body.profile_name)
     model = _resolve_model(body.model, profile)
@@ -667,12 +668,16 @@ def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
 
     if backend == "llamacpp":
         result = _execute_openai_chat(chat_body, model, settings.llamacpp_url, "llamacpp")
+
+    elif backend == "llama-cola":
+        result = _execute_openai_chat(chat_body, model, settings.llama_cola_url, "llama-cola")
+
     else:
         result = _execute_openai_chat(chat_body, model, settings.vllm_url, "vllm")
 
     elapsed_ms = int((time.time() - t0) * 1000)
 
-    # 4. Log (WITH FIXED ARGUMENTS)
+    # 4. Log
     logger.info(
         "[LLM-GW] exec_step verb=%s step=%s service=%s elapsed_ms=%d backend=%s model=%s",
         body.verb,

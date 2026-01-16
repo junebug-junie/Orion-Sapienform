@@ -3,7 +3,7 @@ from typing import Dict, Literal, Optional, List
 
 from pydantic import BaseModel, Field, ConfigDict
 
-BackendType = Literal["ollama", "vllm", "brain", "llamacpp"]
+BackendType = Literal["ollama", "vllm", "brain", "llamacpp", "llama-cola"]
 
 
 class GPUConfig(BaseModel):

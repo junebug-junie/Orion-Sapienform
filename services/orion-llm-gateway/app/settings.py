@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     llamacpp_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_URL")
 
     # Embedding endpoint (optional, defaults to llama.cpp chat host)
-    llamacpp_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_EMBEDDING_URL")
+    llama_cola_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_EMBEDDING_URL")
 
     # If false, the gateway will NOT attempt a secondary embedding call.
     # If true, and the backend response did not already include an embedding/vector,

@@ -168,6 +168,13 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
     return backend
 
 
+def _resolve_embedding_backend(backend: str) -> str:
+    if backend in ("vllm", "llama-cola"):
+        return backend
+    logger.warning("[LLM-GW] Embeddings not supported for backend=%s; falling back to vllm", backend)
+    return "vllm"
+
+
 def _resolve_model(body_model: str | None, profile: LLMProfile | None) -> str:
     if body_model:
         return body_model
@@ -758,18 +765,13 @@ def run_llm_generate(body: GenerateBody) -> str:
 def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
     profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
+    embedding_backend = _resolve_embedding_backend(backend)
     model = _resolve_model(body.model, profile)
-    if backend == "vllm":
+    if embedding_backend == "vllm":
         model = _normalize_model_for_vllm(model)
 
-    if backend == "ollama":
-        raise RuntimeError("Embeddings are not supported for backend=ollama")
-
-    if backend == "llama-cola":
+    if embedding_backend == "llama-cola":
         return _execute_openai_embeddings(body, model, settings.llama_cola_embedding_url, "llama-cola")
-
-    if backend == "llamacpp":
-        raise RuntimeError("Embeddings are not supported for backend=llamacpp")
 
     return _execute_openai_embeddings(body, model, settings.vllm_url, "vllm")
 

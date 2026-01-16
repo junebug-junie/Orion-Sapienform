@@ -497,25 +497,25 @@ async def call_step_services(
                     if not parsed:
                         parsed = _loose_json_extract(raw_content)
 
+                    # 3) Handle Result or Fallback
                     if not parsed:
                         logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
+                        # Use the fallback model directly
                         entry = _fallback_metacog_draft(ctx)
                     else:
+                        # We have a dictionary, ensure required fields exist before normalizing
                         parsed["observer"] = "orion"
                         parsed["visibility"] = "internal"
                         parsed["epistemic_status"] = "observed"
+
+                        # Convert dictionary to Pydantic model
                         entry = normalize_collapse_entry(parsed)
 
-                    parsed["observer"] = "orion"
-                    parsed["visibility"] = "internal"
-                    parsed["epistemic_status"] = "observed"
-
-                    entry = normalize_collapse_entry(parsed)
-
+                    # At this point, 'entry' is guaranteed to be a CollapseMirrorEntryV2 object
                     entry_dict = entry.model_dump(mode="json")
-                    ctx["collapse_entry"] = entry_dict
 
-                    # IMPORTANT: collapse_json should be the canonical JSON draft (not raw model text)
+                    # Update Context
+                    ctx["collapse_entry"] = entry_dict
                     ctx["collapse_json"] = json.dumps(entry_dict, ensure_ascii=False)
 
                     merged_result[service] = {"ok": True, "event_id": entry.event_id}
@@ -525,6 +525,7 @@ async def call_step_services(
                     logger.error(f"MetacogDraftService FAILED: {e}")
                     logs.append(f"error <- MetacogDraftService parsing: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
+
 
                 continue
 

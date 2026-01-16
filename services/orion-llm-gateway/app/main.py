@@ -99,7 +99,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         payload=ChatResultPayload(
             model_used=(result.get("raw") or {}).get("model") if isinstance(result, dict) else None,
             content=text or "",
-            usage=(result.get("raw") or {}).get("usage") if isinstance(result, dict) else {},
+            usage=(result.get("raw") or {}).get("usage", {}) if isinstance(result, dict) else {},
             raw=result,
             spark_meta=spark_meta,
             spark_vector=spark_vector,

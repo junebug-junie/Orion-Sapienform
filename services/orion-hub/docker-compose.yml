@@ -80,6 +80,11 @@ services:
       - TIMEOUT_SEC=${TIMEOUT_SEC}
       - NVIDIA_VISIBLE_DEVICES=all
 
+      # --- Hub Prompt Context (UI-side rolling history) ---
+      - HUB_CONTEXT_TURNS=${HUB_CONTEXT_TURNS}
+      - HUB_CONTEXT_MAX_CHARS=${HUB_CONTEXT_MAX_CHARS}
+
+
     runtime: nvidia
 
     # if running on athena:

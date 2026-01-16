@@ -121,6 +121,14 @@ class Settings(BaseSettings):
     TIMEOUT_SEC: int = Field(default=300, alias="TIMEOUT_SEC")
 
 
+    # --- Hub Prompt Context (UI-side rolling history) ---
+    # Number of *turns* (user+assistant pairs) to include as inline context
+    HUB_CONTEXT_TURNS: int = Field(default=12, alias="HUB_CONTEXT_TURNS")
+    # Hard cap to avoid runaway prompts when users paste long text
+    HUB_CONTEXT_MAX_CHARS: int = Field(default=12000, alias="HUB_CONTEXT_MAX_CHARS")
+
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()

@@ -22,6 +22,66 @@ from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPay
 
 logger = logging.getLogger("orion-hub.ws")
 
+
+#________________________
+# store chat turns
+#________________________
+
+
+def _build_prompt_with_history(
+    history: List[Dict[str, Any]],
+    user_text: str,
+    turns: int,
+    max_chars: int,
+) -> str:
+    """Build a single prompt string that includes the last N turns as plain text.
+
+    This is intentionally *Hub-side only* and does not require any schema changes.
+
+    Notes:
+      - "turns" means userassistant pairs; we keep up to 2*turns messages.
+      - We exclude system messages (the backend already has its own system prompt).
+    """
+    msgs = [m for m in history if m.get("role") in ("user", "assistant")]
+
+    # "turns" = userassistant pairs -> 2*turns messages
+    tail = msgs[-2 * max(0, int(turns)) :] if turns else []
+
+    lines: List[str] = []
+    for m in tail:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        speaker = "You" if role == "user" else "Orion"
+        # Avoid accidental mega-prompts if something goes sideways
+        if len(content) > 6000:
+            content = content[:6000].rstrip() + " …"
+
+        lines.append(f"{speaker}: {content}")
+
+    base_user = (user_text or "").strip()
+    if not lines:
+        return base_user
+
+    header = "Conversation context (most recent last):"
+
+    def _compose(ls: List[str]) -> str:
+        ctx = "\n".join(ls).strip()
+        return f"{header}\n{ctx}\n\nYou: {base_user}\nOrion:"
+
+    prompt = _compose(lines)
+
+    # Trim oldest context lines until we fit under max_chars
+    if max_chars and max_chars > 0:
+        while len(prompt) > max_chars and lines:
+            lines.pop(0)
+            prompt = _compose(lines)
+
+    return prompt
+
+
+
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
     try:
         while websocket.client_state.name == "CONNECTED":
@@ -54,7 +114,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket accepted.")
 
-    # PATCH: Soft warning if services missing, but keep connection alive
+    # Soft warning if services missing, but keep connection alive
     if not bus or not cortex_client:
         logger.warning("OrionBus/CortexClient not ready. Chat will be limited.")
         await websocket.send_json({
@@ -65,7 +125,7 @@ async def websocket_endpoint(websocket: WebSocket):
     history: List[Dict[str, Any]] = [
         {"role": "system", "content": mini_personality_summary()}
     ]
-    
+
     tts_q: asyncio.Queue = asyncio.Queue()
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q))
 
@@ -80,16 +140,16 @@ async def websocket_endpoint(websocket: WebSocket):
             mode = data.get("mode", "brain")
             disable_tts = data.get("disable_tts", False)
 
-            # --- FIX: Trace Verb & Test Stub Logic ---
+            # Trace Verb & Test Stub Logic ---
             # 1. Default to general chat
             trace_verb = "chat_general"
-            
+
             # 2. Map modes to verbs for the Visualizer
             if mode == "agent":
                 trace_verb = "task_execution"
             elif mode == "council":
                 trace_verb = "council_deliberation"
-            
+
             # 3. Force verb for Test/Stub Submissions
             if data.get("test_mode") or data.get("submission_id"):
                 trace_verb = "test_submission"
@@ -132,9 +192,25 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
             trace_id = str(uuid.uuid4())
 
+            # ----------------------------
+            # Hub-side short-term memory
+            # ----------------------------
+            # N = userassistant pairs; helper keeps up to 2*N messages.
+            turns = int(data.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+            max_chars = int(getattr(settings, "HUB_CONTEXT_MAX_CHARS", 12000))
+            prompt_with_ctx = _build_prompt_with_history(
+                history=history,
+                user_text=transcript,
+                turns=turns,
+                max_chars=max_chars,
+            )
+            # IMPORTANT: store the raw user message for next turn
+            history.append({"role": "user", "content": transcript})
+
+
             # Inject trace_verb into metadata so Cortex might see it too
             chat_req = CortexChatRequest(
-                prompt=transcript,
+                prompt=prompt_with_ctx,
                 mode=mode,
                 session_id=data.get("session_id"),
                 user_id=data.get("user_id"),
@@ -165,6 +241,10 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
+                # If the model echoes "Orion:" due to our prompt format, strip it.
+                s = (orion_response_text or "").lstrip()
+                if s.startswith("Orion:"):
+                    orion_response_text = s[len("Orion:"):].lstrip()
             except Exception as e:
                 logger.error(f"Chat RPC Error: {e}")
                 await websocket.send_json({"error": f"Chat failed: {str(e)}"})
@@ -186,7 +266,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     if hasattr(resp, "cortex_result") and resp.cortex_result:
                         gateway_meta = resp.cortex_result.metadata or {}
 
-                    # FIX: Include trace_verb in spark_meta for the Visualizer
+                    # Include trace_verb in spark_meta for the Visualizer
                     spark_meta = {
                         "mode": mode,
                         "trace_verb": trace_verb,
@@ -205,7 +285,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         "spark_meta": spark_meta,
                     }
 
-                    # 1. SQL Log
                     # 1. SQL Log (turn-level row: prompt + response)
                     env_turn = build_chat_turn_envelope(
                         prompt=transcript,
@@ -266,6 +345,13 @@ async def websocket_endpoint(websocket: WebSocket):
             if orion_response_text:
                 history.append({"role": "assistant", "content": orion_response_text})
 
+            # Keep history bounded (system + last 2*turns messages)
+            try:
+                keep_msgs = 1 + (2 * max(0, int(turns)))
+                if len(history) > keep_msgs:
+                    history[:] = history[:1] + history[-(2 * turns):]
+            except Exception:
+                pass
             await websocket.send_json({"state": "idle"})
 
     except WebSocketDisconnect:

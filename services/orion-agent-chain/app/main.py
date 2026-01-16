@@ -1,8 +1,10 @@
-# FILE: services/orion-agent-chain/app/main.py
+# services/orion-agent-chain/app/main.py
 from __future__ import annotations
 
 import logging
 import asyncio
+import uuid
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -25,7 +27,7 @@ app = FastAPI(
     version=settings.service_version,
 )
 
-
+BOOT_ID = str(uuid.uuid4())
 heartbeat_task = None
 
 async def heartbeat_loop(settings):
@@ -43,6 +45,8 @@ async def heartbeat_loop(settings):
                     payload = SystemHealthV1(
                         service=settings.service_name,
                         version=settings.service_version,
+                        boot_id=BOOT_ID,
+                        last_seen_ts=datetime.now(timezone.utc),
                         node="agent-chain-node",
                         status="ok"
                     ).model_dump(mode="json")

@@ -1,3 +1,4 @@
 orion-vision-edge
 orion-security-watcher
 orion-sql-db
+orion-llama-cola-host

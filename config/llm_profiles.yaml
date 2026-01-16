@@ -71,7 +71,7 @@ profiles:
     display_name: "Llama 3.1 CoLA – Intention Host"
     task_type: chat
     backend: llama-cola
-    model_id: "lamda-rl/cola"
+    model_id: "LAMDA-RL/Llama-3.1-CoLA-10B"
     supports_tools: false
     supports_embeddings: true
     supports_vision: false
@@ -85,9 +85,9 @@ profiles:
       gpu_memory_fraction: 0.85
     llama_cola:
       model_root: "/models/cola"
-      repo_id: "lamda-rl/cola"
+      repo_id: "LAMDA-RL/Llama-3.1-CoLA-10B"
       host: "0.0.0.0"
-      port: 7006
+      port: 8005
       max_new_tokens: 256
     notes: |
       CoLA inference host profile that returns both text and latent action paths.

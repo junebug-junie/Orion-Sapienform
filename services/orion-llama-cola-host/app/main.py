@@ -2,6 +2,7 @@ import logging
 import os
 import contextlib
 import asyncio
+import json
 import uuid
 from typing import List, Optional, Any, Union, Tuple
 from pathlib import Path
@@ -10,7 +11,8 @@ import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from huggingface_hub import snapshot_download
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, LlamaConfig, LlamaTokenizer, LlamaTokenizerFast
+import yaml
 from intention import IntentionForCausalLM
 
 from app.settings import settings
@@ -47,9 +49,10 @@ def _ensure_model_path(model_path: str, dl: Optional[LlamaColaConfig], repo_id: 
         return
 
     p = Path(model_path)
-    if p.exists():
+    if p.exists() and _has_model_config(p):
         return
-
+    if p.exists() and repo_id is None:
+        logger.info("Model path exists without repo_id; skipping download for %s", model_path)
     if dl is None or not repo_id:
         raise FileNotFoundError(f"Model not found and no download spec available: {model_path}")
 
@@ -90,6 +93,79 @@ def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaColaConfig, Optiona
         model_path = str(Path(cfg.model_root) / repo_id.replace("/", "--"))
 
     return model_path, cfg, repo_id
+
+
+def _has_model_config(model_path: Path) -> bool:
+    if (model_path / "config.json").exists() or (model_path / "model_config.yaml").exists():
+        return True
+    if any(model_path.rglob("config.json")):
+        return True
+    return any(model_path.rglob("model_config.yaml"))
+
+
+def _select_model_dir(model_path: str) -> str:
+    base_path = Path(model_path)
+    if (base_path / "config.json").exists():
+        return model_path
+
+    candidates = list(base_path.rglob("config.json"))
+    if not candidates:
+        candidates = list(base_path.rglob("model_config.yaml"))
+    if not candidates:
+        raise FileNotFoundError(f"No config.json or model_config.yaml found under {model_path}")
+
+    def _score(path: Path) -> Tuple[int, int]:
+        parts = [p.lower() for p in path.parts]
+        intention_hint = any("intention" in part for part in parts)
+        return (0 if intention_hint else 1, len(path.parts))
+
+    candidates.sort(key=_score)
+    selected = candidates[0].parent
+    logger.info("Resolved model directory to %s", selected)
+    return str(selected)
+
+
+def _load_model_config(model_dir: str) -> LlamaConfig:
+    config_path = Path(model_dir) / "config.json"
+    if config_path.exists():
+        config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    else:
+        yaml_path = Path(model_dir) / "model_config.yaml"
+        if not yaml_path.exists():
+            raise FileNotFoundError(f"No config.json or model_config.yaml found in {model_dir}")
+        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        config_data = raw.get("hf_config") or raw.get("config") or raw
+        if "hidden_size" not in config_data and "n_embd" in config_data:
+            config_data["hidden_size"] = config_data.get("n_embd")
+        if "num_attention_heads" not in config_data and "n_head" in config_data:
+            config_data["num_attention_heads"] = config_data.get("n_head")
+        if "num_hidden_layers" not in config_data and "n_layer" in config_data:
+            config_data["num_hidden_layers"] = config_data.get("n_layer")
+        if "vocab_size" not in config_data and "n_vocab" in config_data:
+            config_data["vocab_size"] = config_data.get("n_vocab")
+        if "max_position_embeddings" not in config_data and "block_size" in config_data:
+            config_data["max_position_embeddings"] = config_data.get("block_size")
+        if "intermediate_size" not in config_data and config_data.get("hidden_size"):
+            config_data["intermediate_size"] = int(config_data["hidden_size"]) * 4
+        logger.warning("Using model_config.yaml to build LlamaConfig; please verify config compatibility.")
+    config_data.setdefault("model_type", "llama")
+    return LlamaConfig.from_dict(config_data)
+
+
+def _load_tokenizer(model_dir: str, config: LlamaConfig) -> Any:
+    try:
+        return AutoTokenizer.from_pretrained(
+            model_dir,
+            trust_remote_code=True,
+            use_fast=True,
+            config=config,
+        )
+    except Exception as exc:
+        logger.warning("AutoTokenizer failed (%s). Falling back to Llama tokenizer.", exc)
+    try:
+        return LlamaTokenizerFast.from_pretrained(model_dir)
+    except Exception:
+        return LlamaTokenizer.from_pretrained(model_dir)
 
 
 def _format_messages(messages: List["ChatMessage"], tokenizer: Any) -> str:
@@ -133,13 +209,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to resolve profile: {e}")
         raise e
-    
+
     model_path, cfg, repo_id = _resolve_runtime(profile)
     logger.info(f"Selected model path: {model_path}")
 
     # 2. Download/Ensure Model
     _ensure_model_path(model_path, cfg, repo_id)
-    
+    model_dir = _select_model_dir(model_path)
+    model_config = _load_model_config(model_dir)
+
     # 3. Apply GPU overrides (before Llama init)
     if settings.cuda_visible_devices_override:
         logger.info(f"Overriding CUDA_VISIBLE_DEVICES={settings.cuda_visible_devices_override}")
@@ -153,14 +231,13 @@ async def lifespan(app: FastAPI):
     # 4. Initialize CoLA
     logger.info("Loading CoLA model...")
     try:
-        state.tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
-            trust_remote_code=True,
-            use_fast=True,
-        )
+        state.tokenizer = _load_tokenizer(model_dir, model_config)
+        if state.tokenizer.pad_token_id is None and state.tokenizer.eos_token_id is not None:
+            state.tokenizer.pad_token = state.tokenizer.eos_token
         state.llm = IntentionForCausalLM.from_pretrained(
-            model_path,
+            model_dir,
             torch_dtype="auto",
+            config=model_config,
         )
         state.llm.eval()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -185,7 +262,7 @@ async def lifespan(app: FastAPI):
         # based on memory/inspection of bus_service_chassis, but we can set env var or
         # trust OrionBusAsync to pick it up from env if it supports it.
         # The env var ORION_BUS_ENFORCE_CATALOG is already in os.environ by virtue of docker env.
-        
+
         state.chassis = NeuralHostChassis(chassis_cfg)
         await state.chassis.start_background()
     else:

@@ -77,6 +77,10 @@ class Settings(BaseSettings):
                 continue
             cfg = dict(cfg)
             cfg.setdefault("name", name)
+            backend = str(cfg.get("backend") or "").strip()
+            if backend and backend != "llama-cola":
+                logger.info("Skipping non-llama-cola profile '%s' (backend=%s)", name, backend)
+                continue
             profiles[name] = LLMProfile(**cfg)
 
         self._registry = LLMProfileRegistry(profiles=profiles)

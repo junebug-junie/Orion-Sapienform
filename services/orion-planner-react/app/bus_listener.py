@@ -12,6 +12,9 @@ from orion.schemas.agents.schemas import PlannerRequest, PlannerResponse
 
 logger = logging.getLogger("planner-react.bus")
 
+# Global set to hold strong references to background tasks so the GC doesn't kill them
+_background_tasks = set()
+
 def start_planner_bus_listener_background() -> None:
     if not settings.orion_bus_enabled:
         return
@@ -22,18 +25,22 @@ def start_planner_bus_listener_background() -> None:
         logger.warning("No running event loop to attach bus listener.")
         return
 
-    loop.create_task(_async_bus_worker())
+    task = loop.create_task(_async_bus_worker())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 async def _async_bus_worker() -> None:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     request_channel = settings.planner_request_channel
-    
+
     logger.info("[planner-react] Connecting Async Bus listener on %s...", request_channel)
     await bus.connect()
 
     async with bus.subscribe(request_channel) as pubsub:
         async for msg in bus.iter_messages(pubsub):
-            asyncio.create_task(_handle_request(bus, msg))
+            task = asyncio.create_task(_handle_request(bus, msg))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
 
 async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
     decoded = bus.codec.decode(raw_msg.get("data"))
@@ -42,11 +49,11 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
 
     env = decoded.envelope
     reply_channel = env.reply_to
-    
-    # Payload Logic: 
+
+    # Payload Logic:
     # 1. BaseEnvelope puts the data in env.payload
     payload = env.payload or {}
-    
+
     # 2. Legacy Protection: If the payload is STILL a wrapper (has 'event' and nested 'payload')
     # we unwrap it. This protects against other services (not just agent-chain) doing it wrong.
     if "payload" in payload and "event" in payload:
@@ -68,10 +75,10 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
     try:
         # STRICT VALIDATION
         planner_req = PlannerRequest(**payload)
-        
+
         # EXECUTE
         resp = await run_react_loop(planner_req)
-        
+
         if resp.request_id is None:
             resp.request_id = planner_req.request_id or str(trace_id)
 

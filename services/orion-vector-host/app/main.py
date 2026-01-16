@@ -196,7 +196,13 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
 
     reply_channel = env.reply_to or f"{settings.VECTOR_HOST_EMBEDDING_RESULT_PREFIX}{doc_id}"
     if not text:
-        error_payload = {"error": "missing_text", "doc_id": doc_id}
+        error_payload = EmbeddingResultV1(
+            doc_id=doc_id,
+            embedding=[],
+            embedding_model=None,
+            embedding_dim=0,
+        ).model_dump(mode="json")
+        error_payload["error"] = "missing_text"
         await hunter.bus.publish(
             reply_channel,
             BaseEnvelope(
@@ -213,6 +219,13 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         embedding, embedding_model, embedding_dim = await embedder.embed(text)
     except Exception as exc:
         logger.warning("Embedding request failed doc_id=%s error=%s", doc_id, exc)
+        error_payload = EmbeddingResultV1(
+            doc_id=doc_id,
+            embedding=[],
+            embedding_model=None,
+            embedding_dim=0,
+        ).model_dump(mode="json")
+        error_payload["error"] = str(exc)
         await hunter.bus.publish(
             reply_channel,
             BaseEnvelope(
@@ -220,7 +233,7 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
                 source=_source(),
                 correlation_id=env.correlation_id,
                 causality_chain=env.causality_chain,
-                payload={"doc_id": doc_id, "error": str(exc)},
+                payload=error_payload
             ),
         )
         return
@@ -239,6 +252,7 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
             payload=result.model_dump(mode="json"),
+
         ),
     )
 

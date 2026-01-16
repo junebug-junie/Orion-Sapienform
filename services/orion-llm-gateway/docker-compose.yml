@@ -47,9 +47,6 @@ services:
       - CONNECT_TIMEOUT_SEC=${CONNECT_TIMEOUT_SEC}
       - READ_TIMEOUT_SEC=${READ_TIMEOUT_SEC}
 
-      # Label used in reply payloads
-      - ORION_LLM_SERVICE_NAME=${ORION_LLM_SERVICE_NAME}
-
       # ─────────────────────────────────────
       # Profiles config (new)
       # ─────────────────────────────────────

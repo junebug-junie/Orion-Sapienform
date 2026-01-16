@@ -10,8 +10,9 @@ from app.llm_backend import (  # noqa: E402
     _extract_text_from_ollama_response,
     _extract_vector_from_openai_response,
     _serialize_messages,
+    run_llm_embeddings,
 )
-from app.models import ChatBody, ChatMessage  # noqa: E402
+from app.models import ChatBody, ChatMessage, EmbeddingsBody  # noqa: E402
 
 
 class TestLLMBackendHelpers(unittest.TestCase):
@@ -41,6 +42,11 @@ class TestLLMBackendHelpers(unittest.TestCase):
     def test_serialize_messages_accepts_dicts(self) -> None:
         serialized = _serialize_messages([{"role": "user", "content": "hello"}])
         self.assertEqual(serialized, [{"role": "user", "content": "hello"}])
+
+    def test_run_llm_embeddings_rejects_ollama(self) -> None:
+        body = EmbeddingsBody(input=["hello"], options={"backend": "ollama"})
+        with self.assertRaises(RuntimeError):
+            run_llm_embeddings(body)
 
 
 if __name__ == "__main__":

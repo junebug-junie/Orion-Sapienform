@@ -473,8 +473,6 @@ def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
     url = None
     if settings.llama_cola_embedding_url:
         url = f"{settings.llama_cola_embedding_url.rstrip('/')}/v1/embeddings"
-    elif settings.llamacpp_embedding_url:
-        url = f"{settings.llamacpp_embedding_url.rstrip('/')}/v1/embeddings"
     elif settings.vllm_url:
         url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
     elif settings.ollama_url:
@@ -612,25 +610,6 @@ def _execute_openai_embeddings(
         r = client.post(url, json=payload)
         r.raise_for_status()
         return r.json()
-
-
-def _execute_ollama_embeddings(body: EmbeddingsBody, model: str, base_url: Optional[str]) -> Dict[str, Any]:
-    if not base_url:
-        raise RuntimeError("No embedding URL configured for ollama")
-
-    url = f"{base_url.rstrip('/')}/api/embeddings"
-    data: List[Dict[str, Any]] = []
-    with _common_http_client() as client:
-        for idx, text in enumerate(body.input):
-            payload = {"model": model, "prompt": text}
-            if body.options:
-                payload.update({k: v for k, v in body.options.items() if k != "backend"})
-            r = client.post(url, json=payload)
-            r.raise_for_status()
-            resp = r.json()
-            embedding = resp.get("embedding") or []
-            data.append({"object": "embedding", "embedding": embedding, "index": idx})
-    return {"object": "list", "data": data, "model": model}
 
 
 def _execute_openai_chat(
@@ -784,13 +763,13 @@ def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
         model = _normalize_model_for_vllm(model)
 
     if backend == "ollama":
-        return _execute_ollama_embeddings(body, model, settings.ollama_url)
+        raise RuntimeError("Embeddings are not supported for backend=ollama")
 
     if backend == "llama-cola":
         return _execute_openai_embeddings(body, model, settings.llama_cola_embedding_url, "llama-cola")
 
     if backend == "llamacpp":
-        return _execute_openai_embeddings(body, model, settings.llamacpp_embedding_url, "llamacpp")
+        raise RuntimeError("Embeddings are not supported for backend=llamacpp")
 
     return _execute_openai_embeddings(body, model, settings.vllm_url, "vllm")
 

@@ -1,6 +1,5 @@
 import logging
 import asyncio
-from uuid import uuid4
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
@@ -9,11 +8,10 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vector.schemas import (
-    EmbeddingGenerateV1,
-    EmbeddingResultV1,
     VectorDocumentUpsertV1,
+    VectorUpsertV1,
     VectorWriteRequest,
 )
 
@@ -43,6 +41,7 @@ def _cfg() -> ChassisConfig:
         node_name=settings.NODE_NAME,
         bus_url=settings.ORION_BUS_URL,
         bus_enabled=settings.ORION_BUS_ENABLED,
+        heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
         health_channel=settings.ORION_HEALTH_CHANNEL,
         error_channel=settings.ERROR_CHANNEL,
     )
@@ -66,80 +65,6 @@ def _setup_resources():
         # We don't raise here to allow the service to start, but writes will fail.
         chroma_client = None
 
-
-async def _fetch_embedding(req: VectorDocumentUpsertV1, env: BaseEnvelope) -> Optional[EmbeddingResultV1]:
-    if not hunter or not hunter.bus.enabled:
-        logger.warning("Embedding fetch skipped: bus unavailable.")
-        return None
-
-    if not req.text:
-        return None
-
-    reply_channel = f"{settings.VECTOR_WRITER_EMBEDDING_REPLY_PREFIX}{uuid4()}"
-    correlation_id = env.correlation_id or uuid4()
-    payload = EmbeddingGenerateV1(
-        doc_id=req.doc_id,
-        text=req.text,
-        embedding_profile=settings.VECTOR_WRITER_EMBEDDING_PROFILE,
-    )
-
-    envelope = BaseEnvelope(
-        kind="embedding.generate.v1",
-        source=ServiceRef(
-            name=settings.SERVICE_NAME,
-            node=settings.NODE_NAME,
-            version=settings.SERVICE_VERSION,
-        ),
-        correlation_id=correlation_id,
-        reply_to=reply_channel,
-        payload=payload.model_dump(mode="json"),
-    )
-
-    logger.info(
-        "Embedding request doc_id=%s profile=%s channel=%s reply_channel=%s input_len=%d",
-        req.doc_id,
-        settings.VECTOR_WRITER_EMBEDDING_PROFILE,
-        settings.VECTOR_WRITER_EMBEDDING_CHANNEL,
-        reply_channel,
-        len(req.text),
-    )
-
-    try:
-        msg = await hunter.bus.rpc_request(
-            settings.VECTOR_WRITER_EMBEDDING_CHANNEL,
-            envelope,
-            reply_channel=reply_channel,
-            timeout_sec=settings.VECTOR_WRITER_EMBEDDING_TIMEOUT_SEC,
-        )
-    except Exception as exc:
-        logger.warning("Embedding request failed doc_id=%s error=%s", req.doc_id, exc)
-        return None
-
-    decoded = hunter.bus.codec.decode(msg.get("data"))
-    if not decoded.ok or not decoded.envelope:
-        logger.warning("Embedding response decode failed doc_id=%s error=%s", req.doc_id, decoded.error)
-        return None
-
-    payload_obj = decoded.envelope.payload
-    if hasattr(payload_obj, "model_dump"):
-        payload_obj = payload_obj.model_dump(mode="json")
-    if not isinstance(payload_obj, dict):
-        logger.warning("Embedding response invalid payload doc_id=%s", req.doc_id)
-        return None
-
-    try:
-        result = EmbeddingResultV1.model_validate(payload_obj)
-    except Exception as exc:
-        logger.warning("Embedding response validation failed doc_id=%s error=%s", req.doc_id, exc)
-        return None
-
-    logger.info(
-        "Embedding received doc_id=%s embedding_dim=%s model=%s",
-        result.doc_id,
-        result.embedding_dim or len(result.embedding),
-        result.embedding_model,
-    )
-    return result
 
 def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     """
@@ -267,6 +192,14 @@ def _to_upsert(req: VectorWriteRequest, env: BaseEnvelope) -> VectorDocumentUpse
         embedding_model=None,
     )
 
+
+def _pick_collection(kind: str, payload_collection: Optional[str]) -> str:
+    if payload_collection:
+        return payload_collection
+    if kind == "latent":
+        return settings.CHROMA_COLLECTION_LATENT
+    return settings.CHROMA_COLLECTION_DEFAULT
+
 # --- Bus Handler ---
 async def handle_envelope(env: BaseEnvelope) -> None:
     """
@@ -277,26 +210,56 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         return
 
     try:
+        payload_dict = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+        if isinstance(payload_dict, dict) and "embedding_kind" in payload_dict:
+            try:
+                upsert = VectorUpsertV1.model_validate(payload_dict)
+            except Exception as e:
+                logger.warning("Invalid vector upsert payload: %s", e)
+                return
+
+            if not upsert.embedding:
+                if settings.VECTOR_WRITER_REQUIRE_EMBEDDINGS:
+                    raise RuntimeError(f"Embedding missing for kind={upsert.embedding_kind} id={upsert.doc_id}")
+                logger.warning("Skipping %s: no embedding supplied for id=%s", upsert.embedding_kind, upsert.doc_id)
+                return
+
+            collection_name = _pick_collection(upsert.embedding_kind, upsert.collection)
+            meta = dict(upsert.meta)
+            if upsert.embedding_model:
+                meta["embedding_model"] = upsert.embedding_model
+            if upsert.embedding_dim is not None:
+                meta["embedding_dim"] = upsert.embedding_dim
+
+            collection = chroma_client.get_or_create_collection(name=collection_name)
+            await asyncio.to_thread(
+                collection.upsert,
+                ids=[upsert.doc_id],
+                embeddings=[upsert.embedding],
+                documents=[upsert.text] if upsert.text is not None else None,
+                metadatas=[meta],
+            )
+            logger.info(
+                "✨ Stored kind=%s collection=%s id=%s embedding_dim=%s",
+                upsert.embedding_kind,
+                collection_name,
+                upsert.doc_id,
+                upsert.embedding_dim or len(upsert.embedding),
+            )
+            return
+
         req: Optional[VectorDocumentUpsertV1]
         if env.kind == "memory.vector.upsert.v1":
             try:
-                payload_dict = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
                 req = VectorDocumentUpsertV1.model_validate(payload_dict)
             except Exception as e:
-                logger.warning(f"Invalid upsert payload: {e}")
+                logger.warning("Invalid upsert payload: %s", e)
                 return
         else:
             legacy_req = normalize_to_request(env)
             if not legacy_req:
                 return
             req = _to_upsert(legacy_req, env)
-
-        if not req.embedding and settings.VECTOR_WRITER_EMBEDDINGS_ENABLED:
-            embed_result = await _fetch_embedding(req, env)
-            if embed_result and embed_result.embedding:
-                req.embedding = embed_result.embedding
-                req.embedding_model = embed_result.embedding_model
-                req.embedding_dim = embed_result.embedding_dim or len(embed_result.embedding)
 
         if not req.embedding:
             if settings.VECTOR_WRITER_REQUIRE_EMBEDDINGS:
@@ -329,15 +292,15 @@ async def handle_envelope(env: BaseEnvelope) -> None:
 
         collection_name = req.collection or settings.CHROMA_COLLECTION_DEFAULT
         collection = chroma_client.get_or_create_collection(name=collection_name)
-        
+
         await asyncio.to_thread(
             collection.upsert,
             ids=[req.doc_id],
             embeddings=[vector_list],
             documents=[req.text],
-            metadatas=[meta]
+            metadatas=[meta],
         )
-        
+
         logger.info(
             "✨ Stored kind=%s collection=%s id=%s embedding_dim=%s",
             req.kind,

@@ -29,18 +29,21 @@ This service flow persists Orion Hub chat messages into vector memory using the 
   - Re-publishes the legacy chat history payload to the same channel for backward compatibility.
 - **Env lineage:** `.env_example` → `docker-compose.yml` → `scripts/settings.py` (`chat_history_channel` property) → publisher helpers.
 
-## Ingestion (orion-vector-writer)
-- **Subscription:** `VECTOR_WRITER_CHAT_HISTORY_CHANNEL` (default `orion:chat:history:log`) is auto-added to `VECTOR_WRITER_SUBSCRIBE_CHANNELS`.
-- **Validation:** Incoming envelopes are validated with `ChatHistoryMessageEnvelope`; invalid payloads are logged and dropped.
-- **Vector write:** `services/orion-vector-writer/app/chat_history.py` converts envelopes to `VectorWriteRequest` using `message_id` as the stable document id and `orion_chat` (configurable via `VECTOR_WRITER_CHAT_COLLECTION`) as the collection.
-- **Metadata logged:** role, speaker, session_id, correlation_id, and channel are included with each vector upsert.
+## Ingestion (orion-vector-host → orion-vector-writer)
+- **Subscription:** `orion-vector-host` listens on `orion:chat:history:log` and filters roles via `VECTOR_HOST_EMBED_ROLES`.
+- **Embedding:** `orion-vector-host` generates semantic embeddings and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`.
+- **Vector write:** `orion-vector-writer` listens on `orion:vector:semantic:upsert` and writes the embedding to the semantic collection (default `VECTOR_DB_COLLECTION`).
+- **Metadata logged:** `source_service`, `role`, `session_id`, `correlation_id`, and `original_channel` are included with each vector upsert.
 
 ## Configuration quick reference
 - **Hub**
   - `.env_example`: `CHAT_HISTORY_LOG_CHANNEL` (new) + legacy `CHANNEL_CHAT_HISTORY_LOG`
   - `docker-compose.yml`: forwards `CHAT_HISTORY_LOG_CHANNEL` (falls back to legacy variable)
   - `scripts/settings.py`: `chat_history_channel` property reads new var or legacy fallback
+- **Vector Host**
+  - `.env_example`: `VECTOR_HOST_CHAT_HISTORY_CHANNEL`, `VECTOR_HOST_EMBED_BACKEND`, `VECTOR_HOST_EMBEDDING_MODEL`
+  - `docker-compose.yml`: forwards chat history + embedding env vars
+  - `app/settings.py`: validates embedding model + roles list
 - **Vector Writer**
-  - `.env_example`: `VECTOR_WRITER_CHAT_HISTORY_CHANNEL`, `VECTOR_WRITER_CHAT_COLLECTION`, updated subscribe list + route map
-  - `docker-compose.yml`: forwards the new chat history env vars
-  - `app/settings.py`: ensures chat history channel is subscribed even if omitted from `VECTOR_WRITER_SUBSCRIBE_CHANNELS`
+  - `.env_example`: `VECTOR_WRITER_SUBSCRIBE_CHANNELS`, `VECTOR_DB_COLLECTION`, `VECTOR_DB_COLLECTION_LATENT`
+  - `docker-compose.yml`: forwards vector upsert channels + collections

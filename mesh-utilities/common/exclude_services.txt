@@ -1,8 +1,8 @@
 ## service to exclude from auto rebuilding
 # one service per line
-#orion-llamacpp-neural-host
+orion-llamacpp-neural-host
 #orion-vision-edge
-orion-security-watcher
+#orion-security-watcher
 orion-vllm-host
 orion-vision-council
 orion-vision-host
@@ -13,15 +13,15 @@ orion-rag
 orion-ollama-host
 orion-voip-endpoint
 voip-endopoint
-
+orion-llama-cola-host
 # for testing
 #orion-llamacpp-host
 #orion-agent-chain
 #orion-agent-council
 #orion-planner-react
-orion-power-guard 
+#orion-power-guard 
 #orion-recall               
-orion-gpu-cluster-power
+#orion-gpu-cluster-power
 orion-bus-mirror
 orion-bus-tap
 #orion-biometrics

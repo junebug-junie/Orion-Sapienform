@@ -15,11 +15,12 @@ class Settings(BaseSettings):
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, alias="ORION_BUS_ENFORCE_CATALOG")
     ORION_HEALTH_CHANNEL: str = "orion:system:health"
     ERROR_CHANNEL: str = "orion:system:error"
+    HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
-        default='["orion:memory:vector:upsert", "orion:vector:write", "orion:collapse:triage", "orion:chat:history:log", "orion:rag:doc", "orion:cognition:trace"]',
+        default='["orion:vector:semantic:upsert", "orion:vector:latent:upsert", "orion:vector:write", "orion:memory:vector:upsert"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
     VECTOR_WRITER_CHAT_HISTORY_CHANNEL: str = Field(
@@ -28,23 +29,8 @@ class Settings(BaseSettings):
     VECTOR_WRITER_CHAT_COLLECTION: str = Field(
         default="orion_chat", alias="VECTOR_WRITER_CHAT_COLLECTION"
     )
-    VECTOR_WRITER_EMBEDDINGS_ENABLED: bool = Field(
-        default=True, alias="VECTOR_WRITER_EMBEDDINGS_ENABLED"
-    )
     VECTOR_WRITER_REQUIRE_EMBEDDINGS: bool = Field(
         default=False, alias="VECTOR_WRITER_REQUIRE_EMBEDDINGS"
-    )
-    VECTOR_WRITER_EMBEDDING_CHANNEL: str = Field(
-        default="orion:embedding:generate", alias="VECTOR_WRITER_EMBEDDING_CHANNEL"
-    )
-    VECTOR_WRITER_EMBEDDING_REPLY_PREFIX: str = Field(
-        default="orion:embedding:result:", alias="VECTOR_WRITER_EMBEDDING_REPLY_PREFIX"
-    )
-    VECTOR_WRITER_EMBEDDING_PROFILE: str = Field(
-        default="default", alias="VECTOR_WRITER_EMBEDDING_PROFILE"
-    )
-    VECTOR_WRITER_EMBEDDING_TIMEOUT_SEC: float = Field(
-        default=30.0, alias="VECTOR_WRITER_EMBEDDING_TIMEOUT_SEC"
     )
 
     @property
@@ -60,9 +46,6 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 channels = [x.strip() for x in val.split(",") if x.strip()]
 
-        # Ensure chat history channel is always included for ingestion
-        if self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL not in channels:
-            channels.append(self.VECTOR_WRITER_CHAT_HISTORY_CHANNEL)
         # Ensure canonical memory upsert channel is always present
         if "orion:memory:vector:upsert" not in channels:
             channels.append("orion:memory:vector:upsert")
@@ -74,6 +57,7 @@ class Settings(BaseSettings):
 
     # Capture the collection from .env. Defaults to 'orion_general' if missing.
     CHROMA_COLLECTION_DEFAULT: str = Field(default="orion_general", alias="VECTOR_DB_COLLECTION")
+    CHROMA_COLLECTION_LATENT: str = Field(default="orion_latent_store", alias="VECTOR_DB_COLLECTION_LATENT")
 
     class Config:
         env_file = ".env"

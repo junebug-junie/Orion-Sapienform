@@ -9,13 +9,14 @@ from pydantic import ValidationError
 # [FIX] Added ServiceRef to imports
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
-from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1
+from orion.schemas.vector.schemas import VectorUpsertV1
 
-from .llm_backend import run_llm_chat, run_llm_embeddings
-from .models import ChatBody, EmbeddingsBody
+from .llm_backend import run_llm_chat
+from .models import ChatBody
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
+bus_handle: Optional[Any] = None
 
 
 def _cfg() -> ChassisConfig:
@@ -36,6 +37,61 @@ def _source() -> ServiceRef:
         node=getattr(settings, "node_name", None),
         version=settings.service_version,
     )
+
+
+async def _maybe_publish_latent_upsert(
+    *,
+    env: BaseEnvelope,
+    spark_vector: Optional[list[float]],
+    backend: Optional[str],
+    model_used: Optional[str],
+    session_id: Optional[str],
+    user_id: Optional[str],
+) -> None:
+    if not spark_vector:
+        return
+    if backend not in ("vllm", "llama-cola"):
+        return
+    if not bus_handle or not getattr(bus_handle, "enabled", False):
+        logger.warning("Latent upsert skipped: bus unavailable.")
+        return
+
+    doc_id = str(env.correlation_id or env.id)
+    meta: Dict[str, Any] = {
+        "source_service": env.source.name,
+        "original_channel": settings.channel_llm_intake,
+        "role": "assistant",
+        "timestamp": env.created_at.isoformat() if env.created_at else None,
+        "correlation_id": str(env.correlation_id),
+        "backend": backend,
+        "model_used": model_used,
+        "session_id": session_id,
+        "user_id": user_id,
+        "envelope_id": str(env.id),
+    }
+    meta = {k: v for k, v in meta.items() if v is not None}
+
+    upsert = VectorUpsertV1(
+        doc_id=doc_id,
+        collection=settings.orion_vector_latent_collection,
+        embedding=spark_vector,
+        embedding_kind="latent",
+        embedding_model=model_used,
+        embedding_dim=len(spark_vector),
+        text=None,
+        meta=meta,
+    )
+    envelope = BaseEnvelope(
+        kind="vector.upsert.v1",
+        source=_source(),
+        correlation_id=env.correlation_id,
+        causality_chain=env.causality_chain,
+        payload=upsert.model_dump(mode="json"),
+    )
+    try:
+        await bus_handle.publish(settings.channel_vector_latent_upsert, envelope)
+    except Exception as exc:
+        logger.warning("Latent upsert publish failed doc_id=%s error=%s", doc_id, exc)
 
 
 async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
@@ -90,6 +146,8 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     # which gateway instance handled the request.
     spark_meta = (result.get("spark_meta") if isinstance(result, dict) else None) or {}
     spark_vector = (result.get("spark_vector") if isinstance(result, dict) else None)
+    backend = (result.get("backend") if isinstance(result, dict) else None)
+    model_used = (result.get("model") if isinstance(result, dict) else None)
 
     out = Envelope[ChatResultPayload](
         kind="llm.chat.result",
@@ -99,94 +157,35 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         payload=ChatResultPayload(
             model_used=(result.get("raw") or {}).get("model") if isinstance(result, dict) else None,
             content=text or "",
-            usage=(result.get("raw") or {}).get("usage") if isinstance(result, dict) else {},
+            usage=(result.get("raw") or {}).get("usage", {}) if isinstance(result, dict) else {},
             raw=result,
             spark_meta=spark_meta,
             spark_vector=spark_vector,
         ),
     )
+    await _maybe_publish_latent_upsert(
+        env=env,
+        spark_vector=spark_vector,
+        backend=backend,
+        model_used=model_used or out.payload.model_used,
+        session_id=typed_req.payload.session_id,
+        user_id=typed_req.payload.user_id,
+    )
     return out.model_copy(update={"reply_to": None})
-
-
-async def handle_embedding(env: BaseEnvelope) -> BaseEnvelope:
-    if env.kind != "embedding.generate.v1":
-        return BaseEnvelope(
-            kind="system.error",
-            source=_source(),
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain,
-            payload={"error": f"unsupported_kind:{env.kind}"},
-        )
-
-    payload_obj: Dict[str, Any]
-    if hasattr(env.payload, "model_dump"):
-        payload_obj = env.payload.model_dump(mode="json")
-    elif isinstance(env.payload, dict):
-        payload_obj = env.payload
-    else:
-        payload_obj = {}
-
-    try:
-        request = EmbeddingGenerateV1.model_validate(payload_obj)
-    except ValidationError as ve:
-        return BaseEnvelope(
-            kind="embedding.result.v1",
-            source=_source(),
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain,
-            payload={"error": "validation_failed", "details": ve.errors()},
-        )
-
-    body = EmbeddingsBody(
-        input=[request.text],
-        profile_name=request.embedding_profile,
-        trace_id=str(env.correlation_id),
-        source=env.source.name if env.source else None,
-    )
-    result: Dict[str, Any] = {}
-    error: Optional[str] = None
-    try:
-        result = run_llm_embeddings(body)
-    except Exception as exc:
-        error = str(exc)
-        logger.error("Embedding request failed for doc_id=%s: %s", request.doc_id, error)
-
-    embedding: list[float] = []
-    if isinstance(result, dict):
-        data = result.get("data") or []
-        if data:
-            embedding = data[0].get("embedding") or []
-
-    payload = EmbeddingResultV1(
-        doc_id=request.doc_id,
-        embedding=embedding,
-        embedding_model=(result.get("model") if isinstance(result, dict) else None),
-        embedding_dim=len(embedding) if embedding else None,
-    ).model_dump(mode="json")
-    if error:
-        payload["error"] = error
-
-    return BaseEnvelope(
-        kind="embedding.result.v1",
-        source=_source(),
-        correlation_id=env.correlation_id,
-        causality_chain=env.causality_chain,
-        payload=payload,
-    )
 
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[LLM-GW] %(levelname)s - %(message)s")
     cfg = _cfg()
     chat_svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle_chat)
-    embed_svc = Rabbit(cfg, request_channel=settings.channel_embedding_generate, handler=handle_embedding)
+    global bus_handle
+    bus_handle = chat_svc.bus
     logger.info(
-        "Rabbit listening channels=%s,%s bus=%s",
+        "Rabbit listening channels=%s bus=%s",
         settings.channel_llm_intake,
-        settings.channel_embedding_generate,
         cfg.bus_url,
     )
-    await asyncio.gather(chat_svc.start(), embed_svc.start())
+    await asyncio.gather(chat_svc.start())
 
 
 if __name__ == "__main__":

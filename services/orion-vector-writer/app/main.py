@@ -41,6 +41,7 @@ def _cfg() -> ChassisConfig:
         node_name=settings.NODE_NAME,
         bus_url=settings.ORION_BUS_URL,
         bus_enabled=settings.ORION_BUS_ENABLED,
+        heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
         health_channel=settings.ORION_HEALTH_CHANNEL,
         error_channel=settings.ERROR_CHANNEL,
     )

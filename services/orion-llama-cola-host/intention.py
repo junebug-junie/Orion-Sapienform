@@ -2,7 +2,7 @@ import transformers
 from transformers.models.llama import modeling_llama
 
 from transformers import LlamaPreTrainedModel
-from transformers.models.llama.modeling_llama import LLAMA_INPUTS_DOCSTRING, LLAMA_START_DOCSTRING, LlamaDecoderLayer, LlamaForCausalLM
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaForCausalLM
 
 import math
 from typing import List, Optional, Tuple, Union, Dict
@@ -35,6 +35,9 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
+
+LLAMA_INPUTS_DOCSTRING = getattr(modeling_llama, "LLAMA_INPUTS_DOCSTRING", "")
+LLAMA_START_DOCSTRING = getattr(modeling_llama, "LLAMA_START_DOCSTRING", "")
 
 TOP_K = 40
 TOP_P = 1.0

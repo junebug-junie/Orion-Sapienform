@@ -569,7 +569,7 @@ channels:
     kind: "event"
     schema_id: "ChatHistoryMessageV1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-sql-writer", "orion-vector-writer"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -605,18 +605,34 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:vector:semantic:upsert"
+    kind: "event"
+    schema_id: "VectorUpsertV1"
+    producer_services: ["orion-vector-host"]
+    consumer_services: ["orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-01-16"
+
+  - name: "orion:vector:latent:upsert"
+    kind: "event"
+    schema_id: "VectorUpsertV1"
+    producer_services: ["orion-llm-gateway"]
+    consumer_services: ["orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-01-16"
+
   - name: "orion:embedding:generate"
     kind: "request"
     schema_id: "EmbeddingGenerateV1"
     producer_services: ["orion-vector-writer", "orion-hub", "orion-cortex-exec", "*"]
-    consumer_services: ["orion-llm-gateway"]
+    consumer_services: ["orion-vector-host"]
     stability: "experimental"
     since: "2026-01-10"
 
   - name: "orion:embedding:result:*"
     kind: "result"
     schema_id: "EmbeddingResultV1"
-    producer_services: ["orion-llm-gateway"]
+    producer_services: ["orion-vector-host"]
     consumer_services: ["*"]
     stability: "experimental"
     since: "2026-01-10"

@@ -19,6 +19,7 @@ from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1
 from orion.schemas.vector.schemas import (
     EmbeddingGenerateV1,
     EmbeddingResultV1,
+    VectorUpsertV1,
     VectorWriteRequest,
 )
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
@@ -107,6 +108,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistoryMessageV1": ChatHistoryMessageV1,
     "ChatHistoryTurnV1": ChatHistoryTurnV1,
     "VectorWriteRequest": VectorWriteRequest,
+    "VectorUpsertV1": VectorUpsertV1,
     "EmbeddingGenerateV1": EmbeddingGenerateV1,
     "EmbeddingResultV1": EmbeddingResultV1,
     "ConceptProfile": ConceptProfile,

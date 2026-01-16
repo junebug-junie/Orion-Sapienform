@@ -169,9 +169,20 @@ def _pick_backend(options: Dict[str, Any] | None, profile: LLMProfile | None) ->
 
 
 def _resolve_embedding_backend(backend: str) -> str:
+    # 1. If the requested backend natively supports embeddings, use it.
     if backend in ("vllm", "llama-cola"):
         return backend
-    logger.warning("[LLM-GW] Embeddings not supported for backend=%s; falling back to vllm", backend)
+
+    # 2. Fallback: The backend (e.g. llamacpp) doesn't support embeddings.
+    # We must find a surrogate.
+
+    # Check if llama-cola is configured. If so, use it as the preferred fallback.
+    if settings.llama_cola_url or settings.llama_cola_embedding_url:
+        logger.warning(f"[LLM-GW] Backend '{backend}' does not support embeddings; falling back to llama-cola")
+        return "llama-cola"
+
+    # 3. Default fallback to vllm
+    logger.warning(f"[LLM-GW] Backend '{backend}' does not support embeddings; falling back to vllm")
     return "vllm"
 
 
@@ -763,6 +774,10 @@ def run_llm_generate(body: GenerateBody) -> str:
 
 
 def run_llm_embeddings(body: EmbeddingsBody) -> Dict[str, Any]:
+
+    if not settings.include_embeddings:
+        raise RuntimeError("Embeddings are disabled on this gateway instance")
+
     profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     embedding_backend = _resolve_embedding_backend(backend)

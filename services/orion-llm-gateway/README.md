@@ -2,7 +2,7 @@
 
 The **LLM Gateway** provides a unified interface to various LLM backends (OpenAI, Anthropic, Local, etc.). It accepts standard `ChatRequestPayload` messages and returns normalized `ChatResultPayload` responses.
 
-It now supports **Reflective Embeddings** (Neural Projection), where it automatically fetches embeddings for generated text and attaches them to the response.
+It now supports **latent vector emission** for vLLM/llama-cola responses (when the backend returns a spark vector), publishing those latents to the vector writer while leaving semantic embeddings to orion-vector-host.
 
 ## Contracts
 
@@ -23,7 +23,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | Variable | Default (Settings) | Description |
 | :--- | :--- | :--- |
 | `CHANNEL_LLM_INTAKE` | `orion-exec:request:LLMGatewayService` | Primary intake. |
-| `ORION_LLM_LLAMACPP_EMBEDDING_URL` | `None` | URL for the Embedding Lobe (e.g., `http://orion-llamacpp-host:8001`). |
+| `CHANNEL_VECTOR_LATENT_UPSERT` | `orion:vector:latent:upsert` | Latent vector upsert channel. |
+| `ORION_VECTOR_LATENT_COLLECTION` | `orion_latent_store` | Latent vector collection. |
 | `ORION_LLM_VLLM_URL` | `None` | URL for vLLM host. |
 | `ORION_LLM_LLAMACPP_URL` | `None` | URL for LlamaCpp Chat host. |
 

@@ -24,7 +24,10 @@ class Settings(BaseSettings):
 
     # Intake from other services
     channel_llm_intake: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
-    channel_embedding_generate: str = Field("orion:embedding:generate", alias="CHANNEL_EMBEDDING_GENERATE")
+    channel_vector_latent_upsert: str = Field(
+        "orion:vector:latent:upsert",
+        alias="CHANNEL_VECTOR_LATENT_UPSERT",
+    )
 
     # Spark
     channel_spark_introspect_candidate: str = Field(
@@ -41,16 +44,18 @@ class Settings(BaseSettings):
     ollama_url: Optional[str] = Field(None, alias="ORION_LLM_OLLAMA_URL")
     ollama_use_openai_compat: bool = Field(False, alias="ORION_LLM_OLLAMA_USE_OPENAI")
     llamacpp_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_URL")
-    llamacpp_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_EMBEDDING_URL")
     llama_cola_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_URL")
-
-    # Embedding endpoint (optional, defaults to llama.cpp chat host)
-    llama_cola_embedding_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_EMBEDDING_URL")
 
     # If false, the gateway will NOT attempt a secondary embedding call.
     # If true, and the backend response did not already include an embedding/vector,
     # the gateway will try to fetch one from the embedding URLs (cola/llamacpp/vllm/ollama).
     include_embeddings: bool = Field(False, alias="ORION_LLM_INCLUDE_EMBEDDINGS")
+
+    # Vector collections
+    orion_vector_latent_collection: str = Field(
+        "orion_latent_store",
+        alias="ORION_VECTOR_LATENT_COLLECTION",
+    )
 
     # Timeout knobs (shared across backends)
     connect_timeout_sec: float = Field(10.0, alias="CONNECT_TIMEOUT_SEC")
@@ -65,11 +70,9 @@ class Settings(BaseSettings):
         extra = "ignore"
 
     @model_validator(mode='after')
-    def default_embedding_url(self) -> "Settings":
-        if not self.llamacpp_embedding_url and self.llamacpp_url:
-            self.llamacpp_embedding_url = self.llamacpp_url
-        if not self.llama_cola_embedding_url and self.llama_cola_url:
-            self.llama_cola_embedding_url = self.llama_cola_url
+    def enforce_no_embeddings(self) -> "Settings":
+        if self.include_embeddings:
+            self.include_embeddings = False
         return self
 
     def load_profile_registry(self) -> LLMProfileRegistry:

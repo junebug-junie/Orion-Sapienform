@@ -1,14 +1,21 @@
-from typing import Any, Dict, Optional, List
-from pydantic import BaseModel, Field
+from typing import Any, Dict, Optional, List, Literal
+from pydantic import BaseModel, Field, ConfigDict
+
+
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str
 
 
 class GenerateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     # Model can be omitted; we fall back to settings.default_model
     model: Optional[str] = None
     prompt: str
-    options: Optional[dict] = None
-    stream: Optional[bool] = False
-    return_json: Optional[bool] = False
+    options: Dict[str, Any] = Field(default_factory=dict)
+    stream: bool = False
+    return_json: bool = False
     trace_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -20,19 +27,20 @@ class GenerateBody(BaseModel):
 
 
 class ChatBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     # Model can be omitted; we fall back to settings.default_model
     model: Optional[str] = None
 
     # Messages can start empty; gateway can adapt prompt → messages
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    messages: List[ChatMessage] = Field(default_factory=list)
     raw_user_text: Optional[str] = Field(
         default=None,
         description="Canonical raw user text supplied by upstream services (pre-scaffold).",
     )
 
-    options: Optional[dict] = None
-    stream: Optional[bool] = False
-    return_json: Optional[bool] = False
+    options: Dict[str, Any] = Field(default_factory=dict)
+    stream: bool = False
+    return_json: bool = False
     trace_id: Optional[str] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -44,6 +52,7 @@ class ChatBody(BaseModel):
 
 
 class ExecStepPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     """
     Payload for a Cortex exec_step routed through the LLM Gateway.
 
@@ -59,9 +68,9 @@ class ExecStepPayload(BaseModel):
     prompt: Optional[str] = None
     prompt_template: Optional[str] = None
 
-    context: Dict[str, Any] = {}
-    args: Dict[str, Any] = {}
-    prior_step_results: List[Dict[str, Any]] = []
+    context: Dict[str, Any] = Field(default_factory=dict)
+    args: Dict[str, Any] = Field(default_factory=dict)
+    prior_step_results: List[Dict[str, Any]] = Field(default_factory=list)
     raw_user_text: Optional[str] = Field(
         default=None,
         description="Canonical raw user message associated with this exec step.",
@@ -69,15 +78,17 @@ class ExecStepPayload(BaseModel):
 
     requires_gpu: bool = False
     requires_memory: bool = False
+    profile_name: Optional[str] = None
 
 
 class EmbeddingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     """
     Request body for embeddings generation via LLM Gateway.
     """
     model: Optional[str] = None
     input: List[str]
-    options: Optional[dict] = None
+    options: Dict[str, Any] = Field(default_factory=dict)
     trace_id: Optional[str] = None
     source: Optional[str] = None
 
@@ -87,6 +98,7 @@ class EmbeddingsBody(BaseModel):
 
 
 class ExecutionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     """
     Standard message shape on the bus for LLM gateway.
 

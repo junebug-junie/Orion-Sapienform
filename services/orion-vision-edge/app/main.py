@@ -1,5 +1,7 @@
 # app/main.py
 import asyncio
+from datetime import datetime, timezone
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import logging
@@ -15,6 +17,9 @@ from .routes import router as vision_router
 logger = logging.getLogger("orion-vision-edge.main")
 logging.basicConfig(level=logging.INFO)
 
+
+BOOT_ID = str(uuid.uuid4())
+
 async def heartbeat_loop(bus_instance):
     """Publishes a heartbeat every 30 seconds."""
     logger.info("Heartbeat loop started.")
@@ -24,6 +29,8 @@ async def heartbeat_loop(bus_instance):
                 payload = SystemHealthV1(
                     service=settings.SERVICE_NAME,
                     version=settings.SERVICE_VERSION,
+                    boot_id=BOOT_ID,
+                    last_seen_ts=datetime.now(timezone.utc),
                     node="vision-edge-node",
                     status="ok"
                 ).model_dump(mode="json")

@@ -1,3 +1,5 @@
+import uuid
+from datetime import datetime, timezone
 import threading
 from fastapi import FastAPI
 from app.settings import settings
@@ -11,6 +13,7 @@ import asyncio
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
 
+BOOT_ID = str(uuid.uuid4())
 
 @app.on_event("startup")
 def startup_event():
@@ -53,6 +56,8 @@ def heartbeat_worker_thread():
                     payload = SystemHealthV1(
                         service=settings.SERVICE_NAME,
                         version=settings.SERVICE_VERSION,
+                        boot_id=BOOT_ID,
+                        last_seen_ts=datetime.now(timezone.utc),
                         node="gdb-node",
                         status="ok"
                     ).model_dump(mode="json")

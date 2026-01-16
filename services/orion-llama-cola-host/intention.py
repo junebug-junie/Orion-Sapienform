@@ -36,8 +36,10 @@ from transformers.utils import (
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+
 LLAMA_INPUTS_DOCSTRING = getattr(modeling_llama, "LLAMA_INPUTS_DOCSTRING", "")
 LLAMA_START_DOCSTRING = getattr(modeling_llama, "LLAMA_START_DOCSTRING", "")
+
 
 TOP_K = 40
 TOP_P = 1.0

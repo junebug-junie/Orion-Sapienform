@@ -475,6 +475,8 @@ def _fetch_embedding_internal(text: str) -> Optional[List[float]]:
         url = f"{settings.llama_cola_embedding_url.rstrip('/')}/v1/embeddings"
     elif settings.vllm_url:
         url = f"{settings.vllm_url.rstrip('/')}/v1/embeddings"
+    elif settings.ollama_url:
+        url = f"{settings.ollama_url.rstrip('/')}/api/embeddings"
 
     if not url:
         return None

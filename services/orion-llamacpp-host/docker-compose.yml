@@ -47,9 +47,9 @@ services:
 
     ports:
       # Publish llama-server port (container binds whatever profile/override chooses; default 8080)
-      #- "${LLAMACPP_HOST_PORT:-7005}:8080"
+      - "${LLAMACPP_HOST_PORT:-7005}:8080"
       # when running on athena:
-      - "${LLAMACPP_HOST_PORT:-7005}:7005"
+      #- "${LLAMACPP_HOST_PORT:-7005}:7005"
 
     healthcheck:
       # We cannot easily check specific port since it's dynamic (profile-driven),

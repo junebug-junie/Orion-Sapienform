@@ -62,6 +62,13 @@ class PlanRunner:
         )
         mode = extra.get("mode") or ctx.get("mode") or "brain"
         recall_cfg = extra.get("recall") or ctx.get("recall") or {}
+        recall_mode = str(recall_cfg.get("mode") or "").lower()
+        if recall_mode == "deep":
+            selected_profile = "deep.graph.v1"
+        elif recall_mode == "graph":
+            selected_profile = "graphtri.v1"
+        else:
+            selected_profile = "reflect.v1"
         raw_enabled = recall_cfg.get("enabled", True)
         ctx.setdefault("recall", recall_cfg)
         recall_enabled = (
@@ -80,6 +87,7 @@ class PlanRunner:
                 recall_required,
                 recall_cfg,
             )
+            logger.info("Recall selected profile=%s", selected_profile)
 
         logger.info(
             "Exec plan start: corr=%s mode=%s verb=%s recall_enabled=%s recall_required=%s steps=%s recall_cfg=%s",
@@ -123,11 +131,37 @@ class PlanRunner:
                 ctx=ctx,
                 correlation_id=correlation_id,
                 recall_cfg=recall_cfg,
-                recall_profile=recall_cfg.get("profile"),
+                recall_profile=selected_profile,
                 diagnostic=diagnostic,
             )
             step_results.append(recall_step)
             memory_used = recall_step.status == "success"
+            recall_count = 0
+            if isinstance(recall_step.result, dict):
+                recall_payload = recall_step.result.get("RecallService")
+                if isinstance(recall_payload, dict):
+                    recall_count = int(recall_payload.get("count") or 0)
+                    recall_debug = recall_payload
+            if recall_required and recall_count == 0:
+                if diagnostic:
+                    logger.info(
+                        "required recall empty; failing fast session_id=%s trace_id=%s",
+                        ctx.get("session_id"),
+                        ctx.get("trace_id"),
+                    )
+                return PlanExecutionResult(
+                    verb_name=plan.verb_name,
+                    request_id=req.args.request_id,
+                    status="fail",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=mode,
+                    final_text=None,
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    error="recall_required_but_empty",
+                )
             if recall_step.status != "success":
                 overall_status = "fail" if recall_required else "partial"
                 soft_failure = not recall_required

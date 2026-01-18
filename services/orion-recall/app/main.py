@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
+
+import requests
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -12,6 +15,23 @@ from .service import chassis_cfg
 from .settings import settings
 from .worker import handle_recall, process_recall
 from orion.core.contracts.recall import RecallQueryV1
+
+logger = logging.getLogger("orion-recall.main")
+
+
+def _check_rdf_endpoint() -> None:
+    if not settings.RECALL_RDF_ENDPOINT_URL:
+        logger.info("RDF endpoint not configured; skipping RDF health check.")
+        return
+    try:
+        resp = requests.get(
+            settings.RECALL_RDF_ENDPOINT_URL,
+            auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
+            timeout=settings.RECALL_RDF_TIMEOUT_SEC,
+        )
+        logger.info("RDF endpoint check status=%s url=%s", resp.status_code, settings.RECALL_RDF_ENDPOINT_URL)
+    except Exception as exc:
+        logger.warning("RDF endpoint check failed url=%s error=%s", settings.RECALL_RDF_ENDPOINT_URL, exc)
 
 
 @asynccontextmanager
@@ -30,6 +50,7 @@ async def lifespan(app: FastAPI):
 
     await rabbit.start_background()
     app.state.rabbit = rabbit
+    _check_rdf_endpoint()
 
     yield
 

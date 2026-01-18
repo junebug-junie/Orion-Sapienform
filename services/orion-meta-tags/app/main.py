@@ -2,6 +2,7 @@
 import logging
 import traceback
 import uuid
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -40,6 +41,19 @@ def _svc_ref() -> ServiceRef:
         version=settings.SERVICE_VERSION,
         node=settings.NODE_NAME,
     )
+
+
+def _normalize_observer(observer: Any) -> str:
+    normalized = unicodedata.normalize("NFKD", str(observer or "")).encode("ascii", "ignore").decode("ascii")
+    return normalized.strip().lower()
+
+
+def _is_juniper(observer: Any) -> bool:
+    return _normalize_observer(observer) == "juniper"
+
+
+def _is_orion(observer: Any) -> bool:
+    return _normalize_observer(observer) == "orion"
 
 
 async def handle_meta_tags_rpc(env: BaseEnvelope) -> BaseEnvelope:
@@ -95,8 +109,18 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
     global meta_tagger
 
     try:
+        raw_payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+        observer = _normalize_observer(raw_payload.get("observer"))
+        logger.debug(
+            "Meta-tags gate observer=%s action=%s",
+            observer or "unknown",
+            "skip" if _is_orion(observer) else "publish",
+        )
+        if _is_orion(observer):
+            return
+
         # VALIDATION & TEXT EXTRACTION
-        in_payload = EventIn(**(envelope.payload if isinstance(envelope.payload, dict) else {}))
+        in_payload = EventIn(**raw_payload)
         logger.info("📨 Processing %s (Text len: %d)", in_payload.id, len(in_payload.text or ""))
 
         # NLP PROCESSING

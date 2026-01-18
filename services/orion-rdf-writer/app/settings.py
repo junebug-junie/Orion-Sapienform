@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # Collapse (Raw)
     CHANNEL_EVENTS_COLLAPSE: str = Field(default="orion:collapse:intake", env="CHANNEL_EVENTS_COLLAPSE")
     # Tagged/Enriched
-    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:raw", env="CHANNEL_EVENTS_TAGGED")
+    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
     # Core Events (Filtering targets="rdf")
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
 
@@ -29,6 +29,10 @@ class Settings(BaseSettings):
 
     # Cognition Trace
     CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
+
+    # Chat History
+    CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
+    CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
 
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
@@ -56,7 +60,9 @@ class Settings(BaseSettings):
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_WORKER_RDF,
             self.CORTEX_LOG_CHANNEL,
-            self.CHANNEL_COGNITION_TRACE_PUB
+            self.CHANNEL_COGNITION_TRACE_PUB,
+            self.CHANNEL_CHAT_HISTORY_TURN,
+            self.CHANNEL_CHAT_HISTORY_LOG,
         ]
 
 settings = Settings()

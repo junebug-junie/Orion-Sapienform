@@ -49,11 +49,13 @@ def _normalize_observer(observer: Any) -> str:
 
 
 def _is_juniper(observer: Any) -> bool:
-    return _normalize_observer(observer) == "juniper"
+    normalized = _normalize_observer(observer)
+    return normalized == "juniper" or normalized.startswith("juniper")
 
 
 def _is_orion(observer: Any) -> bool:
-    return _normalize_observer(observer) == "orion"
+    normalized = _normalize_observer(observer)
+    return normalized == "orion" or normalized.startswith("orion")
 
 
 async def handle_meta_tags_rpc(env: BaseEnvelope) -> BaseEnvelope:
@@ -164,15 +166,6 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
             logger.info("✅ Published chat tags for %s -> %s", turn_id, settings.CHANNEL_EVENTS_TAGGED_CHAT)
             return
 
-        observer = _normalize_observer(raw_payload.get("observer"))
-        logger.debug(
-            "Meta-tags gate observer=%s action=%s",
-            observer or "unknown",
-            "skip" if _is_orion(observer) else "publish",
-        )
-        if _is_orion(observer):
-            return
-
         # VALIDATION & TEXT EXTRACTION
         raw_id = raw_payload.get("id") or raw_payload.get("event_id")
         if not raw_id and envelope.correlation_id:
@@ -182,6 +175,15 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
         if not raw_payload.get("id"):
             raw_payload = dict(raw_payload)
             raw_payload["id"] = raw_id
+
+        observer = _normalize_observer(raw_payload.get("observer"))
+        if _is_orion(observer):
+            logger.info("skip meta-tags: observer=orion collapse_id=%s", raw_id)
+            return
+        if not _is_juniper(observer):
+            logger.info("skip meta-tags: observer unknown=%s collapse_id=%s", observer or "unknown", raw_id)
+            return
+
         in_payload = EventIn(**raw_payload)
         logger.info("📨 Processing %s (Text len: %d)", in_payload.id, len(in_payload.text or ""))
 
@@ -233,7 +235,12 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
         )
 
         await meta_tagger.bus.publish(settings.CHANNEL_EVENTS_TAGGED, out_env)
-        logger.info("✅ Published tags for %s -> %s", in_payload.id, settings.CHANNEL_EVENTS_TAGGED)
+        logger.info(
+            "✅ Published tags for %s observer=%s -> %s",
+            in_payload.id,
+            observer or "unknown",
+            settings.CHANNEL_EVENTS_TAGGED,
+        )
 
     except Exception as e:
         logger.error("❌ Error processing event: %s", e)

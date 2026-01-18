@@ -49,11 +49,13 @@ def _normalize_observer(observer: Any) -> str:
 
 
 def _is_juniper(observer: Any) -> bool:
-    return _normalize_observer(observer) == "juniper"
+    normalized = _normalize_observer(observer)
+    return normalized == "juniper" or normalized.startswith("juniper")
 
 
 def _is_orion(observer: Any) -> bool:
-    return _normalize_observer(observer) == "orion"
+    normalized = _normalize_observer(observer)
+    return normalized == "orion" or normalized.startswith("orion")
 
 
 async def handle_meta_tags_rpc(env: BaseEnvelope) -> BaseEnvelope:
@@ -110,16 +112,78 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
 
     try:
         raw_payload = envelope.payload if isinstance(envelope.payload, dict) else {}
-        observer = _normalize_observer(raw_payload.get("observer"))
-        logger.debug(
-            "Meta-tags gate observer=%s action=%s",
-            observer or "unknown",
-            "skip" if _is_orion(observer) else "publish",
-        )
-        if _is_orion(observer):
+        if envelope.kind == "chat.history":
+            turn_id = raw_payload.get("correlation_id")
+            if not turn_id and envelope.correlation_id:
+                turn_id = str(envelope.correlation_id)
+            if not turn_id:
+                turn_id = uuid.uuid4().hex
+            if not raw_payload.get("id"):
+                raw_payload = dict(raw_payload)
+                raw_payload["id"] = turn_id
+
+            in_payload = EventIn(**raw_payload)
+            logger.info("📨 Processing chat turn %s (Text len: %d)", in_payload.id, len(in_payload.text or ""))
+
+            doc = nlp(in_payload.text or "")
+            entities = [ent.text for ent in doc.ents]
+            tags = list(entities)
+
+            sentiment_tag = "sentiment:neutral"
+            positive_keywords = {"triumphant", "relief", "capable", "good", "success"}
+            negative_keywords = {"anxious", "fear", "fail", "bad", "panic"}
+
+            tokens = set((in_payload.text or "").lower().split())
+            if tokens & positive_keywords:
+                sentiment_tag = "sentiment:positive"
+            elif tokens & negative_keywords:
+                sentiment_tag = "sentiment:negative"
+
+            tags.append(sentiment_tag)
+
+            enrichment = Enrichment(
+                id=turn_id,
+                collapse_id=turn_id,
+                service_name=settings.SERVICE_NAME,
+                service_version=settings.SERVICE_VERSION,
+                enrichment_type="chat_tagging",
+                tags=tags,
+                entities=entities,
+                salience=0.0,
+                ts=datetime.now(timezone.utc).isoformat(),
+                node=settings.NODE_NAME,
+                correlation_id=str(envelope.correlation_id) if envelope.correlation_id else str(turn_id),
+                source_message_id=str(envelope.id) if envelope.id else None,
+            )
+
+            out_env = envelope.derive_child(
+                kind="tags.enriched",
+                source=_svc_ref(),
+                payload=enrichment,
+            )
+
+            await meta_tagger.bus.publish(settings.CHANNEL_EVENTS_TAGGED_CHAT, out_env)
+            logger.info("✅ Published chat tags for %s -> %s", turn_id, settings.CHANNEL_EVENTS_TAGGED_CHAT)
             return
 
         # VALIDATION & TEXT EXTRACTION
+        raw_id = raw_payload.get("id") or raw_payload.get("event_id")
+        if not raw_id and envelope.correlation_id:
+            raw_id = str(envelope.correlation_id)
+        if not raw_id:
+            raw_id = uuid.uuid4().hex
+        if not raw_payload.get("id"):
+            raw_payload = dict(raw_payload)
+            raw_payload["id"] = raw_id
+
+        observer = _normalize_observer(raw_payload.get("observer"))
+        if _is_orion(observer):
+            logger.info("skip meta-tags: observer=orion collapse_id=%s", raw_id)
+            return
+        if not _is_juniper(observer):
+            logger.info("skip meta-tags: observer unknown=%s collapse_id=%s", observer or "unknown", raw_id)
+            return
+
         in_payload = EventIn(**raw_payload)
         logger.info("📨 Processing %s (Text len: %d)", in_payload.id, len(in_payload.text or ""))
 
@@ -128,6 +192,7 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
 
         # Extract entities (as tags)
         tags = [ent.text for ent in doc.ents]
+        entities = [ent.text for ent in doc.ents]
 
         # Basic sentiment heuristic
         sentiment_tag = "sentiment:neutral"
@@ -154,7 +219,7 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
             service_version=settings.SERVICE_VERSION,
             enrichment_type="tagging",
             tags=tags,
-            entities=[],
+            entities=entities,
             salience=0.0,
             ts=datetime.now(timezone.utc).isoformat(),
             node=settings.NODE_NAME,
@@ -170,7 +235,12 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
         )
 
         await meta_tagger.bus.publish(settings.CHANNEL_EVENTS_TAGGED, out_env)
-        logger.info("✅ Published tags for %s -> %s", in_payload.id, settings.CHANNEL_EVENTS_TAGGED)
+        logger.info(
+            "✅ Published tags for %s observer=%s -> %s",
+            in_payload.id,
+            observer or "unknown",
+            settings.CHANNEL_EVENTS_TAGGED,
+        )
 
     except Exception as e:
         logger.error("❌ Error processing event: %s", e)
@@ -195,7 +265,7 @@ async def lifespan(app: FastAPI):
     meta_tagger = Hunter(
         cfg=config,
         handler=handle_triage_event,
-        patterns=[settings.CHANNEL_EVENTS_TRIAGE],
+        patterns=[settings.CHANNEL_EVENTS_TRIAGE, settings.CHANNEL_EVENTS_CHAT_TURN],
     )
 
     # RPC step-service (MetaTagsService)

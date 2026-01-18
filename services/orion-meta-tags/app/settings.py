@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # === Channel Routing ===
     CHANNEL_EVENTS_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_EVENTS_TRIAGE")
     CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
+    CHANNEL_EVENTS_CHAT_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_EVENTS_CHAT_TURN")
+    CHANNEL_EVENTS_TAGGED_CHAT: str = Field(default="orion:tags:chat:enriched", env="CHANNEL_EVENTS_TAGGED_CHAT")
 
     # === NLP Model ===
     SPA_MODEL: str = Field(default="en_core_web_trf", env="SPA_MODEL")

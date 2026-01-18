@@ -35,6 +35,7 @@ services:
       - CHANNEL_EVENTS_COLLAPSE=${CHANNEL_EVENTS_COLLAPSE}
       # Tagged/Enriched
       - CHANNEL_EVENTS_TAGGED=${CHANNEL_EVENTS_TAGGED}
+      - CHANNEL_EVENTS_TAGGED_CHAT=${CHANNEL_EVENTS_TAGGED_CHAT}
       # Core Events (Filtering targets="rdf")
       - CHANNEL_CORE_EVENTS=${CHANNEL_CORE_EVENTS}
       # Worker intake for Cortex (RPC)

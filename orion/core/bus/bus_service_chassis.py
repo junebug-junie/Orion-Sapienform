@@ -264,15 +264,31 @@ class Hunter(BaseChassis):
         if pattern is not None:
             self.patterns.append(pattern)
 
+        seen = set()
+        deduped: List[str] = []
+        for value in self.patterns:
+            value = (value or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        self.patterns = deduped
+
         if not self.patterns:
             raise ValueError("Hunter requires at least one pattern (via 'patterns' list or 'pattern' str)")
             
         self.handler = handler
 
     async def _run(self) -> None:
-        logger.info(f"Hunter subscribing patterns={self.patterns} bus={self.cfg.bus_url}")
+        uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in self.patterns)
+        logger.info(
+            "Hunter subscribing patterns=%s use_patterns=%s bus=%s",
+            self.patterns,
+            uses_glob,
+            self.cfg.bus_url,
+        )
 
-        async with self.bus.subscribe(*self.patterns, patterns=True) as pubsub:
+        async with self.bus.subscribe(*self.patterns, patterns=uses_glob) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
                 if self._stop.is_set():
                     break
@@ -285,11 +301,14 @@ class Hunter(BaseChassis):
                 channel = msg.get("channel")
                 if hasattr(channel, "decode"):
                     channel = channel.decode("utf-8")
+                pattern = msg.get("pattern")
+                if hasattr(pattern, "decode"):
+                    pattern = pattern.decode("utf-8")
 
                 decoded = self.bus.codec.decode(data)
                 if not decoded.ok or decoded.envelope is None:
                     logger.warning(
-                        f"Hunter decode failed channel={channel} error={decoded.error}"
+                        f"Hunter decode failed channel={channel} pattern={pattern} error={decoded.error}"
                     )
                     await self._publish_error(
                         RuntimeError(decoded.error or "decode_failed"),
@@ -301,7 +320,7 @@ class Hunter(BaseChassis):
                 env = decoded.envelope
                 trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
                 logger.info(
-                    f"Hunter intake channel={channel} kind={env.kind} "
+                    f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
                     f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
                 )
                 try:

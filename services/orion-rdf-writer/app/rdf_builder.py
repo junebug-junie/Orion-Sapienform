@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Tuple, Optional, Any
 
 from rdflib import Graph, Namespace, URIRef, Literal
-from rdflib.namespace import RDF, XSD
+from rdflib.namespace import RDF, RDFS, XSD
 
 # Typed schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
@@ -20,6 +20,7 @@ from app.settings import settings
 
 ORION = Namespace("http://conjourney.net/orion#")
 CM = Namespace("http://orion.ai/collapse#")
+PROV = Namespace("http://www.w3.org/ns/prov#")
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,11 @@ def _sanitize_fragment(raw: Any) -> str:
     like 'llm_brain' or 'dream_synthesize' for use in IRIs.
     """
     return "".join(c if c.isalnum() else "_" for c in str(raw))
+
+
+def _entity_uri(text: str) -> URIRef:
+    slug = _sanitize_fragment(str(text).strip().lower())
+    return URIRef(f"http://conjourney.net/orion/entity/{slug}")
 
 def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -129,7 +135,11 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             else:
                 meta = payload
 
-            subject_uri = URIRef(f"http://conjourney.net/event/{meta.collapse_id or meta.id}")
+            if meta.enrichment_type == "chat_tagging":
+                key = meta.collapse_id or meta.id
+                subject_uri = URIRef(f"http://conjourney.net/orion/chatTurn/{_sanitize_fragment(key)}")
+            else:
+                subject_uri = URIRef(f"http://conjourney.net/event/{meta.collapse_id or meta.id}")
             _build_enrichment_graph(g, meta, subject_uri, emit_claims=(env_kind == "tags.enriched"))
             attach_provenance(g, subject_uri, meta.service_name)
             return g.serialize(format="nt"), "orion:enrichment"
@@ -305,6 +315,30 @@ def _handle_chat_turn(g: Graph, data: dict) -> Tuple[str, str]:
     if node:
         g.add((turn_uri, ORION.node, Literal(str(node), datatype=XSD.string)))
 
+    prompt_tokens = data.get("prompt_tokens")
+    if prompt_tokens is not None:
+        g.add((turn_uri, ORION.promptTokens, Literal(prompt_tokens, datatype=XSD.integer)))
+
+    completion_tokens = data.get("completion_tokens")
+    if completion_tokens is not None:
+        g.add((turn_uri, ORION.completionTokens, Literal(completion_tokens, datatype=XSD.integer)))
+
+    total_tokens = data.get("total_tokens")
+    if total_tokens is not None:
+        g.add((turn_uri, ORION.totalTokens, Literal(total_tokens, datatype=XSD.integer)))
+
+    intent = data.get("intent")
+    if intent:
+        g.add((turn_uri, ORION.intent, Literal(str(intent), datatype=XSD.string)))
+
+    topic = data.get("topic")
+    if topic:
+        g.add((turn_uri, ORION.topic, Literal(str(topic), datatype=XSD.string)))
+
+    artifact_path = data.get("artifact_path")
+    if artifact_path:
+        g.add((turn_uri, ORION.artifactPath, Literal(str(artifact_path), datatype=XSD.string)))
+
     return g.serialize(format="nt"), "orion:chat"
 
 
@@ -340,6 +374,34 @@ def _handle_chat_message(g: Graph, data: dict) -> Tuple[str, str]:
     model = data.get("model")
     if model:
         g.add((message_uri, ORION.model, Literal(str(model), datatype=XSD.string)))
+
+    node = data.get("node")
+    if node:
+        g.add((message_uri, ORION.node, Literal(str(node), datatype=XSD.string)))
+
+    prompt_tokens = data.get("prompt_tokens")
+    if prompt_tokens is not None:
+        g.add((message_uri, ORION.promptTokens, Literal(prompt_tokens, datatype=XSD.integer)))
+
+    completion_tokens = data.get("completion_tokens")
+    if completion_tokens is not None:
+        g.add((message_uri, ORION.completionTokens, Literal(completion_tokens, datatype=XSD.integer)))
+
+    total_tokens = data.get("total_tokens")
+    if total_tokens is not None:
+        g.add((message_uri, ORION.totalTokens, Literal(total_tokens, datatype=XSD.integer)))
+
+    intent = data.get("intent")
+    if intent:
+        g.add((message_uri, ORION.intent, Literal(str(intent), datatype=XSD.string)))
+
+    topic = data.get("topic")
+    if topic:
+        g.add((message_uri, ORION.topic, Literal(str(topic), datatype=XSD.string)))
+
+    artifact_path = data.get("artifact_path")
+    if artifact_path:
+        g.add((message_uri, ORION.artifactPath, Literal(str(artifact_path), datatype=XSD.string)))
 
     provider = data.get("provider")
     if provider:
@@ -394,41 +456,52 @@ def _build_enrichment_graph(
     if isinstance(entities, str):
         entities = [entities]
     for ent in entities:
+        entity_text = None
+        entity_label = None
         if isinstance(ent, str):
-            g.add((subject, CM.hasEntity, Literal(ent)))
-            if emit_claims:
-                _emit_claim(
-                    g,
-                    subject=subject,
-                    predicate=ORION.mentionsEntity,
-                    obj=Literal(ent),
-                    meta=meta,
-                )
-            continue
-        if isinstance(ent, dict):
+            entity_text = ent
+            entity_label = ent
+        elif isinstance(ent, dict):
             val = ent.get("value") or ent.get("name") or ent.get("text")
             typ = ent.get("type") or ent.get("label")
             if val and typ:
-                entity_value = f"{val} ({typ})"
-                g.add((subject, CM.hasEntity, Literal(entity_value)))
-                if emit_claims:
-                    _emit_claim(
-                        g,
-                        subject=subject,
-                        predicate=ORION.mentionsEntity,
-                        obj=Literal(entity_value),
-                        meta=meta,
-                    )
+                entity_text = str(val)
+                entity_label = f"{val} ({typ})"
             elif val:
-                g.add((subject, CM.hasEntity, Literal(str(val))))
-                if emit_claims:
-                    _emit_claim(
-                        g,
-                        subject=subject,
-                        predicate=ORION.mentionsEntity,
-                        obj=Literal(str(val)),
-                        meta=meta,
-                    )
+                entity_text = str(val)
+                entity_label = str(val)
+
+        if not entity_text:
+            continue
+
+        g.add((subject, CM.hasEntity, Literal(entity_label or entity_text)))
+        if emit_claims:
+            _emit_claim(
+                g,
+                subject=subject,
+                predicate=ORION.mentionsEntity,
+                obj=Literal(entity_label or entity_text),
+                meta=meta,
+            )
+
+        entity_uri = _entity_uri(entity_text)
+        g.add((entity_uri, RDF.type, ORION.Entity))
+        g.add((entity_uri, RDFS.label, Literal(entity_label or entity_text)))
+
+        timestamp_val = meta.timestamp or meta.ts
+        subject_id = _sanitize_fragment(str(subject).rsplit("/", 1)[-1])
+        mention_seed = f"{subject}|{entity_text}|{timestamp_val}"
+        mention_hash = hashlib.sha256(mention_seed.encode("utf-8")).hexdigest()[:16]
+        mention_uri = URIRef(f"http://conjourney.net/orion/mention/{subject_id}/{mention_hash}")
+        g.add((mention_uri, RDF.type, ORION.Mention))
+        g.add((mention_uri, ORION.subject, subject))
+        g.add((mention_uri, ORION.entity, entity_uri))
+
+        confidence = meta.salience if meta.salience is not None else 0.6
+        g.add((mention_uri, ORION.confidence, Literal(confidence, datatype=XSD.float)))
+        if timestamp_val:
+            g.add((mention_uri, ORION.timestamp, Literal(str(timestamp_val), datatype=XSD.string)))
+        g.add((mention_uri, PROV.wasGeneratedBy, Literal(meta.service_name)))
 
     # Provenance for enrichment
     enrichment_id = meta.id or meta.collapse_id or str(uuid.uuid4())

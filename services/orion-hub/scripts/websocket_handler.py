@@ -28,6 +28,18 @@ logger = logging.getLogger("orion-hub.ws")
 #________________________
 
 
+def _schedule_publish(coro: asyncio.Future, label: str) -> None:
+    task = asyncio.create_task(coro)
+
+    def _log_result(t: asyncio.Task) -> None:
+        try:
+            t.result()
+        except Exception as exc:
+            logger.warning("Failed to publish %s: %s", label, exc, exc_info=True)
+
+    task.add_done_callback(_log_result)
+
+
 def _build_prompt_with_history(
     history: List[Dict[str, Any]],
     user_text: str,
@@ -139,6 +151,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
             mode = data.get("mode", "brain")
             disable_tts = data.get("disable_tts", False)
+            diagnostic = bool(
+                data.get("diagnostic")
+                or (isinstance(data.get("options"), dict) and data.get("options", {}).get("diagnostic"))
+            )
+            session_id = data.get("session_id")
+            publish_session_id = session_id or "unknown"
+            if not session_id and diagnostic:
+                logger.warning("Missing session_id; publishing chat history with session_id=unknown")
 
             # Trace Verb & Test Stub Logic ---
             # 1. Default to general chat
@@ -212,7 +232,7 @@ async def websocket_endpoint(websocket: WebSocket):
             chat_req = CortexChatRequest(
                 prompt=prompt_with_ctx,
                 mode=mode,
-                session_id=data.get("session_id"),
+                session_id=session_id,
                 user_id=data.get("user_id"),
                 trace_id=trace_id,
                 recall={"enabled": data.get("use_recall", False)},
@@ -230,12 +250,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 user_env = build_chat_history_envelope(
                     content=transcript,
                     role="user",
-                    session_id=data.get("session_id"),
+                    session_id=publish_session_id,
                     correlation_id=trace_id,
                     speaker=data.get("user_id") or "user",
                     tags=[mode],
                 )
-                await publish_chat_history(bus, [user_env])
+                _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
 
             orion_response_text = ""
             try:
@@ -289,14 +309,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     env_turn = build_chat_turn_envelope(
                         prompt=transcript,
                         response=orion_response_text,
-                        session_id=data.get("session_id"),
+                        session_id=publish_session_id,
                         correlation_id=trace_id,
                         user_id=data.get("user_id"),
                         source_label="hub_ws",
                         spark_meta=spark_meta,
                         turn_id=trace_id,
                     )
-                    await publish_chat_turn(bus, env_turn)
+                    _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
                     logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
                     # 2. Spark Introspection Candidate
                     candidate_payload = {
@@ -314,7 +334,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                     # Kept the literal string to ensure it hits the default introspection channel
                     # and avoids settings attribute errors
-                    await bus.publish("orion:spark:introspect:candidate:log", env_spark)
+                    _schedule_publish(
+                        bus.publish("orion:spark:introspect:candidate:log", env_spark),
+                        "spark.candidate",
+                    )
 
                 except Exception as e:
                     logger.warning(f"Failed to log/introspect chat: {e}")
@@ -327,14 +350,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     assistant_env = build_chat_history_envelope(
                         content=orion_response_text,
                         role="assistant",
-                        session_id=data.get("session_id"),
+                        session_id=publish_session_id,
                         correlation_id=getattr(resp.cortex_result, "correlation_id", None) or trace_id,
                         speaker=gateway_meta.get("speaker") or settings.SERVICE_NAME,
                         model=gateway_meta.get("model"),
                         provider=gateway_meta.get("provider"),
                         tags=[mode, trace_verb],
                     )
-                    await publish_chat_history(bus, [assistant_env])
+                    _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
                 except Exception as e:
                     logger.warning("Failed to publish assistant chat history: %s", e, exc_info=True)
 

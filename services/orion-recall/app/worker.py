@@ -23,7 +23,7 @@ try:
     from .fusion import fuse_candidates
     from .profiles import get_profile
     from .settings import settings
-    from .storage.rdf_adapter import fetch_rdf_fragments
+    from .storage.rdf_adapter import fetch_rdf_fragments, fetch_rdf_expansion_terms
     from .storage.vector_adapter import fetch_vector_fragments
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
 except ImportError:  # pragma: no cover - fallback for test harness pathing
@@ -31,11 +31,11 @@ except ImportError:  # pragma: no cover - fallback for test harness pathing
     from profiles import get_profile  # type: ignore
     from settings import settings  # type: ignore
     try:
-        from rdf_adapter import fetch_rdf_fragments  # type: ignore
+        from rdf_adapter import fetch_rdf_fragments, fetch_rdf_expansion_terms  # type: ignore
         from vector_adapter import fetch_vector_fragments  # type: ignore
         from sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
     except ImportError:
-        from storage.rdf_adapter import fetch_rdf_fragments  # type: ignore
+        from storage.rdf_adapter import fetch_rdf_fragments, fetch_rdf_expansion_terms  # type: ignore
         from storage.vector_adapter import fetch_vector_fragments  # type: ignore
         from sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
 
@@ -91,32 +91,75 @@ async def _query_backends(
     session_id: str | None,
     node_id: str | None,
     entities: List[str],
+    diagnostic: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     candidates: List[Dict[str, Any]] = []
     backend_counts: Dict[str, int] = {}
 
-    if settings.RECALL_ENABLE_VECTOR:
+    rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
+    rdf_top_k = int(profile.get("rdf_top_k", 0))
+    expansion_terms: List[str] = []
+    if rdf_enabled:
         try:
-            vec = fetch_vector_fragments(
-                query_text=fragment,
-                time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
-                max_items=int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)),
-            )
-            backend_counts["vector"] = len(vec)
-            candidates.extend(vec)
+            expansion_terms = fetch_rdf_expansion_terms(query_text=fragment, max_items=6)
         except Exception as exc:
-            logger.debug(f"vector backend skipped: {exc}")
+            logger.debug(f"rdf expansion skipped: {exc}")
 
-    if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
+    if settings.RECALL_ENABLE_VECTOR:
+        seeds = [fragment, *entities]
+        expansions = expansion_terms[:6]
+        vector_queries: List[str] = []
+        seen = set()
+        for term in [*seeds, *expansions]:
+            cleaned = (term or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            vector_queries.append(cleaned)
+            if len(vector_queries) >= 4:
+                break
+        if not vector_queries:
+            vector_queries = [fragment]
+        per_query = max(1, int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)) // len(vector_queries))
+        vec_count = 0
+        for term in vector_queries:
+            try:
+                vec = fetch_vector_fragments(
+                    query_text=term,
+                    time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
+                    max_items=per_query,
+                )
+                vec_count += len(vec)
+                candidates.extend(vec)
+            except Exception as exc:
+                logger.debug(f"vector backend skipped: {exc}")
+        backend_counts["vector"] = vec_count
+        if diagnostic:
+            logger.info(
+                "recall expansions seeds=%s expansions=%s vector_queries=%s vector_count=%s",
+                seeds,
+                expansions,
+                vector_queries,
+                vec_count,
+            )
+
+    if rdf_enabled:
         try:
             rdf = fetch_rdf_fragments(
                 query_text=fragment,
-                max_items=int(profile.get("rdf_top_k", 0)),
+                max_items=rdf_top_k,
             )
             backend_counts["rdf"] = len(rdf)
             candidates.extend(rdf)
         except Exception as exc:
             logger.debug(f"rdf backend skipped: {exc}")
+    if diagnostic:
+        logger.info(
+            "recall rdf_enabled=%s rdf_top_k=%s rdf_candidates=%s",
+            rdf_enabled,
+            rdf_top_k,
+            backend_counts.get("rdf", 0),
+        )
 
     if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
         try:
@@ -215,7 +258,12 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
             pass
 
 
-async def process_recall(q: RecallQueryV1, *, corr_id: str) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
+async def process_recall(
+    q: RecallQueryV1,
+    *,
+    corr_id: str,
+    diagnostic: bool = False,
+) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
     profile = get_profile(q.profile)
     enable_qe = bool(profile.get("enable_query_expansion", True))
     signals = _expand_query(q.fragment, verb=q.verb, intent=q.intent, enable=enable_qe)
@@ -230,6 +278,7 @@ async def process_recall(q: RecallQueryV1, *, corr_id: str) -> Tuple[MemoryBundl
             session_id=q.session_id,
             node_id=q.node_id,
             entities=_extract_entities(q.fragment),
+            diagnostic=diagnostic,
         )
         candidates.extend(cand)
         for k, v in counts.items():
@@ -283,7 +332,10 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
             payload={"error": f"unsupported_kind:{env.kind}"},
         )
 
-    payload_obj: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
+    raw_payload: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
+    diagnostic = bool((raw_payload.get("options") or {}).get("diagnostic"))
+    payload_obj = dict(raw_payload)
+    payload_obj.pop("options", None)
     try:
         q = RecallQueryV1.model_validate(payload_obj)
     except ValidationError as ve:
@@ -294,7 +346,7 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
             payload={"error": "validation_failed", "details": ve.errors()},
         )
 
-    bundle, decision = await process_recall(q, corr_id=str(env.correlation_id))
+    bundle, decision = await process_recall(q, corr_id=str(env.correlation_id), diagnostic=diagnostic)
 
     # emit telemetry (fire and forget)
     try:

@@ -9,9 +9,11 @@ The **RDF Writer** service constructs the Knowledge Graph by converting incoming
 | :--- | :--- | :--- | :--- |
 | `orion:rdf-collapse:enqueue` | `CHANNEL_RDF_ENQUEUE` | `rdf.write.request` | Direct write requests. |
 | `orion:collapse:intake` | `CHANNEL_EVENTS_COLLAPSE` | `collapse.mirror.entry` | Collapse entries (raw). |
-| `orion:tags:raw` | `CHANNEL_EVENTS_TAGGED` | `tags.enriched`, `telemetry.meta_tags` | Enriched metadata tags. |
+| `orion:tags:enriched` | `CHANNEL_EVENTS_TAGGED` | `tags.enriched`, `telemetry.meta_tags` | Enriched metadata tags. |
 | `orion:core:events` | `CHANNEL_CORE_EVENTS` | `orion.event` | Legacy events targeted for RDF. |
 | `orion:rdf:worker` | `CHANNEL_WORKER_RDF` | `cortex.worker.rdf_build` | Worker tasks from Cortex. |
+| `orion:chat:history:turn` | `CHANNEL_CHAT_HISTORY_TURN` | `chat.history` | Chat turn history (prompt + response). |
+| `orion:chat:history:log` | `CHANNEL_CHAT_HISTORY_LOG` | `chat.history.message.v1` | Chat message history (per-message). |
 
 ### Published Channels
 | Channel | Env Var | Kind | Description |
@@ -26,7 +28,9 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- | :--- |
 | `CHANNEL_RDF_ENQUEUE` | `orion:rdf-collapse:enqueue` | Direct enqueue channel. |
 | `CHANNEL_EVENTS_COLLAPSE` | `orion:collapse:intake` | Collapse event source. |
-| `CHANNEL_EVENTS_TAGGED` | `orion:tags:raw` | Tagged event source. |
+| `CHANNEL_EVENTS_TAGGED` | `orion:tags:enriched` | Tagged event source. |
+| `CHANNEL_CHAT_HISTORY_TURN` | `orion:chat:history:turn` | Chat turn history intake. |
+| `CHANNEL_CHAT_HISTORY_LOG` | `orion:chat:history:log` | Chat message history intake. |
 | `GRAPHDB_URL` | (Required) | URL for the GraphDB endpoint. |
 
 ## Running & Testing
@@ -40,4 +44,20 @@ docker-compose up -d orion-rdf-writer
 Check connection to GraphDB in logs.
 ```bash
 docker-compose logs -f orion-rdf-writer | grep "Connected"
+```
+
+### SPARQL Smoke Query (last 10 chat turns by sessionId)
+```sparql
+PREFIX orion: <http://conjourney.net/orion#>
+
+SELECT ?turn ?prompt ?response ?timestamp
+WHERE {
+  ?turn a orion:ChatTurn ;
+        orion:sessionId "session-id-here" ;
+        orion:prompt ?prompt ;
+        orion:response ?response .
+  OPTIONAL { ?turn orion:timestamp ?timestamp }
+}
+ORDER BY DESC(?timestamp)
+LIMIT 10
 ```

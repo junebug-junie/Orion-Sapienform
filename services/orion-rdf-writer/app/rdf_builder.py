@@ -1,6 +1,8 @@
 import uuid
+import hashlib
 import logging
 import json
+import unicodedata
 from datetime import datetime, timezone
 from typing import Tuple, Optional, Any
 
@@ -20,6 +22,26 @@ ORION = Namespace("http://conjourney.net/orion#")
 CM = Namespace("http://orion.ai/collapse#")
 
 logger = logging.getLogger(__name__)
+
+def _normalize_observer(observer: Any) -> str:
+    normalized = unicodedata.normalize("NFKD", str(observer or "")).encode("ascii", "ignore").decode("ascii")
+    return normalized.strip().lower()
+
+def _is_juniper(observer: Any) -> bool:
+    return _normalize_observer(observer) == "juniper"
+
+def _is_orion(observer: Any) -> bool:
+    return _normalize_observer(observer) == "orion"
+
+def _is_dense(entry: CollapseMirrorEntry) -> bool:
+    if entry.is_causally_dense:
+        return True
+    score = None
+    if entry.causal_density and isinstance(entry.causal_density, dict):
+        score = entry.causal_density.get("score")
+    elif entry.causal_density is not None:
+        score = getattr(entry.causal_density, "score", None)
+    return score is not None and float(score) >= 0.70
 
 def _sanitize_fragment(raw: Any) -> str:
     """
@@ -67,6 +89,27 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             else:
                 entry = payload
 
+            observer = _normalize_observer(entry.observer)
+            dense = _is_dense(entry)
+            allow_write = False
+            if _is_juniper(observer):
+                allow_write = True
+            elif _is_orion(observer):
+                allow_write = dense
+            else:
+                allow_write = dense
+                logger.warning("Unknown observer %s; applying dense-only RDF gating.", observer or "unknown")
+
+            logger.debug(
+                "Collapse RDF gate observer=%s dense=%s action=%s",
+                observer or "unknown",
+                dense,
+                "write" if allow_write else "skip",
+            )
+
+            if not allow_write:
+                return None, None
+
             # Collapse ID is usually in the envelope or we generate it?
             # The schema doesn't have ID, it has 'observer' etc.
             # Actually, `services/orion-collapse-mirror/app/schemas.py` shows it has no ID field in Pydantic.
@@ -80,14 +123,14 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             return g.serialize(format="nt"), "orion:collapse"
 
         # 4. Meta Tags (Enriched)
-        elif env_kind == "telemetry.meta_tags":
+        elif env_kind in ("telemetry.meta_tags", "tags.enriched"):
             if isinstance(payload, dict):
                 meta = MetaTagsPayload.model_validate(payload)
             else:
                 meta = payload
 
             subject_uri = URIRef(f"http://conjourney.net/event/{meta.collapse_id or meta.id}")
-            _build_enrichment_graph(g, meta, subject_uri)
+            _build_enrichment_graph(g, meta, subject_uri, emit_claims=(env_kind == "tags.enriched"))
             attach_provenance(g, subject_uri, meta.service_name)
             return g.serialize(format="nt"), "orion:enrichment"
 
@@ -104,6 +147,16 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
              # Legacy dict handling
              if isinstance(payload, dict) and "rdf" in payload.get("targets", []):
                  return _legacy_dict_build(g, payload)
+
+        # 7. Chat History (Turn-level)
+        elif env_kind == "chat.history":
+            data = payload if isinstance(payload, dict) else payload.model_dump()
+            return _handle_chat_turn(g, data)
+
+        # 8. Chat History (Message-level)
+        elif env_kind == "chat.history.message.v1":
+            data = payload if isinstance(payload, dict) else payload.model_dump()
+            return _handle_chat_message(g, data)
 
         else:
             logger.debug(f"Unknown kind {env_kind} for RDF builder")
@@ -204,6 +257,97 @@ def _handle_cognition_trace(g: Graph, trace: CognitionTracePayload) -> Tuple[str
     return g.serialize(format="nt"), "orion:cognition"
 
 
+# === Chat History ===
+
+def _handle_chat_turn(g: Graph, data: dict) -> Tuple[str, str]:
+    session_id = data.get("session_id") or "unknown"
+    turn_id = data.get("id") or data.get("turn_id") or data.get("correlation_id") or data.get("message_id")
+    turn_id = turn_id or str(uuid.uuid4())
+
+    session_uri = URIRef(f"http://conjourney.net/orion/chatSession/{_sanitize_fragment(session_id)}")
+    turn_uri = URIRef(f"http://conjourney.net/orion/chatTurn/{_sanitize_fragment(turn_id)}")
+
+    g.add((session_uri, RDF.type, ORION.ChatSession))
+    g.add((turn_uri, RDF.type, ORION.ChatTurn))
+    g.add((session_uri, ORION.hasTurn, turn_uri))
+
+    g.add((turn_uri, ORION.sessionId, Literal(session_id, datatype=XSD.string)))
+
+    prompt = data.get("prompt")
+    if prompt:
+        g.add((turn_uri, ORION.prompt, Literal(prompt)))
+    response = data.get("response")
+    if response:
+        g.add((turn_uri, ORION.response, Literal(response)))
+
+    timestamp = data.get("timestamp")
+    if timestamp:
+        g.add((turn_uri, ORION.timestamp, Literal(timestamp, datatype=XSD.string)))
+
+    correlation_id = data.get("correlation_id")
+    if correlation_id:
+        g.add((turn_uri, ORION.correlationId, Literal(str(correlation_id), datatype=XSD.string)))
+
+    trace_id = data.get("trace_id") or correlation_id
+    if trace_id:
+        g.add((turn_uri, ORION.traceId, Literal(str(trace_id), datatype=XSD.string)))
+
+    spark_meta = data.get("spark_meta") if isinstance(data.get("spark_meta"), dict) else {}
+    verb = spark_meta.get("trace_verb") or data.get("verb")
+    if verb:
+        g.add((turn_uri, ORION.verb, Literal(str(verb), datatype=XSD.string)))
+
+    model = spark_meta.get("model") or data.get("model")
+    if model:
+        g.add((turn_uri, ORION.model, Literal(str(model), datatype=XSD.string)))
+
+    node = spark_meta.get("source_node") or data.get("node")
+    if node:
+        g.add((turn_uri, ORION.node, Literal(str(node), datatype=XSD.string)))
+
+    return g.serialize(format="nt"), "orion:chat"
+
+
+def _handle_chat_message(g: Graph, data: dict) -> Tuple[str, str]:
+    session_id = data.get("session_id") or "unknown"
+    message_id = data.get("message_id") or data.get("id") or str(uuid.uuid4())
+
+    session_uri = URIRef(f"http://conjourney.net/orion/chatSession/{_sanitize_fragment(session_id)}")
+    message_uri = URIRef(f"http://conjourney.net/orion/chatMessage/{_sanitize_fragment(message_id)}")
+
+    g.add((session_uri, RDF.type, ORION.ChatSession))
+    g.add((message_uri, RDF.type, ORION.ChatMessage))
+    g.add((session_uri, ORION.hasMessage, message_uri))
+
+    g.add((message_uri, ORION.sessionId, Literal(session_id, datatype=XSD.string)))
+
+    content = data.get("content")
+    if content:
+        g.add((message_uri, ORION.content, Literal(content)))
+
+    role = data.get("role")
+    if role:
+        g.add((message_uri, ORION.role, Literal(str(role), datatype=XSD.string)))
+
+    speaker = data.get("speaker")
+    if speaker:
+        g.add((message_uri, ORION.speaker, Literal(str(speaker), datatype=XSD.string)))
+
+    timestamp = data.get("timestamp")
+    if timestamp:
+        g.add((message_uri, ORION.timestamp, Literal(timestamp, datatype=XSD.string)))
+
+    model = data.get("model")
+    if model:
+        g.add((message_uri, ORION.model, Literal(str(model), datatype=XSD.string)))
+
+    provider = data.get("provider")
+    if provider:
+        g.add((message_uri, ORION.provider, Literal(str(provider), datatype=XSD.string)))
+
+    return g.serialize(format="nt"), "orion:chat"
+
+
 # ================================================================
 # --- HELPERS (Adapted) ------------------------------------------
 # ================================================================
@@ -222,25 +366,134 @@ def _build_raw_collapse_graph(g: Graph, entry: CollapseMirrorEntry, subject: URI
         state = ",".join(str(s) for s in state)
     g.add((subject, CM.observerState, Literal(state)))
 
-def _build_enrichment_graph(g: Graph, meta: MetaTagsPayload, subject: URIRef):
+def _build_enrichment_graph(
+    g: Graph,
+    meta: MetaTagsPayload,
+    subject: URIRef,
+    *,
+    emit_claims: bool = False,
+) -> None:
     # Link back to original event if known, else assume subject IS the event
     # Ideally, subject is the event URI.
 
-    for tag in meta.tags:
+    tags = meta.tags or []
+    if isinstance(tags, str):
+        tags = [tags]
+    for tag in tags:
         g.add((subject, CM.hasTag, Literal(tag)))
+        if emit_claims:
+            _emit_claim(
+                g,
+                subject=subject,
+                predicate=ORION.hasTag,
+                obj=Literal(tag),
+                meta=meta,
+            )
 
-    for ent in meta.entities:
-        val = ent.get("value")
-        typ = ent.get("type")
-        if val and typ:
-             g.add((subject, CM.hasEntity, Literal(f"{val} ({typ})")))
+    entities = meta.entities or []
+    if isinstance(entities, str):
+        entities = [entities]
+    for ent in entities:
+        if isinstance(ent, str):
+            g.add((subject, CM.hasEntity, Literal(ent)))
+            if emit_claims:
+                _emit_claim(
+                    g,
+                    subject=subject,
+                    predicate=ORION.mentionsEntity,
+                    obj=Literal(ent),
+                    meta=meta,
+                )
+            continue
+        if isinstance(ent, dict):
+            val = ent.get("value") or ent.get("name") or ent.get("text")
+            typ = ent.get("type") or ent.get("label")
+            if val and typ:
+                entity_value = f"{val} ({typ})"
+                g.add((subject, CM.hasEntity, Literal(entity_value)))
+                if emit_claims:
+                    _emit_claim(
+                        g,
+                        subject=subject,
+                        predicate=ORION.mentionsEntity,
+                        obj=Literal(entity_value),
+                        meta=meta,
+                    )
+            elif val:
+                g.add((subject, CM.hasEntity, Literal(str(val))))
+                if emit_claims:
+                    _emit_claim(
+                        g,
+                        subject=subject,
+                        predicate=ORION.mentionsEntity,
+                        obj=Literal(str(val)),
+                        meta=meta,
+                    )
 
     # Provenance for enrichment
-    enrich_id = URIRef(f"http://conjourney.net/enrichment/{meta.id}")
+    enrichment_id = meta.id or meta.collapse_id or str(uuid.uuid4())
+    enrich_id = URIRef(f"http://conjourney.net/enrichment/{enrichment_id}")
     g.add((enrich_id, RDF.type, ORION.Enrichment))
     g.add((enrich_id, ORION.enriches, subject))
     g.add((enrich_id, ORION.processedBy, Literal(meta.service_name)))
-    g.add((enrich_id, ORION.salience, Literal(meta.salience, datatype=XSD.float)))
+    if meta.service_version:
+        g.add((enrich_id, ORION.serviceVersion, Literal(meta.service_version)))
+    if meta.node:
+        g.add((enrich_id, ORION.serviceNode, Literal(meta.node)))
+    if meta.correlation_id:
+        g.add((enrich_id, ORION.correlationId, Literal(meta.correlation_id)))
+    if meta.source_message_id:
+        g.add((enrich_id, ORION.sourceMessageId, Literal(meta.source_message_id)))
+    if meta.enrichment_type:
+        g.add((enrich_id, ORION.enrichmentType, Literal(meta.enrichment_type)))
+    if meta.salience is not None:
+        g.add((enrich_id, ORION.salience, Literal(meta.salience, datatype=XSD.float)))
+    if meta.collapse_id or meta.id:
+        g.add((enrich_id, ORION.collapseId, Literal(meta.collapse_id or meta.id)))
+    timestamp_val = meta.ts or meta.timestamp
+    if timestamp_val:
+        g.add((enrich_id, ORION.timestamp, Literal(str(timestamp_val), datatype=XSD.string)))
+
+
+def _emit_claim(
+    g: Graph,
+    *,
+    subject: URIRef,
+    predicate: URIRef,
+    obj: Literal,
+    meta: MetaTagsPayload,
+) -> None:
+    subject_id = _sanitize_fragment(meta.collapse_id or meta.id or meta.source_message_id or "unknown")
+    timestamp_val = str(meta.timestamp or meta.ts or "")
+    claim_seed = f"{predicate}|{obj}|{timestamp_val}"
+    claim_hash = hashlib.sha256(claim_seed.encode("utf-8")).hexdigest()[:16]
+    claim_uri = URIRef(f"http://conjourney.net/orion/claim/{subject_id}/{claim_hash}")
+
+    g.add((claim_uri, RDF.type, ORION.Claim))
+    g.add((claim_uri, ORION.subject, subject))
+    g.add((claim_uri, ORION.predicate, predicate))
+    g.add((claim_uri, ORION.obj, obj))
+
+    salience = meta.salience
+    confidence = salience if salience is not None else 0.6
+    g.add((claim_uri, ORION.confidence, Literal(confidence, datatype=XSD.float)))
+    if salience is not None:
+        g.add((claim_uri, ORION.salience, Literal(salience, datatype=XSD.float)))
+
+    g.add((claim_uri, ORION.extractorService, Literal(meta.service_name)))
+    if meta.service_version:
+        g.add((claim_uri, ORION.extractorVersion, Literal(meta.service_version)))
+    if meta.node:
+        g.add((claim_uri, ORION.node, Literal(meta.node)))
+
+    timestamp_val = meta.timestamp or meta.ts
+    if timestamp_val:
+        g.add((claim_uri, ORION.timestamp, Literal(str(timestamp_val), datatype=XSD.string)))
+
+    if meta.correlation_id:
+        g.add((claim_uri, ORION.correlationId, Literal(meta.correlation_id)))
+    if meta.source_message_id:
+        g.add((claim_uri, ORION.sourceMessageId, Literal(meta.source_message_id)))
 
 
 def _legacy_dict_build(g: Graph, event: dict) -> Tuple[str, str]:

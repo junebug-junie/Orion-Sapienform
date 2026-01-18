@@ -1,0 +1,11 @@
+profile: chat.general.v1
+vector_top_k: 10
+rdf_top_k: 6
+max_per_source: 4
+max_total_items: 14
+time_decay_half_life_hours: 48
+render_budget_tokens: 256
+enable_query_expansion: true
+enable_sql_timeline: false
+sql_since_minutes: 180
+sql_top_k: 6

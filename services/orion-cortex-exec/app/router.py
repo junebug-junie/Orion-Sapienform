@@ -62,7 +62,13 @@ class PlanRunner:
         )
         mode = extra.get("mode") or ctx.get("mode") or "brain"
         recall_cfg = extra.get("recall") or ctx.get("recall") or {}
-        selected_profile = "deep.graph.v1" if recall_cfg.get("mode") == "deep" else "reflect.v1"
+        recall_mode = str(recall_cfg.get("mode") or "").lower()
+        if recall_mode == "deep":
+            selected_profile = "deep.graph.v1"
+        elif recall_mode == "chat":
+            selected_profile = "chat.general.v1"
+        else:
+            selected_profile = "reflect.v1"
         raw_enabled = recall_cfg.get("enabled", True)
         ctx.setdefault("recall", recall_cfg)
         recall_enabled = (

@@ -20,7 +20,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | Variable | Default (Settings) | Description |
 | :--- | :--- | :--- |
 | `CHANNEL_EVENTS_TRIAGE` | `orion:collapse:triage` | Intake channel. |
-| `CHANNEL_EVENTS_TAGGED` | `orion:tags:raw` | Output channel. (Recommended: `orion:tags:enriched`) |
+| `CHANNEL_EVENTS_TAGGED` | `orion:tags:enriched` | Output channel. |
 
 ## Running & Testing
 

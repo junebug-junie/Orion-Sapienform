@@ -65,6 +65,8 @@ class PlanRunner:
         recall_mode = str(recall_cfg.get("mode") or "").lower()
         if recall_mode == "deep":
             selected_profile = "deep.graph.v1"
+        elif recall_mode == "graph":
+            selected_profile = "graphtri.v1"
         elif recall_mode == "chat":
             selected_profile = "chat.general.v1"
         else:

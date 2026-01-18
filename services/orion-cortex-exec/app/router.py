@@ -67,8 +67,6 @@ class PlanRunner:
             selected_profile = "deep.graph.v1"
         elif recall_mode == "graph":
             selected_profile = "graphtri.v1"
-        elif recall_mode == "chat":
-            selected_profile = "chat.general.v1"
         else:
             selected_profile = "reflect.v1"
         raw_enabled = recall_cfg.get("enabled", True)

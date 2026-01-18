@@ -258,15 +258,20 @@ def _build_hop_messages(
                 except Exception:
                     pass
 
-    if prompt and str(prompt).strip():
-        sys_msg = {"role": "system", "content": str(prompt)}
+    guardrail = "If no memory is provided, do not claim prior work; say you don't know."
+    prompt_content = str(prompt or "").strip()
+    if guardrail.lower() not in prompt_content.lower():
+        prompt_content = f"{prompt_content}\n\n{guardrail}".strip()
+
+    if prompt_content:
+        sys_msg = {"role": "system", "content": prompt_content}
         if normalized and isinstance(normalized[0], dict) and normalized[0].get("role") == "system":
             normalized[0] = sys_msg
         else:
             normalized = [sys_msg] + normalized
 
     if not normalized:
-        content = (prompt or " ").strip() or " "
+        content = prompt_content or " "
         normalized = [{"role": "user", "content": content}]
 
     return normalized
@@ -809,6 +814,15 @@ async def call_step_services(
 
             if service == "LLMGatewayService":
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
+                memory_digest = (ctx.get("memory_digest") or "").strip()
+                if memory_digest:
+                    prompt = f"{prompt}\n\n# RELEVANT MEMORY (retrieved)\n{memory_digest}\n"
+                if diagnostic:
+                    logger.info(
+                        "memory_digest_present=%s memory_digest_chars=%s",
+                        bool(memory_digest),
+                        len(memory_digest),
+                    )
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 request_object = ChatRequestPayload(

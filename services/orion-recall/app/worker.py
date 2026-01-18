@@ -23,7 +23,7 @@ try:
     from .fusion import fuse_candidates
     from .profiles import get_profile
     from .settings import settings
-    from .storage.rdf_adapter import fetch_rdf_fragments
+    from .storage.rdf_adapter import fetch_rdf_fragments, fetch_rdf_expansion_terms
     from .storage.vector_adapter import fetch_vector_fragments
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
 except ImportError:  # pragma: no cover - fallback for test harness pathing
@@ -31,11 +31,11 @@ except ImportError:  # pragma: no cover - fallback for test harness pathing
     from profiles import get_profile  # type: ignore
     from settings import settings  # type: ignore
     try:
-        from rdf_adapter import fetch_rdf_fragments  # type: ignore
+        from rdf_adapter import fetch_rdf_fragments, fetch_rdf_expansion_terms  # type: ignore
         from vector_adapter import fetch_vector_fragments  # type: ignore
         from sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
     except ImportError:
-        from storage.rdf_adapter import fetch_rdf_fragments  # type: ignore
+        from storage.rdf_adapter import fetch_rdf_fragments, fetch_rdf_expansion_terms  # type: ignore
         from storage.vector_adapter import fetch_vector_fragments  # type: ignore
         from sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
 
@@ -62,6 +62,39 @@ def _extract_entities(text: str) -> List[str]:
     return [e.strip() for e in ents if e.strip()]
 
 
+def _anchor_from_uri(uri: str) -> str:
+    if not uri:
+        return ""
+    tail = uri.rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+    return tail.replace("_", " ").strip()
+
+
+def _extract_anchor_terms(rdf_items: List[Dict[str, Any]], *, max_items: int = 12) -> List[str]:
+    terms: List[str] = []
+    seen = set()
+
+    def _add(term: str) -> None:
+        cleaned = (term or "").strip()
+        if not cleaned or cleaned in seen:
+            return
+        seen.add(cleaned)
+        terms.append(cleaned)
+
+    for item in rdf_items:
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        for candidate in (meta.get("subject"), item.get("uri"), item.get("id")):
+            if isinstance(candidate, str):
+                _add(_anchor_from_uri(candidate))
+        text = item.get("text")
+        if isinstance(text, str):
+            for token in re.findall(r"[A-Za-z0-9_]{3,}", text):
+                _add(token)
+        if len(terms) >= max_items:
+            break
+
+    return terms[:max_items]
+
+
 def _expand_query(fragment: str, *, verb: str | None, intent: str | None, enable: bool) -> List[str]:
     if not enable:
         return [fragment]
@@ -79,9 +112,11 @@ def _expand_query(fragment: str, *, verb: str | None, intent: str | None, enable
 
 def _rdf_enabled(profile: Dict[str, Any]) -> bool:
     profile_name = str(profile.get("profile") or "")
-    return settings.RECALL_ENABLE_RDF or (
-        profile_name.startswith("deep.graph") and int(profile.get("rdf_top_k", 0)) > 0
-    )
+    return (
+        profile_name.startswith("deep.graph")
+        or profile_name.startswith("graphtri")
+        or settings.RECALL_ENABLE_RDF
+    ) and int(profile.get("rdf_top_k", 0)) > 0
 
 
 async def _query_backends(
@@ -91,32 +126,75 @@ async def _query_backends(
     session_id: str | None,
     node_id: str | None,
     entities: List[str],
+    diagnostic: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     candidates: List[Dict[str, Any]] = []
     backend_counts: Dict[str, int] = {}
 
-    if settings.RECALL_ENABLE_VECTOR:
+    rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
+    rdf_top_k = int(profile.get("rdf_top_k", 0))
+    expansion_terms: List[str] = []
+    if rdf_enabled:
         try:
-            vec = fetch_vector_fragments(
-                query_text=fragment,
-                time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
-                max_items=int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)),
-            )
-            backend_counts["vector"] = len(vec)
-            candidates.extend(vec)
+            expansion_terms = fetch_rdf_expansion_terms(query_text=fragment, max_items=6)
         except Exception as exc:
-            logger.debug(f"vector backend skipped: {exc}")
+            logger.debug(f"rdf expansion skipped: {exc}")
 
-    if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
+    if settings.RECALL_ENABLE_VECTOR:
+        seeds = [fragment, *entities]
+        expansions = expansion_terms[:6]
+        vector_queries: List[str] = []
+        seen = set()
+        for term in [*seeds, *expansions]:
+            cleaned = (term or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            vector_queries.append(cleaned)
+            if len(vector_queries) >= 4:
+                break
+        if not vector_queries:
+            vector_queries = [fragment]
+        per_query = max(1, int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)) // len(vector_queries))
+        vec_count = 0
+        for term in vector_queries:
+            try:
+                vec = fetch_vector_fragments(
+                    query_text=term,
+                    time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
+                    max_items=per_query,
+                )
+                vec_count += len(vec)
+                candidates.extend(vec)
+            except Exception as exc:
+                logger.debug(f"vector backend skipped: {exc}")
+        backend_counts["vector"] = vec_count
+        if diagnostic:
+            logger.info(
+                "recall expansions seeds=%s expansions=%s vector_queries=%s vector_count=%s",
+                seeds,
+                expansions,
+                vector_queries,
+                vec_count,
+            )
+
+    if rdf_enabled:
         try:
             rdf = fetch_rdf_fragments(
                 query_text=fragment,
-                max_items=int(profile.get("rdf_top_k", 0)),
+                max_items=rdf_top_k,
             )
             backend_counts["rdf"] = len(rdf)
             candidates.extend(rdf)
         except Exception as exc:
             logger.debug(f"rdf backend skipped: {exc}")
+    if diagnostic:
+        logger.info(
+            "recall rdf_enabled=%s rdf_top_k=%s rdf_candidates=%s",
+            rdf_enabled,
+            rdf_top_k,
+            backend_counts.get("rdf", 0),
+        )
 
     if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
         try:
@@ -215,25 +293,115 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
             pass
 
 
-async def process_recall(q: RecallQueryV1, *, corr_id: str) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
+async def process_recall(
+    q: RecallQueryV1,
+    *,
+    corr_id: str,
+    diagnostic: bool = False,
+) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
     profile = get_profile(q.profile)
     enable_qe = bool(profile.get("enable_query_expansion", True))
     signals = _expand_query(q.fragment, verb=q.verb, intent=q.intent, enable=enable_qe)
+    profile_name = str(profile.get("profile") or "")
 
     t0 = time.time()
     candidates: List[Dict[str, Any]] = []
     backend_counts_total: Dict[str, int] = {}
-    for sig in signals:
-        cand, counts = await _query_backends(
-            sig,
-            profile,
-            session_id=q.session_id,
-            node_id=q.node_id,
-            entities=_extract_entities(q.fragment),
-        )
-        candidates.extend(cand)
-        for k, v in counts.items():
-            backend_counts_total[k] = backend_counts_total.get(k, 0) + v
+    if profile_name.startswith("graphtri"):
+        rdf_top_k = int(profile.get("rdf_top_k", 0))
+        rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
+        rdf_items: List[Dict[str, Any]] = []
+        if rdf_enabled:
+            try:
+                rdf_items = fetch_rdf_fragments(query_text=q.fragment, max_items=rdf_top_k)
+                backend_counts_total["rdf"] = len(rdf_items)
+                candidates.extend(rdf_items)
+            except Exception as exc:
+                logger.debug(f"rdf backend skipped: {exc}")
+        anchor_terms = _extract_anchor_terms(rdf_items)
+
+        vector_queries = [q.fragment]
+        vector_queries.extend([f"{q.fragment} {term}" for term in anchor_terms[:12]])
+        if settings.RECALL_ENABLE_VECTOR:
+            vector_top_k = int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS))
+            per_query = max(1, vector_top_k // max(1, len(vector_queries)))
+            seen_vec = set()
+            vec_count = 0
+            for term in vector_queries:
+                if vec_count >= vector_top_k:
+                    break
+                try:
+                    vec = fetch_vector_fragments(
+                        query_text=term,
+                        time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
+                        max_items=per_query,
+                    )
+                except Exception as exc:
+                    logger.debug(f"vector backend skipped: {exc}")
+                    continue
+                for item in vec:
+                    item_id = item.get("id") or item.get("uri")
+                    if item_id in seen_vec:
+                        continue
+                    seen_vec.add(item_id)
+                    candidates.append(item)
+                    vec_count += 1
+                    if vec_count >= vector_top_k:
+                        break
+            backend_counts_total["vector"] = vec_count
+
+        if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
+            try:
+                recent_items = await fetch_recent_fragments(
+                    q.session_id,
+                    q.node_id,
+                    int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+                    int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K)),
+                )
+                related_items = await fetch_related_by_entities(
+                    anchor_terms or _extract_entities(q.fragment),
+                    int(profile.get("sql_since_hours", max(1, settings.RECALL_SQL_SINCE_MINUTES // 60))),
+                    int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K)),
+                )
+                recent_items = list(recent_items) + list(related_items)
+                backend_counts_total["sql_timeline"] = len(recent_items)
+                for item in recent_items:
+                    candidates.append(
+                        {
+                            "id": item.id,
+                            "source": "sql_timeline",
+                            "source_ref": item.source_ref,
+                            "text": item.text,
+                            "ts": item.ts,
+                            "tags": item.tags,
+                            "score": 0.7,
+                        }
+                    )
+            except Exception as exc:
+                logger.debug(f"sql timeline backend skipped: {exc}")
+
+        if diagnostic:
+            logger.info(
+                "graphtri anchors=%s vector_queries=%s rdf_count=%s vector_count=%s sql_count=%s",
+                anchor_terms,
+                vector_queries,
+                backend_counts_total.get("rdf", 0),
+                backend_counts_total.get("vector", 0),
+                backend_counts_total.get("sql_timeline", 0),
+            )
+    else:
+        for sig in signals:
+            cand, counts = await _query_backends(
+                sig,
+                profile,
+                session_id=q.session_id,
+                node_id=q.node_id,
+                entities=_extract_entities(q.fragment),
+                diagnostic=diagnostic,
+            )
+            candidates.extend(cand)
+            for k, v in counts.items():
+                backend_counts_total[k] = backend_counts_total.get(k, 0) + v
 
     latency_ms = int((time.time() - t0) * 1000)
     bundle = fuse_candidates(candidates=candidates, profile=profile, latency_ms=latency_ms)
@@ -283,7 +451,10 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
             payload={"error": f"unsupported_kind:{env.kind}"},
         )
 
-    payload_obj: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
+    raw_payload: Dict[str, Any] = env.payload if isinstance(env.payload, dict) else {}
+    diagnostic = bool((raw_payload.get("options") or {}).get("diagnostic"))
+    payload_obj = dict(raw_payload)
+    payload_obj.pop("options", None)
     try:
         q = RecallQueryV1.model_validate(payload_obj)
     except ValidationError as ve:
@@ -294,7 +465,7 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
             payload={"error": "validation_failed", "details": ve.errors()},
         )
 
-    bundle, decision = await process_recall(q, corr_id=str(env.correlation_id))
+    bundle, decision = await process_recall(q, corr_id=str(env.correlation_id), diagnostic=diagnostic)
 
     # emit telemetry (fire and forget)
     try:

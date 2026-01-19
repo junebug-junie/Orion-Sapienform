@@ -89,33 +89,258 @@ With this blueprint, we can now proceed with the implementation, which will invo
 Find the IP:
     docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' orion-athena-vector-db
 
-Run within the container:
+This appendix shows a few **copy/paste commands** to inspect what Orion is writing into ChromaDB, directly from your running Docker containers.
 
-    docker exec -it orion-athena-vector-writer python -c "
+It covers:
+- Confirming Chroma is reachable
+- Listing collections + counts
+- Peeking at metadata samples
+- Filtering by who requested embeddings (`requester_service`)
+- Verifying the semantic embedding pipeline (gateway → vector-host → vector-writer → Chroma)
 
-    import chromadb
-    from chromadb.config import Settings
-    import pprint
+---
 
-    print('🔌 Connecting to ChromaDB...')
+## 0) Quick note about `docker exec` and “not a TTY”
 
-    # Disable telemetry to avoid the ClientStartEvent error'
-    client = chromadb.HttpClient(
-        host='172.18.0.22', # or replace with IP from above 
-        port=8000, 
-        settings=Settings(anonymized_telemetry=False)
+If you see:
+
+> `the input device is not a TTY`
+
+…it means your shell context can’t allocate a terminal. Use **no `-t`**.
+
+- ✅ Good for one-liners:
+
+```bash
+docker exec <container> python -c "print('hi')"
+```
+
+- ✅ Good for multi-line scripts:
+
+```bash
+docker exec -i <container> python - <<'PY'
+print('hi')
+PY
+```
+
+---
+
+## 1) Confirm Chroma is reachable (HTTP heartbeat)
+
+Run from any container on the same Docker network (e.g. `orion-athena-vector-writer`).
+
+```bash
+docker exec orion-athena-vector-writer sh -lc \
+  'curl -sf http://orion-athena-vector-db:8000/api/v1/heartbeat && echo OK'
+```
+
+If this fails:
+- Chroma isn’t running, or
+- the hostname is wrong, or
+- containers aren’t on the same Docker network.
+
+---
+
+## 2) List collections and their counts
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(
+    host="orion-athena-vector-db",
+    port=8000,
+    settings=Settings(anonymized_telemetry=False),
+)
+
+print("heartbeat:", client.heartbeat())
+cols = client.list_collections()
+
+# Chroma versions differ: list_collections may return objects or strings.
+names = [(c.name if hasattr(c, "name") else c) for c in cols]
+print("collections:", names)
+
+for name in names:
+    col = client.get_collection(name)
+    print(f"- {name}: {col.count()}")
+PY
+```
+
+---
+
+## 3) Peek at metadata samples (what’s actually stored)
+
+This is the fastest way to answer: **“what kinds of documents are in here?”**
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+import pprint
+
+client = chromadb.HttpClient(
+    host="orion-athena-vector-db",
+    port=8000,
+    settings=Settings(anonymized_telemetry=False),
+)
+
+col = client.get_collection("orion_main_store")
+print("count:", col.count())
+
+sample = col.peek(limit=3)
+print("\nmetadatas:")
+pprint.pprint(sample.get("metadatas"))
+PY
+```
+
+Tip: most of your debugging will be done by reading **metadatas**, not the raw text.
+
+---
+
+## 4) Find who is requesting embeddings (requester breakdown)
+
+This tells you whether the pipeline is actually being exercised by the component you think it is.
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+from collections import Counter
+
+client = chromadb.HttpClient(
+    host="orion-athena-vector-db",
+    port=8000,
+    settings=Settings(anonymized_telemetry=False),
+)
+
+col = client.get_collection("orion_main_store")
+res = col.get(where={"role": "embedding_request"}, include=["metadatas"], limit=500)
+
+ctr = Counter()
+for md in res.get("metadatas", []):
+    ctr[md.get("requester_service")] += 1
+
+print("requester_service counts:")
+for k, v in ctr.most_common():
+    print(f"  {k}: {v}")
+PY
+```
+
+Expected (based on your recent run):
+- `llm-gateway: <n>`
+- `orion-chat-memory: <n>`
+
+---
+
+## 5) Verify “gateway assistant-turn → vector-host semantic embed → Chroma”
+
+The contract:
+- The gateway publishes the assistant turn as `embedding.generate.v1` on `orion:embedding:generate`.
+- Vector-host generates a **semantic** embedding.
+- Vector-writer upserts it into Chroma.
+
+This query shows the latest embedding requests attributed to the gateway:
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(
+    host="orion-athena-vector-db",
+    port=8000,
+    settings=Settings(anonymized_telemetry=False),
+)
+
+col = client.get_collection("orion_main_store")
+res = col.get(where={"requester_service": "llm-gateway"}, include=["metadatas"], limit=5)
+print("matches:", len(res.get("metadatas", [])))
+
+for md in res.get("metadatas", []):
+    print(
+        md.get("timestamp"),
+        md.get("request_doc_id"),
+        md.get("original_channel"),
+        md.get("embedding_model"),
+        md.get("embedding_dim"),
     )
+PY
+```
 
-    print('\n📊 Collections Report:')
-    collections = client.list_collections()
-    if not collections:
-        print('   (No collections found)')
+If `matches: 0`, common causes are:
+- You filtered by the wrong service name (e.g. `orion-llm-gateway` vs `llm-gateway`).
+- The gateway instance you’re hitting has bus disabled.
 
-    for c in collections:
-        count = c.count()
-        print(f'📁 Collection: {c.name} | Items: {count}')
-        if count > 0:
-            print('   🔎 Sample (Metadata):')
-            pprint.pprint(c.peek(limit=1)['metadatas'])
-        print('-' * 40)
-    "
+---
+
+## 6) Browse the collapse mirror collection
+
+If you store mirror entries separately (e.g. `orion_collapse`):
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+import pprint
+
+client = chromadb.HttpClient(
+    host="orion-athena-vector-db",
+    port=8000,
+    settings=Settings(anonymized_telemetry=False),
+)
+
+col = client.get_collection("orion_collapse")
+print("count:", col.count())
+
+sample = col.peek(limit=3)
+print("\nmetadatas:")
+pprint.pprint(sample.get("metadatas"))
+PY
+```
+
+---
+
+## 7) Prefer Docker DNS names (avoid hardcoded container IPs)
+
+Avoid hardcoding container IPs like `172.18.x.y` unless you’re actively debugging networking.
+
+Prefer:
+- `orion-athena-vector-db` (Chroma)
+- `orion-athena-vector-writer` (writer)
+
+IPs can change after restarts.
+
+---
+
+## 8) Common troubleshooting
+
+### “Chroma not connected” but scripts show it is
+Often the writer tried to connect before Chroma was ready and didn’t retry.
+
+Quick fix:
+```bash
+docker restart orion-athena-vector-writer
+```
+
+### List collections works but `count()` fails
+Your Chroma client version might return collection **names** instead of objects.
+Use:
+```python
+names = [(c.name if hasattr(c, "name") else c) for c in client.list_collections()]
+col = client.get_collection(name)
+```
+
+### You see embeddings from chat-memory but not from gateway
+Check requester breakdown (section 4), and confirm your gateway’s SERVICE_NAME.
+
+---
+
+## 9) Naming consistency tip
+
+If you want records to show `requester_service: orion-llm-gateway` instead of `llm-gateway`, set:
+
+```env
+SERVICE_NAME=orion-llm-gateway
+```
+
+Then restart the gateway container. New records will use the updated name.

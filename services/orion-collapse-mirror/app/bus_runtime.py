@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV1, CollapseMirrorEntryV2
 from orion.collapse import create_entry_from_v2
 
 from .settings import settings
@@ -72,14 +72,31 @@ async def handle_intake(env: BaseEnvelope) -> None:
     if payload.get("kind") == "ping":
         return
 
+    observer = str(payload.get("observer") or "").strip()
+    event_id = payload.get("event_id") or payload.get("id")
+    session_id = payload.get("session_id")
+    logger.info(
+        "[collapse-mirror] intake received kind=%s observer=%s event_id=%s session_id=%s",
+        env.kind,
+        observer or "unknown",
+        event_id or "unknown",
+        session_id or "unknown",
+    )
+
     try:
         entry = create_entry_from_v2(payload, source_service=settings.SERVICE_NAME, source_node=settings.NODE_NAME)
     except ValidationError as ve:
-        logger.warning("[collapse-mirror] intake schema failed; dropping: %s", ve)
-        return
+        try:
+            v1 = CollapseMirrorEntryV1.model_validate(payload)
+            entry = create_entry_from_v2(v1, source_service=settings.SERVICE_NAME, source_node=settings.NODE_NAME)
+        except Exception as exc:
+            logger.warning("[collapse-mirror] intake schema failed; dropping: %s", ve)
+            logger.warning("[collapse-mirror] intake fallback failed; dropping: %s", exc)
+            return
 
     # Gate NOOPs
     if str(getattr(entry, "type", "")).strip().lower() == "noop":
+        logger.info("[collapse-mirror] intake drop reason=noop event_id=%s", entry.event_id)
         return
 
     enriched = _wrap_entry_for_triage(entry)
@@ -95,6 +112,11 @@ async def handle_intake(env: BaseEnvelope) -> None:
         causality_chain=env.causality_chain
     )
     await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, triage_env)
+    logger.info(
+        "[collapse-mirror] published triage channel=%s corr_id=%s",
+        settings.CHANNEL_COLLAPSE_TRIAGE,
+        env.correlation_id,
+    )
 
     # 2. To SQL Writer (for Raw storage) - hardcoded canonical channel per request
     # Fix: Wrap in envelope so sql-writer sees kind="collapse.mirror"
@@ -106,6 +128,11 @@ async def handle_intake(env: BaseEnvelope) -> None:
         causality_chain=env.causality_chain
     )
     await intake_hunter.bus.publish("orion:collapse:sql-write", write_envelope)
+    logger.info(
+        "[collapse-mirror] published sql-write channel=%s corr_id=%s",
+        "orion:collapse:sql-write",
+        env.correlation_id,
+    )
 
 
 async def handle_exec_step(env: BaseEnvelope) -> BaseEnvelope:

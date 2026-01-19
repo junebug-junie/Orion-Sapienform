@@ -102,6 +102,19 @@ INFO:orion-hub:Bus Clients initialized.
 If you have access to the bus (e.g., via `redis-cli` or a python script), monitor `orion-cortex-gateway:request`.
 When you chat in the UI, you should see a JSON envelope with kind `cortex.gateway.request`.
 
+### 4. Verify Chat History Bus Traffic
+Use the bus probe to watch chat history events while sending a UI message:
+
+```bash
+python scripts/bus_probe.py --pattern orion:chat:history:* --pattern orion:chat:history:turn
+```
+
+Expected lines include:
+
+```
+{"channel":"orion:chat:history:turn","kind":"chat.history", ...}
+```
+
 ---
 
 ## 🧵 Philosophy

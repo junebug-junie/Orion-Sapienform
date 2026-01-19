@@ -581,6 +581,22 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:tags:enriched"
+    kind: "event"
+    schema_id: "MetaTagsPayload"
+    producer_services: ["orion-meta-tags"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-18"
+
+  - name: "orion:tags:chat:enriched"
+    kind: "event"
+    schema_id: "MetaTagsPayload"
+    producer_services: ["orion-meta-tags"]
+    consumer_services: ["orion-rdf-writer"]
+    stability: "experimental"
+    since: "2026-01-18"
+
   - name: "orion:spark:concepts:profile"
     kind: "event"
     schema_id: "ConceptProfile"

@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     # Collapse (Raw)
     CHANNEL_EVENTS_COLLAPSE: str = Field(default="orion:collapse:intake", env="CHANNEL_EVENTS_COLLAPSE")
     # Tagged/Enriched
-    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:raw", env="CHANNEL_EVENTS_TAGGED")
+    CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
+    CHANNEL_EVENTS_TAGGED_CHAT: str = Field(default="orion:tags:chat:enriched", env="CHANNEL_EVENTS_TAGGED_CHAT")
     # Core Events (Filtering targets="rdf")
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
 
@@ -29,6 +30,10 @@ class Settings(BaseSettings):
 
     # Cognition Trace
     CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
+
+    # Chat History
+    CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
+    CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
 
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
@@ -40,6 +45,7 @@ class Settings(BaseSettings):
     SERVICE_VERSION: str = Field(default="0.2.0", env="SERVICE_VERSION")
     NODE_NAME: str = Field(default="unknown")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
+    RDF_SKIP_KINDS: str = Field(default="", env="RDF_SKIP_KINDS")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -49,14 +55,29 @@ class Settings(BaseSettings):
 
     def get_all_subscribe_channels(self) -> List[str]:
         """Returns a list of all channels this service should subscribe to."""
-        return [
+        channels = [
             self.CHANNEL_RDF_ENQUEUE,
             self.CHANNEL_EVENTS_COLLAPSE,
             self.CHANNEL_EVENTS_TAGGED,
+            self.CHANNEL_EVENTS_TAGGED_CHAT,
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_WORKER_RDF,
             self.CORTEX_LOG_CHANNEL,
-            self.CHANNEL_COGNITION_TRACE_PUB
+            self.CHANNEL_COGNITION_TRACE_PUB,
+            self.CHANNEL_CHAT_HISTORY_TURN,
+            self.CHANNEL_CHAT_HISTORY_LOG,
         ]
+        seen = set()
+        ordered: List[str] = []
+        for channel in channels:
+            channel = (channel or "").strip()
+            if not channel or channel in seen:
+                continue
+            seen.add(channel)
+            ordered.append(channel)
+        return ordered
+
+    def get_skip_kinds(self) -> List[str]:
+        return [k.strip() for k in (self.RDF_SKIP_KINDS or "").split(",") if k.strip()]
 
 settings = Settings()

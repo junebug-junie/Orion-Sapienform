@@ -701,6 +701,11 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     x = np.linspace(-3, 3, wave_len)
     waveform = (np.exp(-x**2) * arousal_hint).astype(np.float32)
 
+    emb_expect = TISSUE.embedding_expectations.get(channel_key)
+    if emb_expect is not None and emb_expect.shape != emb.shape:
+        TISSUE.embedding_expectations[channel_key] = np.zeros((emb.shape[0],), dtype=np.float32)
+        TISSUE.last_embedding_input.pop(channel_key, None)
+
     feat_dim = 32
     feature_vec = np.zeros(feat_dim, dtype=np.float32)
 

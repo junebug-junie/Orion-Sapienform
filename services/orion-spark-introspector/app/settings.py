@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # Spark signals (normalized distress/equilibrium)
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
 
+    # Semantic vector upserts
+    channel_vector_semantic_upsert: str = Field(
+        "orion:vector:semantic:upsert",
+        alias="CHANNEL_VECTOR_SEMANTIC_UPSERT",
+    )
+
     # Freshness semantics (for read-model)
     spark_state_valid_for_ms: int = Field(15000, alias="SPARK_STATE_VALID_FOR_MS")
 

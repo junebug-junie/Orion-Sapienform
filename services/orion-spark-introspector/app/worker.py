@@ -1,6 +1,7 @@
 # services/orion-spark-introspector/app/worker.py
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from orion.core.bus.codec import OrionCodec
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
 from orion.spark.orion_tissue import OrionTissue
 from orion.spark.signal_mapper import SignalMapper
@@ -41,6 +43,12 @@ _CANDIDATE_LAST_SEEN_TS: Dict[str, float] = {}
 _CANDIDATE_TELEM_EMITTED: Dict[str, float] = {}
 # keep cache small + bounded
 _CANDIDATE_CACHE_TTL_SEC = 600.0  # 10 minutes
+_EXPECTED_EMB: Dict[str, np.ndarray] = {}
+_SEEN_DOC: Dict[str, float] = {}
+_VALENCE_POS: Optional[np.ndarray] = None
+_VALENCE_NEG: Optional[np.ndarray] = None
+_VALENCE_INIT_TASK: Optional[asyncio.Task] = None
+_VALENCE_ANCHORS_EXPIRES_AT: float = 0.0
 
 
 def set_publisher_bus(bus: OrionBusAsync):
@@ -164,6 +172,99 @@ def _coerce_epoch_ts(v: Any) -> float:
 
 def _to_iso_utc(ts_epoch: float) -> str:
     return datetime.fromtimestamp(float(ts_epoch), tz=timezone.utc).isoformat()
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
+    denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-8
+    if denom <= 0:
+        return 0.0
+    dist = 1.0 - float(np.dot(a, b) / denom)
+    return float(max(0.0, min(1.0, dist)))
+
+
+def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    da = float(np.linalg.norm(a))
+    db = float(np.linalg.norm(b))
+    if da == 0.0 or db == 0.0:
+        return 0.0
+    return float(np.dot(a, b) / (da * db))
+
+
+async def _fetch_anchor_embedding(bus: OrionBusAsync, text: str, doc_id: str) -> Optional[np.ndarray]:
+    reply_channel = f"{settings.embedding_result_prefix}{doc_id}"
+    env = BaseEnvelope(
+        kind="embedding.generate.v1",
+        source=_svc_ref(),
+        correlation_id=uuid4(),
+        payload=EmbeddingGenerateV1(
+            doc_id=doc_id,
+            text=text,
+            embedding_profile="default",
+            include_latent=False,
+        ).model_dump(mode="json"),
+        reply_to=reply_channel,
+    )
+    try:
+        msg = await bus.rpc_request(
+            settings.channel_embedding_generate,
+            env,
+            reply_channel=reply_channel,
+            timeout_sec=float(settings.valence_anchor_timeout_sec),
+        )
+    except Exception as exc:
+        logger.warning("Valence anchor RPC failed doc_id=%s error=%s", doc_id, exc)
+        return None
+
+    decoded = bus.codec.decode(msg.get("data"))
+    if not decoded.ok or decoded.envelope is None:
+        return None
+    payload = decoded.envelope.payload
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json")
+    if not isinstance(payload, dict) or payload.get("error"):
+        return None
+    try:
+        result = EmbeddingResultV1.model_validate(payload)
+    except Exception:
+        return None
+    if not result.embedding:
+        return None
+    return np.array(result.embedding, dtype=np.float32)
+
+
+async def _ensure_valence_anchors(bus: OrionBusAsync) -> None:
+    global _VALENCE_POS, _VALENCE_NEG, _VALENCE_ANCHORS_EXPIRES_AT
+    if _VALENCE_POS is not None and _VALENCE_NEG is not None:
+        if _now() < _VALENCE_ANCHORS_EXPIRES_AT:
+            return
+
+    pos = await _fetch_anchor_embedding(bus, settings.valence_anchor_pos_text, doc_id="valence-anchor-pos")
+    neg = await _fetch_anchor_embedding(bus, settings.valence_anchor_neg_text, doc_id="valence-anchor-neg")
+    if pos is None or neg is None:
+        logger.warning("Valence anchor refresh failed; keeping existing anchors.")
+        return
+
+    _VALENCE_POS = pos
+    _VALENCE_NEG = neg
+    _VALENCE_ANCHORS_EXPIRES_AT = _now() + float(settings.valence_anchor_refresh_sec)
+    logger.info("Valence anchors refreshed. Next refresh in %ss", settings.valence_anchor_refresh_sec)
+
+
+def _valence_from_embedding(emb: np.ndarray) -> float:
+    if _VALENCE_POS is None or _VALENCE_NEG is None:
+        return 0.0
+    v_pos = _cosine_sim(emb, _VALENCE_POS)
+    v_neg = _cosine_sim(emb, _VALENCE_NEG)
+    v = v_pos - v_neg
+    if v > 1.0:
+        return 1.0
+    if v < -1.0:
+        return -1.0
+    return v
 
 
 def _build_llm_prompt(c: SparkCandidatePayload) -> str:
@@ -403,12 +504,12 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
     # Calculate novelty & propagate
     novelty = float(TISSUE.calculate_novelty(stimulus, channel_key="chat"))
     TISSUE.propagate(
-        stimulus, 
-        steps=2, 
-        learning_rate=0.1, 
-        channel_key="chat", 
-        embedding=feature_vec, 
-        distress=0.0
+        stimulus,
+        steps=2,
+        learning_rate=0.1,
+        channel_key="chat",
+        embedding=None,
+        distress=0.0,
     )
     
     # Snapshot & Broadcast to UI
@@ -656,6 +757,140 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
     except Exception as e:
         logger.error(f"Error processing trace for tissue: {e}", exc_info=True)
+
+
+async def handle_semantic_upsert(env: BaseEnvelope) -> None:
+    global _VALENCE_INIT_TASK
+    payload_obj = env.payload if isinstance(env.payload, dict) else {}
+    try:
+        upsert = VectorUpsertV1.model_validate(payload_obj)
+    except ValidationError:
+        logger.warning("Skipping invalid vector.upsert payload")
+        return
+
+    if upsert.embedding_kind != "semantic":
+        return
+    if not upsert.embedding:
+        return
+
+    emb = np.array(upsert.embedding, dtype=np.float32)
+    if emb.size == 0:
+        return
+
+    channel_key = "chat"
+    now = _now()
+    last_seen = _SEEN_DOC.get(upsert.doc_id)
+    if last_seen is not None and (now - last_seen) < 1.0:
+        return
+    _SEEN_DOC[upsert.doc_id] = now
+
+    if _pub_bus and _pub_bus.enabled:
+        if _VALENCE_INIT_TASK is None or (_VALENCE_INIT_TASK.done() and _now() >= _VALENCE_ANCHORS_EXPIRES_AT):
+            _VALENCE_INIT_TASK = asyncio.create_task(_ensure_valence_anchors(_pub_bus))
+
+    expected = _EXPECTED_EMB.get(channel_key)
+    if expected is None or expected.shape != emb.shape:
+        novelty = 1.0
+        coherence = 0.0
+        expected = emb.copy()
+    else:
+        novelty = _cosine_distance(emb, expected)
+        coherence = 1.0 - novelty
+        expected = (0.95 * expected) + (0.05 * emb)
+    _EXPECTED_EMB[channel_key] = expected
+
+    magnitude = min(3.0, 0.5 + (2.5 * novelty))
+    arousal_hint = max(0.1, min(1.0, 0.4 + (0.6 * novelty)))
+
+    wave_len = 64
+    x = np.linspace(-3, 3, wave_len)
+    waveform = (np.exp(-x**2) * arousal_hint).astype(np.float32)
+
+    emb_expect = TISSUE.embedding_expectations.get(channel_key)
+    if emb_expect is not None and emb_expect.shape != emb.shape:
+        TISSUE.embedding_expectations[channel_key] = np.zeros((emb.shape[0],), dtype=np.float32)
+        TISSUE.last_embedding_input.pop(channel_key, None)
+
+    feat_dim = 32
+    feature_vec = np.zeros(feat_dim, dtype=np.float32)
+
+    encoding = SurfaceEncoding(
+        event_id=upsert.doc_id,
+        modality="semantic",
+        timestamp=time.time(),
+        source="orion-vector-host",
+        channel_tags=["chat", "semantic"],
+        waveform=waveform,
+        feature_vec=feature_vec,
+        spark_vector=None,
+        meta={
+            "doc_id": upsert.doc_id,
+            "text": (upsert.text or "")[:200],
+            "embedding_kind": upsert.embedding_kind,
+        },
+    )
+
+    stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=magnitude)
+    v_semantic = _valence_from_embedding(emb)
+    gain = float(settings.valence_gain)
+    if stimulus.ndim == 3 and stimulus.shape[2] >= 2:
+        stimulus[:, :, 0] += gain * v_semantic
+        stimulus[:, :, 1] -= gain * v_semantic
+    elif stimulus.ndim == 1 and stimulus.shape[0] >= 2:
+        stimulus[0] += gain * v_semantic
+        stimulus[1] -= gain * v_semantic
+
+    TISSUE.propagate(
+        stimulus,
+        steps=2,
+        learning_rate=0.1,
+        channel_key=channel_key,
+        embedding=emb,
+        distress=0.0,
+    )
+
+    phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+    phi_stats = _apply_signal_deltas(phi_stats)
+    tissue_valence = float(phi_stats.get("valence", 0.0))
+    arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
+    coherence_stat = float(phi_stats.get("coherence", coherence))
+    tissue_novelty = float(phi_stats.get("novelty", novelty))
+    TISSUE.snapshot()
+
+    try:
+        telemetry_id = str(uuid4())
+        ws_payload = {
+            "type": "tissue.update",
+            "telemetry_id": telemetry_id,
+            "correlation_id": str(env.correlation_id or upsert.doc_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stats": {
+                "phi": coherence_stat,
+                "novelty": tissue_novelty,
+                "valence": tissue_valence,
+                "arousal": arousal_display,
+            },
+            "grid": [],
+            "metadata": {
+                "doc_id": upsert.doc_id,
+                "embedding_kind": upsert.embedding_kind,
+                "vector_present": True,
+            },
+        }
+        await manager.broadcast(ws_payload)
+    except Exception as e:
+        logger.warning("Failed to broadcast semantic tissue update: %s", e)
+
+    logger.info(
+        "semantic upsert tissue update doc_id=%s novelty=%.3f arousal=%.3f energy=%.3f coherence=%.3f v_sem=%.3f valence=%.3f",
+        upsert.doc_id,
+        novelty,
+        arousal_display,
+        float(phi_stats.get("energy", 0.0)),
+        coherence_stat,
+        v_semantic,
+        tissue_valence,
+    )
 
 
 async def handle_candidate(env: BaseEnvelope) -> None:

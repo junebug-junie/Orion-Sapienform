@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Identity
     service_name: str = Field("llamacpp-host", env="SERVICE_NAME")
     service_version: str = Field("0.1.0", env="SERVICE_VERSION")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # Profiles
     llm_profiles_config_path: Path = Field(
@@ -53,7 +54,10 @@ class Settings(BaseSettings):
     llamacpp_batch_size_override: Optional[int] = Field(None, env="LLAMACPP_BATCH_SIZE_OVERRIDE")
 
     # CUDA override (optional; otherwise profile.gpu.device_ids is used)
-    cuda_visible_devices_override: Optional[str] = Field(None, env="CUDA_VISIBLE_DEVICES")
+    cuda_visible_devices_override: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("CUDA_VISIBLE_DEVICES_OVERRIDE", "CUDA_VISIBLE_DEVICES"),
+    )
 
     _registry: Optional[LLMProfileRegistry] = None
 

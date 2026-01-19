@@ -111,6 +111,8 @@ async def fetch_related_by_entities(
     entities: List[str],
     since_hours: int,
     limit: int,
+    *,
+    session_id: Optional[str] = None,
 ) -> List[TimelineItem]:
     """
     Fetch fragments mentioning any of the provided entities.
@@ -134,10 +136,11 @@ async def fetch_related_by_entities(
                 FROM {settings.RECALL_SQL_TIMELINE_TABLE}
                 WHERE {settings.RECALL_SQL_TIMELINE_TS_COL} >= NOW() - INTERVAL '%s hours'
                   AND ({settings.RECALL_SQL_TIMELINE_TEXT_COL} ILIKE ANY (ARRAY[{placeholders}]))
+                  AND (%s IS NULL OR {settings.RECALL_SQL_TIMELINE_SESSION_COL} = %s)
                 ORDER BY {settings.RECALL_SQL_TIMELINE_TS_COL} DESC
                 LIMIT %s
                 """,
-                (since_hours, *[f"%{e}%" for e in entities], limit),
+                (since_hours, *[f"%{e}%" for e in entities], session_id, session_id, limit),
             )
             cols = [desc[0] for desc in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall()]

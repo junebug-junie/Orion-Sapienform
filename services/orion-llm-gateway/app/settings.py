@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import Field, model_validator
+from pydantic import Field, model_validator, AliasChoices
 from pydantic_settings import BaseSettings
 
 from .profiles import LLMProfile, LLMProfileRegistry
@@ -28,6 +28,10 @@ class Settings(BaseSettings):
         "orion:vector:latent:upsert",
         alias="CHANNEL_VECTOR_LATENT_UPSERT",
     )
+    channel_embedding_generate: str = Field(
+        "orion:embedding:generate",
+        alias="CHANNEL_EMBEDDING_GENERATE",
+    )
 
     # Spark
     channel_spark_introspect_candidate: str = Field(
@@ -43,7 +47,10 @@ class Settings(BaseSettings):
     vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
     ollama_url: Optional[str] = Field(None, alias="ORION_LLM_OLLAMA_URL")
     ollama_use_openai_compat: bool = Field(False, alias="ORION_LLM_OLLAMA_USE_OPENAI")
-    llamacpp_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMACPP_URL")
+    llamacpp_url: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("ORION_LLM_LLAMACPP_URL", "ORION_LLM_LLAMA_CPP_URL"),
+    )
     llama_cola_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_URL")
 
     # If false, the gateway will NOT attempt a secondary embedding call.

@@ -53,7 +53,10 @@ class Settings(BaseSettings):
     llamacpp_batch_size_override: Optional[int] = Field(None, env="LLAMACPP_BATCH_SIZE_OVERRIDE")
 
     # CUDA override (optional; otherwise profile.gpu.device_ids is used)
-    cuda_visible_devices_override: Optional[str] = Field(None, env="CUDA_VISIBLE_DEVICES")
+    cuda_visible_devices_override: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("CUDA_VISIBLE_DEVICES_OVERRIDE", "CUDA_VISIBLE_DEVICES"),
+    )
 
     _registry: Optional[LLMProfileRegistry] = None
 

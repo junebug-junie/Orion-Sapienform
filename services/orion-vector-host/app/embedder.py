@@ -19,10 +19,9 @@ class Embedder:
 
     def _embedding_url(self) -> str:
         backend = self._settings.VECTOR_HOST_EMBED_BACKEND
-        if backend == "vllm":
-            base_url = self._settings.ORION_LLM_VLLM_URL
-        else:
-            base_url = self._settings.ORION_LLM_LLAMA_COLA_URL
+        if backend != "vllm":
+            raise RuntimeError(f"Embedding backend {backend} is not supported for semantic embeddings")
+        base_url = self._settings.ORION_LLM_VLLM_URL
 
         if not base_url:
             raise RuntimeError(f"Base URL not configured for embedding backend {backend}")

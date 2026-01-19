@@ -7,6 +7,9 @@ import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+if os.environ.get("CUDA_VISIBLE_DEVICES_OVERRIDE"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES_OVERRIDE"]
+
 from huggingface_hub import hf_hub_download
 
 from .settings import settings
@@ -177,6 +180,8 @@ async def _main_async():
         level=logging.INFO,
         format="[LLAMACPP] %(levelname)s - %(name)s - %(message)s",
     )
+    if settings.cuda_visible_devices_override:
+        os.environ["CUDA_VISIBLE_DEVICES"] = settings.cuda_visible_devices_override
 
     profile = settings.resolve_profile()
     logger.info(

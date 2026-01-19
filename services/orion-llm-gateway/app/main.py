@@ -12,6 +12,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 from orion.schemas.vector.schemas import VectorUpsertV1
 
 from .llm_backend import run_llm_chat
+from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .settings import settings
 
@@ -155,14 +156,27 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         correlation_id=typed_req.correlation_id,
         causality_chain=typed_req.causality_chain,
         payload=ChatResultPayload(
-            model_used=(result.get("raw") or {}).get("model") if isinstance(result, dict) else None,
+            model_used=model_used,
             content=text or "",
             usage=(result.get("raw") or {}).get("usage", {}) if isinstance(result, dict) else {},
-            raw=result,
+            raw=(result.get("raw") if isinstance(result, dict) else None) or {},
             spark_meta=spark_meta,
             spark_vector=spark_vector,
         ),
     )
+    if bus_handle and text:
+        doc_id = str(typed_req.correlation_id or env.id)
+        try:
+            asyncio.create_task(
+                publish_assistant_embedding(
+                    bus_handle,
+                    text=text,
+                    doc_id=doc_id,
+                    trace_id=typed_req.correlation_id,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Embedding publish schedule failed doc_id=%s error=%s", doc_id, exc)
     await _maybe_publish_latent_upsert(
         env=env,
         spark_vector=spark_vector,

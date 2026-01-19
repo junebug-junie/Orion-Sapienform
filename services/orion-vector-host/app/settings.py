@@ -44,11 +44,15 @@ class Settings(BaseSettings):
         default='["user","assistant"]',
         alias="VECTOR_HOST_EMBED_ROLES",
     )
-    VECTOR_HOST_EMBED_BACKEND: Literal["vllm"] = Field(
-        default="vllm",
+    VECTOR_HOST_EMBED_BACKEND: Literal["hf", "vllm"] = Field(
+        default="hf",
         alias="VECTOR_HOST_EMBED_BACKEND",
     )
     VECTOR_HOST_EMBEDDING_MODEL: str = Field(..., alias="VECTOR_HOST_EMBEDDING_MODEL")
+    VECTOR_HOST_EMBEDDING_DEVICE: str = Field(
+        default="cpu",
+        alias="VECTOR_HOST_EMBEDDING_DEVICE",
+    )
     VECTOR_HOST_SEMANTIC_COLLECTION: str = Field(
         default="orion_main_store",
         alias="VECTOR_HOST_SEMANTIC_COLLECTION",

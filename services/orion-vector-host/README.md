@@ -4,7 +4,7 @@ The **Vector Host** service generates semantic embeddings and publishes vector u
 
 ## Semantic embeddings
 
-Vector-host computes semantic embeddings for **all assistant texts** regardless of which backend produced them (ollama/llamacpp/vllm/cola). The provider selection (currently vLLM) only controls the engine used to compute embeddings, not which assistant responses are embedded.
+Vector-host computes semantic embeddings for **all assistant texts** regardless of which backend produced them (ollama/llamacpp/vllm/cola). The provider selection (currently HF) only controls the engine used to compute embeddings, not which assistant responses are embedded.
 
 ## Contracts
 
@@ -25,8 +25,9 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `VECTOR_HOST_EMBED_BACKEND` | `vllm` | Embedding backend (vLLM). |
-| `VECTOR_HOST_EMBEDDING_MODEL` | (required) | Embedding model name sent to the backend. |
+| `VECTOR_HOST_EMBED_BACKEND` | `hf` | Embedding backend (`hf` or `vllm`). |
+| `VECTOR_HOST_EMBEDDING_MODEL` | (required) | HuggingFace model name (HF) or model name sent to vLLM. |
+| `VECTOR_HOST_EMBEDDING_DEVICE` | `cpu` | Device for HF embeddings (`cpu` or `cuda`). |
 | `VECTOR_HOST_SEMANTIC_COLLECTION` | `orion_main_store` | Semantic collection for vector upserts. |
 | `VECTOR_HOST_EMBED_ROLES` | `["user","assistant"]` | Chat roles to embed from history. |
 

@@ -98,6 +98,12 @@ async def _publish_semantic_upsert(
         role,
         original_channel,
     )
+    logger.info(
+        "semantic upsert published doc_id=%s dim=%s provider=%s",
+        doc_id,
+        embedding_dim,
+        settings.VECTOR_HOST_EMBED_BACKEND,
+    )
 
 
 async def _handle_chat_history(env: BaseEnvelope) -> None:
@@ -186,6 +192,9 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
     except Exception as exc:
         logger.warning("Embedding request payload invalid: %s", exc)
         request = None
+    if request and request.include_latent:
+        logger.error("Embedding request include_latent=true is not supported; forcing false.")
+        request = request.model_copy(update={"include_latent": False})
 
     text = _extract_embedding_text(payload_obj)
     doc_id = (
@@ -194,48 +203,56 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         or str(env.correlation_id)
     )
 
-    reply_channel = env.reply_to or f"{settings.VECTOR_HOST_EMBEDDING_RESULT_PREFIX}{doc_id}"
+    reply_channel = env.reply_to or ""
+    logger.info(
+        "embedding.generate received doc_id=%s reply_to=%s text_len=%s",
+        doc_id,
+        "present" if reply_channel else "absent",
+        len(text) if text else 0,
+    )
     if not text:
-        error_payload = EmbeddingResultV1(
-            doc_id=doc_id,
-            embedding=[],
-            embedding_model=None,
-            embedding_dim=0,
-        ).model_dump(mode="json")
-        error_payload["error"] = "missing_text"
-        await hunter.bus.publish(
-            reply_channel,
-            BaseEnvelope(
-                kind="embedding.result.v1",
-                source=_source(),
-                correlation_id=env.correlation_id,
-                causality_chain=env.causality_chain,
-                payload=error_payload,
-            ),
-        )
+        if reply_channel:
+            error_payload = EmbeddingResultV1(
+                doc_id=doc_id,
+                embedding=[],
+                embedding_model=None,
+                embedding_dim=0,
+            ).model_dump(mode="json")
+            error_payload["error"] = "missing_text"
+            await hunter.bus.publish(
+                reply_channel,
+                BaseEnvelope(
+                    kind="embedding.result.v1",
+                    source=_source(),
+                    correlation_id=env.correlation_id,
+                    causality_chain=env.causality_chain,
+                    payload=error_payload,
+                ),
+            )
         return
 
     try:
         embedding, embedding_model, embedding_dim = await embedder.embed(text)
     except Exception as exc:
         logger.warning("Embedding request failed doc_id=%s error=%s", doc_id, exc)
-        error_payload = EmbeddingResultV1(
-            doc_id=doc_id,
-            embedding=[],
-            embedding_model=None,
-            embedding_dim=0,
-        ).model_dump(mode="json")
-        error_payload["error"] = str(exc)
-        await hunter.bus.publish(
-            reply_channel,
-            BaseEnvelope(
-                kind="embedding.result.v1",
-                source=_source(),
-                correlation_id=env.correlation_id,
-                causality_chain=env.causality_chain,
-                payload=error_payload
-            ),
-        )
+        if reply_channel:
+            error_payload = EmbeddingResultV1(
+                doc_id=doc_id,
+                embedding=[],
+                embedding_model=None,
+                embedding_dim=0,
+            ).model_dump(mode="json")
+            error_payload["error"] = str(exc)
+            await hunter.bus.publish(
+                reply_channel,
+                BaseEnvelope(
+                    kind="embedding.result.v1",
+                    source=_source(),
+                    correlation_id=env.correlation_id,
+                    causality_chain=env.causality_chain,
+                    payload=error_payload
+                ),
+            )
         return
 
     result = EmbeddingResultV1(
@@ -244,17 +261,18 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
     )
-    await hunter.bus.publish(
-        reply_channel,
-        BaseEnvelope(
-            kind="embedding.result.v1",
-            source=_source(),
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain,
-            payload=result.model_dump(mode="json"),
+    if reply_channel:
+        await hunter.bus.publish(
+            reply_channel,
+            BaseEnvelope(
+                kind="embedding.result.v1",
+                source=_source(),
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=result.model_dump(mode="json"),
 
-        ),
-    )
+            ),
+        )
 
     timestamp = env.created_at.isoformat() if env.created_at else ""
     meta = _base_meta(

@@ -44,7 +44,7 @@ class Settings(BaseSettings):
         default='["user","assistant"]',
         alias="VECTOR_HOST_EMBED_ROLES",
     )
-    VECTOR_HOST_EMBED_BACKEND: Literal["vllm", "llama-cola"] = Field(
+    VECTOR_HOST_EMBED_BACKEND: Literal["vllm"] = Field(
         default="vllm",
         alias="VECTOR_HOST_EMBED_BACKEND",
     )

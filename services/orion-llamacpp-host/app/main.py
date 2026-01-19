@@ -1,9 +1,12 @@
 # services/orion-llamacpp-host/app/main.py
 from __future__ import annotations
 
+
 import logging
 import os
 import asyncio
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -20,6 +23,9 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.system_health import SystemHealthV1
 
 logger = logging.getLogger("llamacpp-host")
+
+
+BOOT_ID = str(uuid.uuid4())
 
 
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
@@ -156,6 +162,8 @@ async def heartbeat_loop(settings):
                 payload = SystemHealthV1(
                     service=settings.service_name,
                     version=settings.service_version,
+                    boot_id=BOOT_ID,
+                    last_seen_ts=datetime.now(timezone.utc),
                     node="llamacpp-node",
                     status="ok"
                 ).model_dump(mode="json")

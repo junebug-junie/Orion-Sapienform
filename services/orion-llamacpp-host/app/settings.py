@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Identity
     service_name: str = Field("llamacpp-host", env="SERVICE_NAME")
     service_version: str = Field("0.1.0", env="SERVICE_VERSION")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
 
     # Profiles
     llm_profiles_config_path: Path = Field(

@@ -58,6 +58,7 @@ services:
       # --- Runtime ---
       - LOG_LEVEL=${LOG_LEVEL}
       - BATCH_SIZE=${BATCH_SIZE}
+      - RDF_SKIP_KINDS=${RDF_SKIP_KINDS}
       - RETRY_LIMIT=${RETRY_LIMIT}
       - RETRY_INTERVAL=${RETRY_INTERVAL}
 

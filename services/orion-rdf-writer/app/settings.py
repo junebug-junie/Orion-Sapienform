@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     SERVICE_VERSION: str = Field(default="0.2.0", env="SERVICE_VERSION")
     NODE_NAME: str = Field(default="unknown")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
+    RDF_SKIP_KINDS: str = Field(default="", env="RDF_SKIP_KINDS")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -75,5 +76,8 @@ class Settings(BaseSettings):
             seen.add(channel)
             ordered.append(channel)
         return ordered
+
+    def get_skip_kinds(self) -> List[str]:
+        return [k.strip() for k in (self.RDF_SKIP_KINDS or "").split(",") if k.strip()]
 
 settings = Settings()

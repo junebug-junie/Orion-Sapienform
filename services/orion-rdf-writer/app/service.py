@@ -71,6 +71,9 @@ async def handle_envelope(env: BaseEnvelope) -> None:
     """
     Bus handler: Converts incoming envelopes to RDF and pushes to GraphDB.
     """
+    if env.kind in settings.get_skip_kinds():
+        logger.info("skip rdf kind=%s correlation_id=%s", env.kind, env.correlation_id)
+        return
     logger.debug(f"Received {env.kind} from {env.source}")
     if _should_dedupe(env):
         logger.info(f"dedupe skip kind={env.kind} correlation_id={env.correlation_id}")

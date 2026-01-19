@@ -17,6 +17,7 @@ from orion.core.bus.codec import OrionCodec
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from orion.schemas.vector.schemas import VectorUpsertV1
 
 from orion.spark.orion_tissue import OrionTissue
 from orion.spark.signal_mapper import SignalMapper
@@ -41,6 +42,7 @@ _CANDIDATE_LAST_SEEN_TS: Dict[str, float] = {}
 _CANDIDATE_TELEM_EMITTED: Dict[str, float] = {}
 # keep cache small + bounded
 _CANDIDATE_CACHE_TTL_SEC = 600.0  # 10 minutes
+_EXPECTED_EMB: Dict[str, np.ndarray] = {}
 
 
 def set_publisher_bus(bus: OrionBusAsync):
@@ -164,6 +166,14 @@ def _coerce_epoch_ts(v: Any) -> float:
 
 def _to_iso_utc(ts_epoch: float) -> str:
     return datetime.fromtimestamp(float(ts_epoch), tz=timezone.utc).isoformat()
+
+
+def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
+    denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-8
+    if denom <= 0:
+        return 0.0
+    dist = 1.0 - float(np.dot(a, b) / denom)
+    return float(max(0.0, min(1.0, dist)))
 
 
 def _build_llm_prompt(c: SparkCandidatePayload) -> str:
@@ -656,6 +666,113 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
     except Exception as e:
         logger.error(f"Error processing trace for tissue: {e}", exc_info=True)
+
+
+async def handle_semantic_upsert(env: BaseEnvelope) -> None:
+    payload_obj = env.payload if isinstance(env.payload, dict) else {}
+    try:
+        upsert = VectorUpsertV1.model_validate(payload_obj)
+    except ValidationError:
+        logger.warning("Skipping invalid vector.upsert payload")
+        return
+
+    if upsert.embedding_kind != "semantic":
+        return
+    if not upsert.embedding:
+        return
+
+    emb = np.array(upsert.embedding, dtype=np.float32)
+    if emb.size == 0:
+        return
+
+    channel_key = "chat"
+    expected = _EXPECTED_EMB.get(channel_key)
+    if expected is None or expected.shape != emb.shape:
+        expected = emb.copy()
+    novelty = _cosine_distance(emb, expected)
+    coherence = 1.0 - novelty
+    expected = (0.95 * expected) + (0.05 * emb)
+    _EXPECTED_EMB[channel_key] = expected
+
+    magnitude = min(3.0, 0.5 + (2.5 * novelty))
+    arousal_hint = max(0.1, min(1.0, 0.4 + (0.6 * novelty)))
+
+    wave_len = 64
+    x = np.linspace(-3, 3, wave_len)
+    waveform = (np.exp(-x**2) * arousal_hint).astype(np.float32)
+
+    emb_expect = TISSUE.embedding_expectations.get(channel_key)
+    if emb_expect is not None and emb_expect.shape != emb.shape:
+        TISSUE.embedding_expectations[channel_key] = np.zeros((emb.shape[0],), dtype=np.float32)
+        TISSUE.last_embedding_input.pop(channel_key, None)
+
+    feat_dim = 32
+    feature_vec = np.zeros(feat_dim, dtype=np.float32)
+
+    encoding = SurfaceEncoding(
+        event_id=upsert.doc_id,
+        modality="semantic",
+        timestamp=time.time(),
+        source="orion-vector-host",
+        channel_tags=["chat", "semantic"],
+        waveform=waveform,
+        feature_vec=feature_vec,
+        spark_vector=None,
+        meta={
+            "doc_id": upsert.doc_id,
+            "text": (upsert.text or "")[:200],
+            "embedding_kind": upsert.embedding_kind,
+        },
+    )
+
+    stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=magnitude)
+    TISSUE.propagate(
+        stimulus,
+        steps=2,
+        learning_rate=0.1,
+        channel_key=channel_key,
+        embedding=emb,
+        distress=0.0,
+    )
+
+    phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+    phi_stats = _apply_signal_deltas(phi_stats)
+    valence = float(phi_stats.get("valence", 0.5))
+    arousal = float(phi_stats.get("energy", 0.5))
+    coherence_stat = float(phi_stats.get("coherence", coherence))
+    TISSUE.snapshot()
+
+    try:
+        telemetry_id = str(uuid4())
+        ws_payload = {
+            "type": "tissue.update",
+            "telemetry_id": telemetry_id,
+            "correlation_id": str(env.correlation_id or upsert.doc_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stats": {
+                "phi": coherence_stat,
+                "novelty": float(novelty),
+                "valence": valence,
+                "arousal": arousal,
+            },
+            "grid": [],
+            "metadata": {
+                "doc_id": upsert.doc_id,
+                "embedding_kind": upsert.embedding_kind,
+                "vector_present": True,
+            },
+        }
+        await manager.broadcast(ws_payload)
+    except Exception as e:
+        logger.warning("Failed to broadcast semantic tissue update: %s", e)
+
+    logger.info(
+        "semantic upsert tissue update doc_id=%s novelty=%.3f energy=%.3f coherence=%.3f",
+        upsert.doc_id,
+        novelty,
+        arousal,
+        coherence_stat,
+    )
 
 
 async def handle_candidate(env: BaseEnvelope) -> None:

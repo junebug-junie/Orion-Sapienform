@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Optional
 
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
@@ -45,6 +46,38 @@ class Settings(BaseSettings):
     channel_vector_semantic_upsert: str = Field(
         "orion:vector:semantic:upsert",
         alias="CHANNEL_VECTOR_SEMANTIC_UPSERT",
+    )
+
+    # Embedding RPC (to orion-vector-host) for valence anchors
+    channel_embedding_generate: str = Field(
+        "orion:embedding:generate",
+        alias="CHANNEL_EMBEDDING_GENERATE",
+    )
+    embedding_result_prefix: str = Field(
+        "orion:embedding:result:",
+        alias="EMBEDDING_RESULT_PREFIX",
+    )
+
+    # Valence anchor texts (semantic axis), gain, and refresh cadence
+    valence_anchor_pos_text: str = Field(
+        "I feel hopeful and grateful.",
+        alias="VALENCE_ANCHOR_POS_TEXT",
+    )
+    valence_anchor_neg_text: str = Field(
+        "I feel hopeless and afraid.",
+        alias="VALENCE_ANCHOR_NEG_TEXT",
+    )
+    valence_gain: float = Field(
+        0.35,
+        alias="VALENCE_GAIN",
+    )
+    valence_anchor_refresh_sec: int = Field(
+        6 * 60 * 60,
+        alias="VALENCE_ANCHOR_REFRESH_SEC",
+    )
+    valence_anchor_timeout_sec: int = Field(
+        10,
+        alias="VALENCE_ANCHOR_TIMEOUT_SEC",
     )
 
     # Freshness semantics (for read-model)

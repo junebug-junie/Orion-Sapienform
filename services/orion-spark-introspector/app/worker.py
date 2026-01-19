@@ -43,6 +43,7 @@ _CANDIDATE_TELEM_EMITTED: Dict[str, float] = {}
 # keep cache small + bounded
 _CANDIDATE_CACHE_TTL_SEC = 600.0  # 10 minutes
 _EXPECTED_EMB: Dict[str, np.ndarray] = {}
+_SEEN_DOC: Dict[str, float] = {}
 
 
 def set_publisher_bus(bus: OrionBusAsync):
@@ -413,12 +414,12 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
     # Calculate novelty & propagate
     novelty = float(TISSUE.calculate_novelty(stimulus, channel_key="chat"))
     TISSUE.propagate(
-        stimulus, 
-        steps=2, 
-        learning_rate=0.1, 
-        channel_key="chat", 
-        embedding=feature_vec, 
-        distress=0.0
+        stimulus,
+        steps=2,
+        learning_rate=0.1,
+        channel_key="chat",
+        embedding=None,
+        distress=0.0,
     )
     
     # Snapshot & Broadcast to UI
@@ -686,12 +687,21 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
         return
 
     channel_key = "chat"
+    now = time.time()
+    last_seen = _SEEN_DOC.get(upsert.doc_id)
+    if last_seen is not None and (now - last_seen) < 1.0:
+        return
+    _SEEN_DOC[upsert.doc_id] = now
+
     expected = _EXPECTED_EMB.get(channel_key)
     if expected is None or expected.shape != emb.shape:
+        novelty = 1.0
+        coherence = 0.0
         expected = emb.copy()
-    novelty = _cosine_distance(emb, expected)
-    coherence = 1.0 - novelty
-    expected = (0.95 * expected) + (0.05 * emb)
+    else:
+        novelty = _cosine_distance(emb, expected)
+        coherence = 1.0 - novelty
+        expected = (0.95 * expected) + (0.05 * emb)
     _EXPECTED_EMB[channel_key] = expected
 
     magnitude = min(3.0, 0.5 + (2.5 * novelty))
@@ -738,7 +748,7 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
     phi_stats = _apply_signal_deltas(phi_stats)
     valence = float(phi_stats.get("valence", 0.5))
-    arousal = float(phi_stats.get("energy", 0.5))
+    arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
     coherence_stat = float(phi_stats.get("coherence", coherence))
     TISSUE.snapshot()
 
@@ -753,7 +763,7 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
                 "phi": coherence_stat,
                 "novelty": float(novelty),
                 "valence": valence,
-                "arousal": arousal,
+                "arousal": arousal_display,
             },
             "grid": [],
             "metadata": {
@@ -767,10 +777,11 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
         logger.warning("Failed to broadcast semantic tissue update: %s", e)
 
     logger.info(
-        "semantic upsert tissue update doc_id=%s novelty=%.3f energy=%.3f coherence=%.3f",
+        "semantic upsert tissue update doc_id=%s novelty=%.3f arousal=%.3f energy=%.3f coherence=%.3f",
         upsert.doc_id,
         novelty,
-        arousal,
+        arousal_display,
+        float(phi_stats.get("energy", 0.0)),
         coherence_stat,
     )
 

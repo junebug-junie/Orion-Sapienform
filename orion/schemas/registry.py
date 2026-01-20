@@ -23,7 +23,13 @@ from orion.schemas.vector.schemas import (
     VectorWriteRequest,
 )
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
-from orion.schemas.telemetry.biometrics import BiometricsPayload
+from orion.schemas.telemetry.biometrics import (
+    BiometricsPayload,
+    BiometricsSampleV1,
+    BiometricsSummaryV1,
+    BiometricsInductionV1,
+    BiometricsClusterV1,
+)
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
@@ -114,6 +120,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ConceptProfile": ConceptProfile,
     "ConceptProfileDelta": ConceptProfileDelta,
     "BiometricsPayload": BiometricsPayload,
+    "BiometricsSampleV1": BiometricsSampleV1,
+    "BiometricsSummaryV1": BiometricsSummaryV1,
+    "BiometricsInductionV1": BiometricsInductionV1,
+    "BiometricsClusterV1": BiometricsClusterV1,
     "PadEventV1": PadEventV1,
     "StateFrameV1": StateFrameV1,
     "PadRpcRequestV1": PadRpcRequestV1,

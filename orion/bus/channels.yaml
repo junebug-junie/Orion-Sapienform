@@ -677,6 +677,38 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:biometrics:sample"
+    kind: "telemetry"
+    schema_id: "BiometricsSampleV1"
+    producer_services: ["orion-biometrics"]
+    consumer_services: ["orion-sql-writer", "orion-landing-pad"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:biometrics:summary"
+    kind: "telemetry"
+    schema_id: "BiometricsSummaryV1"
+    producer_services: ["orion-biometrics", "orion-biometrics-hub"]
+    consumer_services: ["orion-state-service", "orion-sql-writer", "orion-landing-pad"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:biometrics:induction"
+    kind: "telemetry"
+    schema_id: "BiometricsInductionV1"
+    producer_services: ["orion-biometrics", "orion-biometrics-hub"]
+    consumer_services: ["orion-state-service", "orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:biometrics:cluster"
+    kind: "telemetry"
+    schema_id: "BiometricsClusterV1"
+    producer_services: ["orion-biometrics-hub"]
+    consumer_services: ["orion-state-service", "orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-01-10"
+
   - name: "orion:exec:request:MetaTagsService"
     kind: "request"
     schema_id: "MetaTagsRequestV1"

@@ -27,7 +27,7 @@ Compatibility notes:
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -79,3 +79,68 @@ class BiometricsPayload(BaseModel):
             raise ValueError("BiometricsPayload requires at least one of cpu or gpu telemetry")
 
         return self
+
+
+class BiometricsSampleV1(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    node: Optional[str] = None
+    service_name: Optional[str] = None
+    service_version: Optional[str] = None
+
+    gpu: Optional[Dict[str, Any]] = None
+    cpu: Optional[Dict[str, Any]] = None
+    memory: Optional[Dict[str, Any]] = None
+    disk: Optional[Dict[str, Any]] = None
+    network: Optional[Dict[str, Any]] = None
+    temps: Optional[Dict[str, Any]] = None
+    power: Optional[Dict[str, Any]] = None
+    errors: List[str] = Field(default_factory=list)
+
+
+class BiometricsSummaryV1(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    node: Optional[str] = None
+    service_name: Optional[str] = None
+    service_version: Optional[str] = None
+
+    pressures: Dict[str, float] = Field(default_factory=dict)
+    headroom: Dict[str, float] = Field(default_factory=dict)
+    composites: Dict[str, float] = Field(default_factory=dict)
+    constraint: Optional[str] = None
+    telemetry_error_rate: float = 0.0
+
+
+class BiometricsInductionMetricV1(BaseModel):
+    level: float = Field(0.0, ge=0.0, le=1.0)
+    trend: float = Field(0.5, ge=0.0, le=1.0)
+    volatility: float = Field(0.0, ge=0.0, le=1.0)
+    spike_rate: float = Field(0.0, ge=0.0, le=1.0)
+
+
+class BiometricsInductionV1(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    node: Optional[str] = None
+    service_name: Optional[str] = None
+    service_version: Optional[str] = None
+    window_sec: float = 30.0
+
+    metrics: Dict[str, BiometricsInductionMetricV1] = Field(default_factory=dict)
+
+
+class BiometricsClusterV1(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    sources: List[str] = Field(default_factory=list)
+    role_weights: Dict[str, float] = Field(default_factory=dict)
+
+    pressures: Dict[str, float] = Field(default_factory=dict)
+    headroom: Dict[str, float] = Field(default_factory=dict)
+    composites: Dict[str, float] = Field(default_factory=dict)
+    constraint: Optional[str] = None

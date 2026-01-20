@@ -6,6 +6,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
+from orion.schemas.telemetry.biometrics import BiometricsSummaryV1, BiometricsInductionV1, BiometricsClusterV1
 
 
 StateScope = Literal["global", "node"]
@@ -40,3 +41,15 @@ class StateLatestReply(BaseModel):
     # Diagnostics / hints (stable keys)
     source: Optional[str] = None
     note: Optional[str] = None
+    biometrics: Optional["BiometricsContext"] = None
+
+
+class BiometricsContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    status: FreshnessStatus
+    age_ms: Optional[int] = None
+    note: Optional[str] = None
+    summary: Optional[BiometricsSummaryV1] = None
+    induction: Optional[BiometricsInductionV1] = None
+    cluster: Optional[BiometricsClusterV1] = None

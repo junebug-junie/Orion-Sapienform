@@ -4,6 +4,10 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
+import httpx
+from fastapi import FastAPI
+import uvicorn
+
 from pydantic import ValidationError
 
 # [FIX] Added ServiceRef to imports
@@ -11,13 +15,25 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatRes
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 from orion.schemas.vector.schemas import VectorUpsertV1
 
-from .llm_backend import run_llm_chat
+from .llm_backend import get_route_targets, run_llm_chat
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
 bus_handle: Optional[Any] = None
+app = FastAPI()
+
+
+@app.get("/health")
+async def health() -> Dict[str, Any]:
+    routes = sorted(get_route_targets().keys())
+    return {
+        "status": "ok",
+        "service": settings.service_name,
+        "node": settings.node_name,
+        "routes": routes,
+    }
 
 
 def _cfg() -> ChassisConfig:
@@ -134,6 +150,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         raw_user_text=typed_req.payload.raw_user_text,
         options=typed_req.payload.options or {},
         profile_name=typed_req.payload.profile,
+        route=typed_req.payload.route,
         trace_id=str(typed_req.correlation_id),
         user_id=typed_req.payload.user_id,
         session_id=typed_req.payload.session_id,
@@ -149,6 +166,15 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     spark_vector = (result.get("spark_vector") if isinstance(result, dict) else None)
     backend = (result.get("backend") if isinstance(result, dict) else None)
     model_used = (result.get("model") if isinstance(result, dict) else None)
+    route_used = (result.get("route") if isinstance(result, dict) else None)
+    served_by = (result.get("served_by") if isinstance(result, dict) else None)
+    gateway_label = f"{settings.node_name or 'gateway'}-{settings.service_name}"
+    meta = {
+        "served_by": served_by,
+        "gateway": gateway_label,
+        "route": route_used,
+    }
+    meta = {k: v for k, v in meta.items() if v is not None}
 
     out = Envelope[ChatResultPayload](
         kind="llm.chat.result",
@@ -162,6 +188,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             raw=(result.get("raw") if isinstance(result, dict) else None) or {},
             spark_meta=spark_meta,
             spark_vector=spark_vector,
+            meta=meta or None,
         ),
     )
     if bus_handle and text:
@@ -188,18 +215,55 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     return out.model_copy(update={"reply_to": None})
 
 
+async def _serve_health() -> None:
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=settings.llm_gateway_health_port,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+async def _probe_route_targets() -> None:
+    route_targets = get_route_targets()
+    if not route_targets:
+        logger.info("No route table configured; skipping upstream health probes.")
+        return
+
+    timeout = settings.llm_route_health_timeout_sec
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for route, target in route_targets.items():
+            url = f"{target.url.rstrip('/')}/health"
+            try:
+                response = await client.get(url)
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Route '%s' health probe failed status=%s url=%s",
+                        route,
+                        response.status_code,
+                        url,
+                    )
+                else:
+                    logger.info("Route '%s' health probe ok url=%s", route, url)
+            except Exception as exc:
+                logger.warning("Route '%s' health probe error url=%s error=%s", route, url, exc)
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[LLM-GW] %(levelname)s - %(message)s")
     cfg = _cfg()
     chat_svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle_chat)
     global bus_handle
     bus_handle = chat_svc.bus
+    await _probe_route_targets()
     logger.info(
         "Rabbit listening channels=%s bus=%s",
         settings.channel_llm_intake,
         cfg.bus_url,
     )
-    await asyncio.gather(chat_svc.start())
+    await asyncio.gather(chat_svc.start(), _serve_health())
 
 
 if __name__ == "__main__":

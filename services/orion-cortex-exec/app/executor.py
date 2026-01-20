@@ -476,6 +476,7 @@ async def call_step_services(
                     model=req_model,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                    route="metacog",
                     options={
                         "temperature": 0.8,
                         "max_tokens": 1024,
@@ -545,6 +546,7 @@ async def call_step_services(
                     model=req_model,
                     messages=messages_payload,
                     raw_user_text="metacog_enrich",
+                    route="metacog",
                     options={
                         "temperature": 0.5,
                         "max_tokens": 1024,

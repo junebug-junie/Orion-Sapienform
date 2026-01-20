@@ -4,6 +4,8 @@ from .chat_history_log import ChatHistoryLogSQL
 from .chat_message import ChatMessageSQL
 from .dreams import Dream
 from .biometrics_telemetry import BiometricsTelemetry
+from .biometrics_summary import BiometricsSummarySQL
+from .biometrics_induction import BiometricsInductionSQL
 from .spark_introspection_log import SparkIntrospectionLogSQL
 from .spark_telemetry import SparkTelemetrySQL
 from .fallback_log import BusFallbackLog
@@ -19,6 +21,8 @@ __all__ = [
     "ChatMessageSQL",
     "Dream",
     "BiometricsTelemetry",
+    "BiometricsSummarySQL",
+    "BiometricsInductionSQL",
     "SparkIntrospectionLogSQL",
     "SparkTelemetrySQL",
     "BusFallbackLog",

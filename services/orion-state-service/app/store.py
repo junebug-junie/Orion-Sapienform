@@ -10,7 +10,8 @@ import orjson
 from redis.asyncio import Redis
 
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
-from orion.schemas.state.contracts import StateLatestReply, StateGetLatestRequest
+from orion.schemas.telemetry.biometrics import BiometricsSummaryV1, BiometricsInductionV1, BiometricsClusterV1
+from orion.schemas.state.contracts import StateLatestReply, StateGetLatestRequest, BiometricsContext
 
 
 def _utcnow() -> datetime:
@@ -29,6 +30,13 @@ def _status(snapshot: Optional[SparkStateSnapshotV1]) -> Tuple[str, Optional[int
         return ("fresh" if age <= int(snapshot.valid_for_ms) else "stale"), age
     except Exception:
         return "stale", None
+
+
+def _status_for_timestamp(ts: Optional[datetime], *, stale_after_sec: float) -> Tuple[str, Optional[int]]:
+    if ts is None:
+        return "missing", None
+    age = _age_ms(ts)
+    return ("fresh" if age <= int(stale_after_sec * 1000) else "stale"), age
 
 
 @dataclass
@@ -57,6 +65,11 @@ class StateStore:
 
         # dedupe/out-of-order protection
         self._max_seq_by_boot: Dict[str, int] = {}
+
+        # Biometrics summaries/induction
+        self._biometrics_summary_by_node: Dict[str, BiometricsSummaryV1] = {}
+        self._biometrics_induction_by_node: Dict[str, BiometricsInductionV1] = {}
+        self._biometrics_cluster: Optional[BiometricsClusterV1] = None
 
     async def hydrate_from_snapshots(self, snapshots: list[SparkStateSnapshotV1], *, note: str) -> int:
         accepted = 0
@@ -141,14 +154,43 @@ class StateStore:
         except Exception:
             return False
 
-    async def get_latest(self, req: StateGetLatestRequest) -> StateLatestReply:
+    async def ingest_biometrics_summary(self, summary: BiometricsSummaryV1) -> None:
+        node = (summary.node or self.primary_node or "unknown").strip() or "unknown"
+        async with self._lock:
+            self._biometrics_summary_by_node[node] = summary
+
+    async def ingest_biometrics_induction(self, induction: BiometricsInductionV1) -> None:
+        node = (induction.node or self.primary_node or "unknown").strip() or "unknown"
+        async with self._lock:
+            self._biometrics_induction_by_node[node] = induction
+
+    async def ingest_biometrics_cluster(self, cluster: BiometricsClusterV1) -> None:
+        async with self._lock:
+            self._biometrics_cluster = cluster
+
+    def _pick_latest(self, items: Dict[str, Any]) -> Optional[Any]:
+        if not items:
+            return None
+        primary = items.get(self.primary_node)
+        if primary is not None:
+            return primary
+        return max(items.values(), key=lambda v: getattr(v, "timestamp", _utcnow()))
+
+    async def get_latest(self, req: StateGetLatestRequest, *, biometrics_stale_after_sec: float) -> StateLatestReply:
         if req.scope == "node":
             node = (req.node or "").strip()
             if not node:
                 return StateLatestReply(ok=True, status="missing", note="node_required_for_scope_node")
             async with self._lock:
                 snap = self._latest_by_node.get(node)
+                summary = self._biometrics_summary_by_node.get(node)
+                induction = self._biometrics_induction_by_node.get(node)
+                cluster = self._biometrics_cluster
             st, age = _status(snap)
+            bio_status, bio_age = _status_for_timestamp(
+                summary.timestamp if summary else None,
+                stale_after_sec=biometrics_stale_after_sec,
+            )
             return StateLatestReply(
                 ok=True,
                 status=st,
@@ -156,12 +198,27 @@ class StateStore:
                 age_ms=age,
                 snapshot=snap,
                 source="cache",
+                biometrics=BiometricsContext(
+                    status=bio_status,
+                    age_ms=bio_age,
+                    note="node",
+                    summary=summary,
+                    induction=induction,
+                    cluster=cluster,
+                ),
             )
 
         # global
         async with self._lock:
             snap = self._latest_global
+            summary = self._pick_latest(self._biometrics_summary_by_node)
+            induction = self._pick_latest(self._biometrics_induction_by_node)
+            cluster = self._biometrics_cluster
         st, age = _status(snap)
+        bio_status, bio_age = _status_for_timestamp(
+            summary.timestamp if summary else None,
+            stale_after_sec=biometrics_stale_after_sec,
+        )
         return StateLatestReply(
             ok=True,
             status=st,
@@ -169,6 +226,14 @@ class StateStore:
             age_ms=age,
             snapshot=snap,
             source="cache",
+            biometrics=BiometricsContext(
+                status=bio_status,
+                age_ms=bio_age,
+                note="global",
+                summary=summary,
+                induction=induction,
+                cluster=cluster,
+            ),
         )
 
     async def debug_state(self) -> Dict[str, Any]:

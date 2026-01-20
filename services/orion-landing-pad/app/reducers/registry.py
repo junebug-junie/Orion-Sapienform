@@ -6,7 +6,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.pad import PadEventV1
 
 from .fallback import fallback_reducer
-from .stubs import metric_reducer, snapshot_reducer
+from .stubs import metric_reducer, snapshot_reducer, biometrics_reducer
 
 ReducerFn = Callable[[BaseEnvelope, str], Awaitable[PadEventV1 | None]]
 
@@ -19,6 +19,7 @@ class ReducerRegistry:
     def _install_defaults(self) -> None:
         self.register("telemetry.metric.v1", metric_reducer)
         self.register("spark.state.snapshot.v1", snapshot_reducer)
+        self.register("biometrics.summary.v1", biometrics_reducer)
 
     def register(self, kind: str, reducer: ReducerFn) -> None:
         self._reducers[kind] = reducer

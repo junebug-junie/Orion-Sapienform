@@ -24,6 +24,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CHANNEL_SPARK_STATE_SNAPSHOT", "SPARK_STATE_SNAPSHOT_CHANNEL"),
     )
 
+    # Input stream: Biometrics
+    channel_biometrics_summary: str = Field(
+        "orion:biometrics:summary",
+        validation_alias=AliasChoices("CHANNEL_BIOMETRICS_SUMMARY", "BIOMETRICS_SUMMARY_CHANNEL"),
+    )
+    channel_biometrics_induction: str = Field(
+        "orion:biometrics:induction",
+        validation_alias=AliasChoices("CHANNEL_BIOMETRICS_INDUCTION", "BIOMETRICS_INDUCTION_CHANNEL"),
+    )
+    channel_biometrics_cluster: str = Field(
+        "orion:biometrics:cluster",
+        validation_alias=AliasChoices("CHANNEL_BIOMETRICS_CLUSTER", "BIOMETRICS_CLUSTER_CHANNEL"),
+    )
+
     # RPC intake channel
     state_request_channel: str = Field(
         "orion:state:request",
@@ -37,6 +51,7 @@ class Settings(BaseSettings):
     )
     state_cache_prefix: str = Field("orion:spark_state", alias="STATE_CACHE_PREFIX")
     primary_state_node: str = Field("athena", alias="PRIMARY_STATE_NODE")
+    biometrics_stale_after_sec: float = Field(90.0, alias="BIOMETRICS_STALE_AFTER_SEC")
 
     # Postgres hydration (durable recovery)
     postgres_uri: str = Field(

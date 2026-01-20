@@ -49,6 +49,7 @@ class ChatBody(BaseModel):
     # Semantic routing support
     verb: Optional[str] = None
     profile_name: Optional[str] = None
+    route: Optional[str] = None
 
 
 class ExecStepPayload(BaseModel):

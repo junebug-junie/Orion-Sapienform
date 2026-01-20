@@ -183,6 +183,10 @@ class ChatRequestPayload(BaseModel):
             "Must reflect the human input (pre-scaffold) when available."
         ),
     )
+    route: Optional[str] = Field(
+        default=None,
+        description="Optional routing key for LLM gateway (e.g., chat, metacog, latents).",
+    )
     options: Dict[str, Any] = Field(default_factory=dict)
 
     # Optional provenance
@@ -201,6 +205,7 @@ class ChatResultPayload(BaseModel):
     model_used: Optional[str] = None
     spark_meta: Optional[Dict[str, Any]] = None
     spark_vector: Optional[List[float]] = None
+    meta: Optional[Dict[str, Any]] = None
     usage: Dict[str, Any] = Field(default_factory=dict)
     raw: Dict[str, Any] = Field(default_factory=dict)
 

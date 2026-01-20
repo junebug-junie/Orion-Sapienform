@@ -1,4 +1,6 @@
-from typing import Any, Dict, Optional, List, Coroutine, Sequence
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any, Dict, Optional, List, Coroutine, Sequence, Tuple
 import asyncio
 import logging
 import time
@@ -20,6 +22,13 @@ from orion.spark.integration import (
 logger = logging.getLogger("orion-llm-gateway.backend")
 
 
+@dataclass(frozen=True)
+class RouteTarget:
+    url: str
+    backend: Optional[str] = None
+    served_by: Optional[str] = None
+
+
 def _run_async(coro: asyncio.Future | Coroutine[Any, Any, Any]) -> None:
     try:
         loop = asyncio.get_running_loop()
@@ -34,6 +43,81 @@ def _run_async(coro: asyncio.Future | Coroutine[Any, Any, Any]) -> None:
 # ─────────────────────────────────────────────
 
 _profile_registry: LLMProfileRegistry = settings.load_profile_registry()
+
+
+@lru_cache
+def _load_route_targets() -> Dict[str, RouteTarget]:
+    route_table: Dict[str, RouteTarget] = {}
+    raw_json = settings.llm_route_table_json
+    if raw_json:
+        try:
+            raw = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            logger.error("[LLM-GW] Invalid LLM_GATEWAY_ROUTE_TABLE_JSON: %s", exc)
+            return {}
+
+        if not isinstance(raw, dict):
+            logger.error("[LLM-GW] Route table JSON must be a dict, got %s", type(raw))
+            return {}
+
+        for route, value in raw.items():
+            if isinstance(value, str):
+                route_table[str(route)] = RouteTarget(url=value)
+                continue
+            if isinstance(value, dict):
+                url = value.get("url") or value.get("base_url")
+                if not url:
+                    logger.warning("[LLM-GW] Route '%s' missing url/base_url", route)
+                    continue
+                route_table[str(route)] = RouteTarget(
+                    url=url,
+                    backend=value.get("backend"),
+                    served_by=value.get("served_by"),
+                )
+                continue
+            logger.warning("[LLM-GW] Route '%s' ignored (invalid value type %s)", route, type(value))
+    else:
+        for route, url in {
+            "chat": settings.llm_route_chat_url,
+            "metacog": settings.llm_route_metacog_url,
+            "latents": settings.llm_route_latents_url,
+            "specialist": settings.llm_route_specialist_url,
+        }.items():
+            if url:
+                route_table[route] = RouteTarget(url=url)
+
+    served_by_defaults = {
+        "chat": settings.llm_route_chat_served_by or "atlas-worker-1",
+        "metacog": settings.llm_route_metacog_served_by or "athena-worker-1",
+        "latents": settings.llm_route_latents_served_by or "atlas-worker-2",
+        "specialist": settings.llm_route_specialist_served_by or "atlas-worker-3",
+    }
+    for route, target in list(route_table.items()):
+        if target.served_by or route not in served_by_defaults:
+            continue
+        route_table[route] = RouteTarget(
+            url=target.url,
+            backend=target.backend,
+            served_by=served_by_defaults[route],
+        )
+    return route_table
+
+
+def get_route_targets() -> Dict[str, RouteTarget]:
+    return _load_route_targets()
+
+
+def _resolve_route(body: ChatBody) -> Tuple[str, Optional[RouteTarget], bool]:
+    opts = body.options or {}
+    route = body.route or opts.get("route") or opts.get("routing_key")
+    route_table = get_route_targets()
+
+    if route_table:
+        resolved_route = str(route or settings.llm_route_default or "chat")
+        return resolved_route, route_table.get(resolved_route), True
+
+    resolved_route = str(route or settings.llm_route_default or "chat")
+    return resolved_route, None, False
 
 
 def _common_http_client() -> httpx.Client:
@@ -643,36 +727,81 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
+    route, route_target, has_route_table = _resolve_route(body)
 
-    # Normalize aliases if vLLM, harmless if llama.cpp
-    if backend == "vllm":
-        model = _normalize_model_for_vllm(model)
-        base_url = settings.vllm_url
+    if has_route_table and not route_target:
+        logger.error("[LLM-GW] Route '%s' not configured in route table", route)
+        return {
+            "text": f"[Error: route '{route}' not configured]",
+            "spark_meta": {},
+            "raw": {"error": "route_not_configured", "route": route},
+            "route": route,
+        }
 
-    elif backend == "ollama":
-        base_url = settings.ollama_url
-        if settings.ollama_use_openai_compat:
-            result = _execute_openai_chat(body, model, base_url, "ollama")
+    if route_target:
+        backend = _normalize_backend_name(route_target.backend or "llamacpp")
+        base_url = route_target.url
+        if backend == "vllm":
+            model = _normalize_model_for_vllm(model)
+        if backend == "ollama":
+            if settings.ollama_use_openai_compat:
+                result = _execute_openai_chat(body, model, base_url, "ollama")
+                if isinstance(result, dict):
+                    result["backend"] = backend
+                    result["model"] = model
+                    result["route"] = route
+                    result["served_by"] = route_target.served_by
+                return result
+            result = _execute_ollama_chat(body, model, base_url)
             if isinstance(result, dict):
                 result["backend"] = backend
                 result["model"] = model
+                result["route"] = route
+                result["served_by"] = route_target.served_by
             return result
-        result = _execute_ollama_chat(body, model, base_url)
-        if isinstance(result, dict):
-            result["backend"] = backend
-            result["model"] = model
-        return result
-
-    elif backend == "llama-cola":
-        base_url = settings.llama_cola_url
-
     else:
-        base_url = settings.llamacpp_url
+        # Normalize aliases if vLLM, harmless if llama.cpp
+        if backend == "vllm":
+            model = _normalize_model_for_vllm(model)
+            base_url = settings.vllm_url
 
+        elif backend == "ollama":
+            base_url = settings.ollama_url
+            if settings.ollama_use_openai_compat:
+                result = _execute_openai_chat(body, model, base_url, "ollama")
+                if isinstance(result, dict):
+                    result["backend"] = backend
+                    result["model"] = model
+                    result["route"] = route
+                    result["served_by"] = route_target.served_by if route_target else None
+                return result
+            result = _execute_ollama_chat(body, model, base_url)
+            if isinstance(result, dict):
+                result["backend"] = backend
+                result["model"] = model
+                result["route"] = route
+                result["served_by"] = route_target.served_by if route_target else None
+            return result
+
+        elif backend == "llama-cola":
+            base_url = settings.llama_cola_url
+
+        else:
+            base_url = settings.llamacpp_url
+
+    logger.info(
+        "[LLM-GW] route=%s backend=%s served_by=%s url=%s",
+        route,
+        backend,
+        route_target.served_by if route_target else None,
+        base_url,
+    )
     result = _execute_openai_chat(body, model, base_url, backend)
     if isinstance(result, dict):
         result["backend"] = backend
         result["model"] = model
+        result["route"] = route
+        result["served_by"] = route_target.served_by if route_target else None
     return result
 
 

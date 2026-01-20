@@ -72,6 +72,20 @@ class Settings(BaseSettings):
     llm_profiles_config_path: Optional[Path] = Field(None, alias="LLM_PROFILES_CONFIG_PATH")
     llm_default_profile_name: Optional[str] = Field(None, alias="LLM_DEFAULT_PROFILE_NAME")
 
+    # Route table (single-subscriber routing)
+    llm_route_table_json: Optional[str] = Field(None, alias="LLM_GATEWAY_ROUTE_TABLE_JSON")
+    llm_route_default: str = Field("chat", alias="LLM_ROUTE_DEFAULT")
+    llm_route_chat_url: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_URL")
+    llm_route_metacog_url: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_URL")
+    llm_route_latents_url: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_URL")
+    llm_route_specialist_url: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_URL")
+    llm_route_chat_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_SERVED_BY")
+    llm_route_metacog_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_SERVED_BY")
+    llm_route_latents_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_SERVED_BY")
+    llm_route_specialist_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_SERVED_BY")
+    llm_route_health_timeout_sec: float = Field(1.5, alias="LLM_ROUTE_HEALTH_TIMEOUT_SEC")
+    llm_gateway_health_port: int = Field(8210, alias="LLM_GATEWAY_HEALTH_PORT")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

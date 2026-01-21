@@ -1,5 +1,8 @@
+import json
+from typing import Dict
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -18,11 +21,29 @@ class Settings(BaseSettings):
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False)
 
     # Channels
-    TELEMETRY_PUBLISH_CHANNEL: str = Field(default="orion:biometrics:telemetry")
+    TELEMETRY_PUBLISH_CHANNEL: str = Field(default="orion:telemetry:biometrics")
+    BIOMETRICS_SAMPLE_CHANNEL: str = Field(default="orion:biometrics:sample")
+    BIOMETRICS_SUMMARY_CHANNEL: str = Field(default="orion:biometrics:summary")
+    BIOMETRICS_INDUCTION_CHANNEL: str = Field(default="orion:biometrics:induction")
+    BIOMETRICS_CLUSTER_CHANNEL: str = Field(default="orion:biometrics:cluster")
+    SPARK_SIGNAL_CHANNEL: str = Field(default="orion:spark:signal")
 
     # Behavior
     TELEMETRY_INTERVAL: int = Field(default=30)
     LOG_LEVEL: str = Field(default="INFO")
+    BIOMETRICS_MODE: str = Field(default="agent")
+    CLUSTER_PUBLISH_INTERVAL: int = Field(default=15)
+    role_weights: Dict[str, float] = Field(
+        default_factory=lambda: {"atlas": 0.7, "athena": 0.3, "other": 0.5},
+        alias="CLUSTER_ROLE_WEIGHTS",
+    )
+    SPARK_SIGNAL_TTL_MS: int = Field(default=15000)
+
+    THERMAL_MIN_C: float = Field(default=50.0)
+    THERMAL_MAX_C: float = Field(default=85.0)
+    DISK_BW_MBPS: float = Field(default=200.0)
+    NET_BW_MBPS: float = Field(default=125.0)
+    POWER_BAND_ALPHA: float = Field(default=0.1)
 
     TABLE_NAME: str = Field(default="biometrics_raw")
 
@@ -32,4 +53,23 @@ class Settings(BaseSettings):
     ERROR_CHANNEL: str = "orion:system:error"
     SHUTDOWN_GRACE_SEC: float = 10.0
 
+    @field_validator("role_weights", mode="before")
+    @classmethod
+    def _parse_role_weights(cls, value: object) -> Dict[str, float]:
+        if isinstance(value, dict):
+            return {str(k): float(v) for k, v in value.items()}
+        if isinstance(value, str):
+            try:
+                data = json.loads(value)
+            except json.JSONDecodeError:
+                return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+            if isinstance(data, dict):
+                return {str(k): float(v) for k, v in data.items()}
+        return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+
 settings = Settings()
+
+try:
+    settings.role_weights = json.loads(settings.CLUSTER_ROLE_WEIGHTS)
+except Exception:
+    settings.role_weights = {"atlas": 0.7, "athena": 0.3, "other": 0.5}

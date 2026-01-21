@@ -5,6 +5,7 @@ Canonical read-model service for Orion's latest internal state (Spark/Tissue).
 ## Responsibilities
 
 - Consume `spark.state.snapshot.v1` from the bus (real-time).
+- Consume biometrics summaries/inductions (and optional cluster aggregates).
 - Maintain an in-memory + Redis cache of the latest state:
   - per-node
   - global (most-recent wins, or authoritative node if configured)
@@ -13,6 +14,19 @@ Canonical read-model service for Orion's latest internal state (Spark/Tissue).
 - Serve a single retrieval interface to consumers:
   - Bus RPC: `state.get_latest.v1` -> `state.latest.reply.v1`
   - Optional HTTP endpoint for debugging: `GET /state/latest`
+
+Biometrics are surfaced under `payload.biometrics` with freshness metadata so callers can avoid missing-key failures.
+
+## Biometrics Inputs
+
+| Channel | Kind | Usage |
+| :--- | :--- | :--- |
+| `orion:biometrics:summary` | `biometrics.summary.v1` | Cached per-node + global summary. |
+| `orion:biometrics:induction` | `biometrics.induction.v1` | Cached per-node + global induction. |
+| `orion:biometrics:cluster` | `biometrics.cluster.v1` | Cached latest cluster aggregate (optional). |
+
+Environment:
+- `BIOMETRICS_STALE_AFTER_SEC` (default `90`) controls biometrics freshness.
 
 ## Notes
 
@@ -44,11 +58,12 @@ python - <<'PY'
 import json
 import time
 import uuid
+import os
 import redis
 
 # --- Configuration ---
-BUS_URL = "redis://100.92.216.81:6379/0"
-REQUEST_CHANNEL = "orion-state:request"
+BUS_URL = os.getenv("ORION_BUS_URL", "redis://100.92.216.81:6379/0")
+REQUEST_CHANNEL = os.getenv("STATE_REQUEST_CHANNEL", "orion:state:request")
 REPLY_CHANNEL = f"orion:tmp:state-reply:{uuid.uuid4()}"
 
 # --- Connect to Redis ---
@@ -100,6 +115,7 @@ You should see a JSON envelope printed containing:
 - `status: fresh | stale | missing`
 - `snapshot` (if available)
 - `age_ms` and `as_of_ts`
+- `biometrics` (summary/induction + freshness metadata)
 
 Example (truncated):
 

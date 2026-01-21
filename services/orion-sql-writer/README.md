@@ -14,6 +14,8 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:chat:history:log` | `chat.history`, `chat.log` | `ChatHistoryLogSQL` |
 | `orion:dream:log` | `dream.log` | `Dream` |
 | `orion:telemetry:biometrics` | `biometrics.telemetry` | `BiometricsTelemetry` |
+| `orion:biometrics:summary` | `biometrics.summary.v1` | `BiometricsSummarySQL` |
+| `orion:biometrics:induction` | `biometrics.induction.v1` | `BiometricsInductionSQL` |
 | `orion:spark:introspection:log` | `spark.introspection` | `SparkIntrospectionLogSQL` |
 
 ### Environment Variables

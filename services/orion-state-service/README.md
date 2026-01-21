@@ -58,11 +58,12 @@ python - <<'PY'
 import json
 import time
 import uuid
+import os
 import redis
 
 # --- Configuration ---
-BUS_URL = "redis://100.92.216.81:6379/0"
-REQUEST_CHANNEL = "orion-state:request"
+BUS_URL = os.getenv("ORION_BUS_URL", "redis://100.92.216.81:6379/0")
+REQUEST_CHANNEL = os.getenv("STATE_REQUEST_CHANNEL", "orion:state:request")
 REPLY_CHANNEL = f"orion:tmp:state-reply:{uuid.uuid4()}"
 
 # --- Connect to Redis ---

@@ -329,6 +329,9 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     """
     if not text:
         return None
+    extracted = _extract_first_json_object(text)
+    if isinstance(extracted, dict):
+        return extracted
     try:
         start = text.find("{")
         end = text.rfind("}")
@@ -337,6 +340,49 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
             return json.loads(json_str)
     except Exception:
         pass
+    return None
+
+
+def _extract_first_json_object(text: str) -> Dict[str, Any] | None:
+    if not text or "{" not in text:
+        return None
+
+    starts = [i for i, ch in enumerate(text) if ch == "{"]
+
+    for s in starts:
+        depth = 0
+        in_str = False
+        esc = False
+
+        for e in range(s, len(text)):
+            ch = text[e]
+
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[s : e + 1].strip()
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                    break
+
     return None
 
 

@@ -1,6 +1,8 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 import json
-from pydantic import Field
+from typing import Dict
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -31,7 +33,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(default="INFO")
     BIOMETRICS_MODE: str = Field(default="agent")
     CLUSTER_PUBLISH_INTERVAL: int = Field(default=15)
-    CLUSTER_ROLE_WEIGHTS: str = Field(default=json.dumps({"atlas": 0.7, "athena": 0.3, "other": 0.5}))
+    role_weights: Dict[str, float] = Field(
+        default_factory=lambda: {"atlas": 0.7, "athena": 0.3, "other": 0.5},
+        alias="CLUSTER_ROLE_WEIGHTS",
+    )
     SPARK_SIGNAL_TTL_MS: int = Field(default=15000)
 
     THERMAL_MIN_C: float = Field(default=50.0)
@@ -47,6 +52,20 @@ class Settings(BaseSettings):
     ORION_HEALTH_CHANNEL: str = "orion:system:health"
     ERROR_CHANNEL: str = "orion:system:error"
     SHUTDOWN_GRACE_SEC: float = 10.0
+
+    @field_validator("role_weights", mode="before")
+    @classmethod
+    def _parse_role_weights(cls, value: object) -> Dict[str, float]:
+        if isinstance(value, dict):
+            return {str(k): float(v) for k, v in value.items()}
+        if isinstance(value, str):
+            try:
+                data = json.loads(value)
+            except json.JSONDecodeError:
+                return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+            if isinstance(data, dict):
+                return {str(k): float(v) for k, v in data.items()}
+        return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
 
 settings = Settings()
 

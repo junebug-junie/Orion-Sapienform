@@ -282,6 +282,12 @@ def _extract_llm_text(res: Any) -> str:
     if not res:
         return ""
 
+    if isinstance(res, dict):
+        try:
+            return json.dumps(res)
+        except Exception:
+            return str(res)
+
     if hasattr(res, "choices") and res.choices:
         try:
             return str(res.choices[0].message.content)
@@ -306,6 +312,12 @@ def _extract_llm_text(res: Any) -> str:
                 return str(d["choices"][0]["message"]["content"])
         except Exception:
             pass
+
+    if isinstance(res, list):
+        try:
+            return json.dumps(res)
+        except Exception:
+            return str(res)
 
     return str(res)
 
@@ -572,6 +584,9 @@ async def call_step_services(
                     # 2) fallback loose extract
                     if not patch:
                         patch = _loose_json_extract(raw_content)
+
+                    if isinstance(patch, dict) and isinstance(patch.get("draft"), dict):
+                        patch = patch["draft"]
 
                     if not patch:
                         logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")

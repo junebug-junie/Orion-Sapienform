@@ -68,3 +68,8 @@ class Settings(BaseSettings):
         return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
 
 settings = Settings()
+
+try:
+    settings.role_weights = json.loads(settings.CLUSTER_ROLE_WEIGHTS)
+except Exception:
+    settings.role_weights = {"atlas": 0.7, "athena": 0.3, "other": 0.5}

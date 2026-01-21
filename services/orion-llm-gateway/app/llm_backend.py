@@ -789,6 +789,13 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
         else:
             base_url = settings.llamacpp_url
 
+    logger.info(
+        "[LLM-GW] route=%s backend=%s served_by=%s url=%s",
+        route,
+        backend,
+        route_target.served_by if route_target else None,
+        base_url,
+    )
     result = _execute_openai_chat(body, model, base_url, backend)
     if isinstance(result, dict):
         result["backend"] = backend

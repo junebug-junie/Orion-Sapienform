@@ -63,6 +63,11 @@ class Settings(BaseSettings):
 
     redis_url: Optional[str] = Field(None, alias="REDIS_URL")
 
+    public_base_path: str = Field("/landing-pad", alias="PUBLIC_BASE_PATH")
+    ui_sample_limit: int = Field(500, alias="UI_SAMPLE_LIMIT")
+    ui_query_limit: int = Field(2000, alias="UI_QUERY_LIMIT")
+    ui_default_lookback_minutes: int = Field(60, alias="UI_DEFAULT_LOOKBACK_MINUTES")
+
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     shutdown_grace_sec: float = Field(10.0, alias="SHUTDOWN_GRACE_SEC")
     health_channel: str = Field("orion:system:health", alias="ORION_HEALTH_CHANNEL")
@@ -78,6 +83,18 @@ class Settings(BaseSettings):
         # Accept comma-separated env strings
         parts = [p.strip() for p in str(v).split(",") if p.strip()]
         return parts
+
+    @field_validator("public_base_path")
+    @classmethod
+    def _normalize_base_path(cls, v: str) -> str:
+        if not v:
+            return "/"
+        base = v.strip()
+        if not base.startswith("/"):
+            base = f"/{base}"
+        if base != "/" and base.endswith("/"):
+            base = base.rstrip("/")
+        return base
 
     def merged_redis_url(self) -> str:
         return self.redis_url or self.orion_bus_url

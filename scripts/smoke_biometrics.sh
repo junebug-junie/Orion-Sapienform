@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BUS_URL="${ORION_BUS_URL:-redis://orion-redis:6379/0}"
-STATE_CHANNEL="${STATE_REQUEST_CHANNEL:-orion:state:request}"
-
 python - <<'PY'
 import asyncio
 import json

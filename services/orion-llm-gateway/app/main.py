@@ -257,6 +257,18 @@ async def main() -> None:
     chat_svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle_chat)
     global bus_handle
     bus_handle = chat_svc.bus
+    route_targets = get_route_targets()
+    routes_summary = ",".join(
+        f"{name}={target.url}" for name, target in sorted(route_targets.items())
+    )
+    logger.info(
+        "[LLM-GW] startup routes=[%s] timeouts=connect:%s read:%s bus=%s channel=%s",
+        routes_summary,
+        settings.connect_timeout_sec,
+        settings.read_timeout_sec,
+        cfg.bus_url,
+        settings.channel_llm_intake,
+    )
     await _probe_route_targets()
     logger.info(
         "Rabbit listening channels=%s bus=%s",

@@ -14,7 +14,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.state.contracts import StateGetLatestRequest
 
-BUS_URL = os.getenv("ORION_BUS_URL", "redis://orion-redis:6379/0")
+BUS_URL = os.getenv("ORION_BUS_URL", "redis://100.92.216.81/0")
 STATE_CHANNEL = os.getenv("STATE_REQUEST_CHANNEL", "orion:state:request")
 
 TARGET_CHANNELS = {

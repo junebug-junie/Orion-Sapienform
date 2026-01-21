@@ -610,6 +610,13 @@ async def call_step_services(
                         except Exception:
                             final_dict["resonance_signature"] = str(rs)
 
+                    if isinstance(final_dict.get("change_type"), dict):
+                        trace_id = ctx.get("trace_id") or correlation_id
+                        logger.warning(
+                            "MetacogEnrichService: change_type emitted as dict "
+                            f"correlation_id={correlation_id} trace_id={trace_id}"
+                        )
+
                     final_entry = CollapseMirrorEntryV2.model_validate(final_dict)
 
                     ctx["final_entry"] = final_entry.model_dump(mode="json")

@@ -282,6 +282,12 @@ def _extract_llm_text(res: Any) -> str:
     if not res:
         return ""
 
+    if isinstance(res, dict):
+        try:
+            return json.dumps(res)
+        except Exception:
+            return str(res)
+
     if hasattr(res, "choices") and res.choices:
         try:
             return str(res.choices[0].message.content)
@@ -307,6 +313,12 @@ def _extract_llm_text(res: Any) -> str:
         except Exception:
             pass
 
+    if isinstance(res, list):
+        try:
+            return json.dumps(res)
+        except Exception:
+            return str(res)
+
     return str(res)
 
 
@@ -317,6 +329,9 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     """
     if not text:
         return None
+    extracted = _extract_first_json_object(text)
+    if isinstance(extracted, dict):
+        return extracted
     try:
         start = text.find("{")
         end = text.rfind("}")
@@ -325,6 +340,49 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
             return json.loads(json_str)
     except Exception:
         pass
+    return None
+
+
+def _extract_first_json_object(text: str) -> Dict[str, Any] | None:
+    if not text or "{" not in text:
+        return None
+
+    starts = [i for i, ch in enumerate(text) if ch == "{"]
+
+    for s in starts:
+        depth = 0
+        in_str = False
+        esc = False
+
+        for e in range(s, len(text)):
+            ch = text[e]
+
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[s : e + 1].strip()
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                    break
+
     return None
 
 
@@ -573,6 +631,9 @@ async def call_step_services(
                     if not patch:
                         patch = _loose_json_extract(raw_content)
 
+                    if isinstance(patch, dict) and isinstance(patch.get("draft"), dict):
+                        patch = patch["draft"]
+
                     if not patch:
                         logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
                         patch = {}
@@ -609,6 +670,13 @@ async def call_step_services(
                             final_dict["resonance_signature"] = json.dumps(rs)
                         except Exception:
                             final_dict["resonance_signature"] = str(rs)
+
+                    if isinstance(final_dict.get("change_type"), dict):
+                        trace_id = ctx.get("trace_id") or correlation_id
+                        logger.warning(
+                            "MetacogEnrichService: change_type emitted as dict "
+                            f"correlation_id={correlation_id} trace_id={trace_id}"
+                        )
 
                     final_entry = CollapseMirrorEntryV2.model_validate(final_dict)
 

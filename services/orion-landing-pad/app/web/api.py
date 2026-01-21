@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from ..settings import Settings
 from ..store.redis_store import PadStore
@@ -182,6 +182,10 @@ def build_router(*, store: PadStore, settings: Settings) -> APIRouter:
     @router.get("/ui")
     async def ui() -> FileResponse:
         return FileResponse(_index_path())
+
+    @router.get("/")
+    async def root() -> RedirectResponse:
+        return RedirectResponse(url="ui")
 
     @router.get("/healthz")
     async def healthz() -> Dict[str, str]:

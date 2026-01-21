@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Landing Pad Metrics Explorer</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #0f1117;
+        color: #e6e8f0;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0;
+      }
+      .panel {
+        background: #171b26;
+        border: 1px solid #23283a;
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }
+      label {
+        font-size: 12px;
+        color: #aab1c6;
+      }
+      input,
+      select {
+        width: 100%;
+        margin-top: 6px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #2b3144;
+        background: #0f1117;
+        color: #e6e8f0;
+      }
+      button {
+        border: none;
+        background: #4f6bff;
+        color: white;
+        padding: 10px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      #chart {
+        height: 460px;
+      }
+      .status {
+        font-size: 12px;
+        color: #8892aa;
+      }
+      .summary {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 12px;
+        color: #aab1c6;
+      }
+      .summary span {
+        background: #0f1117;
+        border: 1px solid #2b3144;
+        padding: 6px 10px;
+        border-radius: 999px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Landing Pad Metrics Explorer</h1>
+      <div class="status" id="status">Idle</div>
+    </header>
+
+    <section class="panel">
+      <div class="controls">
+        <div>
+          <label for="metric">Metric</label>
+          <select id="metric"></select>
+        </div>
+        <div>
+          <label for="groupBy">Group By</label>
+          <select id="groupBy"></select>
+        </div>
+        <div>
+          <label for="range">Time Range</label>
+          <select id="range">
+            <option value="15">Last 15m</option>
+            <option value="60" selected>Last 1h</option>
+            <option value="360">Last 6h</option>
+          </select>
+        </div>
+        <div>
+          <label for="rollup">Rollup</label>
+          <select id="rollup">
+            <option value="auto" selected>Auto</option>
+            <option value="5">5s</option>
+            <option value="30">30s</option>
+            <option value="60">1m</option>
+          </select>
+        </div>
+        <div>
+          <label for="agg">Aggregation</label>
+          <select id="agg">
+            <option value="avg" selected>Average</option>
+            <option value="max">Max</option>
+            <option value="p95">P95</option>
+          </select>
+        </div>
+        <div>
+          <label for="chartType">Chart Type</label>
+          <select id="chartType">
+            <option value="line" selected>Line</option>
+            <option value="histogram">Histogram</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top: 12px; display: flex; justify-content: flex-end">
+        <button id="runQuery">Run Query</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div id="chart"></div>
+      <div class="summary" id="summary"></div>
+    </section>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const summaryEl = document.getElementById("summary");
+      const metricSelect = document.getElementById("metric");
+      const groupSelect = document.getElementById("groupBy");
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function setSummary(summary) {
+        summaryEl.innerHTML = "";
+        if (!summary) {
+          return;
+        }
+        const entries = [
+          ["count", summary.count],
+          ["min", summary.min],
+          ["p50", summary.p50],
+          ["p95", summary.p95],
+          ["max", summary.max],
+        ];
+        entries.forEach(([label, value]) => {
+          if (value === null || value === undefined) return;
+          const span = document.createElement("span");
+          span.textContent = `${label}: ${Number(value).toFixed(3)}`;
+          summaryEl.appendChild(span);
+        });
+      }
+
+      async function loadMetrics() {
+        const response = await fetch("api/metrics");
+        const data = await response.json();
+        metricSelect.innerHTML = "";
+        data.metrics.forEach((metric) => {
+          const option = document.createElement("option");
+          option.value = metric.name;
+          option.textContent = `${metric.name} (${metric.unit})`;
+          metricSelect.appendChild(option);
+        });
+      }
+
+      async function loadDimensions() {
+        const response = await fetch("api/dimensions");
+        const data = await response.json();
+        groupSelect.innerHTML = "";
+        const noneOption = document.createElement("option");
+        noneOption.value = "";
+        noneOption.textContent = "(none)";
+        groupSelect.appendChild(noneOption);
+        Object.keys(data.dimensions || {}).forEach((key) => {
+          const option = document.createElement("option");
+          option.value = key;
+          option.textContent = `${key} (${Object.keys(data.dimensions[key]).length})`;
+          groupSelect.appendChild(option);
+        });
+      }
+
+      async function runQuery() {
+        const params = new URLSearchParams();
+        params.set("metric", metricSelect.value);
+        params.set("lookback_minutes", document.getElementById("range").value);
+        params.set("agg", document.getElementById("agg").value);
+        const groupBy = groupSelect.value;
+        if (groupBy) params.set("group_by", groupBy);
+        const rollup = document.getElementById("rollup").value;
+        if (rollup) params.set("step_seconds", rollup);
+
+        setStatus("Querying...");
+        const response = await fetch(`api/query?${params.toString()}`);
+        const data = await response.json();
+
+        const chartType = document.getElementById("chartType").value;
+        let traces = [];
+
+        if (chartType === "histogram") {
+          const values = data.series.flatMap((series) => series.points.map((point) => point[1]));
+          traces = [
+            {
+              x: values,
+              type: "histogram",
+              marker: { color: "#4f6bff" },
+            },
+          ];
+        } else {
+          traces = data.series.map((series) => ({
+            x: series.points.map((point) => new Date(point[0])),
+            y: series.points.map((point) => point[1]),
+            type: "scatter",
+            mode: "lines+markers",
+            name: series.name,
+          }));
+        }
+
+        const layout = {
+          paper_bgcolor: "#171b26",
+          plot_bgcolor: "#171b26",
+          font: { color: "#e6e8f0" },
+          xaxis: { gridcolor: "#2b3144" },
+          yaxis: { gridcolor: "#2b3144" },
+          margin: { t: 30, r: 20, l: 50, b: 50 },
+        };
+
+        Plotly.newPlot("chart", traces, layout, { responsive: true });
+        setStatus(`Loaded ${data.summary?.count ?? 0} values`);
+        setSummary(data.summary);
+      }
+
+      document.getElementById("runQuery").addEventListener("click", () => {
+        runQuery().catch((err) => {
+          console.error(err);
+          setStatus("Query failed");
+        });
+      });
+
+      Promise.all([loadMetrics(), loadDimensions()])
+        .then(() => runQuery())
+        .catch((err) => {
+          console.error(err);
+          setStatus("Failed to load metadata");
+        });
+    </script>
+  </body>
+</html>

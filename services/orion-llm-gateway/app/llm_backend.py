@@ -107,17 +107,32 @@ def get_route_targets() -> Dict[str, RouteTarget]:
     return _load_route_targets()
 
 
-def _resolve_route(body: ChatBody) -> Tuple[str, Optional[RouteTarget], bool]:
+def _resolve_route(body: ChatBody) -> Tuple[str, Optional[RouteTarget], bool, str]:
     opts = body.options or {}
     route = body.route or opts.get("route") or opts.get("routing_key")
+    if body.route:
+        route_source = "payload.route"
+    elif opts.get("route"):
+        route_source = "options.route"
+    elif opts.get("routing_key"):
+        route_source = "options.routing_key"
+    else:
+        route_source = "default"
     route_table = get_route_targets()
 
     if route_table:
         resolved_route = str(route or settings.llm_route_default or "chat")
-        return resolved_route, route_table.get(resolved_route), True
+        return resolved_route, route_table.get(resolved_route), True, route_source
 
     resolved_route = str(route or settings.llm_route_default or "chat")
-    return resolved_route, None, False
+    return resolved_route, None, False, route_source
+
+
+def _timeout_summary() -> str:
+    return (
+        f"connect:{getattr(settings, 'connect_timeout_sec', 10.0)} "
+        f"read:{getattr(settings, 'read_timeout_sec', 60.0)}"
+    )
 
 
 def _common_http_client() -> httpx.Client:
@@ -579,7 +594,13 @@ def _build_ollama_payload(body: ChatBody, model: str) -> Dict[str, Any]:
     }
 
 
-def _execute_ollama_chat(body: ChatBody, model: str, base_url: str) -> Dict[str, Any]:
+def _execute_ollama_chat(
+    body: ChatBody,
+    model: str,
+    base_url: str,
+    route: Optional[str] = None,
+    served_by: Optional[str] = None,
+) -> Dict[str, Any]:
     if not base_url:
         err = "ollama URL not configured"
         logger.error(f"[LLM-GW] {err}")
@@ -614,7 +635,14 @@ def _execute_ollama_chat(body: ChatBody, model: str, base_url: str) -> Dict[str,
                 "raw": raw_data,
             }
     except httpx.TimeoutException:
-        logger.error(f"[LLM-GW] ollama TIMEOUT on {url}")
+        logger.error(
+            "[LLM-GW] ollama TIMEOUT route=%s served_by=%s url=%s corr=%s timeouts=%s",
+            route,
+            served_by,
+            url,
+            body.trace_id,
+            _timeout_summary(),
+        )
         return {
             "text": "[Error: ollama timed out after waiting]",
             "spark_meta": spark_meta,
@@ -634,6 +662,8 @@ def _execute_openai_chat(
     model: str,
     base_url: str,
     backend_name: str,
+    route: Optional[str] = None,
+    served_by: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Unified logic for both vLLM and llama.cpp since they share the OpenAI API shape.
@@ -704,7 +734,15 @@ def _execute_openai_chat(
             }
 
     except httpx.TimeoutException:
-        logger.error(f"[LLM-GW] {backend_name} TIMEOUT on {url}")
+        logger.error(
+            "[LLM-GW] %s TIMEOUT route=%s served_by=%s url=%s corr=%s timeouts=%s",
+            backend_name,
+            route,
+            served_by,
+            url,
+            body.trace_id,
+            _timeout_summary(),
+        )
         return {
             "text": f"[Error: {backend_name} timed out after waiting]",
             "spark_meta": spark_meta,
@@ -727,7 +765,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     profile = _select_profile(body.profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
-    route, route_target, has_route_table = _resolve_route(body)
+    route, route_target, has_route_table, route_source = _resolve_route(body)
 
     if has_route_table and not route_target:
         logger.error("[LLM-GW] Route '%s' not configured in route table", route)
@@ -738,70 +776,159 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             "route": route,
         }
 
+    route_url: Optional[str] = None
+    served_by: Optional[str] = None
     if route_target:
         backend = _normalize_backend_name(route_target.backend or "llamacpp")
         base_url = route_target.url
+        route_url = base_url
+        served_by = route_target.served_by
         if backend == "vllm":
             model = _normalize_model_for_vllm(model)
         if backend == "ollama":
             if settings.ollama_use_openai_compat:
-                result = _execute_openai_chat(body, model, base_url, "ollama")
+                logger.info(
+                    "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
+                    route,
+                    route_source,
+                    backend,
+                    served_by,
+                    base_url,
+                    model,
+                    body.trace_id,
+                    _timeout_summary(),
+                )
+                result = _execute_openai_chat(
+                    body,
+                    model,
+                    base_url,
+                    "ollama",
+                    route=route,
+                    served_by=served_by,
+                )
                 if isinstance(result, dict):
                     result["backend"] = backend
                     result["model"] = model
                     result["route"] = route
-                    result["served_by"] = route_target.served_by
+                    result["served_by"] = served_by
                 return result
-            result = _execute_ollama_chat(body, model, base_url)
+            logger.info(
+                "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
+                route,
+                route_source,
+                backend,
+                served_by,
+                base_url,
+                model,
+                body.trace_id,
+                _timeout_summary(),
+            )
+            result = _execute_ollama_chat(
+                body,
+                model,
+                base_url,
+                route=route,
+                served_by=served_by,
+            )
             if isinstance(result, dict):
                 result["backend"] = backend
                 result["model"] = model
                 result["route"] = route
-                result["served_by"] = route_target.served_by
+                result["served_by"] = served_by
             return result
     else:
         # Normalize aliases if vLLM, harmless if llama.cpp
         if backend == "vllm":
             model = _normalize_model_for_vllm(model)
             base_url = settings.vllm_url
+            route_url = base_url
 
         elif backend == "ollama":
             base_url = settings.ollama_url
+            route_url = base_url
             if settings.ollama_use_openai_compat:
-                result = _execute_openai_chat(body, model, base_url, "ollama")
+                logger.info(
+                    "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
+                    route,
+                    route_source,
+                    backend,
+                    served_by,
+                    base_url,
+                    model,
+                    body.trace_id,
+                    _timeout_summary(),
+                )
+                result = _execute_openai_chat(
+                    body,
+                    model,
+                    base_url,
+                    "ollama",
+                    route=route,
+                    served_by=served_by,
+                )
                 if isinstance(result, dict):
                     result["backend"] = backend
                     result["model"] = model
                     result["route"] = route
-                    result["served_by"] = route_target.served_by if route_target else None
+                    result["served_by"] = served_by
                 return result
-            result = _execute_ollama_chat(body, model, base_url)
+            logger.info(
+                "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
+                route,
+                route_source,
+                backend,
+                served_by,
+                base_url,
+                model,
+                body.trace_id,
+                _timeout_summary(),
+            )
+            result = _execute_ollama_chat(
+                body,
+                model,
+                base_url,
+                route=route,
+                served_by=served_by,
+            )
             if isinstance(result, dict):
                 result["backend"] = backend
                 result["model"] = model
                 result["route"] = route
-                result["served_by"] = route_target.served_by if route_target else None
+                result["served_by"] = served_by
             return result
 
         elif backend == "llama-cola":
             base_url = settings.llama_cola_url
+            route_url = base_url
 
         else:
             base_url = settings.llamacpp_url
+            route_url = base_url
 
     logger.info(
-        "[LLM-GW] route=%s backend=%s served_by=%s url=%s",
+        "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
         route,
+        route_source,
         backend,
-        route_target.served_by if route_target else None,
-        base_url,
+        served_by,
+        route_url,
+        model,
+        body.trace_id,
+        _timeout_summary(),
     )
-    result = _execute_openai_chat(body, model, base_url, backend)
+    result = _execute_openai_chat(
+        body,
+        model,
+        base_url,
+        backend,
+        route=route,
+        served_by=served_by,
+    )
     if isinstance(result, dict):
         result["backend"] = backend
         result["model"] = model
         result["route"] = route
-        result["served_by"] = route_target.served_by if route_target else None
+        result["served_by"] = served_by
     return result
 
 

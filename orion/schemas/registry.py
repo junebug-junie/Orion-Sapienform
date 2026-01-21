@@ -81,7 +81,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallQueryV1": RecallQueryV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
-    "CollapseMirrorEntryV2": CollapseMirrorEntryV2,
+    "CollapseMirrorEntryV2": CollapseMirrorEntryV2,  # change_type dict coercion support
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacogTriggerV1": MetacogTriggerV1,

@@ -137,6 +137,73 @@ def _observer_is_orion(observer: Any) -> bool:
     return s == "orion"
 
 
+def _coerce_change_type_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    change_type_payload = data.get("change_type")
+    if not isinstance(change_type_payload, dict):
+        return data
+
+    reserved_keys = {"change_type", "label", "value", "name", "type", "change_type_scores", "telemetry"}
+    chosen_key: Optional[str] = None
+    ct_str: Optional[str] = None
+
+    for key in ("change_type", "label", "value", "name", "type"):
+        val = change_type_payload.get(key)
+        if isinstance(val, str) and val.strip():
+            chosen_key = key
+            ct_str = val.strip()
+            break
+
+    if ct_str is None:
+        for key, val in change_type_payload.items():
+            if isinstance(val, str) and val.strip():
+                chosen_key = key
+                ct_str = val.strip()
+                break
+
+    def _is_numeric(val: Any) -> bool:
+        return isinstance(val, (int, float)) and not isinstance(val, bool)
+
+    numeric_scores: Dict[str, float] = {}
+    meta_payload: Dict[str, Any] = {}
+
+    for key, val in change_type_payload.items():
+        if key == chosen_key or key in reserved_keys:
+            continue
+        if _is_numeric(val):
+            numeric_scores[str(key)] = float(val)
+        else:
+            meta_payload[str(key)] = val
+
+    existing_scores = data.get("change_type_scores")
+    if not isinstance(existing_scores, dict):
+        existing_scores = {}
+    data["change_type_scores"] = {**numeric_scores, **existing_scores}
+
+    if ct_str:
+        data["change_type"] = ct_str
+    elif numeric_scores:
+        data["change_type"] = max(numeric_scores.items(), key=lambda item: item[1])[0]
+    else:
+        data["change_type"] = None
+
+    if meta_payload:
+        meta_json = json.dumps(meta_payload, ensure_ascii=False, default=str)
+        state_snapshot = data.get("state_snapshot")
+        if not isinstance(state_snapshot, dict):
+            state_snapshot = {}
+        telemetry = state_snapshot.get("telemetry")
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        if len(meta_json) <= 2048:
+            telemetry["change_type_meta"] = meta_payload
+        else:
+            telemetry["change_type_meta_keys"] = list(meta_payload.keys())
+        state_snapshot["telemetry"] = telemetry
+        data["state_snapshot"] = state_snapshot
+
+    return data
+
+
 class CollapseMirrorEntryV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -374,8 +441,10 @@ class CollapseMirrorEntryV2(BaseModel):
             # If the dict already looks like V2, keep it as-is.
             v2_markers = {"event_id", "snapshot_kind", "state_snapshot", "numeric_sisters", "causal_density"}
             if _is_v2_shape(data) or any(k in data for k in v2_markers):
-                return data
+                return _coerce_change_type_payload(data)
             return v1_to_v2(CollapseMirrorEntryV1.model_validate(data)).model_dump(mode="json")
+        if isinstance(data, dict):
+            return _coerce_change_type_payload(data)
         return data
 
     @model_validator(mode="after")

@@ -11,11 +11,14 @@ from orion.core.bus.bus_schemas import RecallRequestPayload
 from orion.core.contracts.recall import RecallReplyV1, MemoryBundleV1, MemoryItemV1, MemoryBundleStatsV1
 from orion.core.bus.bus_service_chassis import ChassisConfig
 
-from .pipeline import run_recall_pipeline
 from .profiles import get_profile
 from .render import render_items
 from .types import RecallQuery
 from .settings import settings
+
+def run_recall_pipeline(*args, **kwargs):
+    from .pipeline import run_recall_pipeline as _impl
+    return _impl(*args, **kwargs)
 
 logger = logging.getLogger("orion-recall")
 

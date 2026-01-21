@@ -15,16 +15,54 @@ def _join_path(base: str, suffix: str) -> str:
     return f"{base}{suffix}"
 
 
+def _normalize_prefix(prefix: str) -> str:
+    if not prefix:
+        return ""
+    p = prefix.strip()
+    if not p.startswith("/"):
+        p = "/" + p
+    if p != "/" and p.endswith("/"):
+        p = p.rstrip("/")
+    return p
+
+
+def _static_mount_name(prefix: str) -> str:
+    if not prefix or prefix == "/":
+        return "static"
+    safe = prefix.strip("/").replace("/", "_")
+    return f"static_{safe}"
+
+
 def mount_web(app: FastAPI, *, store: PadStore, settings: Settings) -> None:
     router = build_router(store=store, settings=settings)
-    base_path = settings.public_base_path
+    base_path = _normalize_prefix(settings.public_base_path)
+    fallback_path = "/landing-pad"
 
+    # Always serve at root (covers proxies that strip /landing-pad before forwarding)
     app.include_router(router)
-    if base_path != "/":
-        app.include_router(router, prefix=base_path)
-        app.add_api_route(base_path, lambda: RedirectResponse(url=f"{base_path}/ui"), methods=["GET"])
-        app.add_api_route(f"{base_path}/", lambda: RedirectResponse(url=f"{base_path}/ui"), methods=["GET"])
 
-    app.mount("/static", StaticFiles(directory="app/static"), name="static")
-    if base_path != "/":
-        app.mount(_join_path(base_path, "/static"), StaticFiles(directory="app/static"), name="static_base")
+    # Serve under configured base path (covers proxies that preserve the prefix)
+    prefixes = set()
+    if base_path and base_path != "/":
+        prefixes.add(base_path)
+    prefixes.add(fallback_path)
+
+    for prefix in sorted(prefixes):
+        if not prefix or prefix == "/":
+            continue
+        app.include_router(router, prefix=prefix)
+
+        # Make /<prefix> and /<prefix>/ land on the UI consistently
+        app.add_api_route(prefix, lambda p=prefix: RedirectResponse(url=f"{p}/ui"), methods=["GET"])
+        app.add_api_route(f"{prefix}/", lambda p=prefix: RedirectResponse(url=f"{p}/ui"), methods=["GET"])
+
+    # Static mounted at root and at every prefix (mirrors spark-introspector approach)
+    app.mount("/static", StaticFiles(directory="app/static"), name=_static_mount_name(""))
+    for prefix in sorted(prefixes):
+        if not prefix or prefix == "/":
+            continue
+        app.mount(
+            _join_path(prefix, "/static"),
+            StaticFiles(directory="app/static"),
+            name=_static_mount_name(prefix),
+        )

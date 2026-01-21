@@ -157,9 +157,8 @@
 
       function setSummary(summary) {
         summaryEl.innerHTML = "";
-        if (!summary) {
-          return;
-        }
+        if (!summary) return;
+
         const entries = [
           ["count", summary.count],
           ["min", summary.min],
@@ -167,6 +166,7 @@
           ["p95", summary.p95],
           ["max", summary.max],
         ];
+
         entries.forEach(([label, value]) => {
           if (value === null || value === undefined) return;
           const span = document.createElement("span");
@@ -175,9 +175,29 @@
         });
       }
 
+      // Works for:
+      //  - / (no prefix)
+      //  - /landing-pad (prefix preserved)
+      //  - /landing-pad (prefix stripped before forwarding)
+      function computeBasePath() {
+        let p = window.location.pathname || "/";
+        p = p.replace(/\/ui\/?$/, "");
+        if (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+        if (p === "/") return "";
+        return p;
+      }
+
+      const BASE_PATH = computeBasePath();
+
+      async function fetchJson(path) {
+        const url = `${BASE_PATH}${path}`;
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText} (${url})`);
+        return response.json();
+      }
+
       async function loadMetrics() {
-        const response = await fetch("api/metrics");
-        const data = await response.json();
+        const data = await fetchJson("/api/metrics");
         metricSelect.innerHTML = "";
         data.metrics.forEach((metric) => {
           const option = document.createElement("option");
@@ -188,13 +208,14 @@
       }
 
       async function loadDimensions() {
-        const response = await fetch("api/dimensions");
-        const data = await response.json();
+        const data = await fetchJson("/api/dimensions");
         groupSelect.innerHTML = "";
+
         const noneOption = document.createElement("option");
         noneOption.value = "";
         noneOption.textContent = "(none)";
         groupSelect.appendChild(noneOption);
+
         Object.keys(data.dimensions || {}).forEach((key) => {
           const option = document.createElement("option");
           option.value = key;
@@ -208,27 +229,22 @@
         params.set("metric", metricSelect.value);
         params.set("lookback_minutes", document.getElementById("range").value);
         params.set("agg", document.getElementById("agg").value);
+
         const groupBy = groupSelect.value;
         if (groupBy) params.set("group_by", groupBy);
+
         const rollup = document.getElementById("rollup").value;
         if (rollup) params.set("step_seconds", rollup);
 
         setStatus("Querying...");
-        const response = await fetch(`api/query?${params.toString()}`);
-        const data = await response.json();
+        const data = await fetchJson(`/api/query?${params.toString()}`);
 
         const chartType = document.getElementById("chartType").value;
         let traces = [];
 
         if (chartType === "histogram") {
           const values = data.series.flatMap((series) => series.points.map((point) => point[1]));
-          traces = [
-            {
-              x: values,
-              type: "histogram",
-              marker: { color: "#4f6bff" },
-            },
-          ];
+          traces = [{ x: values, type: "histogram", marker: { color: "#4f6bff" } }];
         } else {
           traces = data.series.map((series) => ({
             x: series.points.map((point) => new Date(point[0])),

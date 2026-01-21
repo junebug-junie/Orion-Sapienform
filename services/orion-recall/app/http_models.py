@@ -2,13 +2,21 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class RecallRequestBody(BaseModel):
     """HTTP API request model (backwards compatibility)."""
 
-    query_text: str = Field(..., alias="text")
+    # Accept both historical key "text" and newer key "query_text".
+    query_text: str = Field(..., validation_alias=AliasChoices("text", "query_text"))
+
+    # Optional override for which recall profile to use for this request.
+    profile: Optional[str] = None
+
+    # If true, include decision + backend counts in the HTTP response.
+    diagnostic: bool = False
+
     max_items: int = 8
     time_window_days: int = 90
     mode: str = "hybrid"

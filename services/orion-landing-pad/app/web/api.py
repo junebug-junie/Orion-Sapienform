@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Query
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 
 from ..settings import Settings
 from ..store.redis_store import PadStore
@@ -116,45 +116,17 @@ def _auto_step_seconds(start_ms: int, end_ms: int) -> int:
 
 def _metric_catalog(event_samples: List[dict], frame_samples: List[dict]) -> List[Dict[str, str]]:
     metrics = [
-        {
-            "name": "pad.event.salience",
-            "unit": "score",
-            "description": "PadEventV1 salience values.",
-        },
-        {
-            "name": "pad.event.novelty",
-            "unit": "score",
-            "description": "PadEventV1 novelty values.",
-        },
-        {
-            "name": "pad.event.confidence",
-            "unit": "score",
-            "description": "PadEventV1 confidence values.",
-        },
-        {
-            "name": "pad.event.count",
-            "unit": "count",
-            "description": "Number of PadEventV1 entries.",
-        },
+        {"name": "pad.event.salience", "unit": "score", "description": "PadEventV1 salience values."},
+        {"name": "pad.event.novelty", "unit": "score", "description": "PadEventV1 novelty values."},
+        {"name": "pad.event.confidence", "unit": "score", "description": "PadEventV1 confidence values."},
+        {"name": "pad.event.count", "unit": "count", "description": "Number of PadEventV1 entries."},
     ]
     if frame_samples:
         metrics.extend(
             [
-                {
-                    "name": "pad.frame.salient_count",
-                    "unit": "count",
-                    "description": "Count of salient event ids per frame.",
-                },
-                {
-                    "name": "pad.frame.window_ms",
-                    "unit": "ms",
-                    "description": "Frame window size in milliseconds.",
-                },
-                {
-                    "name": "pad.frame.tensor_dim",
-                    "unit": "dim",
-                    "description": "Tensor dimension encoded with the frame.",
-                },
+                {"name": "pad.frame.salient_count", "unit": "count", "description": "Count of salient event ids per frame."},
+                {"name": "pad.frame.window_ms", "unit": "ms", "description": "Frame window size in milliseconds."},
+                {"name": "pad.frame.tensor_dim", "unit": "dim", "description": "Tensor dimension encoded with the frame."},
             ]
         )
     return metrics
@@ -184,8 +156,14 @@ def build_router(*, store: PadStore, settings: Settings) -> APIRouter:
         return FileResponse(_index_path())
 
     @router.get("/")
-    async def root() -> RedirectResponse:
-        return RedirectResponse(url="ui")
+    async def root() -> FileResponse:
+        """Serve the UI at / as well.
+
+        Important for reverse proxies (e.g. tailscale serve) that may strip the configured
+        base prefix before forwarding. In that mode, external /landing-pad becomes internal /.
+        We must NOT redirect to /ui (which would escape the proxied prefix).
+        """
+        return FileResponse(_index_path())
 
     @router.get("/healthz")
     async def healthz() -> Dict[str, str]:
@@ -214,6 +192,7 @@ def build_router(*, store: PadStore, settings: Settings) -> APIRouter:
     ) -> Dict[str, Any]:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         end_ms = _parse_time(end) or now_ms
+
         if start is None:
             lookback = lookback_minutes or settings.ui_default_lookback_minutes
             start_ms = end_ms - (lookback * 60 * 1000)
@@ -243,14 +222,17 @@ def build_router(*, store: PadStore, settings: Settings) -> APIRouter:
                 value = _event_value(event, metric)
                 if value is None:
                     continue
+
                 label_value = _extract_dimension(event, group_by) if group_by else "all"
                 label_value = label_value or "unknown"
+
                 entry = series_map.setdefault(
                     label_value,
                     {"name": label_value, "labels": {group_by: label_value} if group_by else {}, "points": []},
                 )
                 entry["points"].append((int(ts_ms), float(value)))
                 values_for_summary.append(float(value))
+
         elif metric.startswith("pad.frame"):
             frames = await store.range_frame_payloads(start_ms, end_ms, limit=settings.ui_query_limit)
             for frame in frames:
@@ -260,12 +242,10 @@ def build_router(*, store: PadStore, settings: Settings) -> APIRouter:
                 value = _frame_value(frame, metric)
                 if value is None:
                     continue
-                entry = series_map.setdefault(
-                    "frames",
-                    {"name": "frames", "labels": {}, "points": []},
-                )
+                entry = series_map.setdefault("frames", {"name": "frames", "labels": {}, "points": []})
                 entry["points"].append((int(ts_ms), float(value)))
                 values_for_summary.append(float(value))
+
         else:
             return {"series": [], "summary": {"count": 0}}
 
@@ -280,7 +260,7 @@ def build_router(*, store: PadStore, settings: Settings) -> APIRouter:
             "p50": _percentile(values_for_summary, 0.5),
             "p95": _percentile(values_for_summary, 0.95),
             "max": max(values_for_summary) if values_for_summary else None,
-            "last_ts": max((point[0] for series_entry in series for point in series_entry["points"]), default=None),
+            "last_ts": max((point[0] for s in series for point in s["points"]), default=None),
         }
 
         return {"series": series, "summary": summary}

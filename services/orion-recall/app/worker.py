@@ -29,33 +29,31 @@ try:
         fetch_graphtri_anchors,
         fetch_rdf_graphtri_anchor_terms,
         fetch_rdf_graphtri_fragments,
+        fetch_rdf_chatturn_fragments,
     )
     from .storage.vector_adapter import fetch_vector_fragments
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
-except ImportError:  # pragma: no cover - fallback for test harness pathing
-    from fusion import fuse_candidates  # type: ignore
-    from profiles import get_profile  # type: ignore
-    from settings import settings  # type: ignore
+
+except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
+    _IMPORT_ERROR = _e
     try:
-        from rdf_adapter import (  # type: ignore
+        # Container/package-safe absolute imports
+        from app.fusion import fuse_candidates  # type: ignore
+        from app.profiles import get_profile  # type: ignore
+        from app.settings import settings  # type: ignore
+        from app.storage.rdf_adapter import (  # type: ignore
             fetch_rdf_fragments,
             fetch_rdf_expansion_terms,
             fetch_graphtri_anchors,
             fetch_rdf_graphtri_anchor_terms,
             fetch_rdf_graphtri_fragments,
+            fetch_rdf_chatturn_fragments,
         )
-        from vector_adapter import fetch_vector_fragments  # type: ignore
-        from sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
+        from app.storage.vector_adapter import fetch_vector_fragments  # type: ignore
+        from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
     except ImportError:
-        from storage.rdf_adapter import (  # type: ignore
-            fetch_rdf_fragments,
-            fetch_rdf_expansion_terms,
-            fetch_graphtri_anchors,
-            fetch_rdf_graphtri_anchor_terms,
-            fetch_rdf_graphtri_fragments,
-        )
-        from storage.vector_adapter import fetch_vector_fragments  # type: ignore
-        from sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
+        # IMPORTANT: raise the real root cause, not the fallback failure
+        raise _IMPORT_ERROR
 
 logger = logging.getLogger("orion-recall.worker")
 
@@ -215,17 +213,45 @@ async def _query_backends(
     expansion_terms: List[str] = []
     if rdf_enabled:
         try:
+
             profile_name = str(profile.get("profile") or "")
-            if profile_name.startswith("graphtri") and session_id:
-                expansion_terms = fetch_rdf_graphtri_anchor_terms(
+
+            # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
+            # This is the only place your "exact text I used" lives.
+            rdf_chat: List[Dict[str, Any]] = []
+            if session_id:
+                rdf_chat = fetch_rdf_chatturn_fragments(
                     query_text=fragment,
                     session_id=session_id,
-                    max_items=8,
+                    max_items=max(rdf_top_k, 6),
                 )
+                backend_counts["rdf_chat"] = len(rdf_chat)
+                candidates.extend(rdf_chat)
+
+            # 1) Keep existing RDF paths (claims / neighborhood) as additional context.
+            rdf: List[Dict[str, Any]] = []
+            if profile_name.startswith("graphtri") and session_id:
+                rdf = fetch_rdf_graphtri_fragments(
+                    query_text=fragment,
+                    session_id=session_id,
+                    max_items=rdf_top_k,
+                )
+                if not rdf:
+                    rdf = fetch_rdf_fragments(
+                        query_text=fragment,
+                        max_items=rdf_top_k,
+                    )
             else:
-                expansion_terms = fetch_rdf_expansion_terms(query_text=fragment, max_items=6)
+                rdf = fetch_rdf_fragments(
+                    query_text=fragment,
+                    max_items=rdf_top_k,
+                )
+
+            backend_counts["rdf"] = len(rdf)
+            candidates.extend(rdf)
         except Exception as exc:
-            logger.debug(f"rdf expansion skipped: {exc}")
+            logger.debug(f"rdf backend skipped: {exc}")
+
 
     if settings.RECALL_ENABLE_VECTOR:
         seeds = [fragment, *entities]
@@ -267,29 +293,6 @@ async def _query_backends(
                 vec_count,
             )
 
-    if rdf_enabled:
-        try:
-            profile_name = str(profile.get("profile") or "")
-            if profile_name.startswith("graphtri") and session_id:
-                rdf = fetch_rdf_graphtri_fragments(
-                    query_text=fragment,
-                    session_id=session_id,
-                    max_items=rdf_top_k,
-                )
-                if not rdf:
-                    rdf = fetch_rdf_fragments(
-                        query_text=fragment,
-                        max_items=rdf_top_k,
-                    )
-            else:
-                rdf = fetch_rdf_fragments(
-                    query_text=fragment,
-                    max_items=rdf_top_k,
-                )
-            backend_counts["rdf"] = len(rdf)
-            candidates.extend(rdf)
-        except Exception as exc:
-            logger.debug(f"rdf backend skipped: {exc}")
     if diagnostic:
         logger.info(
             "recall rdf_enabled=%s rdf_top_k=%s rdf_candidates=%s expansion_terms=%s",

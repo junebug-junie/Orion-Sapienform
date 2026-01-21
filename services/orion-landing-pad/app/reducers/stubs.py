@@ -45,3 +45,25 @@ async def snapshot_reducer(env: BaseEnvelope, *, channel: str) -> PadEventV1:
         payload=payload,
         links=links,
     )
+
+
+async def biometrics_reducer(env: BaseEnvelope, *, channel: str) -> PadEventV1:
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    created_ts = int(env.created_at.timestamp() * 1000) if env.created_at else int(time.time() * 1000)
+    composites = payload.get("composites") or {}
+    strain = float(composites.get("strain") or 0.0)
+    links = PadLinks(correlation_id=env.correlation_id, trace_id=str(env.correlation_id))
+    subject = payload.get("node") or payload.get("subject")
+    return PadEventV1(
+        event_id=str(uuid4()),
+        ts_ms=created_ts,
+        source_service=env.source.name if env.source else "unknown",
+        source_channel=channel,
+        subject=str(subject) if subject else None,
+        type="biometrics",
+        salience=max(0.1, min(1.0, strain)),
+        confidence=float(payload.get("confidence") or 0.6),
+        novelty=float(payload.get("novelty") or 0.2),
+        payload=payload,
+        links=links,
+    )

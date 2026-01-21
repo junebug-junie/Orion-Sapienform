@@ -37,6 +37,8 @@ class Settings(BaseSettings):
             "orion:chat:history:turn",
             "orion:dream:log",
             "orion:telemetry:biometrics",
+            "orion:biometrics:summary",
+            "orion:biometrics:induction",
             "orion:spark:introspection:log", # legacy?
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -58,6 +60,8 @@ class Settings(BaseSettings):
             "chat.history.message.v1": "ChatMessageSQL",
             "dream.log": "Dream",
             "biometrics.telemetry": "BiometricsTelemetry",
+            "biometrics.summary.v1": "BiometricsSummarySQL",
+            "biometrics.induction.v1": "BiometricsInductionSQL",
             "spark.introspection.log": "SparkIntrospectionLogSQL",
             "spark.introspection": "SparkIntrospectionLogSQL",
             "spark.telemetry": "SparkTelemetrySQL",

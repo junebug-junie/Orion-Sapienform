@@ -15,6 +15,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
+from orion.schemas.telemetry.biometrics import BiometricsSummaryV1, BiometricsInductionV1, BiometricsClusterV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
 from .settings import settings
@@ -162,7 +163,7 @@ async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
             payload=out.model_dump(mode="json"),
         )
 
-    reply = await STORE.get_latest(req)
+    reply = await STORE.get_latest(req, biometrics_stale_after_sec=float(settings.biometrics_stale_after_sec))
     return BaseEnvelope(
         kind="state.latest.reply.v1",
         source=_source(),
@@ -170,6 +171,31 @@ async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
         causality_chain=env.causality_chain,
         payload=reply.model_dump(mode="json"),
     )
+
+
+async def _handle_biometrics(env: BaseEnvelope) -> None:
+    global STORE
+    if STORE is None:
+        return
+
+    payload_obj = env.payload
+    if hasattr(payload_obj, "model_dump"):
+        payload_obj = payload_obj.model_dump(mode="json")
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+
+    try:
+        if env.kind == "biometrics.summary.v1":
+            summary = BiometricsSummaryV1.model_validate(payload_obj)
+            await STORE.ingest_biometrics_summary(summary)
+        elif env.kind == "biometrics.induction.v1":
+            induction = BiometricsInductionV1.model_validate(payload_obj)
+            await STORE.ingest_biometrics_induction(induction)
+        elif env.kind == "biometrics.cluster.v1":
+            cluster = BiometricsClusterV1.model_validate(payload_obj)
+            await STORE.ingest_biometrics_cluster(cluster)
+    except Exception as exc:
+        logger.warning("Invalid biometrics payload dropped kind=%s error=%s", env.kind, exc)
 
 
 @asynccontextmanager
@@ -193,6 +219,15 @@ async def lifespan(app: FastAPI):
 
     # 3) Start chassis workers
     hunter = Hunter(_cfg(), patterns=[settings.channel_spark_state_snapshot], handler=_handle_snapshot)
+    biometrics_hunter = Hunter(
+        _cfg(),
+        patterns=[
+            settings.channel_biometrics_summary,
+            settings.channel_biometrics_induction,
+            settings.channel_biometrics_cluster,
+        ],
+        handler=_handle_biometrics,
+    )
     rabbit = Rabbit(_cfg(), request_channel=settings.state_request_channel, handler=_handle_get_latest)
 
     # --- FIX: Set global reference so _handle_snapshot can reply ---
@@ -200,13 +235,14 @@ async def lifespan(app: FastAPI):
 
     stop = asyncio.Event()
     hunter_task = asyncio.create_task(hunter.start_background(stop))
+    biometrics_task = asyncio.create_task(biometrics_hunter.start_background(stop))
     rabbit_task = asyncio.create_task(rabbit.start_background(stop))
 
     try:
         yield
     finally:
         stop.set()
-        for t in (hunter_task, rabbit_task):
+        for t in (hunter_task, biometrics_task, rabbit_task):
             try:
                 await asyncio.wait_for(t, timeout=float(settings.shutdown_grace_sec) + 1.0)
             except Exception:

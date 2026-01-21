@@ -476,6 +476,7 @@ async def call_step_services(
                     model=req_model,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                    route="metacog",
                     options={
                         "temperature": 0.8,
                         "max_tokens": 1024,
@@ -545,6 +546,7 @@ async def call_step_services(
                     model=req_model,
                     messages=messages_payload,
                     raw_user_text="metacog_enrich",
+                    route="metacog",
                     options={
                         "temperature": 0.5,
                         "max_tokens": 1024,
@@ -722,6 +724,13 @@ async def call_step_services(
                     reply_to=state_reply_channel,
                     payload=state_req.model_dump(mode="json"),
                 )
+                biometrics_context = {
+                    "status": "missing",
+                    "note": "no_state_reply",
+                    "summary": None,
+                    "induction": None,
+                    "cluster": None,
+                }
                 try:
                     state_msg = await bus.rpc_request(
                         settings.channel_state_request,
@@ -732,6 +741,13 @@ async def call_step_services(
                     state_dec = bus.codec.decode(state_msg.get("data"))
                     if state_dec.ok:
                         state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
+                        if state_res.biometrics:
+                            if hasattr(state_res.biometrics, "model_dump"):
+                                biometrics_context = state_res.biometrics.model_dump(mode="json")
+                            elif isinstance(state_res.biometrics, dict):
+                                biometrics_context = state_res.biometrics
+                        ctx["biometrics"] = biometrics_context
+                        ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                         if state_res.ok and state_res.snapshot:
                             snap_obj = state_res.snapshot
 
@@ -766,6 +782,18 @@ async def call_step_services(
                 except Exception as e:
                     logger.warning("MetacogContextService state RPC failed: %s", e)
                     spark_line = f"error: {e}"
+                    biometrics_context = {
+                        "status": "missing",
+                        "note": f"state_rpc_error:{e}",
+                        "summary": None,
+                        "induction": None,
+                        "cluster": None,
+                    }
+                    ctx["biometrics"] = biometrics_context
+                    ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
+                if "biometrics" not in ctx:
+                    ctx["biometrics"] = biometrics_context
+                    ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
 
                 # Recent Traces
                 recent_traces = get_trace_cache().get_recent(5)
@@ -781,11 +809,28 @@ async def call_step_services(
                 if isinstance(pad_short, str) and len(pad_short) > 500:
                     pad_short = pad_short[:500] + "...(truncated)"
 
+                biometrics_context = ctx.get("biometrics") or {}
+                summary = biometrics_context.get("summary") or {}
+                composites = summary.get("composites") or {}
+                pressures = summary.get("pressures") or {}
+                strain = composites.get("strain")
+                biometrics_line = f"status={biometrics_context.get('status','missing')}"
+                if strain is not None:
+                    biometrics_line += f", strain={float(strain):.2f}"
+                if pressures:
+                    cpu_p = pressures.get("cpu")
+                    gpu_p = pressures.get("gpu_util")
+                    if cpu_p is not None:
+                        biometrics_line += f", cpu={float(cpu_p):.2f}"
+                    if gpu_p is not None:
+                        biometrics_line += f", gpu={float(gpu_p):.2f}"
+
                 summary_text = (
                     f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
                     f"Pressure: {trigger.pressure}\n"
                     f"Landing Pad: {pad_short}\n"
                     f"Spark: {spark_line}\n"
+                    f"Biometrics: {biometrics_line}\n"
                     f"Recent Traces:\n{trace_summary}\n"
                 )
 

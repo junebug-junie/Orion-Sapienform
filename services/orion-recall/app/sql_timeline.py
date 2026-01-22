@@ -67,6 +67,20 @@ def _parse_row(row: Dict[str, Any]) -> TimelineItem:
     )
 
 
+def _should_filter_juniper() -> bool:
+    if settings.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:
+        return settings.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"
+    return bool(settings.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER)
+
+
+def _juniper_filter_clause() -> str:
+    observer_col = settings.RECALL_SQL_TIMELINE_SESSION_COL
+    return (
+        f"(lower({observer_col}) LIKE 'junip%' "
+        f"OR lower({observer_col}) IN ('juniper','june','juniperk','juniperr','juniperfeld'))"
+    )
+
+
 async def fetch_recent_fragments(
     session_id: Optional[str],
     node_id: Optional[str],
@@ -80,6 +94,9 @@ async def fetch_recent_fragments(
         conn = _connect()
         try:
             cur = conn.cursor()
+            juniper_clause = ""
+            if _should_filter_juniper() and settings.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror":
+                juniper_clause = f" AND {_juniper_filter_clause()}"
             cur.execute(
                 f"""
                 SELECT id,
@@ -91,6 +108,7 @@ async def fetch_recent_fragments(
                 FROM {settings.RECALL_SQL_TIMELINE_TABLE}
                 WHERE {settings.RECALL_SQL_TIMELINE_TS_COL} >= NOW() - INTERVAL '%s minutes'
                   AND (%s IS NULL OR {settings.RECALL_SQL_TIMELINE_SESSION_COL} = %s)
+                  {juniper_clause}
                 ORDER BY {settings.RECALL_SQL_TIMELINE_TS_COL} DESC
                 LIMIT %s
                 """,
@@ -125,6 +143,9 @@ async def fetch_related_by_entities(
         try:
             cur = conn.cursor()
             placeholders = ", ".join(["%s"] * len(entities))
+            juniper_clause = ""
+            if _should_filter_juniper() and settings.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror":
+                juniper_clause = f" AND {_juniper_filter_clause()}"
             cur.execute(
                 f"""
                 SELECT id,
@@ -137,6 +158,7 @@ async def fetch_related_by_entities(
                 WHERE {settings.RECALL_SQL_TIMELINE_TS_COL} >= NOW() - INTERVAL '%s hours'
                   AND ({settings.RECALL_SQL_TIMELINE_TEXT_COL} ILIKE ANY (ARRAY[{placeholders}]))
                   AND (%s IS NULL OR {settings.RECALL_SQL_TIMELINE_SESSION_COL} = %s)
+                  {juniper_clause}
                 ORDER BY {settings.RECALL_SQL_TIMELINE_TS_COL} DESC
                 LIMIT %s
                 """,

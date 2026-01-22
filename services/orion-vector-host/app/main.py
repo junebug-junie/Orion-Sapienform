@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -351,3 +351,18 @@ def health() -> Dict[str, Any]:
         "service": settings.SERVICE_NAME,
         "bus_connected": bus_connected,
     }
+
+
+@app.post("/embedding", response_model=EmbeddingResultV1)
+async def embedding_endpoint(request: EmbeddingGenerateV1) -> EmbeddingResultV1:
+    if embedder is None:
+        raise HTTPException(status_code=503, detail="Embedding backend unavailable")
+    if not request.text:
+        raise HTTPException(status_code=400, detail="Missing text")
+    embedding, embedding_model, embedding_dim = await embedder.embed(request.text)
+    return EmbeddingResultV1(
+        doc_id=request.doc_id,
+        embedding=embedding,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+    )

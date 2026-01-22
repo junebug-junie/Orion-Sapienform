@@ -270,12 +270,17 @@ async def _query_backends(
             vector_queries = [fragment]
         per_query = max(1, int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)) // len(vector_queries))
         vec_count = 0
+        raw_vector_filters = profile.get("vector_meta_filters")
+        vector_filters = raw_vector_filters if isinstance(raw_vector_filters, dict) else None
         for term in vector_queries:
             try:
                 vec = fetch_vector_fragments(
                     query_text=term,
                     time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
                     max_items=per_query,
+                    session_id=session_id,
+                    node_id=node_id,
+                    metadata_filters=vector_filters,
                 )
                 vec_count += len(vec)
                 candidates.extend(vec)
@@ -455,12 +460,17 @@ async def process_recall(
             seen_vec = set()
             vec_count = 0
             vector_candidates: List[Dict[str, Any]] = []
+            raw_vector_filters = profile.get("vector_meta_filters")
+            vector_filters = raw_vector_filters if isinstance(raw_vector_filters, dict) else None
             for term in vector_queries:
                 try:
                     vec = fetch_vector_fragments(
                         query_text=term,
                         time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
                         max_items=per_query,
+                        session_id=q.session_id,
+                        node_id=q.node_id,
+                        metadata_filters=vector_filters,
                     )
                 except Exception as exc:
                     logger.debug(f"vector backend skipped: {exc}")

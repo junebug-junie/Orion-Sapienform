@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smoke test: publish a VectorDocumentUpsertV1 via the bus and verify retrieval.
+Smoke test: publish chat.history.message.v1 via the bus and verify retrieval.
 """
 from __future__ import annotations
 
@@ -13,51 +13,40 @@ from uuid import uuid4
 
 import requests
 
+from chromadb import HttpClient  # type: ignore
+from chromadb.config import Settings as ChromaSettings  # type: ignore
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from chromadb import HttpClient  # type: ignore
-from chromadb.config import Settings as ChromaSettings  # type: ignore
-
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.vector.schemas import VectorDocumentUpsertV1
+from orion.schemas.chat_history import ChatHistoryMessageV1
 
 BUS_URL = os.getenv("ORION_BUS_URL", "redis://localhost:6379/0")
-UPSERT_CHANNEL = os.getenv("VECTOR_UPSERT_CHANNEL", "orion:memory:vector:upsert")
+CHAT_HISTORY_CHANNEL = os.getenv("CHAT_HISTORY_CHANNEL", "orion:chat:history:log")
 ERROR_CHANNEL = os.getenv("ORION_ERROR_CHANNEL", "system.error")
 TIMEOUT_SEC = float(os.getenv("VECTOR_SMOKE_TIMEOUT_SEC", "15"))
 
+RECALL_URL = os.getenv("RECALL_URL", "http://localhost:8260/recall")
 VECTOR_DB_HOST = os.getenv("VECTOR_DB_HOST", "orion-athena-vector-db")
 VECTOR_DB_PORT = int(os.getenv("VECTOR_DB_PORT", "8000"))
-VECTOR_DB_COLLECTION = os.getenv("VECTOR_DB_COLLECTION", "orion_main_store")
-
-RECALL_URL = os.getenv("RECALL_URL", "http://localhost:8260/recall")
+VECTOR_DB_COLLECTION = os.getenv("VECTOR_DB_COLLECTION", "orion_chat")
 
 
-def _build_envelope(doc_id: str, *, session_id: str, embedding: list[float]) -> BaseEnvelope:
-    payload = VectorDocumentUpsertV1(
-        doc_id=doc_id,
-        kind="chat.turn.smoke",
-        text="Synthetic chat turn about the cpu card for recall testing.",
-        metadata={
-            "doc_type": "chat_turn",
-            "schema_version": "v1",
-            "role": "assistant",
-            "session_id": session_id,
-            "channel": "smoke",
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "source_service": "vector-smoke-test",
-            "source_node": "local",
-        },
-        collection=VECTOR_DB_COLLECTION,
-        embedding=embedding,
-        embedding_dim=len(embedding),
-        embedding_model="smoke-embedder",
+def _build_envelope(doc_id: str, *, session_id: str) -> BaseEnvelope:
+    payload = ChatHistoryMessageV1(
+        message_id=doc_id,
+        session_id=session_id,
+        role="assistant",
+        speaker="smoke-tester",
+        content="Synthetic chat turn about the cpu card for recall testing.",
+        timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        tags=["brain", "chat_general"],
     )
     return BaseEnvelope(
-        kind="memory.vector.upsert.v1",
+        kind="chat.history.message.v1",
         source=ServiceRef(name="vector-smoke-test", node="local", version="0.0.0"),
         correlation_id=uuid4(),
         payload=payload.model_dump(mode="json"),
@@ -79,25 +68,6 @@ async def _collect_errors(bus: OrionBusAsync, window_sec: float) -> list[str]:
     return errors
 
 
-def _query_chroma(doc_id: str, session_id: str) -> None:
-    client = HttpClient(
-        host=VECTOR_DB_HOST,
-        port=VECTOR_DB_PORT,
-        settings=ChromaSettings(anonymized_telemetry=False),
-    )
-    col = client.get_or_create_collection(name=VECTOR_DB_COLLECTION)
-    res = col.get(
-        where={"session_id": session_id},
-        include=["metadatas", "documents"],
-        limit=5,
-    )
-    print(f"[ok] chroma get session_id={session_id} -> {len(res.get('ids', []))} hits")
-    if doc_id in (res.get("ids") or []):
-        print("[ok] found inserted doc_id in Chroma")
-    else:
-        print("[warn] inserted doc_id not found in Chroma response")
-
-
 def _query_recall(session_id: str) -> None:
     payload = {"query_text": "cpu card", "session_id": session_id, "diagnostic": True}
     try:
@@ -111,27 +81,45 @@ def _query_recall(session_id: str) -> None:
     print(f"[ok] recall debug backend_counts={counts}")
 
 
+def _query_chroma(session_id: str) -> None:
+    client = HttpClient(
+        host=VECTOR_DB_HOST,
+        port=VECTOR_DB_PORT,
+        settings=ChromaSettings(anonymized_telemetry=False),
+    )
+    col = client.get_or_create_collection(name=VECTOR_DB_COLLECTION)
+    res = col.get(where={"session_id": session_id}, include=["metadatas", "documents"], limit=5)
+    metas = (res.get("metadatas") or [])
+    print(f"[ok] chroma hits for session_id={session_id}: {len(res.get('ids', []))}")
+    if metas:
+        meta = metas[0] or {}
+        missing = [key for key in ("role", "speaker", "created_at", "original_channel") if key not in meta]
+        if missing:
+            print(f"[warn] missing metadata keys: {missing}")
+        else:
+            print("[ok] metadata includes role/speaker/created_at/original_channel")
+
+
 async def main() -> int:
     bus = OrionBusAsync(BUS_URL)
     await bus.connect()
 
     session_id = f"smoke-session-{uuid4()}"
     doc_id = f"smoke-doc-{uuid4()}"
-    embedding = [0.12, 0.34, 0.56, 0.78]
 
-    envelope = _build_envelope(doc_id, session_id=session_id, embedding=embedding)
-    async with bus.subscribe(UPSERT_CHANNEL) as _:
-        await bus.publish(UPSERT_CHANNEL, envelope)
+    envelope = _build_envelope(doc_id, session_id=session_id)
+    async with bus.subscribe(CHAT_HISTORY_CHANNEL) as _:
+        await bus.publish(CHAT_HISTORY_CHANNEL, envelope)
 
     errors = await _collect_errors(bus, window_sec=TIMEOUT_SEC)
     await bus.close()
 
-    print("[ok] published memory.vector.upsert.v1")
+    print("[ok] published chat.history.message.v1")
     if errors:
         print(f"[warn] observed error kinds on bus: {errors}")
 
     try:
-        _query_chroma(doc_id, session_id)
+        _query_chroma(session_id)
     except Exception as exc:
         print(f"[warn] chroma query failed: {exc}")
 

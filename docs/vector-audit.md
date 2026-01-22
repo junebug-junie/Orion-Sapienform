@@ -66,8 +66,27 @@ If `RECALL_VECTOR_COLLECTIONS` is unset or blank, the vector adapter returns ear
 
 ## Chroma Inventory & Counts (Runtime Audit)
 
-### Attempted Query (from repo environment)
-Chroma access from this environment failed with a **403 Forbidden** tenant error, so counts could not be retrieved here.
+### Latest observed counts (from vector-writer container)
+```
+collections ['memory_summaries', 'docs_research', 'docs_design', 'orion_chat', 'orion_general', 'orion_main_store', 'orion_collapse']
+memory_summaries count 0
+docs_research count 0
+docs_design count 0
+orion_chat count 2
+orion_general count 10
+orion_main_store count 615
+orion_collapse count 6
+chat_history channel 0
+session_id present 0
+role user 0
+role assistant 0
+role embedding_request 592
+```
+
+**Interpretation**
+- `orion_main_store` is heavily populated, but most entries are **embedding requests** (`role=embedding_request`).
+- `session_id` is absent in stored metadata, so session-filtered recall will currently return **no vector hits**.
+- `orion_chat` is sparse, indicating chat-history ingestion isn’t populating the vector store consistently.
 
 **Recommended command (run inside vector-writer container)**:
 ```bash
@@ -94,6 +113,16 @@ print("role assistant", count({"role": "assistant"}))
 print("role embedding_request", count({"role": "embedding_request"}))
 PY
 ```
+
+---
+
+## “Looks Good” Checklist
+- ✅ `/debug/settings` shows `RECALL_VECTOR_COLLECTIONS` is non-empty and `RECALL_VECTOR_BASE_URL` points at Chroma.
+- ✅ `orion_main_store` has non-zero count.
+- ✅ At least some docs have `session_id` and `role` metadata (user/assistant).
+- ✅ `curl /recall` with `diagnostic=true` returns `debug.backend_counts.vector > 0` for a session-scoped query.
+
+If **session_id count is 0**, vectors are likely derived from `embedding.generate.v1` events (embedding_request artifacts). To fix this, ensure chat history messages are published on `orion:chat:history:log` with session_id metadata and that vector-host is embedding those messages.
 
 ---
 

@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     # ── Vector backend (recall-specific overrides) ────────────────────
     RECALL_VECTOR_BASE_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_BASE_URL"))
     RECALL_VECTOR_COLLECTIONS: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_COLLECTIONS"))
+    RECALL_VECTOR_EMBEDDING_URL: Optional[str] = Field(
+        default="http://orion-vector-host:8320/embedding",
+        validation_alias=AliasChoices("RECALL_VECTOR_EMBEDDING_URL"),
+    )
     RECALL_VECTOR_TIMEOUT_SEC: float = Field(default=5.0, validation_alias=AliasChoices("RECALL_VECTOR_TIMEOUT_SEC"))
     RECALL_VECTOR_MAX_ITEMS: int = Field(default=24, validation_alias=AliasChoices("RECALL_VECTOR_MAX_ITEMS"))
 
@@ -169,6 +173,7 @@ class Settings(BaseSettings):
     @field_validator(
         "RECALL_VECTOR_BASE_URL",
         "RECALL_VECTOR_COLLECTIONS",
+        "RECALL_VECTOR_EMBEDDING_URL",
         "RECALL_RDF_ENDPOINT_URL",
         mode="before",
     )
@@ -186,9 +191,9 @@ class Settings(BaseSettings):
         if not self.RECALL_VECTOR_BASE_URL:
             self.RECALL_VECTOR_BASE_URL = f"http://{self.VECTOR_DB_HOST}:{self.VECTOR_DB_PORT}"
 
-        # If recall-specific collections are not set, fall back to the main collection
+        # If recall-specific collections are not set, fall back to the chat collection
         if not self.RECALL_VECTOR_COLLECTIONS:
-            self.RECALL_VECTOR_COLLECTIONS = self.VECTOR_DB_COLLECTION
+            self.RECALL_VECTOR_COLLECTIONS = "orion_chat"
 
         # If endpoint override isn't set, build from GraphDB URL + repo
         if not self.RECALL_RDF_ENDPOINT_URL:

@@ -45,6 +45,7 @@ class Settings(BaseSettings):
         default='{"atlas":0.6,"athena":0.4}',
         alias="BIOMETRICS_ROLE_WEIGHTS_JSON",
     )
+    BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
 
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(

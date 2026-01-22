@@ -146,6 +146,24 @@ async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
     except Exception as e:
         logger.error(f"TTS Remote Failed: {e}")
 
+
+async def biometrics_heartbeat(
+    websocket: WebSocket,
+    *,
+    cache: Optional[BiometricsCache],
+    interval_sec: float,
+) -> None:
+    try:
+        while websocket.client_state.name == "CONNECTED":
+            await websocket.send_json(
+                await _with_biometrics({"biometrics_tick": True}, cache=cache)
+            )
+            await asyncio.sleep(interval_sec)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error("Biometrics heartbeat error: %s", e, exc_info=True)
+
 async def websocket_endpoint(websocket: WebSocket):
     import scripts.main
     bus = scripts.main.bus
@@ -170,6 +188,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
     tts_q: asyncio.Queue = asyncio.Queue()
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q, biometrics_cache))
+    biometrics_task = asyncio.create_task(
+        biometrics_heartbeat(
+            websocket,
+            cache=biometrics_cache,
+            interval_sec=float(getattr(settings, "BIOMETRICS_PUSH_INTERVAL_SEC", 5.0)),
+        )
+    )
 
     try:
         while True:
@@ -428,3 +453,4 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}", exc_info=True)
     finally:
         drain_task.cancel()
+        biometrics_task.cancel()

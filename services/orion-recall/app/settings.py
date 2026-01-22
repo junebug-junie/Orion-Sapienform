@@ -186,6 +186,10 @@ class Settings(BaseSettings):
         if not self.RECALL_VECTOR_BASE_URL:
             self.RECALL_VECTOR_BASE_URL = f"http://{self.VECTOR_DB_HOST}:{self.VECTOR_DB_PORT}"
 
+        # If recall-specific collections are not set, fall back to the main collection
+        if not self.RECALL_VECTOR_COLLECTIONS:
+            self.RECALL_VECTOR_COLLECTIONS = self.VECTOR_DB_COLLECTION
+
         # If endpoint override isn't set, build from GraphDB URL + repo
         if not self.RECALL_RDF_ENDPOINT_URL:
             base = self.GRAPHDB_URL.rstrip("/")

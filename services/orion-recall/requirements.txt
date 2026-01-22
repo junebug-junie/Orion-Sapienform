@@ -3,6 +3,7 @@ uvicorn[standard]==0.30.*
 redis==5.0.*
 sqlalchemy==2.0.*
 psycopg2-binary==2.9.*
+asyncpg==0.29.*
 pydantic==2.7.*
 pydantic-settings==2.5.2
 httpx==0.27.*

@@ -161,6 +161,21 @@ class Settings(BaseSettings):
     RECALL_SQL_TIMELINE_SESSION_COL: str = Field(default="observer", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_SESSION_COL"))
     RECALL_SQL_TIMELINE_NODE_COL: str = Field(default="observer_state", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_NODE_COL"))
     RECALL_SQL_TIMELINE_TAGS_COL: str = Field(default="tags", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TAGS_COL"))
+    RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER: Optional[bool] = Field(
+        default=None, validation_alias=AliasChoices("RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER")
+    )
+
+    # ── SQL message table (optional) ──────────────────────────────────
+    RECALL_SQL_MESSAGE_TABLE: str = Field(default="", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_TABLE"))
+    RECALL_SQL_MESSAGE_ROLE_COL: str = Field(
+        default="role", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_ROLE_COL")
+    )
+    RECALL_SQL_MESSAGE_TEXT_COL: str = Field(
+        default="text", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_TEXT_COL")
+    )
+    RECALL_SQL_MESSAGE_CREATED_AT_COL: str = Field(
+        default="created_at", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_CREATED_AT_COL")
+    )
 
     # ── Future tensor / ranker toggles ────────────────────────────────
     RECALL_TENSOR_RANKER_ENABLED: bool = Field(default=False, validation_alias=AliasChoices("RECALL_TENSOR_RANKER_ENABLED"))
@@ -194,6 +209,11 @@ class Settings(BaseSettings):
         # If recall-specific collections are not set, fall back to the chat collection
         if not self.RECALL_VECTOR_COLLECTIONS:
             self.RECALL_VECTOR_COLLECTIONS = "orion_chat"
+
+        if self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:
+            self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER = (
+                self.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"
+            )
 
         # If endpoint override isn't set, build from GraphDB URL + repo
         if not self.RECALL_RDF_ENDPOINT_URL:

@@ -32,7 +32,8 @@ try:
         fetch_rdf_chatturn_fragments,
     )
     from .storage.vector_adapter import fetch_vector_fragments
-    from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
+from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
+from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
 
 except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     _IMPORT_ERROR = _e
@@ -306,6 +307,46 @@ async def _query_backends(
             backend_counts.get("rdf", 0),
             expansion_terms,
         )
+
+    if settings.RECALL_ENABLE_SQL_CHAT:
+        try:
+            chat_pairs = await fetch_chat_history_pairs(
+                limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
+                since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+            )
+            backend_counts["sql_chat_pairs"] = len(chat_pairs)
+            for item in chat_pairs:
+                candidates.append(
+                    {
+                        "id": item.id,
+                        "source": "sql_chat",
+                        "source_ref": item.source_ref,
+                        "text": item.text,
+                        "ts": item.ts,
+                        "tags": ["sql", "chat", "pairs"],
+                        "score": 0.75,
+                    }
+                )
+
+            chat_msgs = await fetch_chat_messages(
+                limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
+                since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+            )
+            backend_counts["sql_chat_msgs"] = len(chat_msgs)
+            for item in chat_msgs:
+                candidates.append(
+                    {
+                        "id": item.id,
+                        "source": "sql_chat",
+                        "source_ref": item.source_ref,
+                        "text": item.text,
+                        "ts": item.ts,
+                        "tags": ["sql", "chat", "messages"],
+                        "score": 0.75,
+                    }
+                )
+        except Exception as exc:
+            logger.debug(f"sql chat backend skipped: {exc}")
 
     if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
         try:

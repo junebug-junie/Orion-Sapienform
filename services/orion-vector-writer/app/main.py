@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
@@ -32,6 +33,31 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 # --- Global Resources ---
 chroma_client: Optional[chromadb.HttpClient] = None
 hunter: Optional[Hunter] = None
+
+
+def sanitize_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned: Dict[str, Any] = {}
+    changed = False
+    for key, value in (meta or {}).items():
+        if value is None:
+            changed = True
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            cleaned[key] = value
+            continue
+        if isinstance(value, list):
+            cleaned[key] = ",".join(str(item) for item in value)
+            changed = True
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = json.dumps(value, sort_keys=True)
+            changed = True
+            continue
+        cleaned[key] = str(value)
+        changed = True
+    if changed:
+        logger.debug("Sanitized metadata for Chroma upsert keys=%s", list(cleaned.keys()))
+    return cleaned
 
 # --- Configuration ---
 def _cfg() -> ChassisConfig:
@@ -230,6 +256,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 meta["embedding_model"] = upsert.embedding_model
             if upsert.embedding_dim is not None:
                 meta["embedding_dim"] = upsert.embedding_dim
+            meta = sanitize_metadata(meta)
 
             collection = chroma_client.get_or_create_collection(name=collection_name)
             await asyncio.to_thread(
@@ -276,6 +303,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
             meta["latent_ref"] = req.latent_ref
         if req.latent_summary:
             meta["latent_summary"] = req.latent_summary
+        meta = sanitize_metadata(meta)
         if env.kind == CHAT_HISTORY_MESSAGE_KIND:
             logger.info(
                 "Chat history ingest id=%s role=%s session=%s correlation_id=%s",

@@ -40,12 +40,17 @@ def chat_history_envelope_to_request(
         correlation_id=envelope.correlation_id,
         channel=channel,
     )
+    metadata = dict(doc["metadata"])
+    metadata["original_channel"] = channel
+    metadata["correlation_id"] = str(envelope.correlation_id)
+    metadata["envelope_id"] = str(envelope.id)
+    metadata["created_at"] = envelope.created_at.isoformat()
 
     collection = collection_name or CHAT_HISTORY_COLLECTION
     return VectorWriteRequest(
         id=doc["id"],
         kind=envelope.kind,
         content=doc["text"],
-        metadata=doc["metadata"],
+        metadata=metadata,
         collection_name=collection,
     )

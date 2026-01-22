@@ -127,10 +127,15 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optiona
     try:
         while websocket.client_state.name == "CONNECTED":
             msg = await queue.get()
-            await websocket.send_json(await _with_biometrics(msg, cache=cache))
+            try:
+                await websocket.send_json(await _with_biometrics(msg, cache=cache))
+            except WebSocketDisconnect:
+                break
             queue.task_done()
             await asyncio.sleep(0.01)
     except asyncio.CancelledError:
+        pass
+    except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.error(f"drain_queue error: {e}", exc_info=True)
@@ -155,11 +160,16 @@ async def biometrics_heartbeat(
 ) -> None:
     try:
         while websocket.client_state.name == "CONNECTED":
-            await websocket.send_json(
-                await _with_biometrics({"biometrics_tick": True}, cache=cache)
-            )
+            try:
+                await websocket.send_json(
+                    await _with_biometrics({"biometrics_tick": True}, cache=cache)
+                )
+            except WebSocketDisconnect:
+                break
             await asyncio.sleep(interval_sec)
     except asyncio.CancelledError:
+        pass
+    except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.error("Biometrics heartbeat error: %s", e, exc_info=True)

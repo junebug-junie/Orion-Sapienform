@@ -37,6 +37,15 @@ class Settings(BaseSettings):
         alias="ORION_BUS_URL",
     )
 
+    # --- Biometrics Cache (Hub) ---
+    BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
+    BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")
+    BIOMETRICS_NO_SIGNAL_AFTER_SEC: float = Field(default=600.0, alias="BIOMETRICS_NO_SIGNAL_AFTER_SEC")
+    BIOMETRICS_ROLE_WEIGHTS_JSON: str = Field(
+        default='{"atlas":0.6,"athena":0.4}',
+        alias="BIOMETRICS_ROLE_WEIGHTS_JSON",
+    )
+
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(
         default="orion:cortex:gateway:request",

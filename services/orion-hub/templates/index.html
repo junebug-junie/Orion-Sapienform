@@ -39,25 +39,24 @@
 
             <div id="biometricsPanel" class="w-full h-28 bg-gray-800/50 rounded-lg border border-gray-800 p-3 flex flex-col justify-between">
               <div class="flex items-center justify-between">
-                <span class="text-xs text-gray-400">Biometrics (stub)</span>
-                <span class="text-xs text-gray-500 italic">Loading...</span>
+                <span class="text-xs text-gray-400">Biometrics</span>
+                <div class="flex items-center gap-2">
+                  <span id="bioConstraint" class="hidden text-[10px] uppercase tracking-wide bg-gray-700/60 text-gray-200 px-2 py-0.5 rounded-full"></span>
+                  <span id="bioStatus" class="text-xs text-gray-500 italic">Loading...</span>
+                </div>
               </div>
               <div class="flex items-center justify-between text-sm">
                 <div class="flex flex-col">
-                  <span class="text-[10px] uppercase tracking-wide text-gray-500">HR</span>
-                  <span id="bioHr" class="font-semibold text-gray-100">--</span>
+                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Strain</span>
+                  <span class="font-semibold text-gray-100"><span id="bioStrainValue">--</span> <span id="bioStrainTrend">→</span></span>
                 </div>
                 <div class="flex flex-col">
-                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Stress</span>
-                  <span id="bioStress" class="font-semibold text-gray-100">--</span>
+                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Homeostasis</span>
+                  <span class="font-semibold text-gray-100"><span id="bioHomeostasisValue">--</span> <span id="bioHomeostasisTrend">→</span></span>
                 </div>
                 <div class="flex flex-col">
-                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Temp</span>
-                  <span id="bioTemp" class="font-semibold text-gray-100">--</span>
-                </div>
-                <div class="flex flex-col">
-                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Hydration</span>
-                  <span id="bioHydration" class="font-semibold text-gray-100">--</span>
+                  <span class="text-[10px] uppercase tracking-wide text-gray-500">Stability</span>
+                  <span class="font-semibold text-gray-100"><span id="bioStabilityValue">--</span> <span id="bioStabilityTrend">→</span></span>
                 </div>
               </div>
             </div>

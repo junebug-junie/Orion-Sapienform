@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
+from scripts.biometrics_cache import BiometricsCache
 
 from orion.core.bus.async_service import OrionBusAsync
 from scripts.bus_clients.cortex_client import CortexGatewayClient
@@ -39,6 +40,7 @@ bus: Optional[OrionBusAsync] = None
 cortex_client: Optional[CortexGatewayClient] = None
 tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
+biometrics_cache: Optional[BiometricsCache] = None
 
 
 # ───────────────────────────────────────────────────────────────
@@ -51,7 +53,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_client, tts_client, html_content
+    global bus, cortex_client, tts_client, html_content, biometrics_cache
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -71,6 +73,15 @@ async def startup_event():
             cortex_client = CortexGatewayClient(bus)
             tts_client = TTSClient(bus)
             logger.info("Bus Clients initialized.")
+
+            # Biometrics cache (singleton)
+            biometrics_cache = BiometricsCache(
+                enabled=settings.BIOMETRICS_ENABLED,
+                stale_after_sec=settings.BIOMETRICS_STALE_AFTER_SEC,
+                no_signal_after_sec=settings.BIOMETRICS_NO_SIGNAL_AFTER_SEC,
+                role_weights_json=settings.BIOMETRICS_ROLE_WEIGHTS_JSON,
+            )
+            await biometrics_cache.start(bus)
 
         except Exception as e:
             logger.error(f"Failed to initialize OrionBus: {e}")
@@ -97,7 +108,9 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus
+    global bus, biometrics_cache
+    if biometrics_cache is not None:
+        await biometrics_cache.stop()
     if bus is not None:
         try:
             await bus.close()

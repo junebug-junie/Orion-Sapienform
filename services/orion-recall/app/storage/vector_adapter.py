@@ -72,6 +72,9 @@ def fetch_vector_fragments(
     query_text: str,
     time_window_days: int,
     max_items: int,
+    session_id: Optional[str] = None,
+    node_id: Optional[str] = None,
+    metadata_filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Lightweight wrapper around the existing Chroma client used by the legacy recall pipeline.
@@ -101,10 +104,19 @@ def fetch_vector_fragments(
             continue
 
         try:
+            where: Optional[Dict[str, Any]] = None
+            if metadata_filters or session_id or node_id:
+                where = dict(metadata_filters or {})
+                if session_id:
+                    where["session_id"] = session_id
+                if node_id:
+                    where["source_node"] = node_id
+
             res = coll.query(
                 query_texts=[query_text],
                 n_results=max_items * 2,
                 include=["documents", "metadatas", "distances", "ids"],
+                where=where,
             )
         except Exception:
             continue

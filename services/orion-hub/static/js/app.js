@@ -76,7 +76,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const biometricsPanel = document.getElementById("biometricsPanel");
   const bioStatus = document.getElementById("bioStatus");
   const bioConstraint = document.getElementById("bioConstraint");
-  const bioNodeSelect = document.getElementById("bioNodeSelect");
   const bioStrainValue = document.getElementById("bioStrainValue");
   const bioStrainTrend = document.getElementById("bioStrainTrend");
   const bioHomeostasisValue = document.getElementById("bioHomeostasisValue");
@@ -154,43 +153,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateBiometricsPanel(biometrics) {
     if (!biometricsPanel) return;
-    lastBiometricsPayload = biometrics;
-    if (bioNodeSelect) {
-      const nodes = Object.keys(biometrics?.nodes || {});
-      const options = ["cluster", ...nodes];
-      const existing = Array.from(bioNodeSelect.options).map((opt) => opt.value);
-      const changed = options.length !== existing.length || options.some((opt, i) => opt !== existing[i]);
-      if (changed) {
-        bioNodeSelect.innerHTML = "";
-        options.forEach((opt) => {
-          const option = document.createElement("option");
-          option.value = opt;
-          option.textContent = opt === "cluster" ? "Cluster" : opt;
-          bioNodeSelect.appendChild(option);
-        });
-      }
-      if (!options.includes(selectedBiometricsNode)) {
-        selectedBiometricsNode = "cluster";
-      }
-      bioNodeSelect.value = selectedBiometricsNode;
-    }
-    const selectedNodePayload =
-      selectedBiometricsNode !== "cluster"
-        ? biometrics?.nodes?.[selectedBiometricsNode]
-        : null;
-    const status = selectedNodePayload?.status || biometrics?.status || "NO_SIGNAL";
-    const freshness =
-      selectedNodePayload?.freshness_s !== undefined
-        ? selectedNodePayload?.freshness_s
-        : biometrics?.freshness_s;
+    const status = biometrics?.status || "NO_SIGNAL";
+    const freshness = biometrics?.freshness_s;
     const displayFreshness =
       typeof freshness === "number" && Number.isFinite(freshness) ? `${freshness.toFixed(0)}s` : "--";
     const statusLabel = status === "OK" ? "LIVE" : String(status).replace(/_/g, " ");
     if (bioStatus) {
       bioStatus.textContent = `${statusLabel} • ${displayFreshness}`;
     }
-    const constraint =
-      selectedNodePayload?.summary?.constraint || biometrics?.constraint || "NONE";
+    const constraint = biometrics?.constraint || "NONE";
     if (bioConstraint) {
       if (constraint && constraint !== "NONE") {
         bioConstraint.textContent = constraint;
@@ -199,13 +170,8 @@ document.addEventListener("DOMContentLoaded", () => {
         bioConstraint.classList.add("hidden");
       }
     }
-    let composite = biometrics?.cluster?.composite || {};
-    let trend = biometrics?.cluster?.trend || {};
-    if (selectedBiometricsNode !== "cluster") {
-      const node = biometrics?.nodes?.[selectedBiometricsNode] || {};
-      composite = node?.summary?.composites || {};
-      trend = node?.induction?.metrics || {};
-    }
+    const composite = biometrics?.cluster?.composite || {};
+    const trend = biometrics?.cluster?.trend || {};
     const strainTrend = (trend?.strain?.trend ?? 0.5) - 0.5;
     const homeostasisTrend = (trend?.homeostasis?.trend ?? 0.5) - 0.5;
     const stabilityTrend = (trend?.stability?.trend ?? 0.5) - 0.5;

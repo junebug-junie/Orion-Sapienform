@@ -35,7 +35,7 @@ chroma_client: Optional[chromadb.HttpClient] = None
 hunter: Optional[Hunter] = None
 
 
-def sanitize_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
+def sanitize_chroma_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
     cleaned: Dict[str, Any] = {}
     changed = False
     for key, value in (meta or {}).items():
@@ -256,7 +256,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 meta["embedding_model"] = upsert.embedding_model
             if upsert.embedding_dim is not None:
                 meta["embedding_dim"] = upsert.embedding_dim
-            meta = sanitize_metadata(meta)
+            meta = sanitize_chroma_metadata(meta)
 
             collection = chroma_client.get_or_create_collection(name=collection_name)
             await asyncio.to_thread(
@@ -303,7 +303,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
             meta["latent_ref"] = req.latent_ref
         if req.latent_summary:
             meta["latent_summary"] = req.latent_summary
-        meta = sanitize_metadata(meta)
+        meta = sanitize_chroma_metadata(meta)
         if env.kind == CHAT_HISTORY_MESSAGE_KIND:
             logger.info(
                 "Chat history ingest id=%s role=%s session=%s correlation_id=%s",

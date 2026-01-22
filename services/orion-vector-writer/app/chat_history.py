@@ -41,10 +41,16 @@ def chat_history_envelope_to_request(
         channel=channel,
     )
     metadata = dict(doc["metadata"])
+    timestamp = metadata.get("timestamp")
+    if isinstance(timestamp, str) and " " in timestamp and "T" not in timestamp:
+        metadata["timestamp"] = timestamp.replace(" ", "T", 1)
     metadata["original_channel"] = channel
     metadata["correlation_id"] = str(envelope.correlation_id)
     metadata["envelope_id"] = str(envelope.id)
-    metadata["created_at"] = envelope.created_at.isoformat()
+    created_at = envelope.created_at.isoformat()
+    if " " in created_at and "T" not in created_at:
+        created_at = created_at.replace(" ", "T", 1)
+    metadata["created_at"] = created_at
 
     collection = collection_name or CHAT_HISTORY_COLLECTION
     return VectorWriteRequest(

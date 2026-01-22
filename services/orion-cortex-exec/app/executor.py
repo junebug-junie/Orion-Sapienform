@@ -39,6 +39,27 @@ from .spark_narrative import spark_phi_hint, spark_phi_narrative
 logger = logging.getLogger("orion.cortex.exec")
 
 
+def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        "as_of": None,
+        "freshness_s": None,
+        "constraint": "NONE",
+        "cluster": {
+            "composite": {"strain": 0.0, "homeostasis": 0.0, "stability": 1.0},
+            "trend": {
+                "strain": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                "homeostasis": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                "stability": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+            },
+        },
+        "nodes": {},
+        "summary": None,
+        "induction": None,
+    }
+
+
 def _metacog_messages(prompt: str) -> List[Dict[str, Any]]:
     """
     Force "schema-mode": system prompt + explicit user instruction.
@@ -792,13 +813,10 @@ async def call_step_services(
                     reply_to=state_reply_channel,
                     payload=state_req.model_dump(mode="json"),
                 )
-                biometrics_context = {
-                    "status": "missing",
-                    "note": "no_state_reply",
-                    "summary": None,
-                    "induction": None,
-                    "cluster": None,
-                }
+                biometrics_context = _default_biometrics_context(
+                    status="NO_SIGNAL",
+                    reason="no_state_reply",
+                )
                 try:
                     state_msg = await bus.rpc_request(
                         settings.channel_state_request,
@@ -811,9 +829,31 @@ async def call_step_services(
                         state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
                         if state_res.biometrics:
                             if hasattr(state_res.biometrics, "model_dump"):
-                                biometrics_context = state_res.biometrics.model_dump(mode="json")
+                                raw_biometrics = state_res.biometrics.model_dump(mode="json")
                             elif isinstance(state_res.biometrics, dict):
-                                biometrics_context = state_res.biometrics
+                                raw_biometrics = state_res.biometrics
+                            else:
+                                raw_biometrics = {}
+                            biometrics_context = _default_biometrics_context(
+                                status="OK",
+                                reason="state_service",
+                            )
+                            if isinstance(raw_biometrics, dict):
+                                biometrics_context["summary"] = raw_biometrics.get("summary")
+                                biometrics_context["induction"] = raw_biometrics.get("induction")
+                                if raw_biometrics.get("constraint"):
+                                    biometrics_context["constraint"] = raw_biometrics.get("constraint")
+                                if raw_biometrics.get("freshness_s") is not None:
+                                    biometrics_context["freshness_s"] = raw_biometrics.get("freshness_s")
+                                if raw_biometrics.get("as_of") is not None:
+                                    biometrics_context["as_of"] = raw_biometrics.get("as_of")
+                                if raw_biometrics.get("status"):
+                                    biometrics_context["status"] = raw_biometrics.get("status")
+                                if raw_biometrics.get("reason"):
+                                    biometrics_context["reason"] = raw_biometrics.get("reason")
+                                nodes = raw_biometrics.get("nodes")
+                                if isinstance(nodes, dict):
+                                    biometrics_context["nodes"] = nodes
                         ctx["biometrics"] = biometrics_context
                         ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                         if state_res.ok and state_res.snapshot:
@@ -850,13 +890,10 @@ async def call_step_services(
                 except Exception as e:
                     logger.warning("MetacogContextService state RPC failed: %s", e)
                     spark_line = f"error: {e}"
-                    biometrics_context = {
-                        "status": "missing",
-                        "note": f"state_rpc_error:{e}",
-                        "summary": None,
-                        "induction": None,
-                        "cluster": None,
-                    }
+                    biometrics_context = _default_biometrics_context(
+                        status="NO_SIGNAL",
+                        reason=f"state_rpc_error:{e}",
+                    )
                     ctx["biometrics"] = biometrics_context
                     ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                 if "biometrics" not in ctx:

@@ -23,6 +23,8 @@ let selectedPacks = [];
 let selectedVerbs = [];
 let orionSessionId = null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
+let selectedBiometricsNode = "cluster";
+let lastBiometricsPayload = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
@@ -122,8 +124,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!conversationDiv) return;
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
-    div.innerHTML = `<p class="font-bold ${color}">${sender}</p><p class="${colorClass}">${text}</p>`;
+    const header = document.createElement('p');
+    header.className = `font-bold ${color}`;
+    header.textContent = sender;
+    const body = document.createElement('p');
+    body.className = `${colorClass} whitespace-pre-wrap`;
+    body.textContent = text || "";
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
+    div.appendChild(header);
+    div.appendChild(body);
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
   }
@@ -188,7 +197,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (chatInput) {
     chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault(); 
           sendTextMessage();
       }
@@ -836,5 +845,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // Initial call
       updateVisionUi();
   })();
+
+  if (bioNodeSelect) {
+    bioNodeSelect.addEventListener("change", () => {
+      selectedBiometricsNode = bioNodeSelect.value || "cluster";
+      if (lastBiometricsPayload) {
+        updateBiometricsPanel(lastBiometricsPayload);
+      }
+    });
+  }
 
 });

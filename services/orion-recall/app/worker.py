@@ -32,8 +32,8 @@ try:
         fetch_rdf_chatturn_fragments,
     )
     from .storage.vector_adapter import fetch_vector_fragments
-from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
-from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
+    from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
+    from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
 
 except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     _IMPORT_ERROR = _e
@@ -52,6 +52,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         )
         from app.storage.vector_adapter import fetch_vector_fragments  # type: ignore
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
+        from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages  # type: ignore
     except ImportError:
         # IMPORTANT: raise the real root cause, not the fallback failure
         raise _IMPORT_ERROR

@@ -70,6 +70,17 @@ document.addEventListener("DOMContentLoaded", () => {
   const visionCloseFloatingButton = document.getElementById("visionCloseFloating");
   const visionSourceSelect = document.getElementById("visionSource");
 
+  // Biometrics
+  const biometricsPanel = document.getElementById("biometricsPanel");
+  const bioStatus = document.getElementById("bioStatus");
+  const bioConstraint = document.getElementById("bioConstraint");
+  const bioStrainValue = document.getElementById("bioStrainValue");
+  const bioStrainTrend = document.getElementById("bioStrainTrend");
+  const bioHomeostasisValue = document.getElementById("bioHomeostasisValue");
+  const bioHomeostasisTrend = document.getElementById("bioHomeostasisTrend");
+  const bioStabilityValue = document.getElementById("bioStabilityValue");
+  const bioStabilityTrend = document.getElementById("bioStabilityTrend");
+
   // Collapse Mirror
   const collapseModeGuided = document.getElementById('collapseModeGuided');
   const collapseModeRaw = document.getElementById('collapseModeRaw');
@@ -115,6 +126,54 @@ document.addEventListener("DOMContentLoaded", () => {
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
+  }
+
+  function formatMetric(value) {
+    if (value === null || value === undefined || Number.isNaN(value)) return "--";
+    return `${(Number(value) * 100).toFixed(0)}%`;
+  }
+
+  function trendArrow(trendValue) {
+    const eps = 0.001;
+    const normalized = Number(trendValue);
+    if (Number.isNaN(normalized)) return "→";
+    if (normalized > eps) return "↗";
+    if (normalized < -eps) return "↘";
+    return "→";
+  }
+
+  function updateBiometricsPanel(biometrics) {
+    if (!biometricsPanel) return;
+    const status = biometrics?.status || "NO_SIGNAL";
+    const freshness = biometrics?.freshness_s;
+    const displayFreshness =
+      typeof freshness === "number" && Number.isFinite(freshness) ? `${freshness.toFixed(0)}s` : "--";
+    const statusLabel = status === "OK" ? "LIVE" : String(status).replace(/_/g, " ");
+    if (bioStatus) {
+      bioStatus.textContent = `${statusLabel} • ${displayFreshness}`;
+    }
+    const constraint = biometrics?.constraint || "NONE";
+    if (bioConstraint) {
+      if (constraint && constraint !== "NONE") {
+        bioConstraint.textContent = constraint;
+        bioConstraint.classList.remove("hidden");
+      } else {
+        bioConstraint.classList.add("hidden");
+      }
+    }
+    const composite = biometrics?.cluster?.composite || {};
+    const trend = biometrics?.cluster?.trend || {};
+    const strainTrend = (trend?.strain?.trend ?? 0.5) - 0.5;
+    const homeostasisTrend = (trend?.homeostasis?.trend ?? 0.5) - 0.5;
+    const stabilityTrend = (trend?.stability?.trend ?? 0.5) - 0.5;
+
+    if (bioStrainValue) bioStrainValue.textContent = formatMetric(composite?.strain ?? null);
+    if (bioHomeostasisValue) bioHomeostasisValue.textContent = formatMetric(composite?.homeostasis ?? null);
+    if (bioStabilityValue) bioStabilityValue.textContent = formatMetric(composite?.stability ?? null);
+
+    if (bioStrainTrend) bioStrainTrend.textContent = trendArrow(strainTrend);
+    if (bioHomeostasisTrend) bioHomeostasisTrend.textContent = trendArrow(homeostasisTrend);
+    if (bioStabilityTrend) bioStabilityTrend.textContent = trendArrow(stabilityTrend);
   }
 
   // --- 3. Event Listeners ---
@@ -348,6 +407,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
+          if (d.biometrics) updateBiometricsPanel(d.biometrics);
       } catch (err) {
           console.error("WS Parse Error", err);
       }

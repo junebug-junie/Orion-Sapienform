@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
+from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
     publish_chat_history,
@@ -94,11 +95,39 @@ def _build_prompt_with_history(
 
 
 
-async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
+async def _with_biometrics(
+    payload: Dict[str, Any],
+    *,
+    cache: Optional[BiometricsCache],
+) -> Dict[str, Any]:
+    enriched = dict(payload)
+    if cache:
+        enriched["biometrics"] = await cache.get_snapshot()
+    else:
+        enriched["biometrics"] = {
+            "status": "NO_SIGNAL",
+            "reason": "cache_unavailable",
+            "as_of": None,
+            "freshness_s": None,
+            "constraint": "NONE",
+            "cluster": {
+                "composite": {"strain": 0.0, "homeostasis": 0.0, "stability": 1.0},
+                "trend": {
+                    "strain": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                    "homeostasis": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                    "stability": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                },
+            },
+            "nodes": {},
+        }
+    return enriched
+
+
+async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optional[BiometricsCache]):
     try:
         while websocket.client_state.name == "CONNECTED":
             msg = await queue.get()
-            await websocket.send_json(msg)
+            await websocket.send_json(await _with_biometrics(msg, cache=cache))
             queue.task_done()
             await asyncio.sleep(0.01)
     except asyncio.CancelledError:
@@ -122,6 +151,7 @@ async def websocket_endpoint(websocket: WebSocket):
     bus = scripts.main.bus
     cortex_client = scripts.main.cortex_client
     tts_client = scripts.main.tts_client
+    biometrics_cache = scripts.main.biometrics_cache
 
     await websocket.accept()
     logger.info("WebSocket accepted.")
@@ -129,17 +159,17 @@ async def websocket_endpoint(websocket: WebSocket):
     # Soft warning if services missing, but keep connection alive
     if not bus or not cortex_client:
         logger.warning("OrionBus/CortexClient not ready. Chat will be limited.")
-        await websocket.send_json({
+        await websocket.send_json(await _with_biometrics({
             "llm_response": "[SYSTEM WARNING] Bus disconnected. Brain is offline, but UI is active.", 
             "state": "idle"
-        })
+        }, cache=biometrics_cache))
 
     history: List[Dict[str, Any]] = [
         {"role": "system", "content": mini_personality_summary()}
     ]
 
     tts_q: asyncio.Queue = asyncio.Queue()
-    drain_task = asyncio.create_task(drain_queue(websocket, tts_q))
+    drain_task = asyncio.create_task(drain_queue(websocket, tts_q, biometrics_cache))
 
     try:
         while True:
@@ -186,27 +216,40 @@ async def websocket_endpoint(websocket: WebSocket):
             elif data.get("audio"):
                 if tts_client:
                     try:
-                        await websocket.send_json({"state": "processing"})
+                        await websocket.send_json(
+                            await _with_biometrics({"state": "processing"}, cache=biometrics_cache)
+                        )
                         stt_req = STTRequestPayload(audio_b64=data.get("audio"))
                         stt_result = await tts_client.transcribe(stt_req)
                         transcript = stt_result.text
                     except Exception as e:
                         logger.error(f"STT Error: {e}")
-                        await websocket.send_json({"error": "Transcription failed"})
+                        await websocket.send_json(
+                            await _with_biometrics({"error": "Transcription failed"}, cache=biometrics_cache)
+                        )
                         continue
                 else:
-                    await websocket.send_json({"error": "STT service unavailable"})
+                    await websocket.send_json(
+                        await _with_biometrics({"error": "STT service unavailable"}, cache=biometrics_cache)
+                    )
                     continue
 
             if not transcript:
                 continue
 
             if not is_text_input:
-                await websocket.send_json({"transcript": transcript, "is_text_input": False})
+                await websocket.send_json(
+                    await _with_biometrics(
+                        {"transcript": transcript, "is_text_input": False},
+                        cache=biometrics_cache,
+                    )
+                )
 
             # 2. Chat Execution
             if not cortex_client:
-                await websocket.send_json({"error": "Cortex disconnected (Bus offline)"})
+                await websocket.send_json(
+                    await _with_biometrics({"error": "Cortex disconnected (Bus offline)"}, cache=biometrics_cache)
+                )
                 continue
 
             logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
@@ -267,14 +310,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     orion_response_text = s[len("Orion:"):].lstrip()
             except Exception as e:
                 logger.error(f"Chat RPC Error: {e}")
-                await websocket.send_json({"error": f"Chat failed: {str(e)}"})
+                await websocket.send_json(
+                    await _with_biometrics({"error": f"Chat failed: {str(e)}"}, cache=biometrics_cache)
+                )
                 continue
 
             # 3. Response & Logging
-            await websocket.send_json({
+            await websocket.send_json(await _with_biometrics({
                 "llm_response": orion_response_text,
                 "mode": mode,
-            })
+            }, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus:
@@ -375,7 +420,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     history[:] = history[:1] + history[-(2 * turns):]
             except Exception:
                 pass
-            await websocket.send_json({"state": "idle"})
+            await websocket.send_json(await _with_biometrics({"state": "idle"}, cache=biometrics_cache))
 
     except WebSocketDisconnect:
         logger.info("Client disconnected.")

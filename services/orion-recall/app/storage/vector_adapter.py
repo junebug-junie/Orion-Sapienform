@@ -4,6 +4,9 @@ import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+from uuid import uuid4
+
+import httpx
 
 try:
     from chromadb import HttpClient  # type: ignore
@@ -13,6 +16,7 @@ except Exception:  # pragma: no cover - optional dependency
     ChromaSettings = None
 
 from app.settings import settings
+from orion.schemas.vector.schemas import EmbeddingGenerateV1
 
 
 def _parse_meta_ts(meta: Dict[str, Any]) -> Optional[float]:
@@ -61,6 +65,40 @@ def _get_client() -> Optional[HttpClient]:
     )
 
 
+def _embedding_url() -> Optional[str]:
+    url = settings.RECALL_VECTOR_EMBEDDING_URL
+    if not url:
+        return None
+    return str(url).strip() or None
+
+
+def _embed_query_text(text: str) -> Optional[List[float]]:
+    url = _embedding_url()
+    if not url:
+        return None
+    payload = EmbeddingGenerateV1(
+        doc_id=str(uuid4()),
+        text=text,
+        embedding_profile="default",
+        include_latent=False,
+    )
+    try:
+        resp = httpx.post(
+            url,
+            json=payload.model_dump(mode="json"),
+            timeout=settings.RECALL_VECTOR_TIMEOUT_SEC,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        embedding = data.get("embedding")
+        if isinstance(embedding, list):
+            return embedding
+    return None
+
+
 def _parse_collections(val: str) -> List[str]:
     if not val:
         return []
@@ -72,6 +110,9 @@ def fetch_vector_fragments(
     query_text: str,
     time_window_days: int,
     max_items: int,
+    session_id: Optional[str] = None,
+    node_id: Optional[str] = None,
+    metadata_filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Lightweight wrapper around the existing Chroma client used by the legacy recall pipeline.
@@ -94,6 +135,10 @@ def fetch_vector_fragments(
     since_ts = (datetime.utcnow() - timedelta(days=max(1, time_window_days))).timestamp()
     frags: List[Dict[str, Any]] = []
 
+    query_embedding = _embed_query_text(query_text)
+    if not query_embedding:
+        return []
+
     for coll_name in collections:
         try:
             coll = client.get_or_create_collection(name=coll_name)
@@ -101,10 +146,19 @@ def fetch_vector_fragments(
             continue
 
         try:
+            where: Optional[Dict[str, Any]] = None
+            if metadata_filters or session_id or node_id:
+                where = dict(metadata_filters or {})
+                if session_id:
+                    where["session_id"] = session_id
+                if node_id:
+                    where["source_node"] = node_id
+
             res = coll.query(
-                query_texts=[query_text],
+                query_embeddings=[query_embedding],
                 n_results=max_items * 2,
-                include=["documents", "metadatas", "distances", "ids"],
+                include=["documents", "metadatas", "distances"],
+                where=where,
             )
         except Exception:
             continue

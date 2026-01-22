@@ -33,6 +33,7 @@ try:
     )
     from .storage.vector_adapter import fetch_vector_fragments
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
+    from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
 
 except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     _IMPORT_ERROR = _e
@@ -51,6 +52,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         )
         from app.storage.vector_adapter import fetch_vector_fragments  # type: ignore
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
+        from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages  # type: ignore
     except ImportError:
         # IMPORTANT: raise the real root cause, not the fallback failure
         raise _IMPORT_ERROR
@@ -270,12 +272,17 @@ async def _query_backends(
             vector_queries = [fragment]
         per_query = max(1, int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)) // len(vector_queries))
         vec_count = 0
+        raw_vector_filters = profile.get("vector_meta_filters")
+        vector_filters = raw_vector_filters if isinstance(raw_vector_filters, dict) else None
         for term in vector_queries:
             try:
                 vec = fetch_vector_fragments(
                     query_text=term,
                     time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
                     max_items=per_query,
+                    session_id=session_id,
+                    node_id=node_id,
+                    metadata_filters=vector_filters,
                 )
                 vec_count += len(vec)
                 candidates.extend(vec)
@@ -301,6 +308,46 @@ async def _query_backends(
             backend_counts.get("rdf", 0),
             expansion_terms,
         )
+
+    if settings.RECALL_ENABLE_SQL_CHAT:
+        try:
+            chat_pairs = await fetch_chat_history_pairs(
+                limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
+                since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+            )
+            backend_counts["sql_chat_pairs"] = len(chat_pairs)
+            for item in chat_pairs:
+                candidates.append(
+                    {
+                        "id": item.id,
+                        "source": "sql_chat",
+                        "source_ref": item.source_ref,
+                        "text": item.text,
+                        "ts": item.ts,
+                        "tags": ["sql", "chat", "pairs"],
+                        "score": 0.75,
+                    }
+                )
+
+            chat_msgs = await fetch_chat_messages(
+                limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
+                since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+            )
+            backend_counts["sql_chat_msgs"] = len(chat_msgs)
+            for item in chat_msgs:
+                candidates.append(
+                    {
+                        "id": item.id,
+                        "source": "sql_chat",
+                        "source_ref": item.source_ref,
+                        "text": item.text,
+                        "ts": item.ts,
+                        "tags": ["sql", "chat", "messages"],
+                        "score": 0.75,
+                    }
+                )
+        except Exception as exc:
+            logger.debug(f"sql chat backend skipped: {exc}")
 
     if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
         try:
@@ -455,12 +502,17 @@ async def process_recall(
             seen_vec = set()
             vec_count = 0
             vector_candidates: List[Dict[str, Any]] = []
+            raw_vector_filters = profile.get("vector_meta_filters")
+            vector_filters = raw_vector_filters if isinstance(raw_vector_filters, dict) else None
             for term in vector_queries:
                 try:
                     vec = fetch_vector_fragments(
                         query_text=term,
                         time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
                         max_items=per_query,
+                        session_id=q.session_id,
+                        node_id=q.node_id,
+                        metadata_filters=vector_filters,
                     )
                 except Exception as exc:
                     logger.debug(f"vector backend skipped: {exc}")

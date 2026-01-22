@@ -621,6 +621,14 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:memory:vector:upsert"
+    kind: "event"
+    schema_id: "VectorDocumentUpsertV1"
+    producer_services: ["*"]
+    consumer_services: ["orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-01-16"
+
   - name: "orion:vector:semantic:upsert"
     kind: "event"
     schema_id: "VectorUpsertV1"

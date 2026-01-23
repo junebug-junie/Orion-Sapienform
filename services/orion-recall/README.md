@@ -343,3 +343,373 @@ out:
   },
   "first": "ExactUserText: \"just holding my breath that the CPU replacement is actual solution and your core programming doesn't come crashing down at any moment! So stressful!\"\nOrionResponse: \"I can imagine the relief and tension you must be feeling, waiting for the new CPU cards to arrive and seeing if they resolve the issue. It's natural to be on edge, especially with how critical Athena is to our operations. Let's keep an eye on any unusual behaviors or patterns that could give us early insights once the new components are in place. Is there anything specific you're particularly watching out for, or any other systems that might be affected by this change?\""
 }```
+
+
+# Recall troubleshooting playbook (commands + what to look for)
+
+This is a **copy/paste** runbook of the inspection steps that proved useful while debugging Recall + RDF + Chroma vectors on Athena.
+
+---
+
+## 0) Quick mental model
+
+**Chat memory path (ideal):**
+1) `orion-hub` publishes `chat.history.message.v1` on `orion:chat:history:log` (has `session_id`, `role`, `content`, `tags`)
+2) `orion-vector-host` consumes it and publishes `vector.upsert.v1` on `orion:vector:semantic:upsert` (meta includes `session_id`, `role`, `original_channel`)
+3) `orion-vector-writer` stores into Chroma (collection often `orion_chat` for chat docs; `orion_main_store` for general)
+4) `orion-recall` queries Chroma using **session_id filters** (no keyword hacks)
+
+---
+
+## 1) Verify hub is publishing chat history (bus probe)
+
+Run inside a container that has Orion bus libs (e.g., `orion-athena-vector-host`). This works with `redis.asyncio` PubSub.
+
+```bash
+docker exec -i orion-athena-vector-host python - <<'PY'
+import asyncio, json
+from orion.core.bus.async_service import OrionBusAsync
+
+REDIS_URL = "redis://100.92.216.81:6379/0"
+CHANNEL = "orion:chat:history:log"
+
+async def main():
+    bus = OrionBusAsync(REDIS_URL)
+    await bus.connect()
+    print("subscribing...", CHANNEL)
+
+    async with bus.subscribe(CHANNEL) as ps:
+        async for raw in ps.listen():
+            if not isinstance(raw, dict) or raw.get("type") != "message":
+                continue
+            data = raw.get("data")
+            if isinstance(data, (bytes, bytearray)):
+                env = json.loads(data.decode("utf-8"))
+            else:
+                env = data
+            print("GOT", env.get("kind"), env.get("correlation_id"))
+            print(json.dumps(env, indent=2)[:2500])
+            return
+
+asyncio.run(main())
+PY
+```
+
+**Expected:** you see `GOT chat.history.message.v1 <corr_id>` and payload contains `session_id`, `role`, `content`, `timestamp`, `tags`.
+
+---
+
+## 2) Verify vector-host is subscribed correctly
+
+```bash
+docker exec -i orion-athena-vector-host env | egrep 'VECTOR_HOST_CHAT_HISTORY_CHANNEL|VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL|ORION_BUS_URL'
+```
+
+**Expected:**
+- `VECTOR_HOST_CHAT_HISTORY_CHANNEL=orion:chat:history:log`
+- `VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL=orion:embedding:generate`
+- `ORION_BUS_URL=redis://...`
+
+---
+
+## 3) Verify vector-host publishes semantic upserts for chat history
+
+Subscribe to `orion:vector:semantic:upsert` and print `meta.session_id`.
+
+```bash
+docker exec -i orion-athena-vector-host python - <<'PY'
+import asyncio, json
+from orion.core.bus.async_service import OrionBusAsync
+
+REDIS_URL = "redis://100.92.216.81:6379/0"
+CHANNEL = "orion:vector:semantic:upsert"
+
+async def main():
+    bus = OrionBusAsync(REDIS_URL)
+    await bus.connect()
+    print("subscribing...", CHANNEL)
+
+    async with bus.subscribe(CHANNEL) as ps:
+        async for raw in ps.listen():
+            if not isinstance(raw, dict) or raw.get("type") != "message":
+                continue
+            data = raw.get("data")
+            env = json.loads(data.decode("utf-8"))
+            meta = ((env.get("payload") or {}).get("meta") or {})
+            print("GOT", env.get("kind"), "corr=", env.get("correlation_id"), "src=", (env.get("source") or {}).get("name"))
+            print("meta keys:", sorted(list(meta.keys()))[:25])
+            print("session_id:", meta.get("session_id"))
+            print("original_channel:", meta.get("original_channel"))
+            print("role:", meta.get("role"))
+            return
+
+asyncio.run(main())
+PY
+```
+
+**Expected:**
+- `kind=vector.upsert.v1`
+- `meta.session_id` present
+- `meta.original_channel=orion:chat:history:log`
+- `meta.role=user` or `assistant`
+
+---
+
+## 4) Verify vector-writer is receiving + storing upserts (logs)
+
+```bash
+docker logs --tail=200 -f orion-athena-vector-writer | egrep -i 'Stored|vector\.upsert|semantic|orion:vector:semantic:upsert|chroma|collection|error'
+```
+
+**If you see:**
+- `✨ Stored kind=semantic collection=...`
+  → writer is storing.
+
+**If you see errors like:**
+- `Expected metadata value to be a str,int,float,bool got <list>`
+  → Chroma metadata sanitizer is needed (lists/dicts must be stringified).
+
+---
+
+## 5) Inspect Chroma collections + counts
+
+Run inside `orion-athena-vector-writer` (or any container that can reach `orion-athena-vector-db`).
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+cols = client.list_collections()
+names = [(c.name if hasattr(c, "name") else c) for c in cols]
+print("collections:", names)
+for name in names:
+    col = client.get_collection(name)
+    print(f"- {name}: {col.count()}")
+PY
+```
+
+> Note: you may see a telemetry warning like `capture() takes 1 positional argument...`. It’s noisy but not a blocker.
+
+---
+
+## 6) Inspect stored chat docs in `orion_chat`
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+import pprint
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+col = client.get_collection("orion_chat")
+
+sample = col.peek(limit=3)
+print("metadatas:")
+pprint.pprint(sample.get("metadatas"))
+print("\ndocuments head:")
+for d in (sample.get("documents") or [])[:3]:
+    print("---")
+    print((d or "")[:200].replace("\n","\\n"))
+PY
+```
+
+**Expected:** metadata contains at least `session_id`, `created_at`, `kind`.
+
+---
+
+## 7) Query Chroma safely (avoid include errors + handle None metadatas)
+
+Some Chroma clients reject `include=["ids"]`. IDs are returned separately in `q["ids"]`.
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+col = client.get_collection("orion_main_store")
+
+q = col.query(
+    query_texts=["cpu card ilo uncorrectable machine check"],
+    n_results=5,
+    include=["documents","metadatas","distances"],
+)
+
+print("ids:", q["ids"][0])
+for i in range(len(q["ids"][0])):
+    md = (q["metadatas"][0][i] or {})
+    doc = (q["documents"][0][i] or "")
+    dist = q["distances"][0][i]
+    print("\n--- hit", i, "dist", dist)
+    print("role:", md.get("role"), "channel:", md.get("original_channel"), "corr:", md.get("correlation_id"))
+    print("doc_head:", doc[:240].replace("\n","\\n"))
+PY
+```
+
+**Filter out junk:**
+
+```python
+where={"role":"embedding_request"}
+```
+
+or for session-scoped chat:
+
+```python
+where={"session_id": sid}
+```
+
+---
+
+## 8) Session-filtered chat query (the “good” retrieval)
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+sid = "9c91d646-cbd0-4977-8cdd-d2c82045c7f9"  # replace
+
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+col = client.get_collection("orion_chat")
+
+q = col.query(
+    query_texts=["cpu card"],
+    where={"session_id": sid},
+    n_results=5,
+    include=["documents","metadatas","distances"],
+)
+
+for i in range(len(q["ids"][0])):
+    md = (q["metadatas"][0][i] or {})
+    doc = (q["documents"][0][i] or "")
+    print("---", i, q["distances"][0][i], md.get("created_at"), md.get("kind"))
+    print(doc[:220].replace("\n","\\n"))
+PY
+```
+
+---
+
+## 9) Recall service diagnostics (vector/RDF/SQL)
+
+### A) Inspect recall runtime settings
+
+```bash
+curl -s http://localhost:8260/debug/settings | jq
+```
+
+### B) Run recall with diagnostic output
+
+```bash
+curl -s http://localhost:8260/recall \
+  -H 'content-type: application/json' \
+  -d '{
+    "query_text": "why did I bring up CPUs",
+    "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+    "diagnostic": true,
+    "profile": "reflect.v1"
+  }' | jq '{item_count:(.bundle.items|length), debug_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'
+```
+
+If `vector: 0` but you know Chroma has data, check:
+- `RECALL_VECTOR_COLLECTIONS` points at the correct collection (often `orion_chat`)
+- recall uses session filters `where={"session_id": session_id}`
+
+---
+
+## 10) Chroma metadata crash: list/dict values (fix target)
+
+If you see errors like:
+
+```
+Expected metadata value to be a str, int, float or bool, got ['brain','chat_general']
+```
+
+You must sanitize metadata before `col.upsert()`:
+- lists → comma-joined strings
+- dicts → JSON strings
+- drop None
+
+(Implement in vector-writer, right before any Chroma upsert.)
+
+---
+
+## 11) “MiniLM model downloaded instead of BGE” (why + how to avoid)
+
+If a query triggers download of `all-MiniLM-L6-v2`, that means **the client query path is embedding query_texts using a default embedding function**.
+
+To avoid surprise embedder selection:
+- prefer `query_embeddings=[...]` using **your own embedder** (vector-host / BGE)
+- or ensure your query pipeline uses the same embedding model as write-time
+
+Operational check:
+- confirm stored metadata includes `embedding_model=BAAI/bge-small-en-v1.5` and `embedding_dim=384`
+
+---
+
+## 12) Local dev env gotchas
+
+### A) If scripts fail with `ModuleNotFoundError: orion`
+
+Run with repo root on PYTHONPATH:
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+PYTHONPATH=. python scripts/bus_probe.py --pattern orion:chat:history:*
+```
+
+### B) If pydantic is broken in venv
+
+Sanity check:
+
+```bash
+python - <<'PY'
+import pydantic
+print(getattr(pydantic, '__version__', 'unknown'), pydantic.__file__)
+print('has BaseModel:', hasattr(pydantic, 'BaseModel'))
+PY
+```
+
+If BaseModel missing, reinstall inside the venv:
+
+```bash
+pip uninstall -y pydantic pydantic-core
+pip install "pydantic>=2,<3"
+```
+
+---
+
+## 13) Handy collection breakdown query (where did my docs land?)
+
+```bash
+docker exec -i orion-athena-vector-writer python - <<'PY'
+import chromadb
+from chromadb.config import Settings
+
+sid = "9c91d646-cbd0-4977-8cdd-d2c82045c7f9"  # replace
+client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
+
+def count_where(colname, where):
+    col = client.get_collection(colname)
+    got = col.get(where=where, include=["metadatas"], limit=200)
+    return len(got.get("metadatas") or [])
+
+for colname in ["orion_main_store", "orion_chat", "orion_general", "orion_collapse"]:
+    try:
+        col = client.get_collection(colname)
+        total = col.count()
+        sess = count_where(colname, {"session_id": sid})
+        print(colname, "total", total, "session", sess)
+    except Exception as e:
+        print(colname, "ERROR", e)
+PY
+```
+
+---
+
+## 14) Notes / expectations
+
+- If you can see `chat.history.message.v1` on the bus **and** see `vector.upsert.v1` with `meta.session_id`, then embedding is working.
+- If vectors aren’t showing up in Chroma, the writer is either not subscribing, writing to a different collection, or failing on metadata validation.
+- Prefer session-filtered queries (`where={"session_id": ...}`) to avoid unrelated junk hits.

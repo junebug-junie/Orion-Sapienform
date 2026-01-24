@@ -13,7 +13,13 @@ from orion.core.bus.bus_schemas import (
 from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1, RecallQueryV1
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
-from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult, CortexChatRequest, CortexChatResult
+from orion.schemas.cortex.contracts import (
+    CortexClientRequest,
+    CortexClientResult,
+    CortexChatRequest,
+    CortexChatResult,
+    RecallDirective,
+)
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1
 from orion.schemas.vector.schemas import (
@@ -112,6 +118,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionGuardAlert": VisionGuardAlert,
     "CortexChatRequest": CortexChatRequest,
     "CortexChatResult": CortexChatResult,
+    "RecallDirective": RecallDirective,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,
     "ChatHistoryTurnV1": ChatHistoryTurnV1,
     "VectorWriteRequest": VectorWriteRequest,

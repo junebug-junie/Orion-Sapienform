@@ -8,6 +8,12 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import call_step_services, run_recall_step
+from .recall_utils import (
+    has_inline_recall,
+    recall_enabled_value,
+    resolve_profile,
+    should_run_recall,
+)
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
 from .supervisor import Supervisor
 from .settings import settings
@@ -62,21 +68,18 @@ class PlanRunner:
         )
         mode = extra.get("mode") or ctx.get("mode") or "brain"
         recall_cfg = extra.get("recall") or ctx.get("recall") or {}
-        recall_mode = str(recall_cfg.get("mode") or "").lower()
-        if recall_mode == "deep":
-            selected_profile = "deep.graph.v1"
-        elif recall_mode == "graph":
-            selected_profile = "graphtri.v1"
-        else:
-            selected_profile = "reflect.v1"
         raw_enabled = recall_cfg.get("enabled", True)
         ctx.setdefault("recall", recall_cfg)
-        recall_enabled = (
-            str(raw_enabled).lower() not in {"false", "0", "no", "off"}
-            if isinstance(raw_enabled, str)
-            else bool(raw_enabled)
-        )
+        recall_enabled = recall_enabled_value(recall_cfg)
         recall_required = bool(recall_cfg.get("required", False))
+        verb_recall_profile = None
+        if isinstance(plan.metadata, dict):
+            verb_recall_profile = plan.metadata.get("recall_profile") or None
+        ctx.setdefault("plan_recall_profile", verb_recall_profile)
+        selected_profile, profile_source = resolve_profile(
+            recall_cfg,
+            verb_profile=verb_recall_profile,
+        )
 
         if diagnostic:
             logger.info("Diagnostic PlanExecutionRequest json=%s", req.model_dump_json())
@@ -87,7 +90,11 @@ class PlanRunner:
                 recall_required,
                 recall_cfg,
             )
-            logger.info("Recall selected profile=%s", selected_profile)
+            logger.info(
+                "Recall selected profile=%s source=%s",
+                selected_profile,
+                profile_source,
+            )
 
         logger.info(
             "Exec plan start: corr=%s mode=%s verb=%s recall_enabled=%s recall_required=%s steps=%s recall_cfg=%s",
@@ -121,10 +128,16 @@ class PlanRunner:
                 recall_cfg=recall_cfg,
             )
 
-        has_inline_recall = any("RecallService" in s.services or getattr(s, "recall_profile", None) for s in plan.steps)
+        inline_recall = has_inline_recall(plan.steps)
+        should_recall, recall_reason = should_run_recall(recall_cfg, plan.steps)
 
-        needs_memory = recall_enabled and not has_inline_recall
-        if needs_memory:
+        if should_recall and not inline_recall:
+            logger.info(
+                "Recall resolved profile=%s source=%s gating=%s",
+                selected_profile,
+                profile_source,
+                recall_reason,
+            )
             recall_step, recall_debug, _ = await run_recall_step(
                 bus,
                 source=source,
@@ -181,11 +194,18 @@ class PlanRunner:
                     )
 
         else:
-            if not has_inline_recall:
-                recall_debug = {"skipped": "disabled_by_client"}
+            if inline_recall:
+                recall_debug = {"skipped": "inline_recall_step_present"}
+                logger.info(
+                    "Recall skipped; inline RecallService step present",
+                    extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg, "diagnostic": diagnostic},
+                )
+            else:
+                recall_debug = {"skipped": recall_reason}
                 ctx["memory_used"] = False
                 logger.info(
-                    "Recall skipped by client directive",
+                    "Recall skipped by gating (%s)",
+                    recall_reason,
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg, "diagnostic": diagnostic},
                 )
 

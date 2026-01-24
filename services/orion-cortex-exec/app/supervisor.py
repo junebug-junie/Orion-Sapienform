@@ -27,6 +27,7 @@ from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecu
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
+from .recall_utils import has_inline_recall, resolve_profile, should_run_recall
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.supervisor")
@@ -303,20 +304,64 @@ class Supervisor:
         memory_used = False
         recall_debug: Dict[str, Any] = {}
 
-        # Recall
-        raw_enabled = recall_cfg.get("enabled", False)
-        recall_enabled = str(raw_enabled).lower() not in {"false", "0", "no", "off"} if isinstance(raw_enabled, str) else bool(raw_enabled)
-        if recall_enabled:
+        verb_recall_profile = None
+        if isinstance(req.metadata, dict):
+            verb_recall_profile = req.metadata.get("recall_profile") or None
+        ctx.setdefault("plan_recall_profile", verb_recall_profile)
+        recall_required = bool(recall_cfg.get("required", False))
+        selected_profile, profile_source = resolve_profile(
+            recall_cfg,
+            verb_profile=verb_recall_profile,
+        )
+        inline_recall = has_inline_recall(req.steps)
+        should_recall, recall_reason = should_run_recall(recall_cfg, req.steps)
+
+        if should_recall and not inline_recall:
+            logger.info(
+                "Supervisor recall resolved profile=%s source=%s gating=%s",
+                selected_profile,
+                profile_source,
+                recall_reason,
+            )
             recall_step, recall_debug, _ = await run_recall_step(
                 self.bus,
                 source=source,
                 ctx=ctx,
                 correlation_id=correlation_id,
                 recall_cfg=recall_cfg,
+                recall_profile=selected_profile,
                 diagnostic=bool(ctx.get("diagnostic")),
             )
             step_results.append(recall_step)
             memory_used = recall_step.status == "success"
+            if recall_required and recall_step.status != "success":
+                return PlanExecutionResult(
+                    verb_name=req.verb_name,
+                    request_id=correlation_id,
+                    status="fail",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=ctx.get("mode") or req.metadata.get("mode") or "agent",
+                    final_text=None,
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    error=recall_step.error,
+                )
+        else:
+            if inline_recall:
+                recall_debug = {"skipped": "inline_recall_step_present"}
+                logger.info(
+                    "Supervisor recall skipped; inline RecallService step present",
+                    extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
+                )
+            else:
+                recall_debug = {"skipped": recall_reason}
+                logger.info(
+                    "Supervisor recall skipped by gating (%s)",
+                    recall_reason,
+                    extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
+                )
 
         packs = ctx.get("packs") or []
         tags = ctx.get("verb_tags") or []

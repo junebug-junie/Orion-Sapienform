@@ -307,13 +307,21 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
             # Inject trace_verb into metadata so Cortex might see it too
+            recall_payload = {"enabled": bool(data.get("use_recall", False))}
+            if data.get("recall_mode"):
+                recall_payload["mode"] = data.get("recall_mode")
+            if data.get("recall_profile"):
+                recall_payload["profile"] = data.get("recall_profile")
+            if data.get("recall_required"):
+                recall_payload["required"] = True
+
             chat_req = CortexChatRequest(
                 prompt=prompt_with_ctx,
                 mode=mode,
                 session_id=session_id,
                 user_id=data.get("user_id"),
                 trace_id=trace_id,
-                recall={"enabled": data.get("use_recall", False)},
+                recall=recall_payload,
                 packs=data.get("packs"),
                 metadata={"source": "hub_ws", "trace_verb": trace_verb} 
             )

@@ -80,6 +80,9 @@ async def handle_chat_request(
     mode = payload.get("mode", "brain")
 
     use_recall = bool(payload.get("use_recall", False))
+    recall_mode = payload.get("recall_mode")
+    recall_profile = payload.get("recall_profile")
+    recall_required = bool(payload.get("recall_required", False))
 
     packs = payload.get("packs")
     user_id = payload.get("user_id")
@@ -103,6 +106,14 @@ async def handle_chat_request(
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
+    recall_payload = {"enabled": use_recall}
+    if recall_mode:
+        recall_payload["mode"] = recall_mode
+    if recall_profile:
+        recall_payload["profile"] = recall_profile
+    if recall_required:
+        recall_payload["required"] = True
+
     # Build the Request
     req = CortexChatRequest(
         prompt=user_prompt,
@@ -112,7 +123,7 @@ async def handle_chat_request(
         packs=packs,
         verb=verb_override,
         options=options if options else None,
-        recall={"enabled": use_recall},
+        recall=recall_payload,
         metadata={"source": "hub_http"},
     )
 

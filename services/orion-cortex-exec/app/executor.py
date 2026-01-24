@@ -33,6 +33,7 @@ from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestRepl
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .recall_utils import resolve_profile
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
 
@@ -946,14 +947,23 @@ async def call_step_services(
                 continue
 
             if service == "RecallService":
-                logs.append(f"rpc -> RecallService (reply={reply_channel}, profile={step.recall_profile})")
+                recall_cfg = ctx.get("recall") or {}
+                resolved_profile, profile_source = resolve_profile(
+                    recall_cfg,
+                    verb_profile=ctx.get("plan_recall_profile"),
+                    step=step,
+                    is_recall_step=True,
+                )
+                logs.append(
+                    f"rpc -> RecallService (reply={reply_channel}, profile={resolved_profile}, source={profile_source})"
+                )
                 recall_step, recall_debug, memory_digest = await run_recall_step(
                     bus,
                     source=source,
                     ctx=ctx,
                     correlation_id=correlation_id,
-                    recall_cfg=ctx.get("recall") or {},
-                    recall_profile=step.recall_profile,
+                    recall_cfg=recall_cfg,
+                    recall_profile=resolved_profile,
                     step_name=step.step_name,
                     step_order=step.order,
                     diagnostic=diagnostic,

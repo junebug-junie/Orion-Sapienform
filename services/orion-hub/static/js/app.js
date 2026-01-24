@@ -38,6 +38,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const sendButton = document.getElementById('sendButton');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
+  const recallRequiredToggle = document.getElementById('recallRequiredToggle');
+  const recallModeSelect = document.getElementById('recallModeSelect');
+  const recallProfileSelect = document.getElementById('recallProfileSelect');
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -474,12 +477,17 @@ document.addEventListener("DOMContentLoaded", () => {
     appendMessage('You', text);
     chatInput.value = '';
 
+    const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
+    const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
     const payload = {
        text_input: text,
        mode: currentMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        use_recall: recallToggle ? recallToggle.checked : false,
+       recall_mode: recallMode !== "auto" ? recallMode : null,
+       recall_profile: recallProfile !== "auto" ? recallProfile : null,
+       recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
        packs: selectedPacks,
        verbs: selectedVerbs,
     };
@@ -517,11 +525,14 @@ document.addEventListener("DOMContentLoaded", () => {
         reader.readAsDataURL(blob);
         reader.onloadend = () => {
            if(socket && socket.readyState === WebSocket.OPEN) {
-             socket.send(JSON.stringify({
+              socket.send(JSON.stringify({
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
-               use_recall: recallToggle ? recallToggle.checked : false
+               use_recall: recallToggle ? recallToggle.checked : false,
+               recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
+               recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,
+               recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false
              }));
              updateStatus('Audio sent.');
            } else {

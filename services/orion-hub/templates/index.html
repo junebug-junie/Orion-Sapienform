@@ -123,9 +123,36 @@
               <input type="checkbox" id="recallToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
             </div>
             <div class="flex items-center space-x-2">
+              <label for="recallRequiredToggle" class="text-xs text-gray-400">Force</label>
+              <input type="checkbox" id="recallRequiredToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
+            </div>
+            <div class="flex items-center space-x-2">
               <label for="textToSpeechToggle" class="text-xs text-gray-400">TTS</label>
               <input type="checkbox" id="textToSpeechToggle" class="h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-600" checked />
             </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-lg p-2 text-xs">
+          <div class="flex items-center gap-2">
+            <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
+            <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="auto" selected>Auto</option>
+              <option value="hybrid">Hybrid</option>
+              <option value="deep">Deep</option>
+              <option value="graph">Graph</option>
+            </select>
+          </div>
+          <div class="flex items-center gap-2">
+            <label for="recallProfileSelect" class="text-gray-400">Recall Profile</label>
+            <select id="recallProfileSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="auto" selected>Auto</option>
+              <option value="assist.light.v1">assist.light.v1</option>
+              <option value="chat.general.v1">chat.general.v1</option>
+              <option value="reflect.v1">reflect.v1</option>
+              <option value="deep.graph.v1">deep.graph.v1</option>
+              <option value="graphtri.v1">graphtri.v1</option>
+            </select>
           </div>
         </div>
 

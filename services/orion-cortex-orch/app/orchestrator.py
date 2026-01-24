@@ -70,6 +70,7 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
     # Defaults
     timeout_ms = int(data.get("timeout_ms", 120000) or 120000)
     default_services = list(data.get("services") or [])
+    verb_recall_profile = data.get("recall_profile")
 
     # Load the raw content if it's a file reference
     raw_template_ref = str(data.get("prompt_template") or "")
@@ -85,18 +86,19 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
             step_prompt = _load_prompt_content(step_template_ref) if step_template_ref else default_prompt
 
             steps.append(
-                ExecutionStep(
-                    verb_name=verb_name,
-                    step_name=str(s.get("name") or f"step_{i}"),
-                    description=str(s.get("description") or ""),
-                    order=int(s.get("order", i)),
-                    services=list(s.get("services") or default_services),
-                    prompt_template=step_prompt,
-                    requires_gpu=bool(s.get("requires_gpu", False)),
-                    requires_memory=bool(s.get("requires_memory", False)),
-                    timeout_ms=int(s.get("timeout_ms", timeout_ms) or timeout_ms),
+                    ExecutionStep(
+                        verb_name=verb_name,
+                        step_name=str(s.get("name") or f"step_{i}"),
+                        description=str(s.get("description") or ""),
+                        order=int(s.get("order", i)),
+                        services=list(s.get("services") or default_services),
+                        prompt_template=step_prompt,
+                        requires_gpu=bool(s.get("requires_gpu", False)),
+                        requires_memory=bool(s.get("requires_memory", False)),
+                        timeout_ms=int(s.get("timeout_ms", timeout_ms) or timeout_ms),
+                        recall_profile=s.get("recall_profile"),
+                    )
                 )
-            )
     else:
         # Single-step inference
         steps.append(
@@ -110,6 +112,7 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
                 requires_gpu=bool(data.get("requires_gpu", False)),
                 requires_memory=bool(data.get("requires_memory", False)),
                 timeout_ms=timeout_ms,
+                recall_profile=data.get("recall_profile"),
             )
         )
 
@@ -124,7 +127,11 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
         timeout_ms=timeout_ms,
         max_recursion_depth=int(data.get("max_recursion_depth", 2) or 2),
         steps=steps,
-        metadata={"verb_yaml": f"{verb_name}.yaml", "mode": mode},
+        metadata={
+            "verb_yaml": f"{verb_name}.yaml",
+            "mode": mode,
+            "recall_profile": str(verb_recall_profile) if verb_recall_profile else "",
+        },
     )
 
 

@@ -112,6 +112,13 @@ def _pick_session_col(cur, table: str) -> Optional[str]:
     return None
 
 
+def _pick_id_col(cur, table: str) -> Optional[str]:
+    for column in ("id", "correlation_id"):
+        if _table_has_column(cur, table, column):
+            return column
+    return None
+
+
 def _should_filter_juniper() -> bool:
     if settings.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:
         return settings.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"
@@ -147,7 +154,9 @@ async def fetch_recent_fragments(
                 prompt_col = settings.RECALL_SQL_CHAT_TEXT_COL
                 response_col = settings.RECALL_SQL_CHAT_RESPONSE_COL
                 ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
+                id_col = _pick_id_col(cur, timeline_table)
                 session_col = _pick_session_col(cur, timeline_table)
+                select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 session_clause = ""
                 session_presence_clause = ""
@@ -160,6 +169,7 @@ async def fetch_recent_fragments(
                 cur.execute(
                     f"""
                     SELECT
+                        {select_row_id}
                         {select_sid}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
@@ -182,8 +192,9 @@ async def fetch_recent_fragments(
                     text = f"User: {prompt}\nOrion: {response}".strip()
                     created_at = row.get("created_at")
                     sid = row.get("sid")
+                    row_id = row.get("row_id")
                     row_data = {
-                        "id": str(sid or f"chat_{int(_epoch(created_at))}"),
+                        "id": str(row_id or f"chat_{int(_epoch(created_at))}"),
                         "ts": _epoch(created_at),
                         "text": text,
                         "session_id": str(sid) if sid is not None else None,
@@ -252,7 +263,9 @@ async def fetch_related_by_entities(
                 response_col = settings.RECALL_SQL_CHAT_RESPONSE_COL
                 ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
                 patterns = [f"%{e}%" for e in entities]
+                id_col = _pick_id_col(cur, timeline_table)
                 session_col = _pick_session_col(cur, timeline_table)
+                select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 session_clause = ""
                 session_presence_clause = ""
@@ -265,6 +278,7 @@ async def fetch_related_by_entities(
                 cur.execute(
                     f"""
                     SELECT
+                        {select_row_id}
                         {select_sid}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
@@ -291,8 +305,9 @@ async def fetch_related_by_entities(
                     text = f"User: {prompt}\nOrion: {response}".strip()
                     created_at = row.get("created_at")
                     sid = row.get("sid")
+                    row_id = row.get("row_id")
                     row_data = {
-                        "id": str(sid or f"chat_{int(_epoch(created_at))}"),
+                        "id": str(row_id or f"chat_{int(_epoch(created_at))}"),
                         "ts": _epoch(created_at),
                         "text": text,
                         "session_id": str(sid) if sid is not None else None,

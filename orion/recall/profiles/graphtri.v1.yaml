@@ -1,5 +1,5 @@
 profile: graphtri.v1
-vector_top_k: 10
+vector_top_k: 15
 rdf_top_k: 12
 max_per_source: 5
 max_total_items: 14
@@ -8,4 +8,4 @@ render_budget_tokens: 280
 enable_query_expansion: true
 enable_sql_timeline: true
 sql_since_minutes: 20160 #14 days
-sql_top_k: 12
+sql_top_k: 4

@@ -1,5 +1,5 @@
 profile: deep.graph.v1
-vector_top_k: 8
+vector_top_k: 20
 rdf_top_k: 12
 max_per_source: 5
 max_total_items: 14

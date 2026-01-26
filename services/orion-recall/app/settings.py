@@ -155,12 +155,16 @@ class Settings(BaseSettings):
     RECALL_ENABLE_SQL_TIMELINE: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_SQL_TIMELINE"))
     RECALL_SQL_SINCE_MINUTES: int = Field(default=180, validation_alias=AliasChoices("RECALL_SQL_SINCE_MINUTES"))
     RECALL_SQL_TOP_K: int = Field(default=10, validation_alias=AliasChoices("RECALL_SQL_TOP_K"))
-    RECALL_SQL_TIMELINE_TABLE: str = Field(default="collapse_mirror", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TABLE"))
+    # Default timeline source is chat history. When RECALL_SQL_TIMELINE_TABLE == RECALL_SQL_CHAT_TABLE,
+    # sql_timeline uses RECALL_SQL_CHAT_* columns to build "User/Orion" turns and ignores TIMELINE_* columns.
+    # When RECALL_SQL_TIMELINE_TABLE is another table (e.g. collapse_mirror), TIMELINE_* columns are used.
+    RECALL_SQL_TIMELINE_TABLE: str = Field(default="chat_history_log", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TABLE"))
     RECALL_SQL_TIMELINE_TS_COL: str = Field(default="timestamp", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TS_COL"))
     RECALL_SQL_TIMELINE_TEXT_COL: str = Field(default="summary", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TEXT_COL"))
     RECALL_SQL_TIMELINE_SESSION_COL: str = Field(default="observer", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_SESSION_COL"))
     RECALL_SQL_TIMELINE_NODE_COL: str = Field(default="observer_state", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_NODE_COL"))
     RECALL_SQL_TIMELINE_TAGS_COL: str = Field(default="tags", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TAGS_COL"))
+    # Juniper observer filter is intended for collapse_mirror timelines only.
     RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER: Optional[bool] = Field(
         default=None, validation_alias=AliasChoices("RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER")
     )
@@ -210,6 +214,7 @@ class Settings(BaseSettings):
         if not self.RECALL_VECTOR_COLLECTIONS:
             self.RECALL_VECTOR_COLLECTIONS = "orion_chat"
 
+        # Default Juniper filter only for collapse_mirror timelines.
         if self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:
             self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER = (
                 self.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"

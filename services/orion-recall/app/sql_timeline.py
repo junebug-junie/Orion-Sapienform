@@ -193,13 +193,18 @@ async def fetch_recent_fragments(
                     created_at = row.get("created_at")
                     sid = row.get("sid")
                     row_id = row.get("row_id")
+                    tags = ["chat_timeline"]
+                    if sid is not None and str(sid) != "":
+                        tags.append(f"session_id:{sid}")
+                        if session_col:
+                            tags.append(f"session_col:{session_col}")
                     row_data = {
                         "id": str(row_id or f"chat_{int(_epoch(created_at))}"),
                         "ts": _epoch(created_at),
                         "text": text,
                         "session_id": str(sid) if sid is not None else None,
                         "node_id": None,
-                        "tags": ["chat_timeline"],
+                        "tags": tags,
                         "source_ref": timeline_table,
                     }
                     formatted.append(_parse_row(row_data))
@@ -306,13 +311,18 @@ async def fetch_related_by_entities(
                     created_at = row.get("created_at")
                     sid = row.get("sid")
                     row_id = row.get("row_id")
+                    tags = ["chat_timeline"]
+                    if sid is not None and str(sid) != "":
+                        tags.append(f"session_id:{sid}")
+                        if session_col:
+                            tags.append(f"session_col:{session_col}")
                     row_data = {
                         "id": str(row_id or f"chat_{int(_epoch(created_at))}"),
                         "ts": _epoch(created_at),
                         "text": text,
                         "session_id": str(sid) if sid is not None else None,
                         "node_id": None,
-                        "tags": ["chat_timeline"],
+                        "tags": tags,
                         "source_ref": timeline_table,
                     }
                     formatted.append(_parse_row(row_data))

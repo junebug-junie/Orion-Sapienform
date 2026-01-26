@@ -105,6 +105,13 @@ def _table_has_column(cur, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _pick_session_col(cur, table: str) -> Optional[str]:
+    for column in ("session_id", "correlation_id", "trace_id"):
+        if _table_has_column(cur, table, column):
+            return column
+    return None
+
+
 def _should_filter_juniper() -> bool:
     if settings.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:
         return settings.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"
@@ -140,22 +147,26 @@ async def fetch_recent_fragments(
                 prompt_col = settings.RECALL_SQL_CHAT_TEXT_COL
                 response_col = settings.RECALL_SQL_CHAT_RESPONSE_COL
                 ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
-                has_trace_id = _table_has_column(cur, timeline_table, "trace_id")
+                session_col = _pick_session_col(cur, timeline_table)
+                select_sid = f"{session_col} AS sid," if session_col else ""
                 session_clause = ""
+                session_presence_clause = ""
                 params: List[Any] = [since_minutes]
-                if has_trace_id:
-                    session_clause = "AND (%s IS NULL OR trace_id = %s)"
+                if session_col:
+                    session_presence_clause = f"AND {session_col} IS NOT NULL AND {session_col} <> ''"
+                    session_clause = f"AND (%s IS NULL OR {session_col} = %s)"
                     params.extend([session_id, session_id])
                 params.append(limit)
                 cur.execute(
                     f"""
                     SELECT
-                        {"trace_id," if has_trace_id else ""}
+                        {select_sid}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
                         {ts_col} AS created_at
                     FROM {timeline_table}
                     WHERE {ts_col} >= NOW() - INTERVAL '%s minutes'
+                      {session_presence_clause}
                       {session_clause}
                     ORDER BY {ts_col} DESC
                     LIMIT %s
@@ -170,12 +181,12 @@ async def fetch_recent_fragments(
                     response = (row.get("response") or "").strip()
                     text = f"User: {prompt}\nOrion: {response}".strip()
                     created_at = row.get("created_at")
-                    trace_id = row.get("trace_id")
+                    sid = row.get("sid")
                     row_data = {
-                        "id": str(trace_id or f"chat_{int(_epoch(created_at))}"),
+                        "id": str(sid or f"chat_{int(_epoch(created_at))}"),
                         "ts": _epoch(created_at),
                         "text": text,
-                        "session_id": str(trace_id) if trace_id is not None else None,
+                        "session_id": str(sid) if sid is not None else None,
                         "node_id": None,
                         "tags": ["chat_timeline"],
                         "source_ref": timeline_table,
@@ -241,17 +252,20 @@ async def fetch_related_by_entities(
                 response_col = settings.RECALL_SQL_CHAT_RESPONSE_COL
                 ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
                 patterns = [f"%{e}%" for e in entities]
-                has_trace_id = _table_has_column(cur, timeline_table, "trace_id")
+                session_col = _pick_session_col(cur, timeline_table)
+                select_sid = f"{session_col} AS sid," if session_col else ""
                 session_clause = ""
+                session_presence_clause = ""
                 params: List[Any] = [since_hours, patterns, patterns]
-                if has_trace_id:
-                    session_clause = "AND (%s IS NULL OR trace_id = %s)"
+                if session_col:
+                    session_presence_clause = f"AND {session_col} IS NOT NULL AND {session_col} <> ''"
+                    session_clause = f"AND (%s IS NULL OR {session_col} = %s)"
                     params.extend([session_id, session_id])
                 params.append(limit)
                 cur.execute(
                     f"""
                     SELECT
-                        {"trace_id," if has_trace_id else ""}
+                        {select_sid}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
                         {ts_col} AS created_at
@@ -261,6 +275,7 @@ async def fetch_related_by_entities(
                         {prompt_col} ILIKE ANY (%s)
                         OR {response_col} ILIKE ANY (%s)
                       )
+                      {session_presence_clause}
                       {session_clause}
                     ORDER BY {ts_col} DESC
                     LIMIT %s
@@ -275,12 +290,12 @@ async def fetch_related_by_entities(
                     response = (row.get("response") or "").strip()
                     text = f"User: {prompt}\nOrion: {response}".strip()
                     created_at = row.get("created_at")
-                    trace_id = row.get("trace_id")
+                    sid = row.get("sid")
                     row_data = {
-                        "id": str(trace_id or f"chat_{int(_epoch(created_at))}"),
+                        "id": str(sid or f"chat_{int(_epoch(created_at))}"),
                         "ts": _epoch(created_at),
                         "text": text,
-                        "session_id": str(trace_id) if trace_id is not None else None,
+                        "session_id": str(sid) if sid is not None else None,
                         "node_id": None,
                         "tags": ["chat_timeline"],
                         "source_ref": timeline_table,

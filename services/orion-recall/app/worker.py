@@ -351,18 +351,24 @@ async def _query_backends(
 
     if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
         try:
+
+            since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
+            since_hours_effective = int(profile.get("sql_since_hours", max(1, since_minutes_effective // 60)))
+            sql_top_k = int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))
+
             recent_items = await fetch_recent_fragments(
                 session_id,
                 node_id,
-                int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
-                int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K)),
+                since_minutes_effective,
+                sql_top_k,
             )
             related_items = await fetch_related_by_entities(
                 entities,
-                int(profile.get("sql_since_hours", max(1, settings.RECALL_SQL_SINCE_MINUTES // 60))),
-                int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K)),
+                since_hours_effective,
+                sql_top_k,
                 session_id=session_id,
             )
+
             recent_items = list(recent_items) + list(related_items)
             backend_counts["sql_timeline"] = len(recent_items)
             for item in recent_items:
@@ -563,18 +569,24 @@ async def process_recall(
             try:
                 sql_attempted = True
                 sql_filters_used = sql_filters if q.session_id else []
+
+                since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
+                since_hours_effective = int(profile.get("sql_since_hours", max(1, since_minutes_effective // 60)))
+                sql_top_k = int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))
+
                 recent_items = await fetch_recent_fragments(
                     q.session_id,
                     q.node_id,
-                    int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
-                    int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K)),
+                    since_minutes_effective,
+                    sql_top_k,
                 )
                 related_items = await fetch_related_by_entities(
                     sql_filters_used or [],
-                    int(profile.get("sql_since_hours", max(1, settings.RECALL_SQL_SINCE_MINUTES // 60))),
-                    int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K)),
+                    since_hours_effective,
+                    sql_top_k,
                     session_id=q.session_id,
                 )
+
                 recent_items = list(recent_items) + list(related_items)
                 backend_counts_total["sql_timeline"] = len(recent_items)
                 for item in recent_items:

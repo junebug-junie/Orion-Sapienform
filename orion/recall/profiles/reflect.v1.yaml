@@ -7,5 +7,5 @@ time_decay_half_life_hours: 72
 render_budget_tokens: 256
 enable_query_expansion: true
 enable_sql_timeline: true
-sql_since_minutes: 180
+sql_since_minutes: 10080 #7 days
 sql_top_k: 8

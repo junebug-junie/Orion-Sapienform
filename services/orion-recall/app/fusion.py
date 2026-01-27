@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-from datetime import datetime, timezone
+import re
+import time
 from typing import Any, Dict, Iterable, List, Tuple
 
 from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, MemoryItemV1
@@ -17,13 +18,12 @@ DEFAULT_BACKEND_WEIGHTS = {
     "vector": 1.0,
     "sql_timeline": 0.9,
     "sql_chat": 0.6,
-    "rdf_chat": 0.5,
-    "rdf": 0.4,
+    "rdf_chat": 0.4,
+    "rdf": 0.3,
 }
-DEFAULT_SCORE_WEIGHT = 0.7
-DEFAULT_TEXT_SIM_WEIGHT = 0.2
-DEFAULT_RECENCY_WEIGHT = 0.1
-DEFAULT_SESSION_BOOST = 0.1
+OVERLAP_WEIGHT = 0.15
+EXACT_MATCH_WEIGHT = 0.45
+RECENCY_WEIGHT = 0.2
 
 
 def _norm_score(score: Any) -> float:
@@ -44,87 +44,65 @@ def _key_for(item: Dict[str, Any]) -> str:
     return key_src
 
 
-def _text_tokens(text: str) -> List[str]:
-    if not text:
-        return []
-    tokens = []
-    for raw in text.lower().split():
-        token = "".join(ch for ch in raw if ch.isalnum() or ch in {"_", "-"})
-        if len(token) >= 3:
-            tokens.append(token)
-    return tokens
+def _tokenize(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]{3,}", (text or "").lower())
 
 
-def _text_similarity(query: str, snippet: str) -> float:
-    query_terms = set(_text_tokens(query))
-    if not query_terms:
-        return 0.0
-    snippet_terms = set(_text_tokens(snippet))
-    if not snippet_terms:
-        return 0.0
-    overlap = query_terms.intersection(snippet_terms)
-    return min(1.0, len(overlap) / max(1, len(query_terms)))
+def _rare_tokens(text: str) -> List[str]:
+    tokens = re.findall(r"[A-Za-z0-9_]{3,}", text or "")
+    return [tok for tok in tokens if len(tok) >= 6 or any(ch.isdigit() for ch in tok)]
 
 
-def _extract_session_id(item: Dict[str, Any]) -> str | None:
-    sid = item.get("session_id")
-    if isinstance(sid, str) and sid:
-        return sid
-    meta = item.get("meta")
-    if isinstance(meta, dict):
-        meta_sid = meta.get("session_id")
-        if isinstance(meta_sid, str) and meta_sid:
-            return meta_sid
-    tags = item.get("tags") or []
-    if isinstance(tags, (list, tuple)):
-        for tag in tags:
-            if isinstance(tag, str) and tag.startswith("session_id:"):
-                return tag.split("session_id:", 1)[-1]
-    return None
+def _overlap_count(query_text: str, snippet: str) -> int:
+    if not query_text:
+        return 0
+    query_tokens = set(_tokenize(query_text))
+    if not query_tokens:
+        return 0
+    snippet_tokens = set(_tokenize(snippet))
+    return len(query_tokens.intersection(snippet_tokens))
 
 
-def _recency_score(ts: Any, *, now: float, half_life_hours: float) -> float:
-    if not ts or half_life_hours <= 0:
+def _exact_match_boost(query_text: str, snippet: str) -> float:
+    for token in _rare_tokens(query_text):
+        if token.lower() in (snippet or "").lower():
+            return 1.0
+    return 0.0
+
+
+def _recency_score(ts: Any, *, half_life_hours: float) -> float:
+    if ts is None or half_life_hours <= 0:
         return 0.0
     try:
         ts_val = float(ts)
     except Exception:
         return 0.0
-    age_seconds = max(0.0, now - ts_val)
-    age_hours = age_seconds / 3600.0
+    age_hours = max(0.0, (time.time() - ts_val) / 3600.0)
     return max(0.0, min(1.0, 0.5 ** (age_hours / half_life_hours)))
 
 
-def _relevance_config(profile: Dict[str, Any]) -> Dict[str, Any]:
-    relevance = profile.get("relevance")
-    if not isinstance(relevance, dict):
-        relevance = {}
-    backend_weights = relevance.get("backend_weights")
-    if not isinstance(backend_weights, dict):
-        backend_weights = profile.get("backend_weights")
-    if not isinstance(backend_weights, dict):
-        backend_weights = DEFAULT_BACKEND_WEIGHTS
+def _backend_weights(profile: Dict[str, Any]) -> Dict[str, float]:
+    weights = dict(DEFAULT_BACKEND_WEIGHTS)
+    raw = profile.get("backend_weights")
+    if raw is None:
+        relevance = profile.get("relevance")
+        if isinstance(relevance, dict):
+            raw = relevance.get("backend_weights")
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            try:
+                weights[str(key)] = float(value)
+            except Exception:
+                continue
+    return weights
 
-    def _to_float(value: Any, fallback: float) -> float:
-        try:
-            return float(value)
-        except Exception:
-            return fallback
 
-    return {
-        "backend_weights": {str(k): _to_float(v, 0.0) for k, v in backend_weights.items()},
-        "score_weight": _to_float(relevance.get("score_weight", DEFAULT_SCORE_WEIGHT), DEFAULT_SCORE_WEIGHT),
-        "text_similarity_weight": _to_float(
-            relevance.get("text_similarity_weight", DEFAULT_TEXT_SIM_WEIGHT), DEFAULT_TEXT_SIM_WEIGHT
-        ),
-        "recency_weight": _to_float(relevance.get("recency_weight", DEFAULT_RECENCY_WEIGHT), DEFAULT_RECENCY_WEIGHT),
-        "enable_recency": bool(relevance.get("enable_recency", False)),
-        "recency_half_life_hours": _to_float(
-            relevance.get("recency_half_life_hours", profile.get("time_decay_half_life_hours", 72)),
-            72.0,
-        ),
-        "session_boost": _to_float(relevance.get("session_boost", DEFAULT_SESSION_BOOST), DEFAULT_SESSION_BOOST),
-    }
+def _denial_patterns() -> List[re.Pattern[str]]:
+    return [
+        re.compile(r"i\\s+don['’]t\\s+have\\s+(a|any)\\s+(specific\\s+)?memory", re.I),
+        re.compile(r"i\\s+don['’]t\\s+recall", re.I),
+        re.compile(r"could\\s+you\\s+provide\\s+a\\s+keyword", re.I),
+    ]
 
 
 def fuse_candidates(
@@ -139,50 +117,47 @@ def fuse_candidates(
     max_per_source = int(profile.get("max_per_source", 3))
     max_total = int(profile.get("max_total_items", 12))
     render_budget = int(profile.get("render_budget_tokens", 256))
+    half_life_hours = float(profile.get("time_decay_half_life_hours", 72) or 72)
+    weights = _backend_weights(profile)
+    query_text = query_text or ""
 
-    relevance_cfg = _relevance_config(profile)
-    now = datetime.now(timezone.utc).timestamp()
     seen_keys: Dict[str, Dict[str, Any]] = {}
     per_source: Dict[str, int] = {}
     items: List[MemoryItemV1] = []
     backend_counts: Dict[str, int] = {}
     ranking_debug: List[Dict[str, Any]] = []
 
+    denial_patterns = _denial_patterns()
     for cand in candidates:
         source = str(cand.get("source") or "unknown")
         backend_counts[source] = backend_counts.get(source, 0) + 1
         key = _key_for(cand)
-        base_score = _norm_score(cand.get("score"))
         snippet = str(cand.get("text") or cand.get("snippet") or "")
-        text_similarity = (
-            _text_similarity(query_text or "", snippet) if relevance_cfg["text_similarity_weight"] > 0 else 0.0
-        )
-        recency = (
-            _recency_score(cand.get("ts"), now=now, half_life_hours=relevance_cfg["recency_half_life_hours"])
-            if relevance_cfg["enable_recency"]
-            else 0.0
-        )
-        backend_weight = relevance_cfg["backend_weights"].get(source, 0.5)
-        session_match = _extract_session_id(cand)
-        session_boost = relevance_cfg["session_boost"] if session_id and session_match == session_id else 0.0
-        composite = (
-            backend_weight
-            * (
-                relevance_cfg["score_weight"] * base_score
-                + relevance_cfg["text_similarity_weight"] * text_similarity
-                + relevance_cfg["recency_weight"] * recency
-            )
-            + session_boost
+        exact_boost = _exact_match_boost(query_text, snippet) if query_text else 0.0
+        if query_text:
+            denial_hit = any(pattern.search(snippet) for pattern in denial_patterns)
+            if denial_hit and exact_boost <= 0.0:
+                continue
+
+        base_score = _norm_score(cand.get("score"))
+        overlap = _overlap_count(query_text, snippet)
+        recency = _recency_score(cand.get("ts"), half_life_hours=half_life_hours)
+        backend_weight = float(weights.get(source, 0.5))
+        composite = backend_weight * (
+            base_score
+            + (OVERLAP_WEIGHT * overlap)
+            + (EXACT_MATCH_WEIGHT * exact_boost)
+            + (RECENCY_WEIGHT * recency)
         )
 
         ranked = dict(cand)
         ranked["_relevance"] = {
             "key": key,
             "base_score": base_score,
-            "text_similarity": text_similarity,
+            "overlap": overlap,
+            "exact_boost": exact_boost,
             "recency": recency,
             "backend_weight": backend_weight,
-            "session_boost": session_boost,
             "composite_score": composite,
         }
 
@@ -211,6 +186,18 @@ def fuse_candidates(
         if selected:
             snippet = cand.get("text") or cand.get("snippet") or ""
             composite_score = float(cand["_relevance"]["composite_score"])
+            rel = cand["_relevance"]
+            tags = [str(t) for t in (cand.get("tags") or []) if t]
+            tags.extend(
+                [
+                    f"rel:{rel['composite_score']:.3f}",
+                    f"ov:{rel['overlap']}",
+                    f"ex:{rel['exact_boost']:.1f}",
+                    f"rc:{rel['recency']:.2f}",
+                    f"bw:{rel['backend_weight']:.2f}",
+                    f"bs:{rel['base_score']:.2f}",
+                ]
+            )
             item = MemoryItemV1(
                 id=str(cand.get("id") or cand["_relevance"]["key"]),
                 source=source,
@@ -220,7 +207,7 @@ def fuse_candidates(
                 ts=cand.get("ts"),
                 title=cand.get("title"),
                 snippet=str(snippet)[:800],
-                tags=[str(t) for t in (cand.get("tags") or []) if t],
+                tags=tags,
             )
             per_source[source] = per_source.get(source, 0) + 1
             items.append(item)
@@ -234,8 +221,9 @@ def fuse_candidates(
                     "selected": selected,
                     "composite_score": cand["_relevance"]["composite_score"],
                     "backend_weight": cand["_relevance"]["backend_weight"],
-                    "recency_contribution": relevance_cfg["recency_weight"] * cand["_relevance"]["recency"],
-                    "session_boost": cand["_relevance"]["session_boost"],
+                    "overlap": cand["_relevance"]["overlap"],
+                    "exact_boost": cand["_relevance"]["exact_boost"],
+                    "recency": cand["_relevance"]["recency"],
                 }
             )
 

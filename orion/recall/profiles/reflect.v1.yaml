@@ -1,14 +1,14 @@
 profile: reflect.v1
 vector_top_k: 12
-rdf_top_k: 12
+rdf_top_k: 8
 max_per_source: 4
-max_total_items: 12
+max_total_items: 24
 time_decay_half_life_hours: 72
 render_budget_tokens: 256
 enable_query_expansion: true
 enable_sql_timeline: true
 sql_since_minutes: 10080 #7 days
-sql_top_k: 8
+sql_top_k: 200
 relevance:
   backend_weights:
     vector: 1.0

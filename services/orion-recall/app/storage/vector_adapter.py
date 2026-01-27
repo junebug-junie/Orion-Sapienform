@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -139,6 +140,10 @@ def fetch_vector_fragments(
     if not query_embedding:
         return []
 
+    logger = logging.getLogger("orion-recall.vector")
+    scoped_hits = 0
+    fallback_triggered = False
+
     for coll_name in collections:
         try:
             coll = client.get_or_create_collection(name=coll_name)
@@ -146,58 +151,98 @@ def fetch_vector_fragments(
             continue
 
         try:
-            where: Optional[Dict[str, Any]] = None
-            if metadata_filters or session_id or node_id:
-                where = dict(metadata_filters or {})
-                if session_id:
-                    where["session_id"] = session_id
+            base_where: Optional[Dict[str, Any]] = None
+            if metadata_filters or node_id:
+                base_where = dict(metadata_filters or {})
                 if node_id:
-                    where["source_node"] = node_id
+                    base_where["source_node"] = node_id
 
-            res = coll.query(
-                query_embeddings=[query_embedding],
-                n_results=max_items * 2,
-                include=["documents", "metadatas", "distances"],
-                where=where,
-            )
+            use_session_scope = bool(session_id) and coll_name.startswith("orion_")
+            scoped_where: Optional[Dict[str, Any]] = None
+            if use_session_scope:
+                scoped_where = dict(base_where or {})
+                scoped_where["session_id"] = session_id
+
+            def _query(where: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                return coll.query(
+                    query_embeddings=[query_embedding],
+                    n_results=max_items * 2,
+                    include=["documents", "metadatas", "distances"],
+                    where=where,
+                )
+
+            res = _query(scoped_where or base_where)
         except Exception:
             continue
 
-        ids = (res.get("ids") or [[]])[0]
-        docs = (res.get("documents") or [[]])[0]
-        metas = (res.get("metadatas") or [[]])[0]
-        dists = (res.get("distances") or [[]])[0]
+        def _append_results(result: Dict[str, Any], extra_tags: Optional[List[str]] = None) -> int:
+            ids = (result.get("ids") or [[]])[0]
+            docs = (result.get("documents") or [[]])[0]
+            metas = (result.get("metadatas") or [[]])[0]
+            dists = (result.get("distances") or [[]])[0]
 
-        k = min(len(ids), len(docs), len(metas), len(dists) or len(ids))
-        for i in range(k):
-            nid = ids[i]
-            ntext = docs[i] or ""
-            meta = metas[i] or {}
-            dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
+            count = 0
+            k = min(len(ids), len(docs), len(metas), len(dists) or len(ids))
+            for i in range(k):
+                nid = ids[i]
+                ntext = docs[i] or ""
+                meta = metas[i] or {}
+                dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
 
-            if not _recent_enough(meta, since_ts):
-                continue
+                if not _recent_enough(meta, since_ts):
+                    continue
 
-            sim = None
-            if isinstance(dist, (int, float)) and not math.isnan(dist):
-                sim = max(0.0, 1.0 - float(dist))
+                sim = None
+                if isinstance(dist, (int, float)) and not math.isnan(dist):
+                    sim = max(0.0, 1.0 - float(dist))
 
-            frags.append(
-                {
-                    "id": str(nid),
-                    "source": "vector",
-                    "source_ref": coll_name,
-                    "text": str(ntext)[:1200],
-                    "ts": _parse_meta_ts(meta) or since_ts,
-                    "tags": [
-                        "vector-assoc",
-                        f"collection:{coll_name}",
-                    ]
-                    + ([str(meta.get("source"))] if meta.get("source") else []),
-                    "score": sim or 0.0,
-                    "meta": meta,
-                }
-            )
+                tags = [
+                    "vector-assoc",
+                    f"collection:{coll_name}",
+                ] + ([str(meta.get("source"))] if meta.get("source") else [])
+                if session_id:
+                    tags.append(f"session_id:{session_id}")
+                if extra_tags:
+                    tags.extend(extra_tags)
+
+                frags.append(
+                    {
+                        "id": str(nid),
+                        "source": "vector",
+                        "source_ref": coll_name,
+                        "text": str(ntext)[:1200],
+                        "ts": _parse_meta_ts(meta) or since_ts,
+                        "tags": tags,
+                        "score": sim or 0.0,
+                        "meta": meta,
+                    }
+                )
+                count += 1
+            return count
+
+        scoped_count = _append_results(
+            res,
+            extra_tags=["vector_scope:scoped"] if use_session_scope else None,
+        )
+        if use_session_scope:
+            scoped_hits += scoped_count
+            if scoped_count < 3:
+                try:
+                    fallback_res = _query(base_where)
+                except Exception:
+                    continue
+                _append_results(
+                    fallback_res,
+                    extra_tags=["vector_fallback:unscoped", "vector_scope:unscoped"],
+                )
+                fallback_triggered = True
 
     frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    logger.info(
+        "vector recall: collections=%s session_id=%s scoped_hits=%s fallback=%s",
+        collections,
+        session_id,
+        scoped_hits,
+        fallback_triggered,
+    )
     return frags[:max_items]

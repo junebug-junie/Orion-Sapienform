@@ -366,3 +366,82 @@ def fetch_vector_fragments(
             trigger_reason,
         )
     return frags[:max_items]
+
+
+def fetch_vector_exact_matches(
+    *,
+    tokens: List[str],
+    max_items: int,
+    session_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
+    node_id: Optional[str] = None,
+    metadata_filters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    if not tokens:
+        return []
+    client = _get_client()
+    if client is None:
+        return []
+    collections = _parse_collections(settings.RECALL_VECTOR_COLLECTIONS)
+    if not collections:
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for coll_name in collections:
+        try:
+            coll = client.get_or_create_collection(name=coll_name)
+        except Exception:
+            continue
+
+        base_where: Optional[Dict[str, Any]] = None
+        if metadata_filters or node_id:
+            base_where = dict(metadata_filters or {})
+            if node_id:
+                base_where["source_node"] = node_id
+
+        use_session_scope = bool(session_id) and coll_name.startswith("orion_")
+        scoped_where: Optional[Dict[str, Any]] = None
+        if use_session_scope:
+            scoped_where = dict(base_where or {})
+            scoped_where["session_id"] = session_id
+
+        for token in tokens:
+            try:
+                res = coll.get(
+                    where=scoped_where or base_where,
+                    where_document={"$contains": token},
+                    include=["documents", "metadatas"],
+                    limit=max_items,
+                )
+            except Exception:
+                continue
+            ids = res.get("ids") or []
+            docs = res.get("documents") or []
+            metas = res.get("metadatas") or []
+
+            for idx, nid in enumerate(ids):
+                if len(results) >= max_items:
+                    return results
+                doc = docs[idx] if idx < len(docs) else ""
+                meta = metas[idx] if idx < len(metas) else {}
+                tags = [
+                    "vector-exact",
+                    f"collection:{coll_name}",
+                ]
+                if session_id:
+                    tags.append(f"session_id:{session_id}")
+                if meta.get("source"):
+                    tags.append(str(meta.get("source")))
+                results.append(
+                    {
+                        "id": str(nid),
+                        "source": "vector",
+                        "source_ref": coll_name,
+                        "text": str(doc)[:1200],
+                        "ts": _parse_meta_ts(meta) or 0.0,
+                        "tags": tags,
+                        "score": 0.95,
+                        "meta": meta,
+                    }
+                )
+    return results[:max_items]

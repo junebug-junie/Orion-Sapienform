@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -139,6 +140,15 @@ def fetch_vector_fragments(
     if not query_embedding:
         return []
 
+    logger = logging.getLogger("orion-recall.vector")
+    has_session_filter = bool(session_id)
+    logger.debug(
+        "vector recall: collections=%s session_filter=%s session_id=%s",
+        collections,
+        has_session_filter,
+        session_id,
+    )
+
     for coll_name in collections:
         try:
             coll = client.get_or_create_collection(name=coll_name)
@@ -151,6 +161,8 @@ def fetch_vector_fragments(
                 where = dict(metadata_filters or {})
                 if session_id:
                     where["session_id"] = session_id
+                    if coll_name == "orion_chat":
+                        where["source_channel"] = "orion:chat:history:log"
                 if node_id:
                     where["source_node"] = node_id
 

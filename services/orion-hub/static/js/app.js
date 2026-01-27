@@ -3,7 +3,9 @@
 // ───────────────────────────────────────────────────────────────
 // Global State
 // ───────────────────────────────────────────────────────────────
-const API_BASE_URL = window.location.origin;
+const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
+const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
+const API_BASE_URL = window.location.origin + URL_PREFIX;
 const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
 
 let socket;
@@ -21,7 +23,7 @@ let visionIsFloating = false;
 let currentMode = "brain";
 let selectedPacks = [];
 let selectedVerbs = [];
-let orionSessionId = null;
+let orionSessionId = localStorage.getItem('orion_sid') || null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
 let selectedBiometricsNode = "cluster";
 let lastBiometricsPayload = null;
@@ -435,7 +437,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- WebSocket ---
   function setupWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/ws`;
+    const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
     
     console.log(`[WS] Connecting to ${wsUrl}...`);
     socket = new WebSocket(wsUrl);
@@ -471,7 +473,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  function sendTextMessage() {
+  async function sendTextMessage() {
     const text = chatInput.value.trim();
     if (!text) return;
     appendMessage('You', text);
@@ -497,10 +499,17 @@ document.addEventListener("DOMContentLoaded", () => {
         updateStatus('Sent...');
     } else {
         appendMessage('System', 'WebSocket not connected. Trying HTTP fallback...', 'text-yellow-400');
+
+        if (!orionSessionId) await initSession();
+        payload.session_id = orionSessionId;
+
+        const headers = {'Content-Type': 'application/json'};
+        if (orionSessionId) headers['X-Orion-Session-Id'] = orionSessionId;
+
         // Fallback to HTTP if WS is down
         fetch(`${API_BASE_URL}/api/chat`, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: headers,
             body: JSON.stringify({messages:[{role:'user', content:text}], ...payload})
         })
         .then(r => r.json())
@@ -612,12 +621,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- Session & Init ---
   async function initSession() {
     try {
-       const sid = localStorage.getItem('orion_sid');
+       const sid = orionSessionId || localStorage.getItem('orion_sid');
        const r = await fetch(`${API_BASE_URL}/api/session`, {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
        const d = await r.json();
        if(d.session_id) {
          orionSessionId = d.session_id;
          localStorage.setItem('orion_sid', orionSessionId);
+         console.log("[Session] Initialized:", orionSessionId);
        }
     } catch(e) { console.warn("Session init fail", e); }
   }

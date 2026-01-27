@@ -303,9 +303,10 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
     digest = (memory_digest or "").strip()
     if not digest:
         return prompt
-    if "RELEVANT MEMORY" in (prompt or ""):
+    prompt_text = prompt or ""
+    if "RELEVANT MEMORY" in prompt_text or digest in prompt_text:
         return prompt
-    return f"{prompt}\n\n# RELEVANT MEMORY (retrieved)\n{digest}\n"
+    return f"{prompt_text}\n\n# RELEVANT MEMORY (retrieved)\n{digest}\n"
 
 
 def _extract_llm_text(res: Any) -> str:
@@ -994,8 +995,7 @@ async def call_step_services(
                         len(memory_digest),
                     )
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
-                memory_marker = "RELEVANT MEMORY"
-                memory_has_marker = memory_marker in prompt
+                memory_has_marker = bool(memory_digest) and memory_digest in prompt
                 raw_query = (ctx.get("raw_user_text") or _last_user_message(ctx) or "").strip()
                 query_terms = []
                 if raw_query:

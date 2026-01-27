@@ -159,12 +159,14 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     messages = body.messages or []
     memory_marker = "RELEVANT MEMORY"
     marked_message = next(
-        (m for m in messages if memory_marker in str((m.get("content") or ""))), None
+        (m for m in messages if memory_marker in str(getattr(m, "content", "") or "")), None
     )
-    combined_chars = sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
-    fallback_message = next((m for m in messages if (m.get("role") or "").lower() == "user"), None)
-    snippet_source = marked_message or fallback_message or (messages[0] if messages else {})
-    snippet = str((snippet_source or {}).get("content") or "")[:160]
+    combined_chars = sum(len(str(getattr(m, "content", "") or "")) for m in messages)
+    fallback_message = next(
+        (m for m in messages if str(getattr(m, "role", "") or "").lower() == "user"), None
+    )
+    snippet_source = marked_message or fallback_message or (messages[0] if messages else None)
+    snippet = str(getattr(snippet_source, "content", "") or "")[:160]
     logger.info(
         "llm_request_received corr_id=%s msgs_count=%s any_msg_contains_memory_marker=%s combined_chars=%s snippet=%r",
         typed_req.correlation_id,

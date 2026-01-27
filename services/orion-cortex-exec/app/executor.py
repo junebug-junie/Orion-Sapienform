@@ -984,6 +984,74 @@ async def call_step_services(
                         len(memory_digest),
                     )
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                memory_marker = "RELEVANT MEMORY"
+                memory_has_marker = memory_marker in prompt
+                raw_query = (ctx.get("raw_user_text") or _last_user_message(ctx) or "").strip()
+                query_terms = []
+                if raw_query:
+                    stopwords = {
+                        "the",
+                        "and",
+                        "or",
+                        "for",
+                        "with",
+                        "from",
+                        "that",
+                        "this",
+                        "have",
+                        "has",
+                        "what",
+                        "when",
+                        "where",
+                        "which",
+                        "there",
+                        "your",
+                        "you",
+                        "yourself",
+                        "about",
+                        "into",
+                        "were",
+                        "was",
+                        "are",
+                        "but",
+                        "been",
+                        "their",
+                        "they",
+                    }
+                    raw_tokens = [
+                        "".join(ch for ch in token if ch.isalnum()).lower()
+                        for token in raw_query.split()
+                    ]
+                    query_terms = [
+                        token
+                        for token in raw_tokens
+                        if len(token) >= 4 and token and token not in stopwords
+                    ][:8]
+                memory_contains_query_term = any(
+                    term in memory_digest.lower() for term in query_terms
+                )
+                logger.info(
+                    "llm_request_preflight corr_id=%s outgoing_msgs_count=%s has_memory_digest=%s memory_digest_len_chars=%s memory_digest_has_marker_in_prompt=%s memory_contains_any_query_term=%s query_terms_checked=%s",
+                    correlation_id,
+                    len(messages_payload or []),
+                    bool(memory_digest),
+                    len(memory_digest),
+                    memory_has_marker,
+                    memory_contains_query_term,
+                    len(query_terms),
+                )
+                roles = []
+                sizes = []
+                for msg in messages_payload or []:
+                    if isinstance(msg, dict):
+                        roles.append(msg.get("role"))
+                        sizes.append(len(str(msg.get("content") or "")))
+                logger.info(
+                    "llm_request_message_shapes corr_id=%s roles=%s content_lens=%s",
+                    correlation_id,
+                    roles,
+                    sizes,
+                )
 
                 request_object = ChatRequestPayload(
                     model=req_model,

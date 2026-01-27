@@ -28,6 +28,21 @@ logger = logging.getLogger("orion-hub.ws")
 # store chat turns
 #________________________
 
+def _normalize_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
 
 def _schedule_publish(coro: asyncio.Future, label: str) -> None:
     task = asyncio.create_task(coro)
@@ -307,8 +322,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
             # Inject trace_verb into metadata so Cortex might see it too
-            raw_recall = data.get("use_recall")
-            use_recall = True
+            raw_recall = data.get("use_recall", None)
+            use_recall = _normalize_bool(raw_recall, default=True)
             recall_payload = {"enabled": use_recall}
             
             if data.get("recall_mode"):
@@ -387,7 +402,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     spark_meta = {
                         "mode": mode,
                         "trace_verb": trace_verb,
-                        "use_recall": bool(data.get("use_recall", False)),
+                        "use_recall": use_recall,
                         **(gateway_meta if isinstance(gateway_meta, dict) else {}),
                     }
 

@@ -18,6 +18,20 @@ logger = logging.getLogger("orion-hub.api")
 
 router = APIRouter()
 
+def _normalize_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
 
 # ======================================================================
 # 🏠 ROOT + STATIC HTML
@@ -79,9 +93,9 @@ async def handle_chat_request(
     user_messages = payload.get("messages", [])
     mode = payload.get("mode", "brain")
 
-    # Force recall to TRUE for chat, overriding client setting
-    raw_recall = payload.get("use_recall")
-    use_recall = True
+    # Respect client toggle; default to True if missing
+    raw_recall = payload.get("use_recall", None)
+    use_recall = _normalize_bool(raw_recall, default=True)
     
     recall_mode = payload.get("recall_mode")
     recall_profile = payload.get("recall_profile")
@@ -203,7 +217,7 @@ async def api_chat(
             if isinstance(user_messages, list) and user_messages:
                 latest_user_prompt = user_messages[-1].get("content", "") or ""
 
-            use_recall = bool(payload.get("use_recall", False))
+            use_recall = bool(result.get("use_recall", True))
 
             # If we didn't get a correlation_id from gateway, fallback to new UUID
             # (but ideally we got it).

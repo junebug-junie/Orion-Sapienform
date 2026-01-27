@@ -212,7 +212,7 @@ class Settings(BaseSettings):
 
         # If recall-specific collections are not set, fall back to the chat collection
         if not self.RECALL_VECTOR_COLLECTIONS:
-            self.RECALL_VECTOR_COLLECTIONS = "orion_chat"
+            self.RECALL_VECTOR_COLLECTIONS = "orion_chat_turns,orion_chat"
 
         # Default Juniper filter only for collapse_mirror timelines.
         if self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:

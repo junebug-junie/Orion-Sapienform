@@ -413,6 +413,10 @@ async def handle_envelope(env: BaseEnvelope) -> None:
     extra_sql_fields: Dict[str, Any] = {}
     if getattr(env, "correlation_id", None):
         extra_sql_fields["correlation_id"] = str(env.correlation_id)
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    trace_id = payload.get("trace_id") or payload.get("traceId")
+    if trace_id:
+        extra_sql_fields["trace_id"] = str(trace_id)
 
     # -------------------------------------------------------------------------
     # 1. SPECIAL CASE: Spark State Snapshot -> SparkTelemetrySQL

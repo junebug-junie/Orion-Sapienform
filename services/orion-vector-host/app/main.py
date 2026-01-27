@@ -8,7 +8,14 @@ from fastapi import FastAPI, HTTPException
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.chat_history import ChatHistoryMessageV1, CHAT_HISTORY_MESSAGE_KIND
+import json
+
+from orion.schemas.chat_history import (
+    ChatHistoryMessageV1,
+    ChatHistoryTurnV1,
+    CHAT_HISTORY_MESSAGE_KIND,
+    CHAT_HISTORY_TURN_KIND,
+)
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
 from .embedder import Embedder
@@ -69,6 +76,7 @@ async def _publish_semantic_upsert(
     embedding_model: str,
     embedding_dim: int,
     original_channel: str,
+    collection_name: str,
 ) -> None:
     if not hunter or not hunter.bus:
         logger.warning("Vector upsert skipped: bus unavailable.")
@@ -76,7 +84,7 @@ async def _publish_semantic_upsert(
 
     payload = VectorUpsertV1(
         doc_id=doc_id,
-        collection=settings.VECTOR_HOST_SEMANTIC_COLLECTION,
+        collection=collection_name,
         embedding=embedding,
         embedding_kind="semantic",
         embedding_model=embedding_model,
@@ -163,6 +171,63 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
         original_channel=settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
+        collection_name=settings.VECTOR_HOST_CHAT_MESSAGE_COLLECTION,
+    )
+
+async def _handle_chat_turn(env: BaseEnvelope) -> None:
+    if embedder is None:
+        logger.warning("Embedding skipped: embedder unavailable.")
+        return
+    payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+    if not isinstance(payload_obj, dict):
+        return
+
+    try:
+        turn = ChatHistoryTurnV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.warning("Chat turn payload invalid: %s", exc)
+        return
+
+    corr = turn.correlation_id or str(env.correlation_id) or turn.id
+    doc_id = str(corr) if corr else str(env.correlation_id)
+    text = f'ExactUserText: "{turn.prompt or ""}"\nOrionResponse: "{turn.response or ""}"'
+    if not (turn.prompt or turn.response):
+        return
+
+    timestamp = env.created_at.isoformat() if env.created_at else ""
+    meta = _base_meta(
+        env,
+        original_channel=settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
+        role="turn",
+        timestamp=timestamp,
+    )
+    meta.update(
+        {
+            "correlation_id": doc_id,
+            "turn_id": turn.id,
+            "user_id": turn.user_id,
+            "session_id": turn.session_id,
+            "source_label": turn.source,
+            "spark_meta": json.dumps(turn.spark_meta) if turn.spark_meta else None,
+        }
+    )
+    try:
+        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+    except Exception as exc:
+        logger.warning("Embedding failed doc_id=%s error=%s", doc_id, exc)
+        return
+
+    await _publish_semantic_upsert(
+        env=env,
+        text=text,
+        doc_id=doc_id,
+        role="turn",
+        meta=meta,
+        embedding=embedding,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        original_channel=settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
+        collection_name=settings.VECTOR_HOST_CHAT_TURN_COLLECTION,
     )
 
 
@@ -297,10 +362,14 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
         original_channel=settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
+        collection_name=settings.VECTOR_HOST_SEMANTIC_COLLECTION,
     )
 
 
 async def handle_envelope(env: BaseEnvelope) -> None:
+    if env.kind == CHAT_HISTORY_TURN_KIND:
+        await _handle_chat_turn(env)
+        return
     if env.kind == CHAT_HISTORY_MESSAGE_KIND:
         await _handle_chat_history(env)
         return
@@ -319,14 +388,16 @@ async def lifespan(app: FastAPI):
         cfg,
         patterns=[
             settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
+            settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
             settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
         ],
         handler=handle_envelope,
     )
     await hunter.start_background()
     logger.info(
-        "Vector host listening channels=%s,%s",
+        "Vector host listening channels=%s,%s,%s",
         settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
+        settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
         settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
     )
     yield

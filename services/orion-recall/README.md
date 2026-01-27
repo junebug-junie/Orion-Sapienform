@@ -36,6 +36,8 @@ If you have debug enabled (recommended while wiring), you may also have:
 
 - `GET /debug/settings` — prints resolved config (GraphDB endpoint, DSN, vector collections, etc.)
 
+> **Note:** `session_id` is accepted in recall requests for backwards compatibility, but recall ignores it for retrieval and ranking.
+
 ---
 
 ## 2) Environment Variables (high-signal)
@@ -113,7 +115,7 @@ Your RDF store contains **multiple semantic layers**. Recall uses them different
 
 ### RDF graphs you should expect
 
-- `GRAPH <orion:chat>` — **ChatTurn** objects, including `prompt`, `response`, `sessionId`
+- `GRAPH <orion:chat>` — **ChatTurn** objects, including `prompt`, `response`, and optional `sessionId`
 - `GRAPH <orion:enrichment>` — **tags/entities/claims** linked to turns (GraphTRI / enrichment layer)
 
 ### RDF retrieval types (what recall returns)
@@ -124,7 +126,7 @@ Your RDF store contains **multiple semantic layers**. Recall uses them different
 | `rdf` | Graph neighborhood / claim-like triples | generic RDF scan | entity/topic adjacency, “what’s related to X”, light graph recall |
 | `rdf` (graphtri claims) | Claims linked to turns | `GRAPH <orion:enrichment>` | “what did we claim/decide”, tags/entities evidence trails |
 
-> Design principle: **candidate generation is structure-driven** (session + graph + type). Ranking should be semantic/vector scoring (and later learned rankers), not ad-hoc keyword lists.
+> Design principle: **candidate generation is structure-driven** (graph + type). Ranking should be semantic/vector scoring (and later learned rankers), not ad-hoc keyword lists.
 
 ### Verify RDF chat turns exist (GraphDB)
 
@@ -133,10 +135,10 @@ SELECT ?turn ?prompt ?response
 WHERE {
   GRAPH <orion:chat> {
     ?turn a <http://conjourney.net/orion#ChatTurn> ;
-          <http://conjourney.net/orion#sessionId> "YOUR_SESSION_ID" ;
           <http://conjourney.net/orion#prompt> ?prompt ;
           <http://conjourney.net/orion#response> ?response .
   }
+  FILTER(CONTAINS(LCASE(STR(?prompt)), "cpu") || CONTAINS(LCASE(STR(?response)), "cpu"))
 }
 LIMIT 20
 ```
@@ -148,7 +150,8 @@ SELECT ?turn ?claim ?pred ?obj
 WHERE {
   GRAPH <orion:chat> {
     ?turn a <http://conjourney.net/orion#ChatTurn> ;
-          <http://conjourney.net/orion#sessionId> "YOUR_SESSION_ID" .
+          <http://conjourney.net/orion#prompt> ?prompt ;
+          <http://conjourney.net/orion#response> ?response .
   }
   GRAPH <orion:enrichment> {
     ?claim a <http://conjourney.net/orion#Claim> ;
@@ -156,6 +159,7 @@ WHERE {
            <http://conjourney.net/orion#predicate> ?pred ;
            <http://conjourney.net/orion#obj> ?obj .
   }
+  FILTER(CONTAINS(LCASE(STR(?prompt)), "cpu") || CONTAINS(LCASE(STR(?response)), "cpu"))
 }
 LIMIT 50
 ```
@@ -217,7 +221,6 @@ curl -s http://localhost:8260/recall \
   -H 'content-type: application/json' \
   -d '{
     "query_text": "why did I bring up CPUs",
-    "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
     "diagnostic": true,
     "profile": "reflect.v1"
   }' | jq '{item_count:(.bundle.items|length), backend_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'
@@ -252,7 +255,7 @@ Expected behavior:
 - SQL timeline enabled with a larger window
 - larger render budget
 
-### Example 3 — GraphTRI (tags/entities/claims anchored to session)
+### Example 3 — GraphTRI (tags/entities/claims anchored to keywords)
 
 Use `graphtri.v1` when you want enrichment anchors (tags/entities/claims) to guide retrieval.
 
@@ -285,7 +288,6 @@ Relevance knobs (per profile under `relevance:`):
 - `backend_weights` (vector > sql_timeline > rdf_chat > rdf by default)
 - `score_weight`, `text_similarity_weight`, `recency_weight`
 - `enable_recency`, `recency_half_life_hours`
-- `session_boost` (exact session match)
 
 If you see `rdf_chat` counts high but your desired quote didn’t appear in the top items:
 
@@ -302,7 +304,7 @@ If you see `rdf_chat` counts high but your desired quote didn’t appear in the 
 
 - confirm `RECALL_ENABLE_RDF=true`
 - confirm GraphDB endpoint is reachable from recall container network
-- confirm `GRAPH <orion:chat>` contains ChatTurns for that session ID
+- confirm `GRAPH <orion:chat>` contains ChatTurns for the relevant keywords
 
 ### B) `rdf_chat` non-zero but Orion still hallucinates
 
@@ -330,13 +332,12 @@ docker-compose up -d orion-recall
 ```bash
 curl -s http://localhost:8260/recall \
   -H 'content-type: application/json' \
-  -d '{"query_text":"what did I say about CPU cards?","session_id":"YOUR_SESSION_ID","profile":"reflect.v1"}' | jq
+  -d '{"query_text":"what did I say about CPU cards?","profile":"reflect.v1"}' | jq
 ```
 
 ### General chat test
 ```curl -s http://localhost:8260/recall   -H 'content-type: application/json'   -d '{
     "query_text": "why did I bring up CPUs",
-    "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
     "diagnostic": true,
     "profile": "reflect.v1"
   }' | jq '{item_count:(.bundle.items|length), debug_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'```
@@ -364,8 +365,8 @@ This is a **copy/paste** runbook of the inspection steps that proved useful whil
 **Chat memory path (ideal):**
 1) `orion-hub` publishes `chat.history.message.v1` on `orion:chat:history:log` (has `session_id`, `role`, `content`, `tags`)
 2) `orion-vector-host` consumes it and publishes `vector.upsert.v1` on `orion:vector:semantic:upsert` (meta includes `session_id`, `role`, `original_channel`)
-3) `orion-vector-writer` stores into Chroma (collection often `orion_chat` for chat docs; `orion_main_store` for general)
-4) `orion-recall` queries Chroma using **session_id filters** (no keyword hacks)
+3) `orion-vector-writer` stores into Chroma (collection often `orion_chat_turns` for turn docs; `orion_chat` for message docs; `orion_main_store` for general)
+4) `orion-recall` queries Chroma globally (metadata/node filters only)
 
 ---
 
@@ -502,7 +503,7 @@ PY
 
 ---
 
-## 6) Inspect stored chat docs in `orion_chat`
+## 6) Inspect stored chat docs in `orion_chat_turns`
 
 ```bash
 docker exec -i orion-athena-vector-writer python - <<'PY'
@@ -511,7 +512,7 @@ from chromadb.config import Settings
 import pprint
 
 client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
-col = client.get_collection("orion_chat")
+col = client.get_collection("orion_chat_turns")
 
 sample = col.peek(limit=3)
 print("metadatas:")
@@ -523,7 +524,7 @@ for d in (sample.get("documents") or [])[:3]:
 PY
 ```
 
-**Expected:** metadata contains at least `session_id`, `created_at`, `kind`.
+**Expected:** metadata contains at least `correlation_id` (if available), `created_at`, `kind` (and may include `session_id`).
 
 ---
 
@@ -562,29 +563,20 @@ PY
 where={"role":"embedding_request"}
 ```
 
-or for session-scoped chat:
-
-```python
-where={"session_id": sid}
-```
-
 ---
 
-## 8) Session-filtered chat query (the “good” retrieval)
+## 8) Sample chat query (inspect recent chat vectors)
 
 ```bash
 docker exec -i orion-athena-vector-writer python - <<'PY'
 import chromadb
 from chromadb.config import Settings
 
-sid = "9c91d646-cbd0-4977-8cdd-d2c82045c7f9"  # replace
-
 client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
-col = client.get_collection("orion_chat")
+col = client.get_collection("orion_chat_turns")
 
 q = col.query(
     query_texts=["cpu card"],
-    where={"session_id": sid},
     n_results=5,
     include=["documents","metadatas","distances"],
 )
@@ -614,15 +606,14 @@ curl -s http://localhost:8260/recall \
   -H 'content-type: application/json' \
   -d '{
     "query_text": "why did I bring up CPUs",
-    "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
     "diagnostic": true,
     "profile": "reflect.v1"
   }' | jq '{item_count:(.bundle.items|length), debug_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'
 ```
 
 If `vector: 0` but you know Chroma has data, check:
-- `RECALL_VECTOR_COLLECTIONS` points at the correct collection (often `orion_chat`)
-- recall uses session filters `where={"session_id": session_id}`
+- `RECALL_VECTOR_COLLECTIONS` points at the correct collection (often `orion_chat_turns,orion_chat`)
+- recall uses global metadata/node filters only
 
 ---
 
@@ -695,7 +686,6 @@ docker exec -i orion-athena-vector-writer python - <<'PY'
 import chromadb
 from chromadb.config import Settings
 
-sid = "9c91d646-cbd0-4977-8cdd-d2c82045c7f9"  # replace
 client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
 
 def count_where(colname, where):
@@ -703,12 +693,11 @@ def count_where(colname, where):
     got = col.get(where=where, include=["metadatas"], limit=200)
     return len(got.get("metadatas") or [])
 
-for colname in ["orion_main_store", "orion_chat", "orion_general", "orion_collapse"]:
+for colname in ["orion_chat_turns", "orion_chat", "orion_main_store", "orion_general", "orion_collapse"]:
     try:
         col = client.get_collection(colname)
         total = col.count()
-        sess = count_where(colname, {"session_id": sid})
-        print(colname, "total", total, "session", sess)
+        print(colname, "total", total)
     except Exception as e:
         print(colname, "ERROR", e)
 PY
@@ -718,6 +707,5 @@ PY
 
 ## 14) Notes / expectations
 
-- If you can see `chat.history.message.v1` on the bus **and** see `vector.upsert.v1` with `meta.session_id`, then embedding is working.
+- If you can see `chat.history.message.v1` on the bus **and** see `vector.upsert.v1` with `meta.session_id` (optional), then embedding is working.
 - If vectors aren’t showing up in Chroma, the writer is either not subscribing, writing to a different collection, or failing on metadata validation.
-- Prefer session-filtered queries (`where={"session_id": ...}`) to avoid unrelated junk hits.

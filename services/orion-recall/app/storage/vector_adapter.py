@@ -200,6 +200,8 @@ def fetch_vector_fragments(
                     "vector-assoc",
                     f"collection:{coll_name}",
                 ] + ([str(meta.get("source"))] if meta.get("source") else [])
+                if session_id:
+                    tags.append(f"session_id:{session_id}")
                 if extra_tags:
                     tags.extend(extra_tags)
 
@@ -218,7 +220,10 @@ def fetch_vector_fragments(
                 count += 1
             return count
 
-        scoped_count = _append_results(res)
+        scoped_count = _append_results(
+            res,
+            extra_tags=["vector_scope:scoped"] if use_session_scope else None,
+        )
         if use_session_scope:
             scoped_hits += scoped_count
             if scoped_count < 3:
@@ -226,7 +231,10 @@ def fetch_vector_fragments(
                     fallback_res = _query(base_where)
                 except Exception:
                     continue
-                _append_results(fallback_res, extra_tags=["vector_fallback:unscoped"])
+                _append_results(
+                    fallback_res,
+                    extra_tags=["vector_fallback:unscoped", "vector_scope:unscoped"],
+                )
                 fallback_triggered = True
 
     frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)

@@ -165,6 +165,10 @@ async def handle_chat_request(
         # Here we rely on CortexChatResult having it.
         correlation_id = resp.cortex_result.correlation_id
 
+        memory_digest = None
+        if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
+            memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
+
         return {
             "session_id": session_id,
             "mode": mode,
@@ -173,6 +177,7 @@ async def handle_chat_request(
             "tokens": len(text.split()), # simple approx
             "raw": raw_result,
             "recall_debug": resp.cortex_result.recall_debug,
+            "memory_digest": memory_digest,
             "spark_meta": None,
             "correlation_id": correlation_id,
         }

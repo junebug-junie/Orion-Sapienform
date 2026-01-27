@@ -21,4 +21,3 @@ relevance:
   recency_weight: 0.15
   enable_recency: true
   recency_half_life_hours: 48
-  session_boost: 0.2

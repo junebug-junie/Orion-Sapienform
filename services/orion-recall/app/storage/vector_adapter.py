@@ -142,18 +142,6 @@ def fetch_vector_fragments(
         return []
 
     logger = logging.getLogger("orion-recall.vector")
-    scoped_hits = 0
-    fallback_triggered = False
-    cross_session_ran = False
-    cross_session_appended = 0
-    min_scoped = 3
-    fallback_k = 3
-    best_scoped_sim = 0.0
-    term_hit = False
-    trigger_reason = "none"
-    is_graphtri = bool(profile_name) and (
-        str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
-    )
 
     for coll_name in collections:
         try:
@@ -168,12 +156,6 @@ def fetch_vector_fragments(
                 if node_id:
                     base_where["source_node"] = node_id
 
-            use_session_scope = bool(session_id) and coll_name.startswith("orion_")
-            scoped_where: Optional[Dict[str, Any]] = None
-            if use_session_scope:
-                scoped_where = dict(base_where or {})
-                scoped_where["session_id"] = session_id
-
             def _query(where: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 return coll.query(
                     query_embeddings=[query_embedding],
@@ -182,7 +164,7 @@ def fetch_vector_fragments(
                     where=where,
                 )
 
-            res = _query(scoped_where or base_where)
+            res = _query(base_where)
         except Exception:
             continue
 
@@ -219,8 +201,6 @@ def fetch_vector_fragments(
                     "vector-assoc",
                     f"collection:{coll_name}",
                 ] + ([str(meta.get("source"))] if meta.get("source") else [])
-                if session_id:
-                    tags.append(f"session_id:{session_id}")
                 if extra_tags:
                     tags.extend(extra_tags)
 
@@ -239,132 +219,10 @@ def fetch_vector_fragments(
                 count += 1
             return count
 
-        scoped_count = _append_results(
-            res,
-            extra_tags=["vector_scope:scoped"] if use_session_scope else None,
-        )
-        if use_session_scope:
-            scoped_hits += scoped_count
-            if is_graphtri and session_id:
-                dists = (res.get("distances") or [[]])[0]
-                if isinstance(dists, list):
-                    for dist in dists[: min(3, len(dists))]:
-                        if isinstance(dist, (int, float)) and not math.isnan(dist):
-                            best_scoped_sim = max(best_scoped_sim, max(0.0, 1.0 - float(dist)))
-                query_terms = {
-                    token
-                    for token in "".join(
-                        ch.lower() if ch.isalnum() else " " for ch in query_text
-                    ).split()
-                    if len(token) >= 3
-                    and token
-                    not in {
-                        "the",
-                        "and",
-                        "or",
-                        "a",
-                        "an",
-                        "to",
-                        "of",
-                        "in",
-                        "on",
-                        "for",
-                        "with",
-                        "is",
-                        "are",
-                        "was",
-                        "were",
-                        "be",
-                        "been",
-                        "it",
-                        "this",
-                        "that",
-                        "i",
-                        "you",
-                        "we",
-                        "my",
-                        "your",
-                        "our",
-                    }
-                }
-                if query_terms:
-                    docs = (res.get("documents") or [[]])[0]
-                    top_n = min(3, scoped_count, len(docs))
-                    for doc in docs[:top_n]:
-                        doc_text = str(doc or "").lower()
-                        if any(term in doc_text for term in query_terms):
-                            term_hit = True
-                            break
-            if is_graphtri and session_id and (
-                scoped_count < min_scoped or (best_scoped_sim < 0.70 and not term_hit)
-            ):
-                trigger_reason = "count" if scoped_count < min_scoped else "lexical"
-                try:
-                    fallback_res = _query(None)
-                except Exception:
-                    continue
-                cross_session_ran = True
-                existing_ids = {item.get("id") for item in frags if item.get("id")}
-                def _is_cross_session(meta: Dict[str, Any]) -> bool:
-                    if not session_id:
-                        return True
-                    meta_session = meta.get("session_id")
-                    return meta_session is None or meta_session != session_id
-
-                ids = (fallback_res.get("ids") or [[]])[0]
-                docs = (fallback_res.get("documents") or [[]])[0]
-                metas = (fallback_res.get("metadatas") or [[]])[0]
-                dists = (fallback_res.get("distances") or [[]])[0]
-                filtered_res = {
-                    "ids": [ids[:fallback_k]],
-                    "documents": [docs[:fallback_k]],
-                    "metadatas": [metas[:fallback_k]],
-                    "distances": [dists[:fallback_k]],
-                }
-                filtered_ids = filtered_res["ids"][0]
-                filtered_docs = filtered_res["documents"][0]
-                filtered_metas = filtered_res["metadatas"][0]
-                filtered_dists = filtered_res["distances"][0]
-                keep_ids, keep_docs, keep_metas, keep_dists = [], [], [], []
-                for idx, meta in enumerate(filtered_metas):
-                    if not _is_cross_session(meta or {}):
-                        continue
-                    keep_ids.append(filtered_ids[idx])
-                    keep_docs.append(filtered_docs[idx])
-                    keep_metas.append(filtered_metas[idx])
-                    keep_dists.append(filtered_dists[idx])
-                cross_session_res = {
-                    "ids": [keep_ids],
-                    "documents": [keep_docs],
-                    "metadatas": [keep_metas],
-                    "distances": [keep_dists],
-                }
-                cross_session_appended += _append_results(
-                    cross_session_res,
-                    extra_tags=[
-                        "vector_fallback:unscoped",
-                        "vector_scope:unscoped",
-                        "vector_cross_session:true",
-                    ],
-                    score_multiplier=0.85,
-                    skip_ids=existing_ids,
-                )
-                fallback_triggered = True
+        _append_results(res)
 
     frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-    if is_graphtri and session_id:
-        logger.info(
-            "vector recall: collections=%s session_id=%s scoped_hits=%s fallback=%s cross_session=%s cross_session_appended=%s best_scoped_sim=%s term_hit=%s trigger_reason=%s",
-            collections,
-            session_id,
-            scoped_hits,
-            fallback_triggered,
-            cross_session_ran,
-            cross_session_appended,
-            best_scoped_sim,
-            term_hit,
-            trigger_reason,
-        )
+    logger.debug("vector recall: collections=%s hits=%s", collections, len(frags))
     return frags[:max_items]
 
 
@@ -399,16 +257,10 @@ def fetch_vector_exact_matches(
             if node_id:
                 base_where["source_node"] = node_id
 
-        use_session_scope = bool(session_id) and coll_name.startswith("orion_")
-        scoped_where: Optional[Dict[str, Any]] = None
-        if use_session_scope:
-            scoped_where = dict(base_where or {})
-            scoped_where["session_id"] = session_id
-
         for token in tokens:
             try:
                 res = coll.get(
-                    where=scoped_where or base_where,
+                    where=base_where,
                     where_document={"$contains": token},
                     include=["documents", "metadatas"],
                     limit=max_items,
@@ -428,8 +280,6 @@ def fetch_vector_exact_matches(
                     "vector-exact",
                     f"collection:{coll_name}",
                 ]
-                if session_id:
-                    tags.append(f"session_id:{session_id}")
                 if meta.get("source"):
                     tags.append(str(meta.get("source")))
                 results.append(

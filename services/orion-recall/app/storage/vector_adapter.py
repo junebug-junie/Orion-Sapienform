@@ -148,6 +148,9 @@ def fetch_vector_fragments(
     cross_session_appended = 0
     min_scoped = 3
     fallback_k = 3
+    best_scoped_sim = 0.0
+    term_hit = False
+    trigger_reason = "none"
     is_graphtri = bool(profile_name) and (
         str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
     )
@@ -242,7 +245,60 @@ def fetch_vector_fragments(
         )
         if use_session_scope:
             scoped_hits += scoped_count
-            if is_graphtri and scoped_count < min_scoped:
+            if is_graphtri and session_id:
+                dists = (res.get("distances") or [[]])[0]
+                if isinstance(dists, list):
+                    for dist in dists[: min(3, len(dists))]:
+                        if isinstance(dist, (int, float)) and not math.isnan(dist):
+                            best_scoped_sim = max(best_scoped_sim, max(0.0, 1.0 - float(dist)))
+                query_terms = {
+                    token
+                    for token in "".join(
+                        ch.lower() if ch.isalnum() else " " for ch in query_text
+                    ).split()
+                    if len(token) >= 3
+                    and token
+                    not in {
+                        "the",
+                        "and",
+                        "or",
+                        "a",
+                        "an",
+                        "to",
+                        "of",
+                        "in",
+                        "on",
+                        "for",
+                        "with",
+                        "is",
+                        "are",
+                        "was",
+                        "were",
+                        "be",
+                        "been",
+                        "it",
+                        "this",
+                        "that",
+                        "i",
+                        "you",
+                        "we",
+                        "my",
+                        "your",
+                        "our",
+                    }
+                }
+                if query_terms:
+                    docs = (res.get("documents") or [[]])[0]
+                    top_n = min(3, scoped_count, len(docs))
+                    for doc in docs[:top_n]:
+                        doc_text = str(doc or "").lower()
+                        if any(term in doc_text for term in query_terms):
+                            term_hit = True
+                            break
+            if is_graphtri and session_id and (
+                scoped_count < min_scoped or (best_scoped_sim < 0.70 and not term_hit)
+            ):
+                trigger_reason = "count" if scoped_count < min_scoped else "lexical"
                 try:
                     fallback_res = _query(None)
                 except Exception:
@@ -298,12 +354,15 @@ def fetch_vector_fragments(
     frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     if is_graphtri and session_id:
         logger.info(
-            "vector recall: collections=%s session_id=%s scoped_hits=%s fallback=%s cross_session=%s cross_session_appended=%s",
+            "vector recall: collections=%s session_id=%s scoped_hits=%s fallback=%s cross_session=%s cross_session_appended=%s best_scoped_sim=%s term_hit=%s trigger_reason=%s",
             collections,
             session_id,
             scoped_hits,
             fallback_triggered,
             cross_session_ran,
             cross_session_appended,
+            best_scoped_sim,
+            term_hit,
+            trigger_reason,
         )
     return frags[:max_items]

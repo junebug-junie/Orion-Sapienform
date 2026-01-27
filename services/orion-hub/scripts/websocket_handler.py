@@ -310,13 +310,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # ----------------------------
             # N = userassistant pairs; helper keeps up to 2*N messages.
             turns = int(data.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
-            max_chars = int(getattr(settings, "HUB_CONTEXT_MAX_CHARS", 12000))
-            prompt_with_ctx = _build_prompt_with_history(
-                history=history,
-                user_text=transcript,
-                turns=turns,
-                max_chars=max_chars,
-            )
+            prompt_with_ctx = transcript
             # IMPORTANT: store the raw user message for next turn
             history.append({"role": "user", "content": transcript})
 
@@ -338,6 +332,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 recall_payload["profile"] = "reflect.v1"
 
             logger.info(f"WS Chat Request recall config: {recall_payload} session_id={session_id}")
+            logger.info(
+                "WS Chat Request payload session_id=%s history_len=%s last_user_len=%s last_user_head=%r",
+                session_id,
+                len(history),
+                len(transcript or ""),
+                (transcript or "")[:120],
+            )
 
             chat_req = CortexChatRequest(
                 prompt=prompt_with_ctx,

@@ -136,6 +136,13 @@ async def handle_chat_request(
         recall_payload["profile"] = "reflect.v1"
         
     logger.info(f"Chat Request recall config: {recall_payload} session_id={session_id}")
+    logger.info(
+        "HTTP Chat Request payload session_id=%s messages_len=%s last_user_len=%s last_user_head=%r",
+        session_id,
+        len(user_messages),
+        len(user_prompt or ""),
+        (user_prompt or "")[:120],
+    )
 
     # Build the Request
     req = CortexChatRequest(

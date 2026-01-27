@@ -1,0 +1,26 @@
+name: reflect.sql_only.v1
+
+enable_rdf: false
+enable_rdf_chat: false
+enable_vector: false
+
+enable_sql_chat: true
+enable_sql_timeline: true
+
+# retrieval knobs
+sql_chat_top_k: 50
+sql_timeline_top_k: 50
+sql_since_minutes: 60*24*14    # last 14 days (adjustable)
+
+# fusion knobs
+max_total_items: 40
+max_per_source: 40
+
+# rendering
+render_mode: timeline
+render_include_source: true
+render_include_ts: true
+render_include_role: true
+
+# debugging
+diagnostic: true

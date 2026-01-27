@@ -499,7 +499,7 @@ document.addEventListener("DOMContentLoaded", () => {
         updateStatus('Sent...');
     } else {
         appendMessage('System', 'WebSocket not connected. Trying HTTP fallback...', 'text-yellow-400');
-
+        
         if (!orionSessionId) await initSession();
         payload.session_id = orionSessionId;
 

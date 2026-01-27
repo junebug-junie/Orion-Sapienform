@@ -79,7 +79,10 @@ async def handle_chat_request(
     user_messages = payload.get("messages", [])
     mode = payload.get("mode", "brain")
 
-    use_recall = bool(payload.get("use_recall", False))
+    # Force recall to TRUE for chat, overriding client setting
+    raw_recall = payload.get("use_recall")
+    use_recall = True
+    
     recall_mode = payload.get("recall_mode")
     recall_profile = payload.get("recall_profile")
     recall_required = bool(payload.get("recall_required", False))
@@ -113,6 +116,12 @@ async def handle_chat_request(
         recall_payload["profile"] = recall_profile
     if recall_required:
         recall_payload["required"] = True
+    
+    # Default profile if enabled but missing
+    if use_recall and "profile" not in recall_payload:
+        recall_payload["profile"] = "reflect.v1"
+        
+    logger.info(f"Chat Request recall config: {recall_payload} session_id={session_id}")
 
     # Build the Request
     req = CortexChatRequest(

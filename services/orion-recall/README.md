@@ -365,7 +365,7 @@ This is a **copy/paste** runbook of the inspection steps that proved useful whil
 **Chat memory path (ideal):**
 1) `orion-hub` publishes `chat.history.message.v1` on `orion:chat:history:log` (has `session_id`, `role`, `content`, `tags`)
 2) `orion-vector-host` consumes it and publishes `vector.upsert.v1` on `orion:vector:semantic:upsert` (meta includes `session_id`, `role`, `original_channel`)
-3) `orion-vector-writer` stores into Chroma (collection often `orion_chat` for chat docs; `orion_main_store` for general)
+3) `orion-vector-writer` stores into Chroma (collection often `orion_chat_turns` for turn docs; `orion_chat` for message docs; `orion_main_store` for general)
 4) `orion-recall` queries Chroma globally (metadata/node filters only)
 
 ---
@@ -503,7 +503,7 @@ PY
 
 ---
 
-## 6) Inspect stored chat docs in `orion_chat`
+## 6) Inspect stored chat docs in `orion_chat_turns`
 
 ```bash
 docker exec -i orion-athena-vector-writer python - <<'PY'
@@ -512,7 +512,7 @@ from chromadb.config import Settings
 import pprint
 
 client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
-col = client.get_collection("orion_chat")
+col = client.get_collection("orion_chat_turns")
 
 sample = col.peek(limit=3)
 print("metadatas:")
@@ -573,7 +573,7 @@ import chromadb
 from chromadb.config import Settings
 
 client = chromadb.HttpClient(host="orion-athena-vector-db", port=8000, settings=Settings(anonymized_telemetry=False))
-col = client.get_collection("orion_chat")
+col = client.get_collection("orion_chat_turns")
 
 q = col.query(
     query_texts=["cpu card"],
@@ -612,7 +612,7 @@ curl -s http://localhost:8260/recall \
 ```
 
 If `vector: 0` but you know Chroma has data, check:
-- `RECALL_VECTOR_COLLECTIONS` points at the correct collection (often `orion_chat`)
+- `RECALL_VECTOR_COLLECTIONS` points at the correct collection (often `orion_chat_turns,orion_chat`)
 - recall uses global metadata/node filters only
 
 ---
@@ -693,7 +693,7 @@ def count_where(colname, where):
     got = col.get(where=where, include=["metadatas"], limit=200)
     return len(got.get("metadatas") or [])
 
-for colname in ["orion_main_store", "orion_chat", "orion_general", "orion_collapse"]:
+for colname in ["orion_chat_turns", "orion_chat", "orion_main_store", "orion_general", "orion_collapse"]:
     try:
         col = client.get_collection(colname)
         total = col.count()

@@ -188,6 +188,8 @@ def fetch_vector_fragments(
                     continue
                 ntext = docs[i] or ""
                 meta = metas[i] or {}
+                if not isinstance(meta, dict):
+                    meta = {}
                 dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
 
                 if not _recent_enough(meta, since_ts):
@@ -197,16 +199,21 @@ def fetch_vector_fragments(
                 if isinstance(dist, (int, float)) and not math.isnan(dist):
                     sim = max(0.0, 1.0 - float(dist)) * score_multiplier
 
+                canonical_id = str(meta.get("correlation_id") or nid_str)
                 tags = [
                     "vector-assoc",
                     f"collection:{coll_name}",
                 ] + ([str(meta.get("source"))] if meta.get("source") else [])
+                if canonical_id != nid_str:
+                    meta = dict(meta)
+                    meta["vector_doc_id"] = nid_str
+                    tags.append("canon:correlation_id")
                 if extra_tags:
                     tags.extend(extra_tags)
 
                 frags.append(
                     {
-                        "id": nid_str,
+                        "id": canonical_id,
                         "source": "vector",
                         "source_ref": coll_name,
                         "text": str(ntext)[:1200],
@@ -274,17 +281,25 @@ def fetch_vector_exact_matches(
             for idx, nid in enumerate(ids):
                 if len(results) >= max_items:
                     return results
+                nid_str = str(nid)
                 doc = docs[idx] if idx < len(docs) else ""
                 meta = metas[idx] if idx < len(metas) else {}
+                if not isinstance(meta, dict):
+                    meta = {}
                 tags = [
                     "vector-exact",
                     f"collection:{coll_name}",
                 ]
                 if meta.get("source"):
                     tags.append(str(meta.get("source")))
+                canonical_id = str(meta.get("correlation_id") or nid_str)
+                if canonical_id != nid_str:
+                    meta = dict(meta)
+                    meta["vector_doc_id"] = nid_str
+                    tags.append("canon:correlation_id")
                 results.append(
                     {
-                        "id": str(nid),
+                        "id": canonical_id,
                         "source": "vector",
                         "source_ref": coll_name,
                         "text": str(doc)[:1200],

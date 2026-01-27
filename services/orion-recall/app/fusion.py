@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -75,7 +76,29 @@ def fuse_candidates(
         if len(items) >= max_total:
             break
 
-    rendered = render_items(items, render_budget)
+    profile_name = profile.get("profile")
+    rendered = render_items(items, render_budget, profile_name=profile_name)
+    is_graphtri = bool(profile_name) and (
+        str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
+    )
+    if is_graphtri:
+        job_offer_terms = ("job offer", "AI/ML", "Architect")
+        bundle_has_terms = any(
+            any(term in (item.snippet or "") for term in job_offer_terms) for item in items
+        )
+        top_vector = next(
+            (item for item in items if str(item.source or "") == "vector" and item.snippet), None
+        )
+        top_vector_head = (top_vector.snippet or "")[:80] if top_vector else ""
+        digest_has_terms = any(term in rendered for term in job_offer_terms)
+        logger = logging.getLogger("orion-recall.render")
+        logger.info(
+            "graphtri_render_summary top_vector_snippet_head=%r bundle_has_job_offer_terms=%s digest_has_job_offer_terms=%s rendered_len_chars=%s",
+            top_vector_head,
+            bundle_has_terms,
+            digest_has_terms,
+            len(rendered),
+        )
     stats = MemoryBundleStatsV1(
         backend_counts=backend_counts,
         latency_ms=latency_ms,

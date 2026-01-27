@@ -984,6 +984,31 @@ async def call_step_services(
                         len(memory_digest),
                     )
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                memory_marker = "RELEVANT MEMORY"
+                memory_has_marker = memory_marker in memory_digest
+                memory_has_terms = any(term in memory_digest for term in ("job offer", "AI/ML", "Architect"))
+                logger.info(
+                    "llm_request_preflight corr_id=%s outgoing_msgs_count=%s has_memory_digest=%s memory_digest_len_chars=%s memory_digest_has_marker=%s memory_digest_has_job_offer_terms=%s memory_digest_head=%r",
+                    correlation_id,
+                    len(messages_payload or []),
+                    bool(memory_digest),
+                    len(memory_digest),
+                    memory_has_marker,
+                    memory_has_terms,
+                    memory_digest[:160],
+                )
+                roles = []
+                sizes = []
+                for msg in messages_payload or []:
+                    if isinstance(msg, dict):
+                        roles.append(msg.get("role"))
+                        sizes.append(len(str(msg.get("content") or "")))
+                logger.info(
+                    "llm_request_message_shapes corr_id=%s roles=%s content_lens=%s",
+                    correlation_id,
+                    roles,
+                    sizes,
+                )
 
                 request_object = ChatRequestPayload(
                     model=req_model,

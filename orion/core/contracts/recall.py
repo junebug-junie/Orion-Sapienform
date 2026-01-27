@@ -76,4 +76,8 @@ class RecallDecisionV1(BaseModel):
     dropped: Dict[str, str] = Field(default_factory=dict)
     backend_counts: Dict[str, int] = Field(default_factory=dict)
     latency_ms: int = 0
+    ranking_debug: List[Dict[str, Optional[float | int | str | bool]]] = Field(
+        default_factory=list,
+        description="Optional relevance diagnostics for ranked candidates.",
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

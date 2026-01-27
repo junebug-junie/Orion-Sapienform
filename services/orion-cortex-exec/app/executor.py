@@ -299,6 +299,16 @@ def _build_hop_messages(
     return normalized
 
 
+def _append_memory_digest(prompt: str, memory_digest: str) -> str:
+    digest = (memory_digest or "").strip()
+    if not digest:
+        return prompt
+    prompt_text = prompt or ""
+    if "RELEVANT MEMORY" in prompt_text or digest in prompt_text:
+        return prompt
+    return f"{prompt_text}\n\n# RELEVANT MEMORY (retrieved)\n{digest}\n"
+
+
 def _extract_llm_text(res: Any) -> str:
     """Safely extract text content from various LLM result shapes."""
     if not res:
@@ -455,6 +465,8 @@ async def run_recall_step(
             "error": None,
         }
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
+        debug["memory_digest"] = memory_digest
+        debug["memory_digest_chars"] = len(memory_digest or "")
         ctx["memory_digest"] = memory_digest
         ctx["memory_bundle"] = bundle.model_dump(mode="json")
         ctx["memory_used"] = True
@@ -975,8 +987,7 @@ async def call_step_services(
             if service == "LLMGatewayService":
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 memory_digest = (ctx.get("memory_digest") or "").strip()
-                if memory_digest:
-                    prompt = f"{prompt}\n\n# RELEVANT MEMORY (retrieved)\n{memory_digest}\n"
+                prompt = _append_memory_digest(prompt, memory_digest)
                 if diagnostic:
                     logger.info(
                         "memory_digest_present=%s memory_digest_chars=%s",
@@ -984,8 +995,7 @@ async def call_step_services(
                         len(memory_digest),
                     )
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
-                memory_marker = "RELEVANT MEMORY"
-                memory_has_marker = memory_marker in prompt
+                memory_has_marker = bool(memory_digest) and memory_digest in prompt
                 raw_query = (ctx.get("raw_user_text") or _last_user_message(ctx) or "").strip()
                 query_terms = []
                 if raw_query:
@@ -1085,6 +1095,8 @@ async def call_step_services(
                 logs.append(f"ok <- {service}")
 
             elif service == "AgentChainService":
+                memory_digest = (ctx.get("memory_digest") or "").strip()
+                prompt = _append_memory_digest(prompt, memory_digest)
                 hop_msgs = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 agent_req = AgentChainRequest(

@@ -19,6 +19,11 @@ EXPECTED CONTEXT KEYS (if provided)
 Do NOT mention "context", "JSON", or "memory digest" explicitly.
 Treat them as internal mental state.
 
+{% if memory_digest %}
+RELEVANT MEMORY:
+{{ memory_digest }}
+{% endif %}
+
 -------------------------------
 TASK
 -------------------------------

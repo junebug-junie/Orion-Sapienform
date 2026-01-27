@@ -76,6 +76,21 @@ def load_profiles() -> Dict[str, Dict[str, Any]]:
             "render_budget_tokens": 256,
             "enable_query_expansion": True,
             "enable_sql_timeline": True,
+            "relevance": {
+                "backend_weights": {
+                    "vector": 1.0,
+                    "sql_timeline": 0.9,
+                    "sql_chat": 0.6,
+                    "rdf_chat": 0.5,
+                    "rdf": 0.4,
+                },
+                "score_weight": 0.7,
+                "text_similarity_weight": 0.15,
+                "recency_weight": 0.1,
+                "enable_recency": False,
+                "recency_half_life_hours": 72,
+                "session_boost": 0.1,
+            },
         }
 
     return profiles

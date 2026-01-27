@@ -276,8 +276,16 @@ Recall gathers candidates from backends and then fuses them with caps:
 - `max_per_source` (e.g., 4 items from `rdf_chat`, 4 from `vector`, etc.)
 - `max_total_items` (overall bundle size)
 - `render_budget_tokens` (how much makes it into `.bundle.rendered`)
+- relevance ranking (composite score from backend weights, vector score, optional recency, and text overlap)
 
 These are controlled by the active recall profile.
+
+Relevance knobs (per profile under `relevance:`):
+
+- `backend_weights` (vector > sql_timeline > rdf_chat > rdf by default)
+- `score_weight`, `text_similarity_weight`, `recency_weight`
+- `enable_recency`, `recency_half_life_hours`
+- `session_boost` (exact session match)
 
 If you see `rdf_chat` counts high but your desired quote didn’t appear in the top items:
 

@@ -112,6 +112,7 @@ def fetch_vector_fragments(
     time_window_days: int,
     max_items: int,
     session_id: Optional[str] = None,
+    profile_name: Optional[str] = None,
     node_id: Optional[str] = None,
     metadata_filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
@@ -143,6 +144,13 @@ def fetch_vector_fragments(
     logger = logging.getLogger("orion-recall.vector")
     scoped_hits = 0
     fallback_triggered = False
+    cross_session_ran = False
+    cross_session_appended = 0
+    min_scoped = 3
+    fallback_k = 3
+    is_graphtri = bool(profile_name) and (
+        str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
+    )
 
     for coll_name in collections:
         try:
@@ -175,7 +183,12 @@ def fetch_vector_fragments(
         except Exception:
             continue
 
-        def _append_results(result: Dict[str, Any], extra_tags: Optional[List[str]] = None) -> int:
+        def _append_results(
+            result: Dict[str, Any],
+            extra_tags: Optional[List[str]] = None,
+            score_multiplier: float = 1.0,
+            skip_ids: Optional[set[str]] = None,
+        ) -> int:
             ids = (result.get("ids") or [[]])[0]
             docs = (result.get("documents") or [[]])[0]
             metas = (result.get("metadatas") or [[]])[0]
@@ -185,6 +198,9 @@ def fetch_vector_fragments(
             k = min(len(ids), len(docs), len(metas), len(dists) or len(ids))
             for i in range(k):
                 nid = ids[i]
+                nid_str = str(nid)
+                if skip_ids and nid_str in skip_ids:
+                    continue
                 ntext = docs[i] or ""
                 meta = metas[i] or {}
                 dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
@@ -194,7 +210,7 @@ def fetch_vector_fragments(
 
                 sim = None
                 if isinstance(dist, (int, float)) and not math.isnan(dist):
-                    sim = max(0.0, 1.0 - float(dist))
+                    sim = max(0.0, 1.0 - float(dist)) * score_multiplier
 
                 tags = [
                     "vector-assoc",
@@ -207,7 +223,7 @@ def fetch_vector_fragments(
 
                 frags.append(
                     {
-                        "id": str(nid),
+                        "id": nid_str,
                         "source": "vector",
                         "source_ref": coll_name,
                         "text": str(ntext)[:1200],
@@ -226,23 +242,68 @@ def fetch_vector_fragments(
         )
         if use_session_scope:
             scoped_hits += scoped_count
-            if scoped_count < 3:
+            if is_graphtri and scoped_count < min_scoped:
                 try:
-                    fallback_res = _query(base_where)
+                    fallback_res = _query(None)
                 except Exception:
                     continue
-                _append_results(
-                    fallback_res,
-                    extra_tags=["vector_fallback:unscoped", "vector_scope:unscoped"],
+                cross_session_ran = True
+                existing_ids = {item.get("id") for item in frags if item.get("id")}
+                def _is_cross_session(meta: Dict[str, Any]) -> bool:
+                    if not session_id:
+                        return True
+                    meta_session = meta.get("session_id")
+                    return meta_session is None or meta_session != session_id
+
+                ids = (fallback_res.get("ids") or [[]])[0]
+                docs = (fallback_res.get("documents") or [[]])[0]
+                metas = (fallback_res.get("metadatas") or [[]])[0]
+                dists = (fallback_res.get("distances") or [[]])[0]
+                filtered_res = {
+                    "ids": [ids[:fallback_k]],
+                    "documents": [docs[:fallback_k]],
+                    "metadatas": [metas[:fallback_k]],
+                    "distances": [dists[:fallback_k]],
+                }
+                filtered_ids = filtered_res["ids"][0]
+                filtered_docs = filtered_res["documents"][0]
+                filtered_metas = filtered_res["metadatas"][0]
+                filtered_dists = filtered_res["distances"][0]
+                keep_ids, keep_docs, keep_metas, keep_dists = [], [], [], []
+                for idx, meta in enumerate(filtered_metas):
+                    if not _is_cross_session(meta or {}):
+                        continue
+                    keep_ids.append(filtered_ids[idx])
+                    keep_docs.append(filtered_docs[idx])
+                    keep_metas.append(filtered_metas[idx])
+                    keep_dists.append(filtered_dists[idx])
+                cross_session_res = {
+                    "ids": [keep_ids],
+                    "documents": [keep_docs],
+                    "metadatas": [keep_metas],
+                    "distances": [keep_dists],
+                }
+                cross_session_appended += _append_results(
+                    cross_session_res,
+                    extra_tags=[
+                        "vector_fallback:unscoped",
+                        "vector_scope:unscoped",
+                        "vector_cross_session:true",
+                    ],
+                    score_multiplier=0.85,
+                    skip_ids=existing_ids,
                 )
                 fallback_triggered = True
 
     frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-    logger.info(
-        "vector recall: collections=%s session_id=%s scoped_hits=%s fallback=%s",
-        collections,
-        session_id,
-        scoped_hits,
-        fallback_triggered,
-    )
+    if is_graphtri and session_id:
+        logger.info(
+            "vector recall: collections=%s session_id=%s scoped_hits=%s fallback=%s cross_session=%s cross_session_appended=%s",
+            collections,
+            session_id,
+            scoped_hits,
+            fallback_triggered,
+            cross_session_ran,
+            cross_session_appended,
+        )
     return frags[:max_items]

@@ -281,6 +281,7 @@ async def _query_backends(
                     time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
                     max_items=per_query,
                     session_id=session_id,
+                    profile_name=profile.get("profile"),
                     node_id=node_id,
                     metadata_filters=vector_filters,
                 )
@@ -517,6 +518,7 @@ async def process_recall(
                         time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
                         max_items=per_query,
                         session_id=q.session_id,
+                        profile_name=profile.get("profile"),
                         node_id=q.node_id,
                         metadata_filters=vector_filters,
                     )

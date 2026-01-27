@@ -380,6 +380,7 @@ async def _query_backends(
                         "source_ref": item.source_ref,
                         "text": item.text,
                         "ts": item.ts,
+                        "session_id": item.session_id,
                         "tags": item.tags,
                         "score": 0.7,
                     }
@@ -599,6 +600,7 @@ async def process_recall(
                             "source_ref": item.source_ref,
                             "text": item.text,
                             "ts": item.ts,
+                            "session_id": item.session_id,
                             "tags": item.tags,
                             "score": 0.7,
                         }
@@ -637,7 +639,14 @@ async def process_recall(
                 backend_counts_total[k] = backend_counts_total.get(k, 0) + v
 
     latency_ms = int((time.time() - t0) * 1000)
-    bundle = fuse_candidates(candidates=candidates, profile=profile, latency_ms=latency_ms)
+    bundle, ranking_debug = fuse_candidates(
+        candidates=candidates,
+        profile=profile,
+        latency_ms=latency_ms,
+        query_text=q.fragment,
+        session_id=q.session_id,
+        diagnostic=diagnostic,
+    )
 
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),
@@ -650,6 +659,7 @@ async def process_recall(
         backend_counts=backend_counts_total or bundle.stats.backend_counts,
         latency_ms=latency_ms,
         dropped={},  # placeholder for future detailed drop reasons
+        ranking_debug=ranking_debug if diagnostic else [],
     )
     return bundle, decision
 

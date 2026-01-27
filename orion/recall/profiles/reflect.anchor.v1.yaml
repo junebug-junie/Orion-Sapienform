@@ -1,6 +1,6 @@
-profile: reflect.v1
-vector_top_k: 12
-rdf_top_k: 12
+profile: reflect.anchor.v1
+vector_top_k: 14
+rdf_top_k: 8
 max_per_source: 4
 max_total_items: 12
 time_decay_half_life_hours: 72
@@ -8,17 +8,17 @@ render_budget_tokens: 256
 enable_query_expansion: true
 enable_sql_timeline: true
 sql_since_minutes: 10080 #7 days
-sql_top_k: 8
+sql_top_k: 10
 relevance:
   backend_weights:
     vector: 1.0
-    sql_timeline: 0.9
-    sql_chat: 0.6
-    rdf_chat: 0.55
-    rdf: 0.4
+    sql_timeline: 0.95
+    sql_chat: 0.55
+    rdf_chat: 0.35
+    rdf: 0.25
   score_weight: 0.7
-  text_similarity_weight: 0.15
-  recency_weight: 0.1
+  text_similarity_weight: 0.25
+  recency_weight: 0.15
   enable_recency: true
-  recency_half_life_hours: 72
-  session_boost: 0.1
+  recency_half_life_hours: 48
+  session_boost: 0.2

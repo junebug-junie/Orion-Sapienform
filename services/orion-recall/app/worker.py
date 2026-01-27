@@ -30,9 +30,10 @@ try:
         fetch_rdf_graphtri_anchor_terms,
         fetch_rdf_graphtri_fragments,
         fetch_rdf_chatturn_fragments,
+        fetch_rdf_chatturn_exact_matches,
     )
-    from .storage.vector_adapter import fetch_vector_fragments
-    from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities
+    from .storage.vector_adapter import fetch_vector_fragments, fetch_vector_exact_matches
+    from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
     from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
 
 except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
@@ -49,9 +50,10 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
             fetch_rdf_graphtri_anchor_terms,
             fetch_rdf_graphtri_fragments,
             fetch_rdf_chatturn_fragments,
+            fetch_rdf_chatturn_exact_matches,
         )
-        from app.storage.vector_adapter import fetch_vector_fragments  # type: ignore
-        from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities  # type: ignore
+        from app.storage.vector_adapter import fetch_vector_fragments, fetch_vector_exact_matches  # type: ignore
+        from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
         from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages  # type: ignore
     except ImportError:
         # IMPORTANT: raise the real root cause, not the fallback failure
@@ -93,6 +95,31 @@ def _extract_keywords(text: str, *, max_keywords: int = 6) -> List[str]:
             break
     return keywords
 
+
+def _anchor_tokens(text: str, *, max_tokens: int = 3) -> List[str]:
+    if not text:
+        return []
+    tokens = re.findall(r"\\b[A-Za-z][A-Za-z0-9]*\\d+\\b", text)
+    seen = set()
+    anchors: List[str] = []
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        anchors.append(token)
+        if len(anchors) >= max_tokens:
+            break
+    return anchors
+
+
+def _is_memory_browse(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return bool(
+        re.search(r"\\b(fetch|show|list|browse|recall)\\b", lowered)
+        and re.search(r"\\b(memory|memories|recent|context)\\b", lowered)
+    )
 
 def _anchor_overlap(text: str, anchors: List[str]) -> int:
     if not text or not anchors:
@@ -196,6 +223,91 @@ def _rdf_enabled(profile: Dict[str, Any]) -> bool:
         or profile_name.startswith("graphtri")
         or settings.RECALL_ENABLE_RDF
     ) and int(profile.get("rdf_top_k", 0)) > 0
+
+
+async def _fetch_anchor_candidates(
+    *,
+    query_text: str,
+    session_id: str | None,
+    node_id: str | None,
+    profile: Dict[str, Any],
+    diagnostic: bool = False,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    tokens = _anchor_tokens(query_text)
+    if not tokens:
+        return [], {}
+
+    candidates: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = {}
+    limit = max(3, min(10, int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))))
+
+    try:
+        sql_items = await fetch_exact_fragments(
+            tokens=tokens,
+            session_id=session_id,
+            node_id=node_id,
+            limit=limit,
+        )
+        counts["sql_timeline_anchor"] = len(sql_items)
+        for item in sql_items:
+            tags = list(item.tags or [])
+            tags.append("anchor_exact")
+            candidates.append(
+                {
+                    "id": item.id,
+                    "source": "sql_timeline",
+                    "source_ref": item.source_ref,
+                    "text": item.text,
+                    "ts": item.ts,
+                    "tags": tags,
+                    "score": 0.95,
+                }
+            )
+    except Exception as exc:
+        logger.debug(f"sql anchor fetch skipped: {exc}")
+
+    if settings.RECALL_ENABLE_VECTOR:
+        try:
+            vec = fetch_vector_exact_matches(
+                tokens=tokens,
+                max_items=limit,
+                session_id=session_id,
+                profile_name=profile.get("profile"),
+                node_id=node_id,
+            )
+            counts["vector_anchor"] = len(vec)
+            for item in vec:
+                item = dict(item)
+                item["tags"] = list(item.get("tags") or []) + ["anchor_exact"]
+                item["score"] = max(0.95, float(item.get("score") or 0.0))
+                candidates.append(item)
+        except Exception as exc:
+            logger.debug(f"vector anchor fetch skipped: {exc}")
+
+    if _rdf_enabled(profile) and session_id and settings.RECALL_RDF_ENDPOINT_URL:
+        try:
+            rdf = fetch_rdf_chatturn_exact_matches(
+                tokens=tokens,
+                session_id=session_id,
+                max_items=limit,
+            )
+            counts["rdf_chat_anchor"] = len(rdf)
+            for item in rdf:
+                item = dict(item)
+                item["tags"] = list(item.get("tags") or []) + ["anchor_exact"]
+                item["score"] = max(0.9, float(item.get("score") or 0.0))
+                candidates.append(item)
+        except Exception as exc:
+            logger.debug(f"rdf anchor fetch skipped: {exc}")
+
+    if diagnostic:
+        logger.info(
+            "anchor rail tokens=%s counts=%s",
+            tokens,
+            counts,
+        )
+
+    return candidates, counts
 
 
 async def _query_backends(
@@ -380,6 +492,7 @@ async def _query_backends(
                         "source_ref": item.source_ref,
                         "text": item.text,
                         "ts": item.ts,
+                        "session_id": item.session_id,
                         "tags": item.tags,
                         "score": 0.7,
                     }
@@ -468,6 +581,70 @@ async def process_recall(
     t0 = time.time()
     candidates: List[Dict[str, Any]] = []
     backend_counts_total: Dict[str, int] = {}
+
+    if _is_memory_browse(q.fragment):
+        since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
+        browse_limit = max(10, min(20, int(profile.get("max_total_items", 12))))
+        try:
+            recent_items = await fetch_recent_fragments(
+                q.session_id,
+                q.node_id,
+                since_minutes_effective,
+                browse_limit,
+            )
+        except Exception as exc:
+            logger.debug(f"browse timeline fetch skipped: {exc}")
+            recent_items = []
+        backend_counts_total["sql_timeline"] = len(recent_items)
+        for item in recent_items:
+            candidates.append(
+                {
+                    "id": item.id,
+                    "source": "sql_timeline",
+                    "source_ref": item.source_ref,
+                    "text": item.text,
+                    "ts": item.ts,
+                    "tags": list(item.tags or []) + ["memory_browse"],
+                    "score": 0.6,
+                }
+            )
+        latency_ms = int((time.time() - t0) * 1000)
+        bundle, ranking_debug = fuse_candidates(
+            candidates=candidates,
+            profile=profile,
+            latency_ms=latency_ms,
+            query_text=None,
+            session_id=q.session_id,
+            diagnostic=diagnostic,
+            browse_mode=True,
+        )
+        decision = RecallDecisionV1(
+            corr_id=corr_id or str(uuid4()),
+            session_id=q.session_id,
+            node_id=q.node_id,
+            verb=q.verb,
+            profile=q.profile,
+            query=q.fragment,
+            selected_ids=[i.id for i in bundle.items],
+            backend_counts=backend_counts_total or bundle.stats.backend_counts,
+            latency_ms=latency_ms,
+            dropped={},  # placeholder for future detailed drop reasons
+            ranking_debug=ranking_debug if diagnostic else [],
+        )
+        return bundle, decision
+
+    anchor_candidates, anchor_counts = await _fetch_anchor_candidates(
+        query_text=q.fragment,
+        session_id=q.session_id,
+        node_id=q.node_id,
+        profile=profile,
+        diagnostic=diagnostic,
+    )
+    if anchor_candidates:
+        candidates.extend(anchor_candidates)
+        for key, value in anchor_counts.items():
+            backend_counts_total[key] = value
+
     if profile_name.startswith("graphtri"):
         anchor_set = _build_anchor_set(
             query_text=q.fragment,
@@ -599,6 +776,7 @@ async def process_recall(
                             "source_ref": item.source_ref,
                             "text": item.text,
                             "ts": item.ts,
+                            "session_id": item.session_id,
                             "tags": item.tags,
                             "score": 0.7,
                         }
@@ -637,7 +815,14 @@ async def process_recall(
                 backend_counts_total[k] = backend_counts_total.get(k, 0) + v
 
     latency_ms = int((time.time() - t0) * 1000)
-    bundle = fuse_candidates(candidates=candidates, profile=profile, latency_ms=latency_ms)
+    bundle, ranking_debug = fuse_candidates(
+        candidates=candidates,
+        profile=profile,
+        latency_ms=latency_ms,
+        query_text=q.fragment,
+        session_id=q.session_id,
+        diagnostic=diagnostic,
+    )
 
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),
@@ -650,6 +835,7 @@ async def process_recall(
         backend_counts=backend_counts_total or bundle.stats.backend_counts,
         latency_ms=latency_ms,
         dropped={},  # placeholder for future detailed drop reasons
+        ranking_debug=ranking_debug if diagnostic else [],
     )
     return bundle, decision
 

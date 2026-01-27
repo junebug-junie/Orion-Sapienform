@@ -523,6 +523,89 @@ def fetch_rdf_chatturn_fragments(
         )
     return out
 
+
+def fetch_rdf_chatturn_exact_matches(
+    *,
+    tokens: List[str],
+    session_id: str | None,
+    max_items: int = 20,
+) -> List[Dict[str, Any]]:
+    if not tokens or not session_id:
+        return []
+    endpoint = settings.RECALL_RDF_ENDPOINT_URL
+    if not endpoint:
+        return []
+
+    filters = []
+    for token in tokens:
+        escaped = _escape_sparql(token.lower())
+        filters.append(f'CONTAINS(LCASE(STR(?prompt)), "{escaped}")')
+        filters.append(f'CONTAINS(LCASE(STR(?response)), "{escaped}")')
+    filter_clause = " || ".join(filters) if filters else "TRUE"
+
+    sparql = f"""
+    SELECT ?turn ?prompt ?response
+    WHERE {{
+      GRAPH <orion:chat> {{
+        ?turn a <http://conjourney.net/orion#ChatTurn> ;
+              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" ;
+              <http://conjourney.net/orion#prompt> ?prompt ;
+              <http://conjourney.net/orion#response> ?response .
+      }}
+      FILTER({filter_clause})
+    }}
+    ORDER BY DESC(STR(?turn))
+    LIMIT {max_items}
+    """
+
+    try:
+        resp = requests.post(
+            endpoint,
+            data=sparql,
+            headers={
+                "Content-Type": "application/sparql-query",
+                "Accept": "application/sparql-results+json",
+            },
+            auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
+            timeout=settings.RECALL_RDF_TIMEOUT_SEC,
+        )
+    except Exception:
+        return []
+
+    if resp.status_code != 200:
+        return []
+
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+
+    bindings = data.get("results", {}).get("bindings", [])
+    out: List[Dict[str, Any]] = []
+    for b in bindings:
+        turn = b.get("turn", {}).get("value")
+        prompt = (b.get("prompt", {}).get("value") or "").strip()
+        response = (b.get("response", {}).get("value") or "").strip()
+        if not turn:
+            continue
+        text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+        out.append(
+            {
+                "id": turn,
+                "source": "rdf_chat",
+                "source_ref": "graphdb",
+                "uri": turn,
+                "text": text[:1800],
+                "ts": 0.0,
+                "tags": ["rdf", "chat", "chatturn"],
+                "score": 0.7,
+                "meta": {"session_id": session_id},
+            }
+        )
+        if len(out) >= max_items:
+            break
+    return out
+
 # ---------------------------------------------------------------------
 # Backwards-compat exports
 # These are imported by legacy pipeline/worker codepaths.
@@ -622,6 +705,49 @@ def _fetch_rdf_neighborhood_fragments(*, query_text: str, max_items: int = 8):
         return []
 
     bindings = data.get("results", {}).get("bindings", [])
+    def _fetch_subject_literals(subject: str) -> str:
+        if not subject:
+            return ""
+        sparql = f"""
+        SELECT ?label ?prompt ?response
+        WHERE {{
+          OPTIONAL {{ <{_escape_sparql(subject)}> <http://www.w3.org/2000/01/rdf-schema#label> ?label }}
+          OPTIONAL {{ <{_escape_sparql(subject)}> <http://conjourney.net/orion#prompt> ?prompt }}
+          OPTIONAL {{ <{_escape_sparql(subject)}> <http://conjourney.net/orion#response> ?response }}
+        }}
+        LIMIT 1
+        """
+        try:
+            resp = requests.post(
+                endpoint,
+                data=sparql,
+                headers={"Content-Type": "application/sparql-query", "Accept": "application/sparql-results+json"},
+                auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
+                timeout=settings.RECALL_RDF_TIMEOUT_SEC,
+            )
+        except Exception:
+            return ""
+        if resp.status_code != 200:
+            return ""
+        try:
+            data = resp.json()
+        except Exception:
+            return ""
+        bindings = data.get("results", {}).get("bindings", [])
+        if not bindings:
+            return ""
+        row = bindings[0]
+        label = (row.get("label", {}).get("value") or "").strip()
+        prompt = (row.get("prompt", {}).get("value") or "").strip()
+        response = (row.get("response", {}).get("value") or "").strip()
+        parts: List[str] = []
+        if label:
+            parts.append(f"label: {label}")
+        if prompt or response:
+            parts.append(f'ExactUserText: "{prompt}"')
+            parts.append(f'OrionResponse: "{response}"')
+        return "\n".join(p for p in parts if p)
+
     out = []
     for b in bindings:
         s = b.get("s", {}).get("value") or b.get("node", {}).get("value")
@@ -629,13 +755,20 @@ def _fetch_rdf_neighborhood_fragments(*, query_text: str, max_items: int = 8):
         o = b.get("o", {}).get("value") or b.get("neighbor", {}).get("value")
         if not s or not p or not o:
             continue
+        text = f"{p} {o}"[:1500]
+        if p.endswith("rdf-syntax-ns#type") and (
+            o.endswith("ChatTurn") or o.endswith("Entity")
+        ):
+            literal = _fetch_subject_literals(s)
+            if literal:
+                text = literal[:1500]
         out.append(
             {
                 "id": s,
                 "source": "rdf",
                 "source_ref": "graphdb",
                 "uri": s,
-                "text": f"{p} {o}"[:1500],
+                "text": text,
                 "ts": 0.0,
                 "tags": ["rdf"],
                 "score": 0.5,

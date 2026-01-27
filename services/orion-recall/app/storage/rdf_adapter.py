@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import requests
 
@@ -442,34 +442,36 @@ def _build_claim_snippet(pairs: List[Tuple[str, str]]) -> str:
         return ""
     return f"Claim: {' | '.join(parts)}"
 
-
-def fetch_rdf_fragments(
+def fetch_rdf_chatturn_fragments(
     *,
     query_text: str,
-    max_items: int = 8,
-) -> List[Dict[str, str]]:
+    session_id: str | None,
+    max_items: int = 20,
+) -> List[Dict[str, Any]]:
     """
-    Minimal GraphDB lookup used for recall fusion.
-    Returns a list of dicts that can be transformed downstream.
+    Pull recent ChatTurns from GRAPH <orion:chat> for the session.
+    NO keyword filtering at SPARQL layer (sustainable).
+    Ranking happens later (vector / lexical) in fusion.
     """
-    if not query_text:
-        return []
-
     endpoint = settings.RECALL_RDF_ENDPOINT_URL
-    if not endpoint:
+    if not endpoint or not session_id:
         return []
 
-    q = query_text.strip()
-    if not q:
-        return []
-
-    keywords = _extract_keywords(q)
-    if not keywords:
-        keywords = [q[:80].lower()]
-
-    max_nodes = max(1, min(max_items, 8))
-    max_results = max_items * 4
-    sparql = _build_sparql_query(keywords, max_nodes=max_nodes, max_results=max_results)
+    # If you have a timestamp predicate, add it here and ORDER BY DESC(?ts).
+    # If not, we order by the turn URI string as a stable proxy.
+    sparql = f"""
+    SELECT ?turn ?prompt ?response
+    WHERE {{
+      GRAPH <orion:chat> {{
+        ?turn a <http://conjourney.net/orion#ChatTurn> ;
+              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" ;
+              <http://conjourney.net/orion#prompt> ?prompt ;
+              <http://conjourney.net/orion#response> ?response .
+      }}
+    }}
+    ORDER BY DESC(STR(?turn))
+    LIMIT {max_items}
+    """
 
     try:
         resp = requests.post(
@@ -494,25 +496,273 @@ def fetch_rdf_fragments(
         return []
 
     bindings = data.get("results", {}).get("bindings", [])
-    by_subject: Dict[str, List[Tuple[str, str]]] = {}
+    out: List[Dict[str, Any]] = []
     for b in bindings:
-        node = b.get("node", {}).get("value")
-        predicate = b.get("p", {}).get("value")
-        neighbor = b.get("neighbor", {}).get("value")
-        if not node or not predicate or not neighbor:
+        turn = b.get("turn", {}).get("value")
+        prompt = (b.get("prompt", {}).get("value") or "").strip()
+        response = (b.get("response", {}).get("value") or "").strip()
+        if not turn:
             continue
-        by_subject.setdefault(node, []).append((predicate, neighbor))
 
-    frags: List[Dict[str, str]] = []
-    for s, pairs in by_subject.items():
-        if _is_claim_node(s):
-            text = _build_claim_snippet(pairs)
-        else:
-            text = " | ".join([f"{predicate} {neighbor}" for predicate, neighbor in pairs])[:1500]
-        if not text:
+        # Keep the exact text accessible for quoting.
+        text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+
+        out.append(
+            {
+                "id": turn,
+                "source": "rdf_chat",
+                "source_ref": "graphdb",
+                "uri": turn,
+                "text": text[:1800],
+                "ts": 0.0,
+                "tags": ["rdf", "chat", "chatturn"],
+                # Base score is neutral; ranking should happen later.
+                "score": 0.50,
+                "meta": {"session_id": session_id},
+            }
+        )
+    return out
+
+
+def fetch_rdf_chatturn_exact_matches(
+    *,
+    tokens: List[str],
+    session_id: str | None,
+    max_items: int = 20,
+) -> List[Dict[str, Any]]:
+    if not tokens or not session_id:
+        return []
+    endpoint = settings.RECALL_RDF_ENDPOINT_URL
+    if not endpoint:
+        return []
+
+    filters = []
+    for token in tokens:
+        escaped = _escape_sparql(token.lower())
+        filters.append(f'CONTAINS(LCASE(STR(?prompt)), "{escaped}")')
+        filters.append(f'CONTAINS(LCASE(STR(?response)), "{escaped}")')
+    filter_clause = " || ".join(filters) if filters else "TRUE"
+
+    sparql = f"""
+    SELECT ?turn ?prompt ?response
+    WHERE {{
+      GRAPH <orion:chat> {{
+        ?turn a <http://conjourney.net/orion#ChatTurn> ;
+              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" ;
+              <http://conjourney.net/orion#prompt> ?prompt ;
+              <http://conjourney.net/orion#response> ?response .
+      }}
+      FILTER({filter_clause})
+    }}
+    ORDER BY DESC(STR(?turn))
+    LIMIT {max_items}
+    """
+
+    try:
+        resp = requests.post(
+            endpoint,
+            data=sparql,
+            headers={
+                "Content-Type": "application/sparql-query",
+                "Accept": "application/sparql-results+json",
+            },
+            auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
+            timeout=settings.RECALL_RDF_TIMEOUT_SEC,
+        )
+    except Exception:
+        return []
+
+    if resp.status_code != 200:
+        return []
+
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+
+    bindings = data.get("results", {}).get("bindings", [])
+    out: List[Dict[str, Any]] = []
+    for b in bindings:
+        turn = b.get("turn", {}).get("value")
+        prompt = (b.get("prompt", {}).get("value") or "").strip()
+        response = (b.get("response", {}).get("value") or "").strip()
+        if not turn:
             continue
-        tags = ["rdf", "claim"] if _is_claim_node(s) else ["rdf"]
-        frags.append(
+        text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+        out.append(
+            {
+                "id": turn,
+                "source": "rdf_chat",
+                "source_ref": "graphdb",
+                "uri": turn,
+                "text": text[:1800],
+                "ts": 0.0,
+                "tags": ["rdf", "chat", "chatturn"],
+                "score": 0.7,
+                "meta": {"session_id": session_id},
+            }
+        )
+        if len(out) >= max_items:
+            break
+    return out
+
+# ---------------------------------------------------------------------
+# Backwards-compat exports
+# These are imported by legacy pipeline/worker codepaths.
+# Even if you don't use them, they must exist to prevent boot cascades.
+# ---------------------------------------------------------------------
+
+def fetch_rdf_fragments(*, query_text: str, max_items: int = 8):
+    """
+    Legacy API: return generic RDF fragments for query_text.
+    Prefer the real implementation if present; otherwise degrade safely.
+    """
+    impl = globals().get("_fetch_rdf_fragments_impl") or globals().get("fetch_rdf_fragments_impl")
+    if callable(impl):
+        return impl(query_text=query_text, max_items=max_items)
+    # If you have fetch_rdf_graphtri_fragments, use it as a weak fallback
+    try:
+        return _fetch_rdf_neighborhood_fragments(query_text=query_text, max_items=max_items)
+    except Exception:
+        return []
+
+
+def fetch_rdf_expansion_terms(*, query_text: str, max_items: int = 6):
+    """
+    Legacy API: return related terms for query expansion.
+    If not implemented, return [] (safe).
+    """
+    impl = globals().get("_fetch_rdf_expansion_terms_impl") or globals().get("fetch_rdf_expansion_terms_impl")
+    if callable(impl):
+        return impl(query_text=query_text, max_items=max_items)
+    try:
+        # If you have a neighborhood scan, reuse labels as expansion terms.
+        items = _fetch_rdf_neighborhood_fragments(query_text=query_text, max_items=max_items * 3)
+        terms = []
+        seen = set()
+        for it in items:
+            txt = str(it.get("text") or "")
+            for token in re.findall(r"[A-Za-z0-9_]{3,}", txt):
+                t = token.strip()
+                if not t or t.lower() in seen:
+                    continue
+                seen.add(t.lower())
+                terms.append(t)
+                if len(terms) >= max_items:
+                    break
+            if len(terms) >= max_items:
+                break
+        return terms
+    except Exception:
+        return []
+
+
+def _fetch_rdf_neighborhood_fragments(*, query_text: str, max_items: int = 8):
+    """
+    Minimal, safe RDF neighborhood lookup.
+    This exists only to satisfy legacy callers if the richer functions were removed.
+    """
+    endpoint = settings.RECALL_RDF_ENDPOINT_URL
+    if not endpoint or not query_text:
+        return []
+    q = (query_text or "").strip()
+    if not q:
+        return []
+
+    keywords = _extract_keywords(q, max_keywords=6) if "max_keywords" in _extract_keywords.__code__.co_varnames else _extract_keywords(q)
+
+    # Fallback: reuse your existing _build_sparql_query if present
+    if "_build_sparql_query" in globals():
+        sparql = _build_sparql_query(keywords, max_nodes=max(1, min(max_items, 6)), max_results=max_items * 4)
+    else:
+        # extremely basic SPARQL
+        filters = " || ".join(f'CONTAINS(LCASE(STR(?o)), "{_escape_sparql(k)}")' for k in keywords)
+        sparql = f"""
+        SELECT ?s ?p ?o WHERE {{
+          ?s ?p ?o .
+          FILTER({filters})
+        }}
+        LIMIT {max_items * 4}
+        """
+
+    try:
+        resp = requests.post(
+            endpoint,
+            data=sparql,
+            headers={"Content-Type": "application/sparql-query", "Accept": "application/sparql-results+json"},
+            auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
+            timeout=settings.RECALL_RDF_TIMEOUT_SEC,
+        )
+    except Exception:
+        return []
+
+    if resp.status_code != 200:
+        return []
+
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+
+    bindings = data.get("results", {}).get("bindings", [])
+    def _fetch_subject_literals(subject: str) -> str:
+        if not subject:
+            return ""
+        sparql = f"""
+        SELECT ?label ?prompt ?response
+        WHERE {{
+          OPTIONAL {{ <{_escape_sparql(subject)}> <http://www.w3.org/2000/01/rdf-schema#label> ?label }}
+          OPTIONAL {{ <{_escape_sparql(subject)}> <http://conjourney.net/orion#prompt> ?prompt }}
+          OPTIONAL {{ <{_escape_sparql(subject)}> <http://conjourney.net/orion#response> ?response }}
+        }}
+        LIMIT 1
+        """
+        try:
+            resp = requests.post(
+                endpoint,
+                data=sparql,
+                headers={"Content-Type": "application/sparql-query", "Accept": "application/sparql-results+json"},
+                auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
+                timeout=settings.RECALL_RDF_TIMEOUT_SEC,
+            )
+        except Exception:
+            return ""
+        if resp.status_code != 200:
+            return ""
+        try:
+            data = resp.json()
+        except Exception:
+            return ""
+        bindings = data.get("results", {}).get("bindings", [])
+        if not bindings:
+            return ""
+        row = bindings[0]
+        label = (row.get("label", {}).get("value") or "").strip()
+        prompt = (row.get("prompt", {}).get("value") or "").strip()
+        response = (row.get("response", {}).get("value") or "").strip()
+        parts: List[str] = []
+        if label:
+            parts.append(f"label: {label}")
+        if prompt or response:
+            parts.append(f'ExactUserText: "{prompt}"')
+            parts.append(f'OrionResponse: "{response}"')
+        return "\n".join(p for p in parts if p)
+
+    out = []
+    for b in bindings:
+        s = b.get("s", {}).get("value") or b.get("node", {}).get("value")
+        p = b.get("p", {}).get("value")
+        o = b.get("o", {}).get("value") or b.get("neighbor", {}).get("value")
+        if not s or not p or not o:
+            continue
+        text = f"{p} {o}"[:1500]
+        if p.endswith("rdf-syntax-ns#type") and (
+            o.endswith("ChatTurn") or o.endswith("Entity")
+        ):
+            literal = _fetch_subject_literals(s)
+            if literal:
+                text = literal[:1500]
+        out.append(
             {
                 "id": s,
                 "source": "rdf",
@@ -520,66 +770,11 @@ def fetch_rdf_fragments(
                 "uri": s,
                 "text": text,
                 "ts": 0.0,
-                "tags": tags,
-                "score": 0.6,
+                "tags": ["rdf"],
+                "score": 0.5,
                 "meta": {"subject": s},
             }
         )
-
-    return frags[:max_items]
-
-
-def fetch_rdf_expansion_terms(
-    *,
-    query_text: str,
-    max_items: int = 6,
-) -> List[str]:
-    if not query_text:
-        return []
-
-    endpoint = settings.RECALL_RDF_ENDPOINT_URL
-    if not endpoint:
-        return []
-
-    q = query_text.strip()
-    if not q:
-        return []
-
-    keywords = _extract_keywords(q)
-    if not keywords:
-        keywords = [q[:80].lower()]
-
-    max_nodes = max(1, min(max_items, 6))
-    max_results = max_items * 6
-    sparql = _build_sparql_query(keywords, max_nodes=max_nodes, max_results=max_results)
-
-    try:
-        resp = requests.post(
-            endpoint,
-            data=sparql,
-            headers={
-                "Content-Type": "application/sparql-query",
-                "Accept": "application/sparql-results+json",
-            },
-            auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
-            timeout=settings.RECALL_RDF_TIMEOUT_SEC,
-        )
-    except Exception:
-        return []
-
-    if resp.status_code != 200:
-        return []
-
-    try:
-        data = resp.json()
-    except Exception:
-        return []
-
-    bindings = data.get("results", {}).get("bindings", [])
-    neighbors: List[str] = []
-    for b in bindings:
-        neighbor = b.get("neighbor", {}).get("value")
-        if neighbor:
-            neighbors.append(neighbor)
-
-    return _extract_labels(neighbors, max_items=max_items)
+        if len(out) >= max_items:
+            break
+    return out

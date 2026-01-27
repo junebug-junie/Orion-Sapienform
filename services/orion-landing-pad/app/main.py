@@ -9,6 +9,7 @@ from loguru import logger
 
 from .service import LandingPadService
 from .settings import settings
+from .web.main import mount_web
 
 service = LandingPadService(settings=settings)
 
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="orion-landing-pad", lifespan=lifespan)
+mount_web(app, store=service.store, settings=settings)
 
 
 @app.get("/health")

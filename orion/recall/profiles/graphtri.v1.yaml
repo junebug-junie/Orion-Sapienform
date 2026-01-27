@@ -1,5 +1,5 @@
 profile: graphtri.v1
-vector_top_k: 10
+vector_top_k: 15
 rdf_top_k: 12
 max_per_source: 5
 max_total_items: 14
@@ -7,5 +7,18 @@ time_decay_half_life_hours: 72
 render_budget_tokens: 280
 enable_query_expansion: true
 enable_sql_timeline: true
-sql_since_minutes: 360
-sql_top_k: 12
+sql_since_minutes: 20160 #14 days
+sql_top_k: 4
+relevance:
+  backend_weights:
+    vector: 1.0
+    sql_timeline: 0.9
+    sql_chat: 0.6
+    rdf_chat: 0.5
+    rdf: 0.45
+  score_weight: 0.7
+  text_similarity_weight: 0.2
+  recency_weight: 0.1
+  enable_recency: true
+  recency_half_life_hours: 72
+  session_boost: 0.12

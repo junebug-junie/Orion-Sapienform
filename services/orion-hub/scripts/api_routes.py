@@ -18,6 +18,20 @@ logger = logging.getLogger("orion-hub.api")
 
 router = APIRouter()
 
+def _normalize_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
 
 # ======================================================================
 # 🏠 ROOT + STATIC HTML
@@ -79,7 +93,13 @@ async def handle_chat_request(
     user_messages = payload.get("messages", [])
     mode = payload.get("mode", "brain")
 
-    use_recall = bool(payload.get("use_recall", False))
+    # Respect client toggle; default to True if missing
+    raw_recall = payload.get("use_recall", None)
+    use_recall = _normalize_bool(raw_recall, default=True)
+    
+    recall_mode = payload.get("recall_mode")
+    recall_profile = payload.get("recall_profile")
+    recall_required = bool(payload.get("recall_required", False))
 
     packs = payload.get("packs")
     user_id = payload.get("user_id")
@@ -103,6 +123,27 @@ async def handle_chat_request(
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
+    recall_payload = {"enabled": use_recall}
+    if recall_mode:
+        recall_payload["mode"] = recall_mode
+    if recall_profile:
+        recall_payload["profile"] = recall_profile
+    if recall_required:
+        recall_payload["required"] = True
+    
+    # Default profile if enabled but missing
+    if use_recall and "profile" not in recall_payload:
+        recall_payload["profile"] = "reflect.v1"
+        
+    logger.info(f"Chat Request recall config: {recall_payload} session_id={session_id}")
+    logger.info(
+        "HTTP Chat Request payload session_id=%s messages_len=%s last_user_len=%s last_user_head=%r",
+        session_id,
+        len(user_messages),
+        len(user_prompt or ""),
+        (user_prompt or "")[:120],
+    )
+
     # Build the Request
     req = CortexChatRequest(
         prompt=user_prompt,
@@ -112,7 +153,7 @@ async def handle_chat_request(
         packs=packs,
         verb=verb_override,
         options=options if options else None,
-        recall={"enabled": use_recall},
+        recall=recall_payload,
         metadata={"source": "hub_http"},
     )
 
@@ -131,6 +172,10 @@ async def handle_chat_request(
         # Here we rely on CortexChatResult having it.
         correlation_id = resp.cortex_result.correlation_id
 
+        memory_digest = None
+        if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
+            memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
+
         return {
             "session_id": session_id,
             "mode": mode,
@@ -139,6 +184,7 @@ async def handle_chat_request(
             "tokens": len(text.split()), # simple approx
             "raw": raw_result,
             "recall_debug": resp.cortex_result.recall_debug,
+            "memory_digest": memory_digest,
             "spark_meta": None,
             "correlation_id": correlation_id,
         }
@@ -183,7 +229,7 @@ async def api_chat(
             if isinstance(user_messages, list) and user_messages:
                 latest_user_prompt = user_messages[-1].get("content", "") or ""
 
-            use_recall = bool(payload.get("use_recall", False))
+            use_recall = bool(result.get("use_recall", True))
 
             # If we didn't get a correlation_id from gateway, fallback to new UUID
             # (but ideally we got it).

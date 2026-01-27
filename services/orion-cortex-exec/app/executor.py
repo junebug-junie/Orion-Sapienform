@@ -33,10 +33,32 @@ from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestRepl
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .recall_utils import resolve_profile
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
 
 logger = logging.getLogger("orion.cortex.exec")
+
+
+def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        "as_of": None,
+        "freshness_s": None,
+        "constraint": "NONE",
+        "cluster": {
+            "composite": {"strain": 0.0, "homeostasis": 0.0, "stability": 1.0},
+            "trend": {
+                "strain": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                "homeostasis": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                "stability": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+            },
+        },
+        "nodes": {},
+        "summary": None,
+        "induction": None,
+    }
 
 
 def _metacog_messages(prompt: str) -> List[Dict[str, Any]]:
@@ -277,10 +299,26 @@ def _build_hop_messages(
     return normalized
 
 
+def _append_memory_digest(prompt: str, memory_digest: str) -> str:
+    digest = (memory_digest or "").strip()
+    if not digest:
+        return prompt
+    prompt_text = prompt or ""
+    if "RELEVANT MEMORY" in prompt_text or digest in prompt_text:
+        return prompt
+    return f"{prompt_text}\n\n# RELEVANT MEMORY (retrieved)\n{digest}\n"
+
+
 def _extract_llm_text(res: Any) -> str:
     """Safely extract text content from various LLM result shapes."""
     if not res:
         return ""
+
+    if isinstance(res, dict):
+        try:
+            return json.dumps(res)
+        except Exception:
+            return str(res)
 
     if hasattr(res, "choices") and res.choices:
         try:
@@ -307,6 +345,12 @@ def _extract_llm_text(res: Any) -> str:
         except Exception:
             pass
 
+    if isinstance(res, list):
+        try:
+            return json.dumps(res)
+        except Exception:
+            return str(res)
+
     return str(res)
 
 
@@ -317,6 +361,9 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     """
     if not text:
         return None
+    extracted = _extract_first_json_object(text)
+    if isinstance(extracted, dict):
+        return extracted
     try:
         start = text.find("{")
         end = text.rfind("}")
@@ -325,6 +372,49 @@ def _loose_json_extract(text: str) -> Dict[str, Any] | None:
             return json.loads(json_str)
     except Exception:
         pass
+    return None
+
+
+def _extract_first_json_object(text: str) -> Dict[str, Any] | None:
+    if not text or "{" not in text:
+        return None
+
+    starts = [i for i, ch in enumerate(text) if ch == "{"]
+
+    for s in starts:
+        depth = 0
+        in_str = False
+        esc = False
+
+        for e in range(s, len(text)):
+            ch = text[e]
+
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[s : e + 1].strip()
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                    break
+
     return None
 
 
@@ -375,6 +465,8 @@ async def run_recall_step(
             "error": None,
         }
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
+        debug["memory_digest"] = memory_digest
+        debug["memory_digest_chars"] = len(memory_digest or "")
         ctx["memory_digest"] = memory_digest
         ctx["memory_bundle"] = bundle.model_dump(mode="json")
         ctx["memory_used"] = True
@@ -573,6 +665,9 @@ async def call_step_services(
                     if not patch:
                         patch = _loose_json_extract(raw_content)
 
+                    if isinstance(patch, dict) and isinstance(patch.get("draft"), dict):
+                        patch = patch["draft"]
+
                     if not patch:
                         logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
                         patch = {}
@@ -609,6 +704,13 @@ async def call_step_services(
                             final_dict["resonance_signature"] = json.dumps(rs)
                         except Exception:
                             final_dict["resonance_signature"] = str(rs)
+
+                    if isinstance(final_dict.get("change_type"), dict):
+                        trace_id = ctx.get("trace_id") or correlation_id
+                        logger.warning(
+                            "MetacogEnrichService: change_type emitted as dict "
+                            f"correlation_id={correlation_id} trace_id={trace_id}"
+                        )
 
                     final_entry = CollapseMirrorEntryV2.model_validate(final_dict)
 
@@ -724,13 +826,10 @@ async def call_step_services(
                     reply_to=state_reply_channel,
                     payload=state_req.model_dump(mode="json"),
                 )
-                biometrics_context = {
-                    "status": "missing",
-                    "note": "no_state_reply",
-                    "summary": None,
-                    "induction": None,
-                    "cluster": None,
-                }
+                biometrics_context = _default_biometrics_context(
+                    status="NO_SIGNAL",
+                    reason="no_state_reply",
+                )
                 try:
                     state_msg = await bus.rpc_request(
                         settings.channel_state_request,
@@ -743,9 +842,31 @@ async def call_step_services(
                         state_res = StateLatestReply.model_validate(state_dec.envelope.payload)
                         if state_res.biometrics:
                             if hasattr(state_res.biometrics, "model_dump"):
-                                biometrics_context = state_res.biometrics.model_dump(mode="json")
+                                raw_biometrics = state_res.biometrics.model_dump(mode="json")
                             elif isinstance(state_res.biometrics, dict):
-                                biometrics_context = state_res.biometrics
+                                raw_biometrics = state_res.biometrics
+                            else:
+                                raw_biometrics = {}
+                            biometrics_context = _default_biometrics_context(
+                                status="OK",
+                                reason="state_service",
+                            )
+                            if isinstance(raw_biometrics, dict):
+                                biometrics_context["summary"] = raw_biometrics.get("summary")
+                                biometrics_context["induction"] = raw_biometrics.get("induction")
+                                if raw_biometrics.get("constraint"):
+                                    biometrics_context["constraint"] = raw_biometrics.get("constraint")
+                                if raw_biometrics.get("freshness_s") is not None:
+                                    biometrics_context["freshness_s"] = raw_biometrics.get("freshness_s")
+                                if raw_biometrics.get("as_of") is not None:
+                                    biometrics_context["as_of"] = raw_biometrics.get("as_of")
+                                if raw_biometrics.get("status"):
+                                    biometrics_context["status"] = raw_biometrics.get("status")
+                                if raw_biometrics.get("reason"):
+                                    biometrics_context["reason"] = raw_biometrics.get("reason")
+                                nodes = raw_biometrics.get("nodes")
+                                if isinstance(nodes, dict):
+                                    biometrics_context["nodes"] = nodes
                         ctx["biometrics"] = biometrics_context
                         ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                         if state_res.ok and state_res.snapshot:
@@ -782,13 +903,10 @@ async def call_step_services(
                 except Exception as e:
                     logger.warning("MetacogContextService state RPC failed: %s", e)
                     spark_line = f"error: {e}"
-                    biometrics_context = {
-                        "status": "missing",
-                        "note": f"state_rpc_error:{e}",
-                        "summary": None,
-                        "induction": None,
-                        "cluster": None,
-                    }
+                    biometrics_context = _default_biometrics_context(
+                        status="NO_SIGNAL",
+                        reason=f"state_rpc_error:{e}",
+                    )
                     ctx["biometrics"] = biometrics_context
                     ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                 if "biometrics" not in ctx:
@@ -841,14 +959,23 @@ async def call_step_services(
                 continue
 
             if service == "RecallService":
-                logs.append(f"rpc -> RecallService (reply={reply_channel}, profile={step.recall_profile})")
+                recall_cfg = ctx.get("recall") or {}
+                resolved_profile, profile_source = resolve_profile(
+                    recall_cfg,
+                    verb_profile=ctx.get("plan_recall_profile"),
+                    step=step,
+                    is_recall_step=True,
+                )
+                logs.append(
+                    f"rpc -> RecallService (reply={reply_channel}, profile={resolved_profile}, source={profile_source})"
+                )
                 recall_step, recall_debug, memory_digest = await run_recall_step(
                     bus,
                     source=source,
                     ctx=ctx,
                     correlation_id=correlation_id,
-                    recall_cfg=ctx.get("recall") or {},
-                    recall_profile=step.recall_profile,
+                    recall_cfg=recall_cfg,
+                    recall_profile=resolved_profile,
                     step_name=step.step_name,
                     step_order=step.order,
                     diagnostic=diagnostic,
@@ -860,8 +987,7 @@ async def call_step_services(
             if service == "LLMGatewayService":
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 memory_digest = (ctx.get("memory_digest") or "").strip()
-                if memory_digest:
-                    prompt = f"{prompt}\n\n# RELEVANT MEMORY (retrieved)\n{memory_digest}\n"
+                prompt = _append_memory_digest(prompt, memory_digest)
                 if diagnostic:
                     logger.info(
                         "memory_digest_present=%s memory_digest_chars=%s",
@@ -869,6 +995,73 @@ async def call_step_services(
                         len(memory_digest),
                     )
                 messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                memory_has_marker = bool(memory_digest) and memory_digest in prompt
+                raw_query = (ctx.get("raw_user_text") or _last_user_message(ctx) or "").strip()
+                query_terms = []
+                if raw_query:
+                    stopwords = {
+                        "the",
+                        "and",
+                        "or",
+                        "for",
+                        "with",
+                        "from",
+                        "that",
+                        "this",
+                        "have",
+                        "has",
+                        "what",
+                        "when",
+                        "where",
+                        "which",
+                        "there",
+                        "your",
+                        "you",
+                        "yourself",
+                        "about",
+                        "into",
+                        "were",
+                        "was",
+                        "are",
+                        "but",
+                        "been",
+                        "their",
+                        "they",
+                    }
+                    raw_tokens = [
+                        "".join(ch for ch in token if ch.isalnum()).lower()
+                        for token in raw_query.split()
+                    ]
+                    query_terms = [
+                        token
+                        for token in raw_tokens
+                        if len(token) >= 4 and token and token not in stopwords
+                    ][:8]
+                memory_contains_query_term = any(
+                    term in memory_digest.lower() for term in query_terms
+                )
+                logger.info(
+                    "llm_request_preflight corr_id=%s outgoing_msgs_count=%s has_memory_digest=%s memory_digest_len_chars=%s memory_digest_has_marker_in_prompt=%s memory_contains_any_query_term=%s query_terms_checked=%s",
+                    correlation_id,
+                    len(messages_payload or []),
+                    bool(memory_digest),
+                    len(memory_digest),
+                    memory_has_marker,
+                    memory_contains_query_term,
+                    len(query_terms),
+                )
+                roles = []
+                sizes = []
+                for msg in messages_payload or []:
+                    if isinstance(msg, dict):
+                        roles.append(msg.get("role"))
+                        sizes.append(len(str(msg.get("content") or "")))
+                logger.info(
+                    "llm_request_message_shapes corr_id=%s roles=%s content_lens=%s",
+                    correlation_id,
+                    roles,
+                    sizes,
+                )
 
                 request_object = ChatRequestPayload(
                     model=req_model,
@@ -902,6 +1095,8 @@ async def call_step_services(
                 logs.append(f"ok <- {service}")
 
             elif service == "AgentChainService":
+                memory_digest = (ctx.get("memory_digest") or "").strip()
+                prompt = _append_memory_digest(prompt, memory_digest)
                 hop_msgs = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 agent_req = AgentChainRequest(

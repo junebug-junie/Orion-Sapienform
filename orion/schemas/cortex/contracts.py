@@ -14,7 +14,8 @@ class RecallDirective(BaseModel):
 
     enabled: bool = True
     required: bool = False
-    mode: Literal["hybrid", "deep"] = "hybrid"
+    mode: Literal["hybrid", "deep", "graph"] = "hybrid"
+    profile: Optional[str] = None
     time_window_days: int = 90
     max_items: int = 8
 

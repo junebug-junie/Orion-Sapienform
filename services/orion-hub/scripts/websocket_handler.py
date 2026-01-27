@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
+from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
     publish_chat_history,
@@ -26,6 +27,21 @@ logger = logging.getLogger("orion-hub.ws")
 #________________________
 # store chat turns
 #________________________
+
+def _normalize_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
 
 
 def _schedule_publish(coro: asyncio.Future, label: str) -> None:
@@ -94,14 +110,47 @@ def _build_prompt_with_history(
 
 
 
-async def drain_queue(websocket: WebSocket, queue: asyncio.Queue):
+async def _with_biometrics(
+    payload: Dict[str, Any],
+    *,
+    cache: Optional[BiometricsCache],
+) -> Dict[str, Any]:
+    enriched = dict(payload)
+    if cache:
+        enriched["biometrics"] = await cache.get_snapshot()
+    else:
+        enriched["biometrics"] = {
+            "status": "NO_SIGNAL",
+            "reason": "cache_unavailable",
+            "as_of": None,
+            "freshness_s": None,
+            "constraint": "NONE",
+            "cluster": {
+                "composite": {"strain": 0.0, "homeostasis": 0.0, "stability": 1.0},
+                "trend": {
+                    "strain": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                    "homeostasis": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                    "stability": {"trend": 0.5, "volatility": 0.0, "spike_rate": 0.0},
+                },
+            },
+            "nodes": {},
+        }
+    return enriched
+
+
+async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optional[BiometricsCache]):
     try:
         while websocket.client_state.name == "CONNECTED":
             msg = await queue.get()
-            await websocket.send_json(msg)
+            try:
+                await websocket.send_json(await _with_biometrics(msg, cache=cache))
+            except WebSocketDisconnect:
+                break
             queue.task_done()
             await asyncio.sleep(0.01)
     except asyncio.CancelledError:
+        pass
+    except WebSocketDisconnect:
         pass
     except Exception as e:
         logger.error(f"drain_queue error: {e}", exc_info=True)
@@ -117,11 +166,35 @@ async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
     except Exception as e:
         logger.error(f"TTS Remote Failed: {e}")
 
+
+async def biometrics_heartbeat(
+    websocket: WebSocket,
+    *,
+    cache: Optional[BiometricsCache],
+    interval_sec: float,
+) -> None:
+    try:
+        while websocket.client_state.name == "CONNECTED":
+            try:
+                await websocket.send_json(
+                    await _with_biometrics({"biometrics_tick": True}, cache=cache)
+                )
+            except WebSocketDisconnect:
+                break
+            await asyncio.sleep(interval_sec)
+    except asyncio.CancelledError:
+        pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error("Biometrics heartbeat error: %s", e, exc_info=True)
+
 async def websocket_endpoint(websocket: WebSocket):
     import scripts.main
     bus = scripts.main.bus
     cortex_client = scripts.main.cortex_client
     tts_client = scripts.main.tts_client
+    biometrics_cache = scripts.main.biometrics_cache
 
     await websocket.accept()
     logger.info("WebSocket accepted.")
@@ -129,17 +202,24 @@ async def websocket_endpoint(websocket: WebSocket):
     # Soft warning if services missing, but keep connection alive
     if not bus or not cortex_client:
         logger.warning("OrionBus/CortexClient not ready. Chat will be limited.")
-        await websocket.send_json({
+        await websocket.send_json(await _with_biometrics({
             "llm_response": "[SYSTEM WARNING] Bus disconnected. Brain is offline, but UI is active.", 
             "state": "idle"
-        })
+        }, cache=biometrics_cache))
 
     history: List[Dict[str, Any]] = [
         {"role": "system", "content": mini_personality_summary()}
     ]
 
     tts_q: asyncio.Queue = asyncio.Queue()
-    drain_task = asyncio.create_task(drain_queue(websocket, tts_q))
+    drain_task = asyncio.create_task(drain_queue(websocket, tts_q, biometrics_cache))
+    biometrics_task = asyncio.create_task(
+        biometrics_heartbeat(
+            websocket,
+            cache=biometrics_cache,
+            interval_sec=float(getattr(settings, "BIOMETRICS_PUSH_INTERVAL_SEC", 5.0)),
+        )
+    )
 
     try:
         while True:
@@ -186,27 +266,40 @@ async def websocket_endpoint(websocket: WebSocket):
             elif data.get("audio"):
                 if tts_client:
                     try:
-                        await websocket.send_json({"state": "processing"})
+                        await websocket.send_json(
+                            await _with_biometrics({"state": "processing"}, cache=biometrics_cache)
+                        )
                         stt_req = STTRequestPayload(audio_b64=data.get("audio"))
                         stt_result = await tts_client.transcribe(stt_req)
                         transcript = stt_result.text
                     except Exception as e:
                         logger.error(f"STT Error: {e}")
-                        await websocket.send_json({"error": "Transcription failed"})
+                        await websocket.send_json(
+                            await _with_biometrics({"error": "Transcription failed"}, cache=biometrics_cache)
+                        )
                         continue
                 else:
-                    await websocket.send_json({"error": "STT service unavailable"})
+                    await websocket.send_json(
+                        await _with_biometrics({"error": "STT service unavailable"}, cache=biometrics_cache)
+                    )
                     continue
 
             if not transcript:
                 continue
 
             if not is_text_input:
-                await websocket.send_json({"transcript": transcript, "is_text_input": False})
+                await websocket.send_json(
+                    await _with_biometrics(
+                        {"transcript": transcript, "is_text_input": False},
+                        cache=biometrics_cache,
+                    )
+                )
 
             # 2. Chat Execution
             if not cortex_client:
-                await websocket.send_json({"error": "Cortex disconnected (Bus offline)"})
+                await websocket.send_json(
+                    await _with_biometrics({"error": "Cortex disconnected (Bus offline)"}, cache=biometrics_cache)
+                )
                 continue
 
             logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
@@ -217,25 +310,43 @@ async def websocket_endpoint(websocket: WebSocket):
             # ----------------------------
             # N = userassistant pairs; helper keeps up to 2*N messages.
             turns = int(data.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
-            max_chars = int(getattr(settings, "HUB_CONTEXT_MAX_CHARS", 12000))
-            prompt_with_ctx = _build_prompt_with_history(
-                history=history,
-                user_text=transcript,
-                turns=turns,
-                max_chars=max_chars,
-            )
+            prompt_with_ctx = transcript
             # IMPORTANT: store the raw user message for next turn
             history.append({"role": "user", "content": transcript})
 
 
             # Inject trace_verb into metadata so Cortex might see it too
+            raw_recall = data.get("use_recall", None)
+            use_recall = _normalize_bool(raw_recall, default=True)
+            recall_payload = {"enabled": use_recall}
+            
+            if data.get("recall_mode"):
+                recall_payload["mode"] = data.get("recall_mode")
+            if data.get("recall_profile"):
+                recall_payload["profile"] = data.get("recall_profile")
+            if data.get("recall_required"):
+                recall_payload["required"] = True
+
+            # Default profile if enabled but missing
+            if use_recall and "profile" not in recall_payload:
+                recall_payload["profile"] = "reflect.v1"
+
+            logger.info(f"WS Chat Request recall config: {recall_payload} session_id={session_id}")
+            logger.info(
+                "WS Chat Request payload session_id=%s history_len=%s last_user_len=%s last_user_head=%r",
+                session_id,
+                len(history),
+                len(transcript or ""),
+                (transcript or "")[:120],
+            )
+
             chat_req = CortexChatRequest(
                 prompt=prompt_with_ctx,
                 mode=mode,
                 session_id=session_id,
                 user_id=data.get("user_id"),
                 trace_id=trace_id,
-                recall={"enabled": data.get("use_recall", False)},
+                recall=recall_payload,
                 packs=data.get("packs"),
                 metadata={"source": "hub_ws", "trace_verb": trace_verb} 
             )
@@ -258,23 +369,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
 
             orion_response_text = ""
+            memory_digest = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
+                if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
+                    memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
                     orion_response_text = s[len("Orion:"):].lstrip()
             except Exception as e:
                 logger.error(f"Chat RPC Error: {e}")
-                await websocket.send_json({"error": f"Chat failed: {str(e)}"})
+                await websocket.send_json(
+                    await _with_biometrics({"error": f"Chat failed: {str(e)}"}, cache=biometrics_cache)
+                )
                 continue
 
             # 3. Response & Logging
-            await websocket.send_json({
+            await websocket.send_json(await _with_biometrics({
                 "llm_response": orion_response_text,
                 "mode": mode,
-            })
+                "memory_digest": memory_digest,
+            }, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus:
@@ -290,7 +407,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     spark_meta = {
                         "mode": mode,
                         "trace_verb": trace_verb,
-                        "use_recall": bool(data.get("use_recall", False)),
+                        "use_recall": use_recall,
                         **(gateway_meta if isinstance(gateway_meta, dict) else {}),
                     }
 
@@ -375,7 +492,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     history[:] = history[:1] + history[-(2 * turns):]
             except Exception:
                 pass
-            await websocket.send_json({"state": "idle"})
+            await websocket.send_json(await _with_biometrics({"state": "idle"}, cache=biometrics_cache))
 
     except WebSocketDisconnect:
         logger.info("Client disconnected.")
@@ -383,3 +500,4 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}", exc_info=True)
     finally:
         drain_task.cancel()
+        biometrics_task.cancel()

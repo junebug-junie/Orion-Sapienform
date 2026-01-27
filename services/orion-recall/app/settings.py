@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     # ── Vector backend (recall-specific overrides) ────────────────────
     RECALL_VECTOR_BASE_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_BASE_URL"))
     RECALL_VECTOR_COLLECTIONS: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_COLLECTIONS"))
+    RECALL_VECTOR_EMBEDDING_URL: Optional[str] = Field(
+        default="http://orion-vector-host:8320/embedding",
+        validation_alias=AliasChoices("RECALL_VECTOR_EMBEDDING_URL"),
+    )
     RECALL_VECTOR_TIMEOUT_SEC: float = Field(default=5.0, validation_alias=AliasChoices("RECALL_VECTOR_TIMEOUT_SEC"))
     RECALL_VECTOR_MAX_ITEMS: int = Field(default=24, validation_alias=AliasChoices("RECALL_VECTOR_MAX_ITEMS"))
 
@@ -151,12 +155,31 @@ class Settings(BaseSettings):
     RECALL_ENABLE_SQL_TIMELINE: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_SQL_TIMELINE"))
     RECALL_SQL_SINCE_MINUTES: int = Field(default=180, validation_alias=AliasChoices("RECALL_SQL_SINCE_MINUTES"))
     RECALL_SQL_TOP_K: int = Field(default=10, validation_alias=AliasChoices("RECALL_SQL_TOP_K"))
-    RECALL_SQL_TIMELINE_TABLE: str = Field(default="collapse_mirror", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TABLE"))
+    # Default timeline source is chat history. When RECALL_SQL_TIMELINE_TABLE == RECALL_SQL_CHAT_TABLE,
+    # sql_timeline uses RECALL_SQL_CHAT_* columns to build "User/Orion" turns and ignores TIMELINE_* columns.
+    # When RECALL_SQL_TIMELINE_TABLE is another table (e.g. collapse_mirror), TIMELINE_* columns are used.
+    RECALL_SQL_TIMELINE_TABLE: str = Field(default="chat_history_log", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TABLE"))
     RECALL_SQL_TIMELINE_TS_COL: str = Field(default="timestamp", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TS_COL"))
     RECALL_SQL_TIMELINE_TEXT_COL: str = Field(default="summary", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TEXT_COL"))
     RECALL_SQL_TIMELINE_SESSION_COL: str = Field(default="observer", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_SESSION_COL"))
     RECALL_SQL_TIMELINE_NODE_COL: str = Field(default="observer_state", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_NODE_COL"))
     RECALL_SQL_TIMELINE_TAGS_COL: str = Field(default="tags", validation_alias=AliasChoices("RECALL_SQL_TIMELINE_TAGS_COL"))
+    # Juniper observer filter is intended for collapse_mirror timelines only.
+    RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER: Optional[bool] = Field(
+        default=None, validation_alias=AliasChoices("RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER")
+    )
+
+    # ── SQL message table (optional) ──────────────────────────────────
+    RECALL_SQL_MESSAGE_TABLE: str = Field(default="", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_TABLE"))
+    RECALL_SQL_MESSAGE_ROLE_COL: str = Field(
+        default="role", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_ROLE_COL")
+    )
+    RECALL_SQL_MESSAGE_TEXT_COL: str = Field(
+        default="text", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_TEXT_COL")
+    )
+    RECALL_SQL_MESSAGE_CREATED_AT_COL: str = Field(
+        default="created_at", validation_alias=AliasChoices("RECALL_SQL_MESSAGE_CREATED_AT_COL")
+    )
 
     # ── Future tensor / ranker toggles ────────────────────────────────
     RECALL_TENSOR_RANKER_ENABLED: bool = Field(default=False, validation_alias=AliasChoices("RECALL_TENSOR_RANKER_ENABLED"))
@@ -169,6 +192,7 @@ class Settings(BaseSettings):
     @field_validator(
         "RECALL_VECTOR_BASE_URL",
         "RECALL_VECTOR_COLLECTIONS",
+        "RECALL_VECTOR_EMBEDDING_URL",
         "RECALL_RDF_ENDPOINT_URL",
         mode="before",
     )
@@ -185,6 +209,16 @@ class Settings(BaseSettings):
         # If recall-specific base URL is not set, build from VECTOR_DB_HOST/PORT
         if not self.RECALL_VECTOR_BASE_URL:
             self.RECALL_VECTOR_BASE_URL = f"http://{self.VECTOR_DB_HOST}:{self.VECTOR_DB_PORT}"
+
+        # If recall-specific collections are not set, fall back to the chat collection
+        if not self.RECALL_VECTOR_COLLECTIONS:
+            self.RECALL_VECTOR_COLLECTIONS = "orion_chat"
+
+        # Default Juniper filter only for collapse_mirror timelines.
+        if self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:
+            self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER = (
+                self.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"
+            )
 
         # If endpoint override isn't set, build from GraphDB URL + repo
         if not self.RECALL_RDF_ENDPOINT_URL:

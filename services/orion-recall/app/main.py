@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 
 import requests
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -13,7 +14,8 @@ from orion.core.bus.bus_service_chassis import Rabbit
 from .http_models import RecallRequestBody, RecallResponseBody
 from .service import chassis_cfg
 from .settings import settings
-from .worker import handle_recall, process_recall
+from .worker import handle_recall, process_recall, _persist_decision
+
 from orion.core.contracts.recall import RecallQueryV1
 
 logger = logging.getLogger("orion-recall.main")
@@ -85,7 +87,41 @@ async def recall_endpoint(body: RecallRequestBody):
         session_id=body.session_id,
         verb="http.reflect",
         intent=None,
-        profile=settings.RECALL_DEFAULT_PROFILE,
+        profile=body.profile or settings.RECALL_DEFAULT_PROFILE,
     )
-    bundle, _ = await process_recall(q, corr_id="http")
-    return {"bundle": bundle.model_dump()}
+    corr = str(uuid4())
+    bundle, decision = await process_recall(q, corr_id=corr, diagnostic=bool(body.diagnostic))
+
+    # Best-effort persist to Postgres (creates recall_telemetry table in the same DB)
+    _persist_decision(decision)
+
+    debug: dict = {}
+    if body.diagnostic:
+        debug = {
+            "corr_id": corr,
+            "decision": decision.model_dump(mode="json"),
+            "backend_counts": decision.backend_counts,
+            "selected_ids": decision.selected_ids,
+        }
+    return {"bundle": bundle.model_dump(mode="json"), "debug": debug}
+
+
+@app.get("/debug/settings")
+def debug_settings():
+    return {
+        "RECALL_ENABLE_RDF": settings.RECALL_ENABLE_RDF,
+        "RECALL_RDF_ENDPOINT_URL": settings.RECALL_RDF_ENDPOINT_URL,
+        "GRAPHDB_URL": settings.GRAPHDB_URL,
+        "GRAPHDB_REPO": settings.GRAPHDB_REPO,
+        "RECALL_PG_DSN": settings.RECALL_PG_DSN,
+        "RECALL_ENABLE_VECTOR": settings.RECALL_ENABLE_VECTOR,
+        "RECALL_VECTOR_BASE_URL": settings.RECALL_VECTOR_BASE_URL,
+        "RECALL_VECTOR_COLLECTIONS": settings.RECALL_VECTOR_COLLECTIONS,
+        "RECALL_VECTOR_EMBEDDING_URL": settings.RECALL_VECTOR_EMBEDDING_URL,
+        "RECALL_VECTOR_TIMEOUT_SEC": settings.RECALL_VECTOR_TIMEOUT_SEC,
+        "RECALL_VECTOR_MAX_ITEMS": settings.RECALL_VECTOR_MAX_ITEMS,
+        "VECTOR_DB_HOST": settings.VECTOR_DB_HOST,
+        "VECTOR_DB_PORT": settings.VECTOR_DB_PORT,
+        "VECTOR_DB_COLLECTION": settings.VECTOR_DB_COLLECTION,
+        "RECALL_DEFAULT_PROFILE": settings.RECALL_DEFAULT_PROFILE,
+    }

@@ -64,6 +64,20 @@ class PadStore:
                     continue
         return list(reversed(payloads))
 
+    async def _range_stream(self, key: str, start_ms: int, end_ms: int, limit: int) -> List[dict]:
+        min_id = f"{start_ms}-0"
+        max_id = f"{end_ms}-999999"
+        entries = await self.redis.xrange(key, min=min_id, max=max_id, count=limit)
+        payloads: List[dict] = []
+        for _, fields in entries:
+            data = fields.get(b"data") or fields.get("data")
+            if data:
+                try:
+                    payloads.append(orjson.loads(data))
+                except Exception:
+                    continue
+        return payloads
+
     async def get_frames(self, limit: int = 10) -> List[StateFrameV1]:
         payloads = await self._parse_stream(self.frames_stream_key, limit)
         frames: List[StateFrameV1] = []
@@ -84,3 +98,15 @@ class PadStore:
                 continue
         events = sorted(events, key=lambda e: e.salience, reverse=True)
         return events[:limit]
+
+    async def get_event_payloads(self, limit: int = 200) -> List[dict]:
+        return await self._parse_stream(self.events_stream_key, limit)
+
+    async def get_frame_payloads(self, limit: int = 200) -> List[dict]:
+        return await self._parse_stream(self.frames_stream_key, limit)
+
+    async def range_event_payloads(self, start_ms: int, end_ms: int, limit: int = 2000) -> List[dict]:
+        return await self._range_stream(self.events_stream_key, start_ms, end_ms, limit)
+
+    async def range_frame_payloads(self, start_ms: int, end_ms: int, limit: int = 2000) -> List[dict]:
+        return await self._range_stream(self.frames_stream_key, start_ms, end_ms, limit)

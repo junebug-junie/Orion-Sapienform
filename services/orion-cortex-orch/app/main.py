@@ -156,8 +156,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
         # ENRICHMENT: Extract executed verbs from steps to populate metadata
         executed_verbs = []
+        terminal_skip = {"planner_react", "council_checkpoint", "agent_chain", "introspect_spark"}
         for s in steps:
-            if s.verb_name and s.verb_name not in ["planner_react", "council_checkpoint", "agent_chain"]:
+            if s.verb_name and s.verb_name not in terminal_skip:
                 executed_verbs.append(s.verb_name)
         
         # Determine the "primary" verb (the most specific one executed)

@@ -368,9 +368,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
 
             orion_response_text = ""
+            memory_digest = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
+                if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
+                    memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
@@ -386,6 +389,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json(await _with_biometrics({
                 "llm_response": orion_response_text,
                 "mode": mode,
+                "memory_digest": memory_digest,
             }, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection

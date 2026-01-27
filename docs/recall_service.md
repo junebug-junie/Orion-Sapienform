@@ -56,7 +56,7 @@ All messages use the Titanium envelope fields:
   - `rendered`: prompt-ready bullet list
   - `items[]`: id, source, source_ref, uri, score, ts, title, snippet, tags
   - `stats`: backend_counts, latency_ms, profile
-- `RecallDecisionV1`: corr_id, session_id, node_id, verb, profile, query, selected_ids, backend_counts, latency_ms, dropped
+- `RecallDecisionV1`: corr_id, session_id, node_id, verb, profile, query, selected_ids, backend_counts, latency_ms, dropped, ranking_debug (diagnostic only)
 - SQL timeline: optional source reading from Postgres (e.g., `collapse_mirror`), controlled via profile (`enable_sql_timeline`, `sql_top_k`, `sql_since_minutes`). Items are emitted with `source="sql_timeline"` and `source_ref` identifying the table.
 
 ## Profiles
@@ -64,6 +64,7 @@ All messages use the Titanium envelope fields:
 Profiles live in `orion/recall/profiles/*.yaml`:
 
 - `reflect.v1`: balanced vector+RDF
+- `reflect.anchor.v1`: anchor-forward (vector + timeline emphasis)
 - `assist.light.v1`: cheap, vector-focused
 - `deep.graph.v1`: RDF-heavy neighborhood
 
@@ -71,9 +72,17 @@ Fields:
 
 - `vector_top_k`, `rdf_top_k`
 - `max_per_source`, `max_total_items`
-- `time_decay_half_life_hours` (reserved)
+- `time_decay_half_life_hours` (recency fallback)
 - `render_budget_tokens`
 - `enable_query_expansion`
+- `relevance`:
+  - `backend_weights` (priority weights per backend)
+  - `score_weight`
+  - `text_similarity_weight`
+  - `recency_weight`
+  - `enable_recency`
+  - `recency_half_life_hours`
+  - `session_boost`
 
 ## Prompt Usage
 

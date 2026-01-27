@@ -51,16 +51,6 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
             emitted_ids.add(item.id)
 
     if is_graphtri:
-        refusal_patterns = (
-            "i don't have a specific memory",
-            "i don't have a memory",
-            "i don't remember",
-            "i can't recall",
-            "i do not recall",
-            "not in my recent context",
-            "if you could provide more details",
-        )
-
         def _score(it: MemoryItemV1) -> float:
             try:
                 return float(it.score or 0.0)
@@ -75,19 +65,33 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
             ),
             reverse=True,
         )
-        def _is_refusal(it: MemoryItemV1) -> bool:
-            snippet = (it.snippet or "").lower()
-            return any(pattern in snippet for pattern in refusal_patterns)
+        def _is_refusal_snippet(text: str) -> bool:
+            t = (text or "").lower()
+            return any(
+                p in t
+                for p in [
+                    "i don't have a specific memory",
+                    "i don't have a memory",
+                    "i don't remember",
+                    "i cant recall",
+                    "i can't recall",
+                    "i do not recall",
+                    "not in my recent context",
+                    "if you could provide more details",
+                    "if you could share more details",
+                ]
+            )
 
+        skipped_refusal = 0
         top_vector = [
             it
             for it in non_claims
-            if str(it.source or "") == "vector" and not _is_refusal(it)
+            if str(it.source or "") == "vector" and not _is_refusal_snippet(it.snippet or "")
         ][:5]
         top_other = [
             it
             for it in non_claims
-            if str(it.source or "") != "vector" and not _is_refusal(it)
+            if str(it.source or "") != "vector" and not _is_refusal_snippet(it.snippet or "")
         ][:3]
         top_items = top_vector + top_other
         if top_items:
@@ -96,7 +100,8 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
                 if item.id in emitted_ids:
                     continue
                 snippet = (item.snippet or "").strip().replace("\n", " ")
-                if _is_refusal(item):
+                if _is_refusal_snippet(snippet):
+                    skipped_refusal += 1
                     continue
                 if not snippet:
                     continue
@@ -108,6 +113,12 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
                 if not _append_line(line):
                     break
                 emitted_ids.add(item.id)
+        logger = logging.getLogger("orion-recall.render")
+        logger.info(
+            "graphtri_top_snippets_summary top_selected_count=%s top_skipped_refusal_count=%s",
+            len(emitted_ids),
+            skipped_refusal,
+        )
 
         _render_group("High-salience claims", claims)
         remaining = [item for item in others if item.id not in emitted_ids]
@@ -115,13 +126,11 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
 
         first_line = next((line for line in lines if line.startswith("- ")), "")
         digest_has_ai_ml_architect = ("AI/ML" in "\n".join(lines)) or ("Architect" in "\n".join(lines))
-        digest_has_refusal = any(pattern in "\n".join(lines).lower() for pattern in refusal_patterns)
-        logger = logging.getLogger("orion-recall.render")
         logger.info(
             "graphtri_render_guardrails top_snippets_first_line=%r digest_has_ai_ml_architect=%s digest_has_refusal_phrase=%s",
             first_line,
             digest_has_ai_ml_architect,
-            digest_has_refusal,
+            _is_refusal_snippet("\n".join(lines)),
         )
     else:
         _render_group("High-salience claims", claims)

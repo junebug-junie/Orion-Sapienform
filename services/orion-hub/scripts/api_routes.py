@@ -33,6 +33,64 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
             return False
     return default
 
+
+def _parse_no_write_header(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _rec_tape_req(
+    *,
+    corr_id: str,
+    session_id: str,
+    mode: str,
+    verb: Optional[str],
+    use_recall: bool,
+    recall_profile: Optional[str],
+    messages_len: int,
+    last_user_head: str,
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    logger.info(
+        "REC_TAPE REQ corr_id=%s session_id=%s mode=%s verb=%s recall=%s profile=%s messages_len=%s last_user_head=%r",
+        corr_id,
+        session_id,
+        mode,
+        verb,
+        use_recall,
+        recall_profile,
+        messages_len,
+        last_user_head,
+    )
+
+
+def _rec_tape_rsp(
+    *,
+    corr_id: str,
+    memory_used: bool,
+    recall_count: int,
+    backend_counts: Dict[str, Any] | None,
+    memory_digest: Optional[str],
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    digest_chars = len(memory_digest or "")
+    logger.info(
+        "REC_TAPE RSP corr_id=%s memory_used=%s digest_chars=%s recall_count=%s backend_counts=%s",
+        corr_id,
+        memory_used,
+        digest_chars,
+        recall_count,
+        backend_counts or {},
+    )
+
 # ======================================================================
 # 🏠 ROOT + STATIC HTML
 # ======================================================================
@@ -173,8 +231,36 @@ async def handle_chat_request(
         correlation_id = resp.cortex_result.correlation_id
 
         memory_digest = None
+        recall_debug = None
         if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
-            memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
+            recall_debug = resp.cortex_result.recall_debug
+            memory_digest = recall_debug.get("memory_digest")
+
+        recall_count = 0
+        backend_counts = None
+        if isinstance(recall_debug, dict):
+            recall_count = int(recall_debug.get("count") or 0)
+            backend_counts = recall_debug.get("backend_counts")
+            if backend_counts is None and isinstance(recall_debug.get("debug"), dict):
+                backend_counts = recall_debug["debug"].get("backend_counts")
+        memory_used = bool(recall_count)
+        _rec_tape_req(
+            corr_id=str(correlation_id),
+            session_id=session_id,
+            mode=mode,
+            verb=verb_override,
+            use_recall=use_recall,
+            recall_profile=recall_payload.get("profile"),
+            messages_len=len(user_messages),
+            last_user_head=(user_prompt or "")[:80],
+        )
+        _rec_tape_rsp(
+            corr_id=str(correlation_id),
+            memory_used=memory_used,
+            recall_count=recall_count,
+            backend_counts=backend_counts,
+            memory_digest=memory_digest,
+        )
 
         return {
             "session_id": session_id,
@@ -183,7 +269,8 @@ async def handle_chat_request(
             "text": text,
             "tokens": len(text.split()), # simple approx
             "raw": raw_result,
-            "recall_debug": resp.cortex_result.recall_debug,
+            "recall_debug": recall_debug,
+            "memory_used": memory_used,
             "memory_digest": memory_digest,
             "spark_meta": None,
             "correlation_id": correlation_id,
@@ -201,6 +288,7 @@ async def handle_chat_request(
 async def api_chat(
     payload: dict,
     x_orion_session_id: Optional[str] = Header(None),
+    x_orion_no_write: Optional[str] = Header(None),
 ):
     """
     Main LLM chat endpoint.
@@ -212,6 +300,13 @@ async def api_chat(
 
     # Ensure warm-started session
     session_id = await ensure_session(x_orion_session_id, bus)
+    header_no_write = _parse_no_write_header(x_orion_no_write)
+    default_no_write = bool(getattr(settings, "HUB_DEFAULT_NO_WRITE", False))
+    no_write = (
+        header_no_write
+        if header_no_write is not None
+        else _normalize_bool(payload.get("no_write", default_no_write), default=default_no_write)
+    )
 
     # Core chat handling
     result = await handle_chat_request(cortex_client, payload, session_id)
@@ -222,7 +317,10 @@ async def api_chat(
     text = result.get("text")
     correlation_id = result.get("correlation_id")
 
-    if text and getattr(bus, "enabled", False):
+    if no_write:
+        logger.info("NO_WRITE active corr=%s sid=%s", correlation_id or "unknown", session_id)
+
+    if text and getattr(bus, "enabled", False) and not no_write:
         try:
             user_messages = payload.get("messages", [])
             latest_user_prompt = ""

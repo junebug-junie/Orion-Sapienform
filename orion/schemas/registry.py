@@ -119,8 +119,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CortexChatRequest": CortexChatRequest,
     "CortexChatResult": CortexChatResult,
     "RecallDirective": RecallDirective,
-    "ChatHistoryMessageV1": ChatHistoryMessageV1,
-    "ChatHistoryTurnV1": ChatHistoryTurnV1,
+    "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields
+    "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
     "VectorWriteRequest": VectorWriteRequest,
     "VectorDocumentUpsertV1": VectorDocumentUpsertV1,
     "VectorUpsertV1": VectorUpsertV1,

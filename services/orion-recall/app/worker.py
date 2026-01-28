@@ -566,6 +566,38 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
             pass
 
 
+def _log_debug_dump(
+    *,
+    corr_id: str,
+    profile: Dict[str, Any],
+    backend_counts: Dict[str, int],
+    items: List[Any],
+) -> None:
+    top_n = int(getattr(settings, "RECALL_DEBUG_DUMP_TOP_N", 0) or 0)
+    if top_n <= 0:
+        return
+    logger.info(
+        "recall debug dump corr_id=%s profile=%s backend_counts=%s",
+        corr_id,
+        profile.get("profile"),
+        backend_counts,
+    )
+    for idx, item in enumerate(items[:top_n]):
+        source = getattr(item, "source", None) or (item.get("source") if isinstance(item, dict) else None)
+        item_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else None)
+        score = getattr(item, "score", None) if hasattr(item, "score") else (item.get("score") if isinstance(item, dict) else None)
+        snippet = getattr(item, "snippet", None) or (item.get("text") if isinstance(item, dict) else None)
+        snippet_head = str(snippet or "")[:120].replace("\n", " ")
+        logger.info(
+            "recall debug item idx=%s source=%s id=%s score=%s snippet_head=%r",
+            idx,
+            source,
+            item_id,
+            score,
+            snippet_head,
+        )
+
+
 async def process_recall(
     q: RecallQueryV1,
     *,
@@ -618,6 +650,12 @@ async def process_recall(
             session_id=None,
             diagnostic=diagnostic,
             browse_mode=True,
+        )
+        _log_debug_dump(
+            corr_id=corr_id,
+            profile=profile,
+            backend_counts=backend_counts_total or bundle.stats.backend_counts,
+            items=list(bundle.items),
         )
         decision = RecallDecisionV1(
             corr_id=corr_id or str(uuid4()),
@@ -829,6 +867,12 @@ async def process_recall(
         query_text=q.fragment,
         session_id=effective_session_id,
         diagnostic=diagnostic,
+    )
+    _log_debug_dump(
+        corr_id=corr_id,
+        profile=profile,
+        backend_counts=backend_counts_total or bundle.stats.backend_counts,
+        items=list(bundle.items),
     )
 
     decision = RecallDecisionV1(

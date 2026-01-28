@@ -56,6 +56,53 @@ def _schedule_publish(coro: asyncio.Future, label: str) -> None:
     task.add_done_callback(_log_result)
 
 
+def _rec_tape_req(
+    *,
+    corr_id: str,
+    session_id: Optional[str],
+    mode: str,
+    verb: Optional[str],
+    use_recall: bool,
+    recall_profile: Optional[str],
+    messages_len: int,
+    last_user_head: str,
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    logger.info(
+        "REC_TAPE REQ corr_id=%s session_id=%s mode=%s verb=%s recall=%s profile=%s messages_len=%s last_user_head=%r",
+        corr_id,
+        session_id,
+        mode,
+        verb,
+        use_recall,
+        recall_profile,
+        messages_len,
+        last_user_head,
+    )
+
+
+def _rec_tape_rsp(
+    *,
+    corr_id: str,
+    memory_used: bool,
+    recall_count: int,
+    backend_counts: Dict[str, Any] | None,
+    memory_digest: Optional[str],
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    digest_chars = len(memory_digest or "")
+    logger.info(
+        "REC_TAPE RSP corr_id=%s memory_used=%s digest_chars=%s recall_count=%s backend_counts=%s",
+        corr_id,
+        memory_used,
+        digest_chars,
+        recall_count,
+        backend_counts or {},
+    )
+
+
 def _build_prompt_with_history(
     history: List[Dict[str, Any]],
     user_text: str,
@@ -247,6 +294,8 @@ async def websocket_endpoint(websocket: WebSocket):
             publish_session_id = session_id or "unknown"
             if not session_id and diagnostic:
                 logger.warning("Missing session_id; publishing chat history with session_id=unknown")
+            default_no_write = bool(getattr(settings, "HUB_DEFAULT_NO_WRITE", False))
+            no_write = _normalize_bool(data.get("no_write", default_no_write), default=default_no_write)
 
             # Trace Verb & Test Stub Logic ---
             # 1. Default to general chat
@@ -312,6 +361,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
             trace_id = str(uuid.uuid4())
+            if no_write:
+                logger.info("NO_WRITE active corr=%s sid=%s", trace_id, session_id)
 
             # ----------------------------
             # Hub-side short-term memory
@@ -347,6 +398,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 len(transcript or ""),
                 (transcript or "")[:120],
             )
+            _rec_tape_req(
+                corr_id=trace_id,
+                session_id=session_id,
+                mode=mode,
+                verb=trace_verb,
+                use_recall=use_recall,
+                recall_profile=recall_payload.get("profile"),
+                messages_len=len(history),
+                last_user_head=(transcript or "")[:80],
+            )
 
             chat_req = CortexChatRequest(
                 prompt=prompt_with_ctx,
@@ -365,7 +426,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 chat_req.options["allowed_verbs"] = data.get("verbs")
 
             # Publish the inbound user message into chat history
-            if bus:
+            if bus and not no_write:
                 user_env = build_chat_history_envelope(
                     content=transcript,
                     role="user",
@@ -382,11 +443,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
             orion_response_text = ""
             memory_digest = None
+            recall_debug = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
                 if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
-                    memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
+                    recall_debug = resp.cortex_result.recall_debug
+                    memory_digest = recall_debug.get("memory_digest")
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
@@ -399,10 +462,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             # 3. Response & Logging
+            recall_count = 0
+            backend_counts = None
+            if isinstance(recall_debug, dict):
+                recall_count = int(recall_debug.get("count") or 0)
+                backend_counts = recall_debug.get("backend_counts")
+                if backend_counts is None and isinstance(recall_debug.get("debug"), dict):
+                    backend_counts = recall_debug["debug"].get("backend_counts")
+            memory_used = bool(recall_count)
+            _rec_tape_rsp(
+                corr_id=trace_id,
+                memory_used=memory_used,
+                recall_count=recall_count,
+                backend_counts=backend_counts,
+                memory_digest=memory_digest,
+            )
             await websocket.send_json(await _with_biometrics({
                 "llm_response": orion_response_text,
                 "mode": mode,
                 "memory_digest": memory_digest,
+                "memory_used": memory_used,
+                "recall_debug": recall_debug,
             }, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection
@@ -434,22 +514,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         "spark_meta": spark_meta,
                     }
 
-                    # 1. SQL Log (turn-level row: prompt + response)
-                    env_turn = build_chat_turn_envelope(
-                        prompt=transcript,
-                        response=orion_response_text,
-                        session_id=publish_session_id,
-                        correlation_id=trace_id,
-                        user_id=data.get("user_id"),
-                        source_label="hub_ws",
-                        spark_meta=spark_meta,
-                        turn_id=trace_id,
-                        memory_status="accepted",
-                        memory_tier="ephemeral",
-                        client_meta=client_meta,
-                    )
-                    _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
-                    logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
+                    if not no_write:
+                        # 1. SQL Log (turn-level row: prompt + response)
+                        env_turn = build_chat_turn_envelope(
+                            prompt=transcript,
+                            response=orion_response_text,
+                            session_id=publish_session_id,
+                            correlation_id=trace_id,
+                            user_id=data.get("user_id"),
+                            source_label="hub_ws",
+                            spark_meta=spark_meta,
+                            turn_id=trace_id,
+                            memory_status="accepted",
+                            memory_tier="ephemeral",
+                            client_meta=client_meta,
+                        )
+                        _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
+                        logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
                     # 2. Spark Introspection Candidate
                     candidate_payload = {
                         "trace_id": trace_id,
@@ -475,27 +556,28 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.warning(f"Failed to log/introspect chat: {e}")
 
                 # Publish assistant reply into chat history
-                try:
-                    gateway_meta = {}
-                    if hasattr(resp, "cortex_result") and resp.cortex_result:
-                        gateway_meta = resp.cortex_result.metadata or {}
-                    assistant_env = build_chat_history_envelope(
-                        content=orion_response_text,
-                        role="assistant",
-                        session_id=publish_session_id,
-                        correlation_id=getattr(resp.cortex_result, "correlation_id", None) or trace_id,
-                        speaker=gateway_meta.get("speaker") or settings.SERVICE_NAME,
-                        model=gateway_meta.get("model"),
-                        provider=gateway_meta.get("provider"),
-                        tags=[mode, trace_verb],
-                        message_id=f"{trace_id}:assistant",
-                        memory_status="accepted",
-                        memory_tier="ephemeral",
-                        client_meta=client_meta,
-                    )
-                    _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
-                except Exception as e:
-                    logger.warning("Failed to publish assistant chat history: %s", e, exc_info=True)
+                if not no_write:
+                    try:
+                        gateway_meta = {}
+                        if hasattr(resp, "cortex_result") and resp.cortex_result:
+                            gateway_meta = resp.cortex_result.metadata or {}
+                        assistant_env = build_chat_history_envelope(
+                            content=orion_response_text,
+                            role="assistant",
+                            session_id=publish_session_id,
+                            correlation_id=getattr(resp.cortex_result, "correlation_id", None) or trace_id,
+                            speaker=gateway_meta.get("speaker") or settings.SERVICE_NAME,
+                            model=gateway_meta.get("model"),
+                            provider=gateway_meta.get("provider"),
+                            tags=[mode, trace_verb],
+                            message_id=f"{trace_id}:assistant",
+                            memory_status="accepted",
+                            memory_tier="ephemeral",
+                            client_meta=client_meta,
+                        )
+                        _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
+                    except Exception as e:
+                        logger.warning("Failed to publish assistant chat history: %s", e, exc_info=True)
 
             # 4. TTS
             if orion_response_text and not disable_tts and tts_client:

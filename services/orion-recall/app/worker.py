@@ -577,23 +577,30 @@ def _log_debug_dump(
     if top_n <= 0:
         return
     logger.info(
-        "recall debug dump corr_id=%s profile=%s backend_counts=%s",
+        "REC_TAPE RECALL corr_id=%s profile=%s backend_counts=%s selected_count=%s",
         corr_id,
         profile.get("profile"),
         backend_counts,
+        len(items),
     )
     for idx, item in enumerate(items[:top_n]):
         source = getattr(item, "source", None) or (item.get("source") if isinstance(item, dict) else None)
         item_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else None)
-        score = getattr(item, "score", None) if hasattr(item, "score") else (item.get("score") if isinstance(item, dict) else None)
+        score = (
+            getattr(item, "score", None)
+            if hasattr(item, "score")
+            else (item.get("score") if isinstance(item, dict) else None)
+        )
+        source_ref = getattr(item, "source_ref", None) or (item.get("source_ref") if isinstance(item, dict) else None)
         snippet = getattr(item, "snippet", None) or (item.get("text") if isinstance(item, dict) else None)
-        snippet_head = str(snippet or "")[:120].replace("\n", " ")
+        snippet_head = str(snippet or "")[:160].replace("\n", " ")
         logger.info(
-            "recall debug item idx=%s source=%s id=%s score=%s snippet_head=%r",
+            "REC_TAPE RECALL item idx=%s source=%s id=%s score=%s source_ref=%s snippet_head=%r",
             idx,
             source,
             item_id,
             score,
+            source_ref,
             snippet_head,
         )
 
@@ -669,6 +676,12 @@ async def process_recall(
             latency_ms=latency_ms,
             dropped={},  # placeholder for future detailed drop reasons
             ranking_debug=ranking_debug if diagnostic else [],
+        )
+        _log_debug_dump(
+            corr_id=decision.corr_id,
+            profile=profile,
+            backend_counts=decision.backend_counts or {},
+            items=list(bundle.items),
         )
         return bundle, decision
 
@@ -868,13 +881,6 @@ async def process_recall(
         session_id=effective_session_id,
         diagnostic=diagnostic,
     )
-    _log_debug_dump(
-        corr_id=corr_id,
-        profile=profile,
-        backend_counts=backend_counts_total or bundle.stats.backend_counts,
-        items=list(bundle.items),
-    )
-
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),
         session_id=ignored_session_id,
@@ -887,6 +893,12 @@ async def process_recall(
         latency_ms=latency_ms,
         dropped={},  # placeholder for future detailed drop reasons
         ranking_debug=ranking_debug if diagnostic else [],
+    )
+    _log_debug_dump(
+        corr_id=decision.corr_id,
+        profile=profile,
+        backend_counts=decision.backend_counts or {},
+        items=list(bundle.items),
     )
     return bundle, decision
 

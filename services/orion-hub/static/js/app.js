@@ -133,7 +133,7 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (orionState === 'processing') updateStatus('Processing...');
   }
 
-  function updateMemoryPanel(data) {
+  function updateMemoryPanelFromResponse(data) {
     if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
     const recallDebug = data && typeof data.recall_debug === 'object' ? data.recall_debug : null;
     const recallCount = recallDebug && typeof recallDebug.count === 'number' ? recallDebug.count : null;
@@ -149,6 +149,11 @@ document.addEventListener("DOMContentLoaded", () => {
     recallCountValue.textContent = typeof recallCount === 'number' ? recallCount : "--";
     backendCountsValue.textContent = backendCounts ? JSON.stringify(backendCounts, null, 2) : "--";
     memoryDigestPre.textContent = memoryDigest || "--";
+  }
+
+  function toggleMemoryPanel() {
+    if (!memoryPanelBody) return;
+    memoryPanelBody.classList.toggle('hidden');
   }
 
   function appendMessage(sender, text, colorClass = 'text-white') {
@@ -459,10 +464,8 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
 
-  if (memoryPanelToggle && memoryPanelBody) {
-    memoryPanelToggle.addEventListener('click', () => {
-      memoryPanelBody.classList.toggle('hidden');
-    });
+  if (memoryPanelToggle) {
+    memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }
 
   // --- WebSocket ---
@@ -487,7 +490,9 @@ document.addEventListener("DOMContentLoaded", () => {
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
           if (d.biometrics) updateBiometricsPanel(d.biometrics);
-          updateMemoryPanel(d);
+          if (d.memory_digest || d.recall_debug || typeof d.memory_used === 'boolean') {
+            updateMemoryPanelFromResponse(d);
+          }
       } catch (err) {
           console.error("WS Parse Error", err);
       }
@@ -550,7 +555,7 @@ document.addEventListener("DOMContentLoaded", () => {
         .then(d => {
             if(d.text) appendMessage('Orion', d.text);
             else if(d.error) appendMessage('System', d.error, 'text-red-400');
-            updateMemoryPanel(d);
+            updateMemoryPanelFromResponse(d);
         })
         .catch(e => appendMessage('System', "HTTP Failed: " + e.message, 'text-red-400'));
     }

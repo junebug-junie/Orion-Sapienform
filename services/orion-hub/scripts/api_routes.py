@@ -34,40 +34,27 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
-def _parse_no_write_header(value: Optional[str]) -> Optional[bool]:
-    if value is None:
-        return None
-    lowered = value.strip().lower()
-    if lowered in {"1", "true", "yes", "y", "on"}:
-        return True
-    if lowered in {"0", "false", "no", "n", "off"}:
-        return False
-    return None
-
-
 def _rec_tape_req(
     *,
     corr_id: str,
     session_id: str,
     mode: str,
-    verb: Optional[str],
     use_recall: bool,
     recall_profile: Optional[str],
-    messages_len: int,
-    last_user_head: str,
+    user_head: str,
+    no_write: bool,
 ) -> None:
     if not settings.HUB_DEBUG_RECALL:
         return
     logger.info(
-        "REC_TAPE REQ corr_id=%s session_id=%s mode=%s verb=%s recall=%s profile=%s messages_len=%s last_user_head=%r",
+        "REC_TAPE REQ corr_id=%s sid=%s mode=%s recall=%s profile=%s user_head=%r no_write=%s",
         corr_id,
         session_id,
         mode,
-        verb,
         use_recall,
         recall_profile,
-        messages_len,
-        last_user_head,
+        user_head,
+        no_write,
     )
 
 
@@ -143,6 +130,7 @@ async def handle_chat_request(
     cortex_client,
     payload: dict,
     session_id: str,
+    no_write: bool,
 ) -> Dict[str, Any]:
     """
     Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.
@@ -202,6 +190,17 @@ async def handle_chat_request(
         (user_prompt or "")[:120],
     )
 
+    corr_id = str(uuid4())
+    _rec_tape_req(
+        corr_id=corr_id,
+        session_id=session_id,
+        mode=mode,
+        use_recall=use_recall,
+        recall_profile=recall_payload.get("profile"),
+        user_head=(user_prompt or "")[:80],
+        no_write=no_write,
+    )
+
     # Build the Request
     req = CortexChatRequest(
         prompt=user_prompt,
@@ -217,7 +216,7 @@ async def handle_chat_request(
 
     try:
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
-        resp: CortexChatResult = await cortex_client.chat(req)
+        resp: CortexChatResult = await cortex_client.chat(req, correlation_id=corr_id)
 
         # Extract Text
         text = resp.final_text or ""
@@ -228,7 +227,7 @@ async def handle_chat_request(
         # Use the correlation_id from the response (gateway) if available
         # or it might be passed back from the client logic if modified to do so.
         # Here we rely on CortexChatResult having it.
-        correlation_id = resp.cortex_result.correlation_id
+        correlation_id = resp.cortex_result.correlation_id or corr_id
 
         memory_digest = None
         recall_debug = None
@@ -243,17 +242,9 @@ async def handle_chat_request(
             backend_counts = recall_debug.get("backend_counts")
             if backend_counts is None and isinstance(recall_debug.get("debug"), dict):
                 backend_counts = recall_debug["debug"].get("backend_counts")
-        memory_used = bool(recall_count)
-        _rec_tape_req(
-            corr_id=str(correlation_id),
-            session_id=session_id,
-            mode=mode,
-            verb=verb_override,
-            use_recall=use_recall,
-            recall_profile=recall_payload.get("profile"),
-            messages_len=len(user_messages),
-            last_user_head=(user_prompt or "")[:80],
-        )
+        memory_used = bool(getattr(resp.cortex_result, "memory_used", False))
+        if not memory_used:
+            memory_used = bool(recall_count)
         _rec_tape_rsp(
             corr_id=str(correlation_id),
             memory_used=memory_used,
@@ -272,6 +263,7 @@ async def handle_chat_request(
             "recall_debug": recall_debug,
             "memory_used": memory_used,
             "memory_digest": memory_digest,
+            "no_write": no_write,
             "spark_meta": None,
             "correlation_id": correlation_id,
         }
@@ -300,25 +292,18 @@ async def api_chat(
 
     # Ensure warm-started session
     session_id = await ensure_session(x_orion_session_id, bus)
-    header_no_write = _parse_no_write_header(x_orion_no_write)
-    default_no_write = bool(getattr(settings, "HUB_DEFAULT_NO_WRITE", False))
-    no_write = (
-        header_no_write
-        if header_no_write is not None
-        else _normalize_bool(payload.get("no_write", default_no_write), default=default_no_write)
+    no_write = _normalize_bool(payload.get("no_write"), default=False) or _normalize_bool(
+        x_orion_no_write, default=False
     )
 
     # Core chat handling
-    result = await handle_chat_request(cortex_client, payload, session_id)
+    result = await handle_chat_request(cortex_client, payload, session_id, no_write)
 
     # ─────────────────────────────────────────────
     # 📡 Publish HTTP chat → chat history log
     # ─────────────────────────────────────────────
     text = result.get("text")
     correlation_id = result.get("correlation_id")
-
-    if no_write:
-        logger.info("NO_WRITE active corr=%s sid=%s", correlation_id or "unknown", session_id)
 
     if text and getattr(bus, "enabled", False) and not no_write:
         try:

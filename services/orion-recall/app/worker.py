@@ -658,6 +658,12 @@ async def process_recall(
             diagnostic=diagnostic,
             browse_mode=True,
         )
+        _log_debug_dump(
+            corr_id=corr_id,
+            profile=profile,
+            backend_counts=backend_counts_total or bundle.stats.backend_counts,
+            items=list(bundle.items),
+        )
         decision = RecallDecisionV1(
             corr_id=corr_id or str(uuid4()),
             session_id=ignored_session_id,

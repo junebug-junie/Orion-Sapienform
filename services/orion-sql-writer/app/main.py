@@ -27,6 +27,45 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Schema init warning: %s", e)
 
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS trace_id TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS memory_status TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS memory_tier TEXT;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_message_corr_id ON chat_message (correlation_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_message_corr_role_ts ON chat_message (correlation_id, role, timestamp);"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS memory_status TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS memory_tier TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS memory_reason TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS client_meta JSONB;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
+            )
+        logger.info("🧬 chat_message correlation/trace columns ensured")
+    except Exception as e:
+        logger.warning("chat_message migration warning: %s", e)
+
     task: asyncio.Task | None = None
     if settings.orion_bus_enabled:
         svc = build_hunter()

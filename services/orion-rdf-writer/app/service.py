@@ -71,6 +71,13 @@ async def handle_envelope(env: BaseEnvelope) -> None:
     """
     Bus handler: Converts incoming envelopes to RDF and pushes to GraphDB.
     """
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    memory_status = str(payload.get("memory_status") or "").lower()
+    memory_tier = str(payload.get("memory_tier") or "").lower()
+    if settings.RDF_SKIP_REJECTED and memory_status == "rejected":
+        return
+    if settings.RDF_DURABLE_ONLY and memory_tier != "durable":
+        return
     if env.kind in settings.get_skip_kinds():
         logger.info("skip rdf kind=%s correlation_id=%s", env.kind, env.correlation_id)
         return

@@ -56,6 +56,51 @@ def _schedule_publish(coro: asyncio.Future, label: str) -> None:
     task.add_done_callback(_log_result)
 
 
+def _rec_tape_req(
+    *,
+    corr_id: str,
+    session_id: Optional[str],
+    mode: str,
+    use_recall: bool,
+    recall_profile: Optional[str],
+    user_head: str,
+    no_write: bool,
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    logger.info(
+        "REC_TAPE REQ corr_id=%s sid=%s mode=%s recall=%s profile=%s user_head=%r no_write=%s",
+        corr_id,
+        session_id,
+        mode,
+        use_recall,
+        recall_profile,
+        user_head,
+        no_write,
+    )
+
+
+def _rec_tape_rsp(
+    *,
+    corr_id: str,
+    memory_used: bool,
+    recall_count: int,
+    backend_counts: Dict[str, Any] | None,
+    memory_digest: Optional[str],
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    digest_chars = len(memory_digest or "")
+    logger.info(
+        "REC_TAPE RSP corr_id=%s memory_used=%s digest_chars=%s recall_count=%s backend_counts=%s",
+        corr_id,
+        memory_used,
+        digest_chars,
+        recall_count,
+        backend_counts or {},
+    )
+
+
 def _build_prompt_with_history(
     history: List[Dict[str, Any]],
     user_text: str,
@@ -199,6 +244,14 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket accepted.")
 
+    client_meta = {
+        "user_agent": websocket.headers.get("user-agent"),
+        "origin": websocket.headers.get("origin"),
+        "x_forwarded_for": websocket.headers.get("x-forwarded-for"),
+        "client_host": getattr(websocket.client, "host", None),
+        "client_port": getattr(websocket.client, "port", None),
+    }
+
     # Soft warning if services missing, but keep connection alive
     if not bus or not cortex_client:
         logger.warning("OrionBus/CortexClient not ready. Chat will be limited.")
@@ -239,6 +292,7 @@ async def websocket_endpoint(websocket: WebSocket):
             publish_session_id = session_id or "unknown"
             if not session_id and diagnostic:
                 logger.warning("Missing session_id; publishing chat history with session_id=unknown")
+            no_write = bool(data.get("no_write", settings.HUB_DEFAULT_NO_WRITE))
 
             # Trace Verb & Test Stub Logic ---
             # 1. Default to general chat
@@ -304,6 +358,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
             trace_id = str(uuid.uuid4())
+            if no_write:
+                logger.info("NO_WRITE active (WS) sid=%s", session_id)
 
             # ----------------------------
             # Hub-side short-term memory
@@ -339,6 +395,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 len(transcript or ""),
                 (transcript or "")[:120],
             )
+            _rec_tape_req(
+                corr_id=trace_id,
+                session_id=session_id,
+                mode=mode,
+                use_recall=use_recall,
+                recall_profile=recall_payload.get("profile"),
+                user_head=(transcript or "")[:80],
+                no_write=no_write,
+            )
 
             chat_req = CortexChatRequest(
                 prompt=prompt_with_ctx,
@@ -357,7 +422,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 chat_req.options["allowed_verbs"] = data.get("verbs")
 
             # Publish the inbound user message into chat history
-            if bus:
+            if bus and not no_write:
                 user_env = build_chat_history_envelope(
                     content=transcript,
                     role="user",
@@ -365,16 +430,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     correlation_id=trace_id,
                     speaker=data.get("user_id") or "user",
                     tags=[mode],
+                    message_id=f"{trace_id}:user",
+                    memory_status="accepted",
+                    memory_tier="ephemeral",
+                    client_meta=client_meta,
                 )
                 _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
 
             orion_response_text = ""
             memory_digest = None
+            recall_debug = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
                 if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
-                    memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
+                    recall_debug = resp.cortex_result.recall_debug
+                    memory_digest = recall_debug.get("memory_digest")
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
@@ -387,14 +458,35 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             # 3. Response & Logging
+            recall_count = 0
+            backend_counts = None
+            if isinstance(recall_debug, dict):
+                recall_count = int(recall_debug.get("count") or 0)
+                backend_counts = recall_debug.get("backend_counts")
+                if backend_counts is None and isinstance(recall_debug.get("debug"), dict):
+                    backend_counts = recall_debug["debug"].get("backend_counts")
+            memory_used = bool(getattr(resp.cortex_result, "memory_used", False))
+            if not memory_used:
+                memory_used = bool(recall_count)
+            _rec_tape_rsp(
+                corr_id=trace_id,
+                memory_used=memory_used,
+                recall_count=recall_count,
+                backend_counts=backend_counts,
+                memory_digest=memory_digest,
+            )
             await websocket.send_json(await _with_biometrics({
                 "llm_response": orion_response_text,
                 "mode": mode,
+                "correlation_id": trace_id,
                 "memory_digest": memory_digest,
+                "memory_used": memory_used,
+                "recall_debug": recall_debug,
+                "no_write": no_write,
             }, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection
-            if bus:
+            if bus and not no_write:
                 try:
                     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
@@ -432,6 +524,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         source_label="hub_ws",
                         spark_meta=spark_meta,
                         turn_id=trace_id,
+                        memory_status="accepted",
+                        memory_tier="ephemeral",
+                        client_meta=client_meta,
                     )
                     _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
                     logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
@@ -473,6 +568,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         model=gateway_meta.get("model"),
                         provider=gateway_meta.get("provider"),
                         tags=[mode, trace_verb],
+                        message_id=f"{trace_id}:assistant",
+                        memory_status="accepted",
+                        memory_tier="ephemeral",
+                        client_meta=client_meta,
                     )
                     _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
                 except Exception as e:

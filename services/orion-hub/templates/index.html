@@ -183,9 +183,39 @@
               <option value="assist.light.v1">assist.light.v1</option>
               <option value="chat.general.v1">chat.general.v1</option>
               <option value="reflect.v1">reflect.v1</option>
+              <option value="reflect.anchor.v1">reflect.anchor.v1</option>
               <option value="deep.graph.v1">deep.graph.v1</option>
               <option value="graphtri.v1">graphtri.v1</option>
             </select>
+          </div>
+        </div>
+
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <button
+            id="memoryPanelToggle"
+            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
+            type="button"
+          >
+            <span class="uppercase tracking-wide">Memory / Recall Debug</span>
+            <span class="text-gray-500">▾</span>
+          </button>
+          <div id="memoryPanelBody" class="hidden space-y-2 text-xs text-gray-300">
+            <div class="flex items-center justify-between">
+              <span class="text-gray-500">Memory used</span>
+              <span id="memoryUsedValue">--</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="text-gray-500">Recall count</span>
+              <span id="recallCountValue">--</span>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Backend counts</div>
+              <pre id="backendCountsValue" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Memory digest</div>
+              <pre id="memoryDigestPre" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
           </div>
         </div>
 

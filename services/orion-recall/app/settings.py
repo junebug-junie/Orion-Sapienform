@@ -141,6 +141,8 @@ class Settings(BaseSettings):
     )
     RECALL_VECTOR_TIMEOUT_SEC: float = Field(default=5.0, validation_alias=AliasChoices("RECALL_VECTOR_TIMEOUT_SEC"))
     RECALL_VECTOR_MAX_ITEMS: int = Field(default=24, validation_alias=AliasChoices("RECALL_VECTOR_MAX_ITEMS"))
+    RECALL_EXCLUDE_REJECTED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_EXCLUDE_REJECTED"))
+    RECALL_DURABLE_ONLY: bool = Field(default=False, validation_alias=AliasChoices("RECALL_DURABLE_ONLY"))
 
     # ── RDF / GraphDB (recall-specific) ───────────────────────────────
     RECALL_RDF_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_ENDPOINT_URL"))
@@ -212,7 +214,7 @@ class Settings(BaseSettings):
 
         # If recall-specific collections are not set, fall back to the chat collection
         if not self.RECALL_VECTOR_COLLECTIONS:
-            self.RECALL_VECTOR_COLLECTIONS = "orion_chat"
+            self.RECALL_VECTOR_COLLECTIONS = "orion_chat_turns,orion_chat"
 
         # Default Juniper filter only for collapse_mirror timelines.
         if self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:

@@ -187,6 +187,9 @@ def _ensure_chat_history_from_message(
     session_id: str | None,
     role: str,
     content: str,
+    memory_status: str | None,
+    memory_tier: str | None,
+    client_meta: Any,
 ) -> None:
     if not correlation_id:
         return
@@ -218,6 +221,12 @@ def _ensure_chat_history_from_message(
 
     if session_id and hasattr(existing, "session_id") and not getattr(existing, "session_id", None):
         existing.session_id = session_id
+    if memory_status and hasattr(existing, "memory_status") and not getattr(existing, "memory_status", None):
+        existing.memory_status = memory_status
+    if memory_tier and hasattr(existing, "memory_tier") and not getattr(existing, "memory_tier", None):
+        existing.memory_tier = memory_tier
+    if client_meta and hasattr(existing, "client_meta") and not getattr(existing, "client_meta", None):
+        existing.client_meta = _json_sanitize(client_meta)
 
 
 def _write_row(sql_model_cls, data: dict) -> None:
@@ -337,11 +346,20 @@ def _write_row(sql_model_cls, data: dict) -> None:
                 return
 
         if sql_model_cls is ChatMessageSQL:
+            client_meta = data.get("client_meta")
+            if client_meta is not None:
+                existing_meta = filtered_data.get("meta") or {}
+                if not isinstance(existing_meta, dict):
+                    existing_meta = {"raw_meta": str(existing_meta)}
+                existing_meta["client_meta"] = _json_sanitize(client_meta)
+                filtered_data["meta"] = existing_meta
             try:
                 corr_id = data.get("correlation_id")
                 session_id = filtered_data.get("session_id") or data.get("session_id")
                 role = (filtered_data.get("role") or "").lower()
                 content = filtered_data.get("content")
+                memory_status = data.get("memory_status")
+                memory_tier = data.get("memory_tier")
                 if corr_id and role in ("user", "assistant") and isinstance(content, str) and content.strip():
                     _ensure_chat_history_from_message(
                         sess=sess,
@@ -349,6 +367,9 @@ def _write_row(sql_model_cls, data: dict) -> None:
                         session_id=str(session_id) if session_id else None,
                         role=role,
                         content=content,
+                        memory_status=memory_status,
+                        memory_tier=memory_tier,
+                        client_meta=client_meta,
                     )
             except Exception as ex:
                 logger.warning(f"Failed to upsert chat_history_log from chat_message: {ex}")
@@ -413,6 +434,22 @@ async def handle_envelope(env: BaseEnvelope) -> None:
     extra_sql_fields: Dict[str, Any] = {}
     if getattr(env, "correlation_id", None):
         extra_sql_fields["correlation_id"] = str(env.correlation_id)
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    trace_id = payload.get("trace_id") or payload.get("traceId")
+    if trace_id:
+        extra_sql_fields["trace_id"] = str(trace_id)
+    memory_status = payload.get("memory_status")
+    if memory_status:
+        extra_sql_fields["memory_status"] = memory_status
+    memory_tier = payload.get("memory_tier")
+    if memory_tier:
+        extra_sql_fields["memory_tier"] = memory_tier
+    memory_reason = payload.get("memory_reason")
+    if memory_reason:
+        extra_sql_fields["memory_reason"] = memory_reason
+    client_meta = payload.get("client_meta")
+    if client_meta is not None:
+        extra_sql_fields["client_meta"] = _json_sanitize(client_meta)
 
     # -------------------------------------------------------------------------
     # 1. SPECIAL CASE: Spark State Snapshot -> SparkTelemetrySQL

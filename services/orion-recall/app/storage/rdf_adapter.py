@@ -29,6 +29,17 @@ def _escape_sparql(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _build_chatturn_keyword_filter(keywords: List[str]) -> str:
+    if not keywords:
+        return ""
+    filters = " || ".join(
+        f'CONTAINS(LCASE(STR(?prompt)), "{_escape_sparql(keyword)}") || '
+        f'CONTAINS(LCASE(STR(?response)), "{_escape_sparql(keyword)}")'
+        for keyword in keywords
+    )
+    return f"FILTER({filters})"
+
+
 def _build_sparql_query(keywords: List[str], *, max_nodes: int, max_results: int) -> str:
     filters = " || ".join(
         f'CONTAINS(LCASE(STR(?node)), "{_escape_sparql(keyword)}") || '
@@ -89,19 +100,23 @@ def _build_graphtri_anchor_sparql(
     max_terms: int,
     filtered: bool,
 ) -> str:
-    filter_clause = ""
-    if filtered and keywords:
-        filters = " || ".join(
-            f'CONTAINS(LCASE(STR(?term)), "{_escape_sparql(keyword)}")' for keyword in keywords
-        )
-        filter_clause = f"FILTER({filters})"
+    filter_clause = _build_chatturn_keyword_filter(keywords) if filtered and keywords else ""
 
     return f"""
     SELECT DISTINCT ?term
     WHERE {{
-      GRAPH <orion:chat> {{
-        ?turn a <http://conjourney.net/orion#ChatTurn> ;
-              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" .
+      {{
+        SELECT DISTINCT ?turn ?prompt ?response
+        WHERE {{
+          GRAPH <orion:chat> {{
+            ?turn a <http://conjourney.net/orion#ChatTurn> ;
+                  <http://conjourney.net/orion#prompt> ?prompt ;
+                  <http://conjourney.net/orion#response> ?response .
+          }}
+          {filter_clause}
+        }}
+        ORDER BY DESC(STR(?turn))
+        LIMIT {max_turns}
       }}
       GRAPH <orion:enrichment> {{
         {{ ?turn <http://orion.ai/collapse#hasTag> ?term . }}
@@ -125,19 +140,23 @@ def _build_graphtri_anchor_kind_sparql(
     max_terms: int,
     filtered: bool,
 ) -> str:
-    filter_clause = ""
-    if filtered and query_terms:
-        filters = " || ".join(
-            f'CONTAINS(LCASE(STR(?term)), "{_escape_sparql(term)}")' for term in query_terms
-        )
-        filter_clause = f"FILTER({filters})"
+    filter_clause = _build_chatturn_keyword_filter(query_terms) if filtered and query_terms else ""
 
     return f"""
     SELECT ?kind ?term
     WHERE {{
-      GRAPH <orion:chat> {{
-        ?turn a <http://conjourney.net/orion#ChatTurn> ;
-              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" .
+      {{
+        SELECT DISTINCT ?turn ?prompt ?response
+        WHERE {{
+          GRAPH <orion:chat> {{
+            ?turn a <http://conjourney.net/orion#ChatTurn> ;
+                  <http://conjourney.net/orion#prompt> ?prompt ;
+                  <http://conjourney.net/orion#response> ?response .
+          }}
+          {filter_clause}
+        }}
+        ORDER BY DESC(STR(?turn))
+        LIMIT {max_terms}
       }}
       GRAPH <orion:enrichment> {{
         {{ ?turn <http://orion.ai/collapse#hasTag> ?term .
@@ -163,9 +182,6 @@ def fetch_graphtri_anchors(
     query_terms: List[str],
     max_terms: int = 12,
 ) -> Dict[str, List[str]]:
-    if not session_id:
-        return {"entities_terms": [], "tags_terms": [], "claim_objs": [], "related_terms": []}
-
     endpoint = settings.RECALL_RDF_ENDPOINT_URL
     if not endpoint:
         return {"entities_terms": [], "tags_terms": [], "claim_objs": [], "related_terms": []}
@@ -254,7 +270,7 @@ def fetch_rdf_graphtri_anchor_terms(
     session_id: str,
     max_items: int = 10,
 ) -> List[str]:
-    if not query_text or not session_id:
+    if not query_text:
         return []
 
     endpoint = settings.RECALL_RDF_ENDPOINT_URL
@@ -331,19 +347,32 @@ def fetch_rdf_graphtri_fragments(
     session_id: str,
     max_items: int = 8,
 ) -> List[Dict[str, str]]:
-    if not query_text or not session_id:
+    if not query_text:
         return []
 
     endpoint = settings.RECALL_RDF_ENDPOINT_URL
     if not endpoint:
         return []
 
+    keywords = _extract_keywords(query_text)
+    max_turns = max(1, min(max_items, 12))
+    filter_clause = _build_chatturn_keyword_filter(keywords) if keywords else ""
+
     sparql = f"""
     SELECT ?turn ?claim ?pred ?obj ?conf ?sal
     WHERE {{
-      GRAPH <orion:chat> {{
-        ?turn a <http://conjourney.net/orion#ChatTurn> ;
-              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" .
+      {{
+        SELECT DISTINCT ?turn ?prompt ?response
+        WHERE {{
+          GRAPH <orion:chat> {{
+            ?turn a <http://conjourney.net/orion#ChatTurn> ;
+                  <http://conjourney.net/orion#prompt> ?prompt ;
+                  <http://conjourney.net/orion#response> ?response .
+          }}
+          {filter_clause}
+        }}
+        ORDER BY DESC(STR(?turn))
+        LIMIT {max_turns}
       }}
       GRAPH <orion:enrichment> {{
         ?claim a <http://conjourney.net/orion#Claim> ;
@@ -454,8 +483,11 @@ def fetch_rdf_chatturn_fragments(
     Ranking happens later (vector / lexical) in fusion.
     """
     endpoint = settings.RECALL_RDF_ENDPOINT_URL
-    if not endpoint or not session_id:
+    if not endpoint or not query_text:
         return []
+
+    keywords = _extract_keywords(query_text)
+    filter_clause = _build_chatturn_keyword_filter(keywords) if keywords else ""
 
     # If you have a timestamp predicate, add it here and ORDER BY DESC(?ts).
     # If not, we order by the turn URI string as a stable proxy.
@@ -464,10 +496,10 @@ def fetch_rdf_chatturn_fragments(
     WHERE {{
       GRAPH <orion:chat> {{
         ?turn a <http://conjourney.net/orion#ChatTurn> ;
-              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" ;
               <http://conjourney.net/orion#prompt> ?prompt ;
               <http://conjourney.net/orion#response> ?response .
       }}
+      {filter_clause}
     }}
     ORDER BY DESC(STR(?turn))
     LIMIT {max_items}
@@ -518,7 +550,7 @@ def fetch_rdf_chatturn_fragments(
                 "tags": ["rdf", "chat", "chatturn"],
                 # Base score is neutral; ranking should happen later.
                 "score": 0.50,
-                "meta": {"session_id": session_id},
+                "meta": {},
             }
         )
     return out
@@ -530,7 +562,7 @@ def fetch_rdf_chatturn_exact_matches(
     session_id: str | None,
     max_items: int = 20,
 ) -> List[Dict[str, Any]]:
-    if not tokens or not session_id:
+    if not tokens:
         return []
     endpoint = settings.RECALL_RDF_ENDPOINT_URL
     if not endpoint:
@@ -548,7 +580,6 @@ def fetch_rdf_chatturn_exact_matches(
     WHERE {{
       GRAPH <orion:chat> {{
         ?turn a <http://conjourney.net/orion#ChatTurn> ;
-              <http://conjourney.net/orion#sessionId> "{_escape_sparql(session_id)}" ;
               <http://conjourney.net/orion#prompt> ?prompt ;
               <http://conjourney.net/orion#response> ?response .
       }}
@@ -599,7 +630,101 @@ def fetch_rdf_chatturn_exact_matches(
                 "ts": 0.0,
                 "tags": ["rdf", "chat", "chatturn"],
                 "score": 0.7,
-                "meta": {"session_id": session_id},
+                "meta": {},
+            }
+        )
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def fetch_rdf_connected_chatturns(
+    *,
+    terms: List[str],
+    max_items: int = 12,
+) -> List[Dict[str, Any]]:
+    if not terms:
+        return []
+    endpoint = settings.RECALL_RDF_ENDPOINT_URL
+    if not endpoint:
+        return []
+
+    cleaned_terms = [t.strip() for t in terms if isinstance(t, str) and t.strip()]
+    if not cleaned_terms:
+        return []
+
+    filters = " || ".join(
+        f'CONTAINS(LCASE(STR(?term)), "{_escape_sparql(term.lower())}")'
+        for term in cleaned_terms[:10]
+    )
+    filter_clause = f"FILTER({filters})" if filters else ""
+
+    sparql = f"""
+    SELECT DISTINCT ?turn ?prompt ?response ?term
+    WHERE {{
+      GRAPH <orion:enrichment> {{
+        {{ ?turn <http://orion.ai/collapse#hasTag> ?term . }}
+        UNION {{ ?turn <http://orion.ai/collapse#hasEntity> ?term . }}
+        UNION {{
+          ?claim a <http://conjourney.net/orion#Claim> ;
+                 <http://conjourney.net/orion#subject> ?turn ;
+                 <http://conjourney.net/orion#obj> ?term .
+        }}
+        {filter_clause}
+      }}
+      GRAPH <orion:chat> {{
+        ?turn a <http://conjourney.net/orion#ChatTurn> ;
+              <http://conjourney.net/orion#prompt> ?prompt ;
+              <http://conjourney.net/orion#response> ?response .
+      }}
+    }}
+    ORDER BY DESC(STR(?turn))
+    LIMIT {max_items}
+    """
+
+    try:
+        resp = requests.post(
+            endpoint,
+            data=sparql,
+            headers={
+                "Content-Type": "application/sparql-query",
+                "Accept": "application/sparql-results+json",
+            },
+            auth=(settings.RECALL_RDF_USER, settings.RECALL_RDF_PASS),
+            timeout=settings.RECALL_RDF_TIMEOUT_SEC,
+        )
+    except Exception:
+        return []
+
+    if resp.status_code != 200:
+        return []
+
+    try:
+        data = resp.json()
+    except Exception:
+        return []
+
+    bindings = data.get("results", {}).get("bindings", [])
+    out: List[Dict[str, Any]] = []
+    for b in bindings:
+        turn = b.get("turn", {}).get("value")
+        prompt = (b.get("prompt", {}).get("value") or "").strip()
+        response = (b.get("response", {}).get("value") or "").strip()
+        term_val = b.get("term", {}).get("value")
+        if not turn:
+            continue
+        text = f'ExactUserText: "{prompt}"\nOrionResponse: "{response}"'.strip()
+        out.append(
+            {
+                "id": turn,
+                "source": "rdf_chat",
+                "source_ref": "graphdb",
+                "uri": turn,
+                "text": text[:1800],
+                "ts": 0.0,
+                "tags": ["rdf", "chat", "chatturn", "graph_hop:1"],
+                "score": 0.6,
+                "meta": {"anchor_term": term_val} if term_val else {},
             }
         )
         if len(out) >= max_items:

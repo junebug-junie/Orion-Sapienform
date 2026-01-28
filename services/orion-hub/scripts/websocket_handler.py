@@ -199,6 +199,14 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket accepted.")
 
+    client_meta = {
+        "user_agent": websocket.headers.get("user-agent"),
+        "origin": websocket.headers.get("origin"),
+        "x_forwarded_for": websocket.headers.get("x-forwarded-for"),
+        "client_host": getattr(websocket.client, "host", None),
+        "client_port": getattr(websocket.client, "port", None),
+    }
+
     # Soft warning if services missing, but keep connection alive
     if not bus or not cortex_client:
         logger.warning("OrionBus/CortexClient not ready. Chat will be limited.")
@@ -365,6 +373,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     correlation_id=trace_id,
                     speaker=data.get("user_id") or "user",
                     tags=[mode],
+                    message_id=f"{trace_id}:user",
+                    memory_status="accepted",
+                    memory_tier="ephemeral",
+                    client_meta=client_meta,
                 )
                 _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
 
@@ -432,6 +444,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         source_label="hub_ws",
                         spark_meta=spark_meta,
                         turn_id=trace_id,
+                        memory_status="accepted",
+                        memory_tier="ephemeral",
+                        client_meta=client_meta,
                     )
                     _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
                     logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
@@ -473,6 +488,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         model=gateway_meta.get("model"),
                         provider=gateway_meta.get("provider"),
                         tags=[mode, trace_verb],
+                        message_id=f"{trace_id}:assistant",
+                        memory_status="accepted",
+                        memory_tier="ephemeral",
+                        client_meta=client_meta,
                     )
                     _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
                 except Exception as e:

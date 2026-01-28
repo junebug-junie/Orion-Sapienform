@@ -33,6 +33,51 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
             return False
     return default
 
+
+def _rec_tape_req(
+    *,
+    corr_id: str,
+    session_id: str,
+    mode: str,
+    use_recall: bool,
+    recall_profile: Optional[str],
+    user_head: str,
+    no_write: bool,
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    logger.info(
+        "REC_TAPE REQ corr_id=%s sid=%s mode=%s recall=%s profile=%s user_head=%r no_write=%s",
+        corr_id,
+        session_id,
+        mode,
+        use_recall,
+        recall_profile,
+        user_head,
+        no_write,
+    )
+
+
+def _rec_tape_rsp(
+    *,
+    corr_id: str,
+    memory_used: bool,
+    recall_count: int,
+    backend_counts: Dict[str, Any] | None,
+    memory_digest: Optional[str],
+) -> None:
+    if not settings.HUB_DEBUG_RECALL:
+        return
+    digest_chars = len(memory_digest or "")
+    logger.info(
+        "REC_TAPE RSP corr_id=%s memory_used=%s digest_chars=%s recall_count=%s backend_counts=%s",
+        corr_id,
+        memory_used,
+        digest_chars,
+        recall_count,
+        backend_counts or {},
+    )
+
 # ======================================================================
 # 🏠 ROOT + STATIC HTML
 # ======================================================================
@@ -85,6 +130,7 @@ async def handle_chat_request(
     cortex_client,
     payload: dict,
     session_id: str,
+    no_write: bool,
 ) -> Dict[str, Any]:
     """
     Core chat handler used by both HTTP /api/chat and (optionally) WebSocket.
@@ -144,6 +190,17 @@ async def handle_chat_request(
         (user_prompt or "")[:120],
     )
 
+    corr_id = str(uuid4())
+    _rec_tape_req(
+        corr_id=corr_id,
+        session_id=session_id,
+        mode=mode,
+        use_recall=use_recall,
+        recall_profile=recall_payload.get("profile"),
+        user_head=(user_prompt or "")[:80],
+        no_write=no_write,
+    )
+
     # Build the Request
     req = CortexChatRequest(
         prompt=user_prompt,
@@ -159,7 +216,7 @@ async def handle_chat_request(
 
     try:
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
-        resp: CortexChatResult = await cortex_client.chat(req)
+        resp: CortexChatResult = await cortex_client.chat(req, correlation_id=corr_id)
 
         # Extract Text
         text = resp.final_text or ""
@@ -170,11 +227,31 @@ async def handle_chat_request(
         # Use the correlation_id from the response (gateway) if available
         # or it might be passed back from the client logic if modified to do so.
         # Here we rely on CortexChatResult having it.
-        correlation_id = resp.cortex_result.correlation_id
+        correlation_id = resp.cortex_result.correlation_id or corr_id
 
         memory_digest = None
+        recall_debug = None
         if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
-            memory_digest = resp.cortex_result.recall_debug.get("memory_digest")
+            recall_debug = resp.cortex_result.recall_debug
+            memory_digest = recall_debug.get("memory_digest")
+
+        recall_count = 0
+        backend_counts = None
+        if isinstance(recall_debug, dict):
+            recall_count = int(recall_debug.get("count") or 0)
+            backend_counts = recall_debug.get("backend_counts")
+            if backend_counts is None and isinstance(recall_debug.get("debug"), dict):
+                backend_counts = recall_debug["debug"].get("backend_counts")
+        memory_used = bool(getattr(resp.cortex_result, "memory_used", False))
+        if not memory_used:
+            memory_used = bool(recall_count)
+        _rec_tape_rsp(
+            corr_id=str(correlation_id),
+            memory_used=memory_used,
+            recall_count=recall_count,
+            backend_counts=backend_counts,
+            memory_digest=memory_digest,
+        )
 
         return {
             "session_id": session_id,
@@ -183,8 +260,10 @@ async def handle_chat_request(
             "text": text,
             "tokens": len(text.split()), # simple approx
             "raw": raw_result,
-            "recall_debug": resp.cortex_result.recall_debug,
+            "recall_debug": recall_debug,
+            "memory_used": memory_used,
             "memory_digest": memory_digest,
+            "no_write": no_write,
             "spark_meta": None,
             "correlation_id": correlation_id,
         }
@@ -201,6 +280,7 @@ async def handle_chat_request(
 async def api_chat(
     payload: dict,
     x_orion_session_id: Optional[str] = Header(None),
+    x_orion_no_write: Optional[str] = Header(None),
 ):
     """
     Main LLM chat endpoint.
@@ -212,9 +292,12 @@ async def api_chat(
 
     # Ensure warm-started session
     session_id = await ensure_session(x_orion_session_id, bus)
+    no_write = _normalize_bool(payload.get("no_write"), default=False) or _normalize_bool(
+        x_orion_no_write, default=False
+    )
 
     # Core chat handling
-    result = await handle_chat_request(cortex_client, payload, session_id)
+    result = await handle_chat_request(cortex_client, payload, session_id, no_write)
 
     # ─────────────────────────────────────────────
     # 📡 Publish HTTP chat → chat history log
@@ -222,7 +305,7 @@ async def api_chat(
     text = result.get("text")
     correlation_id = result.get("correlation_id")
 
-    if text and getattr(bus, "enabled", False):
+    if text and getattr(bus, "enabled", False) and not no_write:
         try:
             user_messages = payload.get("messages", [])
             latest_user_prompt = ""

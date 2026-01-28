@@ -21,7 +21,7 @@ from orion.schemas.cortex.contracts import (
     RecallDirective,
 )
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
-from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1
+from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
 from orion.schemas.vector.schemas import (
     EmbeddingGenerateV1,
     EmbeddingResultV1,
@@ -119,8 +119,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CortexChatRequest": CortexChatRequest,
     "CortexChatResult": CortexChatResult,
     "RecallDirective": RecallDirective,
-    "ChatHistoryMessageV1": ChatHistoryMessageV1,
-    "ChatHistoryTurnV1": ChatHistoryTurnV1,
+    "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields
+    "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
     "VectorWriteRequest": VectorWriteRequest,
     "VectorDocumentUpsertV1": VectorDocumentUpsertV1,
     "VectorUpsertV1": VectorUpsertV1,

@@ -26,6 +26,7 @@ try:
     from .storage.rdf_adapter import (
         fetch_rdf_fragments,
         fetch_rdf_expansion_terms,
+        fetch_rdf_connected_chatturns,
         fetch_graphtri_anchors,
         fetch_rdf_graphtri_anchor_terms,
         fetch_rdf_graphtri_fragments,
@@ -46,6 +47,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         from app.storage.rdf_adapter import (  # type: ignore
             fetch_rdf_fragments,
             fetch_rdf_expansion_terms,
+            fetch_rdf_connected_chatturns,
             fetch_graphtri_anchors,
             fetch_rdf_graphtri_anchor_terms,
             fetch_rdf_graphtri_fragments,
@@ -200,8 +202,6 @@ def _build_anchor_set(
         "claim_objs": [],
         "related_terms": [],
     }
-    if not session_id:
-        return anchors
     if not _rdf_enabled(profile) or not settings.RECALL_RDF_ENDPOINT_URL:
         return anchors
     query_terms = _extract_keywords(query_text) if query_text else []
@@ -284,7 +284,7 @@ async def _fetch_anchor_candidates(
         except Exception as exc:
             logger.debug(f"vector anchor fetch skipped: {exc}")
 
-    if _rdf_enabled(profile) and session_id and settings.RECALL_RDF_ENDPOINT_URL:
+    if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
         try:
             rdf = fetch_rdf_chatturn_exact_matches(
                 tokens=tokens,
@@ -333,18 +333,17 @@ async def _query_backends(
             # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
             # This is the only place your "exact text I used" lives.
             rdf_chat: List[Dict[str, Any]] = []
-            if session_id:
-                rdf_chat = fetch_rdf_chatturn_fragments(
-                    query_text=fragment,
-                    session_id=session_id,
-                    max_items=max(rdf_top_k, 6),
-                )
-                backend_counts["rdf_chat"] = len(rdf_chat)
-                candidates.extend(rdf_chat)
+            rdf_chat = fetch_rdf_chatturn_fragments(
+                query_text=fragment,
+                session_id=session_id,
+                max_items=max(rdf_top_k, 6),
+            )
+            backend_counts["rdf_chat"] = len(rdf_chat)
+            candidates.extend(rdf_chat)
 
             # 1) Keep existing RDF paths (claims / neighborhood) as additional context.
             rdf: List[Dict[str, Any]] = []
-            if profile_name.startswith("graphtri") and session_id:
+            if profile_name.startswith("graphtri"):
                 rdf = fetch_rdf_graphtri_fragments(
                     query_text=fragment,
                     session_id=session_id,
@@ -567,6 +566,45 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
             pass
 
 
+def _log_debug_dump(
+    *,
+    corr_id: str,
+    profile: Dict[str, Any],
+    backend_counts: Dict[str, int],
+    items: List[Any],
+) -> None:
+    top_n = int(getattr(settings, "RECALL_DEBUG_DUMP_TOP_N", 0) or 0)
+    if top_n <= 0:
+        return
+    logger.info(
+        "REC_TAPE RECALL corr_id=%s profile=%s backend_counts=%s selected_count=%s",
+        corr_id,
+        profile.get("profile"),
+        backend_counts,
+        len(items),
+    )
+    for idx, item in enumerate(items[:top_n]):
+        source = getattr(item, "source", None) or (item.get("source") if isinstance(item, dict) else None)
+        item_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else None)
+        score = (
+            getattr(item, "score", None)
+            if hasattr(item, "score")
+            else (item.get("score") if isinstance(item, dict) else None)
+        )
+        source_ref = getattr(item, "source_ref", None) or (item.get("source_ref") if isinstance(item, dict) else None)
+        snippet = getattr(item, "snippet", None) or (item.get("text") if isinstance(item, dict) else None)
+        snippet_head = str(snippet or "")[:160].replace("\n", " ")
+        logger.info(
+            "REC_TAPE RECALL item idx=%s source=%s id=%s score=%s source_ref=%s snippet_head=%r",
+            idx,
+            source,
+            item_id,
+            score,
+            source_ref,
+            snippet_head,
+        )
+
+
 async def process_recall(
     q: RecallQueryV1,
     *,
@@ -577,6 +615,8 @@ async def process_recall(
     enable_qe = bool(profile.get("enable_query_expansion", True))
     signals = _expand_query(q.fragment, verb=q.verb, intent=q.intent, enable=enable_qe)
     profile_name = str(profile.get("profile") or "")
+    ignored_session_id = q.session_id
+    effective_session_id: str | None = None
 
     t0 = time.time()
     candidates: List[Dict[str, Any]] = []
@@ -587,7 +627,7 @@ async def process_recall(
         browse_limit = max(10, min(20, int(profile.get("max_total_items", 12))))
         try:
             recent_items = await fetch_recent_fragments(
-                q.session_id,
+                effective_session_id,
                 q.node_id,
                 since_minutes_effective,
                 browse_limit,
@@ -614,13 +654,19 @@ async def process_recall(
             profile=profile,
             latency_ms=latency_ms,
             query_text=None,
-            session_id=q.session_id,
+            session_id=None,
             diagnostic=diagnostic,
             browse_mode=True,
         )
+        _log_debug_dump(
+            corr_id=corr_id,
+            profile=profile,
+            backend_counts=backend_counts_total or bundle.stats.backend_counts,
+            items=list(bundle.items),
+        )
         decision = RecallDecisionV1(
             corr_id=corr_id or str(uuid4()),
-            session_id=q.session_id,
+            session_id=ignored_session_id,
             node_id=q.node_id,
             verb=q.verb,
             profile=q.profile,
@@ -631,11 +677,17 @@ async def process_recall(
             dropped={},  # placeholder for future detailed drop reasons
             ranking_debug=ranking_debug if diagnostic else [],
         )
+        _log_debug_dump(
+            corr_id=decision.corr_id,
+            profile=profile,
+            backend_counts=decision.backend_counts or {},
+            items=list(bundle.items),
+        )
         return bundle, decision
 
     anchor_candidates, anchor_counts = await _fetch_anchor_candidates(
         query_text=q.fragment,
-        session_id=q.session_id,
+        session_id=effective_session_id,
         node_id=q.node_id,
         profile=profile,
         diagnostic=diagnostic,
@@ -648,7 +700,7 @@ async def process_recall(
     if profile_name.startswith("graphtri"):
         anchor_set = _build_anchor_set(
             query_text=q.fragment,
-            session_id=q.session_id,
+            session_id=effective_session_id,
             profile=profile,
         )
         anchor_terms = anchor_set.get("related_terms") or []
@@ -658,26 +710,32 @@ async def process_recall(
         query_plan = {
             "vector_queries": vector_queries,
             "sql_filters": sql_filters,
-            "sql_session_id": q.session_id,
+            "sql_session_id": effective_session_id,
         }
 
         rdf_top_k = int(profile.get("rdf_top_k", 0))
         rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
         rdf_items: List[Dict[str, Any]] = []
+        rdf_connected: List[Dict[str, Any]] = []
         if rdf_enabled:
             try:
-                if q.session_id:
-                    rdf_items = fetch_rdf_graphtri_fragments(
-                        query_text=q.fragment,
-                        session_id=q.session_id,
-                        max_items=rdf_top_k,
-                    )
-                    if not rdf_items:
-                        rdf_items = fetch_rdf_fragments(query_text=q.fragment, max_items=rdf_top_k)
-                else:
+                rdf_items = fetch_rdf_graphtri_fragments(
+                    query_text=q.fragment,
+                    session_id=effective_session_id,
+                    max_items=rdf_top_k,
+                )
+                if not rdf_items:
                     rdf_items = fetch_rdf_fragments(query_text=q.fragment, max_items=rdf_top_k)
                 backend_counts_total["rdf"] = len(rdf_items)
                 candidates.extend(rdf_items)
+
+                if anchor_terms:
+                    rdf_connected = fetch_rdf_connected_chatturns(
+                        terms=anchor_terms[:10],
+                        max_items=max(6, min(12, rdf_top_k or 12)),
+                    )
+                    backend_counts_total["rdf_chat_connected"] = len(rdf_connected)
+                    candidates.extend(rdf_connected)
             except Exception as exc:
                 logger.debug(f"rdf backend skipped: {exc}")
         if settings.RECALL_ENABLE_VECTOR:
@@ -694,7 +752,7 @@ async def process_recall(
                         query_text=term,
                         time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
                         max_items=per_query,
-                        session_id=q.session_id,
+                        session_id=effective_session_id,
                         profile_name=profile.get("profile"),
                         node_id=q.node_id,
                         metadata_filters=vector_filters,
@@ -742,19 +800,19 @@ async def process_recall(
                 )
 
         sql_attempted = False
-        sql_session_id = q.session_id
+        sql_session_id = effective_session_id
         sql_filters_used: List[str] = []
         if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
             try:
                 sql_attempted = True
-                sql_filters_used = sql_filters if q.session_id else []
+                sql_filters_used = sql_filters
 
                 since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
                 since_hours_effective = int(profile.get("sql_since_hours", max(1, since_minutes_effective // 60)))
                 sql_top_k = int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))
 
                 recent_items = await fetch_recent_fragments(
-                    q.session_id,
+                    effective_session_id,
                     q.node_id,
                     since_minutes_effective,
                     sql_top_k,
@@ -763,7 +821,7 @@ async def process_recall(
                     sql_filters_used or [],
                     since_hours_effective,
                     sql_top_k,
-                    session_id=q.session_id,
+                    session_id=effective_session_id,
                 )
 
                 recent_items = list(recent_items) + list(related_items)
@@ -805,7 +863,7 @@ async def process_recall(
             cand, counts = await _query_backends(
                 sig,
                 profile,
-                session_id=q.session_id,
+                session_id=effective_session_id,
                 node_id=q.node_id,
                 entities=_extract_entities(q.fragment),
                 diagnostic=diagnostic,
@@ -820,13 +878,12 @@ async def process_recall(
         profile=profile,
         latency_ms=latency_ms,
         query_text=q.fragment,
-        session_id=q.session_id,
+        session_id=effective_session_id,
         diagnostic=diagnostic,
     )
-
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),
-        session_id=q.session_id,
+        session_id=ignored_session_id,
         node_id=q.node_id,
         verb=q.verb,
         profile=q.profile,
@@ -836,6 +893,12 @@ async def process_recall(
         latency_ms=latency_ms,
         dropped={},  # placeholder for future detailed drop reasons
         ranking_debug=ranking_debug if diagnostic else [],
+    )
+    _log_debug_dump(
+        corr_id=decision.corr_id,
+        profile=profile,
+        backend_counts=decision.backend_counts or {},
+        items=list(bundle.items),
     )
     return bundle, decision
 

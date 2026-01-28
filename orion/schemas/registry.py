@@ -21,7 +21,7 @@ from orion.schemas.cortex.contracts import (
     RecallDirective,
 )
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
-from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1
+from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
 from orion.schemas.vector.schemas import (
     EmbeddingGenerateV1,
     EmbeddingResultV1,

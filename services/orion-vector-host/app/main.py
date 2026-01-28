@@ -31,6 +31,15 @@ embedder: Optional[Embedder] = None
 hunter: Optional[Hunter] = None
 
 
+def _should_skip_memory(payload: Dict[str, Any]) -> bool:
+    tier = str(payload.get("memory_tier") or "").lower()
+    if settings.VECTOR_HOST_SKIP_REJECTED and str(payload.get("memory_status") or "").lower() == "rejected":
+        return True
+    if settings.VECTOR_HOST_EMBED_DURABLE_ONLY and tier != "durable":
+        return True
+    return False
+
+
 def _cfg() -> ChassisConfig:
     return ChassisConfig(
         service_name=settings.SERVICE_NAME,
@@ -121,6 +130,8 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
     payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
     if not isinstance(payload_obj, dict):
         return
+    if _should_skip_memory(payload_obj):
+        return
 
     try:
         message = ChatHistoryMessageV1.model_validate(payload_obj)
@@ -153,6 +164,10 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
             "provider": message.provider,
             "model": message.model,
             "tags": message.tags,
+            "memory_status": message.memory_status,
+            "memory_tier": message.memory_tier,
+            "memory_reason": message.memory_reason,
+            "client_meta": message.client_meta,
         }
     )
     try:
@@ -180,6 +195,8 @@ async def _handle_chat_turn(env: BaseEnvelope) -> None:
         return
     payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
     if not isinstance(payload_obj, dict):
+        return
+    if _should_skip_memory(payload_obj):
         return
 
     try:
@@ -209,6 +226,10 @@ async def _handle_chat_turn(env: BaseEnvelope) -> None:
             "session_id": turn.session_id,
             "source_label": turn.source,
             "spark_meta": json.dumps(turn.spark_meta) if turn.spark_meta else None,
+            "memory_status": turn.memory_status,
+            "memory_tier": turn.memory_tier,
+            "memory_reason": turn.memory_reason,
+            "client_meta": turn.client_meta,
         }
     )
     try:

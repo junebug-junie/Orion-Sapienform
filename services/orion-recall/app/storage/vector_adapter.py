@@ -192,6 +192,10 @@ def fetch_vector_fragments(
                     meta = {}
                 dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
 
+                if settings.RECALL_EXCLUDE_REJECTED and str(meta.get("memory_status") or "").lower() == "rejected":
+                    continue
+                if settings.RECALL_DURABLE_ONLY and str(meta.get("memory_tier") or "").lower() != "durable":
+                    continue
                 if not _recent_enough(meta, since_ts):
                     continue
 
@@ -286,6 +290,10 @@ def fetch_vector_exact_matches(
                 meta = metas[idx] if idx < len(metas) else {}
                 if not isinstance(meta, dict):
                     meta = {}
+                if settings.RECALL_EXCLUDE_REJECTED and str(meta.get("memory_status") or "").lower() == "rejected":
+                    continue
+                if settings.RECALL_DURABLE_ONLY and str(meta.get("memory_tier") or "").lower() != "durable":
+                    continue
                 tags = [
                     "vector-exact",
                     f"collection:{coll_name}",

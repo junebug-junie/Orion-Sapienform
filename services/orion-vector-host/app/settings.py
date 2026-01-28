@@ -42,6 +42,14 @@ class Settings(BaseSettings):
         default="orion:vector:semantic:upsert",
         alias="VECTOR_HOST_SEMANTIC_UPSERT_CHANNEL",
     )
+    VECTOR_HOST_SKIP_REJECTED: bool = Field(
+        default=True,
+        alias="VECTOR_HOST_SKIP_REJECTED",
+    )
+    VECTOR_HOST_EMBED_DURABLE_ONLY: bool = Field(
+        default=False,
+        alias="VECTOR_HOST_EMBED_DURABLE_ONLY",
+    )
 
     # Embedding behavior
     VECTOR_HOST_EMBED_ROLES: Union[str, List[str]] = Field(

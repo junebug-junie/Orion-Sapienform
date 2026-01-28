@@ -10,6 +10,8 @@ class ChatMessageSQL(Base):
     session_id = Column(String, index=True)
     correlation_id = Column(String, index=True, nullable=True)
     trace_id = Column(String, index=True, nullable=True)
+    memory_status = Column(String, index=True, nullable=True)
+    memory_tier = Column(String, index=True, nullable=True)
     user_id = Column(String, nullable=True)
     role = Column(String)
     content = Column(Text)

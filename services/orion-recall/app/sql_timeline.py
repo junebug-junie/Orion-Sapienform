@@ -119,6 +119,17 @@ def _pick_id_col(cur, table: str) -> Optional[str]:
     return None
 
 
+def _memory_filter_clause(cur, table: str) -> str:
+    clauses: List[str] = []
+    if settings.RECALL_EXCLUDE_REJECTED and _table_has_column(cur, table, "memory_status"):
+        clauses.append("(memory_status IS NULL OR memory_status <> 'rejected')")
+    if settings.RECALL_DURABLE_ONLY and _table_has_column(cur, table, "memory_tier"):
+        clauses.append("memory_tier = 'durable'")
+    if not clauses:
+        return ""
+    return " AND " + " AND ".join(clauses)
+
+
 def _should_filter_juniper() -> bool:
     if settings.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:
         return settings.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"
@@ -156,6 +167,7 @@ async def fetch_recent_fragments(
                 ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
                 id_col = _pick_id_col(cur, timeline_table)
                 session_col = _pick_session_col(cur, timeline_table)
+                memory_clause = _memory_filter_clause(cur, timeline_table)
                 select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 params: List[Any] = [since_minutes]
@@ -170,6 +182,7 @@ async def fetch_recent_fragments(
                         {ts_col} AS created_at
                     FROM {timeline_table}
                     WHERE {ts_col} >= NOW() - INTERVAL '%s minutes'
+                      {memory_clause}
                     ORDER BY {ts_col} DESC
                     LIMIT %s
                     """,
@@ -206,6 +219,7 @@ async def fetch_recent_fragments(
             juniper_clause = ""
             if _should_filter_juniper() and timeline_table == "collapse_mirror":
                 juniper_clause = f" AND {_juniper_filter_clause()}"
+            memory_clause = _memory_filter_clause(cur, timeline_table)
             cur.execute(
                 f"""
                 SELECT id,
@@ -217,6 +231,7 @@ async def fetch_recent_fragments(
                 FROM {timeline_table}
                 WHERE {settings.RECALL_SQL_TIMELINE_TS_COL} >= NOW() - INTERVAL '%s minutes'
                   {juniper_clause}
+                  {memory_clause}
                 ORDER BY {settings.RECALL_SQL_TIMELINE_TS_COL} DESC
                 LIMIT %s
                 """,
@@ -261,6 +276,7 @@ async def fetch_related_by_entities(
                 patterns = [f"%{e}%" for e in entities]
                 id_col = _pick_id_col(cur, timeline_table)
                 session_col = _pick_session_col(cur, timeline_table)
+                memory_clause = _memory_filter_clause(cur, timeline_table)
                 select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 params: List[Any] = [since_hours, patterns, patterns]
@@ -279,6 +295,7 @@ async def fetch_related_by_entities(
                         {prompt_col} ILIKE ANY (%s)
                         OR {response_col} ILIKE ANY (%s)
                       )
+                      {memory_clause}
                     ORDER BY {ts_col} DESC
                     LIMIT %s
                     """,
@@ -316,6 +333,7 @@ async def fetch_related_by_entities(
             juniper_clause = ""
             if _should_filter_juniper() and timeline_table == "collapse_mirror":
                 juniper_clause = f" AND {_juniper_filter_clause()}"
+            memory_clause = _memory_filter_clause(cur, timeline_table)
             cur.execute(
                 f"""
                 SELECT id,
@@ -328,6 +346,7 @@ async def fetch_related_by_entities(
                 WHERE {settings.RECALL_SQL_TIMELINE_TS_COL} >= NOW() - INTERVAL '%s hours'
                   AND ({settings.RECALL_SQL_TIMELINE_TEXT_COL} ILIKE ANY (ARRAY[{placeholders}]))
                   {juniper_clause}
+                  {memory_clause}
                 ORDER BY {settings.RECALL_SQL_TIMELINE_TS_COL} DESC
                 LIMIT %s
                 """,
@@ -366,6 +385,7 @@ async def fetch_exact_fragments(
                     prompt_col = settings.RECALL_SQL_CHAT_TEXT_COL
                     response_col = settings.RECALL_SQL_CHAT_RESPONSE_COL
                     ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
+                    memory_clause = _memory_filter_clause(cur, timeline_table)
                     select_row_id = f"{id_col} AS row_id," if id_col else ""
                     select_sid = f"{session_col} AS sid," if session_col else ""
                     params = []
@@ -387,6 +407,7 @@ async def fetch_exact_fragments(
                             {ts_col} AS created_at
                         FROM {timeline_table}
                         WHERE ({filter_clause})
+                          {memory_clause}
                         ORDER BY {ts_col} DESC
                         LIMIT %s
                         """,
@@ -427,6 +448,7 @@ async def fetch_exact_fragments(
                     params.append(f"%{token}%")
                 filter_clause = " OR ".join(term_filters) if term_filters else "TRUE"
                 node_clause = ""
+                memory_clause = _memory_filter_clause(cur, timeline_table)
                 if node_id and settings.RECALL_SQL_TIMELINE_NODE_COL:
                     node_clause = f"AND {settings.RECALL_SQL_TIMELINE_NODE_COL} = %s"
                     params.append(node_id)
@@ -442,6 +464,7 @@ async def fetch_exact_fragments(
                     FROM {timeline_table}
                     WHERE ({filter_clause})
                       {node_clause}
+                      {memory_clause}
                     ORDER BY {settings.RECALL_SQL_TIMELINE_TS_COL} DESC
                     LIMIT %s
                     """,

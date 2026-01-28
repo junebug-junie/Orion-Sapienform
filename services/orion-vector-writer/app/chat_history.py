@@ -33,6 +33,8 @@ def chat_history_envelope_to_request(
     except Exception as e:
         logger.error("Invalid chat history envelope: %s", e, exc_info=True)
         return None
+    if (envelope.payload.memory_status or "").lower() == "rejected":
+        return None
 
     doc = envelope.payload.to_document(
         kind=envelope.kind,

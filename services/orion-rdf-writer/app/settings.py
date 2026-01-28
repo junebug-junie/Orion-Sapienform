@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     NODE_NAME: str = Field(default="unknown")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
     RDF_SKIP_KINDS: str = Field(default="", env="RDF_SKIP_KINDS")
+    RDF_SKIP_REJECTED: bool = Field(default=True, env="RDF_SKIP_REJECTED")
+    RDF_DURABLE_ONLY: bool = Field(default=False, env="RDF_DURABLE_ONLY")
 
     model_config = SettingsConfigDict(
         env_file=".env",

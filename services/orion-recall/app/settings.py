@@ -141,6 +141,8 @@ class Settings(BaseSettings):
     )
     RECALL_VECTOR_TIMEOUT_SEC: float = Field(default=5.0, validation_alias=AliasChoices("RECALL_VECTOR_TIMEOUT_SEC"))
     RECALL_VECTOR_MAX_ITEMS: int = Field(default=24, validation_alias=AliasChoices("RECALL_VECTOR_MAX_ITEMS"))
+    RECALL_EXCLUDE_REJECTED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_EXCLUDE_REJECTED"))
+    RECALL_DURABLE_ONLY: bool = Field(default=False, validation_alias=AliasChoices("RECALL_DURABLE_ONLY"))
 
     # ── RDF / GraphDB (recall-specific) ───────────────────────────────
     RECALL_RDF_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_ENDPOINT_URL"))

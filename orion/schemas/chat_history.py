@@ -11,6 +11,8 @@ from orion.core.bus.bus_schemas import Envelope, ServiceRef
 CHAT_HISTORY_MESSAGE_KIND = "chat.history.message.v1"
 CHAT_HISTORY_TURN_KIND = "chat.history"
 ChatRole = Literal["user", "assistant", "system", "tool"]
+MemoryStatus = Literal["accepted", "rejected", "pending"]
+MemoryTier = Literal["durable", "ephemeral"]
 
 
 def _now_iso() -> str:
@@ -42,6 +44,10 @@ class ChatHistoryMessageV1(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
+    memory_status: Optional[MemoryStatus] = None
+    memory_tier: Optional[MemoryTier] = None
+    memory_reason: Optional[str] = None
+    client_meta: Optional[Dict[str, Any]] = None
 
     def to_document(
         self,
@@ -81,6 +87,14 @@ class ChatHistoryMessageV1(BaseModel):
             metadata["provider"] = self.provider
         if self.tags:
             metadata["tags"] = self.tags
+        if self.memory_status:
+            metadata["memory_status"] = self.memory_status
+        if self.memory_tier:
+            metadata["memory_tier"] = self.memory_tier
+        if self.memory_reason:
+            metadata["memory_reason"] = self.memory_reason
+        if self.client_meta:
+            metadata["client_meta"] = self.client_meta
 
         # Drop None values for cleaner metadata blobs
         metadata = {k: v for k, v in metadata.items() if v is not None}
@@ -115,6 +129,10 @@ class ChatHistoryTurnV1(BaseModel):
     user_id: Optional[str] = Field(default=None)
     session_id: Optional[str] = Field(default=None)
     spark_meta: Optional[Dict[str, Any]] = Field(default=None)
+    memory_status: Optional[MemoryStatus] = None
+    memory_tier: Optional[MemoryTier] = None
+    memory_reason: Optional[str] = None
+    client_meta: Optional[Dict[str, Any]] = None
 
 
 class ChatHistoryTurnEnvelope(Envelope[ChatHistoryTurnV1]):

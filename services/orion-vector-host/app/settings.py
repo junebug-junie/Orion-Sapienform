@@ -26,6 +26,10 @@ class Settings(BaseSettings):
         default="orion:chat:history:log",
         alias="VECTOR_HOST_CHAT_HISTORY_CHANNEL",
     )
+    VECTOR_HOST_CHAT_TURN_CHANNEL: str = Field(
+        default="orion:chat:history:turn",
+        alias="VECTOR_HOST_CHAT_TURN_CHANNEL",
+    )
     VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL: str = Field(
         default="orion:embedding:generate",
         alias="VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL",
@@ -37,6 +41,14 @@ class Settings(BaseSettings):
     VECTOR_HOST_SEMANTIC_UPSERT_CHANNEL: str = Field(
         default="orion:vector:semantic:upsert",
         alias="VECTOR_HOST_SEMANTIC_UPSERT_CHANNEL",
+    )
+    VECTOR_HOST_SKIP_REJECTED: bool = Field(
+        default=True,
+        alias="VECTOR_HOST_SKIP_REJECTED",
+    )
+    VECTOR_HOST_EMBED_DURABLE_ONLY: bool = Field(
+        default=False,
+        alias="VECTOR_HOST_EMBED_DURABLE_ONLY",
     )
 
     # Embedding behavior
@@ -56,6 +68,14 @@ class Settings(BaseSettings):
     VECTOR_HOST_SEMANTIC_COLLECTION: str = Field(
         default="orion_main_store",
         alias="VECTOR_HOST_SEMANTIC_COLLECTION",
+    )
+    VECTOR_HOST_CHAT_MESSAGE_COLLECTION: str = Field(
+        default="orion_chat",
+        alias="VECTOR_HOST_CHAT_MESSAGE_COLLECTION",
+    )
+    VECTOR_HOST_CHAT_TURN_COLLECTION: str = Field(
+        default="orion_chat_turns",
+        alias="VECTOR_HOST_CHAT_TURN_COLLECTION",
     )
 
     ORION_LLM_VLLM_URL: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")

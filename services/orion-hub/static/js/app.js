@@ -41,8 +41,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
+  const noWriteToggle = document.getElementById('noWriteToggle');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
+  const memoryPanelToggle = document.getElementById('memoryPanelToggle');
+  const memoryPanelBody = document.getElementById('memoryPanelBody');
+  const memoryUsedValue = document.getElementById('memoryUsedValue');
+  const recallCountValue = document.getElementById('recallCountValue');
+  const backendCountsValue = document.getElementById('backendCountsValue');
+  const memoryDigestPre = document.getElementById('memoryDigestPre');
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -124,6 +131,24 @@ document.addEventListener("DOMContentLoaded", () => {
     if (orionState === 'idle') updateStatus('Ready.');
     else if (orionState === 'speaking') updateStatus('Speaking...');
     else if (orionState === 'processing') updateStatus('Processing...');
+  }
+
+  function updateMemoryPanel(data) {
+    if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
+    const recallDebug = data && typeof data.recall_debug === 'object' ? data.recall_debug : null;
+    const recallCount = recallDebug && typeof recallDebug.count === 'number' ? recallDebug.count : null;
+    const backendCounts = recallDebug && recallDebug.backend_counts
+      ? recallDebug.backend_counts
+      : (recallDebug && recallDebug.debug && recallDebug.debug.backend_counts) || null;
+    const memoryUsed = typeof data.memory_used === 'boolean'
+      ? data.memory_used
+      : (typeof recallCount === 'number' ? recallCount > 0 : false);
+    const memoryDigest = data.memory_digest || (recallDebug && recallDebug.memory_digest) || "";
+
+    memoryUsedValue.textContent = memoryUsed ? "true" : "false";
+    recallCountValue.textContent = typeof recallCount === 'number' ? recallCount : "--";
+    backendCountsValue.textContent = backendCounts ? JSON.stringify(backendCounts, null, 2) : "--";
+    memoryDigestPre.textContent = memoryDigest || "--";
   }
 
   function appendMessage(sender, text, colorClass = 'text-white') {
@@ -434,6 +459,12 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
 
+  if (memoryPanelToggle && memoryPanelBody) {
+    memoryPanelToggle.addEventListener('click', () => {
+      memoryPanelBody.classList.toggle('hidden');
+    });
+  }
+
   // --- WebSocket ---
   function setupWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -456,6 +487,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
           if (d.biometrics) updateBiometricsPanel(d.biometrics);
+          updateMemoryPanel(d);
       } catch (err) {
           console.error("WS Parse Error", err);
       }
@@ -486,6 +518,7 @@ document.addEventListener("DOMContentLoaded", () => {
        mode: currentMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
+       no_write: noWriteToggle ? noWriteToggle.checked : false,
        use_recall: recallToggle ? recallToggle.checked : false,
        recall_mode: recallMode !== "auto" ? recallMode : null,
        recall_profile: recallProfile !== "auto" ? recallProfile : null,
@@ -505,6 +538,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const headers = {'Content-Type': 'application/json'};
         if (orionSessionId) headers['X-Orion-Session-Id'] = orionSessionId;
+        if (noWriteToggle && noWriteToggle.checked) headers['X-Orion-No-Write'] = '1';
 
         // Fallback to HTTP if WS is down
         fetch(`${API_BASE_URL}/api/chat`, {
@@ -516,6 +550,7 @@ document.addEventListener("DOMContentLoaded", () => {
         .then(d => {
             if(d.text) appendMessage('Orion', d.text);
             else if(d.error) appendMessage('System', d.error, 'text-red-400');
+            updateMemoryPanel(d);
         })
         .catch(e => appendMessage('System', "HTTP Failed: " + e.message, 'text-red-400'));
     }
@@ -538,6 +573,7 @@ document.addEventListener("DOMContentLoaded", () => {
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
+               no_write: noWriteToggle ? noWriteToggle.checked : false,
                use_recall: recallToggle ? recallToggle.checked : false,
                recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
                recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,

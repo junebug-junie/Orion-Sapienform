@@ -137,6 +137,12 @@ class Settings(BaseSettings):
     # Hard cap to avoid runaway prompts when users paste long text
     HUB_CONTEXT_MAX_CHARS: int = Field(default=12000, alias="HUB_CONTEXT_MAX_CHARS")
 
+    # --- Recall Debugging ---
+    HUB_DEBUG_RECALL: bool = Field(default=False, alias="HUB_DEBUG_RECALL")
+
+    # --- No-Write Debug Mode (skip publishing chat history) ---
+    HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")
+
 
 
 @lru_cache(maxsize=1)

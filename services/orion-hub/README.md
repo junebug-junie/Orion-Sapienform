@@ -115,6 +115,21 @@ Expected lines include:
 {"channel":"orion:chat:history:turn","kind":"chat.history", ...}
 ```
 
+### 5. No-Write Debug Mode (skip memory publishing)
+Use the header + JSON flag to avoid publishing `orion:chat:history:*` events while still running recall/LLM:
+
+```bash
+curl -sS http://localhost:8080/api/chat \
+  -H "content-type: application/json" \
+  -H "X-Orion-No-Write: 1" \
+  -d '{ "mode":"brain","use_recall":true,"recall_profile":"reflect.v1","no_write":true,
+        "messages":[{"role":"user","content":"GrowthSynthesis23"}] }'
+```
+
+Expected:
+- Response includes `memory_digest` (when recall is enabled).
+- No events appear on bus patterns `orion:chat:history:*` for that request.
+
 ---
 
 ## 🧵 Philosophy

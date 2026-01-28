@@ -29,6 +29,10 @@ def build_chat_history_envelope(
     provider: Optional[str] = None,
     tags: Optional[List[str]] = None,
     message_id: Optional[str] = None,
+    memory_status: Optional[str] = None,
+    memory_tier: Optional[str] = None,
+    memory_reason: Optional[str] = None,
+    client_meta: Optional[dict] = None,
 ) -> ChatHistoryMessageEnvelope:
     """
     Construct a versioned chat history envelope with Orion's canonical bus schema.
@@ -41,6 +45,10 @@ def build_chat_history_envelope(
         "model": model,
         "provider": provider,
         "tags": tags or [],
+        "memory_status": memory_status,
+        "memory_tier": memory_tier,
+        "memory_reason": memory_reason,
+        "client_meta": client_meta,
     }
     if message_id:
         payload_kwargs["message_id"] = message_id
@@ -86,8 +94,15 @@ def build_chat_turn_envelope(
     source_label: str = "hub_ws",
     spark_meta: Optional[dict] = None,
     turn_id: Optional[str] = None,
+    memory_status: Optional[str] = None,
+    memory_tier: Optional[str] = None,
+    memory_reason: Optional[str] = None,
+    client_meta: Optional[dict] = None,
 ) -> ChatHistoryTurnEnvelope:
     """Construct a turn-level chat history envelope (prompt + response)."""
+    merged_spark_meta = dict(spark_meta or {})
+    if client_meta:
+        merged_spark_meta.setdefault("client_meta", client_meta)
     payload = ChatHistoryTurnV1(
         id=turn_id,
         correlation_id=str(correlation_id) if correlation_id is not None else None,
@@ -96,7 +111,11 @@ def build_chat_turn_envelope(
         response=response,
         user_id=user_id,
         session_id=session_id,
-        spark_meta=spark_meta,
+        spark_meta=merged_spark_meta or None,
+        memory_status=memory_status,
+        memory_tier=memory_tier,
+        memory_reason=memory_reason,
+        client_meta=client_meta,
     )
     return ChatHistoryTurnEnvelope(
         correlation_id=correlation_id or uuid4(),

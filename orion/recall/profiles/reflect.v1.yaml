@@ -1,8 +1,6 @@
 profile: reflect.v1
-vector_top_k: 0
-#12
-rdf_top_k: 0
-#8
+vector_top_k: 12
+rdf_top_k: 8
 max_per_source: 4
 max_total_items: 24
 time_decay_half_life_hours: 72
@@ -14,14 +12,11 @@ sql_since_minutes: 10080
 sql_top_k: 200
 relevance:
   backend_weights:
-    vector: 0
-    #1.0
+    vector: 1.0
     sql_timeline: 0.9
     sql_chat: 0.6
-    rdf_chat: 0 
-    # 0.55
-    rdf: 0
-    # 0.4
+    rdf_chat: 0.55
+    rdf:  0.4
   score_weight: 0.7
   text_similarity_weight: 0.15
   recency_weight: 0.1

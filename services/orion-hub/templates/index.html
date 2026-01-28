@@ -89,35 +89,6 @@
 
         <div id="conversation" class="flex-1 min-h-0 bg-gray-950/60 border border-gray-800 rounded-xl p-3 overflow-y-auto space-y-3"></div>
 
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
-          <button
-            id="memoryPanelToggle"
-            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-            type="button"
-          >
-            <span class="uppercase tracking-wide">Memory / Recall Debug</span>
-            <span class="text-gray-500">▾</span>
-          </button>
-          <div id="memoryPanelBody" class="hidden space-y-2 text-xs text-gray-300">
-            <div class="flex items-center justify-between">
-              <span class="text-gray-500">Memory used</span>
-              <span id="memoryUsedValue">--</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span class="text-gray-500">Recall count</span>
-              <span id="recallCountValue">--</span>
-            </div>
-            <div>
-              <div class="text-gray-500 mb-1">Backend counts</div>
-              <pre id="backendCountsValue" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
-            </div>
-            <div>
-              <div class="text-gray-500 mb-1">Memory digest</div>
-              <pre id="memoryDigestPre" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
-            </div>
-          </div>
-        </div>
-
         <div class="flex items-center gap-2">
           <button id="recordButton" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700" title="Hold to talk" aria-label="Hold to talk">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -190,6 +161,7 @@
           </div>
         </div>
 
+        <!-- ✅ Keep ONLY this (bottom) Memory / Recall Debug panel -->
         <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <button
             id="memoryPanelToggle"
@@ -378,6 +350,6 @@
   <div id="settingsPanel" class="fixed inset-y-0 right-0 w-full sm:w-[420px] bg-gray-950 border-l border-gray-800 transform translate-x-full transition-transform duration-300 z-30 flex flex-col">
      </div>
   
-  <script src="/static/js/app.js?v=1.0.36" defer></script>
+  <script src="/static/js/app.js?v=1.0.39" defer></script>
 </body>
 </html>

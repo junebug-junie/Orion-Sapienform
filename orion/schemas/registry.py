@@ -40,6 +40,7 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
+from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1
@@ -94,6 +95,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacogTriggerV1": MetacogTriggerV1,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
+    "SparkStateSnapshotAckV1": SparkStateSnapshotAckV1,
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,

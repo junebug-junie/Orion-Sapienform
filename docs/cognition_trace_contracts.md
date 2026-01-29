@@ -35,14 +35,10 @@ This document defines the contracts for the "Cognition Trace Memory" system, whi
 ## 2. Spark Telemetry
 
 *   **Channel Env Var:** `CHANNEL_SPARK_TELEMETRY`
-*   **Default Value:** `orion:spark:telemetry` (legacy `orion:spark:introspection:log` may still appear)
+*   **Default Value:** `orion:spark:introspection:log`
 *   **Publisher:** `orion-spark-introspector` (after processing a trace)
-*   **Envelope Kind:** `spark.telemetry` (legacy `spark.introspection.log` may still appear)
+*   **Envelope Kind:** `spark.introspection.log`
 *   **Schema:** `orion.schemas.telemetry.spark.SparkTelemetryPayload`
-
-**Spark contract canonical source:** The single source of truth for Spark telemetry and snapshot schemas is
-`orion/schemas/telemetry/spark.py`. All services should import Spark schemas from that module (or a compatibility
-shim that re-exports it). This prevents drift across duplicate definitions.
 
 ### Schema Payload (`SparkTelemetryPayload`)
 
@@ -55,9 +51,6 @@ shim that re-exports it). This prevents drift across duplicate definitions.
 | `trace_verb` | `str` | Trace verb (for filtering). |
 | `stimulus_summary` | `str` | Debug string of the stimulus encoding (e.g., "v=0.8 a=0.5"). |
 | `metadata` | `dict` | Full tissue stats (valence, energy, etc.). |
-
-**Phi semantics:** `SparkStateSnapshotV1.phi` is a dict of components (valence/energy/coherence/novelty, etc.). If
-`SparkTelemetryPayload.phi` is present, it represents a scalar coherence-style score derived from those components.
 
 ## 3. Consumer Behavior
 
@@ -87,4 +80,4 @@ shim that re-exports it). This prevents drift across duplicate definitions.
     3.  Maps to `OrionTissue` stimulus.
     4.  Updates Tissue (Predictive Coding + Diffusion).
     5.  Calculates `Novelty` and `Phi`.
-    6.  Publishes `spark.telemetry` (legacy `spark.introspection.log`).
+    6.  Publishes `spark.introspection.log`.

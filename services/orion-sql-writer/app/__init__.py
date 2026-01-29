@@ -1,1 +1,0 @@
-"""SQL writer application package."""

@@ -21,6 +21,14 @@ Spark is not a separate "brain" or model. It is a set of verbs, data structures,
 
 ---
 
+## Spark Contract Canonical Source
+
+The canonical Spark telemetry and snapshot schemas live in `orion/schemas/telemetry/spark.py`. Services should import
+Spark schema classes from that module (or a compatibility shim that re-exports it) to avoid drift across duplicate
+definitions.
+
+---
+
 ## 2. Position in the Orion Stack
 
 Spark sits alongside other cognitive modules under `orion/cognition`, but conceptually it spans several layers:

@@ -15,6 +15,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
+from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.biometrics import BiometricsSummaryV1, BiometricsInductionV1, BiometricsClusterV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
@@ -104,15 +105,29 @@ async def _handle_snapshot(env: BaseEnvelope) -> None:
     # --- FIX: Send ACK to prevent RPC timeouts ---
     # If the sender provided a reply_to address, they are waiting for us.
     if env.reply_to and RABBIT:
-        ack_payload = {"ok": True, "seq": snap.seq, "node": snap.source_node}
+        ack_payload = SparkStateSnapshotAckV1(
+            ok=True,
+            snapshot_seq=snap.seq,
+            snapshot_ts=snap.snapshot_ts,
+            source_service=settings.service_name,
+            source_node=settings.node_name,
+        )
         ack_env = BaseEnvelope(
-            kind="spark.state.snapshot.ack",
+            kind="spark.state.snapshot.ack.v1",
             source=_source(),
             correlation_id=env.correlation_id,
-            payload=ack_payload
+            payload=ack_payload.model_dump(mode="json"),
         )
         # Fire and forget the reply
         await RABBIT.send_reply(ack_env, env.reply_to)
+        if settings.emit_legacy_snapshot_ack:
+            legacy_env = BaseEnvelope(
+                kind="spark.state.snapshot.ack",
+                source=_source(),
+                correlation_id=env.correlation_id,
+                payload=ack_payload.model_dump(mode="json"),
+            )
+            await RABBIT.send_reply(legacy_env, env.reply_to)
 
 
 async def _handle_get_latest(env: BaseEnvelope) -> BaseEnvelope:
@@ -216,6 +231,10 @@ async def lifespan(app: FastAPI):
     # 2) Durable warm start from Postgres
     hydrated = await _hydrate_from_postgres(STORE)
     logger.info(f"Hydrated {hydrated} snapshots from Postgres")
+    logger.info(
+        "Legacy spark.state.snapshot.ack emission %s",
+        "enabled" if settings.emit_legacy_snapshot_ack else "disabled",
+    )
 
     # 3) Start chassis workers
     hunter = Hunter(_cfg(), patterns=[settings.channel_spark_state_snapshot], handler=_handle_snapshot)

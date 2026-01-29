@@ -6,6 +6,9 @@ import json
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
+import logging
+
+logger = logging.getLogger("sql-writer.settings")
 
 
 class Settings(BaseSettings):
@@ -39,7 +42,6 @@ class Settings(BaseSettings):
             "orion:telemetry:biometrics",
             "orion:biometrics:summary",
             "orion:biometrics:induction",
-            "orion:spark:introspection:log", # legacy?
             "orion:spark:telemetry",
             "orion:cognition:trace",
             "orion:metacognition:tick",
@@ -47,6 +49,12 @@ class Settings(BaseSettings):
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
+    sql_writer_enable_spark_snapshot_channel: bool = Field(
+        False,
+        alias="SQL_WRITER_ENABLE_SPARK_SNAPSHOT_CHANNEL",
+    )
+
+    spark_legacy_mode: str = Field("accept", alias="SPARK_LEGACY_MODE")
 
     # JSON mapping from envelope.kind -> destination table (or internal model key)
     sql_writer_route_map_json: str = Field(
@@ -62,9 +70,8 @@ class Settings(BaseSettings):
             "biometrics.telemetry": "BiometricsTelemetry",
             "biometrics.summary.v1": "BiometricsSummarySQL",
             "biometrics.induction.v1": "BiometricsInductionSQL",
-            "spark.introspection.log": "SparkIntrospectionLogSQL",
-            "spark.introspection": "SparkIntrospectionLogSQL",
             "spark.telemetry": "SparkTelemetrySQL",
+            "spark.state.snapshot.v1": "SparkTelemetrySQL",
             "cognition.trace": "CognitionTraceSQL",
             "metacognition.tick.v1":"MetacognitionTickSQL",
             "orion.metacog.trigger.v1": "MetacogTriggerSQL"
@@ -87,7 +94,18 @@ class Settings(BaseSettings):
         Some refactor branches referenced `effective_subscribe_channels`.
         We keep env as source of truth and simply expose the configured list.
         """
-        return list(self.sql_writer_subscribe_channels)
+        channels = list(self.sql_writer_subscribe_channels)
+        if self.sql_writer_enable_spark_snapshot_channel and "orion:spark:state:snapshot" not in channels:
+            channels.append("orion:spark:state:snapshot")
+        return channels
+
+    @property
+    def spark_legacy_mode_normalized(self) -> str:
+        mode = (self.spark_legacy_mode or "accept").strip().lower()
+        if mode not in {"accept", "warn", "drop"}:
+            logger.warning("Invalid SPARK_LEGACY_MODE=%s; defaulting to accept", self.spark_legacy_mode)
+            return "accept"
+        return mode
 
 
     # DB

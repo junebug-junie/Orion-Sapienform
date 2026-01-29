@@ -310,6 +310,9 @@ End-to-end flow for a single chat turn:
 | `orion:vector:semantic:upsert`  | `vector.upsert.v1`   | `VectorUpsertV1`   | `orion-vector-host`     | `orion-spark-introspector`  | **semantic embeddings for assistant responses**    |
 | `orion:vector:latent:upsert`    | `vector.upsert.v1`   | `VectorUpsertV1`   | `orion-llm-gateway`     | (future consumers)          | CoLA/vLLM latent vectors, separate axis            |
 
+**Canonical Spark emission:** spark-introspector emits only canonical kinds (`spark.telemetry` and
+`spark.state.snapshot.v1`). Legacy kinds (`spark.introspection.*`) are no longer emitted.
+
 No changes are required to `orion/bus/channels.yaml` for semantic upserts; the channel + schema already exist.
 
 ---

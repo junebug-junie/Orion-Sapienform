@@ -32,6 +32,15 @@ Environment:
 
 This service is intentionally a *read model* (latest snapshot oracle). It is not part of recall/RAG.
 
+## ✅ Spark snapshot ACKs
+
+When a snapshot envelope includes `reply_to`, the service emits an ACK reply:
+
+- Canonical kind: `spark.state.snapshot.ack.v1`
+- Legacy kind (optional): `spark.state.snapshot.ack`
+
+The legacy kind is controlled by `STATE_SERVICE_EMIT_LEGACY_SNAPSHOT_ACK` (default `true`).
+
 ## 🔍 Testing: Bus RPC
 
 This test verifies that **`orion-state-service`** can respond to a bus RPC request

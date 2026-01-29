@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     error_channel: str = Field("orion:system:error", alias="ORION_ERROR_CHANNEL")
     shutdown_grace_sec: float = Field(10.0, alias="ORION_SHUTDOWN_GRACE_SEC")
 
+    # Legacy ack emission (spark.state.snapshot.ack)
+    emit_legacy_snapshot_ack: bool = Field(
+        True,
+        alias="STATE_SERVICE_EMIT_LEGACY_SNAPSHOT_ACK",
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

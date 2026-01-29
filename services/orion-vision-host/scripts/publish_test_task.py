@@ -19,7 +19,7 @@ async def main():
     bus = OrionBusAsync(url=args.url)
     await bus.connect()
 
-request_channel = "orion:exec:request:VisionHostService"
+    request_channel = "orion:exec:request:VisionHostService"
     reply_channel = f"orion:vision:reply:{uuid.uuid4()}"
     correlation_id = str(uuid.uuid4())
 
@@ -63,12 +63,12 @@ request_channel = "orion:exec:request:VisionHostService"
                     print(f"CorrID: {res_env.correlation_id}")
 
                     if isinstance(res_env.payload, dict):
-                         try:
-                             res_payload = VisionTaskResultPayload(**res_env.payload)
-                             print(f"Payload (Typed): {res_payload}")
-                         except Exception as e:
-                             print(f"Payload (Dict): {res_env.payload}")
-                             print(f"Validation Error: {e}")
+                        try:
+                            res_payload = VisionTaskResultPayload(**res_env.payload)
+                            print(f"Payload (Typed): {res_payload}")
+                        except Exception as e:
+                            print(f"Payload (Dict): {res_env.payload}")
+                            print(f"Validation Error: {e}")
                     else:
                         print(f"Payload: {res_env.payload}")
 

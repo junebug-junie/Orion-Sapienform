@@ -340,10 +340,22 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:spark:introspect:candidate*"
+  - name: "orion:spark:introspect:candidate"
     kind: "event"
     schema_id: "SparkCandidateV1"
-    producer_services: ["orion-cortex-exec", "orion-hub"]
+    message_kind: "spark.candidate"
+    channel_pattern: "orion:spark:introspect:candidate*"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-spark-introspector"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:spark:introspect:candidate:log"
+    kind: "event"
+    schema_id: "SparkCandidateV1"
+    message_kind: "spark.candidate"
+    channel_pattern: "orion:spark:introspect:candidate*"
+    producer_services: ["orion-hub"]
     consumer_services: ["orion-spark-introspector"]
     stability: "experimental"
     since: "2026-01-08"
@@ -351,6 +363,7 @@ channels:
   - name: "orion:spark:signal"
     kind: "telemetry"
     schema_id: "SparkSignalV1"
+    message_kind: "spark.signal.v1"
     producer_services: ["*"]
     consumer_services: ["orion-spark-introspector", "orion-state-service"]
     stability: "experimental"
@@ -359,6 +372,9 @@ channels:
   - name: "orion:spark:state:snapshot"
     kind: "telemetry"
     schema_id: "SparkStateSnapshotV1"
+    message_kind: "spark.state.snapshot.v1"
+    reply_kinds: ["spark.state.snapshot.ack.v1"]
+    reply_schema_ids: ["SparkStateSnapshotAckV1"]
     producer_services: ["orion-spark-introspector", "orion-equilibrium-service"]
     consumer_services: ["orion-state-service", "orion-sql-writer"]
     stability: "experimental"
@@ -367,6 +383,7 @@ channels:
   - name: "orion:spark:telemetry"
     kind: "telemetry"
     schema_id: "SparkTelemetryPayload"
+    message_kind: "spark.telemetry"
     producer_services: ["orion-spark-introspector"]
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
@@ -600,6 +617,7 @@ channels:
   - name: "orion:spark:concepts:profile"
     kind: "event"
     schema_id: "ConceptProfile"
+    message_kind: "memory.concepts.profile.v1"
     producer_services: ["orion-spark-concept-induction"]
     consumer_services: ["orion-vector-writer", "orion-sql-writer", "*"]
     stability: "experimental"
@@ -608,6 +626,7 @@ channels:
   - name: "orion:spark:concepts:delta"
     kind: "event"
     schema_id: "ConceptProfileDelta"
+    message_kind: "memory.concepts.delta.v1"
     producer_services: ["orion-spark-concept-induction"]
     consumer_services: ["orion-vector-writer", "orion-sql-writer", "*"]
     stability: "experimental"

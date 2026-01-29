@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         default_factory=lambda: [
             "orion:telemetry:*",
             "orion:cortex:*",
+            "orion:spark:*",
         ],
         alias="PAD_INPUT_ALLOWLIST_PATTERNS",
     )

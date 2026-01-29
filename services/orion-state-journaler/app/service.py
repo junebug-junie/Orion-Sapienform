@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,7 @@ from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 
 from .settings import settings
 
+logger = logging.getLogger("orion.state.journaler")
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -100,14 +102,23 @@ class StateJournaler(BaseChassis):
         ts = snap.snapshot_ts
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
+        phi = snap.phi if isinstance(snap.phi, dict) else {}
+        coherence = phi.get("coherence")
+        if coherence is None:
+            logger.warning(
+                "SPARK_SNAPSHOT_MISSING_COHERENCE seq=%s ts=%s source=%s",
+                snap.seq,
+                ts.isoformat(),
+                snap.source_node or "",
+            )
         self.spark_events.append(
             {
                 "ts": ts,
-                "phi": snap.phi,
+                "phi": phi,
                 "valence": snap.valence,
                 "arousal": snap.arousal,
-                "coherence": snap.phi.get("coherence", snap.arousal),
-                "novelty": snap.phi.get("novelty", 0.0),
+                "coherence": coherence,
+                "novelty": phi.get("novelty"),
                 "node": snap.source_node or "",
             }
         )
@@ -138,12 +149,12 @@ class StateJournaler(BaseChassis):
         if events:
             valence = [float(e.get("valence", e["phi"].get("valence", 0.0))) for e in events]
             arousal = [float(e.get("arousal", e["phi"].get("energy", 0.0))) for e in events]
-            coherence = [float(e.get("coherence", e["phi"].get("coherence", 0.0))) for e in events]
-            novelty = [float(e.get("novelty", e["phi"].get("novelty", 0.0))) for e in events]
+            coherence = [float(val) for e in events if (val := e.get("coherence")) is not None]
+            novelty = [float(val) for e in events if (val := e.get("novelty")) is not None]
             avg_valence = sum(valence) / len(valence)
             avg_arousal = sum(arousal) / len(arousal)
-            avg_coherence = sum(coherence) / len(coherence)
-            avg_novelty = sum(novelty) / len(novelty)
+            avg_coherence = sum(coherence) / len(coherence) if coherence else 0.0
+            avg_novelty = sum(novelty) / len(novelty) if novelty else 0.0
             pct_missing = 0.0
         else:
             avg_valence = avg_arousal = avg_coherence = avg_novelty = 0.0

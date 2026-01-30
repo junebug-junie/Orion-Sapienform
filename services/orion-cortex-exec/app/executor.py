@@ -61,6 +61,7 @@ _SYSTEM_TELEMETRY_KEYS = {
     "alert_explanations",
     "alert_explanations_summary",
     "trigger_kind",
+    "trigger_payload",
     "trigger_correlation_id",
     "trigger_trace_id",
     "trigger_source_service",
@@ -68,6 +69,28 @@ _SYSTEM_TELEMETRY_KEYS = {
 }
 
 _SYSTEM_ALERT_TAG_PREFIX = "metacog.alert"
+
+_METACOG_DRAFT_ALLOWED_KEYS = {
+    "type",
+    "mantra",
+    "summary",
+    "causal_echo",
+    "field_resonance",
+    "emergent_entity",
+    "resonance_signature",
+    "what_changed",
+    "tags_suggested",
+}
+
+_METACOG_ENRICH_ALLOWED_KEYS = {
+    "tag_scores",
+    "change_type_scores",
+    "numeric_sisters",
+    "causal_density",
+    "epistemic_status",
+    "is_causally_dense",
+    "snapshot_kind",
+}
 
 
 def _merge_telemetry_system_owned(base: Any, patch: Any) -> Dict[str, Any]:
@@ -128,9 +151,21 @@ def _truncate_list(values: Any, max_items: int, max_chars: int) -> List[str]:
     return truncated
 
 
+def _filter_patch_dict(raw: Dict[str, Any], allowed: set[str]) -> tuple[Dict[str, Any], list[str]]:
+    if not isinstance(raw, dict):
+        return {}, []
+    filtered: Dict[str, Any] = {}
+    stripped: list[str] = []
+    for key, value in raw.items():
+        if key in allowed:
+            filtered[key] = value
+        else:
+            stripped.append(str(key))
+    return filtered, stripped
+
+
 def _apply_draft_patch(entry_dict: Dict[str, Any], patch: MetacogDraftTextPatchV1) -> None:
     entry_dict["type"] = _truncate_text(patch.type, 2000) or entry_dict.get("type")
-    entry_dict["trigger"] = _truncate_text(patch.trigger, 2000) or entry_dict.get("trigger")
     entry_dict["mantra"] = _truncate_text(patch.mantra, 2000) or entry_dict.get("mantra")
     entry_dict["summary"] = _truncate_text(patch.summary, 2000) or entry_dict.get("summary")
     entry_dict["causal_echo"] = _truncate_text(patch.causal_echo, 2000) or entry_dict.get("causal_echo")
@@ -201,6 +236,14 @@ def _metacog_trigger_lineage(ctx: Dict[str, Any]) -> Dict[str, Optional[str]]:
     }
 
 
+def _metacog_trigger_kind(ctx: Dict[str, Any]) -> str:
+    trigger_kind = ctx.get("trigger_kind")
+    if isinstance(trigger_kind, str) and trigger_kind.strip():
+        return trigger_kind
+    trigger = ctx.get("trigger") if isinstance(ctx.get("trigger"), dict) else {}
+    return str(trigger.get("trigger_kind") or "unknown")
+
+
 def _ensure_metacog_entry_id(ctx: Dict[str, Any]) -> str:
     entry_id = str(ctx.get("metacog_entry_id") or uuid4())
     trigger_corr = ctx.get("trigger_correlation_id")
@@ -214,12 +257,16 @@ def _apply_metacog_system_fields(entry_dict: Dict[str, Any], ctx: Dict[str, Any]
     entry_id = _ensure_metacog_entry_id(ctx)
     entry_dict["id"] = entry_id
     entry_dict["event_id"] = entry_id
+    entry_dict["trigger"] = _metacog_trigger_kind(ctx)
     entry_dict.pop("correlation_id", None)
 
     state_snapshot = entry_dict.get("state_snapshot")
     if not isinstance(state_snapshot, dict):
         state_snapshot = {}
     telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+    trigger_payload = ctx.get("trigger")
+    if isinstance(trigger_payload, dict):
+        telemetry["trigger_payload"] = trigger_payload
     lineage = _metacog_trigger_lineage(ctx)
     telemetry["trigger_kind"] = lineage.get("trigger_kind")
     telemetry["trigger_correlation_id"] = lineage.get("trigger_correlation_id")
@@ -276,7 +323,7 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     If the LLM returns non-JSON, produce a valid baseline draft so the pipeline continues.
     """
     trig = ctx.get("trigger") or {}
-    trigger_kind = str(trig.get("trigger_kind") or "unknown")
+    trigger_kind = _metacog_trigger_kind(ctx)
     reason = str(trig.get("reason") or "unknown")
     pressure = trig.get("pressure")
     zen_state = str(trig.get("zen_state") or "unknown")
@@ -714,6 +761,8 @@ async def call_step_services(
     logs: List[str] = []
     merged_result: Dict[str, Any] = {}
     spark_vector: list[float] | None = None
+    step_failed = False
+    step_error: str | None = None
 
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     logger.info(f"Context Keys available: {list(ctx.keys())}")
@@ -789,71 +838,67 @@ async def call_step_services(
                     if not parsed:
                         parsed = _loose_json_extract(raw_content)
 
-                    # 3) Handle Result or Fallback
                     if not parsed:
                         logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
-                        # Use the fallback model directly
-                        entry = _fallback_metacog_draft(ctx)
-                    else:
-                        # We have a dictionary, ensure required fields exist before normalizing
-                        parsed["observer"] = parsed.get("observer") or "orion"
-                        parsed.setdefault("source_service", "metacog")
-                        parsed["visibility"] = "internal"
-                        parsed["epistemic_status"] = "observed"
+                        parsed = {}
 
-                        base_entry = normalize_collapse_entry(parsed).model_dump(mode="json")
-                        base_entry = _apply_metacog_system_fields(base_entry, ctx)
-                        if ctx.get("turn_effect"):
-                            turn_summary = summarize_turn_effect(ctx["turn_effect"])
-                            state_snapshot = base_entry.get("state_snapshot")
-                            if not isinstance(state_snapshot, dict):
-                                state_snapshot = {}
-                            telemetry = _merge_telemetry_system_owned(
-                                state_snapshot.get("telemetry"), None
-                            )
-                            telemetry["turn_effect"] = ctx["turn_effect"]
-                            telemetry["turn_effect_summary"] = turn_summary
-                            if ctx.get("turn_effect_evidence"):
-                                telemetry["turn_effect_evidence"] = ctx["turn_effect_evidence"]
-                            state_snapshot["telemetry"] = telemetry
-                            base_entry["state_snapshot"] = state_snapshot
-                        policy = ctx.get("turn_effect_policy")
-                        if policy:
-                            state_snapshot = base_entry.get("state_snapshot")
-                            if not isinstance(state_snapshot, dict):
-                                state_snapshot = {}
-                            telemetry = _merge_telemetry_system_owned(
-                                state_snapshot.get("telemetry"), None
-                            )
-                            telemetry["recommended_actions"] = (
-                                policy.get("actions") if isinstance(policy, dict) else []
-                            )
-                            telemetry["recommended_actions_policy"] = policy
-                            state_snapshot["telemetry"] = telemetry
-                            base_entry["state_snapshot"] = state_snapshot
-                        explanations = ctx.get("turn_effect_explanations")
-                        if explanations:
-                            state_snapshot = base_entry.get("state_snapshot")
-                            if not isinstance(state_snapshot, dict):
-                                state_snapshot = {}
-                            telemetry = _merge_telemetry_system_owned(
-                                state_snapshot.get("telemetry"), None
-                            )
-                            telemetry["alert_explanations"] = explanations
-                            telemetry["alert_explanations_summary"] = (
-                                explanations.get("summary") if isinstance(explanations, dict) else None
-                            )
-                            state_snapshot["telemetry"] = telemetry
-                            base_entry["state_snapshot"] = state_snapshot
+                    filtered, stripped = _filter_patch_dict(parsed, _METACOG_DRAFT_ALLOWED_KEYS)
+                    if stripped:
+                        logger.warning("Draft patch stripped keys: %s", stripped)
 
-                        try:
-                            patch_model = MetacogDraftTextPatchV1.model_validate(parsed)
-                        except Exception as exc:
-                            logger.warning("MetacogDraftService patch rejected: %s", exc)
-                            patch_model = MetacogDraftTextPatchV1()
-                        _apply_draft_patch(base_entry, patch_model)
+                    try:
+                        patch_model = MetacogDraftTextPatchV1.model_validate(filtered)
+                    except Exception as exc:
+                        logger.warning("MetacogDraftService patch rejected: %s", exc)
+                        patch_model = MetacogDraftTextPatchV1()
 
-                        entry = normalize_collapse_entry(base_entry)
+                    base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
+                    base_entry = _apply_metacog_system_fields(base_entry, ctx)
+                    if ctx.get("turn_effect"):
+                        turn_summary = summarize_turn_effect(ctx["turn_effect"])
+                        state_snapshot = base_entry.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["turn_effect"] = ctx["turn_effect"]
+                        telemetry["turn_effect_summary"] = turn_summary
+                        if ctx.get("turn_effect_evidence"):
+                            telemetry["turn_effect_evidence"] = ctx["turn_effect_evidence"]
+                        state_snapshot["telemetry"] = telemetry
+                        base_entry["state_snapshot"] = state_snapshot
+                    policy = ctx.get("turn_effect_policy")
+                    if policy:
+                        state_snapshot = base_entry.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["recommended_actions"] = (
+                            policy.get("actions") if isinstance(policy, dict) else []
+                        )
+                        telemetry["recommended_actions_policy"] = policy
+                        state_snapshot["telemetry"] = telemetry
+                        base_entry["state_snapshot"] = state_snapshot
+                    explanations = ctx.get("turn_effect_explanations")
+                    if explanations:
+                        state_snapshot = base_entry.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["alert_explanations"] = explanations
+                        telemetry["alert_explanations_summary"] = (
+                            explanations.get("summary") if isinstance(explanations, dict) else None
+                        )
+                        state_snapshot["telemetry"] = telemetry
+                        base_entry["state_snapshot"] = state_snapshot
+
+                    _apply_draft_patch(base_entry, patch_model)
+                    entry = normalize_collapse_entry(base_entry)
 
                     # At this point, 'entry' is guaranteed to be a CollapseMirrorEntryV2 object
                     entry_dict = entry.model_dump(mode="json")
@@ -916,7 +961,10 @@ async def call_step_services(
                     logger.error(f"MetacogDraftService FAILED: {e}")
                     logs.append(f"error <- MetacogDraftService parsing: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
-
+                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    step_failed = True
+                    step_error = f"{service}: {e}"
+                    break
 
                 continue
 
@@ -972,8 +1020,12 @@ async def call_step_services(
                     draft = CollapseMirrorEntryV2.model_validate(draft_data)
                     final_dict = draft.model_dump(mode="json")
 
+                    filtered, stripped = _filter_patch_dict(patch, _METACOG_ENRICH_ALLOWED_KEYS)
+                    if stripped:
+                        logger.warning("Enrich patch stripped keys: %s", stripped)
+
                     try:
-                        enrich_patch = MetacogEnrichScorePatchV1.model_validate(patch)
+                        enrich_patch = MetacogEnrichScorePatchV1.model_validate(filtered)
                     except Exception as exc:
                         logger.warning("MetacogEnrichService patch rejected: %s", exc)
                         enrich_patch = MetacogEnrichScorePatchV1()
@@ -1053,6 +1105,10 @@ async def call_step_services(
                     logger.error(f"MetacogEnrichService FAILED: {e}")
                     logs.append(f"error <- MetacogEnrichService: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
+                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    step_failed = True
+                    step_error = f"{service}: {e}"
+                    break
 
                 continue
 
@@ -1100,6 +1156,10 @@ async def call_step_services(
                     logger.error(f"MetacogPublishService FAILED: {e}")
                     logs.append(f"error <- MetacogPublishService: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
+                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    step_failed = True
+                    step_error = f"{service}: {e}"
+                    break
 
                 continue
 
@@ -1336,6 +1396,7 @@ async def call_step_services(
                 )
 
                 ctx["trigger"] = trigger.model_dump(mode="json")
+                ctx["trigger_kind"] = trigger.trigger_kind
                 ctx["context_summary"] = summary_text
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
@@ -1673,6 +1734,21 @@ async def call_step_services(
                 logs=logs,
                 error=f"{service}: {e}",
             )
+
+    if step_failed:
+        logs.append(f"fail-fast <- {step_error}")
+        return StepExecutionResult(
+            status="fail",
+            verb_name=step.verb_name,
+            step_name=step.step_name,
+            order=step.order,
+            result=merged_result,
+            spark_vector=spark_vector,
+            latency_ms=int((time.time() - t0) * 1000),
+            node=settings.node_name,
+            logs=logs,
+            error=step_error,
+        )
 
     return StepExecutionResult(
         status="success",

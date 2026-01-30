@@ -1,4 +1,5 @@
 
+import asyncio
 import sys
 import os
 
@@ -16,6 +17,9 @@ from orion.schemas.collapse_mirror import (
     normalize_collapse_entry,
     should_route_to_triage,
 )
+from orion.schemas.cortex.schemas import ExecutionStep
+from orion.core.bus.bus_schemas import ServiceRef
+
 def _load_executor_module():
     repo_root = Path(__file__).resolve().parents[1]
     app_dir = repo_root / "services" / "orion-cortex-exec" / "app"
@@ -264,3 +268,63 @@ def test_metacog_system_fields_override_llm_ids():
     telemetry = updated["state_snapshot"]["telemetry"]
     assert telemetry["trigger_correlation_id"] == "corr-1"
     assert telemetry["trigger_trace_id"] == "trace-1"
+
+
+def test_metacog_trigger_is_string_and_payload_stored():
+    executor_module = _load_executor_module()
+    ctx = {
+        "trigger_kind": "chat_turn",
+        "trigger": {"trigger_kind": "heartbeat", "reason": "unit-test"},
+        "metacog_entry_id": "entry-1",
+    }
+    entry_dict = {"trigger": {"trigger_kind": "raw"}, "state_snapshot": {"telemetry": {"note": "keep"}}}
+    updated = executor_module._apply_metacog_system_fields(entry_dict, ctx)
+    assert updated["trigger"] == "chat_turn"
+    telemetry = updated["state_snapshot"]["telemetry"]
+    assert telemetry["trigger_payload"] == ctx["trigger"]
+    assert telemetry["note"] == "keep"
+
+
+def test_fail_fast_skips_enrich_when_draft_fails(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str | None] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            req = kwargs.get("req")
+            calls.append(getattr(req, "raw_user_text", None))
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(executor_module, "find_collapse_entry", _boom)
+
+    step = ExecutionStep(
+        verb_name="metacog",
+        step_name="metacog",
+        order=0,
+        services=["MetacogDraftService", "MetacogEnrichService", "MetacogPublishService"],
+        prompt_template="",
+    )
+    ctx = {"raw_user_text": "test", "trigger_kind": "heartbeat", "trigger": {"trigger_kind": "heartbeat"}}
+    source = ServiceRef(name="test")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id="corr-1",
+        )
+    )
+
+    assert result.status == "fail"
+    assert calls == ["test"]
+    assert ctx["prior_step_results"]["MetacogDraftService"]["ok"] is False

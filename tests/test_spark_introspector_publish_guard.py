@@ -30,3 +30,15 @@ def test_publishable_channel_guard_blocks_wildcards():
     worker_module = _load_worker_module()
     assert worker_module._is_publishable_channel("orion:spark:introspect:candidate*") is False
     assert worker_module._is_publishable_channel("orion:spark:introspect:candidate") is True
+
+
+def test_append_turn_effect_metadata_includes_effect():
+    worker_module = _load_worker_module()
+    meta = {}
+    spark_meta = {
+        "phi_before": {"valence": 0.2},
+        "phi_after": {"valence": 0.4},
+    }
+    worker_module._append_turn_effect_metadata(meta, spark_meta)
+    assert meta["turn_effect"]["user"]["valence"] == 0.2
+    assert meta["turn_effect_summary"]

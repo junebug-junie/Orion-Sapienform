@@ -119,9 +119,18 @@ class WSClient {
     }
     updateTurnEffect() {
         if (!elTurnEffectBox) return;
-        const turnEffect = state.metadata && state.metadata.turn_effect ? state.metadata.turn_effect : null;
+        const meta = state.metadata || {};
+        const snapshotMeta = meta.spark_state_snapshot && meta.spark_state_snapshot.metadata
+            ? meta.spark_state_snapshot.metadata
+            : {};
+        const turnEffect = meta.turn_effect || snapshotMeta.turn_effect || null;
+        const summary = meta.turn_effect_summary || snapshotMeta.turn_effect_summary || null;
+        const evidence = meta.turn_effect_evidence || snapshotMeta.turn_effect_evidence || null;
         if (!turnEffect) {
             elTurnEffectBox.classList.add('hidden');
+            elTurnEffectUser.innerText = "";
+            elTurnEffectAssistant.innerText = "";
+            elTurnEffectTurn.innerText = "";
             elTurnEffectBox.title = "";
             return;
         }
@@ -142,7 +151,7 @@ class WSClient {
         elTurnEffectUser.innerText = fmtLine("user", turnEffect.user);
         elTurnEffectAssistant.innerText = fmtLine("assistant", turnEffect.assistant);
         elTurnEffectTurn.innerText = fmtLine("turn", turnEffect.turn);
-        elTurnEffectBox.title = JSON.stringify(turnEffect);
+        elTurnEffectBox.title = JSON.stringify({ turn_effect: turnEffect, summary, evidence }, null, 2);
         elTurnEffectBox.classList.remove('hidden');
     }
 }

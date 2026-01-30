@@ -66,6 +66,10 @@ _SYSTEM_TELEMETRY_KEYS = {
     "trigger_trace_id",
     "trigger_source_service",
     "trigger_source_node",
+    "metacog_draft_mode",
+    "metacog_draft_rejected_keys",
+    "metacog_draft_error",
+    "metacog_draft_raw_trigger_null",
 }
 
 _SYSTEM_ALERT_TAG_PREFIX = "metacog.alert"
@@ -162,6 +166,26 @@ def _filter_patch_dict(raw: Dict[str, Any], allowed: set[str]) -> tuple[Dict[str
         else:
             stripped.append(str(key))
     return filtered, stripped
+
+
+def _set_metacog_draft_telemetry(
+    entry_dict: Dict[str, Any],
+    *,
+    mode: str,
+    rejected_keys: list[str] | None = None,
+    error: str | None = None,
+    raw_trigger_null: bool = False,
+) -> None:
+    state_snapshot = entry_dict.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+    telemetry["metacog_draft_mode"] = mode
+    telemetry["metacog_draft_rejected_keys"] = rejected_keys or []
+    telemetry["metacog_draft_error"] = error
+    telemetry["metacog_draft_raw_trigger_null"] = bool(raw_trigger_null)
+    state_snapshot["telemetry"] = telemetry
+    entry_dict["state_snapshot"] = state_snapshot
 
 
 def _apply_draft_patch(entry_dict: Dict[str, Any], patch: MetacogDraftTextPatchV1) -> None:
@@ -838,22 +862,35 @@ async def call_step_services(
                     if not parsed:
                         parsed = _loose_json_extract(raw_content)
 
+                    draft_error = None
                     if not parsed:
                         logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
+                        draft_error = "no_json"
                         parsed = {}
 
                     filtered, stripped = _filter_patch_dict(parsed, _METACOG_DRAFT_ALLOWED_KEYS)
                     if stripped:
                         logger.warning("Draft patch stripped keys: %s", stripped)
 
+                    patch_error = None
                     try:
                         patch_model = MetacogDraftTextPatchV1.model_validate(filtered)
                     except Exception as exc:
                         logger.warning("MetacogDraftService patch rejected: %s", exc)
+                        patch_error = str(exc)
                         patch_model = MetacogDraftTextPatchV1()
 
                     base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
                     base_entry = _apply_metacog_system_fields(base_entry, ctx)
+                    raw_trigger_null = not isinstance(ctx.get("trigger"), dict)
+                    draft_mode = "fallback" if draft_error or patch_error else "llm"
+                    _set_metacog_draft_telemetry(
+                        base_entry,
+                        mode=draft_mode,
+                        rejected_keys=stripped,
+                        error=draft_error or patch_error,
+                        raw_trigger_null=raw_trigger_null,
+                    )
                     if ctx.get("turn_effect"):
                         turn_summary = summarize_turn_effect(ctx["turn_effect"])
                         state_snapshot = base_entry.get("state_snapshot")

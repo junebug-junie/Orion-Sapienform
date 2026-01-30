@@ -391,6 +391,20 @@ def _log_turn_effect_alert_suppressed_dedupe(
     )
 
 
+def _append_turn_effect_metadata(meta: Dict[str, Any], spark_meta: Dict[str, Any] | None) -> None:
+    turn_effect = turn_effect_from_spark_meta(spark_meta or {})
+    evidence = None
+    if isinstance(turn_effect, dict) and "evidence" in turn_effect:
+        evidence = turn_effect.get("evidence")
+        turn_effect = {k: v for k, v in turn_effect.items() if k != "evidence"}
+    if not turn_effect:
+        return
+    meta["turn_effect"] = turn_effect
+    meta["turn_effect_summary"] = summarize_turn_effect(turn_effect)
+    if isinstance(evidence, dict):
+        meta["turn_effect_evidence"] = evidence
+
+
 def _alert_direction(rule: str) -> str:
     return "spike" if rule == "novelty_spike" else "drop"
 
@@ -984,6 +998,17 @@ async def handle_trace(env: BaseEnvelope) -> None:
         TISSUE.snapshot()
 
         seq = _next_seq()
+        metadata = {
+            "stimulus_summary": f"v={valence:.2f} a={arousal:.2f} vec={'yes' if spark_vector else 'no'}",
+            "trace_source_service": trace.source_service,
+            "trace_source_node": trace.source_node,
+            "success_count": int(success_count),
+            "fail_count": int(fail_count),
+        }
+        trace_meta = trace.metadata if isinstance(trace.metadata, dict) else {}
+        spark_meta = trace_meta.get("spark_meta") if isinstance(trace_meta.get("spark_meta"), dict) else trace_meta
+        _append_turn_effect_metadata(metadata, spark_meta)
+
         snap = SparkStateSnapshotV1(
             source_service=settings.service_name,
             source_node=settings.node_name,
@@ -1000,13 +1025,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
             dominance=float(dominance),
             vector_present=bool(spark_vector),
             vector_ref=None,
-            metadata={
-                "stimulus_summary": f"v={valence:.2f} a={arousal:.2f} vec={'yes' if spark_vector else 'no'}",
-                "trace_source_service": trace.source_service,
-                "trace_source_node": trace.source_node,
-                "success_count": int(success_count),
-                "fail_count": int(fail_count),
-            },
+            metadata=metadata,
         )
 
         telem_meta = {
@@ -1019,6 +1038,11 @@ async def handle_trace(env: BaseEnvelope) -> None:
             "source_node": trace.source_node,
             "spark_state_snapshot": snap.model_dump(mode="json"),
         }
+        if metadata.get("turn_effect"):
+            telem_meta["turn_effect"] = metadata.get("turn_effect")
+            telem_meta["turn_effect_summary"] = metadata.get("turn_effect_summary")
+            if metadata.get("turn_effect_evidence") is not None:
+                telem_meta["turn_effect_evidence"] = metadata.get("turn_effect_evidence")
 
         telem = SparkTelemetryPayload(
             correlation_id=corr_id,

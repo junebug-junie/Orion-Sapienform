@@ -164,3 +164,35 @@ def test_fail_fast_skips_enrich_when_draft_fails(monkeypatch):
 
     assert result.status == "fail"
     assert calls == ["test"]
+
+
+def test_metacog_draft_telemetry_records_fallback():
+    executor_module = _load_executor_module()
+    entry = _base_entry()
+    executor_module._set_metacog_draft_telemetry(
+        entry,
+        mode="fallback",
+        rejected_keys=["observer"],
+        error="no_json",
+        raw_trigger_null=True,
+    )
+    telemetry = entry["state_snapshot"]["telemetry"]
+    assert telemetry["metacog_draft_mode"] == "fallback"
+    assert telemetry["metacog_draft_rejected_keys"] == ["observer"]
+    assert telemetry["metacog_draft_error"] == "no_json"
+    assert telemetry["metacog_draft_raw_trigger_null"] is True
+
+
+def test_metacog_draft_telemetry_records_llm_success():
+    executor_module = _load_executor_module()
+    entry = _base_entry()
+    executor_module._set_metacog_draft_telemetry(
+        entry,
+        mode="llm",
+        rejected_keys=[],
+        error=None,
+        raw_trigger_null=False,
+    )
+    telemetry = entry["state_snapshot"]["telemetry"]
+    assert telemetry["metacog_draft_mode"] == "llm"
+    assert telemetry["metacog_draft_rejected_keys"] == []

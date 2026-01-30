@@ -416,6 +416,12 @@ def _dedupe_key(rule: str, direction: str, value: float, eps: float, session_id:
     return f"{rule}:{direction}:{bucket:.3f}:{session_id or 'na'}"
 
 
+def _is_publishable_channel(channel: Optional[str]) -> bool:
+    if not channel:
+        return False
+    return "*" not in channel and "?" not in channel
+
+
 def _is_dedupe_suppressed(last_seen: Optional[float], now_ts: float, window_sec: float) -> bool:
     if last_seen is None:
         return False
@@ -1347,7 +1353,13 @@ async def handle_candidate(env: BaseEnvelope) -> None:
             causality_chain=env.causality_chain,
             payload=final_payload,
         )
-        await bus.publish(settings.channel_spark_candidate, completed)
+        if _is_publishable_channel(settings.channel_spark_candidate):
+            await bus.publish(settings.channel_spark_candidate, completed)
+        else:
+            logger.warning(
+                "Skipping spark candidate publish for non-concrete channel=%s",
+                settings.channel_spark_candidate,
+            )
 
         try:
             ws_introspection = {

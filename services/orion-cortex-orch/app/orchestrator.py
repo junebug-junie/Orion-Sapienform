@@ -547,6 +547,10 @@ async def dispatch_metacog_trigger(
                 "pressure": trigger.pressure,
                 "trace_id": trace_id,
                 "parent_event_id": parent_event_id,
+                "trigger_correlation_id": correlation_id,
+                "trigger_trace_id": trace_id,
+                "trigger_source_service": env.source.name if env.source else None,
+                "trigger_source_node": env.source.node if env.source else None,
                 **recall_override,
             },
         ),
@@ -555,6 +559,8 @@ async def dispatch_metacog_trigger(
             "verb": verb_name,
             "trace_id": trace_id,
             "parent_event_id": parent_event_id,
+            "trigger_correlation_id": correlation_id,
+            "trigger_trace_id": trace_id,
         },
     )
 

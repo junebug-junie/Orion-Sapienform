@@ -10,7 +10,11 @@ from pydantic import ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV1, CollapseMirrorEntryV2
+from orion.schemas.collapse_mirror import (
+    CollapseMirrorEntryV1,
+    CollapseMirrorEntryV2,
+    should_route_to_triage,
+)
 from orion.collapse import create_entry_from_v2
 
 from .settings import settings
@@ -72,6 +76,8 @@ async def handle_intake(env: BaseEnvelope) -> None:
     if payload.get("kind") == "ping":
         return
 
+    route_to_triage = should_route_to_triage(payload)
+
     observer = str(payload.get("observer") or "").strip()
     event_id = payload.get("event_id") or payload.get("id")
     session_id = payload.get("session_id")
@@ -101,22 +107,30 @@ async def handle_intake(env: BaseEnvelope) -> None:
 
     enriched = _wrap_entry_for_triage(entry)
 
-    # Dual-publish:
-    # 1. To Triage (for AI enrichment pipeline)
-    # Wrap in typed envelope
-    triage_env = BaseEnvelope(
-        kind="collapse.mirror.entry",
-        source=_service_ref(),
-        payload=enriched,
-        correlation_id=env.correlation_id,
-        causality_chain=env.causality_chain
-    )
-    await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, triage_env)
-    logger.info(
-        "[collapse-mirror] published triage channel=%s corr_id=%s",
-        settings.CHANNEL_COLLAPSE_TRIAGE,
-        env.correlation_id,
-    )
+    if route_to_triage:
+        # Dual-publish:
+        # 1. To Triage (for AI enrichment pipeline)
+        # Wrap in typed envelope
+        triage_env = BaseEnvelope(
+            kind="collapse.mirror.entry",
+            source=_service_ref(),
+            payload=enriched,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain
+        )
+        await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_TRIAGE, triage_env)
+        logger.info(
+            "[collapse-mirror] published triage channel=%s corr_id=%s",
+            settings.CHANNEL_COLLAPSE_TRIAGE,
+            env.correlation_id,
+        )
+    else:
+        logger.info(
+            "[collapse-mirror] skip_triage reason=non_strict observer=%s event_id=%s corr_id=%s",
+            observer or "unknown",
+            entry.event_id or event_id or "unknown",
+            env.correlation_id or "unknown",
+        )
 
     # 2. To SQL Writer (for Raw storage) - hardcoded canonical channel per request
     # Fix: Wrap in envelope so sql-writer sees kind="collapse.mirror"

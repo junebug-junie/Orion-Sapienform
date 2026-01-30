@@ -33,8 +33,14 @@ def test_fuse_dedupe_and_limit():
         "render_budget_tokens": 50,
     }
 
-    bundle = fuse_candidates(candidates=candidates, profile=profile, latency_ms=5)
+    bundle, _ranking = fuse_candidates(
+        candidates=candidates,
+        profile=profile,
+        latency_ms=5,
+        query_text="alpha",
+        session_id=None,
+    )
 
     assert len(bundle.items) == 2  # dedup + per-source cap
     assert all(item.id in {"1", "3"} for item in bundle.items)
-    assert bundle.rendered.startswith("- [vector")
+    assert "- [vector]" in bundle.rendered

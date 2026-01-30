@@ -127,6 +127,21 @@ curl "http://localhost:8080/api/topics/summary?window_minutes=1440&max_topics=20
 curl "http://localhost:8080/api/topics/drift?window_minutes=1440&min_turns=10&max_sessions=50"
 ```
 
+### 5. No-Write Debug Mode (skip memory publishing)
+Use the header + JSON flag to avoid publishing `orion:chat:history:*` events while still running recall/LLM:
+
+```bash
+curl -sS http://localhost:8080/api/chat \
+  -H "content-type: application/json" \
+  -H "X-Orion-No-Write: 1" \
+  -d '{ "mode":"brain","use_recall":true,"recall_profile":"reflect.v1","no_write":true,
+        "messages":[{"role":"user","content":"GrowthSynthesis23"}] }'
+```
+
+Expected:
+- Response includes `memory_digest` (when recall is enabled).
+- No events appear on bus patterns `orion:chat:history:*` for that request.
+
 ---
 
 ## 🧵 Philosophy

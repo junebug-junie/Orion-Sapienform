@@ -58,33 +58,50 @@ class BusClient:
         )
         logger.debug(f"RPC Payload correlation_id={corr}: {env.payload}")
 
+        async def _wait_for_matching_reply() -> Dict[str, Any]:
+            async with self.bus.subscribe(reply_to) as pubsub:
+                await self.bus.publish(
+                    self.settings.channel_cortex_request,
+                    env,
+                )
+                async for msg in self.bus.iter_messages(pubsub):
+                    decoded = self.bus.codec.decode(msg.get("data"))
+                    if not decoded.ok:
+                        logger.warning(f"Decode failed correlation_id={corr} error={decoded.error}")
+                        continue
+
+                    payload = decoded.envelope.payload
+                    payload_dict: Dict[str, Any] | None = None
+                    if isinstance(payload, dict):
+                        payload_dict = payload
+                    elif hasattr(payload, "model_dump"):
+                        payload_dict = payload.model_dump(mode="json")
+
+                    if payload_dict is not None:
+                        verb = payload_dict.get("verb") or payload_dict.get("verb_name")
+                        if verb == "introspect_spark" and req.verb != "introspect_spark":
+                            logger.info(
+                                "RPC reply filtered corr=%s verb=%s expected=%s",
+                                corr,
+                                verb,
+                                req.verb,
+                            )
+                            continue
+                        logger.info(f"RPC Success correlation_id={corr} kind={decoded.envelope.kind}")
+                        return payload_dict
+
+                    logger.info(f"RPC Success correlation_id={corr} kind={decoded.envelope.kind}")
+                    return payload  # Should be dict or primitive, or BaseEnvelope if unknown
+            raise RuntimeError("RPC reply subscription closed without a match.")
+
         try:
-            msg = await self.bus.rpc_request(
-                self.settings.channel_cortex_request,
-                env,
-                reply_channel=reply_to,
-                timeout_sec=self.settings.gateway_rpc_timeout_sec
+            return await asyncio.wait_for(
+                _wait_for_matching_reply(),
+                timeout=self.settings.gateway_rpc_timeout_sec,
             )
-        except TimeoutError as te:
+        except asyncio.TimeoutError as te:
             logger.error(f"RPC Timeout correlation_id={corr}")
             raise TimeoutError(f"RPC timed out after {self.settings.gateway_rpc_timeout_sec}s") from te
-
-        decoded = self.bus.codec.decode(msg.get("data"))
-        if not decoded.ok:
-            logger.error(f"Decode failed correlation_id={corr} error={decoded.error}")
-            raise RuntimeError(f"Decode failed: {decoded.error}")
-
-        payload = decoded.envelope.payload
-
-        # Log minimal success
-        logger.info(f"RPC Success correlation_id={corr} kind={decoded.envelope.kind}")
-
-        if isinstance(payload, dict):
-            return payload
-        if hasattr(payload, "model_dump"):
-            return payload.model_dump(mode="json")
-
-        return payload  # Should be dict or primitive, or BaseEnvelope if unknown
 
     async def start_gateway_consumer(self):
         logger.info(f"Starting gateway consumer on {self.settings.channel_gateway_request}")
@@ -173,10 +190,28 @@ class BusClient:
 
             # Wrap result
             cortex_res_obj = CortexClientResult.model_validate(orch_result_dict)
+            executed_verbs: list[str] = []
+            if isinstance(cortex_res_obj.metadata, dict):
+                raw_executed = cortex_res_obj.metadata.get("executed_verbs") or []
+                if isinstance(raw_executed, list):
+                    executed_verbs = [str(v) for v in raw_executed]
+            selected_verb = (
+                cortex_res_obj.metadata.get("trace_verb")
+                if isinstance(cortex_res_obj.metadata, dict)
+                else None
+            ) or cortex_res_obj.verb
+            spark_introspection_triggered = "introspect_spark" in executed_verbs
 
             res_payload = CortexChatResult(
                 cortex_result=cortex_res_obj,
                 final_text=cortex_res_obj.final_text
+            )
+
+            logger.info(
+                "Selected cortex reply corr=%s selected_verb=%s spark_introspection_triggered=%s",
+                env.correlation_id,
+                selected_verb,
+                spark_introspection_triggered,
             )
 
             # Reply

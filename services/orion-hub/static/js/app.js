@@ -3,7 +3,9 @@
 // ───────────────────────────────────────────────────────────────
 // Global State
 // ───────────────────────────────────────────────────────────────
-const API_BASE_URL = window.location.origin;
+const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
+const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
+const API_BASE_URL = window.location.origin + URL_PREFIX;
 const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
 
 let socket;
@@ -21,7 +23,7 @@ let visionIsFloating = false;
 let currentMode = "brain";
 let selectedPacks = [];
 let selectedVerbs = [];
-let orionSessionId = null;
+let orionSessionId = localStorage.getItem('orion_sid') || null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
 let selectedBiometricsNode = "cluster";
 let lastBiometricsPayload = null;
@@ -40,8 +42,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
+  const noWriteToggle = document.getElementById('noWriteToggle');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
+  const memoryPanelToggle = document.getElementById('memoryPanelToggle');
+  const memoryPanelBody = document.getElementById('memoryPanelBody');
+  const memoryUsedValue = document.getElementById('memoryUsedValue');
+  const recallCountValue = document.getElementById('recallCountValue');
+  const backendCountsValue = document.getElementById('backendCountsValue');
+  const memoryDigestPre = document.getElementById('memoryDigestPre');
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -148,6 +157,29 @@ document.addEventListener("DOMContentLoaded", () => {
     if (orionState === 'idle') updateStatus('Ready.');
     else if (orionState === 'speaking') updateStatus('Speaking...');
     else if (orionState === 'processing') updateStatus('Processing...');
+  }
+
+  function updateMemoryPanelFromResponse(data) {
+    if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
+    const recallDebug = data && typeof data.recall_debug === 'object' ? data.recall_debug : null;
+    const recallCount = recallDebug && typeof recallDebug.count === 'number' ? recallDebug.count : null;
+    const backendCounts = recallDebug && recallDebug.backend_counts
+      ? recallDebug.backend_counts
+      : (recallDebug && recallDebug.debug && recallDebug.debug.backend_counts) || null;
+    const memoryUsed = typeof data.memory_used === 'boolean'
+      ? data.memory_used
+      : (typeof recallCount === 'number' ? recallCount > 0 : false);
+    const memoryDigest = data.memory_digest || (recallDebug && recallDebug.memory_digest) || "";
+
+    memoryUsedValue.textContent = memoryUsed ? "true" : "false";
+    recallCountValue.textContent = typeof recallCount === 'number' ? recallCount : "--";
+    backendCountsValue.textContent = backendCounts ? JSON.stringify(backendCounts, null, 2) : "--";
+    memoryDigestPre.textContent = memoryDigest || "--";
+  }
+
+  function toggleMemoryPanel() {
+    if (!memoryPanelBody) return;
+    memoryPanelBody.classList.toggle('hidden');
   }
 
   function appendMessage(sender, text, colorClass = 'text-white') {
@@ -657,10 +689,14 @@ document.addEventListener("DOMContentLoaded", () => {
       });
   }
 
+  if (memoryPanelToggle) {
+    memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
+  }
+
   // --- WebSocket ---
   function setupWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/ws`;
+    const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
     
     console.log(`[WS] Connecting to ${wsUrl}...`);
     socket = new WebSocket(wsUrl);
@@ -679,6 +715,9 @@ document.addEventListener("DOMContentLoaded", () => {
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
           if (d.biometrics) updateBiometricsPanel(d.biometrics);
+          if (d.memory_digest || d.recall_debug || typeof d.memory_used === 'boolean') {
+            updateMemoryPanelFromResponse(d);
+          }
       } catch (err) {
           console.error("WS Parse Error", err);
       }
@@ -696,7 +735,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
 
-  function sendTextMessage() {
+  async function sendTextMessage() {
     const text = chatInput.value.trim();
     if (!text) return;
     appendMessage('You', text);
@@ -709,6 +748,7 @@ document.addEventListener("DOMContentLoaded", () => {
        mode: currentMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
+       no_write: noWriteToggle ? noWriteToggle.checked : false,
        use_recall: recallToggle ? recallToggle.checked : false,
        recall_mode: recallMode !== "auto" ? recallMode : null,
        recall_profile: recallProfile !== "auto" ? recallProfile : null,
@@ -722,16 +762,25 @@ document.addEventListener("DOMContentLoaded", () => {
         updateStatus('Sent...');
     } else {
         appendMessage('System', 'WebSocket not connected. Trying HTTP fallback...', 'text-yellow-400');
+        
+        if (!orionSessionId) await initSession();
+        payload.session_id = orionSessionId;
+
+        const headers = {'Content-Type': 'application/json'};
+        if (orionSessionId) headers['X-Orion-Session-Id'] = orionSessionId;
+        if (noWriteToggle && noWriteToggle.checked) headers['X-Orion-No-Write'] = '1';
+
         // Fallback to HTTP if WS is down
         fetch(`${API_BASE_URL}/api/chat`, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: headers,
             body: JSON.stringify({messages:[{role:'user', content:text}], ...payload})
         })
         .then(r => r.json())
         .then(d => {
             if(d.text) appendMessage('Orion', d.text);
             else if(d.error) appendMessage('System', d.error, 'text-red-400');
+            updateMemoryPanelFromResponse(d);
         })
         .catch(e => appendMessage('System', "HTTP Failed: " + e.message, 'text-red-400'));
     }
@@ -754,6 +803,7 @@ document.addEventListener("DOMContentLoaded", () => {
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
+               no_write: noWriteToggle ? noWriteToggle.checked : false,
                use_recall: recallToggle ? recallToggle.checked : false,
                recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
                recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,
@@ -837,12 +887,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- Session & Init ---
   async function initSession() {
     try {
-       const sid = localStorage.getItem('orion_sid');
+       const sid = orionSessionId || localStorage.getItem('orion_sid');
        const r = await fetch(`${API_BASE_URL}/api/session`, {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
        const d = await r.json();
        if(d.session_id) {
          orionSessionId = d.session_id;
          localStorage.setItem('orion_sid', orionSessionId);
+         console.log("[Session] Initialized:", orionSessionId);
        }
     } catch(e) { console.warn("Session init fail", e); }
   }

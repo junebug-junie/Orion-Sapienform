@@ -9,3 +9,15 @@ enable_query_expansion: true
 enable_sql_timeline: true
 sql_since_minutes: 20160 #14 days
 sql_top_k: 4
+relevance:
+  backend_weights:
+    vector: 1.0
+    sql_timeline: 0.9
+    sql_chat: 0.6
+    rdf_chat: 0.5
+    rdf: 0.45
+  score_weight: 0.7
+  text_similarity_weight: 0.2
+  recency_weight: 0.1
+  enable_recency: true
+  recency_half_life_hours: 72

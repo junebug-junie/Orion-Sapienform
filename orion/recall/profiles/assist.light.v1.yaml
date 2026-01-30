@@ -7,3 +7,15 @@ time_decay_half_life_hours: 24
 render_budget_tokens: 180
 enable_query_expansion: true
 enable_sql_timeline: false
+relevance:
+  backend_weights:
+    vector: 1.0
+    sql_timeline: 0.85
+    sql_chat: 0.6
+    rdf_chat: 0.4
+    rdf: 0.3
+  score_weight: 0.75
+  text_similarity_weight: 0.1
+  recency_weight: 0.05
+  enable_recency: false
+  recency_half_life_hours: 24

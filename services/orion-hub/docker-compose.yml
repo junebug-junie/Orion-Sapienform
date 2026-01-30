@@ -90,6 +90,8 @@ services:
       # --- Hub Prompt Context (UI-side rolling history) ---
       - HUB_CONTEXT_TURNS=${HUB_CONTEXT_TURNS}
       - HUB_CONTEXT_MAX_CHARS=${HUB_CONTEXT_MAX_CHARS}
+      - HUB_DEBUG_RECALL=${HUB_DEBUG_RECALL}
+      - HUB_DEFAULT_NO_WRITE=${HUB_DEFAULT_NO_WRITE}
 
 
     runtime: nvidia

@@ -37,6 +37,13 @@ class Settings(BaseSettings):
         alias="ORION_BUS_URL",
     )
 
+    # --- Landing Pad Integration (Topic Rail) ---
+    LANDING_PAD_URL: str = Field(
+        default="http://orion-landing-pad:8370",
+        alias="LANDING_PAD_URL",
+    )
+    LANDING_PAD_TIMEOUT_SEC: float = Field(default=5.0, alias="LANDING_PAD_TIMEOUT_SEC")
+
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")

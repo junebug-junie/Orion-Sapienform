@@ -78,7 +78,13 @@ ORION_BUS_URL=redis://localhost:6379/0
 # Titanium Channels
 CORTEX_GATEWAY_REQUEST_CHANNEL=orion-cortex-gateway:request
 TTS_REQUEST_CHANNEL=orion:tts:intake
+
+# Landing Pad (Topic Rail)
+LANDING_PAD_URL=http://orion-landing-pad:8370
+LANDING_PAD_TIMEOUT_SEC=5
 ```
+
+Topic Rail endpoints are proxied through Landing Pad. Ensure `POSTGRES_URI` is set on the Landing Pad service so it can read the `chat_topic_summary` and `chat_topic_session_drift` tables.
 
 ---
 
@@ -115,6 +121,12 @@ Expected lines include:
 {"channel":"orion:chat:history:turn","kind":"chat.history", ...}
 ```
 
+### 5. Topic Rail Summary + Drift
+```bash
+curl "http://localhost:8080/api/topics/summary?window_minutes=1440&max_topics=20"
+curl "http://localhost:8080/api/topics/drift?window_minutes=1440&min_turns=10&max_sessions=50"
+```
+
 ---
 
 ## 🧵 Philosophy
@@ -124,3 +136,5 @@ Hub is intentionally thin:
 > UI + WebSocket + Bus, nothing else.
 
 All real cognition, memory, and embodiment live elsewhere in the mesh. Hub just gives you a clean window into Oríon’s head.
+
+The UI now includes a **Topic Rail** panel (below Vision/Collapse) that shows the top topics and most drifting sessions for a selected window. Use the window/max-topic/min-turn controls and the optional model version field to query the Hub proxy endpoints. Auto-refresh is enabled by default (60s) and can be toggled off.

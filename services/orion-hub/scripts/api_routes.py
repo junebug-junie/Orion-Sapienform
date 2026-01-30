@@ -4,7 +4,8 @@ import logging
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 
-from fastapi import APIRouter, Header
+import aiohttp
+from fastapi import APIRouter, Header, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .settings import settings
@@ -17,6 +18,15 @@ from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 logger = logging.getLogger("orion-hub.api")
 
 router = APIRouter()
+
+async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = settings.LANDING_PAD_URL.rstrip("/")
+    url = f"{base_url}{path}"
+    timeout = aiohttp.ClientTimeout(total=settings.LANDING_PAD_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
 
 
 # ======================================================================
@@ -33,6 +43,42 @@ async def root():
 def health():
     """Simple health check endpoint."""
     return {"status": "ok", "service": settings.SERVICE_NAME}
+
+# ======================================================================
+# 🧭 TOPIC RAIL (Landing Pad proxy)
+# ======================================================================
+@router.get("/api/topics/summary")
+async def api_topics_summary(
+    window_minutes: int = Query(1440),
+    model_version: Optional[str] = Query(None),
+    max_topics: int = Query(20),
+):
+    params: Dict[str, Any] = {
+        "window_minutes": window_minutes,
+        "max_topics": max_topics,
+    }
+    if model_version:
+        params["model_version"] = model_version
+    payload = await _fetch_landing_pad("/api/topics/summary", params)
+    return JSONResponse(content=payload)
+
+
+@router.get("/api/topics/drift")
+async def api_topics_drift(
+    window_minutes: int = Query(1440),
+    model_version: Optional[str] = Query(None),
+    min_turns: int = Query(10),
+    max_sessions: int = Query(50),
+):
+    params: Dict[str, Any] = {
+        "window_minutes": window_minutes,
+        "min_turns": min_turns,
+        "max_sessions": max_sessions,
+    }
+    if model_version:
+        params["model_version"] = model_version
+    payload = await _fetch_landing_pad("/api/topics/drift", params)
+    return JSONResponse(content=payload)
 
 
 # ======================================================================

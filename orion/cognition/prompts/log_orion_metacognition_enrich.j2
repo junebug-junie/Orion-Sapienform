@@ -106,16 +106,53 @@ ANTI-LOG CONSTRAINTS
 
 TASK
 Output ONE valid JSON object only. No markdown, no commentary.
-Return the FULL CollapseMirrorEntryV2 object, preserving the draft's:
-- event_id, observer, trigger, summary, mantra (do not rewrite summary unless necessary for truth)
 
-You must fill:
-- numeric_sisters (all non-null)
-- causal_density {label, score, rationale} (all non-null)
-- is_causally_dense
-- tags + tag_scores
-- change_type + change_type_scores
+OUTPUT REQUIREMENT
+Return ONLY a JSON object matching MetacogEnrichScorePatchV1.
+Allowed keys ONLY:
+  - tag_scores (dict[str,float])
+  - change_type_scores (dict[str,float])
+  - numeric_sisters {arousal, clarity, valence, overload, risk_score, constraints{notes,severity_score}}
+  - causal_density {label, score, rationale}
+  - epistemic_status
+  - is_causally_dense
+  - snapshot_kind (only if needed)
 
-Do NOT introduce new keys. Do NOT remove keys.
-Ensure "event_id" matches the draft: {{ collapse_entry.event_id }}
-Do NOT change the timestamp.
+FORBIDDEN (do NOT output these keys):
+  summary, mantra, what_changed, field_resonance, emergent_entity, resonance_signature,
+  event_id, id, observer, timestamp, environment, observer_state,
+  trigger, tags, state_snapshot, source_service, source_node,
+  any telemetry or lineage keys.
+
+You are scoring/classification only. Do NOT rewrite narrative fields.
+
+<example_json>
+{
+  "tag_scores": {
+    "mode:mirror": 0.7,
+    "state:coherent": 0.6
+  },
+  "change_type_scores": {
+    "stabilizing": 0.8,
+    "reorientation": 0.2
+  },
+  "numeric_sisters": {
+    "arousal": 0.4,
+    "clarity": 0.7,
+    "valence": 0.6,
+    "overload": 0.2,
+    "risk_score": 0.3,
+    "constraints": {
+      "notes": "Derived from phi bands.",
+      "severity_score": 0.1
+    }
+  },
+  "causal_density": {
+    "label": "state_transition",
+    "score": 0.45,
+    "rationale": "Delta evidence and coherence shift cues."
+  },
+  "epistemic_status": "provisional",
+  "is_causally_dense": false
+}
+</example_json>

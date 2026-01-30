@@ -1,0 +1,27 @@
+profile: reflect.alerts.v1
+
+vector_top_k: 10
+rdf_top_k: 6
+sql_top_k: 250
+sql_since_minutes: 10080
+
+relevance:
+  backend_weights:
+    vector: 0.8
+    sql_timeline: 1.0
+    sql_chat: 0.8
+    rdf_chat: 0.6
+  enable_sql_timeline: true
+  enable_recency: true
+  recency_half_life_hours: 48
+
+filters:
+  prefer_tags:
+    - "metacog.alert."
+    - "metacog.alert.sev."
+
+sql:
+  enable_turn_effect_boost: true
+  turn_effect_section: "turn"
+  turn_effect_min_abs_delta: 0.20
+  turn_effect_boost_weight: 0.35

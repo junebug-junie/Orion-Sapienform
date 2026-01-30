@@ -97,6 +97,38 @@ def _backend_weights(profile: Dict[str, Any]) -> Dict[str, float]:
     return weights
 
 
+def _tag_prefix_boost(tags: List[str], profile: Dict[str, Any]) -> float:
+    filters = profile.get("filters")
+    if not isinstance(filters, dict):
+        return 0.0
+    prefixes = filters.get("prefer_tags")
+    if not isinstance(prefixes, list):
+        return 0.0
+    boost = 0.0
+    per_match = float(filters.get("prefer_tags_boost", 0.15))
+    for tag in tags:
+        if any(str(tag).startswith(str(prefix)) for prefix in prefixes):
+            boost = max(boost, per_match)
+    return boost
+
+
+def _turn_effect_boost(cand: Dict[str, Any], profile: Dict[str, Any]) -> float:
+    sql_cfg = profile.get("sql")
+    if not isinstance(sql_cfg, dict):
+        return 0.0
+    if not sql_cfg.get("enable_turn_effect_boost"):
+        return 0.0
+    try:
+        delta = float(cand.get("turn_effect_delta") or 0.0)
+    except Exception:
+        return 0.0
+    min_delta = float(sql_cfg.get("turn_effect_min_abs_delta", 0.2))
+    if abs(delta) < min_delta:
+        return 0.0
+    weight = float(sql_cfg.get("turn_effect_boost_weight", 0.35))
+    return weight * min(1.0, abs(delta))
+
+
 def _denial_patterns() -> List[re.Pattern[str]]:
     return [
         re.compile(r"i\\s+don['’]t\\s+have\\s+(a|any)\\s+(specific\\s+)?memory", re.I),
@@ -143,6 +175,9 @@ def fuse_candidates(
         base_score = _norm_score(cand.get("score"))
         overlap = _overlap_count(query_text, snippet)
         recency = _recency_score(cand.get("ts"), half_life_hours=half_life_hours)
+        tags = [str(t) for t in (cand.get("tags") or []) if t]
+        tag_boost = _tag_prefix_boost(tags, profile)
+        turn_effect_boost = _turn_effect_boost(cand, profile)
         backend_weight = float(weights.get(source, 0.5))
         if browse_mode:
             composite = base_score
@@ -152,7 +187,7 @@ def fuse_candidates(
                 + (OVERLAP_WEIGHT * overlap)
                 + (EXACT_MATCH_WEIGHT * exact_boost)
                 + (RECENCY_WEIGHT * recency)
-            )
+            ) + tag_boost + turn_effect_boost
 
         ranked = dict(cand)
         ranked["_relevance"] = {
@@ -162,6 +197,8 @@ def fuse_candidates(
             "exact_boost": exact_boost,
             "recency": recency,
             "backend_weight": backend_weight,
+            "tag_boost": tag_boost,
+            "turn_effect_boost": turn_effect_boost,
             "composite_score": composite,
         }
 

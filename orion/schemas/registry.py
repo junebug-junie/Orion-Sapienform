@@ -73,6 +73,7 @@ from orion.schemas.tts import (
     STTRequestPayload,
     STTResultPayload,
 )
+from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -151,6 +152,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TTSResultPayload": TTSResultPayload,
     "STTRequestPayload": STTRequestPayload,
     "STTResultPayload": STTResultPayload,
+    "TopicSummaryEventV1": TopicSummaryEventV1,
+    "TopicShiftEventV1": TopicShiftEventV1,
 
 }
 

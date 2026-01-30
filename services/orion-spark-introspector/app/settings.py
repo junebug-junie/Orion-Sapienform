@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Spark signals (normalized distress/equilibrium)
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
 
+    # Core events (legacy bus events)
+    channel_core_events: str = Field("orion:core:events", alias="CHANNEL_CORE_EVENTS")
+
     # Semantic vector upserts
     channel_vector_semantic_upsert: str = Field(
         "orion:vector:semantic:upsert",
@@ -100,6 +103,17 @@ class Settings(BaseSettings):
 
     # Web UI
     port: int = Field(8444, alias="PORT")
+
+    # Turn effect alerting (opt-in)
+    turn_effect_alerts_enable: bool = Field(False, alias="TURN_EFFECT_ALERTS_ENABLE")
+    turn_effect_alerts_coherence_drop: float = Field(0.25, alias="TURN_EFFECT_ALERTS_COHERENCE_DROP")
+    turn_effect_alerts_valence_drop: float = Field(0.25, alias="TURN_EFFECT_ALERTS_VALENCE_DROP")
+    turn_effect_alerts_novelty_spike: float = Field(0.35, alias="TURN_EFFECT_ALERTS_NOVELTY_SPIKE")
+    turn_effect_alerts_cooldown_sec: int = Field(120, alias="TURN_EFFECT_ALERTS_COOLDOWN_SEC")
+    turn_effect_alerts_notify_enable: bool = Field(False, alias="TURN_EFFECT_ALERTS_NOTIFY_ENABLE")
+    turn_effect_alerts_dedupe_enable: bool = Field(True, alias="TURN_EFFECT_ALERTS_DEDUPE_ENABLE")
+    turn_effect_alerts_dedupe_window_sec: int = Field(600, alias="TURN_EFFECT_ALERTS_DEDUPE_WINDOW_SEC")
+    turn_effect_alerts_dedupe_eps: float = Field(0.02, alias="TURN_EFFECT_ALERTS_DEDUPE_EPS")
 
     class Config:
         env_file = ".env"

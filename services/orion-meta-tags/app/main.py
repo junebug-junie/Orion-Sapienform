@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, Rabbit
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.collapse_mirror import should_route_to_triage
 
 from .settings import settings
 from .models import EventIn, Enrichment
@@ -112,6 +113,15 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
 
     try:
         raw_payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+        if not should_route_to_triage(raw_payload):
+            logger.info(
+                "skip meta-tags: non_strict kind=%s id=%s observer=%s source_service=%s",
+                envelope.kind,
+                raw_payload.get("id") or raw_payload.get("event_id"),
+                raw_payload.get("observer"),
+                raw_payload.get("source_service"),
+            )
+            return
         if envelope.kind == "chat.history":
             turn_id = raw_payload.get("correlation_id")
             if not turn_id and envelope.correlation_id:

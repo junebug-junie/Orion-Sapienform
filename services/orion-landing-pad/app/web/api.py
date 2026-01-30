@@ -169,6 +169,38 @@ def build_router(*, store: PadStore, settings: Settings) -> APIRouter:
     async def healthz() -> Dict[str, str]:
         return {"status": "ok"}
 
+    @router.get("/api/topics/summary")
+    async def topics_summary(
+        window_minutes: int = Query(1440),
+        model_version: Optional[str] = Query(None),
+        max_topics: int = Query(20),
+    ) -> Dict[str, Any]:
+        from ..reducers.topic_rail import get_topic_summary
+
+        return await get_topic_summary(
+            window_minutes=window_minutes,
+            model_version=model_version,
+            max_topics=max_topics,
+            dsn=settings.postgres_uri,
+        )
+
+    @router.get("/api/topics/drift")
+    async def topics_drift(
+        window_minutes: int = Query(1440),
+        model_version: Optional[str] = Query(None),
+        min_turns: int = Query(10),
+        max_sessions: int = Query(50),
+    ) -> Dict[str, Any]:
+        from ..reducers.topic_rail import get_topic_drift
+
+        return await get_topic_drift(
+            window_minutes=window_minutes,
+            model_version=model_version,
+            min_turns=min_turns,
+            max_sessions=max_sessions,
+            dsn=settings.postgres_uri,
+        )
+
     @router.get("/api/metrics")
     async def metrics() -> Dict[str, Any]:
         event_samples = await store.get_event_payloads(limit=settings.ui_sample_limit)

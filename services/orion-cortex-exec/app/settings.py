@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     channel_collapse_intake: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_INTAKE")
     channel_pad_rpc_request: str = Field("orion:pad:rpc:request", alias="CHANNEL_PAD_RPC_REQUEST")
     channel_state_request: str = Field("orion:state:request", alias="CHANNEL_STATE_REQUEST")
+    channel_core_events: str = Field("orion:core:events", alias="CHANNEL_CORE_EVENTS")
 
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
     diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")

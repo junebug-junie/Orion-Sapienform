@@ -1,3 +1,6 @@
+import importlib.util
+import sys
+import types
 import unittest
 from datetime import datetime, timezone
 
@@ -48,6 +51,81 @@ class TestSparkNormalizer(unittest.TestCase):
         for payload in payloads:
             self.assertIsNone(normalize_spark_state_snapshot(payload, now=self.now))
             self.assertIsNone(normalize_spark_telemetry(payload, now=self.now))
+
+
+class TestSparkTelemetryChatMeta(unittest.TestCase):
+    def test_turn_effect_in_spark_meta_minimal(self):
+        repo_root = __import__("pathlib").Path(__file__).resolve().parents[1]
+        worker_path = repo_root / "services" / "orion-sql-writer" / "app" / "worker.py"
+        package_name = "orion_sql_writer"
+        app_package_name = f"{package_name}.app"
+        if "app" not in sys.modules:
+            sys.modules["app"] = types.ModuleType("app")
+        if "app.settings" not in sys.modules:
+            settings_mod = types.ModuleType("app.settings")
+            settings_mod.settings = object()
+            sys.modules["app.settings"] = settings_mod
+        if "app.db" not in sys.modules:
+            db_mod = types.ModuleType("app.db")
+            db_mod.get_session = lambda: None
+            db_mod.remove_session = lambda: None
+            sys.modules["app.db"] = db_mod
+        if "app.models" not in sys.modules:
+            models_mod = types.ModuleType("app.models")
+            for name in (
+                "BiometricsTelemetry",
+                "BiometricsSummarySQL",
+                "BiometricsInductionSQL",
+                "ChatHistoryLogSQL",
+                "ChatMessageSQL",
+                "CollapseEnrichment",
+                "CollapseMirror",
+                "Dream",
+                "SparkIntrospectionLogSQL",
+                "SparkTelemetrySQL",
+                "BusFallbackLog",
+                "CognitionTraceSQL",
+                "MetacognitionTickSQL",
+                "MetacogTriggerSQL",
+            ):
+                setattr(models_mod, name, type(name, (), {}))
+            sys.modules["app.models"] = models_mod
+        if "app.spark_contract_metrics" not in sys.modules:
+            metrics_mod = types.ModuleType("app.spark_contract_metrics")
+            metrics_mod.SparkContractMetrics = type("SparkContractMetrics", (), {})
+            metrics_mod.LEGACY_KINDS = set()
+            sys.modules["app.spark_contract_metrics"] = metrics_mod
+        if package_name not in sys.modules:
+            pkg = types.ModuleType(package_name)
+            pkg.__path__ = [str(worker_path.parent.parent)]
+            sys.modules[package_name] = pkg
+        if app_package_name not in sys.modules:
+            pkg = types.ModuleType(app_package_name)
+            pkg.__path__ = [str(worker_path.parent)]
+            sys.modules[app_package_name] = pkg
+        spec = importlib.util.spec_from_file_location(f"{app_package_name}.worker", worker_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _spark_meta_minimal = module._spark_meta_minimal
+
+        row = {
+            "phi": 0.1,
+            "novelty": 0.2,
+            "trace_mode": "chat",
+            "trace_verb": "reply",
+            "timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(),
+            "stimulus_summary": "summary",
+            "node": "node-1",
+            "metadata": {
+                "turn_effect": {"user": {"valence": 0.1}},
+                "turn_effect_summary": "user: v+0.10",
+            },
+        }
+        meta = _spark_meta_minimal(row)
+        self.assertEqual(meta.get("turn_effect"), {"user": {"valence": 0.1}})
+        self.assertEqual(meta.get("turn_effect_summary"), "user: v+0.10")
 
 
 if __name__ == "__main__":

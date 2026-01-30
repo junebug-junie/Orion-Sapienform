@@ -18,9 +18,11 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime
 
 from orion.schemas.cortex.schemas import PlanExecutionRequest
+from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from .router import PlanRouter
 from .settings import settings
+from .core_event_cache import get_core_event_cache
 from .trace_cache import get_trace_cache
 from .verb_adapters import LegacyPlanVerb  # noqa: F401 - register verb adapter
 from .collapse_verbs import (  # noqa: F401 - register collapse verbs
@@ -79,6 +81,7 @@ router = PlanRouter()
 svc: Rabbit | None = None
 verb_listener: Hunter | None = None
 trace_listener: Hunter | None = None
+core_event_listener: Hunter | None = None
 verb_runtime: VerbRuntime | None = None
 
 
@@ -127,6 +130,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         "parent_event_id": parent_event_id,
         "correlation_id": corr_id,
     }
+    ctx.setdefault("trigger_correlation_id", ctx.get("chat_correlation_id") or corr_id)
+    ctx.setdefault("trigger_trace_id", trace_id)
 
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
 
@@ -272,6 +277,19 @@ async def handle_trace(env: BaseEnvelope) -> None:
         logger.warning(f"Failed to cache trace: {e}")
 
 
+async def handle_core_event(env: BaseEnvelope) -> None:
+    try:
+        raw = env.payload if isinstance(env.payload, dict) else {}
+        try:
+            event = CoreEventV1.model_validate(raw)
+            event_data = event.model_dump(mode="json")
+        except Exception:
+            event_data = {"event": raw.get("event"), "payload": raw.get("payload"), "meta": raw.get("meta")}
+        get_core_event_cache().append(event_data)
+    except Exception as e:
+        logger.warning("Failed to cache core event: %s", e)
+
+
 async def handle_verb_request(env: BaseEnvelope) -> None:
     assert svc is not None, "Rabbit service not initialized"
     assert verb_runtime is not None, "Verb runtime not initialized"
@@ -318,6 +336,7 @@ verb_runtime = VerbRuntime(
 )
 verb_listener = Hunter(_cfg(), handler=handle_verb_request, patterns=["orion:verb:request"])
 trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition:trace"])
+core_event_listener = Hunter(_cfg(), handler=handle_core_event, patterns=[settings.channel_core_events])
 
 
 async def main() -> None:
@@ -328,8 +347,10 @@ async def main() -> None:
     )
     assert verb_listener is not None, "Verb listener not initialized"
     assert trace_listener is not None, "Trace listener not initialized"
+    assert core_event_listener is not None, "Core event listener not initialized"
     await verb_listener.start_background()
     await trace_listener.start_background()
+    await core_event_listener.start_background()
     await svc.start()
 
 

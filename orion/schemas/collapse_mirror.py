@@ -114,6 +114,83 @@ def _normalize_string_list(value: Any) -> List[str]:
     return deduped
 
 
+def _normalize_telemetry_key(key: Any) -> str:
+    explicit = {
+        "gpu_ mem": "gpu_mem",
+        "gpu_ util": "gpu_util",
+        "phi_ hint": "phi_hint",
+    }
+    raw = str(key or "").strip()
+    if raw in explicit:
+        raw = explicit[raw]
+    raw = raw.replace(" ", "_")
+    raw = re.sub(r"_+", "_", raw)
+    if raw in explicit:
+        raw = explicit[raw]
+    return raw
+
+
+def _normalize_telemetry_keys(data: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+    normalized: Dict[str, Any] = {}
+    for key, value in data.items():
+        normalized[_normalize_telemetry_key(key)] = value
+    return normalized
+
+
+def _canonical_phi_hint(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+
+    if value.get("schema_version") == "v1":
+        bands = value.get("bands") if isinstance(value.get("bands"), dict) else None
+        numeric = value.get("numeric") if isinstance(value.get("numeric"), dict) else None
+        out: Dict[str, Any] = {"schema_version": "v1"}
+        if bands:
+            out["bands"] = bands
+        if numeric:
+            out["numeric"] = numeric
+        return out
+
+    band_keys = {"valence_band", "valence_dir", "energy_band", "coherence_band", "novelty_band"}
+    numeric_keys = {
+        "valence",
+        "energy",
+        "coherence",
+        "novelty",
+        "arousal",
+        "dominance",
+        "clarity",
+        "overload",
+        "risk_score",
+    }
+
+    bands = {k: value[k] for k in band_keys if k in value}
+    numeric = {k: value[k] for k in numeric_keys if k in value}
+    if not bands and not numeric:
+        return None
+    out = {"schema_version": "v1"}
+    if bands:
+        out["bands"] = bands
+    if numeric:
+        out["numeric"] = numeric
+    return out
+
+
+def _normalize_entry_telemetry(entry: "CollapseMirrorEntryV2") -> None:
+    telemetry = entry.state_snapshot.telemetry
+    if not isinstance(telemetry, dict):
+        entry.state_snapshot.telemetry = {}
+        return
+    normalized = _normalize_telemetry_keys(telemetry)
+    if "phi_hint" in normalized:
+        canonical = _canonical_phi_hint(normalized.get("phi_hint"))
+        if canonical:
+            normalized["phi_hint"] = canonical
+    entry.state_snapshot.telemetry = normalized
+
+
 def _is_v2_shape(data: Dict[str, Any]) -> bool:
     return V2_MIN_REQUIRED_KEYS.issubset(data.keys())
 
@@ -135,6 +212,69 @@ def _observer_is_orion(observer: Any) -> bool:
         return False
     s = _strip_diacritics(s)
     return s == "orion"
+
+
+def _observer_is_juniper(observer: Any) -> bool:
+    if observer is None:
+        return False
+    try:
+        s = str(observer).strip().lower()
+    except Exception:
+        return False
+    s = _strip_diacritics(s)
+    return s == "juniper"
+
+
+def _origin_service(payload_or_entry: Any) -> Optional[str]:
+    if isinstance(payload_or_entry, dict):
+        origin = payload_or_entry.get("origin")
+        source_service = payload_or_entry.get("source_service")
+    else:
+        origin = getattr(payload_or_entry, "origin", None)
+        source_service = getattr(payload_or_entry, "source_service", None)
+
+    if source_service:
+        return str(source_service)
+    if isinstance(origin, dict):
+        for key in ("source_service", "service", "name"):
+            val = origin.get(key)
+            if val:
+                return str(val)
+        return None
+    if origin:
+        return str(origin)
+    return None
+
+
+def mirror_kind(payload_or_entry: Any) -> str:
+    observer = None
+    if isinstance(payload_or_entry, dict):
+        observer = payload_or_entry.get("observer")
+    else:
+        observer = getattr(payload_or_entry, "observer", None)
+
+    if _observer_is_juniper(observer):
+        return "strict"
+
+    origin_service = _origin_service(payload_or_entry)
+    if origin_service:
+        normalized = _strip_diacritics(str(origin_service).strip().lower())
+        if normalized == "collapse_mirror_service":
+            return "strict"
+
+    if _observer_is_orion(observer):
+        return "metacog"
+
+    if origin_service:
+        normalized = _strip_diacritics(str(origin_service).strip().lower())
+        if normalized == "metacog":
+            return "metacog"
+
+    return "unknown"
+
+
+def should_route_to_triage(payload_or_entry: Any) -> bool:
+    return mirror_kind(payload_or_entry) == "strict"
 
 
 def _coerce_change_type_payload(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -560,12 +700,15 @@ def v1_to_v2(v1: CollapseMirrorEntryV1) -> CollapseMirrorEntryV2:
 
 def normalize_collapse_entry(payload: Any) -> CollapseMirrorEntryV2:
     if isinstance(payload, CollapseMirrorEntryV2):
-        return payload.with_defaults()
-    if isinstance(payload, CollapseMirrorEntryV1):
-        return v1_to_v2(payload).with_defaults()
-    if isinstance(payload, dict) and V1_REQUIRED_KEYS.issubset(payload.keys()) and not _is_v2_shape(payload):
-        return v1_to_v2(CollapseMirrorEntryV1.model_validate(payload)).with_defaults()
-    return CollapseMirrorEntryV2.model_validate(payload).with_defaults()
+        entry = payload.with_defaults()
+    elif isinstance(payload, CollapseMirrorEntryV1):
+        entry = v1_to_v2(payload).with_defaults()
+    elif isinstance(payload, dict) and V1_REQUIRED_KEYS.issubset(payload.keys()) and not _is_v2_shape(payload):
+        entry = v1_to_v2(CollapseMirrorEntryV1.model_validate(payload)).with_defaults()
+    else:
+        entry = CollapseMirrorEntryV2.model_validate(payload).with_defaults()
+    _normalize_entry_telemetry(entry)
+    return entry
 
 
 def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:

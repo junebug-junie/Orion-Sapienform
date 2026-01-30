@@ -48,6 +48,7 @@ from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1, MetaTagsResultV1
+from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.vision import (
     VisionArtifactPayload,
@@ -72,6 +73,7 @@ from orion.schemas.tts import (
     STTRequestPayload,
     STTResultPayload,
 )
+from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -93,6 +95,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacogTriggerV1": MetacogTriggerV1,
+    "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
+    "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
     "SparkStateSnapshotAckV1": SparkStateSnapshotAckV1,
@@ -148,6 +152,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TTSResultPayload": TTSResultPayload,
     "STTRequestPayload": STTRequestPayload,
     "STTResultPayload": STTResultPayload,
+    "TopicSummaryEventV1": TopicSummaryEventV1,
+    "TopicShiftEventV1": TopicShiftEventV1,
 
 }
 

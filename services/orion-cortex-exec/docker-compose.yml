@@ -39,6 +39,7 @@ services:
       CHANNEL_COLLAPSE_INTAKE: ${CHANNEL_COLLAPSE_INTAKE:-orion:collapse:intake}
       CHANNEL_PAD_RPC_REQUEST: ${CHANNEL_PAD_RPC_REQUEST:-orion:pad:rpc:request}
       CHANNEL_STATE_REQUEST: ${CHANNEL_STATE_REQUEST:-orion:state:request}
+      CHANNEL_CORE_EVENTS: ${CHANNEL_CORE_EVENTS:-orion:core:events}
 
       STEP_TIMEOUT_MS: ${STEP_TIMEOUT_MS}
 

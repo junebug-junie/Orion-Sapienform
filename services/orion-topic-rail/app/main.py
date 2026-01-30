@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from threading import Thread
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
+
 from app.settings import settings
 from app.topic_rail.db.lock import acquire_lock, release_lock
 from app.topic_rail.db.reader import TopicRailReader
@@ -134,7 +136,7 @@ class TopicRailService:
             return 0
 
         embed_start = time.monotonic()
-        embeddings = self.embedder.embed_texts(docs)
+        embeddings = np.array(self.embedder.embed_texts(docs), dtype=np.float32)
         embed_secs = time.monotonic() - embed_start
         topic_model = build_topic_model(settings)
         transform_start = time.monotonic()
@@ -178,7 +180,7 @@ class TopicRailService:
         topic_model, _, manifest = self.model_store.load(settings.topic_rail_model_version)
         self.model_loaded = True
         embed_start = time.monotonic()
-        embeddings = self.embedder.embed_texts(docs)
+        embeddings = np.array(self.embedder.embed_texts(docs), dtype=np.float32)
         embed_secs = time.monotonic() - embed_start
         self._validate_manifest(manifest)
         transform_start = time.monotonic()
@@ -436,6 +438,14 @@ class TopicRailService:
             )
 
     def _write_manifest(self, topic_model, train_doc_count: int) -> None:
+        bertopic_params = {}
+        params = getattr(topic_model, "get_params", None)
+        if callable(params):
+            try:
+                bertopic_params = params()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to read BERTopic params for manifest: %s", exc)
+
         manifest = {
             "model_version": settings.topic_rail_model_version,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -443,7 +453,7 @@ class TopicRailService:
             "embedding_endpoint_url": settings.topic_rail_embedding_url.rstrip("/"),
             "embedding_model_name": self.embedder.embedding_model,
             "embedding_dim": self.embedder.embedding_dim,
-            "bertopic_params": getattr(topic_model, "get_params", lambda: {})(),
+            "bertopic_params": bertopic_params,
             "service_version": settings.service_version,
         }
         self.model_store.write_manifest(settings.topic_rail_model_version, manifest)

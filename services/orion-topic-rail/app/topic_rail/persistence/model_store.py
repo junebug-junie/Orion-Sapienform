@@ -57,7 +57,7 @@ class ModelStore:
         path = self.path_for(model_version)
         path.mkdir(parents=True, exist_ok=True)
         manifest_path = path / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        manifest_path.write_text(json.dumps(manifest, indent=2, default=str))
 
     def load_manifest(self, model_version: str) -> Optional[Dict[str, Any]]:
         path = self.path_for(model_version)

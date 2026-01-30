@@ -11,6 +11,8 @@ Orion Response:
 === METRICS SHIFT (The "Spark") ===
 {% set before = metadata.spark_meta.phi_before or {} %}
 {% set after = metadata.spark_meta.phi_after or {} %}
+{% set post_before = metadata.spark_meta.phi_post_before or {} %}
+{% set post_after = metadata.spark_meta.phi_post_after or {} %}
 
 Metric      | Before | After  | Delta
 ----------- | ------ | ------ | -----
@@ -18,6 +20,20 @@ Valence     | {{ "%.2f"|format(before.get('valence', 0.5)) }}   | {{ "%.2f"|form
 Arousal     | {{ "%.2f"|format(before.get('energy', 0.5)) }}    | {{ "%.2f"|format(after.get('energy', 0.5)) }}    | {{ "%.2f"|format(after.get('energy', 0.5) - before.get('energy', 0.5)) }}
 Coherence   | {{ "%.2f"|format(before.get('coherence', 0.5)) }} | {{ "%.2f"|format(after.get('coherence', 0.5)) }} | {{ "%.2f"|format(after.get('coherence', 0.5) - before.get('coherence', 0.5)) }}
 Novelty     | {{ "%.2f"|format(before.get('novelty', 0.0)) }}   | {{ "%.2f"|format(after.get('novelty', 0.0)) }}   | {{ "%.2f"|format(after.get('novelty', 0.0) - before.get('novelty', 0.0)) }}
+
+{% if post_before and post_after %}
+=== ASSISTANT REPLY SHIFT (Post-Ingest) ===
+Metric      | Before | After  | Delta
+----------- | ------ | ------ | -----
+Valence     | {{ "%.2f"|format(post_before.get('valence', 0.5)) }}   | {{ "%.2f"|format(post_after.get('valence', 0.5)) }}   | {{ "%.2f"|format(post_after.get('valence', 0.5) - post_before.get('valence', 0.5)) }}
+Arousal     | {{ "%.2f"|format(post_before.get('energy', 0.5)) }}    | {{ "%.2f"|format(post_after.get('energy', 0.5)) }}    | {{ "%.2f"|format(post_after.get('energy', 0.5) - post_before.get('energy', 0.5)) }}
+Coherence   | {{ "%.2f"|format(post_before.get('coherence', 0.5)) }} | {{ "%.2f"|format(post_after.get('coherence', 0.5)) }} | {{ "%.2f"|format(post_after.get('coherence', 0.5) - post_before.get('coherence', 0.5)) }}
+Novelty     | {{ "%.2f"|format(post_before.get('novelty', 0.0)) }}   | {{ "%.2f"|format(post_after.get('novelty', 0.0)) }}   | {{ "%.2f"|format(post_after.get('novelty', 0.0) - post_before.get('novelty', 0.0)) }}
+{% endif %}
+
+{% if post_after and before %}
+Turn Delta (User→Assistant): valence={{ "%.2f"|format(post_after.get('valence', 0.5) - before.get('valence', 0.5)) }}, energy={{ "%.2f"|format(post_after.get('energy', 0.5) - before.get('energy', 0.5)) }}, coherence={{ "%.2f"|format(post_after.get('coherence', 0.5) - before.get('coherence', 0.5)) }}, novelty={{ "%.2f"|format(post_after.get('novelty', 0.0) - before.get('novelty', 0.0)) }}
+{% endif %}
 
 === ANALYSIS TASK ===
 1. Analyze why the metrics shifted (e.g., "Arousal spiked because the user challenged a core assumption," or "Coherence dropped due to ambiguous input").

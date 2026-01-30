@@ -16,6 +16,10 @@ const elGearBtn = document.getElementById('gear-btn');
 const elSettingsMenu = document.getElementById('settings-menu');
 const elInfoToggle = document.getElementById('info-toggle-row');
 const elExplanation = document.getElementById('explanation-panel');
+const elTurnEffectBox = document.getElementById('turn-effect-box');
+const elTurnEffectUser = document.getElementById('turn-effect-user');
+const elTurnEffectAssistant = document.getElementById('turn-effect-assistant');
+const elTurnEffectTurn = document.getElementById('turn-effect-turn');
 
 // --- UI LOGIC ---
 elGearBtn.addEventListener('click', (e) => { e.stopPropagation(); elSettingsMenu.classList.toggle('visible'); });
@@ -59,6 +63,7 @@ class WSClient {
         state.targetArousal = data.stats.arousal;
         state.correlationId = data.correlation_id;
         state.timestamp = data.timestamp;
+        state.metadata = data.metadata || {};
         this.updateDOM();
     }
     updateDOM() {
@@ -70,6 +75,7 @@ class WSClient {
         document.getElementById('val-arousal').innerText = state.targetArousal.toFixed(2);
         this.updateMoodText();
         this.updateDiagnosticsTable();
+        this.updateTurnEffect();
     }
     updateMoodText() {
         const v = state.targetValence, p = state.targetPhi, a = state.targetArousal, n = state.targetNovelty;
@@ -110,6 +116,43 @@ class WSClient {
         
         const a = state.targetArousal;
         updateRow('aro', a, a > 0.5 ? "HIGH" : "LOW", a > 0.5 ? "Active / Alert" : "Passive / Idle");
+    }
+    updateTurnEffect() {
+        if (!elTurnEffectBox) return;
+        const meta = state.metadata || {};
+        const snapshotMeta = meta.spark_state_snapshot && meta.spark_state_snapshot.metadata
+            ? meta.spark_state_snapshot.metadata
+            : {};
+        const turnEffect = meta.turn_effect || snapshotMeta.turn_effect || null;
+        const summary = meta.turn_effect_summary || snapshotMeta.turn_effect_summary || null;
+        const evidence = meta.turn_effect_evidence || snapshotMeta.turn_effect_evidence || null;
+        if (!turnEffect) {
+            elTurnEffectBox.classList.add('hidden');
+            elTurnEffectUser.innerText = "";
+            elTurnEffectAssistant.innerText = "";
+            elTurnEffectTurn.innerText = "";
+            elTurnEffectBox.title = "";
+            return;
+        }
+        const fmt = (val) => (typeof val === 'number' ? val.toFixed(2) : null);
+        const fmtLine = (label, payload) => {
+            if (!payload) return "";
+            const v = fmt(payload.valence);
+            const e = fmt(payload.energy);
+            const c = fmt(payload.coherence);
+            const n = fmt(payload.novelty);
+            const parts = [];
+            if (v !== null) parts.push(`v=${v}`);
+            if (e !== null) parts.push(`e=${e}`);
+            if (c !== null) parts.push(`c=${c}`);
+            if (n !== null) parts.push(`n=${n}`);
+            return parts.length ? `${label}: ${parts.join(' ')}` : "";
+        };
+        elTurnEffectUser.innerText = fmtLine("user", turnEffect.user);
+        elTurnEffectAssistant.innerText = fmtLine("assistant", turnEffect.assistant);
+        elTurnEffectTurn.innerText = fmtLine("turn", turnEffect.turn);
+        elTurnEffectBox.title = JSON.stringify({ turn_effect: turnEffect, summary, evidence }, null, 2);
+        elTurnEffectBox.classList.remove('hidden');
     }
 }
 

@@ -15,9 +15,16 @@ from pydantic import BaseModel, Field, ValidationError
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
+from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from orion.schemas.telemetry.turn_effect import (
+    evaluate_turn_effect_alert,
+    should_emit_turn_effect_alert,
+    summarize_turn_effect,
+    turn_effect_from_spark_meta,
+)
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
 from orion.spark.orion_tissue import OrionTissue
@@ -35,6 +42,8 @@ _pub_bus: Optional[OrionBusAsync] = None
 _PRODUCER_BOOT_ID = str(uuid4())
 _SEQ: int = 0
 _ACTIVE_SIGNALS: List[Dict[str, Any]] = []
+_TURN_EFFECT_ALERT_LAST: Dict[str, float] = {}
+_TURN_EFFECT_ALERT_DEDUPE: Dict[str, float] = {}
 
 # Dedup + quality gating for candidate processing
 # quality: 0=minimal, 1=rich
@@ -91,11 +100,18 @@ class SparkCandidatePayload(BaseModel):
 def _prune_candidate_caches() -> None:
     now = time.time()
     cutoff = now - _CANDIDATE_CACHE_TTL_SEC
-    for d in (_CANDIDATE_LAST_SEEN_TS, _CANDIDATE_QUALITY, _CANDIDATE_TELEM_EMITTED):
-        # remove keys older than cutoff (based on last seen)
-        old_keys = [k for k, ts in _CANDIDATE_LAST_SEEN_TS.items() if ts < cutoff]
-        for k in old_keys:
-            d.pop(k, None)
+    # remove keys older than cutoff (based on last seen)
+    old_keys = [k for k, ts in _CANDIDATE_LAST_SEEN_TS.items() if ts < cutoff]
+    for k in old_keys:
+        _CANDIDATE_LAST_SEEN_TS.pop(k, None)
+        _CANDIDATE_QUALITY.pop(k, None)
+        _CANDIDATE_TELEM_EMITTED.pop(k, None)
+    # drop entries that no longer have a last-seen timestamp
+    known_keys = set(_CANDIDATE_LAST_SEEN_TS)
+    for k in set(_CANDIDATE_QUALITY) - known_keys:
+        _CANDIDATE_QUALITY.pop(k, None)
+    for k in set(_CANDIDATE_TELEM_EMITTED) - known_keys:
+        _CANDIDATE_TELEM_EMITTED.pop(k, None)
     # hard cap (just in case)
     if len(_CANDIDATE_LAST_SEEN_TS) > 5000:
         # drop oldest
@@ -317,6 +333,126 @@ def _next_seq() -> int:
     return _SEQ
 
 
+def _turn_effect_alert_key(corr_id: Optional[str]) -> str:
+    return str(corr_id or "unknown")
+
+
+def _is_turn_effect_alert_blocked(trace_mode: Optional[str], trigger: Optional[str]) -> bool:
+    if str(trace_mode or "").lower() == "heartbeat":
+        return True
+    if str(trigger or "").lower() == "heartbeat":
+        return True
+    return False
+
+
+def _log_turn_effect_alert(
+    *,
+    rule: str,
+    value: float,
+    severity: str,
+    corr_id: Optional[str],
+    trace_id: Optional[str],
+    summary: str,
+    cooldown_sec: float,
+) -> None:
+    logger.info(
+        "[turn_effect_alert] fired rule=%s value=%.3f severity=%s corr_id=%s trace_id=%s summary=%s cooldown_sec=%s",
+        rule,
+        value,
+        severity,
+        corr_id,
+        trace_id,
+        summary,
+        cooldown_sec,
+    )
+
+
+def _log_turn_effect_alert_suppressed(*, key: str, remaining: float) -> None:
+    logger.debug(
+        "[turn_effect_alert] suppressed cooldown key=%s remaining=%.1f",
+        key,
+        remaining,
+    )
+
+
+def _log_turn_effect_alert_suppressed_dedupe(
+    *,
+    rule: str,
+    value: float,
+    corr_id: Optional[str],
+    trace_id: Optional[str],
+) -> None:
+    logger.info(
+        "[turn_effect_alert] suppressed=dedupe rule=%s value=%.3f corr_id=%s trace_id=%s",
+        rule,
+        value,
+        corr_id,
+        trace_id,
+    )
+
+
+def _append_turn_effect_metadata(meta: Dict[str, Any], spark_meta: Dict[str, Any] | None) -> None:
+    turn_effect = turn_effect_from_spark_meta(spark_meta or {})
+    evidence = None
+    if isinstance(turn_effect, dict) and "evidence" in turn_effect:
+        evidence = turn_effect.get("evidence")
+        turn_effect = {k: v for k, v in turn_effect.items() if k != "evidence"}
+    if not turn_effect:
+        return
+    meta["turn_effect"] = turn_effect
+    meta["turn_effect_summary"] = summarize_turn_effect(turn_effect)
+    if isinstance(evidence, dict):
+        meta["turn_effect_evidence"] = evidence
+
+
+def _alert_direction(rule: str) -> str:
+    return "spike" if rule == "novelty_spike" else "drop"
+
+
+def _alert_severity(rule: str, value: float, threshold: float) -> str:
+    if rule == "coherence_drop":
+        return "error" if value <= (2 * threshold) else "warn"
+    if rule == "valence_drop":
+        return "warn" if value <= threshold else "info"
+    if rule == "novelty_spike":
+        return "warn" if value >= (2 * threshold) else "info"
+    return "info"
+
+
+def _dedupe_bucket(value: float, eps: float) -> float:
+    if eps <= 0:
+        return value
+    return round(value / eps) * eps
+
+
+def _dedupe_key(rule: str, direction: str, value: float, eps: float, session_id: Optional[str]) -> str:
+    bucket = _dedupe_bucket(value, eps)
+    return f"{rule}:{direction}:{bucket:.3f}:{session_id or 'na'}"
+
+
+def _is_publishable_channel(channel: Optional[str]) -> bool:
+    if not channel:
+        return False
+    return "*" not in channel and "?" not in channel
+
+
+def _is_dedupe_suppressed(last_seen: Optional[float], now_ts: float, window_sec: float) -> bool:
+    if last_seen is None:
+        return False
+    return (now_ts - last_seen) < float(window_sec)
+
+
+def _is_heartbeat_trace(trace: CognitionTracePayload) -> bool:
+    if not isinstance(trace, CognitionTracePayload):
+        return False
+    if str(trace.mode or "").lower() == "heartbeat":
+        return True
+    if str(trace.verb or "").lower() == "equilibrium_heartbeat":
+        return True
+    metadata = trace.metadata if isinstance(trace.metadata, dict) else {}
+    return bool(metadata.get("heartbeat"))
+
+
 def _candidate_quality(spark_meta: Dict[str, Any]) -> int:
     """
     quality=1 (rich) if spark_meta contains any rich spark keys.
@@ -406,6 +542,7 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
     # trace_mode / verb
     trace_mode = spark_meta.get("mode") or spark_meta.get("trace_mode") or "brain"
     trace_verb = spark_meta.get("trace_verb") or "unknown"
+    trace_trigger = spark_meta.get("trigger") or spark_meta.get("trace_trigger")
 
     # timestamp
     ts = spark_meta.get("as_of_ts") or spark_meta.get("timestamp")
@@ -429,6 +566,127 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
         # keep rich meta as evidence
         "spark_meta_rich": spark_meta,
     }
+
+    turn_effect = turn_effect_from_spark_meta(spark_meta)
+    evidence = None
+    if isinstance(turn_effect, dict) and "evidence" in turn_effect:
+        evidence = turn_effect.get("evidence")
+        turn_effect = {k: v for k, v in turn_effect.items() if k != "evidence"}
+    if turn_effect:
+        meta["turn_effect"] = turn_effect
+        summary = summarize_turn_effect(turn_effect)
+        meta["turn_effect_summary"] = summary
+        if isinstance(evidence, dict):
+            meta["turn_effect_evidence"] = evidence
+        if settings.turn_effect_alerts_enable and not _is_turn_effect_alert_blocked(trace_mode, trace_trigger):
+            alert = evaluate_turn_effect_alert(
+                turn_effect,
+                coherence_drop=settings.turn_effect_alerts_coherence_drop,
+                valence_drop=settings.turn_effect_alerts_valence_drop,
+                novelty_spike=settings.turn_effect_alerts_novelty_spike,
+            )
+            if alert:
+                now_ts = time.time()
+                key = _turn_effect_alert_key(trace_id)
+                last_seen = _TURN_EFFECT_ALERT_LAST.get(key)
+                severity = _alert_severity(alert["metric"], alert["value"], alert["threshold"])
+                direction = _alert_direction(alert["metric"])
+                session_id = spark_meta.get("session_id") or spark_meta.get("conversation_id") or spark_meta.get("thread_id")
+                if settings.turn_effect_alerts_dedupe_enable:
+                    dedupe_key = _dedupe_key(
+                        alert["metric"],
+                        direction,
+                        alert["value"],
+                        settings.turn_effect_alerts_dedupe_eps,
+                        session_id,
+                    )
+                    last_dedupe = _TURN_EFFECT_ALERT_DEDUPE.get(dedupe_key)
+                    if _is_dedupe_suppressed(
+                        last_dedupe,
+                        now_ts,
+                        settings.turn_effect_alerts_dedupe_window_sec,
+                    ):
+                        _log_turn_effect_alert_suppressed_dedupe(
+                            rule=alert["metric"],
+                            value=alert["value"],
+                            corr_id=env.correlation_id,
+                            trace_id=trace_id,
+                        )
+                        return
+                if should_emit_turn_effect_alert(
+                    last_seen,
+                    now_ts,
+                    settings.turn_effect_alerts_cooldown_sec,
+                ):
+                    _TURN_EFFECT_ALERT_LAST[key] = now_ts
+                    if settings.turn_effect_alerts_dedupe_enable:
+                        _TURN_EFFECT_ALERT_DEDUPE[dedupe_key] = now_ts
+                    _log_turn_effect_alert(
+                        rule=alert["metric"],
+                        value=alert["value"],
+                        severity=severity,
+                        corr_id=env.correlation_id,
+                        trace_id=trace_id,
+                        summary=summary,
+                        cooldown_sec=settings.turn_effect_alerts_cooldown_sec,
+                    )
+                    if not (_pub_bus and _pub_bus.enabled):
+                        return
+                    signal = SparkSignalV1(
+                        signal_type="human",
+                        intensity=1.0,
+                        coherence_delta=alert["value"] if alert["metric"] == "coherence_drop" else None,
+                        valence_delta=alert["value"] if alert["metric"] == "valence_drop" else None,
+                        novelty_delta=alert["value"] if alert["metric"] == "novelty_spike" else None,
+                        as_of_ts=datetime.now(timezone.utc),
+                        ttl_ms=int(settings.turn_effect_alerts_cooldown_sec * 1000),
+                        source_service=settings.service_name,
+                        source_node=settings.node_name,
+                    )
+                    signal_env = BaseEnvelope(
+                        kind="spark.signal.v1",
+                        source=_svc_ref(),
+                        correlation_id=trace_id,
+                        payload=signal.model_dump(mode="json"),
+                    )
+                    await _pub_bus.publish(settings.channel_spark_signal, signal_env)
+                    if settings.turn_effect_alerts_notify_enable:
+                        notify = CoreEventV1(
+                            event="notify",
+                            payload={
+                                "title": f"Turn effect alert: {alert['metric']}",
+                                "body": (
+                                    f"{summary} "
+                                    f"(value={alert['value']:.3f}, threshold={alert['threshold']:.3f})"
+                                ),
+                                "event_type": "turn_effect_alert",
+                                "severity": severity,
+                                "rule": alert["metric"],
+                                "value": alert["value"],
+                                "threshold": alert["threshold"],
+                                "direction": direction,
+                                "correlation_id": str(env.correlation_id or ""),
+                                "trace_id": str(trace_id or ""),
+                                "summary": summary,
+                                "metadata": {
+                                    "corr_id": str(env.correlation_id or ""),
+                                    "trace_id": str(trace_id or ""),
+                                    "rule": alert["metric"],
+                                    "value": alert["value"],
+                                    "threshold": alert["threshold"],
+                                },
+                            },
+                        )
+                        notify_env = BaseEnvelope(
+                            kind="orion.event",
+                            source=_svc_ref(),
+                            correlation_id=env.correlation_id,
+                            payload=notify.model_dump(mode="json"),
+                        )
+                        await _pub_bus.publish(settings.channel_core_events, notify_env)
+                else:
+                    remaining = max(0.0, float(settings.turn_effect_alerts_cooldown_sec) - (now_ts - last_seen))
+                    _log_turn_effect_alert_suppressed(key=key, remaining=remaining)
 
     telem = SparkTelemetryPayload(
         telemetry_id=None,
@@ -523,6 +781,20 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
     TISSUE.snapshot()
     
     seq = _next_seq()
+    metadata = {
+        "stimulus_summary": (c.prompt or "")[:50],
+        "trigger": "spark.candidate",
+    }
+    turn_effect = turn_effect_from_spark_meta(c.spark_meta or {})
+    evidence = None
+    if isinstance(turn_effect, dict) and "evidence" in turn_effect:
+        evidence = turn_effect.get("evidence")
+        turn_effect = {k: v for k, v in turn_effect.items() if k != "evidence"}
+    if turn_effect:
+        metadata["turn_effect"] = turn_effect
+    if isinstance(evidence, dict):
+        metadata["turn_effect_evidence"] = evidence
+
     snap = SparkStateSnapshotV1(
         source_service=settings.service_name,
         source_node=settings.node_name,
@@ -538,10 +810,7 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
         arousal=arousal,
         dominance=dominance,
         vector_present=False,
-        metadata={
-            "stimulus_summary": (c.prompt or "")[:50],
-            "trigger": "spark.candidate"
-        },
+        metadata=metadata,
     )
 
     # Broadcast to Web UI via WebSocket
@@ -590,6 +859,74 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
         ts_epoch = _coerce_epoch_ts(getattr(trace, "timestamp", None))
         iso_ts = _to_iso_utc(ts_epoch)
+
+        if _is_heartbeat_trace(trace):
+            phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+            phi_stats = _apply_signal_deltas(phi_stats)
+            valence = float(phi_stats.get("valence", 0.5))
+            arousal = float(phi_stats.get("energy", 0.5))
+            dominance = float(phi_stats.get("dominance", 0.5))
+            TISSUE.snapshot()
+
+            seq = _next_seq()
+            snap = SparkStateSnapshotV1(
+                source_service=settings.service_name,
+                source_node=settings.node_name,
+                producer_boot_id=_PRODUCER_BOOT_ID,
+                seq=seq,
+                snapshot_ts=datetime.now(timezone.utc),
+                valid_for_ms=int(settings.spark_state_valid_for_ms),
+                correlation_id=corr_id,
+                trace_mode=trace.mode,
+                trace_verb=trace.verb,
+                phi=phi_stats,
+                valence=valence,
+                arousal=arousal,
+                dominance=dominance,
+                vector_present=False,
+                vector_ref=None,
+                metadata={
+                    "trigger": "heartbeat",
+                    "stimulus_summary": "heartbeat",
+                    "trace_source_service": trace.source_service,
+                    "trace_source_node": trace.source_node,
+                },
+            )
+
+            try:
+                telemetry_id = str(uuid4())
+                ws_payload = {
+                    "type": "tissue.update",
+                    "telemetry_id": telemetry_id,
+                    "correlation_id": corr_id,
+                    "timestamp": iso_ts,
+                    "stats": {
+                        "phi": float(phi_stats.get("coherence", 0.0)),
+                        "novelty": float(phi_stats.get("novelty", 0.0)),
+                        "valence": valence,
+                        "arousal": arousal,
+                    },
+                    "grid": [],
+                    "metadata": snap.metadata,
+                }
+                await manager.broadcast(ws_payload)
+            except Exception as e:
+                logger.warning(f"Failed to broadcast heartbeat tissue update: {e}")
+
+            if _pub_bus and _pub_bus.enabled:
+                snap_env = SparkStateSnapshotEnvelope(
+                    source=_svc_ref(),
+                    correlation_id=corr_id,
+                    causality_chain=env.causality_chain,
+                    payload=snap,
+                )
+                await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
+                logger.info(
+                    'Emitted Spark heartbeat snapshot corr_id=%s seq=%s trigger="heartbeat"',
+                    corr_id,
+                    seq,
+                )
+            return
 
         # Basic heuristics
         valence = 0.5
@@ -661,6 +998,17 @@ async def handle_trace(env: BaseEnvelope) -> None:
         TISSUE.snapshot()
 
         seq = _next_seq()
+        metadata = {
+            "stimulus_summary": f"v={valence:.2f} a={arousal:.2f} vec={'yes' if spark_vector else 'no'}",
+            "trace_source_service": trace.source_service,
+            "trace_source_node": trace.source_node,
+            "success_count": int(success_count),
+            "fail_count": int(fail_count),
+        }
+        trace_meta = trace.metadata if isinstance(trace.metadata, dict) else {}
+        spark_meta = trace_meta.get("spark_meta") if isinstance(trace_meta.get("spark_meta"), dict) else trace_meta
+        _append_turn_effect_metadata(metadata, spark_meta)
+
         snap = SparkStateSnapshotV1(
             source_service=settings.service_name,
             source_node=settings.node_name,
@@ -677,13 +1025,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
             dominance=float(dominance),
             vector_present=bool(spark_vector),
             vector_ref=None,
-            metadata={
-                "stimulus_summary": f"v={valence:.2f} a={arousal:.2f} vec={'yes' if spark_vector else 'no'}",
-                "trace_source_service": trace.source_service,
-                "trace_source_node": trace.source_node,
-                "success_count": int(success_count),
-                "fail_count": int(fail_count),
-            },
+            metadata=metadata,
         )
 
         telem_meta = {
@@ -696,6 +1038,11 @@ async def handle_trace(env: BaseEnvelope) -> None:
             "source_node": trace.source_node,
             "spark_state_snapshot": snap.model_dump(mode="json"),
         }
+        if metadata.get("turn_effect"):
+            telem_meta["turn_effect"] = metadata.get("turn_effect")
+            telem_meta["turn_effect_summary"] = metadata.get("turn_effect_summary")
+            if metadata.get("turn_effect_evidence") is not None:
+                telem_meta["turn_effect_evidence"] = metadata.get("turn_effect_evidence")
 
         telem = SparkTelemetryPayload(
             correlation_id=corr_id,
@@ -1030,7 +1377,13 @@ async def handle_candidate(env: BaseEnvelope) -> None:
             causality_chain=env.causality_chain,
             payload=final_payload,
         )
-        await bus.publish(settings.channel_spark_candidate, completed)
+        if _is_publishable_channel(settings.channel_spark_candidate):
+            await bus.publish(settings.channel_spark_candidate, completed)
+        else:
+            logger.warning(
+                "Skipping spark candidate publish for non-concrete channel=%s",
+                settings.channel_spark_candidate,
+            )
 
         try:
             ws_introspection = {

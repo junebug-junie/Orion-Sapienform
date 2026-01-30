@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
     state_retention_sec: float = Field(3600.0, alias="EQUILIBRIUM_STATE_RETENTION_SEC")
     channel_metacognition_tick: str = Field("orion:metacognition:tick", alias="CHANNEL_METACOGNITION_TICK")
+    channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")
+
+    equilibrium_spark_heartbeat_enable: bool = Field(False, alias="EQUILIBRIUM_SPARK_HEARTBEAT_ENABLE")
+    equilibrium_spark_heartbeat_interval_sec: float = Field(
+        30.0, alias="EQUILIBRIUM_SPARK_HEARTBEAT_INTERVAL_SEC"
+    )
 
     # Metacognition
     metacog_enable: bool = Field(False, alias="EQUILIBRIUM_METACOG_ENABLE")

@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     pad_tensor_dim: int = Field(32, alias="PAD_TENSOR_DIM")
 
     redis_url: Optional[str] = Field(None, alias="REDIS_URL")
+    postgres_uri: str = Field(
+        "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
+        alias="POSTGRES_URI",
+    )
 
     public_base_path: str = Field("/landing-pad", alias="PUBLIC_BASE_PATH")
     ui_sample_limit: int = Field(500, alias="UI_SAMPLE_LIMIT")

@@ -160,6 +160,8 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
         meta = {"raw_metadata": str(meta)}
 
     meta = dict(meta)
+    turn_effect = deepcopy(meta.get("turn_effect"))
+    turn_effect_summary = meta.get("turn_effect_summary")
     meta.pop("spark_state_snapshot", None)
 
     out = {
@@ -174,6 +176,10 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
         "node": row.get("node"),
         "metadata": meta,
     }
+    if turn_effect is not None:
+        out["turn_effect"] = turn_effect
+    if turn_effect_summary is not None:
+        out["turn_effect_summary"] = turn_effect_summary
     return _json_sanitize(out)
 
 
@@ -641,7 +647,8 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 )
                 if not base_id: base_id = str(uuid.uuid4())
                 if not data_to_process.get("id"): extra_sql_fields["id"] = base_id
-                if not data_to_process.get("correlation_id"): extra_sql_fields["correlation_id"] = base_id
+                if not data_to_process.get("correlation_id") and not extra_sql_fields.get("correlation_id"):
+                    extra_sql_fields["correlation_id"] = base_id
 
             if sql_model is CollapseEnrichment and isinstance(data_to_process, dict):
                 extra_sql_fields["id"] = str(uuid.uuid4())

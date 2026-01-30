@@ -22,6 +22,14 @@ def _payload_fingerprint(payload: object) -> str:
     return hashlib.sha256(dumped.encode("utf-8")).hexdigest()
 
 
+def _evict_dedupe_cache() -> None:
+    if len(_dedupe_cache) <= _DEDUP_MAX_SIZE:
+        return
+    overflow = len(_dedupe_cache) - _DEDUP_MAX_SIZE
+    for old_key, _ in sorted(_dedupe_cache.items(), key=lambda item: item[1])[:overflow]:
+        _dedupe_cache.pop(old_key, None)
+
+
 def _should_dedupe(env: BaseEnvelope) -> bool:
     now = time.monotonic()
     expired = [key for key, ts in _dedupe_cache.items() if now - ts > _DEDUP_WINDOW_SEC]
@@ -36,13 +44,11 @@ def _should_dedupe(env: BaseEnvelope) -> bool:
         return True
 
     _dedupe_cache[key] = now
-    if len(_dedupe_cache) > _DEDUP_MAX_SIZE:
-        for old_key, _ in sorted(_dedupe_cache.items(), key=lambda item: item[1])[: len(_dedupe_cache) - _DEDUP_MAX_SIZE]:
-            _dedupe_cache.pop(old_key, None)
+    _evict_dedupe_cache()
     return False
 
 
-async def _push_to_graphdb(turtle_content: str, graph_name: str = None):
+async def _push_to_graphdb(turtle_content: str, graph_name: str | None = None) -> None:
     """
     Pushes NTriples/Turtle to GraphDB.
     """
@@ -53,15 +59,15 @@ async def _push_to_graphdb(turtle_content: str, graph_name: str = None):
     if graph_name:
         params["context"] = f"<{graph_name}>"
 
-    headers = {"Content-Type": "text/plain"} # N-Triples usually text/plain, Turtle text/turtle
+    headers = {"Content-Type": "text/plain"}  # N-Triples usually text/plain, Turtle text/turtle
 
     auth = None
     if settings.GRAPHDB_USER and settings.GRAPHDB_PASS:
         auth = (settings.GRAPHDB_USER, settings.GRAPHDB_PASS)
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            resp = await client.post(base_url, content=turtle_content, headers=headers, params=params, auth=auth, timeout=10.0)
+            resp = await client.post(base_url, content=turtle_content, headers=headers, params=params, auth=auth)
             resp.raise_for_status()
         except httpx.HTTPError as e:
             logger.error(f"GraphDB write failed: {e}")

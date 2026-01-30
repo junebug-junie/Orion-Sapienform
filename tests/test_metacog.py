@@ -5,9 +5,37 @@ import os
 # Add current directory to path
 sys.path.append(os.getcwd())
 
+import importlib.util
+import types
+from pathlib import Path
+
 import pytest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, normalize_collapse_entry
+from orion.schemas.collapse_mirror import (
+    CollapseMirrorEntryV2,
+    normalize_collapse_entry,
+    should_route_to_triage,
+)
+def _load_executor_module():
+    repo_root = Path(__file__).resolve().parents[1]
+    app_dir = repo_root / "services" / "orion-cortex-exec" / "app"
+    executor_path = app_dir / "executor.py"
+    package_name = "orion_cortex_exec"
+    app_package_name = f"{package_name}.app"
+    if package_name not in sys.modules:
+        pkg = types.ModuleType(package_name)
+        pkg.__path__ = [str(app_dir.parent)]
+        sys.modules[package_name] = pkg
+    if app_package_name not in sys.modules:
+        pkg = types.ModuleType(app_package_name)
+        pkg.__path__ = [str(app_dir)]
+        sys.modules[app_package_name] = pkg
+    spec = importlib.util.spec_from_file_location(f"{app_package_name}.executor", executor_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 def test_metacog_trigger_schema():
     t = MetacogTriggerV1(
@@ -158,3 +186,81 @@ def test_state_snapshot_tags_follow_entry_tags():
     }
     v2 = normalize_collapse_entry(v2_dict)
     assert v2.state_snapshot.tags == ["metacognition", "flow_state"]
+
+
+def test_change_type_dict_coercion():
+    v2_dict = {
+        "event_id": "collapse_change_type",
+        "observer": "orion",
+        "trigger": "baseline",
+        "observer_state": ["idle"],
+        "type": "flow",
+        "emergent_entity": "self",
+        "summary": "all good",
+        "mantra": "om",
+        "change_type": {"label": "escalating", "signal": 0.7},
+    }
+    v2 = CollapseMirrorEntryV2.model_validate(v2_dict)
+    assert v2.change_type == "escalating"
+    assert v2.change_type_scores["signal"] == 0.7
+
+
+def test_mirror_split_gate():
+    assert should_route_to_triage({"observer": "juniper"}) is True
+    assert should_route_to_triage({"observer": "orion"}) is False
+
+
+def test_metacog_source_service_is_stamped():
+    executor_module = _load_executor_module()
+    entry = executor_module._fallback_metacog_draft({"trigger": {"trigger_kind": "baseline"}})
+    assert entry.source_service == "metacog"
+
+
+def test_turn_effect_telemetry_guard():
+    executor_module = _load_executor_module()
+    turn_effect = {"user": {"valence": 0.1}}
+    summary = executor_module.summarize_turn_effect(turn_effect)
+    telemetry_base = {"turn_effect": {"user": {"valence": 0.2}}, "note": "keep"}
+    telemetry_patch = {"turn_effect": {"user": {"valence": -1.0}}, "note": "override"}
+    merged = executor_module._merge_telemetry_system_owned(telemetry_base, telemetry_patch)
+    merged["turn_effect"] = turn_effect
+    merged["turn_effect_summary"] = summary
+    assert merged["turn_effect"]["user"]["valence"] == 0.1
+    assert merged["turn_effect_summary"] == summary
+    assert merged["note"] == "override"
+
+
+def test_metacog_entry_id_differs_from_trigger_corr():
+    executor_module = _load_executor_module()
+    ctx = {"trigger_correlation_id": "corr-1"}
+    entry = executor_module._fallback_metacog_draft(ctx)
+    assert entry.id != "corr-1"
+    assert entry.event_id == entry.id
+
+
+def test_metacog_system_fields_override_llm_ids():
+    executor_module = _load_executor_module()
+    ctx = {
+        "metacog_entry_id": "base-id",
+        "trigger_correlation_id": "corr-1",
+        "trigger_trace_id": "trace-1",
+    }
+    entry_dict = {
+        "id": "llm-id",
+        "event_id": "llm-id",
+        "correlation_id": "llm-corr",
+        "state_snapshot": {
+            "telemetry": {
+                "trigger_kind": "llm",
+                "trigger_correlation_id": "llm",
+                "trigger_trace_id": "llm",
+            }
+        },
+    }
+    updated = executor_module._apply_metacog_system_fields(entry_dict, ctx)
+    assert updated["id"] == "base-id"
+    assert updated["event_id"] == "base-id"
+    assert "correlation_id" not in updated
+    telemetry = updated["state_snapshot"]["telemetry"]
+    assert telemetry["trigger_correlation_id"] == "corr-1"
+    assert telemetry["trigger_trace_id"] == "trace-1"

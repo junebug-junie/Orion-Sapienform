@@ -493,6 +493,7 @@ async def _query_backends(
                         "ts": item.ts,
                         "session_id": item.session_id,
                         "tags": item.tags,
+                        "turn_effect_delta": item.turn_effect_delta,
                         "score": 0.7,
                     }
                 )

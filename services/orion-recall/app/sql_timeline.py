@@ -31,6 +31,41 @@ class TimelineItem:
     session_id: Optional[str]
     node_id: Optional[str]
     source_ref: Optional[str] = None
+    turn_effect_delta: Optional[float] = None
+
+
+def _parse_spark_meta(raw: Any) -> Dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _extract_turn_effect_delta(meta: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(meta, dict):
+        return None
+    turn_effect = meta.get("turn_effect")
+    if not isinstance(turn_effect, dict):
+        return None
+    turn = turn_effect.get("turn")
+    if not isinstance(turn, dict):
+        return None
+    deltas = []
+    for key in ("valence", "energy", "coherence", "novelty"):
+        val = turn.get(key)
+        if isinstance(val, (int, float)):
+            deltas.append(abs(float(val)))
+    if not deltas:
+        return None
+    return max(deltas)
 
 
 def _connect():
@@ -57,6 +92,11 @@ def _parse_row(row: Dict[str, Any]) -> TimelineItem:
         ts = float(ts_val)
     except Exception:
         ts = 0.0
+    turn_effect_delta = row.get("turn_effect_delta")
+    try:
+        turn_effect_delta_val = float(turn_effect_delta) if turn_effect_delta is not None else None
+    except Exception:
+        turn_effect_delta_val = None
 
     return TimelineItem(
         id=row.get("id"),
@@ -68,6 +108,7 @@ def _parse_row(row: Dict[str, Any]) -> TimelineItem:
         session_id=row.get("session_id"),
         node_id=row.get("node_id"),
         source_ref=row.get("source_ref"),
+        turn_effect_delta=turn_effect_delta_val,
     )
 
 
@@ -114,6 +155,13 @@ def _pick_session_col(cur, table: str) -> Optional[str]:
 
 def _pick_id_col(cur, table: str) -> Optional[str]:
     for column in ("correlation_id", "id"):
+        if _table_has_column(cur, table, column):
+            return column
+    return None
+
+
+def _pick_spark_meta_col(cur, table: str) -> Optional[str]:
+    for column in ("spark_meta", "spark_meta_rich", "metadata"):
         if _table_has_column(cur, table, column):
             return column
     return None
@@ -167,9 +215,11 @@ async def fetch_recent_fragments(
                 ts_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
                 id_col = _pick_id_col(cur, timeline_table)
                 session_col = _pick_session_col(cur, timeline_table)
+                spark_meta_col = _pick_spark_meta_col(cur, timeline_table)
                 memory_clause = _memory_filter_clause(cur, timeline_table)
                 select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
+                select_spark_meta = f"{spark_meta_col} AS spark_meta," if spark_meta_col else ""
                 params: List[Any] = [since_minutes]
                 params.append(limit)
                 cur.execute(
@@ -177,6 +227,7 @@ async def fetch_recent_fragments(
                     SELECT
                         {select_row_id}
                         {select_sid}
+                        {select_spark_meta}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
                         {ts_col} AS created_at
@@ -198,6 +249,8 @@ async def fetch_recent_fragments(
                     created_at = row.get("created_at")
                     sid = row.get("sid")
                     row_id = row.get("row_id")
+                    spark_meta = _parse_spark_meta(row.get("spark_meta"))
+                    turn_effect_delta = _extract_turn_effect_delta(spark_meta)
                     tags = ["chat_timeline"]
                     if sid is not None and str(sid) != "":
                         tags.append("sid_present:true")
@@ -211,6 +264,7 @@ async def fetch_recent_fragments(
                         "node_id": None,
                         "tags": tags,
                         "source_ref": timeline_table,
+                        "turn_effect_delta": turn_effect_delta,
                     }
                     formatted.append(_parse_row(row_data))
                 return formatted

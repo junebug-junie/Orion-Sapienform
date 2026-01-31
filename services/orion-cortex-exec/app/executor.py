@@ -711,6 +711,30 @@ def _extract_llm_text(res: Any) -> str:
     return str(res)
 
 
+def _clean_raw_llm_content(text: str) -> str:
+    """
+    Strips common LLM preambles and code fences to expose raw JSON.
+    """
+    if not text:
+        return ""
+
+    cleaned = text.strip()
+
+    # 1. Strip "Here is the JSON..." preambles (case insensitive)
+    # Match start of string, "Here is...", optional newline/spaces
+    cleaned = re.sub(r"(?i)^(here is (the )?json[^\n]*:?\s*)", "", cleaned)
+
+    # 2. Strip code fences
+    # Remove opening fence: start of string, ```, optional language, optional newline/spaces
+    cleaned = re.sub(r"^```\w*\s*", "", cleaned)
+
+    cleaned = cleaned.strip()
+    # Remove closing fence: optional whitespace, ```, end of string
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    return cleaned.strip()
+
+
 def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     """
     Fallback extraction when strict find_collapse_entry fails.
@@ -950,6 +974,7 @@ async def call_step_services(
 
                 try:
                     raw_content = _extract_llm_text(llm_res)
+                    raw_content = _clean_raw_llm_content(raw_content)
 
                     # 1) Try strict find
                     parsed = find_collapse_entry(raw_content)
@@ -1136,6 +1161,7 @@ async def call_step_services(
 
                 try:
                     raw_content = _extract_llm_text(llm_res)
+                    raw_content = _clean_raw_llm_content(raw_content)
 
                     # 1) strict find
                     patch = find_collapse_entry(raw_content)
@@ -1257,6 +1283,18 @@ async def call_step_services(
                 if not final_data:
                     logs.append("skip <- MetacogPublishService (no entry)")
                     merged_result[service] = {"ok": False, "reason": "no_entry"}
+                    continue
+
+                # Firebreak: Skip baseline fallback publish to avoid pollution
+                trigger_kind = _metacog_trigger_kind(ctx)
+                state_snapshot = final_data.get("state_snapshot") if isinstance(final_data, dict) else {}
+                telemetry = state_snapshot.get("telemetry") if isinstance(state_snapshot, dict) else {}
+                draft_mode = telemetry.get("metacog_draft_mode")
+
+                if trigger_kind == "baseline" and draft_mode == "fallback":
+                    logger.warning("Firebreak: Skipping baseline fallback publish. draft_mode=fallback trigger=baseline")
+                    logs.append("skip <- MetacogPublishService (firebreak: baseline fallback)")
+                    merged_result[service] = {"ok": True, "skipped": True, "reason": "firebreak_baseline_fallback"}
                     continue
 
                 try:

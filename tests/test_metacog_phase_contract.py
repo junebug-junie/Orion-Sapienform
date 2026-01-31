@@ -99,9 +99,9 @@ def test_draft_patch_strips_unknown_keys_and_applies():
         "visibility": "internal",
         "epistemic_status": "observed",
     }
-    filtered, stripped = executor_module._filter_patch_dict(
+    filtered, stripped = executor_module._sanitize_patch_payload(
         raw,
-        executor_module._METACOG_DRAFT_ALLOWED_KEYS,
+        model=MetacogDraftTextPatchV1,
     )
     assert "summary" in filtered
     assert "observer" in stripped
@@ -196,3 +196,60 @@ def test_metacog_draft_telemetry_records_llm_success():
     telemetry = entry["state_snapshot"]["telemetry"]
     assert telemetry["metacog_draft_mode"] == "llm"
     assert telemetry["metacog_draft_rejected_keys"] == []
+
+
+def test_metacog_draft_overrides_fallback_summary_with_patch():
+    executor_module = _load_executor_module()
+    ctx = {"trigger_kind": "heartbeat", "trigger": {"trigger_kind": "heartbeat"}}
+    base_entry = executor_module._fallback_metacog_draft(ctx).model_dump(mode="json")
+    base_entry = executor_module._apply_metacog_system_fields(base_entry, ctx)
+    patch = MetacogDraftTextPatchV1(what_changed={"summary": "clarity↑, overload↓"})
+    executor_module._apply_draft_patch(base_entry, patch)
+    executor_module._postprocess_metacog_draft_summary(base_entry, draft_mode="llm")
+    entry = executor_module.normalize_collapse_entry(base_entry)
+    assert entry.what_changed_summary == "clarity↑, overload↓"
+
+
+def test_metacog_draft_keeps_fallback_summary_when_fallback():
+    executor_module = _load_executor_module()
+    ctx = {"trigger_kind": "heartbeat", "trigger": {"trigger_kind": "heartbeat"}}
+    base_entry = executor_module._fallback_metacog_draft(ctx).model_dump(mode="json")
+    base_entry = executor_module._apply_metacog_system_fields(base_entry, ctx)
+    executor_module._postprocess_metacog_draft_summary(base_entry, draft_mode="fallback")
+    entry = executor_module.normalize_collapse_entry(base_entry)
+    assert entry.what_changed_summary == "fallback_generated"
+
+
+def test_metacog_patch_sanitizer_handles_nested_keys_and_aliases():
+    executor_module = _load_executor_module()
+    raw = {
+        "numeric_ sisters": {
+            "risk_ score": 0.3,
+            "constraints": {"severity_ score": 0.1, "extra_field": "drop"},
+        },
+        "summary": "drop",
+    }
+    sanitized, stripped = executor_module._sanitize_patch_payload(
+        raw,
+        model=MetacogEnrichScorePatchV1,
+    )
+    assert "summary" in stripped
+    assert "numeric_sisters.constraints.extra_field" in stripped
+    patch = MetacogEnrichScorePatchV1.model_validate(sanitized)
+    assert patch.numeric_sisters
+    assert patch.numeric_sisters.risk_score == 0.3
+    assert patch.numeric_sisters.constraints.severity_score == 0.1
+
+
+def test_metacog_patch_sanitizer_parses_code_fences():
+    executor_module = _load_executor_module()
+    raw = """```json
+    {"summary": "delta", "what_changed": {"summary": "shift", "evidence": ["cue"]}}
+    ```"""
+    sanitized, stripped = executor_module._sanitize_patch_payload(
+        raw,
+        model=MetacogDraftTextPatchV1,
+    )
+    assert stripped == []
+    patch = MetacogDraftTextPatchV1.model_validate(sanitized)
+    assert patch.summary == "delta"

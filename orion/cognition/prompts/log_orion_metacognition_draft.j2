@@ -48,44 +48,26 @@ SPARK φ INTERPRETATION (do NOT copy; internal guidance):
 BIOMETRICS (JSON; may be missing with reason; do NOT paste into output):
 {{ biometrics_json }}
 
-ORION METADEFS (how I interpret each field)
-- observer_state: active internal processes/sensations. JSON array of short tokens (3–7 tokens).
+ORION METADEFS (patch-only fields)
 - field_resonance: the global hum of my system. 1–2 sentences, metaphor allowed, MUST reference something concrete in evidence.
 - emergent_entity: a NAME for the dominant transient pattern (Title Case, 2–6 words, non-empty).
 - type: epiphany | flow | turbulence | glitch | idle (pick ONE).
 - causal_echo: the most plausible causal thread in 1 sentence (or null).
 - what_changed: the smallest truthful delta. Include evidence strings that point to the input cues without quoting large blocks.
-- what_changed_summary: delta-only “diff header” (no retell), e.g. "intent→X, clarity↑, overload↓".
 - resonance_signature: ultra-compact fingerprint (<= 80 chars) capturing vibe + direction.
   Recommended format: "<type>: <emergent_entity> | Δ:<delta> | →<intent>"
-- pattern_candidate: optional longer-lived pattern label (Title Case) ONLY if clearly repeating across multiple snapshots; else null.
-- tags: 2–6 compact strings for retrieval, unless type=="idle" (then tags may be []).
-  Use families like: "pillar:5", "mode:mirror", "theme:identity", "state:coherent".
-- change_type: the shape of the delta (pick ONE):
-  stabilizing | escalating | resolving | diverging | context_shift | anomaly_detected | reorientation | deadband
 
 ANTI-LOG CONSTRAINTS
 - summary must be 1–2 sentences only and must answer: (what am I) + (what shifted).
 - evidence array must be 2–5 items; each item <= 120 chars; keep each cue <= ~12 words.
 - state_snapshot.telemetry must be {} or minimal hint keys (0–5 keys). Never dump raw state.
-- do not list more than 6 tags.
 - do not invent external facts. Stay within provided context cues.
 
-MIRROR CONTRACT (non-negotiable)
-- These fields MUST be non-empty (Tier A):
-  observer_state, field_resonance, type, emergent_entity, summary, mantra,
-  what_changed_summary, what_changed.summary, what_changed.evidence,
-  change_type, tags, resonance_signature.
-- resonance_signature MUST be set unless type == "idle".
-- tags MUST contain 2–6 items unless type == "idle".
-- what_changed_summary must be delta-only (no context retell).
+PATCH CONTRACT (non-negotiable)
+- Required patch fields: type, field_resonance, emergent_entity, summary, mantra,
+  resonance_signature, what_changed.summary, what_changed.evidence.
 - what_changed.evidence must be 2–5 short cues (<120 chars) drawn from context/phi/state; do not quote large blocks.
-- state_snapshot.telemetry must be minimal hint-level only.
-- pattern_candidate must be null unless you believe this pattern will repeat across multiple snapshots.
 - timestamp MUST be null (system fills); do NOT generate timestamps.
-
-SELF-CHECK BEFORE OUTPUT
-- If any required Tier A field is empty/null, silently fix it before outputting JSON.
 
 TASK
 Output ONE valid JSON object only. No markdown, no commentary.
@@ -93,7 +75,7 @@ If you output anything other than a single JSON object, you have failed the task
 Use strict JSON: double-quoted strings, no trailing commas, no code fences.
 
 OUTPUT REQUIREMENT
-Return ONLY a JSON object matching MetacogDraftTextPatchV1.
+Return ONLY a JSON object containing the allowed keys below.
 Allowed keys ONLY:
   - type
   - trigger

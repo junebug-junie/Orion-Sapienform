@@ -9,12 +9,15 @@ Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union, get_args, get_origin
 from uuid import uuid4
 
 from jinja2 import Environment
+
+from pydantic import BaseModel
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
@@ -70,31 +73,13 @@ _SYSTEM_TELEMETRY_KEYS = {
     "metacog_draft_rejected_keys",
     "metacog_draft_error",
     "metacog_draft_raw_trigger_null",
+    "metacog_what_changed_summary_source",
 }
 
 _SYSTEM_ALERT_TAG_PREFIX = "metacog.alert"
 
-_METACOG_DRAFT_ALLOWED_KEYS = {
-    "type",
-    "mantra",
-    "summary",
-    "causal_echo",
-    "field_resonance",
-    "emergent_entity",
-    "resonance_signature",
-    "what_changed",
-    "tags_suggested",
-}
-
-_METACOG_ENRICH_ALLOWED_KEYS = {
-    "tag_scores",
-    "change_type_scores",
-    "numeric_sisters",
-    "causal_density",
-    "epistemic_status",
-    "is_causally_dense",
-    "snapshot_kind",
-}
+_METACOG_DRAFT_ALLOWED_KEYS = set(MetacogDraftTextPatchV1.model_fields.keys())
+_METACOG_ENRICH_ALLOWED_KEYS = set(MetacogEnrichScorePatchV1.model_fields.keys())
 
 
 def _merge_telemetry_system_owned(base: Any, patch: Any) -> Dict[str, Any]:
@@ -155,17 +140,85 @@ def _truncate_list(values: Any, max_items: int, max_chars: int) -> List[str]:
     return truncated
 
 
-def _filter_patch_dict(raw: Dict[str, Any], allowed: set[str]) -> tuple[Dict[str, Any], list[str]]:
+_PATCH_KEY_ALIASES = {
+    "change_ type_ scores": "change_type_scores",
+    "numeric_ sisters": "numeric_sisters",
+    "severity_ score": "severity_score",
+    "risk_ score": "risk_score",
+}
+
+
+def _normalize_patch_key(key: Any) -> str:
+    raw = str(key or "").strip()
+    raw = raw.replace(" ", "_")
+    raw = re.sub(r"_+", "_", raw)
+    if raw in _PATCH_KEY_ALIASES:
+        raw = _PATCH_KEY_ALIASES[raw]
+    return raw
+
+
+def _join_patch_path(prefix: str, key: str) -> str:
+    return f"{prefix}.{key}" if prefix else key
+
+
+def _resolve_patch_model(annotation: Any) -> type[BaseModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is Union:
+        for arg in get_args(annotation):
+            model_cls = _resolve_patch_model(arg)
+            if model_cls is not None:
+                return model_cls
+    return None
+
+
+def _sanitize_patch_dict(
+    raw: Dict[str, Any],
+    *,
+    model: type[BaseModel],
+    path: str = "",
+) -> tuple[Dict[str, Any], list[str]]:
     if not isinstance(raw, dict):
-        return {}, []
-    filtered: Dict[str, Any] = {}
+        return {}, [path or "<root>"]
+    sanitized: Dict[str, Any] = {}
     stripped: list[str] = []
+    fields = model.model_fields
     for key, value in raw.items():
-        if key in allowed:
-            filtered[key] = value
+        normalized_key = _normalize_patch_key(key)
+        field = fields.get(normalized_key)
+        if not field:
+            stripped.append(_join_patch_path(path, normalized_key))
+            continue
+        nested_model = _resolve_patch_model(field.annotation)
+        if nested_model and isinstance(value, dict):
+            nested_path = _join_patch_path(path, normalized_key)
+            nested_value, nested_stripped = _sanitize_patch_dict(
+                value,
+                model=nested_model,
+                path=nested_path,
+            )
+            sanitized[normalized_key] = nested_value
+            stripped.extend(nested_stripped)
         else:
-            stripped.append(str(key))
-    return filtered, stripped
+            sanitized[normalized_key] = value
+    return sanitized, stripped
+
+
+def _sanitize_patch_payload(
+    raw: Any,
+    *,
+    model: type[BaseModel],
+) -> tuple[Dict[str, Any], list[str]]:
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
+            text = "\n".join(lines).strip()
+        raw = _loose_json_extract(text) or {}
+    if not isinstance(raw, dict):
+        return {}, ["<root>"]
+    return _sanitize_patch_dict(raw, model=model)
 
 
 def _set_metacog_draft_telemetry(
@@ -188,7 +241,33 @@ def _set_metacog_draft_telemetry(
     entry_dict["state_snapshot"] = state_snapshot
 
 
+def _postprocess_metacog_draft_summary(entry_dict: Dict[str, Any], *, draft_mode: str) -> None:
+    if draft_mode == "fallback":
+        summary_source = "fallback_generated"
+    else:
+        summary_source = "draft_missing_summary"
+        what_changed = entry_dict.get("what_changed") or {}
+        summary = what_changed.get("summary") if isinstance(what_changed, dict) else None
+        if summary:
+            entry_dict["what_changed_summary"] = _truncate_text(summary, 2000)
+            summary_source = "what_changed.summary"
+        elif entry_dict.get("summary"):
+            entry_dict["what_changed_summary"] = _truncate_text(entry_dict.get("summary"), 2000)
+            summary_source = "summary"
+        else:
+            entry_dict["what_changed_summary"] = "draft_missing_summary"
+
+    state_snapshot = entry_dict.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+    telemetry["metacog_what_changed_summary_source"] = summary_source
+    state_snapshot["telemetry"] = telemetry
+    entry_dict["state_snapshot"] = state_snapshot
+
+
 def _apply_draft_patch(entry_dict: Dict[str, Any], patch: MetacogDraftTextPatchV1) -> None:
+    entry_dict["trigger"] = _truncate_text(patch.trigger, 2000) or entry_dict.get("trigger")
     entry_dict["type"] = _truncate_text(patch.type, 2000) or entry_dict.get("type")
     entry_dict["mantra"] = _truncate_text(patch.mantra, 2000) or entry_dict.get("mantra")
     entry_dict["summary"] = _truncate_text(patch.summary, 2000) or entry_dict.get("summary")
@@ -325,19 +404,32 @@ def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
     }
 
 
-def _metacog_messages(prompt: str) -> List[Dict[str, Any]]:
+def _metacog_messages(
+    prompt: str,
+    *,
+    allowed_keys: set[str],
+    phase: str,
+) -> List[Dict[str, Any]]:
     """
     Force "schema-mode": system prompt + explicit user instruction.
     Avoids the model going into explanation/chat mode.
     """
+    allowed_list = ", ".join(sorted(allowed_keys))
+    if phase == "draft":
+        subkeys = "summary, evidence, new_state, previous_state"
+    else:
+        subkeys = "tag_scores, change_type_scores, numeric_sisters, causal_density"
+    instruction = (
+        "Return ONE JSON object only. "
+        f"It must contain ONLY these top-level keys: {allowed_list}. "
+        f"For nested structures, only include documented subkeys (e.g., {subkeys}). "
+        "No markdown, no code fences, no extra keys."
+    )
     return [
         {"role": "system", "content": str(prompt or "").strip() or " "},
         {
             "role": "user",
-            "content": (
-                "Return ONE valid JSON object only (CollapseMirrorEntryV2). "
-                "No explanation, no markdown, no extra text."
-            ),
+            "content": instruction,
         },
     ]
 
@@ -828,7 +920,11 @@ async def call_step_services(
                 logs.append("exec -> MetacogDraftService (LLM + Parse)")
 
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
-                messages_payload = _metacog_messages(prompt)
+                messages_payload = _metacog_messages(
+                    prompt,
+                    allowed_keys=_METACOG_DRAFT_ALLOWED_KEYS,
+                    phase="draft",
+                )
                 #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 request_object = ChatRequestPayload(
@@ -868,7 +964,7 @@ async def call_step_services(
                         draft_error = "no_json"
                         parsed = {}
 
-                    filtered, stripped = _filter_patch_dict(parsed, _METACOG_DRAFT_ALLOWED_KEYS)
+                    filtered, stripped = _sanitize_patch_payload(parsed, model=MetacogDraftTextPatchV1)
                     if stripped:
                         logger.warning("Draft patch stripped keys: %s", stripped)
 
@@ -935,6 +1031,7 @@ async def call_step_services(
                         base_entry["state_snapshot"] = state_snapshot
 
                     _apply_draft_patch(base_entry, patch_model)
+                    _postprocess_metacog_draft_summary(base_entry, draft_mode=draft_mode)
                     entry = normalize_collapse_entry(base_entry)
 
                     # At this point, 'entry' is guaranteed to be a CollapseMirrorEntryV2 object
@@ -1010,7 +1107,11 @@ async def call_step_services(
 
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
-                messages_payload = _metacog_messages(prompt)
+                messages_payload = _metacog_messages(
+                    prompt,
+                    allowed_keys=_METACOG_ENRICH_ALLOWED_KEYS,
+                    phase="enrich",
+                )
 
                 request_object = ChatRequestPayload(
                     model=req_model,
@@ -1057,7 +1158,7 @@ async def call_step_services(
                     draft = CollapseMirrorEntryV2.model_validate(draft_data)
                     final_dict = draft.model_dump(mode="json")
 
-                    filtered, stripped = _filter_patch_dict(patch, _METACOG_ENRICH_ALLOWED_KEYS)
+                    filtered, stripped = _sanitize_patch_payload(patch, model=MetacogEnrichScorePatchV1)
                     if stripped:
                         logger.warning("Enrich patch stripped keys: %s", stripped)
 

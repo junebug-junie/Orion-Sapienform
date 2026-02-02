@@ -11,6 +11,7 @@ from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.core.bus.codec import OrionCodec
@@ -42,6 +43,8 @@ class EquilibriumService(BaseChassis):
         self._state: Dict[str, Dict[str, Any]] = {}
         self.expected_services = settings.expected_services()
         self._last_metacog_trigger_ts: float = 0.0
+        self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
+        self._baseline_skip_count: int = 0
 
     def _trace_meta(
         self,
@@ -376,6 +379,16 @@ class EquilibriumService(BaseChassis):
             try:
                 await asyncio.sleep(interval)
                 distress, zen, _ = self._calculate_metrics()
+
+                last_d, last_z = self._last_baseline_scores
+                if abs(distress - last_d) < 0.01 and abs(zen - last_z) < 0.01 and self._baseline_skip_count < 10:
+                    self._baseline_skip_count += 1
+                    logger.info("Skipping baseline trigger (no change). distress=%.3f zen=%.3f skip=%d", distress, zen, self._baseline_skip_count)
+                    continue
+
+                self._baseline_skip_count = 0
+                self._last_baseline_scores = (distress, zen)
+
                 trigger = MetacogTriggerV1(
                     trigger_kind="baseline",
                     reason="scheduled_check",
@@ -387,11 +400,54 @@ class EquilibriumService(BaseChassis):
             except Exception as e:
                 logger.error(f"Metacog baseline loop error: {e}")
 
+    async def _spark_heartbeat_loop(self) -> None:
+        if not self.bus.enabled:
+            return
+
+        interval = float(settings.equilibrium_spark_heartbeat_interval_sec)
+        while not self._stop.is_set():
+            try:
+                distress, zen, _ = self._calculate_metrics()
+                now = _utcnow()
+                trace_id = uuid4()
+                trace = CognitionTracePayload(
+                    correlation_id=str(trace_id),
+                    mode="heartbeat",
+                    verb="equilibrium_heartbeat",
+                    timestamp=now.timestamp(),
+                    source_service=settings.service_name,
+                    source_node=settings.node_name,
+                    metadata={
+                        "heartbeat": True,
+                        "distress": float(distress),
+                        "zen": float(zen),
+                    },
+                )
+                env = BaseEnvelope(
+                    kind="cognition.trace",
+                    source=self._source(),
+                    correlation_id=trace_id,
+                    id=trace_id,
+                    payload=trace.model_dump(mode="json"),
+                )
+                await self.bus.publish(settings.channel_cognition_trace_pub, env)
+                logger.info(
+                    "Published equilibrium heartbeat trace "
+                    f"trace_id={trace_id} channel={settings.channel_cognition_trace_pub}"
+                )
+            except Exception as e:
+                logger.warning(f"Equilibrium heartbeat loop error: {e}")
+
+            await asyncio.sleep(interval)
+
     async def _run(self) -> None:
         await self._load_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
         metacog_task = asyncio.create_task(self._metacog_baseline_loop())
+        heartbeat_task = None
+        if settings.equilibrium_spark_heartbeat_enable:
+            heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
 
         # Build list of channels to subscribe to
         channels = [settings.health_channel]
@@ -471,5 +527,13 @@ class EquilibriumService(BaseChassis):
         publisher.cancel()
         collapse_task.cancel()
         metacog_task.cancel()
+        if heartbeat_task:
+            heartbeat_task.cancel()
 
-        await asyncio.gather(publisher, collapse_task, metacog_task, return_exceptions=True)
+        await asyncio.gather(
+            publisher,
+            collapse_task,
+            metacog_task,
+            *( [heartbeat_task] if heartbeat_task else [] ),
+            return_exceptions=True,
+        )

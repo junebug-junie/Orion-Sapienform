@@ -5,7 +5,7 @@ import asyncio
 import logging
 import uuid
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, Type
 
 from sqlalchemy import inspect, update
@@ -44,12 +44,30 @@ from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
+from app.spark_contract_metrics import SparkContractMetrics, LEGACY_KINDS
+
 try:
     from orion.schemas.telemetry.spark import SparkTelemetryPayload
 except ImportError:
     SparkTelemetryPayload = None
+try:
+    from orion.normalizers.spark import normalize_spark_state_snapshot, normalize_spark_telemetry
+except ImportError:
+    normalize_spark_state_snapshot = None
+    normalize_spark_telemetry = None
 
 logger = logging.getLogger("sql-writer")
+_SPARK_CONTRACT_METRICS = SparkContractMetrics()
+
+
+def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
+    if kind not in legacy_kinds:
+        return "noop"
+    if mode == "warn":
+        return "warn"
+    if mode == "drop":
+        return "drop"
+    return "accept"
 
 # Map: route_key -> (SQLAlchemy model, Pydantic schema model)
 MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
@@ -142,6 +160,8 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
         meta = {"raw_metadata": str(meta)}
 
     meta = dict(meta)
+    turn_effect = deepcopy(meta.get("turn_effect"))
+    turn_effect_summary = meta.get("turn_effect_summary")
     meta.pop("spark_state_snapshot", None)
 
     out = {
@@ -156,6 +176,10 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
         "node": row.get("node"),
         "metadata": meta,
     }
+    if turn_effect is not None:
+        out["turn_effect"] = turn_effect
+    if turn_effect_summary is not None:
+        out["turn_effect_summary"] = turn_effect_summary
     return _json_sanitize(out)
 
 
@@ -174,6 +198,100 @@ def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
         base[k] = v
 
     return _json_sanitize(base)
+
+
+def _coerce_sql_timestamp(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            return None
+    return None
+
+
+def _map_spark_to_telemetry_row(
+    kind: str,
+    payload: Any,
+    *,
+    envelope_correlation_id: Optional[str],
+    envelope_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if normalize_spark_state_snapshot is None or normalize_spark_telemetry is None:
+        return None
+
+    if kind == "spark.state.snapshot.v1":
+        snapshot = normalize_spark_state_snapshot(payload)
+        if snapshot is None:
+            return None
+        phi_components = snapshot.phi if isinstance(snapshot.phi, dict) else {}
+        metadata = snapshot.metadata if isinstance(snapshot.metadata, dict) else {}
+        snapshot_dict = snapshot.model_dump(mode="json")
+        metadata = dict(metadata)
+        metadata["spark_state_snapshot"] = snapshot_dict
+        correlation_id = snapshot.correlation_id or envelope_correlation_id or envelope_id
+        if not correlation_id:
+            return None
+        return {
+            "correlation_id": str(correlation_id),
+            "timestamp": snapshot.snapshot_ts,
+            "phi": phi_components.get("coherence"),
+            "novelty": phi_components.get("novelty"),
+            "trace_mode": snapshot.trace_mode,
+            "trace_verb": snapshot.trace_verb,
+            "metadata_": metadata,
+        }
+
+    telemetry = normalize_spark_telemetry(payload)
+    if telemetry is None:
+        return None
+
+    correlation_id = telemetry.correlation_id or envelope_correlation_id
+    if not correlation_id:
+        return None
+
+    metadata = telemetry.metadata if isinstance(telemetry.metadata, dict) else {"raw_metadata": str(telemetry.metadata)}
+    metadata = dict(metadata)
+
+    snapshot = telemetry.state_snapshot
+    if snapshot is None and isinstance(metadata.get("spark_state_snapshot"), dict):
+        snapshot = normalize_spark_state_snapshot(metadata.get("spark_state_snapshot"))
+
+    if snapshot is not None:
+        metadata["spark_state_snapshot"] = snapshot.model_dump(mode="json")
+
+    phi_components = snapshot.phi if snapshot is not None and isinstance(snapshot.phi, dict) else {}
+    phi_value = telemetry.phi if telemetry.phi is not None else phi_components.get("coherence")
+    novelty_value = telemetry.novelty if telemetry.novelty is not None else phi_components.get("novelty")
+    ts_value = _coerce_sql_timestamp(telemetry.timestamp) if telemetry.timestamp else None
+    if ts_value is None:
+        return None
+
+    return {
+        "correlation_id": str(correlation_id),
+        "timestamp": ts_value,
+        "phi": phi_value,
+        "novelty": novelty_value,
+        "trace_mode": telemetry.trace_mode,
+        "trace_verb": telemetry.trace_verb,
+        "stimulus_summary": telemetry.stimulus_summary,
+        "metadata_": metadata,
+    }
 
 
 def _safe_set(obj: Any, field: str, value: Any) -> None:
@@ -451,24 +569,51 @@ async def handle_envelope(env: BaseEnvelope) -> None:
     if client_meta is not None:
         extra_sql_fields["client_meta"] = _json_sanitize(client_meta)
 
+    if env.kind.startswith("spark."):
+        try:
+            _SPARK_CONTRACT_METRICS.observe(env.kind)
+            _SPARK_CONTRACT_METRICS.maybe_emit(
+                logger,
+                node=settings.node_name,
+                service=settings.service_name,
+            )
+            action = _legacy_action(env.kind, settings.spark_legacy_mode_normalized, LEGACY_KINDS)
+            if action == "warn":
+                logger.warning(
+                    "SPARK_LEGACY_DEPRECATED kind=%s mode=warn action=accept_write",
+                    env.kind,
+                )
+            elif action == "drop":
+                logger.warning(
+                    "SPARK_LEGACY_DEPRECATED kind=%s mode=drop action=skip_write",
+                    env.kind,
+                )
+                return
+        except Exception as exc:
+            logger.debug("Spark contract metrics emission failed: %s", exc)
+
     # -------------------------------------------------------------------------
     # 1. SPECIAL CASE: Spark State Snapshot -> SparkTelemetrySQL
     # (Adapts complex snapshot object to flat telemetry row + metadata)
     # -------------------------------------------------------------------------
     if env.kind == "spark.state.snapshot.v1":
         try:
-            snapshot = env.payload if isinstance(env.payload, dict) else {}
-            data_to_process = {
-                # Ensure correlation_id is present (prefer global extraction, fallback to env.id)
-                "correlation_id": extra_sql_fields.get("correlation_id") or str(env.id),
-                "timestamp": snapshot.get("snapshot_ts"),
-                "phi": snapshot.get("valence"),
-                "trace_mode": snapshot.get("trace_mode"),
-                "trace_verb": snapshot.get("trace_verb"),
-                "source_service": snapshot.get("source_service"),
-                "source_node": snapshot.get("source_node"),
-                "metadata_": {"spark_state_snapshot": snapshot}
-            }
+            data_to_process = _map_spark_to_telemetry_row(
+                env.kind,
+                env.payload,
+                envelope_correlation_id=extra_sql_fields.get("correlation_id"),
+                envelope_id=str(env.id) if getattr(env, "id", None) else None,
+            )
+            if not data_to_process:
+                logger.warning("Skipping spark.state.snapshot.v1 write: normalization failed.")
+                await asyncio.to_thread(
+                    _write_fallback,
+                    env.kind,
+                    extra_sql_fields.get("correlation_id", ""),
+                    env.payload,
+                    "spark snapshot normalization failed",
+                )
+                return
             # WRITE: SKIP Pydantic validation
             await _write(SparkTelemetrySQL, None, data_to_process, {})
             logger.info(f"Written {env.kind} -> spark_telemetry (via adapter)")
@@ -502,14 +647,34 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 )
                 if not base_id: base_id = str(uuid.uuid4())
                 if not data_to_process.get("id"): extra_sql_fields["id"] = base_id
-                if not data_to_process.get("correlation_id"): extra_sql_fields["correlation_id"] = base_id
+                if not data_to_process.get("correlation_id") and not extra_sql_fields.get("correlation_id"):
+                    extra_sql_fields["correlation_id"] = base_id
 
             if sql_model is CollapseEnrichment and isinstance(data_to_process, dict):
                 extra_sql_fields["id"] = str(uuid.uuid4())
                 target_id = data_to_process.get("id") or data_to_process.get("collapse_id")
                 if target_id: extra_sql_fields["collapse_id"] = target_id
 
-            await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
+            if sql_model is SparkTelemetrySQL:
+                mapped = _map_spark_to_telemetry_row(
+                    env.kind,
+                    data_to_process,
+                    envelope_correlation_id=extra_sql_fields.get("correlation_id"),
+                    envelope_id=str(env.id) if getattr(env, "id", None) else None,
+                )
+                if not mapped:
+                    logger.warning("Skipping spark telemetry write: normalization failed.")
+                    await asyncio.to_thread(
+                        _write_fallback,
+                        env.kind,
+                        extra_sql_fields.get("correlation_id", ""),
+                        env.payload,
+                        "spark telemetry normalization failed",
+                    )
+                    return
+                await _write(sql_model, None, mapped, {})
+            else:
+                await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
             logger.info(f"Written {env.kind} -> {sql_model.__tablename__}")
 
         except Exception as e:

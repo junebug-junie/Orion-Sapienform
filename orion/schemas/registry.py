@@ -40,6 +40,7 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
+from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1
@@ -47,6 +48,7 @@ from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1, MetaTagsResultV1
+from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.vision import (
     VisionArtifactPayload,
@@ -90,6 +92,7 @@ from orion.schemas.notify import (
     RecipientProfile,
     RecipientProfileUpdate,
 )
+from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -111,8 +114,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacogTriggerV1": MetacogTriggerV1,
+    "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
+    "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
+    "SparkStateSnapshotAckV1": SparkStateSnapshotAckV1,
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,
@@ -182,6 +188,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "NotificationPreferencesUpdate": NotificationPreferencesUpdate,
     "PreferenceResolutionRequest": PreferenceResolutionRequest,
     "PreferenceResolutionResponse": PreferenceResolutionResponse,
+    "TopicSummaryEventV1": TopicSummaryEventV1,
+    "TopicShiftEventV1": TopicShiftEventV1,
 
 }
 

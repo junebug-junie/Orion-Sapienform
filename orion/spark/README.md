@@ -21,6 +21,26 @@ Spark is not a separate "brain" or model. It is a set of verbs, data structures,
 
 ---
 
+## Spark Contract Canonical Source
+
+The canonical Spark telemetry and snapshot schemas live in `orion/schemas/telemetry/spark.py`. Services should import
+Spark schema classes from that module (or a compatibility shim that re-exports it) to avoid drift across duplicate
+definitions.
+
+Spark contract surfaces in use:
+
+* **Telemetry**: channel `orion:spark:telemetry`, kind `spark.telemetry`, payload `SparkTelemetryPayload`.
+* **State snapshot**: channel `orion:spark:state:snapshot`, kind `spark.state.snapshot.v1`, payload `SparkStateSnapshotV1`.
+* **Snapshot ACK (reply-only)**: kind `spark.state.snapshot.ack.v1`, payload `SparkStateSnapshotAckV1`.
+* **Candidate**: channels matching `orion:spark:introspect:candidate*`, kind `spark.candidate`, payload `SparkCandidateV1`.
+* **Signal**: channel `orion:spark:signal`, kind `spark.signal.v1`, payload `SparkSignalV1`.
+* **Concept induction outputs**: `orion:spark:concepts:profile` (`memory.concepts.profile.v1`) and
+  `orion:spark:concepts:delta` (`memory.concepts.delta.v1`).
+
+Legacy kinds `spark.introspection.log` and `spark.introspection` are deprecated and should not be emitted.
+
+---
+
 ## 2. Position in the Orion Stack
 
 Spark sits alongside other cognitive modules under `orion/cognition`, but conceptually it spans several layers:

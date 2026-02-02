@@ -4,7 +4,7 @@ import logging
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 import requests
@@ -41,6 +41,14 @@ class PreferencesResolveProxyRequest(BaseModel):
     recipient_group: str
     event_kind: str
     severity: str
+async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = settings.LANDING_PAD_URL.rstrip("/")
+    url = f"{base_url}{path}"
+    timeout = aiohttp.ClientTimeout(total=settings.LANDING_PAD_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
 
 def _normalize_bool(value: Any, default: bool = True) -> bool:
     if value is None:
@@ -345,6 +353,41 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
     except Exception as exc:
         logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
+# ======================================================================
+# 🧭 TOPIC RAIL (Landing Pad proxy)
+# ======================================================================
+@router.get("/api/topics/summary")
+async def api_topics_summary(
+    window_minutes: int = Query(1440),
+    model_version: Optional[str] = Query(None),
+    max_topics: int = Query(20),
+):
+    params: Dict[str, Any] = {
+        "window_minutes": window_minutes,
+        "max_topics": max_topics,
+    }
+    if model_version:
+        params["model_version"] = model_version
+    payload = await _fetch_landing_pad("/api/topics/summary", params)
+    return JSONResponse(content=payload)
+
+
+@router.get("/api/topics/drift")
+async def api_topics_drift(
+    window_minutes: int = Query(1440),
+    model_version: Optional[str] = Query(None),
+    min_turns: int = Query(10),
+    max_sessions: int = Query(50),
+):
+    params: Dict[str, Any] = {
+        "window_minutes": window_minutes,
+        "min_turns": min_turns,
+        "max_sessions": max_sessions,
+    }
+    if model_version:
+        params["model_version"] = model_version
+    payload = await _fetch_landing_pad("/api/topics/drift", params)
+    return JSONResponse(content=payload)
 
 
 # ======================================================================

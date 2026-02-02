@@ -136,6 +136,22 @@ Conjourney role:
 
 ---
 
+## reflect.alerts.v1 — Alert-driven Reflection
+Use for:
+- incident review
+- stability drops
+- “what helped last time” after turn-effect alerts
+
+Weighted toward:
+- sql_timeline
+- vector
+- alert-tagged mirrors
+
+Signature:
+> prioritize alert-tagged memories + high-Δ turn effects
+
+---
+
 ## chat.general.v1 — UX Continuity / Lightweight
 Use for:
 - casual chat

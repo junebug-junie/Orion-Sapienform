@@ -9,12 +9,15 @@ Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union, get_args, get_origin
 from uuid import uuid4
 
 from jinja2 import Environment
+
+from pydantic import BaseModel
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
@@ -29,15 +32,355 @@ from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.pad.v1 import KIND_PAD_RPC_REQUEST_V1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
+from orion.schemas.telemetry.turn_effect import summarize_turn_effect
+from orion.schemas.telemetry.turn_effect_policy import (
+    recommend_actions_from_alerts,
+    summarize_recommended_actions,
+)
+from orion.schemas.telemetry.turn_effect_explanations import (
+    explain_alerts,
+    summarize_explanations,
+)
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
+from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
 from .recall_utils import resolve_profile
+from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
 
 logger = logging.getLogger("orion.cortex.exec")
+
+_SYSTEM_TELEMETRY_KEYS = {
+    "turn_effect",
+    "turn_effect_summary",
+    "turn_effect_evidence",
+    "change_type_meta",
+    "change_type_scores",
+    "recommended_actions",
+    "recommended_actions_policy",
+    "alert_explanations",
+    "alert_explanations_summary",
+    "trigger_kind",
+    "trigger_payload",
+    "trigger_correlation_id",
+    "trigger_trace_id",
+    "trigger_source_service",
+    "trigger_source_node",
+    "metacog_draft_mode",
+    "metacog_draft_rejected_keys",
+    "metacog_draft_error",
+    "metacog_draft_raw_trigger_null",
+    "metacog_what_changed_summary_source",
+}
+
+_SYSTEM_ALERT_TAG_PREFIX = "metacog.alert"
+
+_METACOG_DRAFT_ALLOWED_KEYS = set(MetacogDraftTextPatchV1.model_fields.keys())
+_METACOG_ENRICH_ALLOWED_KEYS = set(MetacogEnrichScorePatchV1.model_fields.keys())
+
+
+def _merge_telemetry_system_owned(base: Any, patch: Any) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    if isinstance(base, dict):
+        merged.update(base)
+    if isinstance(patch, dict):
+        for key, value in patch.items():
+            if key in _SYSTEM_TELEMETRY_KEYS:
+                continue
+            merged[key] = value
+    return merged
+
+
+def _alert_tags_from_recent_alerts(alerts: List[Dict[str, Any]]) -> List[str]:
+    if not alerts:
+        return []
+    tags = set()
+    for alert in alerts:
+        rule = alert.get("rule")
+        severity = alert.get("severity")
+        if rule:
+            tags.add(f"{_SYSTEM_ALERT_TAG_PREFIX}.{rule}")
+        if severity:
+            tags.add(f"{_SYSTEM_ALERT_TAG_PREFIX}.sev.{severity}")
+    return sorted(tags)
+
+
+def _merge_system_tags(existing: Any, system_tags: List[str]) -> List[str]:
+    tags: List[str] = []
+    if isinstance(existing, list):
+        for tag in existing:
+            if isinstance(tag, str) and tag not in tags:
+                tags.append(tag)
+    for tag in system_tags:
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _truncate_text(value: Any, max_chars: int) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def _truncate_list(values: Any, max_items: int, max_chars: int) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    truncated: List[str] = []
+    for item in values[:max_items]:
+        text = _truncate_text(item, max_chars)
+        if text:
+            truncated.append(text)
+    return truncated
+
+
+_PATCH_KEY_ALIASES = {
+    "change_ type_ scores": "change_type_scores",
+    "numeric_ sisters": "numeric_sisters",
+    "severity_ score": "severity_score",
+    "risk_ score": "risk_score",
+}
+
+
+def _normalize_patch_key(key: Any) -> str:
+    raw = str(key or "").strip()
+    raw = raw.replace(" ", "_")
+    raw = re.sub(r"_+", "_", raw)
+    if raw in _PATCH_KEY_ALIASES:
+        raw = _PATCH_KEY_ALIASES[raw]
+    return raw
+
+
+def _join_patch_path(prefix: str, key: str) -> str:
+    return f"{prefix}.{key}" if prefix else key
+
+
+def _resolve_patch_model(annotation: Any) -> type[BaseModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is Union:
+        for arg in get_args(annotation):
+            model_cls = _resolve_patch_model(arg)
+            if model_cls is not None:
+                return model_cls
+    return None
+
+
+def _sanitize_patch_dict(
+    raw: Dict[str, Any],
+    *,
+    model: type[BaseModel],
+    path: str = "",
+) -> tuple[Dict[str, Any], list[str]]:
+    if not isinstance(raw, dict):
+        return {}, [path or "<root>"]
+    sanitized: Dict[str, Any] = {}
+    stripped: list[str] = []
+    fields = model.model_fields
+    for key, value in raw.items():
+        normalized_key = _normalize_patch_key(key)
+        field = fields.get(normalized_key)
+        if not field:
+            stripped.append(_join_patch_path(path, normalized_key))
+            continue
+        nested_model = _resolve_patch_model(field.annotation)
+        if nested_model and isinstance(value, dict):
+            nested_path = _join_patch_path(path, normalized_key)
+            nested_value, nested_stripped = _sanitize_patch_dict(
+                value,
+                model=nested_model,
+                path=nested_path,
+            )
+            sanitized[normalized_key] = nested_value
+            stripped.extend(nested_stripped)
+        else:
+            sanitized[normalized_key] = value
+    return sanitized, stripped
+
+
+def _sanitize_patch_payload(
+    raw: Any,
+    *,
+    model: type[BaseModel],
+) -> tuple[Dict[str, Any], list[str]]:
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
+            text = "\n".join(lines).strip()
+        raw = _loose_json_extract(text) or {}
+    if not isinstance(raw, dict):
+        return {}, ["<root>"]
+    return _sanitize_patch_dict(raw, model=model)
+
+
+def _set_metacog_draft_telemetry(
+    entry_dict: Dict[str, Any],
+    *,
+    mode: str,
+    rejected_keys: list[str] | None = None,
+    error: str | None = None,
+    raw_trigger_null: bool = False,
+) -> None:
+    state_snapshot = entry_dict.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+    telemetry["metacog_draft_mode"] = mode
+    telemetry["metacog_draft_rejected_keys"] = rejected_keys or []
+    telemetry["metacog_draft_error"] = error
+    telemetry["metacog_draft_raw_trigger_null"] = bool(raw_trigger_null)
+    state_snapshot["telemetry"] = telemetry
+    entry_dict["state_snapshot"] = state_snapshot
+
+
+def _postprocess_metacog_draft_summary(entry_dict: Dict[str, Any], *, draft_mode: str) -> None:
+    if draft_mode == "fallback":
+        summary_source = "fallback_generated"
+    else:
+        summary_source = "draft_missing_summary"
+        what_changed = entry_dict.get("what_changed") or {}
+        summary = what_changed.get("summary") if isinstance(what_changed, dict) else None
+        if summary:
+            entry_dict["what_changed_summary"] = _truncate_text(summary, 2000)
+            summary_source = "what_changed.summary"
+        elif entry_dict.get("summary"):
+            entry_dict["what_changed_summary"] = _truncate_text(entry_dict.get("summary"), 2000)
+            summary_source = "summary"
+        else:
+            entry_dict["what_changed_summary"] = "draft_missing_summary"
+
+    state_snapshot = entry_dict.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+    telemetry["metacog_what_changed_summary_source"] = summary_source
+    state_snapshot["telemetry"] = telemetry
+    entry_dict["state_snapshot"] = state_snapshot
+
+
+def _apply_draft_patch(entry_dict: Dict[str, Any], patch: MetacogDraftTextPatchV1) -> None:
+    entry_dict["trigger"] = _truncate_text(patch.trigger, 2000) or entry_dict.get("trigger")
+    entry_dict["type"] = _truncate_text(patch.type, 2000) or entry_dict.get("type")
+    entry_dict["mantra"] = _truncate_text(patch.mantra, 2000) or entry_dict.get("mantra")
+    entry_dict["summary"] = _truncate_text(patch.summary, 2000) or entry_dict.get("summary")
+    entry_dict["causal_echo"] = _truncate_text(patch.causal_echo, 2000) or entry_dict.get("causal_echo")
+    entry_dict["field_resonance"] = _truncate_text(patch.field_resonance, 2000) or entry_dict.get("field_resonance")
+    entry_dict["emergent_entity"] = _truncate_text(patch.emergent_entity, 2000) or entry_dict.get("emergent_entity")
+    entry_dict["resonance_signature"] = _truncate_text(patch.resonance_signature, 2000) or entry_dict.get(
+        "resonance_signature"
+    )
+
+    if patch.what_changed:
+        entry_dict["what_changed"] = {
+            "summary": _truncate_text(patch.what_changed.summary, 2000),
+            "evidence": _truncate_list(patch.what_changed.evidence, 12, 2000),
+            "new_state": _truncate_text(patch.what_changed.new_state, 2000),
+            "previous_state": _truncate_text(patch.what_changed.previous_state, 2000),
+        }
+
+    if patch.tags_suggested:
+        state_snapshot = entry_dict.get("state_snapshot")
+        if not isinstance(state_snapshot, dict):
+            state_snapshot = {}
+        telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+        telemetry["tags_suggested"] = _truncate_list(patch.tags_suggested, 12, 2000)
+        state_snapshot["telemetry"] = telemetry
+        entry_dict["state_snapshot"] = state_snapshot
+
+
+def _apply_enrich_patch(entry_dict: Dict[str, Any], patch: MetacogEnrichScorePatchV1) -> None:
+    if patch.tag_scores is not None:
+        entry_dict["tag_scores"] = patch.tag_scores
+    if patch.change_type_scores is not None:
+        entry_dict["change_type_scores"] = patch.change_type_scores
+    if patch.numeric_sisters is not None:
+        entry_dict["numeric_sisters"] = patch.numeric_sisters.model_dump(mode="json")
+    if patch.causal_density is not None:
+        entry_dict["causal_density"] = patch.causal_density.model_dump(mode="json")
+    if patch.epistemic_status is not None:
+        entry_dict["epistemic_status"] = patch.epistemic_status
+    if patch.is_causally_dense is not None:
+        entry_dict["is_causally_dense"] = patch.is_causally_dense
+    if patch.snapshot_kind is not None:
+        entry_dict["snapshot_kind"] = patch.snapshot_kind
+
+
+def _metacog_trigger_lineage(ctx: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    trigger = ctx.get("trigger") if isinstance(ctx.get("trigger"), dict) else {}
+    upstream = trigger.get("upstream") if isinstance(trigger.get("upstream"), dict) else {}
+
+    chat_corr = ctx.get("chat_correlation_id")
+    trigger_corr = ctx.get("trigger_correlation_id") or chat_corr or ctx.get("correlation_id")
+    trigger_trace = ctx.get("trigger_trace_id") or ctx.get("trace_id")
+
+    trigger_kind = "unknown"
+    if chat_corr:
+        trigger_kind = "chat_turn"
+    elif str(ctx.get("trigger_source") or "").lower() == "heartbeat":
+        trigger_kind = "heartbeat"
+    elif str(trigger.get("trigger_kind") or "").lower() == "heartbeat":
+        trigger_kind = "heartbeat"
+
+    return {
+        "trigger_kind": trigger_kind,
+        "trigger_correlation_id": str(trigger_corr) if trigger_corr is not None else None,
+        "trigger_trace_id": str(trigger_trace) if trigger_trace is not None else None,
+        "trigger_source_service": str(ctx.get("trigger_source_service") or upstream.get("source_service") or "")
+        or None,
+        "trigger_source_node": str(ctx.get("trigger_source_node") or upstream.get("source_node") or "") or None,
+    }
+
+
+def _metacog_trigger_kind(ctx: Dict[str, Any]) -> str:
+    trigger_kind = ctx.get("trigger_kind")
+    if isinstance(trigger_kind, str) and trigger_kind.strip():
+        return trigger_kind
+    trigger = ctx.get("trigger") if isinstance(ctx.get("trigger"), dict) else {}
+    return str(trigger.get("trigger_kind") or "unknown")
+
+
+def _ensure_metacog_entry_id(ctx: Dict[str, Any]) -> str:
+    entry_id = str(ctx.get("metacog_entry_id") or uuid4())
+    trigger_corr = ctx.get("trigger_correlation_id")
+    if trigger_corr and str(trigger_corr) == entry_id:
+        entry_id = str(uuid4())
+    ctx["metacog_entry_id"] = entry_id
+    return entry_id
+
+
+def _apply_metacog_system_fields(entry_dict: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+    entry_id = _ensure_metacog_entry_id(ctx)
+    entry_dict["id"] = entry_id
+    entry_dict["event_id"] = entry_id
+    entry_dict["trigger"] = _metacog_trigger_kind(ctx)
+    entry_dict.pop("correlation_id", None)
+
+    state_snapshot = entry_dict.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+    trigger_payload = ctx.get("trigger")
+    if isinstance(trigger_payload, dict):
+        telemetry["trigger_payload"] = trigger_payload
+    lineage = _metacog_trigger_lineage(ctx)
+    telemetry["trigger_kind"] = lineage.get("trigger_kind")
+    telemetry["trigger_correlation_id"] = lineage.get("trigger_correlation_id")
+    telemetry["trigger_trace_id"] = lineage.get("trigger_trace_id")
+    if lineage.get("trigger_source_service"):
+        telemetry["trigger_source_service"] = lineage.get("trigger_source_service")
+    if lineage.get("trigger_source_node"):
+        telemetry["trigger_source_node"] = lineage.get("trigger_source_node")
+    state_snapshot["telemetry"] = telemetry
+    entry_dict["state_snapshot"] = state_snapshot
+    return entry_dict
 
 
 def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
@@ -61,19 +404,32 @@ def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
     }
 
 
-def _metacog_messages(prompt: str) -> List[Dict[str, Any]]:
+def _metacog_messages(
+    prompt: str,
+    *,
+    allowed_keys: set[str],
+    phase: str,
+) -> List[Dict[str, Any]]:
     """
     Force "schema-mode": system prompt + explicit user instruction.
     Avoids the model going into explanation/chat mode.
     """
+    allowed_list = ", ".join(sorted(allowed_keys))
+    if phase == "draft":
+        subkeys = "summary, evidence, new_state, previous_state"
+    else:
+        subkeys = "tag_scores, change_type_scores, numeric_sisters, causal_density"
+    instruction = (
+        "Return ONE JSON object only. "
+        f"It must contain ONLY these top-level keys: {allowed_list}. "
+        f"For nested structures, only include documented subkeys (e.g., {subkeys}). "
+        "No markdown, no code fences, no extra keys."
+    )
     return [
         {"role": "system", "content": str(prompt or "").strip() or " "},
         {
             "role": "user",
-            "content": (
-                "Return ONE valid JSON object only (CollapseMirrorEntryV2). "
-                "No explanation, no markdown, no extra text."
-            ),
+            "content": instruction,
         },
     ]
 
@@ -83,7 +439,7 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     If the LLM returns non-JSON, produce a valid baseline draft so the pipeline continues.
     """
     trig = ctx.get("trigger") or {}
-    trigger_kind = str(trig.get("trigger_kind") or "unknown")
+    trigger_kind = _metacog_trigger_kind(ctx)
     reason = str(trig.get("reason") or "unknown")
     pressure = trig.get("pressure")
     zen_state = str(trig.get("zen_state") or "unknown")
@@ -112,9 +468,10 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
 
     field_res = f"φ:{vb}-{vd}, energy:{eb}, clarity:{cb}, overload:{nb}; zen={zen_state}"
 
+    entry_id = _ensure_metacog_entry_id(ctx)
     entry = CollapseMirrorEntryV2(
-        event_id=f"collapse_{uuid4().hex}",
-        id=None,
+        event_id=entry_id,
+        id=entry_id,
         observer="orion",
         trigger=trigger_kind,
         observer_state=observer_state,
@@ -156,7 +513,7 @@ def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
         epistemic_status="observed",
         visibility="internal",
         redaction_level="low",
-        source_service=None,
+        source_service="metacog",
         source_node=None,
     )
     return entry.with_defaults()
@@ -354,6 +711,30 @@ def _extract_llm_text(res: Any) -> str:
     return str(res)
 
 
+def _clean_raw_llm_content(text: str) -> str:
+    """
+    Strips common LLM preambles and code fences to expose raw JSON.
+    """
+    if not text:
+        return ""
+
+    cleaned = text.strip()
+
+    # 1. Strip "Here is the JSON..." preambles (case insensitive)
+    # Match start of string, "Here is...", optional newline/spaces
+    cleaned = re.sub(r"(?i)^(here is (the )?json[^\n]*:?\s*)", "", cleaned)
+
+    # 2. Strip code fences
+    # Remove opening fence: start of string, ```, optional language, optional newline/spaces
+    cleaned = re.sub(r"^```\w*\s*", "", cleaned)
+
+    cleaned = cleaned.strip()
+    # Remove closing fence: optional whitespace, ```, end of string
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    return cleaned.strip()
+
+
 def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     """
     Fallback extraction when strict find_collapse_entry fails.
@@ -520,6 +901,8 @@ async def call_step_services(
     logs: List[str] = []
     merged_result: Dict[str, Any] = {}
     spark_vector: list[float] | None = None
+    step_failed = False
+    step_error: str | None = None
 
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     logger.info(f"Context Keys available: {list(ctx.keys())}")
@@ -561,7 +944,11 @@ async def call_step_services(
                 logs.append("exec -> MetacogDraftService (LLM + Parse)")
 
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
-                messages_payload = _metacog_messages(prompt)
+                messages_payload = _metacog_messages(
+                    prompt,
+                    allowed_keys=_METACOG_DRAFT_ALLOWED_KEYS,
+                    phase="draft",
+                )
                 #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
                 request_object = ChatRequestPayload(
@@ -587,6 +974,7 @@ async def call_step_services(
 
                 try:
                     raw_content = _extract_llm_text(llm_res)
+                    raw_content = _clean_raw_llm_content(raw_content)
 
                     # 1) Try strict find
                     parsed = find_collapse_entry(raw_content)
@@ -595,22 +983,131 @@ async def call_step_services(
                     if not parsed:
                         parsed = _loose_json_extract(raw_content)
 
-                    # 3) Handle Result or Fallback
+                    draft_error = None
                     if not parsed:
                         logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
-                        # Use the fallback model directly
-                        entry = _fallback_metacog_draft(ctx)
-                    else:
-                        # We have a dictionary, ensure required fields exist before normalizing
-                        parsed["observer"] = "orion"
-                        parsed["visibility"] = "internal"
-                        parsed["epistemic_status"] = "observed"
+                        draft_error = "no_json"
+                        parsed = {}
 
-                        # Convert dictionary to Pydantic model
-                        entry = normalize_collapse_entry(parsed)
+                    filtered, stripped = _sanitize_patch_payload(parsed, model=MetacogDraftTextPatchV1)
+                    if stripped:
+                        logger.warning("Draft patch stripped keys: %s", stripped)
+
+                    patch_error = None
+                    try:
+                        patch_model = MetacogDraftTextPatchV1.model_validate(filtered)
+                    except Exception as exc:
+                        logger.warning("MetacogDraftService patch rejected: %s", exc)
+                        patch_error = str(exc)
+                        patch_model = MetacogDraftTextPatchV1()
+
+                    base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
+                    base_entry = _apply_metacog_system_fields(base_entry, ctx)
+                    raw_trigger_null = not isinstance(ctx.get("trigger"), dict)
+                    draft_mode = "fallback" if draft_error or patch_error else "llm"
+                    _set_metacog_draft_telemetry(
+                        base_entry,
+                        mode=draft_mode,
+                        rejected_keys=stripped,
+                        error=draft_error or patch_error,
+                        raw_trigger_null=raw_trigger_null,
+                    )
+                    if ctx.get("turn_effect"):
+                        turn_summary = summarize_turn_effect(ctx["turn_effect"])
+                        state_snapshot = base_entry.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["turn_effect"] = ctx["turn_effect"]
+                        telemetry["turn_effect_summary"] = turn_summary
+                        if ctx.get("turn_effect_evidence"):
+                            telemetry["turn_effect_evidence"] = ctx["turn_effect_evidence"]
+                        state_snapshot["telemetry"] = telemetry
+                        base_entry["state_snapshot"] = state_snapshot
+                    policy = ctx.get("turn_effect_policy")
+                    if policy:
+                        state_snapshot = base_entry.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["recommended_actions"] = (
+                            policy.get("actions") if isinstance(policy, dict) else []
+                        )
+                        telemetry["recommended_actions_policy"] = policy
+                        state_snapshot["telemetry"] = telemetry
+                        base_entry["state_snapshot"] = state_snapshot
+                    explanations = ctx.get("turn_effect_explanations")
+                    if explanations:
+                        state_snapshot = base_entry.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["alert_explanations"] = explanations
+                        telemetry["alert_explanations_summary"] = (
+                            explanations.get("summary") if isinstance(explanations, dict) else None
+                        )
+                        state_snapshot["telemetry"] = telemetry
+                        base_entry["state_snapshot"] = state_snapshot
+
+                    _apply_draft_patch(base_entry, patch_model)
+                    _postprocess_metacog_draft_summary(base_entry, draft_mode=draft_mode)
+                    entry = normalize_collapse_entry(base_entry)
 
                     # At this point, 'entry' is guaranteed to be a CollapseMirrorEntryV2 object
                     entry_dict = entry.model_dump(mode="json")
+
+                    entry_dict["observer"] = entry_dict.get("observer") or "orion"
+                    entry_dict.setdefault("source_service", "metacog")
+                    if ctx.get("turn_effect"):
+                        turn_summary = summarize_turn_effect(ctx["turn_effect"])
+                        state_snapshot = entry_dict.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["turn_effect"] = ctx["turn_effect"]
+                        telemetry["turn_effect_summary"] = turn_summary
+                        if ctx.get("turn_effect_evidence"):
+                            telemetry["turn_effect_evidence"] = ctx["turn_effect_evidence"]
+                        state_snapshot["telemetry"] = telemetry
+                        entry_dict["state_snapshot"] = state_snapshot
+                    policy = ctx.get("turn_effect_policy")
+                    if policy:
+                        state_snapshot = entry_dict.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["recommended_actions"] = policy.get("actions") if isinstance(policy, dict) else []
+                        telemetry["recommended_actions_policy"] = policy
+                        state_snapshot["telemetry"] = telemetry
+                        entry_dict["state_snapshot"] = state_snapshot
+                    explanations = ctx.get("turn_effect_explanations")
+                    if explanations:
+                        state_snapshot = entry_dict.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"), None
+                        )
+                        telemetry["alert_explanations"] = explanations
+                        telemetry["alert_explanations_summary"] = (
+                            explanations.get("summary") if isinstance(explanations, dict) else None
+                        )
+                        state_snapshot["telemetry"] = telemetry
+                        entry_dict["state_snapshot"] = state_snapshot
+                    system_alert_tags = ctx.get("system_alert_tags") or []
+                    if system_alert_tags:
+                        entry_dict["tags"] = _merge_system_tags(entry_dict.get("tags"), system_alert_tags)
+                    entry_dict = _apply_metacog_system_fields(entry_dict, ctx)
 
                     # Update Context
                     ctx["collapse_entry"] = entry_dict
@@ -623,7 +1120,10 @@ async def call_step_services(
                     logger.error(f"MetacogDraftService FAILED: {e}")
                     logs.append(f"error <- MetacogDraftService parsing: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
-
+                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    step_failed = True
+                    step_error = f"{service}: {e}"
+                    break
 
                 continue
 
@@ -632,7 +1132,11 @@ async def call_step_services(
 
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
-                messages_payload = _metacog_messages(prompt)
+                messages_payload = _metacog_messages(
+                    prompt,
+                    allowed_keys=_METACOG_ENRICH_ALLOWED_KEYS,
+                    phase="enrich",
+                )
 
                 request_object = ChatRequestPayload(
                     model=req_model,
@@ -657,6 +1161,7 @@ async def call_step_services(
 
                 try:
                     raw_content = _extract_llm_text(llm_res)
+                    raw_content = _clean_raw_llm_content(raw_content)
 
                     # 1) strict find
                     patch = find_collapse_entry(raw_content)
@@ -679,23 +1184,16 @@ async def call_step_services(
                     draft = CollapseMirrorEntryV2.model_validate(draft_data)
                     final_dict = draft.model_dump(mode="json")
 
-                    # Allow enricher to supply these (and only these) fields
-                    for k in [
-                        "numeric_sisters",
-                        "causal_density",
-                        "is_causally_dense",
-                        "what_changed",
-                        "what_changed_summary",
-                        "change_type",
-                        "change_type_scores",
-                        "tag_scores",
-                        "tags",
-                        "state_snapshot",
-                        "pattern_candidate",
-                        "resonance_signature",
-                    ]:
-                        if k in patch and patch[k] is not None:
-                            final_dict[k] = patch[k]
+                    filtered, stripped = _sanitize_patch_payload(patch, model=MetacogEnrichScorePatchV1)
+                    if stripped:
+                        logger.warning("Enrich patch stripped keys: %s", stripped)
+
+                    try:
+                        enrich_patch = MetacogEnrichScorePatchV1.model_validate(filtered)
+                    except Exception as exc:
+                        logger.warning("MetacogEnrichService patch rejected: %s", exc)
+                        enrich_patch = MetacogEnrichScorePatchV1()
+                    _apply_enrich_patch(final_dict, enrich_patch)
 
                     # Coerce resonance_signature to string if LLM returned an object
                     rs = final_dict.get("resonance_signature")
@@ -705,14 +1203,63 @@ async def call_step_services(
                         except Exception:
                             final_dict["resonance_signature"] = str(rs)
 
-                    if isinstance(final_dict.get("change_type"), dict):
-                        trace_id = ctx.get("trace_id") or correlation_id
-                        logger.warning(
-                            "MetacogEnrichService: change_type emitted as dict "
-                            f"correlation_id={correlation_id} trace_id={trace_id}"
-                        )
+                    if isinstance(final_dict.get("change_type_scores"), dict) and not final_dict.get("change_type"):
+                        scores = final_dict["change_type_scores"]
+                        if scores:
+                            final_dict["change_type"] = max(scores.items(), key=lambda item: item[1])[0]
 
-                    final_entry = CollapseMirrorEntryV2.model_validate(final_dict)
+                    if ctx.get("turn_effect"):
+                        turn_summary = summarize_turn_effect(ctx["turn_effect"])
+                        state_snapshot = final_dict.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"),
+                            None,
+                        )
+                        telemetry["turn_effect"] = ctx["turn_effect"]
+                        telemetry["turn_effect_summary"] = turn_summary
+                        if ctx.get("turn_effect_evidence"):
+                            telemetry["turn_effect_evidence"] = ctx["turn_effect_evidence"]
+                        state_snapshot["telemetry"] = telemetry
+                        final_dict["state_snapshot"] = state_snapshot
+                    policy = ctx.get("turn_effect_policy")
+                    if policy:
+                        state_snapshot = final_dict.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"),
+                            None,
+                        )
+                        telemetry["recommended_actions"] = policy.get("actions") if isinstance(policy, dict) else []
+                        telemetry["recommended_actions_policy"] = policy
+                        state_snapshot["telemetry"] = telemetry
+                        final_dict["state_snapshot"] = state_snapshot
+                    explanations = ctx.get("turn_effect_explanations")
+                    if explanations:
+                        state_snapshot = final_dict.get("state_snapshot")
+                        if not isinstance(state_snapshot, dict):
+                            state_snapshot = {}
+                        telemetry = _merge_telemetry_system_owned(
+                            state_snapshot.get("telemetry"),
+                            None,
+                        )
+                        telemetry["alert_explanations"] = explanations
+                        telemetry["alert_explanations_summary"] = (
+                            explanations.get("summary") if isinstance(explanations, dict) else None
+                        )
+                        state_snapshot["telemetry"] = telemetry
+                        final_dict["state_snapshot"] = state_snapshot
+                    system_alert_tags = ctx.get("system_alert_tags") or []
+                    if system_alert_tags:
+                        final_dict["tags"] = _merge_system_tags(final_dict.get("tags"), system_alert_tags)
+
+                    final_dict = _apply_metacog_system_fields(final_dict, ctx)
+                    final_dict.setdefault("source_service", "metacog")
+                    final_dict.setdefault("observer", "orion")
+
+                    final_entry = normalize_collapse_entry(final_dict)
 
                     ctx["final_entry"] = final_entry.model_dump(mode="json")
                     merged_result[service] = {"ok": True, "event_id": final_entry.event_id}
@@ -722,6 +1269,10 @@ async def call_step_services(
                     logger.error(f"MetacogEnrichService FAILED: {e}")
                     logs.append(f"error <- MetacogEnrichService: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
+                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    step_failed = True
+                    step_error = f"{service}: {e}"
+                    break
 
                 continue
 
@@ -734,8 +1285,20 @@ async def call_step_services(
                     merged_result[service] = {"ok": False, "reason": "no_entry"}
                     continue
 
+                # Firebreak: Skip baseline fallback publish to avoid pollution
+                trigger_kind = _metacog_trigger_kind(ctx)
+                state_snapshot = final_data.get("state_snapshot") if isinstance(final_data, dict) else {}
+                telemetry = state_snapshot.get("telemetry") if isinstance(state_snapshot, dict) else {}
+                draft_mode = telemetry.get("metacog_draft_mode")
+
+                if trigger_kind == "baseline" and draft_mode == "fallback":
+                    logger.warning("Firebreak: Skipping baseline fallback publish. draft_mode=fallback trigger=baseline")
+                    logs.append("skip <- MetacogPublishService (firebreak: baseline fallback)")
+                    merged_result[service] = {"ok": True, "skipped": True, "reason": "firebreak_baseline_fallback"}
+                    continue
+
                 try:
-                    entry = CollapseMirrorEntryV2.model_validate(final_data)
+                    entry = normalize_collapse_entry(final_data)
                     event_id = str(uuid4())
                     trace_meta = _trace_meta_from_ctx(
                         ctx,
@@ -769,6 +1332,10 @@ async def call_step_services(
                     logger.error(f"MetacogPublishService FAILED: {e}")
                     logs.append(f"error <- MetacogPublishService: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
+                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    step_failed = True
+                    step_error = f"{service}: {e}"
+                    break
 
                 continue
 
@@ -785,6 +1352,7 @@ async def call_step_services(
                 pad_summary = "unknown"
                 spark_line = "unknown"
                 trace_summary = "unknown"
+                turn_effect = None
 
                 # Landing Pad
                 pad_reply_channel = f"orion:exec:result:PadRpc:{uuid4()}"
@@ -891,6 +1459,18 @@ async def call_step_services(
                                 ctx["spark_phi_narrative"] = spark_phi_narrative(spark_snap)
                                 ctx["spark_state_json"] = spark_snap.model_dump_json()
 
+                                metadata = spark_snap.metadata if isinstance(spark_snap.metadata, dict) else {}
+                                turn_effect = metadata.get("turn_effect") if isinstance(metadata, dict) else None
+                                ctx["turn_effect"] = turn_effect
+                                ctx["turn_effect_json"] = json.dumps(turn_effect, indent=2) if turn_effect else "null"
+                                evidence = metadata.get("turn_effect_evidence") if isinstance(metadata, dict) else None
+                                ctx["turn_effect_evidence"] = evidence if isinstance(evidence, dict) else None
+                                ctx["turn_effect_evidence_json"] = (
+                                    json.dumps(ctx["turn_effect_evidence"], indent=2)
+                                    if ctx.get("turn_effect_evidence")
+                                    else "null"
+                                )
+
                                 spark_line = (
                                     f"φ={phi_hint.get('valence_band','?')}-{phi_hint.get('valence_dir','?')}, "
                                     f"energy={phi_hint.get('energy_band','?')}, "
@@ -912,15 +1492,47 @@ async def call_step_services(
                 if "biometrics" not in ctx:
                     ctx["biometrics"] = biometrics_context
                     ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
+                if "turn_effect" not in ctx:
+                    ctx["turn_effect"] = turn_effect
+                    ctx["turn_effect_json"] = json.dumps(turn_effect, indent=2) if turn_effect else "null"
+                if "turn_effect_evidence" not in ctx:
+                    ctx["turn_effect_evidence"] = None
+                    ctx["turn_effect_evidence_json"] = "null"
 
                 # Recent Traces
-                recent_traces = get_trace_cache().get_recent(5)
+                recent_traces = [
+                    t for t in get_trace_cache().get_recent(5) if (t.mode or "").lower() != "heartbeat"
+                ]
                 if recent_traces:
                     trace_summary = "\n".join(
                         [f"- [{t.mode}] {t.verb}: {(t.final_text or '')[:100]}..." for t in recent_traces]
                     )
                 else:
                     trace_summary = "None available."
+
+                recent_alerts = get_core_event_cache().get_recent_turn_effect_alerts(5)
+                system_alert_tags = _alert_tags_from_recent_alerts(recent_alerts)
+                policy = recommend_actions_from_alerts(recent_alerts)
+                explanations = explain_alerts(recent_alerts)
+                ctx["recent_turn_effect_alerts_json"] = (
+                    json.dumps(recent_alerts, indent=2) if recent_alerts else "[]"
+                )
+                ctx["system_alert_tags"] = system_alert_tags
+                ctx["turn_effect_policy"] = policy
+                ctx["turn_effect_policy_json"] = json.dumps(policy, indent=2)
+                ctx["turn_effect_explanations"] = explanations
+                ctx["turn_effect_explanations_json"] = json.dumps(explanations, indent=2)
+                alerts_line = format_recent_turn_effect_alerts(recent_alerts)
+                actions_line = (
+                    f"Suggested Actions: {summarize_recommended_actions(policy)}\n"
+                    if policy.get("actions")
+                    else ""
+                )
+                explanations_line = (
+                    f"{summarize_explanations(explanations)}\n"
+                    if explanations.get("by_rule")
+                    else ""
+                )
 
                 # Keep context_summary human-readable (spark JSON is separate in spark_state_json)
                 pad_short = pad_summary
@@ -943,16 +1555,24 @@ async def call_step_services(
                     if gpu_p is not None:
                         biometrics_line += f", gpu={float(gpu_p):.2f}"
 
+                turn_effect_line = (
+                    f"Last Turn Effect: {summarize_turn_effect(turn_effect)}\n" if turn_effect else ""
+                )
                 summary_text = (
                     f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
                     f"Pressure: {trigger.pressure}\n"
                     f"Landing Pad: {pad_short}\n"
                     f"Spark: {spark_line}\n"
+                    f"{turn_effect_line}"
+                    f"{alerts_line}\n"
+                    f"{actions_line}"
+                    f"{explanations_line}"
                     f"Biometrics: {biometrics_line}\n"
                     f"Recent Traces:\n{trace_summary}\n"
                 )
 
                 ctx["trigger"] = trigger.model_dump(mode="json")
+                ctx["trigger_kind"] = trigger.trigger_kind
                 ctx["context_summary"] = summary_text
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
@@ -1290,6 +1910,21 @@ async def call_step_services(
                 logs=logs,
                 error=f"{service}: {e}",
             )
+
+    if step_failed:
+        logs.append(f"fail-fast <- {step_error}")
+        return StepExecutionResult(
+            status="fail",
+            verb_name=step.verb_name,
+            step_name=step.step_name,
+            order=step.order,
+            result=merged_result,
+            spark_vector=spark_vector,
+            latency_ms=int((time.time() - t0) * 1000),
+            node=settings.node_name,
+            logs=logs,
+            error=step_error,
+        )
 
     return StepExecutionResult(
         status="success",

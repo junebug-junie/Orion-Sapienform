@@ -45,6 +45,63 @@ Hub supports three modes via the `mode` field in the request:
 *   **Schema**: `TTSRequestPayload` (from `orion.schemas.tts`)
 *   **Flow**: Hub -> Bus -> TTS Service -> Hub (returns audio blob)
 
+### 4. In-app Notifications (Hub UI)
+
+*   **Channel**: `orion:notify:in_app`
+*   **Schema**: `HubNotificationEvent` (from `orion.schemas.notify`)
+*   **Flow**: orion-notify -> Bus -> Hub (WebSocket broadcast)
+*   **WebSocket payload**: `{ "kind": "notification", "notification": { ... } }`
+*   **HTTP history**: `GET /api/notifications?limit=50`
+
+#### Chat Attention
+
+`event_kind="orion.chat.attention"` renders as a special toast/card with:
+
+- **Open chat** (focuses the chat input)
+- **Dismiss** (`ack_type="dismissed"`)
+- **Snooze 30m** (`ack_type="snooze"`)
+
+The hub proxies acknowledgements to `orion-notify`:
+
+- `POST /api/attention/{attention_id}/ack`
+- `GET /api/attention?status=pending`
+
+#### Chat Messages
+
+`event_kind="orion.chat.message"` renders as a message card + toast with:
+
+- **Open chat** (focuses chat input + switches session_id)
+- **Dismiss** (`receipt_type="dismissed"`)
+
+Hub proxies receipts to `orion-notify`:
+
+- `POST /api/chat/message/{message_id}/receipt`
+- `GET /api/chat/messages?status=unread|seen`
+
+Presence endpoint (for notify presence checks):
+
+- `GET /api/presence` → `{ "active": true|false, "last_seen": ... }`
+
+#### Notification Settings UI
+
+Hub exposes a Notification Settings panel (gear icon) that loads and updates:
+
+- Recipient profile (quiet hours, timezone)
+- Event/severity preferences (channels, escalation delay)
+
+Preference rows are provided for:
+
+- `orion.chat.attention`
+- `orion.chat.message`
+- severity `error`, `warning`, `info`
+
+The panel calls:
+
+- `GET /api/notify/recipients/{recipient_group}`
+- `PUT /api/notify/recipients/{recipient_group}`
+- `GET /api/notify/recipients/{recipient_group}/preferences`
+- `PUT /api/notify/recipients/{recipient_group}/preferences`
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import base64
 import logging
-import os
 from datetime import datetime
-from email.message import EmailMessage
 from pathlib import Path
 from typing import List
-import smtplib
 import urllib.request
 
 from .models import AlertPayload, AlertSnapshot
 from .utils import redact_url
+from orion.notify.client import NotifyClient
+from orion.schemas.notify import NotificationAttachment, NotificationRequest
 
 logger = logging.getLogger("orion-security-watcher.notifications")
 
@@ -19,7 +19,7 @@ class Notifier:
     """
     Handles:
     - Capturing snapshots from the vision edge service
-    - Sending email alerts with optional attachments
+    - Sending alerts via the notify service
     """
 
     def __init__(self, settings):
@@ -43,17 +43,10 @@ class Notifier:
         # Notification mode
         self.mode = getattr(settings, "NOTIFY_MODE", "off")
 
-        # SMTP config
-        self.smtp_host = getattr(settings, "NOTIFY_EMAIL_SMTP_HOST", "")
-        self.smtp_port = int(getattr(settings, "NOTIFY_EMAIL_SMTP_PORT", 587))
-        self.smtp_user = getattr(settings, "NOTIFY_EMAIL_SMTP_USERNAME", "")
-        self.smtp_pass = getattr(settings, "NOTIFY_EMAIL_SMTP_PASSWORD", "")
-        self.smtp_use_tls = bool(getattr(settings, "NOTIFY_EMAIL_USE_TLS", True))
+        # Notify service config
+        self.notify_service_url = getattr(settings, "NOTIFY_SERVICE_URL", "")
+        self.notify_api_token = getattr(settings, "NOTIFY_API_TOKEN", "") or None
 
-        # Email headers
-        self.email_from = getattr(settings, "NOTIFY_EMAIL_FROM", "")
-        to_raw = getattr(settings, "NOTIFY_EMAIL_TO", "") or ""
-        self.email_to = [e.strip() for e in to_raw.split(",") if e.strip()]
 
     # ─────────────────────────────────────────────
     # Snapshot capture
@@ -119,16 +112,13 @@ class Notifier:
             logger.info(f"[NOTIFY] NOTIFY_MODE={self.mode}; skipping email send")
             return
 
-        if not (self.smtp_host and self.email_from and self.email_to):
-            logger.error(
-                "[NOTIFY] NOTIFY_EMAIL_SMTP_HOST / NOTIFY_EMAIL_FROM / NOTIFY_EMAIL_TO "
-                "not fully configured; skipping email send"
-            )
+        if not self.notify_service_url:
+            logger.error("[NOTIFY] NOTIFY_SERVICE_URL not configured; skipping email send")
             return
 
         safe_camera = redact_url(str(alert.camera_id))
 
-        subject = f"[Orion] Security alert: {alert.reason} ({alert.severity})"
+        title = f"[Orion] Security alert: {alert.reason} ({alert.severity})"
         body_lines = [
             f"Time (UTC): {alert.ts.isoformat()}",
             f"Camera: {safe_camera}",
@@ -151,35 +141,48 @@ class Notifier:
         else:
             body_lines.append("No snapshots captured for this alert.")
 
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = self.email_from
-        msg["To"] = ", ".join(self.email_to)
-        msg.set_content("\n".join(body_lines))
+        attachments = self._build_attachments(snapshots)
 
-        # Attach JPEGs
+        request = NotificationRequest(
+            source_service=self.settings.SERVICE_NAME,
+            event_kind="security.alert",
+            severity=alert.severity,
+            title=title,
+            body_text="\n".join(body_lines),
+            context={
+                "camera_id": safe_camera,
+                "armed": alert.armed,
+                "mode": alert.mode,
+                "humans_present": alert.humans_present,
+                "best_identity": alert.best_identity,
+                "best_identity_conf": alert.best_identity_conf,
+                "identity_votes": alert.identity_votes,
+            },
+            tags=["security", "alert"],
+            recipient_group="juniper_primary",
+            attachments=attachments or None,
+        )
+
+        client = NotifyClient(base_url=self.notify_service_url, api_token=self.notify_api_token)
+        response = client.send(request)
+
+        if response.ok:
+            logger.info(f"[NOTIFY] Sent alert email via notify service ({len(snapshots)} attached)")
+        else:
+            logger.error(f"[NOTIFY] Failed to send email via notify service: {response.detail}")
+
+    def _build_attachments(self, snapshots: List[AlertSnapshot]) -> List[NotificationAttachment]:
+        attachments: List[NotificationAttachment] = []
         for snap in snapshots:
             try:
-                with open(snap.path, "rb") as f:
-                    data = f.read()
-                filename = os.path.basename(snap.path)
-                msg.add_attachment(data, maintype="image", subtype="jpeg", filename=filename)
-            except Exception as e:
-                logger.error(f"[NOTIFY] Failed to attach snapshot {snap.path}: {e}")
-
-        try:
-            if self.smtp_use_tls:
-                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                    server.starttls()
-                    if self.smtp_user and self.smtp_pass:
-                        server.login(self.smtp_user, self.smtp_pass)
-                    server.send_message(msg)
-            else:
-                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                    if self.smtp_user and self.smtp_pass:
-                        server.login(self.smtp_user, self.smtp_pass)
-                    server.send_message(msg)
-
-            logger.info(f"[NOTIFY] Sent alert email to {self.email_to} ({len(snapshots)} attached)")
-        except Exception as e:
-            logger.error(f"[NOTIFY] Failed to send email: {e}")
+                path = Path(snap.path)
+                attachments.append(
+                    NotificationAttachment(
+                        filename=path.name,
+                        content_base64=base64.b64encode(path.read_bytes()).decode("utf-8"),
+                        mime_type="image/jpeg",
+                    )
+                )
+            except Exception as exc:
+                logger.error(f"[NOTIFY] Failed to attach snapshot {snap.path}: {exc}")
+        return attachments

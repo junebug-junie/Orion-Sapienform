@@ -1,0 +1,87 @@
+quiet_hours:
+  timezone: America/Denver
+  start: "22:00"
+  end: "07:00"
+
+recipient_groups:
+  juniper_primary:
+    email_to_env: NOTIFY_EMAIL_TO
+
+rules:
+  - name: chat_attention_default
+    match:
+      event_kind: ["orion.chat.attention"]
+    action:
+      allowed: true
+      channels: ["in_app"]
+      require_ack: true
+      ack_deadline_minutes: 60
+      escalation_channels: ["email"]
+
+  - name: chat_attention_escalation
+    match:
+      event_kind: ["orion.chat.attention.escalation"]
+    action:
+      allowed: true
+      channels: ["email"]
+      dedupe_window_seconds: 60
+
+  - name: chat_message_default
+    match:
+      event_kind: ["orion.chat.message"]
+    action:
+      allowed: true
+      channels: ["in_app"]
+      require_read_receipt: true
+      read_receipt_deadline_minutes: 60
+      escalation_channels: ["email"]
+
+  - name: chat_message_escalation
+    match:
+      event_kind: ["orion.chat.message.escalation"]
+    action:
+      allowed: true
+      channels: ["email"]
+      dedupe_window_seconds: 60
+
+  - name: critical_default
+    match:
+      severity: ["critical"]
+    action:
+      allowed: true
+      channels: ["email", "in_app"]
+      dedupe_window_seconds: 60
+      throttle:
+        max_per_window: 10
+        window_seconds: 300
+
+  - name: error_default
+    match:
+      severity: ["error"]
+    action:
+      allowed: true
+      channels: ["email", "in_app"]
+      dedupe_window_seconds: 60
+      throttle:
+        max_per_window: 10
+        window_seconds: 300
+
+  - name: warning_default
+    match:
+      severity: ["warning"]
+    action:
+      allowed: true
+      channels: ["in_app"]
+
+  - name: info_default
+    match:
+      severity: ["info"]
+    action:
+      allowed: true
+      channels: []
+
+  - name: fallback
+    match: {}
+    action:
+      allowed: true
+      channels: []

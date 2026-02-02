@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
 
+    # --- In-app Notifications (Hub) ---
+    NOTIFY_IN_APP_ENABLED: bool = Field(default=True, alias="NOTIFY_IN_APP_ENABLED")
+    NOTIFY_IN_APP_CHANNEL: str = Field(default="orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")
+    NOTIFY_IN_APP_MAX: int = Field(default=200, alias="NOTIFY_IN_APP_MAX")
+    NOTIFY_TOAST_SECONDS: int = Field(default=8, alias="NOTIFY_TOAST_SECONDS")
+    NOTIFY_BASE_URL: str = Field(default="http://orion-notify:7140", alias="NOTIFY_BASE_URL")
+    NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
+
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(
         default="orion:cortex:gateway:request",

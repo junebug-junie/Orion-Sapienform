@@ -71,6 +71,25 @@ from orion.schemas.tts import (
     STTRequestPayload,
     STTResultPayload,
 )
+from orion.schemas.notify import (
+    ChatAttentionAck,
+    ChatAttentionRequest,
+    ChatAttentionState,
+    ChatMessageNotification,
+    ChatMessageReceipt,
+    ChatMessageState,
+    DeliveryAttempt,
+    HubNotificationEvent,
+    NotificationAccepted,
+    NotificationRecord,
+    NotificationRequest,
+    NotificationPreference,
+    NotificationPreferencesUpdate,
+    PreferenceResolutionRequest,
+    PreferenceResolutionResponse,
+    RecipientProfile,
+    RecipientProfileUpdate,
+)
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -146,6 +165,23 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TTSResultPayload": TTSResultPayload,
     "STTRequestPayload": STTRequestPayload,
     "STTResultPayload": STTResultPayload,
+    "NotificationRequest": NotificationRequest,
+    "NotificationAccepted": NotificationAccepted,
+    "NotificationRecord": NotificationRecord,
+    "DeliveryAttempt": DeliveryAttempt,
+    "HubNotificationEvent": HubNotificationEvent,
+    "ChatAttentionRequest": ChatAttentionRequest,
+    "ChatAttentionAck": ChatAttentionAck,
+    "ChatAttentionState": ChatAttentionState,
+    "ChatMessageNotification": ChatMessageNotification,
+    "ChatMessageReceipt": ChatMessageReceipt,
+    "ChatMessageState": ChatMessageState,
+    "RecipientProfile": RecipientProfile,
+    "RecipientProfileUpdate": RecipientProfileUpdate,
+    "NotificationPreference": NotificationPreference,
+    "NotificationPreferencesUpdate": NotificationPreferencesUpdate,
+    "PreferenceResolutionRequest": PreferenceResolutionRequest,
+    "PreferenceResolutionResponse": PreferenceResolutionResponse,
 
 }
 

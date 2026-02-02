@@ -1,6 +1,7 @@
 # scripts/main.py
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -9,6 +10,7 @@ from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
+from scripts.notification_cache import NotificationCache
 
 from orion.core.bus.async_service import OrionBusAsync
 from scripts.bus_clients.cortex_client import CortexGatewayClient
@@ -41,6 +43,32 @@ cortex_client: Optional[CortexGatewayClient] = None
 tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
+notification_cache: Optional[NotificationCache] = None
+presence_state: Optional["PresenceState"] = None
+
+
+class PresenceState:
+    def __init__(self) -> None:
+        self.active_connections = 0
+        self.last_seen: Optional[datetime] = None
+
+    def connected(self) -> None:
+        self.active_connections += 1
+        self.last_seen = datetime.now(timezone.utc)
+
+    def disconnected(self) -> None:
+        self.active_connections = max(0, self.active_connections - 1)
+        self.last_seen = datetime.now(timezone.utc)
+
+    def heartbeat(self) -> None:
+        self.last_seen = datetime.now(timezone.utc)
+
+    def snapshot(self) -> dict:
+        return {
+            "active": self.active_connections > 0,
+            "active_connections": self.active_connections,
+            "last_seen": self.last_seen.isoformat() if self.last_seen else None,
+        }
 
 
 # ───────────────────────────────────────────────────────────────
@@ -53,7 +81,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_client, tts_client, html_content, biometrics_cache
+    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -83,6 +111,13 @@ async def startup_event():
             )
             await biometrics_cache.start(bus)
 
+            notification_cache = NotificationCache(
+                max_items=settings.NOTIFY_IN_APP_MAX,
+                channel=settings.NOTIFY_IN_APP_CHANNEL,
+            )
+            if settings.NOTIFY_IN_APP_ENABLED:
+                await notification_cache.start(bus)
+
         except Exception as e:
             logger.error(f"Failed to initialize OrionBus: {e}")
             bus = None
@@ -91,6 +126,8 @@ async def startup_event():
     else:
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")
 
+    presence_state = PresenceState()
+
 
     # ------------------------------------------------------------
     # Load UI HTML Template
@@ -98,6 +135,10 @@ async def startup_event():
     try:
         with open("templates/index.html", "r") as f:
             html_content = f.read()
+        html_content = html_content.replace(
+            "{{NOTIFY_TOAST_SECONDS}}",
+            str(settings.NOTIFY_TOAST_SECONDS),
+        )
         logger.info("UI template loaded successfully.")
     except FileNotFoundError:
         logger.error("CRITICAL: 'templates/index.html' not found.")
@@ -108,9 +149,11 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, biometrics_cache
+    global bus, biometrics_cache, notification_cache
     if biometrics_cache is not None:
         await biometrics_cache.stop()
+    if notification_cache is not None:
+        await notification_cache.stop()
     if bus is not None:
         try:
             await bus.close()

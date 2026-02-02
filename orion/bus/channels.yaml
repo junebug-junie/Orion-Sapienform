@@ -811,3 +811,11 @@ channels:
     schema_id: "STTResultPayload"
     producer_services: ["orion-whisper-tts"]
     consumer_services: ["orion-hub"]
+
+  - name: "orion:notify:in_app"
+    kind: "event"
+    schema_id: "HubNotificationEvent"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-02-01"

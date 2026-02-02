@@ -43,6 +43,8 @@ class EquilibriumService(BaseChassis):
         self._state: Dict[str, Dict[str, Any]] = {}
         self.expected_services = settings.expected_services()
         self._last_metacog_trigger_ts: float = 0.0
+        self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
+        self._baseline_skip_count: int = 0
 
     def _trace_meta(
         self,
@@ -377,6 +379,16 @@ class EquilibriumService(BaseChassis):
             try:
                 await asyncio.sleep(interval)
                 distress, zen, _ = self._calculate_metrics()
+
+                last_d, last_z = self._last_baseline_scores
+                if abs(distress - last_d) < 0.01 and abs(zen - last_z) < 0.01 and self._baseline_skip_count < 10:
+                    self._baseline_skip_count += 1
+                    logger.info("Skipping baseline trigger (no change). distress=%.3f zen=%.3f skip=%d", distress, zen, self._baseline_skip_count)
+                    continue
+
+                self._baseline_skip_count = 0
+                self._last_baseline_scores = (distress, zen)
+
                 trigger = MetacogTriggerV1(
                     trigger_kind="baseline",
                     reason="scheduled_check",

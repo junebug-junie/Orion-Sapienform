@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
+import aiohttp
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse

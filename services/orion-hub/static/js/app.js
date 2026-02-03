@@ -31,6 +31,7 @@ let notifications = [];
 let pendingAttention = [];
 let chatMessages = [];
 const seenMessageIds = new Set();
+const dismissedMessageIds = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
 const ATTENTION_EVENT_KIND = "orion.chat.attention";
@@ -40,6 +41,38 @@ let topicAutoRefreshTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
+
+// --- 0. Local persistence for message dismissals ---
+// Backend may not reflect receipts into /api/chat/messages yet; this prevents dismissed items from reappearing.
+const DISMISSED_STORAGE_KEY = "orion_chat_dismissed_ids_v1";
+function loadDismissedIds() {
+  try {
+    const raw = localStorage.getItem(DISMISSED_STORAGE_KEY);
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) arr.forEach((id) => dismissedMessageIds.add(String(id)));
+  } catch (e) {
+    console.warn("[Messages] Failed to load dismissed ids", e);
+  }
+}
+function persistDismissedIds() {
+  try {
+    localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify(Array.from(dismissedMessageIds)));
+  } catch (e) {
+    console.warn("[Messages] Failed to persist dismissed ids", e);
+  }
+}
+function markDismissed(messageId) {
+  if (!messageId) return;
+  dismissedMessageIds.add(String(messageId));
+  persistDismissedIds();
+}
+function isDismissed(messageId) {
+  if (!messageId) return false;
+  return dismissedMessageIds.has(String(messageId));
+}
+
+loadDismissedIds();
 
   // --- 1. Element References ---
   const recordButton = document.getElementById('recordButton');
@@ -325,6 +358,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function upsertChatMessage(item) {
     if (!item || !item.message_id) return;
+    // Never re-insert locally dismissed messages (backend may still report them as unread)
+    if (isDismissed(item.message_id)) return;
     const idx = chatMessages.findIndex((m) => m.message_id === item.message_id);
     if (idx >= 0) {
       chatMessages[idx] = { ...chatMessages[idx], ...item };
@@ -345,8 +380,10 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderChatMessages() {
     if (!messageList) return;
     const filter = messageFilter ? messageFilter.value : 'unread';
+    // Filter out dismissed regardless of unread/all
+    const visible = chatMessages.filter((m) => !isDismissed(m.message_id));
     const filtered =
-      filter === 'all' ? chatMessages : chatMessages.filter((m) => m.status === 'unread');
+      filter === 'all' ? visible : visible.filter((m) => m.status === 'unread');
 
     messageList.innerHTML = '';
     if (filtered.length === 0) {
@@ -388,17 +425,27 @@ document.addEventListener("DOMContentLoaded", () => {
         const openBtn = document.createElement('button');
         openBtn.className = 'px-2 py-1 rounded bg-indigo-600/80 hover:bg-indigo-500 text-white';
         openBtn.textContent = 'Open chat';
-        openBtn.addEventListener('click', () => {
+        openBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
           setSessionId(item.session_id);
           focusChatInput();
-          handleChatMessageReceipt(item.message_id, item.session_id, 'opened');
+          if (!item._synthetic_id) handleChatMessageReceipt(item.message_id, item.session_id, 'opened');
         });
 
         const dismissBtn = document.createElement('button');
         dismissBtn.className = 'px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200';
         dismissBtn.textContent = 'Dismiss';
-        dismissBtn.addEventListener('click', () => {
-          handleChatMessageReceipt(item.message_id, item.session_id, 'dismissed');
+        dismissBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (item && item.message_id) {
+            // Make dismiss visibly do something even if backend doesn't change message status yet
+            markDismissed(item.message_id);
+            chatMessages = chatMessages.filter((m) => m.message_id !== item.message_id);
+            renderChatMessages();
+          }
+          if (!item._synthetic_id) handleChatMessageReceipt(item.message_id, item.session_id, 'dismissed');
         });
 
         actions.appendChild(openBtn);
@@ -517,6 +564,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function handleChatMessageReceipt(messageId, sessionId, receiptType) {
     if (!messageId || !sessionId) return;
+    if (String(messageId).startsWith('synthetic:')) return;
+    // Deduplicate double-clicks / bubbling
+    const key = `${messageId}:${receiptType}`;
+    window.__orionReceiptInFlight = window.__orionReceiptInFlight || new Set();
+    if (window.__orionReceiptInFlight.has(key)) return;
+    window.__orionReceiptInFlight.add(key);
     try {
       const resp = await fetch(`${API_BASE_URL}/api/chat/message/${messageId}/receipt`, {
         method: 'POST',
@@ -529,6 +582,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } catch (err) {
       console.warn('Failed to send chat message receipt', err);
+    } finally {
+      try { window.__orionReceiptInFlight.delete(key); } catch (_) {}
     }
   }
 
@@ -638,6 +693,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function showToast(notification) {
     if (!toastContainer || !notification) return;
+
+    if (typeof notification === "string") {
+      if (toastMessage) toastMessage.textContent = notification;
+      toastContainer.classList.remove("hidden");
+      setTimeout(() => toastContainer.classList.add("hidden"), 4000);
+      return;
+    }
+
+
     if (isAttentionNotification(notification) && notification.attention_id) {
       showAttentionToast(notification);
       return;
@@ -874,7 +938,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
-        chatMessages = data.map((item) => ({
+        chatMessages = data
+          .map((item) => ({
           message_id: item.message_id,
           session_id: item.session_id,
           created_at: item.created_at,
@@ -883,9 +948,12 @@ document.addEventListener("DOMContentLoaded", () => {
           preview_text: item.preview_text || '',
           status: item.status || 'unread',
           silent: false,
-        }));
+          }))
+          .filter((m) => m && m.session_id)
+          .filter((m) => !isDismissed(m.message_id));
         renderChatMessages();
         chatMessages.forEach((item) => {
+          if (isDismissed(item.message_id)) return;
           if (item.status === 'unread' && !seenMessageIds.has(item.message_id)) {
             seenMessageIds.add(item.message_id);
             handleChatMessageReceipt(item.message_id, item.session_id, 'seen');

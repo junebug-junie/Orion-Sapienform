@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.platform import SystemErrorV1
-from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1
+from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
 
 
 logger = logging.getLogger("topic-rail.bus")
@@ -52,6 +52,20 @@ class TopicRailBusPublisher:
             await self.bus.close()
         logger.info("Published %s topic shifts", sent)
         return sent
+
+    async def publish_assignment_batch(self, channel: str, payload_dict: Dict[str, Any]) -> None:
+        await self.bus.connect()
+        try:
+            payload = TopicRailAssignedV1(**payload_dict)
+            env = BaseEnvelope(
+                kind="topic.rail.assigned.v1",
+                source=self.service_ref,
+                payload=payload.model_dump(mode="json"),
+            )
+            await self.bus.publish(channel, env)
+        finally:
+            await self.bus.close()
+        logger.info("Published assignment batch to %s", channel)
 
     async def publish_warning(self, message: str, details: Dict[str, Any]) -> None:
         await self.bus.connect()

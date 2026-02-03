@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from app.db import Base, engine
 from app.settings import settings
 from app.worker import build_hunter
+from app.api_notify import router as notify_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -90,6 +91,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(notify_router, prefix="/api/notify-read")
 
 @app.get("/health")
 def health():

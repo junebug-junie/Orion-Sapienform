@@ -827,3 +827,39 @@ channels:
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-02-01"
+
+  - name: "orion:notify:persistence:request"
+    kind: "event"
+    schema_id: "NotificationRecord"
+    message_kind: "notify.notification.request.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"
+
+  - name: "orion:notify:config:recipient"
+    kind: "event"
+    schema_id: "RecipientProfileUpdate"
+    message_kind: "notify.recipient.update.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"
+
+  - name: "orion:notify:config:preference"
+    kind: "event"
+    schema_id: "NotificationPreferencesUpdate"
+    message_kind: "notify.preference.update.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"
+
+  - name: "orion:notify:persistence:receipt"
+    kind: "event"
+    schema_id: "NotificationReceiptEvent"
+    message_kind: "notify.notification.receipt.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"

@@ -129,7 +129,8 @@ Presence checks before chat message delivery can be configured with:
 
 ## Persistence & Schema
 
-Notify uses SQLAlchemy's `create_all` (via `init_models`) at startup to ensure tables exist; there is no migration tool in this repo, so schema creation is handled with idempotent `CREATE TABLE IF NOT EXISTS` statements. The default SQLite path is `/data/notify.db` when running via Docker (see `docker-compose.yml` volume mount + `.env_example`).
+Notify is stateless and delegates persistence to `orion-sql-writer` via the Orion Bus.
+Read operations are proxied to `orion-sql-writer`'s read API.
 
 ## Recipient Profiles & Preferences
 

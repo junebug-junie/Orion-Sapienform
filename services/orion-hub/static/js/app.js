@@ -166,7 +166,6 @@ loadDismissedIds();
   const topicDriftBody = document.getElementById("topicDriftBody");
   const topicSummaryMeta = document.getElementById("topicSummaryMeta");
   const topicDriftMeta = document.getElementById("topicDriftMeta");
-  const toastContainer = document.getElementById("toastContainer");
   const toastMessage = document.getElementById("toastMessage");
 
   // Collapse Mirror
@@ -200,13 +199,21 @@ loadDismissedIds();
       }
   }
 
-  function showToast(message) {
+  function showToastText(message) {
     if (!toastContainer || !toastMessage) return;
     toastMessage.textContent = message;
     toastContainer.classList.remove("hidden");
     setTimeout(() => {
       toastContainer.classList.add("hidden");
     }, 4000);
+  }
+
+  function showToast(x) {
+    if (typeof x === "string") {
+      showToastText(x);
+    } else {
+      showToastNotification(x);
+    }
   }
 
   function updateStatusBasedOnState() {
@@ -343,15 +350,17 @@ loadDismissedIds();
   }
 
   function normalizeChatMessage(notification) {
-    if (!notification || !notification.message_id) return null;
+    if (!notification) return null;
+    const msgId = notification.message_id || notification.messageId;
+    if (!msgId) return null;
     return {
-      message_id: notification.message_id,
-      session_id: notification.session_id,
-      created_at: notification.created_at,
+      message_id: msgId,
+      session_id: notification.session_id || notification.sessionId,
+      created_at: notification.created_at || notification.createdAt,
       severity: notification.severity || 'info',
       title: notification.title || 'New message from Orion',
-      preview_text: notification.body_text || '',
-      status: 'unread',
+      preview_text: notification.body_text || notification.preview_text || notification.previewText || '',
+      status: (notification.status || 'unread').toLowerCase(),
       silent: Boolean(notification.silent),
     };
   }
@@ -383,7 +392,7 @@ loadDismissedIds();
     // Filter out dismissed regardless of unread/all
     const visible = chatMessages.filter((m) => !isDismissed(m.message_id));
     const filtered =
-      filter === 'all' ? visible : visible.filter((m) => m.status === 'unread');
+      filter === 'all' ? visible : visible.filter((m) => (m.status || '').toLowerCase() === 'unread');
 
     messageList.innerHTML = '';
     if (filtered.length === 0) {
@@ -691,16 +700,8 @@ loadDismissedIds();
     }
   }
 
-  function showToast(notification) {
+  function showToastNotification(notification) {
     if (!toastContainer || !notification) return;
-
-    if (typeof notification === "string") {
-      if (toastMessage) toastMessage.textContent = notification;
-      toastContainer.classList.remove("hidden");
-      setTimeout(() => toastContainer.classList.add("hidden"), 4000);
-      return;
-    }
-
 
     if (isAttentionNotification(notification) && notification.attention_id) {
       showAttentionToast(notification);
@@ -940,21 +941,21 @@ loadDismissedIds();
       if (Array.isArray(data)) {
         chatMessages = data
           .map((item) => ({
-          message_id: item.message_id,
-          session_id: item.session_id,
-          created_at: item.created_at,
+          message_id: item.message_id || item.messageId,
+          session_id: item.session_id || item.sessionId,
+          created_at: item.created_at || item.createdAt,
           severity: item.severity || 'info',
           title: item.title || 'New message from Orion',
-          preview_text: item.preview_text || '',
-          status: item.status || 'unread',
+          preview_text: item.preview_text || item.previewText || '',
+          status: (item.status || 'unread').toLowerCase(),
           silent: false,
           }))
-          .filter((m) => m && m.session_id)
+          .filter((m) => m && m.session_id && m.message_id)
           .filter((m) => !isDismissed(m.message_id));
         renderChatMessages();
         chatMessages.forEach((item) => {
           if (isDismissed(item.message_id)) return;
-          if (item.status === 'unread' && !seenMessageIds.has(item.message_id)) {
+          if ((item.status || '').toLowerCase() === 'unread' && !seenMessageIds.has(item.message_id)) {
             seenMessageIds.add(item.message_id);
             handleChatMessageReceipt(item.message_id, item.session_id, 'seen');
           }
@@ -1471,7 +1472,7 @@ loadDismissedIds();
   if (verbSelectTrigger) {
       verbSelectTrigger.addEventListener('click', (e) => {
           e.stopPropagation();
-          verbDropdown.classList.toggle('hidden');
+          if (verbDropdown) verbDropdown.classList.toggle('hidden');
       });
       document.addEventListener('click', (e) => {
           if (verbDropdown && !verbDropdown.classList.contains('hidden')) {
@@ -1950,13 +1951,14 @@ loadDismissedIds();
 
         const imgHtml = `<img src="${endpoint}" class="w-full h-full object-cover">`;
         
-        if (visionIsFloating) {
+        if (visionIsFloating && visionFloatingContainer) {
             visionFloatingContainer.classList.remove("hidden");
-            visionFloatingContainer.querySelector('.flex-1').innerHTML = imgHtml;
+            const flex = visionFloatingContainer.querySelector('.flex-1');
+            if (flex) flex.innerHTML = imgHtml;
             visionDockedContainer.innerHTML = `<div class="text-gray-500 text-xs">Viewing in Pop-out</div>`;
             if (visionPopoutButton) visionPopoutButton.textContent = "Dock";
         } else {
-            visionFloatingContainer.classList.add("hidden");
+            if (visionFloatingContainer) visionFloatingContainer.classList.add("hidden");
             visionDockedContainer.innerHTML = imgHtml;
             if (visionPopoutButton) visionPopoutButton.textContent = "Pop Out";
         }

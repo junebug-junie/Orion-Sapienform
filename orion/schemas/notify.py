@@ -174,6 +174,7 @@ class RecipientProfile(BaseModel):
 
 
 class RecipientProfileUpdate(BaseModel):
+    recipient_group: Optional[str] = None
     display_name: Optional[str] = None
     timezone: Optional[str] = None
     quiet_hours_enabled: Optional[bool] = None

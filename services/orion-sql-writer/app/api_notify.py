@@ -4,8 +4,8 @@ from typing import List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, or_
+from sqlalchemy.orm import Session, aliased
 
 from app.db import get_session, remove_session
 from app.models.notify_models import (
@@ -55,10 +55,33 @@ def _attention_to_schema(row: NotificationRequestDB) -> ChatAttentionState:
         status=status,
     )
 
-def _chat_message_to_schema(row: NotificationRequestDB) -> ChatMessageState:
+def _chat_message_to_schema(row: NotificationRequestDB, receipts: List[NotificationReceiptDB] = None) -> ChatMessageState:
+    # Merge receipt data into state
+    first_seen_at = row.message_first_seen_at
+    opened_at = row.message_opened_at
+    dismissed_at = row.message_dismissed_at
+
+    if receipts:
+        for r in receipts:
+            if r.receipt_type == "seen" and (not first_seen_at or r.received_at < first_seen_at):
+                first_seen_at = r.received_at
+            elif r.receipt_type == "opened":
+                if not opened_at or r.received_at < opened_at:
+                    opened_at = r.received_at
+                # Opened implies seen
+                if not first_seen_at or r.received_at < first_seen_at:
+                    first_seen_at = r.received_at
+            elif r.receipt_type == "dismissed":
+                if not dismissed_at or r.received_at < dismissed_at:
+                    dismissed_at = r.received_at
+                # Dismissed implies seen
+                if not first_seen_at or r.received_at < first_seen_at:
+                    first_seen_at = r.received_at
+
     status = "unread"
-    if row.message_opened_at or row.message_dismissed_at or row.message_first_seen_at:
+    if opened_at or dismissed_at or first_seen_at:
         status = "seen"
+
     return ChatMessageState(
         message_id=row.message_id,
         notification_id=row.notification_id,
@@ -73,9 +96,9 @@ def _chat_message_to_schema(row: NotificationRequestDB) -> ChatMessageState:
         severity=row.severity,
         require_read_receipt=row.message_require_read_receipt,
         expires_at=row.message_expires_at,
-        first_seen_at=row.message_first_seen_at,
-        opened_at=row.message_opened_at,
-        dismissed_at=row.message_dismissed_at,
+        first_seen_at=first_seen_at,
+        opened_at=opened_at,
+        dismissed_at=dismissed_at,
         escalated_at=row.message_escalated_at,
         status=status,
     )
@@ -198,23 +221,58 @@ async def list_preferences(recipient_group: str):
 async def list_chat_messages(limit: int = 50, status: Optional[str] = None, session_id: Optional[str] = None):
     db = get_session()
     try:
+        # Base query for messages
         query = db.query(NotificationRequestDB).filter(NotificationRequestDB.message_id.isnot(None))
+
         if session_id:
             query = query.filter(NotificationRequestDB.message_session_id == session_id)
+
+        # Join with receipts to determine status
+        # We need to filter based on EXISTENCE of receipt if status is specified.
+        # But we also need to fetch receipts to populate the schema timestamps.
+        # Efficient approach: Fetch messages then fetch receipts for those messages.
+        # OR: Join.
+        # Let's filter first.
+
         if status == "unread":
+            # No receipts and legacy columns null
             query = query.filter(
                 NotificationRequestDB.message_first_seen_at.is_(None),
                 NotificationRequestDB.message_opened_at.is_(None),
                 NotificationRequestDB.message_dismissed_at.is_(None),
+                ~db.query(NotificationReceiptDB).filter(
+                    NotificationReceiptDB.message_id == NotificationRequestDB.message_id
+                ).exists()
             )
         elif status == "seen":
+            # Receipts exist OR legacy columns not null
             query = query.filter(
-                (NotificationRequestDB.message_first_seen_at.isnot(None))
-                | (NotificationRequestDB.message_opened_at.isnot(None))
-                | (NotificationRequestDB.message_dismissed_at.isnot(None))
+                or_(
+                    NotificationRequestDB.message_first_seen_at.isnot(None),
+                    NotificationRequestDB.message_opened_at.isnot(None),
+                    NotificationRequestDB.message_dismissed_at.isnot(None),
+                    db.query(NotificationReceiptDB).filter(
+                        NotificationReceiptDB.message_id == NotificationRequestDB.message_id
+                    ).exists()
+                )
             )
+
         rows = query.order_by(NotificationRequestDB.created_at.desc()).limit(limit).all()
-        return [_chat_message_to_schema(row) for row in rows]
+
+        # Now fetch receipts for these rows to populate timestamps
+        if not rows:
+            return []
+
+        msg_ids = [r.message_id for r in rows if r.message_id]
+        receipts_map = {}
+        if msg_ids:
+            receipts = db.query(NotificationReceiptDB).filter(NotificationReceiptDB.message_id.in_(msg_ids)).all()
+            for r in receipts:
+                if r.message_id not in receipts_map:
+                    receipts_map[r.message_id] = []
+                receipts_map[r.message_id].append(r)
+
+        return [_chat_message_to_schema(row, receipts_map.get(row.message_id)) for row in rows]
     finally:
         remove_session()
 

@@ -357,29 +357,9 @@ async def update_recipient(
 
     bus: OrionBusAsync | None = request.app.state.bus
     if bus:
-        # We need a full object for the update event?
-        # The schema is RecipientProfileUpdate (partial).
-        # We mapped "notify.recipient.update.v1" to "RecipientProfileUpdate" in channels.yaml?
-        # No, I mapped it to "RecipientProfileUpdate" in my plan, but I need to check if I registered it. Yes.
-        # But wait, sql-writer needs a model. I mapped to RecipientProfileDB.
-        # So I send the Update object, and sql-writer applies it.
-
-        # We need to include the key (recipient_group) in the payload or envelope?
-        # RecipientProfileUpdate doesn't have recipient_group.
-        # I should probably create a specific event or just rely on the fact that I can't change it easily?
-        # I will inject it into the payload if possible, or add it to the model.
-        # RecipientProfileUpdate is pydantic.
-        # I'll rely on a slightly hacked approach: add it to the dict and hope downstream handles it,
-        # OR better: I'll trust that I can add a field to the Pydantic model in the future.
-        # For now, I'll pass it in the envelope metadata or rely on sql-writer knowing?
-        # Actually, `orion-sql-writer` consumes the payload. If the payload lacks `recipient_group`, it can't update.
-        # `RecipientProfileUpdate` schema lacks it.
-        # I'll assume for this exercise that I can't persist profile updates effectively without schema change.
-        # But the prompt said "Durable storage is EXCLUSIVELY...".
-        # I'll construct a custom dict for the payload and publish it as GenericPayloadV1 if needed,
-        # but I defined `notify.recipient.update.v1` -> `RecipientProfileUpdate`.
-        # I'll skip persisting this for now to keep it minimal/safe, or just return the object.
-        pass
+        # Inject recipient_group into payload for persistence
+        payload.recipient_group = recipient_group
+        asyncio.create_task(_publish_persistence_event(bus, "orion:notify:config:recipient", payload))
 
     return RecipientProfile(
         recipient_group=recipient_group,

@@ -91,7 +91,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(notify_router, prefix="/api/notify-read")
+app.include_router(notify_router, prefix="/api/notify-read", tags=["notify-read"])
 
 @app.get("/health")
 def health():

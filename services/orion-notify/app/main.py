@@ -40,6 +40,7 @@ from .db_models import (
     NotificationPreferenceDB,
     NotificationRequestDB,
     RecipientProfileDB,
+    NotificationReceiptDB,
 )
 from .policy import Policy, PolicyDecision, ThrottleRule
 from .settings import settings
@@ -66,7 +67,7 @@ DEDUPE_WINDOW_MAX_SECONDS = 86400
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    init_models([NotificationRequestDB, NotificationAttemptDB, RecipientProfileDB, NotificationPreferenceDB])
+    init_models([NotificationRequestDB, NotificationAttemptDB, RecipientProfileDB, NotificationPreferenceDB, NotificationReceiptDB])
     app.state.transport = EmailTransport(
         smtp_host=settings.NOTIFY_EMAIL_SMTP_HOST,
         smtp_port=settings.NOTIFY_EMAIL_SMTP_PORT,
@@ -1302,6 +1303,25 @@ def _apply_chat_message_receipt(db: Session, payload: ChatMessageReceipt) -> Opt
         return None
     if record.message_session_id and record.message_session_id != payload.session_id:
         return None
+
+    # Persist receipt
+    existing_receipt = (
+        db.query(NotificationReceiptDB)
+        .filter_by(
+            message_id=str(payload.message_id),
+            receipt_type=payload.receipt_type,
+        )
+        .first()
+    )
+    if not existing_receipt:
+        receipt = NotificationReceiptDB(
+            message_id=str(payload.message_id),
+            receipt_type=payload.receipt_type,
+            session_id=payload.session_id,
+            received_at=payload.received_at,
+        )
+        db.add(receipt)
+
     if payload.receipt_type == "seen" and record.message_first_seen_at is None:
         record.message_first_seen_at = payload.received_at
     elif payload.receipt_type == "opened":

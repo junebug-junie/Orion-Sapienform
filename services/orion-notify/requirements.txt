@@ -7,3 +7,4 @@ SQLAlchemy==2.0.43
 pyyaml==6.0.2
 loguru>0.7
 redis[hiredis]==5.0.7
+psycopg2-binary==2.9.9

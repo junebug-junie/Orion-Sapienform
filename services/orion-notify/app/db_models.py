@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Index, Integer, JSON, String, Text, ForeignKey
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, JSON, String, Text, ForeignKey, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 
 from orion.core.sql_router.db import Base
 
@@ -18,10 +19,10 @@ class NotificationRequestDB(Base):
     title = Column(String, nullable=False)
     body_text = Column(Text, nullable=True)
     body_md = Column(Text, nullable=True)
-    context = Column(JSON, nullable=False, default=dict)
-    tags = Column(JSON, nullable=False, default=list)
+    context = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False, default=dict)
+    tags = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False, default=list)
     recipient_group = Column(String, nullable=False)
-    channels_requested = Column(JSON, nullable=True)
+    channels_requested = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     dedupe_key = Column(String, nullable=True)
     dedupe_window_seconds = Column(Integer, nullable=True)
     ttl_seconds = Column(Integer, nullable=True)
@@ -39,7 +40,7 @@ class NotificationRequestDB(Base):
     attention_ack_actor = Column(String, nullable=True)
     attention_ack_note = Column(Text, nullable=True)
     attention_escalated_at = Column(DateTime, nullable=True)
-    attention_escalation_channels = Column(JSON, nullable=True)
+    attention_escalation_channels = Column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     attention_expires_at = Column(DateTime, nullable=True)
     message_id = Column(String, nullable=True)
     message_session_id = Column(String, nullable=True)
@@ -65,6 +66,24 @@ class NotificationRequestDB(Base):
         Index("idx_notify_requests_message_id", "message_id"),
         Index("idx_notify_requests_message_session_id", "message_session_id"),
         Index("idx_notify_requests_message_opened_at", "message_opened_at"),
+        Index("uq_notify_requests_message_id", "message_id", unique=True),
+        Index("uq_notify_requests_attention_id", "attention_id", unique=True),
+    )
+
+
+class NotificationReceiptDB(Base):
+    __tablename__ = "notify_receipts"
+
+    receipt_id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    message_id = Column(String, nullable=False)
+    receipt_type = Column(String, nullable=False)
+    session_id = Column(String, nullable=True)
+    received_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_notify_receipts_message_id", "message_id"),
+        UniqueConstraint("message_id", "receipt_type", name="uq_notify_receipts_message_type"),
     )
 
 

@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     NOTIFY_IN_APP_ENABLED: bool = Field(True, alias="NOTIFY_IN_APP_ENABLED")
     NOTIFY_IN_APP_CHANNEL: str = Field("orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")
 
-    POSTGRES_URI: str = Field("sqlite:////data/notify.db", alias="POSTGRES_URI")
+    # Default to shared Postgres (Conjourney DB) - credentials should be provided via env
+    POSTGRES_URI: str = Field(
+        "postgresql://orion-athena-sql-db:5432/conjourney",
+        alias="POSTGRES_URI"
+    )
     POLICY_RULES_PATH: str = Field("/app/app/policy/rules.yaml", alias="POLICY_RULES_PATH")
 
     NOTIFY_EMAIL_SMTP_HOST: str = Field("", alias="NOTIFY_EMAIL_SMTP_HOST")

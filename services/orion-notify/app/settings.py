@@ -18,11 +18,7 @@ class Settings(BaseSettings):
     NOTIFY_IN_APP_ENABLED: bool = Field(True, alias="NOTIFY_IN_APP_ENABLED")
     NOTIFY_IN_APP_CHANNEL: str = Field("orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")
 
-    # Default to local SQLite (matches existing default)
-    POSTGRES_URI: str = Field(
-        "sqlite:////data/notify.db",
-        alias="POSTGRES_URI"
-    )
+    SQL_WRITER_API_URL: str = Field("http://orion-sql-writer:8220", alias="SQL_WRITER_API_URL")
     POLICY_RULES_PATH: str = Field("/app/app/policy/rules.yaml", alias="POLICY_RULES_PATH")
 
     NOTIFY_EMAIL_SMTP_HOST: str = Field("", alias="NOTIFY_EMAIL_SMTP_HOST")

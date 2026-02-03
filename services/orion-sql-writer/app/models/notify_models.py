@@ -86,3 +86,41 @@ class NotificationReceiptDB(Base):
         Index("idx_notify_receipts_message_id", "message_id"),
         UniqueConstraint("message_id", "receipt_type", name="uq_notify_receipts_message_type"),
     )
+
+
+class RecipientProfileDB(Base):
+    __tablename__ = "notify_recipient_profiles"
+
+    recipient_group = Column(String, primary_key=True)
+    display_name = Column(String, nullable=True)
+    timezone = Column(String, nullable=False, default="America/Denver")
+    quiet_hours_enabled = Column(Integer, nullable=False, default=0)
+    quiet_start_local = Column(String, nullable=False, default="22:00")
+    quiet_end_local = Column(String, nullable=False, default="07:00")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_notify_recipient_profiles_group", "recipient_group"),
+    )
+
+
+class NotificationPreferenceDB(Base):
+    __tablename__ = "notify_preferences"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    recipient_group = Column(String, ForeignKey("notify_recipient_profiles.recipient_group"), nullable=False)
+    scope_type = Column(String, nullable=False)
+    scope_value = Column(String, nullable=False)
+    channels_enabled = Column(Text, nullable=False, default="[]")
+    escalation_enabled = Column(Integer, nullable=True)
+    escalation_delay_minutes = Column(Integer, nullable=True)
+    throttle_max_per_window = Column(Integer, nullable=True)
+    throttle_window_seconds = Column(Integer, nullable=True)
+    dedupe_window_seconds = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_notify_preferences_recipient", "recipient_group"),
+        Index("idx_notify_preferences_recipient_scope", "recipient_group", "scope_type", "scope_value"),
+    )

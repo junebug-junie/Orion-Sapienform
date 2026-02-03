@@ -232,3 +232,12 @@ class HubNotificationEvent(BaseModel):
     message_id: Optional[UUID] = None
     notification_type: Optional[str] = None
     silent: Optional[bool] = None
+
+
+class NotificationReceiptEvent(BaseModel):
+    receipt_id: UUID = Field(default_factory=uuid4)
+    message_id: UUID
+    receipt_type: str
+    session_id: Optional[str] = None
+    received_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)

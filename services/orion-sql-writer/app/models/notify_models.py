@@ -4,8 +4,9 @@ from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, Index, Integer, JSON, String, Text, ForeignKey, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 
-from orion.core.sql_router.db import Base
+from app.db import Base
 
 
 class NotificationRequestDB(Base):
@@ -18,10 +19,10 @@ class NotificationRequestDB(Base):
     title = Column(String, nullable=False)
     body_text = Column(Text, nullable=True)
     body_md = Column(Text, nullable=True)
-    context = Column(JSON, nullable=False, default=dict)
-    tags = Column(JSON, nullable=False, default=list)
+    context = Column(JSONB, nullable=False, default=dict)
+    tags = Column(JSONB, nullable=False, default=list)
     recipient_group = Column(String, nullable=False)
-    channels_requested = Column(JSON, nullable=True)
+    channels_requested = Column(JSONB, nullable=True)
     dedupe_key = Column(String, nullable=True)
     dedupe_window_seconds = Column(Integer, nullable=True)
     ttl_seconds = Column(Integer, nullable=True)
@@ -39,7 +40,7 @@ class NotificationRequestDB(Base):
     attention_ack_actor = Column(String, nullable=True)
     attention_ack_note = Column(Text, nullable=True)
     attention_escalated_at = Column(DateTime, nullable=True)
-    attention_escalation_channels = Column(JSON, nullable=True)
+    attention_escalation_channels = Column(JSONB, nullable=True)
     attention_expires_at = Column(DateTime, nullable=True)
     message_id = Column(String, nullable=True)
     message_session_id = Column(String, nullable=True)
@@ -65,8 +66,9 @@ class NotificationRequestDB(Base):
         Index("idx_notify_requests_message_id", "message_id"),
         Index("idx_notify_requests_message_session_id", "message_session_id"),
         Index("idx_notify_requests_message_opened_at", "message_opened_at"),
-        Index("uq_notify_requests_message_id", "message_id", unique=True),
-        Index("uq_notify_requests_attention_id", "attention_id", unique=True),
+        # Unique constraints for correctness
+        UniqueConstraint("message_id", name="uq_notify_requests_message_id"),
+        UniqueConstraint("attention_id", name="uq_notify_requests_attention_id"),
     )
 
 
@@ -83,59 +85,4 @@ class NotificationReceiptDB(Base):
     __table_args__ = (
         Index("idx_notify_receipts_message_id", "message_id"),
         UniqueConstraint("message_id", "receipt_type", name="uq_notify_receipts_message_type"),
-    )
-
-
-class NotificationAttemptDB(Base):
-    __tablename__ = "notify_attempts"
-
-    attempt_id = Column(String, primary_key=True, default=lambda: str(uuid4()))
-    notification_id = Column(String, nullable=False)
-    channel = Column(String, nullable=False)
-    status = Column(String, nullable=False)
-    provider_message_id = Column(String, nullable=True)
-    error = Column(Text, nullable=True)
-    attempted_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (
-        Index("idx_notify_attempts_notification_id", "notification_id"),
-        Index("idx_notify_attempts_created_at", "attempted_at"),
-    )
-
-
-class RecipientProfileDB(Base):
-    __tablename__ = "notify_recipient_profiles"
-
-    recipient_group = Column(String, primary_key=True)
-    display_name = Column(String, nullable=True)
-    timezone = Column(String, nullable=False, default="America/Denver")
-    quiet_hours_enabled = Column(Integer, nullable=False, default=0)
-    quiet_start_local = Column(String, nullable=False, default="22:00")
-    quiet_end_local = Column(String, nullable=False, default="07:00")
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (
-        Index("idx_notify_recipient_profiles_group", "recipient_group"),
-    )
-
-
-class NotificationPreferenceDB(Base):
-    __tablename__ = "notify_preferences"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
-    recipient_group = Column(String, ForeignKey("notify_recipient_profiles.recipient_group"), nullable=False)
-    scope_type = Column(String, nullable=False)
-    scope_value = Column(String, nullable=False)
-    channels_enabled = Column(Text, nullable=False, default="[]")
-    escalation_enabled = Column(Integer, nullable=True)
-    escalation_delay_minutes = Column(Integer, nullable=True)
-    throttle_max_per_window = Column(Integer, nullable=True)
-    throttle_window_seconds = Column(Integer, nullable=True)
-    dedupe_window_seconds = Column(Integer, nullable=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-    __table_args__ = (
-        Index("idx_notify_preferences_recipient", "recipient_group"),
-        Index("idx_notify_preferences_recipient_scope", "recipient_group", "scope_type", "scope_value"),
     )

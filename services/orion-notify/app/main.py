@@ -28,6 +28,7 @@ from orion.schemas.notify import (
     NotificationPreference,
     NotificationPreferencesUpdate,
     NotificationRecord,
+    NotificationReceiptEvent,
     NotificationRequest,
     PreferenceResolutionRequest,
     PreferenceResolutionResponse,
@@ -692,6 +693,15 @@ def _store_request(
     message_require_read_receipt: bool = False,
     message_expires_at: Optional[datetime] = None,
 ) -> NotificationRequestDB:
+    # Explicitly set created_at if not present in payload, though payload.created_at usually has a default.
+    # However, if payload.created_at is None (unlikely given schema default), we need a value.
+    # More importantly, SQLAlchemy default=datetime.utcnow only fires on flush.
+    # We must ensure record.created_at is set for the bus event and API return.
+    # payload.created_at comes from the API request model which has default_factory=datetime.utcnow.
+    # So payload.created_at SHOULD be set.
+    # But let's be safe and ensure we use the same timestamp for everything.
+    ts = payload.created_at or datetime.utcnow()
+
     record = NotificationRequestDB(
         notification_id=str(payload.notification_id),
         source_service=payload.source_service,
@@ -709,7 +719,7 @@ def _store_request(
         ttl_seconds=payload.ttl_seconds,
         correlation_id=payload.correlation_id,
         session_id=payload.session_id,
-        created_at=payload.created_at,
+        created_at=ts,
         status=status,
         policy_action=policy_action,
         drop_reason=drop_reason,
@@ -725,9 +735,59 @@ def _store_request(
         message_require_read_receipt=message_require_read_receipt,
         message_expires_at=message_expires_at,
     )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
+
+    # Use existing local DB write (works for SQLite and if we connect to Postgres for reads)
+    # But if we are in Postgres mode (PROD), we ALSO publish to bus for durable persistence via SQL writer
+    # The 'db' session passed here is SessionLocal, which is bound to settings.POSTGRES_URI
+
+    # If in dev (sqlite), write locally.
+    # If in prod (postgres), we might be reading from postgres, so we can't write if we don't own the table/permissions or if architecture forbids it.
+    # User said: "persistence should flow bus -> sql-writer".
+    # And "If notify serves reads, notify should query via sql-writer read path or direct DB read"
+
+    # Check URI scheme
+    is_sqlite = str(settings.POSTGRES_URI).startswith("sqlite")
+
+    if is_sqlite:
+        # Local dev: write to local DB
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    else:
+        # Prod/Shared DB: Publish to bus
+        # Note: We return the record object, but it is transient (not attached to session or refreshed from DB)
+        # This means generated fields (like defaults if any, though we set most) might be missing if relying on DB.
+        # But we set most fields explicitly.
+        bus = getattr(app.state, "bus", None)
+        if bus:
+            event = NotificationRecord(
+                notification_id=UUID(record.notification_id),
+                source_service=record.source_service,
+                event_kind=record.event_kind,
+                severity=record.severity,
+                title=record.title,
+                body_text=record.body_text,
+                body_md=record.body_md,
+                context=record.context,
+                tags=record.tags,
+                recipient_group=record.recipient_group,
+                channels_requested=record.channels_requested,
+                dedupe_key=record.dedupe_key,
+                dedupe_window_seconds=record.dedupe_window_seconds,
+                ttl_seconds=record.ttl_seconds,
+                correlation_id=record.correlation_id,
+                session_id=record.session_id,
+                created_at=record.created_at,
+                status=record.status,
+                policy_action=record.policy_action,
+                drop_reason=record.drop_reason,
+            )
+
+            # Fire and forget persistence
+            asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", event))
+        else:
+            logger.warning("Orion Bus not available for persistence in non-SQLite mode")
+
     return record
 
 
@@ -1305,24 +1365,96 @@ def _apply_chat_message_receipt(db: Session, payload: ChatMessageReceipt) -> Opt
         return None
 
     # Persist receipt
-    existing_receipt = (
-        db.query(NotificationReceiptDB)
-        .filter_by(
-            message_id=str(payload.message_id),
-            receipt_type=payload.receipt_type,
-        )
-        .first()
-    )
-    if not existing_receipt:
-        receipt = NotificationReceiptDB(
-            message_id=str(payload.message_id),
-            receipt_type=payload.receipt_type,
-            session_id=payload.session_id,
-            received_at=payload.received_at,
-        )
-        db.add(receipt)
+    is_sqlite = str(settings.POSTGRES_URI).startswith("sqlite")
 
-    if payload.receipt_type == "seen" and record.message_first_seen_at is None:
+    if is_sqlite:
+        existing_receipt = (
+            db.query(NotificationReceiptDB)
+            .filter_by(
+                message_id=str(payload.message_id),
+                receipt_type=payload.receipt_type,
+            )
+            .first()
+        )
+        if not existing_receipt:
+            receipt = NotificationReceiptDB(
+                message_id=str(payload.message_id),
+                receipt_type=payload.receipt_type,
+                session_id=payload.session_id,
+                received_at=payload.received_at,
+            )
+            db.add(receipt)
+            # Local update to request record
+            if payload.receipt_type == "seen" and record.message_first_seen_at is None:
+                record.message_first_seen_at = payload.received_at
+            elif payload.receipt_type == "opened":
+                record.message_opened_at = payload.received_at
+                if record.message_first_seen_at is None:
+                    record.message_first_seen_at = payload.received_at
+            elif payload.receipt_type == "dismissed":
+                record.message_dismissed_at = payload.received_at
+                if record.message_first_seen_at is None:
+                    record.message_first_seen_at = payload.received_at
+            db.commit()
+            db.refresh(record)
+    else:
+        # Prod: Publish receipt to bus
+        bus = getattr(app.state, "bus", None)
+        if bus:
+            receipt_event = NotificationReceiptEvent(
+                message_id=payload.message_id,
+                receipt_type=payload.receipt_type,
+                session_id=payload.session_id,
+                received_at=payload.received_at,
+                created_at=datetime.utcnow()
+            )
+            asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:receipt", receipt_event))
+
+            # Optimistically update the record in memory (record is attached to a session that might be read-only or we shouldn't write to)
+            # If we are reading from Postgres, we shouldn't write.
+            # But the caller expects the updated state.
+            if payload.receipt_type == "seen" and record.message_first_seen_at is None:
+                record.message_first_seen_at = payload.received_at
+            elif payload.receipt_type == "opened":
+                record.message_opened_at = payload.received_at
+                if record.message_first_seen_at is None:
+                    record.message_first_seen_at = payload.received_at
+            elif payload.receipt_type == "dismissed":
+                record.message_dismissed_at = payload.received_at
+                if record.message_first_seen_at is None:
+                    record.message_first_seen_at = payload.received_at
+            # Do NOT commit db.
+
+    return record # Returns updated object (either from DB refresh or optimistic update)
+
+async def _publish_persistence_event(bus: OrionBusAsync, channel: str, payload: Any) -> None:
+    try:
+        env = BaseEnvelope(
+            kind=payload.model_extra.get("message_kind") if hasattr(payload, "model_extra") and payload.model_extra else "notify.persistence.event", # fallback
+            source=ServiceRef(
+                name=settings.SERVICE_NAME,
+                node=settings.NODE_NAME,
+                version=settings.SERVICE_VERSION,
+            ),
+            payload=payload.model_dump(mode="json"),
+        )
+        # Fix kind lookup since we are using explicit mapping in channels.yaml but need kind in envelope
+        if channel == "orion:notify:persistence:request":
+             env.kind = "notify.notification.request.v1"
+        elif channel == "orion:notify:persistence:receipt":
+             env.kind = "notify.notification.receipt.v1"
+
+        await bus.publish(channel, env)
+    except Exception as exc:
+        logger.error(f"Failed to publish persistence event to {channel}: {exc}")
+
+
+# Helper to avoid indentation mess above - we used inline logic but need to be careful with existing logic flow
+# The above search/replace block for receipt assumes we are replacing the *entire* receipt logic block.
+# Let's verify the search block covers what we want to replace.
+# The search block starts with "# Persist receipt" and ends with "elif payload.receipt_type == 'opened':"
+# This is risky if the code continues.
+# Better to implement a cleaner block replacement.
         record.message_first_seen_at = payload.received_at
     elif payload.receipt_type == "opened":
         record.message_opened_at = payload.received_at

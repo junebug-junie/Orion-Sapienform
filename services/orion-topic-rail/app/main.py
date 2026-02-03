@@ -163,6 +163,25 @@ class TopicRailService:
             outlier_pct=outlier_pct,
             topics=topics,
         )
+
+        if settings.topic_rail_bus_publish_enabled and self.publisher:
+            counts = Counter(topics)
+            top_topic_ids = [topic_id for topic_id, _ in counts.most_common(3)]
+            payload = {
+                "model_version": settings.topic_rail_model_version,
+                "node_name": settings.node_name,
+                "doc_count": written,
+                "outlier_pct": outlier_pct,
+                "top_topic_ids": top_topic_ids,
+                "created_at": datetime.now(timezone.utc),
+            }
+            asyncio.run(
+                self.publisher.publish_assignment_batch(
+                    settings.topic_rail_bus_topic_assigned_channel,
+                    payload,
+                )
+            )
+
         logger.info("Training assignments written=%s", written)
         return written
 
@@ -202,6 +221,25 @@ class TopicRailService:
             outlier_pct=outlier_pct,
             topics=topics,
         )
+
+        if settings.topic_rail_bus_publish_enabled and self.publisher:
+            counts = Counter(topics)
+            top_topic_ids = [topic_id for topic_id, _ in counts.most_common(3)]
+            payload = {
+                "model_version": settings.topic_rail_model_version,
+                "node_name": settings.node_name,
+                "doc_count": written,
+                "outlier_pct": outlier_pct,
+                "top_topic_ids": top_topic_ids,
+                "created_at": datetime.now(timezone.utc),
+            }
+            asyncio.run(
+                self.publisher.publish_assignment_batch(
+                    settings.topic_rail_bus_topic_assigned_channel,
+                    payload,
+                )
+            )
+
         logger.info("Assignment batch written=%s", written)
         return written
 

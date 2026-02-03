@@ -334,6 +334,7 @@ async def chat_message_receipt(
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:receipt", event))
 
     # Optimistic return
+    # We return "seen" because we just processed a receipt.
     return ChatMessageState(
         message_id=payload.message_id,
         created_at=datetime.utcnow(),

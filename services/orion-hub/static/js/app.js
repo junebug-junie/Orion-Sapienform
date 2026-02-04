@@ -520,27 +520,6 @@ loadDismissedIds();
     showToast(notification);
   }
 
-  function normalizeTextForPreview(text) {
-    if (!text) return '';
-    const trimmed = String(text).trim();
-    if (!trimmed) return '';
-    const half = Math.floor(trimmed.length / 2);
-    if (trimmed.length % 2 === 0) {
-      const firstHalf = trimmed.slice(0, half);
-      const secondHalf = trimmed.slice(half);
-      if (firstHalf === secondHalf) return firstHalf.trim();
-    }
-    const blocks = trimmed.split(/\n\s*\n/).map((block) => block.trim()).filter(Boolean);
-    if (blocks.length >= 2 && blocks[0] === blocks[1]) return blocks[0];
-    return trimmed;
-  }
-
-  function truncate(text, maxChars = 220) {
-    if (!text) return '';
-    const value = String(text);
-    return value.length > maxChars ? `${value.slice(0, maxChars - 1)}…` : value;
-  }
-
   function notificationIdentity(notification) {
     if (notification && notification.event_id) return `event:${notification.event_id}`;
     const createdAt = notification?.created_at || '';
@@ -606,33 +585,31 @@ loadDismissedIds();
       const createdAt = n.created_at ? new Date(n.created_at).toLocaleString() : '--';
       meta.textContent = `${createdAt} • ${n.event_kind || 'event'} • ${n.source_service || 'unknown'}`;
 
-      const normalizedText = normalizeTextForPreview(n.body_text || n.preview_text || '');
-      const previewText = truncate(normalizedText);
-      const preview = document.createElement('div');
-      preview.className = 'text-[11px] text-gray-300 line-clamp-3';
-      preview.textContent = previewText;
+      const fullText = String(n.full_text || n.body_md || n.body_text || n.preview_text || '').trim();
+      const bodyTextEl = document.createElement('div');
+      bodyTextEl.className = 'text-[11px] text-gray-300 whitespace-pre-wrap line-clamp-2 overflow-hidden';
+      bodyTextEl.textContent = fullText;
 
-      let details = null;
-      if (normalizedText.length > previewText.length) {
-        details = document.createElement('details');
-        details.className = 'text-[11px] text-gray-300';
-        const summary = document.createElement('summary');
-        summary.className = 'cursor-pointer text-gray-400';
-        summary.textContent = 'Expand';
-        const bodyText = document.createElement('div');
-        bodyText.className = 'mt-1 whitespace-pre-wrap';
-        bodyText.textContent = normalizedText;
-        details.appendChild(summary);
-        details.appendChild(bodyText);
-        details.addEventListener('toggle', () => {
-          summary.textContent = details.open ? 'Collapse' : 'Expand';
-        });
-      }
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'text-[10px] text-gray-400 hover:text-gray-200';
+      toggle.textContent = 'Expand';
+      let isExpanded = false;
+      const toggleVisible = fullText.length > 240;
+      toggle.classList.toggle('hidden', !toggleVisible);
+      toggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        isExpanded = !isExpanded;
+        bodyTextEl.classList.toggle('line-clamp-2', !isExpanded);
+        bodyTextEl.classList.toggle('overflow-hidden', !isExpanded);
+        toggle.textContent = isExpanded ? 'Collapse' : 'Expand';
+      });
 
       item.appendChild(header);
       item.appendChild(meta);
-      item.appendChild(preview);
-      if (details) item.appendChild(details);
+      item.appendChild(bodyTextEl);
+      if (toggleVisible) item.appendChild(toggle);
       notificationList.appendChild(item);
     });
   }

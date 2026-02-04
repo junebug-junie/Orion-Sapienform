@@ -1,0 +1,11 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.11.5
+pydantic-settings==2.5.2
+psycopg2-binary==2.9.9
+requests==2.32.3
+hdbscan==0.8.41
+scikit-learn>=1.6,<1.7
+numpy==2.0.2
+scipy==1.13.1
+joblib==1.4.2

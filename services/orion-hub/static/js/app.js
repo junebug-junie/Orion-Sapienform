@@ -31,6 +31,7 @@ let notifications = [];
 let pendingAttention = [];
 let chatMessages = [];
 const seenMessageIds = new Set();
+const openedMessageIds = new Set();
 const dismissedMessageIds = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
@@ -417,16 +418,39 @@ loadDismissedIds();
       messageList.appendChild(groupHeader);
 
       items.forEach((item) => {
-        const card = document.createElement('div');
-        card.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2 space-y-2';
+        const details = document.createElement('details');
+        details.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2';
+
+        const summary = document.createElement('summary');
+        summary.className = 'cursor-pointer list-none space-y-1';
+
+        const headerRow = document.createElement('div');
+        headerRow.className = 'flex items-center justify-between gap-2';
 
         const title = document.createElement('div');
         title.className = 'text-gray-100 font-semibold text-xs';
         title.textContent = item.title || 'Message';
 
+        const meta = document.createElement('div');
+        meta.className = 'text-[10px] text-gray-400';
+        meta.textContent = item.created_at ? new Date(item.created_at).toLocaleString() : '--';
+
+        headerRow.appendChild(title);
+        headerRow.appendChild(meta);
+
+        const preview = document.createElement('div');
+        preview.className = 'text-[11px] text-gray-300 line-clamp-2';
+        preview.textContent = item.preview_text || '';
+
+        summary.appendChild(headerRow);
+        summary.appendChild(preview);
+
         const body = document.createElement('div');
-        body.className = 'text-[11px] text-gray-300 whitespace-pre-wrap';
-        body.textContent = item.preview_text || '';
+        body.className = 'mt-2 space-y-2';
+
+        const bodyText = document.createElement('div');
+        bodyText.className = 'text-[11px] text-gray-300 whitespace-pre-wrap';
+        bodyText.textContent = item.preview_text || '';
 
         const actions = document.createElement('div');
         actions.className = 'flex items-center gap-2 text-[10px]';
@@ -439,7 +463,6 @@ loadDismissedIds();
           e.stopPropagation();
           setSessionId(item.session_id);
           focusChatInput();
-          if (!item._synthetic_id) handleChatMessageReceipt(item.message_id, item.session_id, 'opened');
         });
 
         const dismissBtn = document.createElement('button');
@@ -460,10 +483,20 @@ loadDismissedIds();
         actions.appendChild(openBtn);
         actions.appendChild(dismissBtn);
 
-        card.appendChild(title);
-        card.appendChild(body);
-        card.appendChild(actions);
-        messageList.appendChild(card);
+        body.appendChild(bodyText);
+        body.appendChild(actions);
+
+        details.appendChild(summary);
+        details.appendChild(body);
+        details.addEventListener('toggle', () => {
+          if (!details.open) return;
+          if (!item || !item.message_id || item._synthetic_id) return;
+          if (openedMessageIds.has(item.message_id)) return;
+          openedMessageIds.add(item.message_id);
+          handleChatMessageReceipt(item.message_id, item.session_id, 'opened');
+        });
+
+        messageList.appendChild(details);
       });
     });
   }
@@ -527,8 +560,8 @@ loadDismissedIds();
       const body = document.createElement('details');
       body.className = 'text-[11px] text-gray-300';
       const summary = document.createElement('summary');
-      summary.className = 'cursor-pointer text-gray-400';
-      summary.textContent = 'Details';
+      summary.className = 'cursor-pointer text-gray-400 line-clamp-3';
+      summary.textContent = n.body_text || 'Details';
       const bodyText = document.createElement('div');
       bodyText.className = 'mt-1 whitespace-pre-wrap';
       bodyText.textContent = n.body_text || '';

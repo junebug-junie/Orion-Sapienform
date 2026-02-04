@@ -45,7 +45,9 @@ class Settings(BaseSettings):
             "orion:spark:telemetry",
             "orion:cognition:trace",
             "orion:metacognition:tick",
-            "orion:equilibrium:metacog:trigger"
+            "orion:equilibrium:metacog:trigger",
+            "orion:notify:persistence:request",
+            "orion:notify:persistence:receipt"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

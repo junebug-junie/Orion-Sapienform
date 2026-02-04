@@ -84,6 +84,7 @@ from orion.schemas.notify import (
     HubNotificationEvent,
     NotificationAccepted,
     NotificationRecord,
+    NotificationReceiptEvent,
     NotificationRequest,
     NotificationPreference,
     NotificationPreferencesUpdate,
@@ -92,7 +93,7 @@ from orion.schemas.notify import (
     RecipientProfile,
     RecipientProfileUpdate,
 )
-from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1
+from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -174,6 +175,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "NotificationRequest": NotificationRequest,
     "NotificationAccepted": NotificationAccepted,
     "NotificationRecord": NotificationRecord,
+    "NotificationReceiptEvent": NotificationReceiptEvent,
     "DeliveryAttempt": DeliveryAttempt,
     "HubNotificationEvent": HubNotificationEvent,
     "ChatAttentionRequest": ChatAttentionRequest,
@@ -190,6 +192,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PreferenceResolutionResponse": PreferenceResolutionResponse,
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,
+    "TopicRailAssignedV1": TopicRailAssignedV1,
 
 }
 

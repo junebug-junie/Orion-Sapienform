@@ -8,6 +8,12 @@ from .biometrics_summary import BiometricsSummarySQL
 from .biometrics_induction import BiometricsInductionSQL
 from .spark_introspection_log import SparkIntrospectionLogSQL
 from .spark_telemetry import SparkTelemetrySQL
+from .notify_models import (
+    NotificationRequestDB,
+    NotificationReceiptDB,
+    RecipientProfileDB,
+    NotificationPreferenceDB,
+)
 from .fallback_log import BusFallbackLog
 from .cognition_trace import CognitionTraceSQL
 from .metacognition_tick import MetacognitionTickSQL

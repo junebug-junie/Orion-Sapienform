@@ -31,6 +31,7 @@ let notifications = [];
 let pendingAttention = [];
 let chatMessages = [];
 const seenMessageIds = new Set();
+const openedMessageIds = new Set();
 const dismissedMessageIds = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
@@ -417,16 +418,39 @@ loadDismissedIds();
       messageList.appendChild(groupHeader);
 
       items.forEach((item) => {
-        const card = document.createElement('div');
-        card.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2 space-y-2';
+        const details = document.createElement('details');
+        details.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2';
+
+        const summary = document.createElement('summary');
+        summary.className = 'cursor-pointer list-none space-y-1';
+
+        const headerRow = document.createElement('div');
+        headerRow.className = 'flex items-center justify-between gap-2';
 
         const title = document.createElement('div');
         title.className = 'text-gray-100 font-semibold text-xs';
         title.textContent = item.title || 'Message';
 
+        const meta = document.createElement('div');
+        meta.className = 'text-[10px] text-gray-400';
+        meta.textContent = item.created_at ? new Date(item.created_at).toLocaleString() : '--';
+
+        headerRow.appendChild(title);
+        headerRow.appendChild(meta);
+
+        const preview = document.createElement('div');
+        preview.className = 'text-[11px] text-gray-300 line-clamp-2';
+        preview.textContent = item.preview_text || '';
+
+        summary.appendChild(headerRow);
+        summary.appendChild(preview);
+
         const body = document.createElement('div');
-        body.className = 'text-[11px] text-gray-300 whitespace-pre-wrap';
-        body.textContent = item.preview_text || '';
+        body.className = 'mt-2 space-y-2';
+
+        const bodyText = document.createElement('div');
+        bodyText.className = 'text-[11px] text-gray-300 whitespace-pre-wrap';
+        bodyText.textContent = item.preview_text || '';
 
         const actions = document.createElement('div');
         actions.className = 'flex items-center gap-2 text-[10px]';
@@ -439,7 +463,6 @@ loadDismissedIds();
           e.stopPropagation();
           setSessionId(item.session_id);
           focusChatInput();
-          if (!item._synthetic_id) handleChatMessageReceipt(item.message_id, item.session_id, 'opened');
         });
 
         const dismissBtn = document.createElement('button');
@@ -460,10 +483,20 @@ loadDismissedIds();
         actions.appendChild(openBtn);
         actions.appendChild(dismissBtn);
 
-        card.appendChild(title);
-        card.appendChild(body);
-        card.appendChild(actions);
-        messageList.appendChild(card);
+        body.appendChild(bodyText);
+        body.appendChild(actions);
+
+        details.appendChild(summary);
+        details.appendChild(body);
+        details.addEventListener('toggle', () => {
+          if (!details.open) return;
+          if (!item || !item.message_id || item._synthetic_id) return;
+          if (openedMessageIds.has(item.message_id)) return;
+          openedMessageIds.add(item.message_id);
+          handleChatMessageReceipt(item.message_id, item.session_id, 'opened');
+        });
+
+        messageList.appendChild(details);
       });
     });
   }
@@ -487,6 +520,14 @@ loadDismissedIds();
     showToast(notification);
   }
 
+  function notificationIdentity(notification) {
+    if (notification && notification.event_id) return `event:${notification.event_id}`;
+    const createdAt = notification?.created_at || '';
+    const title = notification?.title || '';
+    const body = notification?.body_text || '';
+    return `fallback:${createdAt}|${title}|${body}`;
+  }
+
   function renderNotifications() {
     if (!notificationList) return;
     const filter = notificationFilter ? notificationFilter.value : 'all';
@@ -503,7 +544,7 @@ loadDismissedIds();
 
     filtered.forEach((n) => {
       const item = document.createElement('div');
-      item.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2 space-y-1';
+      item.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2 space-y-2';
 
       const header = document.createElement('div');
       header.className = 'flex items-center justify-between gap-2';
@@ -512,32 +553,63 @@ loadDismissedIds();
       title.className = 'text-gray-100 font-semibold text-xs';
       title.textContent = n.title || 'Notification';
 
+      const headerActions = document.createElement('div');
+      headerActions.className = 'flex items-center gap-2';
+
       const badge = document.createElement('span');
       badge.className = `text-[10px] px-2 py-0.5 rounded-full uppercase ${severityBadgeClass(n.severity)}`;
       badge.textContent = (n.severity || 'info').toUpperCase();
 
+      const dismissBtn = document.createElement('button');
+      dismissBtn.className = 'text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200';
+      dismissBtn.textContent = 'Dismiss';
+      dismissBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const identity = notificationIdentity(n);
+        notifications = notifications.filter((item) => notificationIdentity(item) !== identity);
+        renderNotifications();
+        if (n && n.message_id && n.session_id) {
+          handleChatMessageReceipt(n.message_id, n.session_id, 'dismissed');
+        }
+      });
+
+      headerActions.appendChild(badge);
+      headerActions.appendChild(dismissBtn);
+
       header.appendChild(title);
-      header.appendChild(badge);
+      header.appendChild(headerActions);
 
       const meta = document.createElement('div');
       meta.className = 'text-[10px] text-gray-400';
       const createdAt = n.created_at ? new Date(n.created_at).toLocaleString() : '--';
       meta.textContent = `${createdAt} • ${n.event_kind || 'event'} • ${n.source_service || 'unknown'}`;
 
-      const body = document.createElement('details');
-      body.className = 'text-[11px] text-gray-300';
-      const summary = document.createElement('summary');
-      summary.className = 'cursor-pointer text-gray-400';
-      summary.textContent = 'Details';
-      const bodyText = document.createElement('div');
-      bodyText.className = 'mt-1 whitespace-pre-wrap';
-      bodyText.textContent = n.body_text || '';
-      body.appendChild(summary);
-      body.appendChild(bodyText);
+      const fullText = String(n.full_text || n.body_md || n.body_text || n.preview_text || '').trim();
+      const bodyTextEl = document.createElement('div');
+      bodyTextEl.className = 'text-[11px] text-gray-300 whitespace-pre-wrap line-clamp-2 overflow-hidden';
+      bodyTextEl.textContent = fullText;
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'text-[10px] text-gray-400 hover:text-gray-200';
+      toggle.textContent = 'Expand';
+      let isExpanded = false;
+      const toggleVisible = fullText.length > 240;
+      toggle.classList.toggle('hidden', !toggleVisible);
+      toggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        isExpanded = !isExpanded;
+        bodyTextEl.classList.toggle('line-clamp-2', !isExpanded);
+        bodyTextEl.classList.toggle('overflow-hidden', !isExpanded);
+        toggle.textContent = isExpanded ? 'Collapse' : 'Expand';
+      });
 
       item.appendChild(header);
       item.appendChild(meta);
-      item.appendChild(body);
+      item.appendChild(bodyTextEl);
+      if (toggleVisible) item.appendChild(toggle);
       notificationList.appendChild(item);
     });
   }

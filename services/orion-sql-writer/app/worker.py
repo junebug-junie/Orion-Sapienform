@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, Tuple, Type
 
 from sqlalchemy import inspect, update
 from sqlalchemy.types import DateTime, String
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 
 from app.settings import settings
@@ -28,7 +29,9 @@ from app.models import (
     BusFallbackLog,
     CognitionTraceSQL,
     MetacognitionTickSQL,
-    MetacogTriggerSQL
+    MetacogTriggerSQL,
+    NotificationRequestDB,
+    NotificationReceiptDB
 )
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -84,6 +87,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
     "MetacogTriggerSQL": (MetacogTriggerSQL, MetacogTriggerV1),
+    "NotificationRequestDB": (NotificationRequestDB, None),
+    "NotificationReceiptDB": (NotificationReceiptDB, None),
 }
 
 
@@ -492,8 +497,22 @@ def _write_row(sql_model_cls, data: dict) -> None:
             except Exception as ex:
                 logger.warning(f"Failed to upsert chat_history_log from chat_message: {ex}")
 
-        sess.merge(sql_model_cls(**filtered_data))
-        sess.commit()
+        try:
+            sess.merge(sql_model_cls(**filtered_data))
+            sess.commit()
+        except IntegrityError as e:
+            sess.rollback()
+            # Handle unique constraint violations gracefully (idempotency)
+            # Postgres unique violation code is 23505
+            if hasattr(e.orig, 'pgcode') and e.orig.pgcode == '23505':
+                logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
+                return
+            # Also catch generic duplicates if pgcode not available or different driver
+            if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
+                return
+            logger.error(f"IntegrityError writing to {sql_model_cls.__tablename__}: {e}")
+            raise e
 
     finally:
         try:

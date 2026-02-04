@@ -520,6 +520,35 @@ loadDismissedIds();
     showToast(notification);
   }
 
+  function normalizeTextForPreview(text) {
+    if (!text) return '';
+    const trimmed = String(text).trim();
+    if (!trimmed) return '';
+    const half = Math.floor(trimmed.length / 2);
+    if (trimmed.length % 2 === 0) {
+      const firstHalf = trimmed.slice(0, half);
+      const secondHalf = trimmed.slice(half);
+      if (firstHalf === secondHalf) return firstHalf.trim();
+    }
+    const blocks = trimmed.split(/\n\s*\n/).map((block) => block.trim()).filter(Boolean);
+    if (blocks.length >= 2 && blocks[0] === blocks[1]) return blocks[0];
+    return trimmed;
+  }
+
+  function truncate(text, maxChars = 220) {
+    if (!text) return '';
+    const value = String(text);
+    return value.length > maxChars ? `${value.slice(0, maxChars - 1)}…` : value;
+  }
+
+  function notificationIdentity(notification) {
+    if (notification && notification.event_id) return `event:${notification.event_id}`;
+    const createdAt = notification?.created_at || '';
+    const title = notification?.title || '';
+    const body = notification?.body_text || '';
+    return `fallback:${createdAt}|${title}|${body}`;
+  }
+
   function renderNotifications() {
     if (!notificationList) return;
     const filter = notificationFilter ? notificationFilter.value : 'all';
@@ -536,7 +565,7 @@ loadDismissedIds();
 
     filtered.forEach((n) => {
       const item = document.createElement('div');
-      item.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2 space-y-1';
+      item.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2 space-y-2';
 
       const header = document.createElement('div');
       header.className = 'flex items-center justify-between gap-2';
@@ -545,32 +574,65 @@ loadDismissedIds();
       title.className = 'text-gray-100 font-semibold text-xs';
       title.textContent = n.title || 'Notification';
 
+      const headerActions = document.createElement('div');
+      headerActions.className = 'flex items-center gap-2';
+
       const badge = document.createElement('span');
       badge.className = `text-[10px] px-2 py-0.5 rounded-full uppercase ${severityBadgeClass(n.severity)}`;
       badge.textContent = (n.severity || 'info').toUpperCase();
 
+      const dismissBtn = document.createElement('button');
+      dismissBtn.className = 'text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200';
+      dismissBtn.textContent = 'Dismiss';
+      dismissBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const identity = notificationIdentity(n);
+        notifications = notifications.filter((item) => notificationIdentity(item) !== identity);
+        renderNotifications();
+        if (n && n.message_id && n.session_id) {
+          handleChatMessageReceipt(n.message_id, n.session_id, 'dismissed');
+        }
+      });
+
+      headerActions.appendChild(badge);
+      headerActions.appendChild(dismissBtn);
+
       header.appendChild(title);
-      header.appendChild(badge);
+      header.appendChild(headerActions);
 
       const meta = document.createElement('div');
       meta.className = 'text-[10px] text-gray-400';
       const createdAt = n.created_at ? new Date(n.created_at).toLocaleString() : '--';
       meta.textContent = `${createdAt} • ${n.event_kind || 'event'} • ${n.source_service || 'unknown'}`;
 
-      const body = document.createElement('details');
-      body.className = 'text-[11px] text-gray-300';
-      const summary = document.createElement('summary');
-      summary.className = 'cursor-pointer text-gray-400 line-clamp-3';
-      summary.textContent = n.body_text || 'Details';
-      const bodyText = document.createElement('div');
-      bodyText.className = 'mt-1 whitespace-pre-wrap';
-      bodyText.textContent = n.body_text || '';
-      body.appendChild(summary);
-      body.appendChild(bodyText);
+      const normalizedText = normalizeTextForPreview(n.body_text || n.preview_text || '');
+      const previewText = truncate(normalizedText);
+      const preview = document.createElement('div');
+      preview.className = 'text-[11px] text-gray-300 line-clamp-3';
+      preview.textContent = previewText;
+
+      let details = null;
+      if (normalizedText.length > previewText.length) {
+        details = document.createElement('details');
+        details.className = 'text-[11px] text-gray-300';
+        const summary = document.createElement('summary');
+        summary.className = 'cursor-pointer text-gray-400';
+        summary.textContent = 'Expand';
+        const bodyText = document.createElement('div');
+        bodyText.className = 'mt-1 whitespace-pre-wrap';
+        bodyText.textContent = normalizedText;
+        details.appendChild(summary);
+        details.appendChild(bodyText);
+        details.addEventListener('toggle', () => {
+          summary.textContent = details.open ? 'Collapse' : 'Expand';
+        });
+      }
 
       item.appendChild(header);
       item.appendChild(meta);
-      item.appendChild(body);
+      item.appendChild(preview);
+      if (details) item.appendChild(details);
       notificationList.appendChild(item);
     });
   }

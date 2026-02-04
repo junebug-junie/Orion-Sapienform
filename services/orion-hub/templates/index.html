@@ -6,7 +6,7 @@
   <title>Orion Hub</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/style.css?v=1.0.6" />
+  <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
 </head>
 <body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}">
   <div id="toastContainer" class="fixed top-4 right-4 z-50 space-y-2"></div>
@@ -193,39 +193,6 @@
         </div>
 
         <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
-          <div class="space-y-2">
-            <div class="flex items-center justify-between">
-              <div class="text-xs uppercase tracking-wide text-gray-500">Pending Attention</div>
-              <span id="attentionCount" class="text-[10px] text-gray-500">0</span>
-            </div>
-            <div id="attentionList" class="space-y-2 max-h-40 overflow-y-auto text-xs"></div>
-          </div>
-          <div class="border-t border-gray-700 pt-3 space-y-3">
-            <div class="flex items-center justify-between">
-              <div class="text-xs uppercase tracking-wide text-gray-500">Messages</div>
-              <select id="messageFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="unread" selected>Unread</option>
-                <option value="all">All</option>
-              </select>
-            </div>
-            <div id="messageList" class="space-y-2 max-h-40 overflow-y-auto text-xs"></div>
-          </div>
-          <div class="border-t border-gray-700 pt-3 space-y-3">
-          <div class="flex items-center justify-between">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Notifications</div>
-            <select id="notificationFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="all" selected>All</option>
-              <option value="critical">Critical</option>
-              <option value="error">Error</option>
-              <option value="warning">Warning</option>
-              <option value="info">Info</option>
-            </select>
-          </div>
-          <div id="notificationList" class="space-y-2 max-h-52 overflow-y-auto text-xs"></div>
-          </div>
-        </div>
-
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between">
             <div class="text-xs uppercase tracking-wide text-gray-500">Cognition Packs</div>
           </div>
@@ -254,6 +221,43 @@
               <div id="verbList" class="max-h-56 overflow-y-auto p-2 space-y-1"></div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="w-full space-y-6">
+      <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-lg font-semibold text-white">Messages</h3>
+          <select id="messageFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+            <option value="unread" selected>Unread</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div id="messageList" class="space-y-2 max-h-72 overflow-y-auto text-xs"></div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Pending Attention</div>
+            <span id="attentionCount" class="text-[10px] text-gray-500">0</span>
+          </div>
+          <div id="attentionList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
+        </div>
+
+        <div class="bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Notifications</div>
+            <select id="notificationFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="all" selected>All</option>
+              <option value="critical">Critical</option>
+              <option value="error">Error</option>
+              <option value="warning">Warning</option>
+              <option value="info">Info</option>
+            </select>
+          </div>
+          <div id="notificationList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
         </div>
       </div>
     </div>

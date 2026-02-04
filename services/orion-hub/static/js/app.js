@@ -585,7 +585,7 @@ loadDismissedIds();
       const createdAt = n.created_at ? new Date(n.created_at).toLocaleString() : '--';
       meta.textContent = `${createdAt} • ${n.event_kind || 'event'} • ${n.source_service || 'unknown'}`;
 
-      const fullText = String(n.body_text || n.preview_text || '').trim();
+      const fullText = String(n.full_text || n.body_md || n.body_text || n.preview_text || '').trim();
       const bodyTextEl = document.createElement('div');
       bodyTextEl.className = 'text-[11px] text-gray-300 whitespace-pre-wrap line-clamp-2 overflow-hidden';
       bodyTextEl.textContent = fullText;

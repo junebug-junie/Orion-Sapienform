@@ -1,0 +1,50 @@
+services:
+  topic-foundry:
+    build:
+      context: ../..
+      dockerfile: services/orion-topic-foundry/Dockerfile
+    container_name: orion-${NODE_NAME}-topic-foundry
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - PORT=${PORT}
+      - TOPIC_FOUNDRY_PG_DSN=${TOPIC_FOUNDRY_PG_DSN}
+      - TOPIC_FOUNDRY_EMBEDDING_URL=${TOPIC_FOUNDRY_EMBEDDING_URL}
+      - TOPIC_FOUNDRY_MODEL_DIR=${TOPIC_FOUNDRY_MODEL_DIR}
+      - TOPIC_FOUNDRY_LLM_BASE_URL=${TOPIC_FOUNDRY_LLM_BASE_URL}
+      - TOPIC_FOUNDRY_LLM_MODEL=${TOPIC_FOUNDRY_LLM_MODEL}
+      - TOPIC_FOUNDRY_LLM_ROUTE=${TOPIC_FOUNDRY_LLM_ROUTE}
+      - TOPIC_FOUNDRY_LLM_BUS_ROUTE=${TOPIC_FOUNDRY_LLM_BUS_ROUTE}
+      - TOPIC_FOUNDRY_LLM_TIMEOUT_SECS=${TOPIC_FOUNDRY_LLM_TIMEOUT_SECS}
+      - TOPIC_FOUNDRY_LLM_MAX_CONCURRENCY=${TOPIC_FOUNDRY_LLM_MAX_CONCURRENCY}
+      - TOPIC_FOUNDRY_LLM_USE_BUS=${TOPIC_FOUNDRY_LLM_USE_BUS}
+      - TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL=${TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL}
+      - TOPIC_FOUNDRY_LLM_REPLY_PREFIX=${TOPIC_FOUNDRY_LLM_REPLY_PREFIX}
+      - TOPIC_FOUNDRY_LLM_HEALTH_URL=${TOPIC_FOUNDRY_LLM_HEALTH_URL}
+      - TOPIC_FOUNDRY_LLM_ENABLE=${TOPIC_FOUNDRY_LLM_ENABLE}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - TOPIC_FOUNDRY_DRIFT_DAEMON=${TOPIC_FOUNDRY_DRIFT_DAEMON}
+      - TOPIC_FOUNDRY_DRIFT_POLL_SECONDS=${TOPIC_FOUNDRY_DRIFT_POLL_SECONDS}
+      - TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS=${TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS}
+    volumes:
+      - /mnt/telemetry/models/topic-foundry:/mnt/telemetry/models/topic-foundry
+    env_file:
+      - .env
+    ports:
+      - "${PORT}:${PORT}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT}/health"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-net:
+    external: true

@@ -29,7 +29,9 @@ from app.models import (
     BusFallbackLog,
     CognitionTraceSQL,
     MetacognitionTickSQL,
-    MetacogTriggerSQL
+    MetacogTriggerSQL,
+    NotificationRequestDB,
+    NotificationReceiptDB
 )
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -85,6 +87,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
     "MetacogTriggerSQL": (MetacogTriggerSQL, MetacogTriggerV1),
+    "NotificationRequestDB": (NotificationRequestDB, None),
+    "NotificationReceiptDB": (NotificationReceiptDB, None),
 }
 
 

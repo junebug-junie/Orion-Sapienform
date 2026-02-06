@@ -1,0 +1,406 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+
+class DatasetSpec(BaseModel):
+    dataset_id: UUID
+    name: str
+    source_table: str
+    id_column: str
+    time_column: str
+    text_columns: List[str]
+    where_sql: Optional[str] = None
+    where_params: Optional[Dict[str, Any]] = None
+    timezone: str = "UTC"
+    created_at: datetime
+
+
+class WindowingSpec(BaseModel):
+    block_mode: Literal["turn_pairs", "triads", "rows"] = "turn_pairs"
+    include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
+    segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"
+    semantic_split_threshold: float = 0.75
+    confirm_edges_k: int = 2
+    smoothing_window: int = 3
+    llm_boundary_context_blocks: int = 3
+    llm_boundary_max_chars: int = 4000
+    llm_candidate_top_k: int = 200
+    llm_candidate_strategy: Literal["semantic_low_sim", "all_edges"] = "semantic_low_sim"
+    llm_candidate_threshold: Optional[float] = None
+    time_gap_seconds: int = 900
+    max_window_seconds: int = 7200
+    min_blocks_per_segment: int = 1
+    max_chars: int = 6000
+
+
+class ModelSpec(BaseModel):
+    algorithm: Literal["hdbscan"] = "hdbscan"
+    embedding_source_url: str
+    min_cluster_size: int = 15
+    metric: str = "cosine"
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EnrichmentSpec(BaseModel):
+    enable_enrichment: bool = False
+    enricher: Literal["llm", "heuristic"] = "llm"
+    aspect_taxonomy: Optional[str] = None
+
+
+class RunSpecSnapshot(BaseModel):
+    dataset: DatasetSpec
+    windowing: WindowingSpec
+    model: ModelSpec
+    enrichment: EnrichmentSpec = Field(default_factory=EnrichmentSpec)
+
+
+class RunRecord(BaseModel):
+    run_id: UUID
+    model_id: UUID
+    dataset_id: UUID
+    specs: RunSpecSnapshot
+    spec_hash: Optional[str] = None
+    status: Literal["queued", "running", "complete", "failed"]
+    stage: Optional[str] = None
+    stats: Dict[str, Any] = Field(default_factory=dict)
+    artifact_paths: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+
+class SegmentRecord(BaseModel):
+    segment_id: UUID
+    run_id: UUID
+    size: int
+    provenance: Dict[str, Any]
+    created_at: datetime
+    label: Optional[str] = None
+    topic_id: Optional[int] = None
+    topic_prob: Optional[float] = None
+    is_outlier: Optional[bool] = None
+    title: Optional[str] = None
+    aspects: Optional[List[str]] = None
+    sentiment: Optional[Dict[str, Any]] = None
+    meaning: Optional[Dict[str, Any]] = None
+    enrichment: Optional[Dict[str, Any]] = None
+    enriched_at: Optional[datetime] = None
+    enrichment_version: Optional[str] = None
+    snippet: Optional[str] = None
+    chars: Optional[int] = None
+    row_ids_count: Optional[int] = None
+    start_at: Optional[datetime] = None
+    end_at: Optional[datetime] = None
+
+
+class DatasetCreateRequest(BaseModel):
+    name: str
+    source_table: str
+    id_column: str
+    time_column: str
+    text_columns: List[str]
+    where_sql: Optional[str] = None
+    where_params: Optional[Dict[str, Any]] = None
+    timezone: str = "UTC"
+
+
+class DatasetCreateResponse(BaseModel):
+    dataset_id: UUID
+    created_at: datetime
+
+
+class DatasetPreviewRequest(BaseModel):
+    dataset: DatasetCreateRequest
+    windowing: WindowingSpec
+    start_at: Optional[datetime] = None
+    end_at: Optional[datetime] = None
+    limit: int = 200
+
+
+class DatasetPreviewDoc(BaseModel):
+    doc_id: str
+    segment_id: str
+    row_ids_count: int
+    chars: int
+    snippet: str
+
+
+class DatasetPreviewResponse(BaseModel):
+    rows_scanned: int
+    blocks_generated: int
+    segments_generated: int
+    docs_generated: int
+    doc_count: int
+    avg_chars: float
+    p95_chars: int
+    max_chars: int
+    observed_start_at: Optional[datetime] = None
+    observed_end_at: Optional[datetime] = None
+    samples: List[DatasetPreviewDoc]
+
+
+class ModelCreateRequest(BaseModel):
+    name: str
+    version: str
+    stage: Optional[str] = "development"
+    dataset_id: UUID
+    model_spec: ModelSpec
+    windowing_spec: WindowingSpec
+    enrichment_spec: Optional[EnrichmentSpec] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelCreateResponse(BaseModel):
+    model_id: UUID
+    created_at: datetime
+
+
+class ModelPromoteRequest(BaseModel):
+    stage: Literal["candidate", "active", "archived"]
+    reason: Optional[str] = None
+
+
+class ModelSummary(BaseModel):
+    model_id: UUID
+    name: str
+    version: str
+    stage: Optional[str]
+    dataset_id: UUID
+    created_at: datetime
+
+
+class ModelListResponse(BaseModel):
+    models: List[ModelSummary]
+
+
+class ModelPromoteResponse(BaseModel):
+    model: ModelSummary
+
+
+class ModelVersionEntry(BaseModel):
+    model_id: UUID
+    name: str
+    version: str
+    stage: Optional[str]
+    created_at: datetime
+
+
+class ModelVersionsResponse(BaseModel):
+    name: str
+    versions: List[ModelVersionEntry]
+
+
+class DatasetListResponse(BaseModel):
+    datasets: List[DatasetSpec]
+
+
+class RunSummary(BaseModel):
+    run_id: UUID
+    model_id: UUID
+    dataset_id: UUID
+    status: Literal["queued", "running", "complete", "failed"]
+    stage: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class RunListResponse(BaseModel):
+    runs: List[RunSummary]
+
+
+class RunTrainRequest(BaseModel):
+    model_id: UUID
+    dataset_id: UUID
+    start_at: Optional[datetime] = None
+    end_at: Optional[datetime] = None
+
+
+class RunEnrichRequest(BaseModel):
+    limit: Optional[int] = None
+    force: bool = False
+    enricher: Optional[Literal["llm", "heuristic"]] = None
+
+
+class RunEnrichResponse(BaseModel):
+    run_id: UUID
+    status: Literal["queued", "running", "complete", "failed"]
+    enriched_count: int
+    failed_count: int
+
+
+class RunTrainResponse(BaseModel):
+    run_id: UUID
+    status: Literal["queued", "running", "complete", "failed"]
+
+
+class SegmentListResponse(BaseModel):
+    run_id: UUID
+    segments: List[SegmentRecord]
+
+
+class SegmentListPage(BaseModel):
+    run_id: UUID
+    items: List[SegmentRecord]
+    limit: int
+    offset: int
+    total: Optional[int] = None
+
+
+class SegmentFacetCount(BaseModel):
+    key: str
+    count: int
+
+
+class SegmentFacetsTotals(BaseModel):
+    segments: int
+    enriched: int
+
+
+class SegmentFacetsResponse(BaseModel):
+    aspects: List[SegmentFacetCount]
+    intents: List[SegmentFacetCount]
+    friction_buckets: List[SegmentFacetCount]
+    totals: SegmentFacetsTotals
+
+
+class TopicSummaryItem(BaseModel):
+    topic_id: int
+    count: int
+    outlier_pct: Optional[float] = None
+    label: Optional[str] = None
+
+
+class TopicSummaryPage(BaseModel):
+    items: List[TopicSummaryItem]
+    limit: int
+    offset: int
+    total: Optional[int] = None
+
+
+class TopicKeywordsResponse(BaseModel):
+    topic_id: int
+    keywords: List[str]
+
+
+class RunCompareResponse(BaseModel):
+    left_run_id: UUID
+    right_run_id: UUID
+    left_stats: Dict[str, Any]
+    right_stats: Dict[str, Any]
+    diffs: Dict[str, Any]
+    aspect_diffs: List[Dict[str, Any]]
+
+
+class SegmentRawResponse(BaseModel):
+    segment_id: UUID
+    provenance: Dict[str, Any]
+
+
+class CapabilitiesResponse(BaseModel):
+    service: str
+    version: str
+    node: str
+    llm_enabled: bool
+    segmentation_modes_supported: List[str]
+    enricher_modes_supported: List[str]
+    defaults: Dict[str, Any]
+
+
+class DriftRunRequest(BaseModel):
+    model_name: str
+    window_days: Optional[int] = None
+    window_hours: Optional[int] = None
+    threshold_js: Optional[float] = None
+    threshold_outlier: Optional[float] = None
+
+
+class DriftRunResponse(BaseModel):
+    drift_id: UUID
+    status: Literal["complete", "skipped", "error"]
+
+
+class RunListItem(BaseModel):
+    run_id: UUID
+    status: Literal["queued", "running", "complete", "failed"]
+    stage: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    model: Dict[str, Any]
+    dataset: Dict[str, Any]
+    window: Dict[str, Any]
+    stats_summary: Dict[str, Any]
+
+
+class RunListPage(BaseModel):
+    items: List[RunListItem]
+    limit: int
+    offset: int
+    total: Optional[int] = None
+
+
+class DriftRecord(BaseModel):
+    drift_id: UUID
+    model_id: UUID
+    window_start: datetime
+    window_end: datetime
+    js_divergence: float
+    outlier_pct: float
+    threshold_js: Optional[float] = None
+    threshold_outlier: Optional[float] = None
+    outlier_pct_delta: Optional[float] = None
+    top_topic_share_delta: Optional[float] = None
+    topic_shares: Dict[str, Any]
+    created_at: datetime
+
+
+class DriftListResponse(BaseModel):
+    model_name: str
+    records: List[DriftRecord]
+
+
+class KgEdgeRecord(BaseModel):
+    edge_id: UUID
+    segment_id: UUID
+    subject: str
+    predicate: str
+    object: str
+    confidence: float
+    created_at: datetime
+
+
+class KgEdgeListResponse(BaseModel):
+    run_id: UUID
+    edges: List[KgEdgeRecord]
+
+
+class KgEdgeListPage(BaseModel):
+    run_id: UUID
+    items: List[KgEdgeRecord]
+    limit: int
+    offset: int
+
+
+class EventRecord(BaseModel):
+    event_id: UUID
+    kind: str
+    run_id: Optional[UUID] = None
+    model_id: Optional[UUID] = None
+    drift_id: Optional[UUID] = None
+    payload: Optional[Dict[str, Any]] = None
+    bus_status: Optional[str] = None
+    bus_error: Optional[str] = None
+    created_at: datetime
+
+
+class EventListResponse(BaseModel):
+    items: List[EventRecord]
+    limit: int
+    offset: int

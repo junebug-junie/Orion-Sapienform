@@ -139,9 +139,14 @@ TTS_REQUEST_CHANNEL=orion:tts:intake
 # Landing Pad (Topic Rail)
 LANDING_PAD_URL=http://orion-landing-pad:8370
 LANDING_PAD_TIMEOUT_SEC=5
+
+# Topic Studio (Topic Foundry proxy)
+TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
 ```
 
 Topic Rail endpoints are proxied through Landing Pad. Ensure `POSTGRES_URI` is set on the Landing Pad service so it can read the `chat_topic_summary` and `chat_topic_session_drift` tables.
+
+Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
 
 ---
 

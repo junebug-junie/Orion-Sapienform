@@ -5,8 +5,8 @@ from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 import aiohttp
 
-from fastapi import APIRouter, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 import requests
 
@@ -42,6 +42,24 @@ class PreferencesResolveProxyRequest(BaseModel):
     recipient_group: str
     event_kind: str
     severity: str
+
+
+async def _proxy_request(request: Request, base_url: str, path: str) -> Response:
+    url = f"{base_url.rstrip('/')}/{path}"
+    headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length"}}
+    body = await request.body()
+    timeout = aiohttp.ClientTimeout(total=settings.TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.request(
+            request.method,
+            url,
+            params=dict(request.query_params),
+            data=body if body else None,
+            headers=headers,
+        ) as response:
+            payload = await response.read()
+            content_type = response.headers.get("content-type", "application/json")
+            return Response(content=payload, status_code=response.status, media_type=content_type)
 async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     base_url = settings.LANDING_PAD_URL.rstrip("/")
     url = f"{base_url}{path}"
@@ -176,6 +194,17 @@ def api_notify_recipient(recipient_group: str):
     except Exception as exc:
         logger.warning("Failed to fetch recipient profile %s: %s", recipient_group, exc)
         raise HTTPException(status_code=502, detail="Failed to fetch recipient profile") from exc
+
+
+@router.api_route("/api/topic-foundry/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def proxy_topic_foundry(path: str, request: Request) -> Response:
+    if not settings.TOPIC_FOUNDRY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Topic Foundry base URL not configured")
+    try:
+        return await _proxy_request(request, settings.TOPIC_FOUNDRY_BASE_URL, path)
+    except aiohttp.ClientError as exc:
+        logger.warning("Topic Foundry proxy error: %s", exc)
+        raise HTTPException(status_code=502, detail="Topic Foundry proxy request failed") from exc
 
 
 @router.put("/api/notify/recipients/{recipient_group}")

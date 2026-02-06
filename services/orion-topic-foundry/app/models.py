@@ -308,6 +308,11 @@ class CapabilitiesResponse(BaseModel):
     version: str
     node: str
     llm_enabled: bool
+    llm_transport: str
+    llm_route: Optional[str] = None
+    llm_bus_route: Optional[str] = None
+    llm_intake_channel: Optional[str] = None
+    llm_reply_prefix: Optional[str] = None
     segmentation_modes_supported: List[str]
     enricher_modes_supported: List[str]
     defaults: Dict[str, Any]

@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-import requests
-
 from app.models import EnrichmentSpec
 from app.services.taxonomy import load_taxonomy
 from app.services.bus_events import get_bus_publisher
 from app.services.kg_edges import generate_edges_for_run
+from app.services.llm_client import get_llm_client
 from app.settings import settings
 from app.storage.repository import create_event, fetch_model, fetch_run, fetch_segments, update_run, update_segment_enrichment, utc_now
 from orion.schemas.topic_foundry import TopicFoundryEnrichCompleteV1
@@ -198,30 +197,13 @@ def _heuristic_enrich(text: str, taxonomy: List[str]) -> Dict[str, Any]:
 def _llm_enrich(text: str, taxonomy: List[str]) -> Optional[Dict[str, Any]]:
     if not text:
         return None
-    url = settings.topic_foundry_llm_base_url.rstrip("/") + "/chat/completions"
-    if settings.topic_foundry_llm_route:
-        url = settings.topic_foundry_llm_base_url.rstrip("/") + settings.topic_foundry_llm_route
-    payload = {
-        "model": settings.topic_foundry_llm_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are an analyst. Return STRICT JSON only.",
-            },
-            {
-                "role": "user",
-                "content": _llm_prompt(text, taxonomy),
-            },
-        ],
-        "temperature": 0.2,
-    }
     try:
-        response = requests.post(url, json=payload, timeout=settings.topic_foundry_llm_timeout_secs)
-        response.raise_for_status()
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        return parsed
+        return get_llm_client().request_json(
+            system_prompt="You are an analyst. Return STRICT JSON only.",
+            user_prompt=_llm_prompt(text, taxonomy),
+            temperature=0.2,
+            max_tokens=None,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("LLM enrichment failed; falling back to heuristic error=%s", exc)
         return None

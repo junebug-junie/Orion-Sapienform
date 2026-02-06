@@ -105,7 +105,7 @@ channels:
 
   - name: "orion:cortex:exec:request"
     kind: "request"
-    schema_id: "GenericPayloadV1"
+    schema_id: "CortexExecRequestPayload"
     producer_services: ["orion-cortex-orch"]
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
@@ -134,7 +134,7 @@ channels:
 
   - name: "orion:exec:result:*"
     kind: "result"
-    schema_id: "GenericPayloadV1"
+    schema_id: "CortexExecResultPayload"
     producer_services: ["*"]
     consumer_services: ["*"]
     stability: "experimental"

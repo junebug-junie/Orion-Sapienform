@@ -25,6 +25,10 @@ if [[ "${TOPIC_FOUNDRY_LLM_ENABLE:-false}" != "true" ]]; then
   exit 0
 fi
 
+if [[ "${TOPIC_FOUNDRY_LLM_USE_BUS:-true}" == "true" ]]; then
+  echo "LLM boundary judge running via bus; ensure ORION_BUS_URL is reachable." >&2
+fi
+
 if [[ -z "$DATASET_ID" ]]; then
   dataset_payload=$(jq -n \
     --arg name "${MODEL_NAME}-dataset" \

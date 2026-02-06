@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -44,6 +46,26 @@ class Settings(BaseSettings):
     topic_foundry_llm_max_concurrency: int = Field(
         4,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_MAX_CONCURRENCY"),
+    )
+    topic_foundry_llm_use_bus: bool = Field(
+        True,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_USE_BUS"),
+    )
+    topic_foundry_llm_intake_channel: str = Field(
+        "orion:exec:request:LLMGatewayService",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL", "CHANNEL_LLM_INTAKE"),
+    )
+    topic_foundry_llm_reply_prefix: str = Field(
+        "orion:llm:reply",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_REPLY_PREFIX"),
+    )
+    topic_foundry_llm_bus_route: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_BUS_ROUTE"),
+    )
+    topic_foundry_llm_health_url: str = Field(
+        "",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_HEALTH_URL"),
     )
     topic_foundry_llm_enable: bool = Field(
         False,

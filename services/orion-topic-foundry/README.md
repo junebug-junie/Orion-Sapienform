@@ -45,8 +45,13 @@ Spec-driven service for building topic artifacts (runs, segments, model registry
 - `TOPIC_FOUNDRY_LLM_BASE_URL`
 - `TOPIC_FOUNDRY_LLM_MODEL`
 - `TOPIC_FOUNDRY_LLM_ROUTE`
+- `TOPIC_FOUNDRY_LLM_BUS_ROUTE`
 - `TOPIC_FOUNDRY_LLM_TIMEOUT_SECS`
 - `TOPIC_FOUNDRY_LLM_MAX_CONCURRENCY`
+- `TOPIC_FOUNDRY_LLM_USE_BUS`
+- `TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL`
+- `TOPIC_FOUNDRY_LLM_REPLY_PREFIX`
+- `TOPIC_FOUNDRY_LLM_HEALTH_URL`
 - `TOPIC_FOUNDRY_LLM_ENABLE`
 - `ORION_BUS_ENABLED`, `ORION_BUS_URL`
 - `TOPIC_FOUNDRY_DRIFT_DAEMON`, `TOPIC_FOUNDRY_DRIFT_POLL_SECONDS`, `TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS`
@@ -112,6 +117,7 @@ Phase 2 adds optional semantic segmentation and segment enrichment.
 - Enrichment is controlled by `EnrichmentSpec` in `/models` or via `POST /runs/{run_id}/enrich`.
 - LLM enrichment requires setting `TOPIC_FOUNDRY_LLM_ENABLE=true` and the LLM URL/model env vars.
 - If LLM JSON parsing fails, the service falls back to the heuristic enricher.
+- LLM requests prefer the Orion bus (`TOPIC_FOUNDRY_LLM_USE_BUS=true`) and fall back to the HTTP gateway.
 
 ### LLM boundary judge knobs
 - `llm_boundary_context_blocks` (default 3)

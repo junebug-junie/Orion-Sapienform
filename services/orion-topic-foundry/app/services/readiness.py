@@ -7,6 +7,7 @@ from typing import Any, Dict
 import requests
 
 from app.settings import settings
+from app.services.llm_client import get_llm_client
 from app.storage.pg import pg_conn
 
 
@@ -66,6 +67,7 @@ def readiness_payload() -> Dict[str, Any]:
         "pg": check_postgres(),
         "embedding": check_embedding(),
         "model_dir": check_model_dir(),
+        "llm": get_llm_client().probe(),
     }
     ok = all(check["ok"] for check in checks.values())
     return {

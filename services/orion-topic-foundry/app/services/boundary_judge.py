@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import requests
-
 from app.models import WindowingSpec
 from app.settings import settings
 from app.storage.repository import fetch_boundary_cache, insert_boundary_cache, utc_now
 from app.services.windowing import RowBlock
+from app.services.llm_client import get_llm_client
 
 
 logger = logging.getLogger("topic-foundry.boundary-judge")
@@ -105,25 +104,13 @@ def _build_prompt(blocks: List[RowBlock], boundary_index: int, spec: WindowingSp
 
 
 def _call_llm(prompt: str) -> Optional[Dict[str, Any]]:
-    url = settings.topic_foundry_llm_base_url.rstrip("/") + "/chat/completions"
-    if settings.topic_foundry_llm_route:
-        url = settings.topic_foundry_llm_base_url.rstrip("/") + settings.topic_foundry_llm_route
-    payload = {
-        "model": settings.topic_foundry_llm_model,
-        "messages": [
-            {"role": "system", "content": "Return STRICT JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-        "max_tokens": 200,
-    }
     try:
-        response = requests.post(url, json=payload, timeout=settings.topic_foundry_llm_timeout_secs)
-        response.raise_for_status()
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        return parsed
+        return get_llm_client().request_json(
+            system_prompt="Return STRICT JSON only.",
+            user_prompt=prompt,
+            temperature=0,
+            max_tokens=200,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Boundary LLM judge failed: %s", exc)
         return None

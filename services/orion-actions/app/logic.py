@@ -271,6 +271,7 @@ def build_notify_request(
         "collapse_type": entry.type,
         "collapse_tags": list(entry.tags or []),
         "collapse_emergent_entity": entry.emergent_entity,
+        "preview_text": preview_text(message_text),
     }
 
     return NotificationRequest(
@@ -278,7 +279,7 @@ def build_notify_request(
         event_kind="orion.chat.message",
         severity="info",
         title="Orion — Collapse Mirror",
-        body_text=preview_text(message_text),
+        body_text=message_text.strip(),
         body_md=body_md,
         recipient_group=recipient_group,
         session_id=session_id,

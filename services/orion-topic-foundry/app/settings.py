@@ -27,18 +27,6 @@ class Settings(BaseSettings):
         "/mnt/telemetry/models/topic-foundry",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_MODEL_DIR"),
     )
-    topic_foundry_llm_base_url: str = Field(
-        "http://orion-llm-gateway:8011/v1",
-        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_BASE_URL"),
-    )
-    topic_foundry_llm_model: str = Field(
-        "gpt-4o-mini",
-        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_MODEL"),
-    )
-    topic_foundry_llm_route: str = Field(
-        "",
-        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_ROUTE"),
-    )
     topic_foundry_llm_timeout_secs: int = Field(
         60,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_TIMEOUT_SECS"),
@@ -62,10 +50,6 @@ class Settings(BaseSettings):
     topic_foundry_llm_bus_route: Optional[str] = Field(
         None,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_BUS_ROUTE"),
-    )
-    topic_foundry_llm_health_url: str = Field(
-        "",
-        validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_HEALTH_URL"),
     )
     topic_foundry_llm_enable: bool = Field(
         False,

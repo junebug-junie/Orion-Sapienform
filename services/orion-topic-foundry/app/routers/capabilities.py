@@ -18,8 +18,6 @@ def capabilities() -> CapabilitiesResponse:
         "embedding_source_url": settings.topic_foundry_embedding_url,
         "metric": ModelSpec.model_fields["metric"].default,
         "min_cluster_size": ModelSpec.model_fields["min_cluster_size"].default,
-        "llm_model": settings.topic_foundry_llm_model,
-        "llm_route": settings.topic_foundry_llm_route,
         "llm_bus_route": settings.topic_foundry_llm_bus_route,
     }
     return CapabilitiesResponse(
@@ -28,7 +26,6 @@ def capabilities() -> CapabilitiesResponse:
         node=settings.node_name,
         llm_enabled=settings.topic_foundry_llm_enable,
         llm_transport=llm_transport,
-        llm_route=settings.topic_foundry_llm_route or None,
         llm_bus_route=settings.topic_foundry_llm_bus_route,
         llm_intake_channel=settings.topic_foundry_llm_intake_channel if llm_transport == "bus" else None,
         llm_reply_prefix=settings.topic_foundry_llm_reply_prefix if llm_transport == "bus" else None,

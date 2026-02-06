@@ -117,7 +117,7 @@ def _call_llm(prompt: str) -> Optional[Dict[str, Any]]:
 
 
 def _cache_key(spec: WindowingSpec, context: BoundaryContext, boundary_index: int, context_hash: str) -> str:
-    raw = f"{context.spec_hash}:{boundary_index}:{context_hash}:{settings.topic_foundry_llm_model}:{spec.segmentation_mode}"
+    raw = f"{context.spec_hash}:{boundary_index}:{context_hash}:{settings.topic_foundry_llm_bus_route}:{spec.segmentation_mode}"
     return _hash_text(raw)
 
 

@@ -309,7 +309,6 @@ class CapabilitiesResponse(BaseModel):
     node: str
     llm_enabled: bool
     llm_transport: str
-    llm_route: Optional[str] = None
     llm_bus_route: Optional[str] = None
     llm_intake_channel: Optional[str] = None
     llm_reply_prefix: Optional[str] = None

@@ -116,8 +116,10 @@ class DatasetCreateResponse(BaseModel):
 
 
 class DatasetPreviewRequest(BaseModel):
-    dataset: DatasetCreateRequest
-    windowing: WindowingSpec
+    dataset_id: Optional[UUID] = None
+    dataset: Optional[DatasetSpec] = None
+    windowing: Optional[WindowingSpec] = None
+    windowing_spec: Optional[WindowingSpec] = None
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
     limit: int = 200

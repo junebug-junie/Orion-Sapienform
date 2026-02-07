@@ -60,6 +60,26 @@ other active model with the same name to `candidate` and records the transition 
 
 ## Artifact layout
 ```
+
+### Preview example (canonical request)
+```bash
+curl -sS http://localhost:8615/datasets/preview \\
+  -H "content-type: application/json" \\
+  -d '{
+    "dataset_id": "00000000-0000-0000-0000-000000000000",
+    "windowing": {
+      "block_mode": "turn_pairs",
+      "segmentation_mode": "time_gap",
+      "time_gap_seconds": 900,
+      "max_window_seconds": 7200,
+      "min_blocks_per_segment": 1,
+      "max_chars": 6000
+    },
+    "start_at": null,
+    "end_at": null,
+    "limit": 200
+  }'
+```
 ${TOPIC_FOUNDRY_MODEL_DIR}/
   registry/{model_name}/versions/{version}/
     model/clusterer.joblib

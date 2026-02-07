@@ -3,9 +3,81 @@
 // ───────────────────────────────────────────────────────────────
 // Global State
 // ───────────────────────────────────────────────────────────────
-const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
-const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
-const API_BASE_URL = window.location.origin + URL_PREFIX;
+const HUB_CFG = window.__HUB_CFG__ || {};
+
+function hubOrigin() {
+  return window.location.origin;
+}
+
+function apiUrl(path) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (HUB_API_BASE_OVERRIDE) {
+    return `${HUB_API_BASE_OVERRIDE}${normalized}`;
+  }
+  return normalized;
+}
+
+function wsProto() {
+  return window.location.protocol === "https:" ? "wss:" : "ws:";
+}
+
+function wsBase() {
+  if (HUB_WS_BASE_OVERRIDE) {
+    return HUB_WS_BASE_OVERRIDE;
+  }
+  return `${wsProto()}//${window.location.host}`;
+}
+
+function wsUrl(path) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${wsBase()}${normalized}`;
+}
+
+function normalizeApiBaseOverride(value) {
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("/")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  return `/${trimmed.replace(/\/+$/, "")}`;
+}
+
+function normalizeWsBaseOverride(value) {
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/^http/, "ws").replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("/")) {
+    return `${wsProto()}//${window.location.host}${trimmed.replace(/\/+$/, "")}`;
+  }
+  return "";
+}
+
+const HUB_API_BASE_OVERRIDE = normalizeApiBaseOverride(HUB_CFG.apiBaseOverride);
+const HUB_WS_BASE_OVERRIDE = normalizeWsBaseOverride(HUB_CFG.wsBaseOverride);
+const DEV_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const IS_DEV = DEV_HOSTS.has(window.location.hostname);
+
+function warnIfCrossOrigin(url) {
+  if (!IS_DEV) return;
+  if ((url.startsWith("http://") || url.startsWith("https://")) && !url.startsWith(hubOrigin())) {
+    console.warn(`[Hub] Cross-origin fetch detected: ${url}`);
+  }
+}
+
+function hubFetch(url, options) {
+  warnIfCrossOrigin(url);
+  return fetch(url, options);
+}
 const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
 
 let socket;
@@ -404,7 +476,7 @@ loadDismissedIds();
     }
   }
 
-  const TOPIC_FOUNDRY_PROXY_BASE = `${API_BASE_URL}/api/topic-foundry`;
+  const TOPIC_FOUNDRY_PROXY_BASE = apiUrl("/api/topic-foundry");
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
 
@@ -769,7 +841,7 @@ loadDismissedIds();
   }
 
   async function topicFoundryFetch(path, options = {}) {
-    const response = await fetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -797,7 +869,7 @@ loadDismissedIds();
   }
 
   async function topicFoundryFetchWithHeaders(path, options = {}) {
-    const response = await fetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -2046,7 +2118,7 @@ loadDismissedIds();
   async function handleAttentionAck(attentionId, ackType, note) {
     if (!attentionId) return;
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/attention/${attentionId}/ack`, {
+      const resp = await hubFetch(apiUrl(`/api/attention/${attentionId}/ack`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ack_type: ackType, note }),
@@ -2067,7 +2139,7 @@ loadDismissedIds();
     if (window.__orionReceiptInFlight.has(key)) return;
     window.__orionReceiptInFlight.add(key);
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/chat/message/${messageId}/receipt`, {
+      const resp = await hubFetch(apiUrl(`/api/chat/message/${messageId}/receipt`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, receipt_type: receiptType }),
@@ -2280,7 +2352,7 @@ loadDismissedIds();
 
   async function loadNotifications() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/notifications?limit=50`);
+      const resp = await hubFetch(apiUrl("/api/notifications?limit=50"));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2363,7 +2435,7 @@ loadDismissedIds();
 
   async function loadNotifySettings() {
     try {
-      const profileResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}`);
+      const profileResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}`));
       if (profileResp.ok) {
         const profile = await profileResp.json();
         if (notifyDisplayName) notifyDisplayName.value = profile.display_name || '';
@@ -2372,7 +2444,7 @@ loadDismissedIds();
         if (notifyQuietStart) notifyQuietStart.value = profile.quiet_start_local || '22:00';
         if (notifyQuietEnd) notifyQuietEnd.value = profile.quiet_end_local || '07:00';
       }
-      const prefsResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}/preferences`);
+      const prefsResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}/preferences`));
       if (prefsResp.ok) {
         const prefs = await prefsResp.json();
         if (Array.isArray(prefs)) applyPreferenceRows(prefs);
@@ -2395,14 +2467,14 @@ loadDismissedIds();
         quiet_start_local: notifyQuietStart ? notifyQuietStart.value : null,
         quiet_end_local: notifyQuietEnd ? notifyQuietEnd.value : null,
       };
-      await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}`, {
+      await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(profilePayload),
       });
 
       const preferencesPayload = { preferences: readPreferenceRows() };
-      const prefResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}/preferences`, {
+      const prefResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}/preferences`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(preferencesPayload),
@@ -2422,7 +2494,7 @@ loadDismissedIds();
     try {
       const filter = messageFilter ? messageFilter.value : 'unread';
       const statusParam = filter === 'all' ? '' : 'unread';
-      const resp = await fetch(`${API_BASE_URL}/api/chat/messages?limit=50&status=${statusParam}`);
+      const resp = await hubFetch(apiUrl(`/api/chat/messages?limit=50&status=${statusParam}`));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2455,7 +2527,7 @@ loadDismissedIds();
 
   async function loadPendingAttention() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/attention?status=pending&limit=50`);
+      const resp = await hubFetch(apiUrl("/api/attention?status=pending&limit=50"));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2703,8 +2775,8 @@ loadDismissedIds();
 
     try {
       const [summaryResp, driftResp] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/topics/summary?${summaryParams.toString()}`),
-        fetch(`${API_BASE_URL}/api/topics/drift?${driftParams.toString()}`),
+        hubFetch(apiUrl(`/api/topics/summary?${summaryParams.toString()}`)),
+        hubFetch(apiUrl(`/api/topics/drift?${driftParams.toString()}`)),
       ]);
 
       if (!summaryResp.ok || !driftResp.ok) {
@@ -2832,7 +2904,7 @@ loadDismissedIds();
 
   async function loadCognitionLibrary() {
       try {
-          const res = await fetch(`${API_BASE_URL}/api/cognition/library`);
+          const res = await hubFetch(apiUrl("/api/cognition/library"));
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           cognitionLibrary = await res.json();
           renderPackButtons();
@@ -2976,11 +3048,9 @@ loadDismissedIds();
 
   // --- WebSocket ---
   function setupWebSocket() {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
-    
-    console.log(`[WS] Connecting to ${wsUrl}...`);
-    socket = new WebSocket(wsUrl);
+    const wsEndpoint = wsUrl("/ws");
+    console.log(`[WS] Connecting to ${wsEndpoint}...`);
+    socket = new WebSocket(wsEndpoint);
 
     socket.onopen = () => {
         console.log("[WS] Connected");
@@ -3055,7 +3125,7 @@ loadDismissedIds();
         if (noWriteToggle && noWriteToggle.checked) headers['X-Orion-No-Write'] = '1';
 
         // Fallback to HTTP if WS is down
-        fetch(`${API_BASE_URL}/api/chat`, {
+        hubFetch(apiUrl("/api/chat"), {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({messages:[{role:'user', content:text}], ...payload})
@@ -3172,7 +3242,7 @@ loadDismissedIds();
   async function initSession() {
     try {
        const sid = orionSessionId || localStorage.getItem('orion_sid');
-       const r = await fetch(`${API_BASE_URL}/api/session`, {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
+       const r = await hubFetch(apiUrl("/api/session"), {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
        const d = await r.json();
        if(d.session_id) {
          orionSessionId = d.session_id;
@@ -3276,7 +3346,7 @@ loadDismissedIds();
     async function postCollapse(payload) {
       setCollapseStatus("Submitting…");
       try {
-        const resp = await fetch("/submit-collapse", {
+        const resp = await hubFetch(apiUrl("/submit-collapse"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),

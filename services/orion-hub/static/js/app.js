@@ -1941,6 +1941,12 @@ loadDismissedIds();
     if (el) el.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
   }
 
+  function setTopicStudioDebugLine(message) {
+    if (!tsDebugLine) return;
+    tsDebugLine.textContent = message || "";
+    tsDebugLine.classList.toggle("hidden", !message);
+  }
+
   function bindTopicStudioPanel() {
     const refreshButton = document.getElementById("ts-mvp-refresh");
     if (refreshButton) {
@@ -1983,6 +1989,13 @@ loadDismissedIds();
         topicStudioMvpState.previewDatasetId = previewSelect.value;
         updateMvpSelectors();
       });
+    }
+    try {
+      const qs = new URLSearchParams();
+      qs.set("run_id", "debug");
+      setTopicStudioDebugLine(`Topic Studio ready (segments qs ok: ${qs.toString()})`);
+    } catch (err) {
+      setTopicStudioDebugLine(`Topic Studio init error: ${err?.message || err}`);
     }
     const createModelBtn = document.getElementById("ts-mvp-create-model");
     if (createModelBtn) {
@@ -6438,6 +6451,7 @@ loadDismissedIds();
       return;
     }
     topicStudioSegmentsPolling = true;
+    const qs = new URLSearchParams();
     try {
       setLoading(tsSegmentsLoading, true);
       if (tsSegmentsError) tsSegmentsError.textContent = "--";
@@ -6447,29 +6461,27 @@ loadDismissedIds();
         resetSegmentsPaging();
       }
       topicStudioSegmentsOffset = 0;
-      const params = new URLSearchParams({
-        run_id: tsSegmentsRunId.value,
-        include_snippet: "true",
-        include_bounds: "true",
-        limit: "50",
-        offset: "0",
-        format: "wrapped",
-        sort_by: "created_at",
-        sort_dir: "desc",
-      });
+      qs.set("run_id", tsSegmentsRunId.value);
+      qs.set("include_snippet", "true");
+      qs.set("include_bounds", "true");
+      qs.set("limit", "50");
+      qs.set("offset", "0");
+      qs.set("format", "wrapped");
+      qs.set("sort_by", "created_at");
+      qs.set("sort_dir", "desc");
       const enrichmentValue = tsSegmentsEnrichment?.value;
       if (enrichmentValue && enrichmentValue !== "all") {
-        params.set("has_enrichment", enrichmentValue);
+        qs.set("has_enrichment", enrichmentValue);
       }
       const aspectValue = tsSegmentsAspect?.value?.trim();
       if (aspectValue && aspectValue !== "all") {
-        params.set("aspect", aspectValue);
+        qs.set("aspect", aspectValue);
       }
       const query = tsSegmentsSearch?.value?.trim();
       if (query) {
-        params.set("q", query);
+        qs.set("q", query);
       }
-      const { payload } = await topicFoundryFetchWithHeaders(`/segments?${params.toString()}`);
+      const { payload } = await topicFoundryFetchWithHeaders(`/segments?${qs.toString()}`);
       const items = asItems(payload);
       const segments = items;
       topicStudioSegmentsPage = segments;
@@ -6483,7 +6495,7 @@ loadDismissedIds();
           debugEl.classList.remove("hidden");
         }
         recordTopicStudioDebug("segments", {
-          request: `/segments?${params.toString()}`,
+          request: `/segments?${qs.toString()}`,
           response_keys: keys,
           items: items.length,
         });
@@ -6499,7 +6511,7 @@ loadDismissedIds();
       refreshSegmentFacets();
     } catch (err) {
       renderTopicStudioError(tsSegmentsError, err, "Load segments", "segments", {
-        request: `/segments?${params?.toString?.() || ""}`,
+        request: `/segments?${qs.toString()}`,
       });
       setLoading(tsSegmentsLoading, false);
     } finally {

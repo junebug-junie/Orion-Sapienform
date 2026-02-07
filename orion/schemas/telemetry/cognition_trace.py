@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from orion.schemas.cortex.schemas import StepExecutionResult
+from orion.schemas.cortex.types import StepExecutionResult
 
 
 class CognitionTracePayload(BaseModel):

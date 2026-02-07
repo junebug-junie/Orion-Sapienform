@@ -637,8 +637,9 @@ loadDismissedIds();
               </select>
               <input id="ts-mvp-preview-gap" value="900" placeholder="time_gap_seconds" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-preview-maxchars" value="6000" placeholder="max_chars" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
-              <button id="ts-mvp-preview" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Preview</button>
+              <button id="ts-mvp-preview" disabled style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer; opacity:0.6;">Preview</button>
             </div>
+            <div style="margin-top:6px; font-size:11px; color:#666;">Tip: set a start/end range for faster previews.</div>
             <div id="ts-mvp-preview-stats" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
             <div id="ts-mvp-preview-samples" style="margin-top:6px; font-size:12px; color:#aaa;">--</div>
           </div>
@@ -1611,6 +1612,13 @@ loadDismissedIds();
       "run_id",
       (run) => `${run.run_id}`
     );
+    const previewSelect = document.getElementById("ts-mvp-preview-dataset");
+    const previewButton = document.getElementById("ts-mvp-preview");
+    if (previewSelect && previewButton) {
+      previewButton.disabled = !previewSelect.value;
+      previewButton.style.opacity = previewSelect.value ? "1" : "0.6";
+      previewButton.style.cursor = previewSelect.value ? "pointer" : "not-allowed";
+    }
   }
 
   function setLastRefresh() {
@@ -1652,6 +1660,12 @@ loadDismissedIds();
     if (previewBtn) {
       previewBtn.addEventListener("click", () => {
         previewDataset().catch((err) => setMvpError(err?.message || "Failed to preview dataset"));
+      });
+    }
+    const previewSelect = document.getElementById("ts-mvp-preview-dataset");
+    if (previewSelect) {
+      previewSelect.addEventListener("change", () => {
+        updateMvpSelectors();
       });
     }
     const createModelBtn = document.getElementById("ts-mvp-create-model");
@@ -1845,7 +1859,7 @@ loadDismissedIds();
       start_at: document.getElementById("ts-mvp-preview-start")?.value || null,
       end_at: document.getElementById("ts-mvp-preview-end")?.value || null,
       limit: Number(document.getElementById("ts-mvp-preview-limit")?.value || 200),
-      windowing_spec: {
+      windowing: {
         block_mode: document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs",
         time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
         max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),

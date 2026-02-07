@@ -3,9 +3,131 @@
 // ───────────────────────────────────────────────────────────────
 // Global State
 // ───────────────────────────────────────────────────────────────
-const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
-const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
-const API_BASE_URL = window.location.origin + URL_PREFIX;
+window.__HUB_LAST_STEP = "boot";
+const HUB_CFG = window.__HUB_CFG__ || {};
+
+function setHubStep(step) {
+  window.__HUB_LAST_STEP = step;
+}
+
+function ensureHubPanelHost() {
+  let host = document.getElementById("hub-panel-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "hub-panel-host";
+    host.setAttribute(
+      "style",
+      "position:fixed; inset:0; padding:80px 24px 24px 24px; overflow:auto; z-index:10; pointer-events:none;"
+    );
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function truncateCrashText(value, maxLength = 4000) {
+  if (!value) return "";
+  const text = String(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function renderCrashOverlay(errorLike) {
+  const host = ensureHubPanelHost();
+  const message = errorLike?.message || errorLike?.toString?.() || "Unknown error";
+  const stack = errorLike?.stack ? String(errorLike.stack) : "";
+  host.style.pointerEvents = "auto";
+  host.innerHTML = `
+    <div style="color:#0f0; background:#111; border:2px solid #0f0; padding:16px; font-family:monospace; max-width:960px; margin:0 auto;">
+      <div style="font-size:18px; font-weight:bold; margin-bottom:8px;">HUB UI CRASH</div>
+      <div style="margin-bottom:8px;">${truncateCrashText(message)}</div>
+      <pre style="white-space:pre-wrap; margin:0 0 8px 0;">${truncateCrashText(stack)}</pre>
+      <div>href: ${truncateCrashText(window.location.href, 400)}</div>
+      <div>hash: ${truncateCrashText(window.location.hash, 200)}</div>
+      <div>lastStep: ${truncateCrashText(window.__HUB_LAST_STEP, 200)}</div>
+    </div>
+  `;
+}
+
+window.addEventListener("error", (event) => {
+  renderCrashOverlay(event.error || event.message || event);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  renderCrashOverlay(event.reason || event);
+});
+
+function hubOrigin() {
+  return window.location.origin;
+}
+
+function apiUrl(path) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (HUB_API_BASE_OVERRIDE) {
+    return `${HUB_API_BASE_OVERRIDE}${normalized}`;
+  }
+  return normalized;
+}
+
+function wsProto() {
+  return window.location.protocol === "https:" ? "wss:" : "ws:";
+}
+
+function wsBase() {
+  if (HUB_WS_BASE_OVERRIDE) {
+    return HUB_WS_BASE_OVERRIDE;
+  }
+  return `${wsProto()}//${window.location.host}`;
+}
+
+function wsUrl(path) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${wsBase()}${normalized}`;
+}
+
+function normalizeApiBaseOverride(value) {
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("/")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  return `/${trimmed.replace(/\/+$/, "")}`;
+}
+
+function normalizeWsBaseOverride(value) {
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/^http/, "ws").replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("/")) {
+    return `${wsProto()}//${window.location.host}${trimmed.replace(/\/+$/, "")}`;
+  }
+  return "";
+}
+
+const HUB_API_BASE_OVERRIDE = normalizeApiBaseOverride(HUB_CFG.apiBaseOverride);
+const HUB_WS_BASE_OVERRIDE = normalizeWsBaseOverride(HUB_CFG.wsBaseOverride);
+const DEV_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const IS_DEV = DEV_HOSTS.has(window.location.hostname);
+
+function warnIfCrossOrigin(url) {
+  if (!IS_DEV) return;
+  if ((url.startsWith("http://") || url.startsWith("https://")) && !url.startsWith(hubOrigin())) {
+    console.warn(`[Hub] Cross-origin fetch detected: ${url}`);
+  }
+}
+
+function hubFetch(url, options) {
+  warnIfCrossOrigin(url);
+  return fetch(url, options);
+}
 const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
 
 let socket;
@@ -331,9 +453,13 @@ loadDismissedIds();
   const tsStatusModelDir = document.getElementById("tsStatusModelDir");
   const tsStatusDetail = document.getElementById("tsStatusDetail");
   const tsStatusLoading = document.getElementById("tsStatusLoading");
+  const tsReadyWarning = document.getElementById("tsReadyWarning");
   const tsCapabilitiesWarning = document.getElementById("tsCapabilitiesWarning");
   const tsCopyReadyUrl = document.getElementById("tsCopyReadyUrl");
   const tsCopyCapabilitiesUrl = document.getElementById("tsCopyCapabilitiesUrl");
+  const tsSkeletonMain = document.getElementById("tsSkeletonMain");
+  const tsSkeletonStatus = document.getElementById("tsSkeletonStatus");
+  const tsSkeletonRetry = document.getElementById("tsSkeletonRetry");
   const tsLlmNote = document.getElementById("tsLlmNote");
   const tsPreviewLoading = document.getElementById("tsPreviewLoading");
   const tsRunLoading = document.getElementById("tsRunLoading");
@@ -400,7 +526,7 @@ loadDismissedIds();
     }
   }
 
-  const TOPIC_FOUNDRY_PROXY_BASE = `${API_BASE_URL}/api/topic-foundry`;
+  const TOPIC_FOUNDRY_PROXY_BASE = apiUrl("/api/topic-foundry");
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
 
@@ -421,6 +547,151 @@ loadDismissedIds();
     topicStudioTabButton.classList.toggle("bg-gray-800", isHub);
     topicStudioTabButton.classList.toggle("text-gray-200", isHub);
     topicStudioTabButton.classList.toggle("border-gray-700", isHub);
+  }
+
+  function renderTopicStudioSkeleton(message = "Loading...") {
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:960px; margin:0 auto; pointer-events:auto;">
+        <div style="font-size:20px; font-weight:600; margin-bottom:12px;">Topic Studio</div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+          <div><strong>Ready:</strong> <span id="ts-host-ready">loading</span></div>
+          <div><strong>Capabilities:</strong> <span id="ts-host-capabilities">loading</span></div>
+          <div><strong>Runs:</strong> <span id="ts-host-runs">loading</span></div>
+        </div>
+        <div id="ts-host-errors" style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;"></div>
+        <button id="ts-host-retry" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Retry</button>
+        <div style="margin-top:12px; font-size:12px; color:#888;">${message}</div>
+        <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-host-step">${window.__HUB_LAST_STEP}</span></div>
+      </div>
+    `;
+    const retryButton = document.getElementById("ts-host-retry");
+    if (retryButton) {
+      retryButton.addEventListener("click", () => {
+        renderTopicStudioSkeleton("Retrying...");
+        refreshTopicStudioRoute();
+      });
+    }
+    setTopicStudioRenderStep("mounted skeleton");
+    setHubStep("topic-skeleton-mounted");
+  }
+
+  function handleHashRouting() {
+    if (!hubTabButton || !topicStudioTabButton) return;
+    const hash = window.location.hash;
+    if (hash === "#topic-studio") {
+      setHubStep("route:topic-studio");
+      setActiveTab("topic-studio");
+      renderTopicStudioSkeleton();
+      ensureTopicStudioSentinel();
+      refreshTopicStudioRoute();
+      refreshTopicStudio().catch((err) => {
+        console.warn("[TopicStudio] Refresh failed", err);
+      });
+    } else {
+      setActiveTab("hub");
+    }
+    updateTopicStudioDebugOverlay();
+  }
+
+  function navigateToHash(nextHash) {
+    if (window.location.hash === nextHash) {
+      handleHashRouting();
+      return;
+    }
+    window.location.hash = nextHash;
+  }
+
+  function ensureTopicStudioSentinel() {
+    let sentinel = document.getElementById("ts-route-sentinel");
+    if (!sentinel) {
+      sentinel = document.createElement("div");
+      sentinel.id = "ts-route-sentinel";
+      sentinel.textContent = "TOPIC STUDIO ACTIVE";
+      sentinel.setAttribute(
+        "style",
+        "position:fixed; top:56px; left:24px; z-index:99999; background:#111; color:#0f0; border:1px solid #0f0; padding:6px 10px; border-radius:10px; font-family:monospace;"
+      );
+      document.body.appendChild(sentinel);
+    }
+    sentinel.style.display = "block";
+  }
+
+  function updateTopicStudioHostStep() {
+    const stepEl = document.getElementById("ts-host-step");
+    if (stepEl) {
+      stepEl.textContent = window.__HUB_LAST_STEP || "";
+    }
+  }
+
+  function setTopicStudioHostStatus(id, value, color = "#ddd") {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.textContent = value;
+    target.style.color = color;
+  }
+
+  function appendTopicStudioHostError(label, err) {
+    const container = document.getElementById("ts-host-errors");
+    if (!container) return;
+    const message = err?.message || err?.toString?.() || "Request failed";
+    const detail = truncateCrashText(err?.body || err?.stack || message, 400);
+    const box = document.createElement("div");
+    box.setAttribute(
+      "style",
+      "background:#220; color:#f88; border:1px solid #a33; padding:8px; border-radius:8px; font-size:12px; font-family:monospace;"
+    );
+    box.textContent = `${label}: ${detail}`;
+    container.appendChild(box);
+  }
+
+  async function refreshTopicStudioRoute() {
+    setHubStep("fetch:ready");
+    updateTopicStudioHostStep();
+    setTopicStudioHostStatus("ts-host-ready", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-capabilities", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-runs", "loading", "#ddd");
+    const errorContainer = document.getElementById("ts-host-errors");
+    if (errorContainer) errorContainer.innerHTML = "";
+
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/ready"));
+      if (!resp.ok) throw new Error(`ready ${resp.status}`);
+      const data = await resp.json();
+      const status = data?.ok ? "ok" : "degraded";
+      setTopicStudioHostStatus("ts-host-ready", status, data?.ok ? "#6f6" : "#ff6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-ready", "error", "#f66");
+      appendTopicStudioHostError("ready", err);
+    }
+
+    setHubStep("fetch:capabilities");
+    updateTopicStudioHostStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/capabilities"));
+      if (!resp.ok) throw new Error(`capabilities ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-capabilities", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-capabilities", "error", "#f66");
+      appendTopicStudioHostError("capabilities", err);
+    }
+
+    setHubStep("fetch:runs");
+    updateTopicStudioHostStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/runs?limit=20"));
+      if (!resp.ok) throw new Error(`runs ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-runs", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-runs", "error", "#f66");
+      appendTopicStudioHostError("runs", err);
+    }
+
+    setHubStep("render:done");
+    updateTopicStudioHostStep();
   }
 
   function resolveTopicStudioSubview() {
@@ -726,7 +997,7 @@ loadDismissedIds();
   }
 
   async function topicFoundryFetch(path, options = {}) {
-    const response = await fetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -754,7 +1025,7 @@ loadDismissedIds();
   }
 
   async function topicFoundryFetchWithHeaders(path, options = {}) {
-    const response = await fetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -848,6 +1119,70 @@ loadDismissedIds();
   let topicStudioEventsPage = [];
   let topicStudioKgEdgesPage = [];
   const TOPIC_STUDIO_RUN_ID_KEY = "topic_studio_run_id_v1";
+  const topicStudioDebugState = {
+    enabled: new URLSearchParams(window.location.search).get("debug") === "1",
+    lastRenderStep: "init",
+    fetchStatus: {
+      ready: null,
+      capabilities: null,
+      runs: null,
+    },
+    overlay: null,
+    overlayBody: null,
+  };
+
+  function formatFetchStatus(status) {
+    if (!status) return "--";
+    const okLabel = status.ok === true ? "ok" : status.ok === false ? "fail" : "unknown";
+    const detail = status.detail ? ` · ${truncateText(status.detail, 80)}` : "";
+    return `${status.status ?? "--"} (${okLabel})${detail}`;
+  }
+
+  function ensureTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled || topicStudioDebugState.overlay) return;
+    const overlay = document.createElement("div");
+    overlay.className = "fixed bottom-3 right-3 z-50 bg-gray-900/95 border border-gray-700 rounded-lg px-3 py-2 text-[10px] text-gray-200 shadow-lg";
+    overlay.style.maxWidth = "240px";
+    overlay.innerHTML = `
+      <div class="flex items-center justify-between gap-2 mb-1">
+        <div class="font-semibold text-xs">Topic Studio Debug</div>
+        <button type="button" class="text-gray-400 hover:text-gray-200 text-[10px]" data-debug-hide>Hide</button>
+      </div>
+      <div data-debug-body class="space-y-1"></div>
+    `;
+    overlay.querySelector("[data-debug-hide]")?.addEventListener("click", () => {
+      overlay.classList.add("hidden");
+    });
+    topicStudioDebugState.overlay = overlay;
+    topicStudioDebugState.overlayBody = overlay.querySelector("[data-debug-body]");
+    document.body.appendChild(overlay);
+  }
+
+  function updateTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled) return;
+    ensureTopicStudioDebugOverlay();
+    if (!topicStudioDebugState.overlayBody) return;
+    const hash = window.location.hash || "(none)";
+    const exists = Boolean(topicStudioPanel);
+    topicStudioDebugState.overlayBody.innerHTML = `
+      <div>hash: <span class="text-gray-400">${hash}</span></div>
+      <div>container: <span class="text-gray-400">${exists ? "found" : "missing"}</span></div>
+      <div>step: <span class="text-gray-400">${topicStudioDebugState.lastRenderStep}</span></div>
+      <div>/ready: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.ready)}</span></div>
+      <div>/capabilities: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.capabilities)}</span></div>
+      <div>/runs: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.runs)}</span></div>
+    `;
+  }
+
+  function setTopicStudioRenderStep(step) {
+    topicStudioDebugState.lastRenderStep = step;
+    updateTopicStudioDebugOverlay();
+  }
+
+  function recordTopicStudioFetchStatus(key, status, ok, detail) {
+    topicStudioDebugState.fetchStatus[key] = { status, ok, detail };
+    updateTopicStudioDebugOverlay();
+  }
 
   function renderError(target, error, fallback = "Request failed.") {
     if (!target) return;
@@ -858,6 +1193,39 @@ loadDismissedIds();
     const status = error.status ? `status ${error.status}` : "status unknown";
     const detail = error.body || error.message || fallback;
     target.textContent = `${status}: ${detail}`;
+  }
+
+  function asItems(value) {
+    if (Array.isArray(value)) return value;
+    if (value && Array.isArray(value.items)) return value.items;
+    return [];
+  }
+
+  function getTotal(resp, json) {
+    const totalValue = Number(json?.total);
+    if (Number.isFinite(totalValue)) return totalValue;
+    const headerValue = resp?.get ? Number(resp.get("X-Total-Count")) : Number.NaN;
+    return Number.isFinite(headerValue) ? headerValue : null;
+  }
+
+  function truncateText(value, maxLength = 200) {
+    if (!value) return "";
+    const trimmed = String(value).replace(/\s+/g, " ").trim();
+    if (trimmed.length <= maxLength) return trimmed;
+    return `${trimmed.slice(0, maxLength)}…`;
+  }
+
+  function renderEndpointWarning(target, endpoint, error) {
+    if (!target) return;
+    if (!error) {
+      target.textContent = "";
+      target.classList.add("hidden");
+      return;
+    }
+    const status = error.status ? `status ${error.status}` : "status unknown";
+    const detail = truncateText(error.body || error.message || "Request failed.");
+    target.textContent = `${endpoint} · ${status} · ${detail}`;
+    target.classList.remove("hidden");
   }
 
   function setWarning(target, message) {
@@ -920,8 +1288,8 @@ loadDismissedIds();
 
   function normalizeRunsResponse(response) {
     if (!response) return [];
-    if (Array.isArray(response)) return response;
-    if (Array.isArray(response.items)) return response.items;
+    const items = asItems(response);
+    if (items.length > 0) return items;
     if (Array.isArray(response.runs)) return response.runs;
     return [];
   }
@@ -1906,7 +2274,7 @@ loadDismissedIds();
   async function handleAttentionAck(attentionId, ackType, note) {
     if (!attentionId) return;
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/attention/${attentionId}/ack`, {
+      const resp = await hubFetch(apiUrl(`/api/attention/${attentionId}/ack`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ack_type: ackType, note }),
@@ -1927,7 +2295,7 @@ loadDismissedIds();
     if (window.__orionReceiptInFlight.has(key)) return;
     window.__orionReceiptInFlight.add(key);
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/chat/message/${messageId}/receipt`, {
+      const resp = await hubFetch(apiUrl(`/api/chat/message/${messageId}/receipt`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, receipt_type: receiptType }),
@@ -2140,7 +2508,7 @@ loadDismissedIds();
 
   async function loadNotifications() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/notifications?limit=50`);
+      const resp = await hubFetch(apiUrl("/api/notifications?limit=50"));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2223,7 +2591,7 @@ loadDismissedIds();
 
   async function loadNotifySettings() {
     try {
-      const profileResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}`);
+      const profileResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}`));
       if (profileResp.ok) {
         const profile = await profileResp.json();
         if (notifyDisplayName) notifyDisplayName.value = profile.display_name || '';
@@ -2232,7 +2600,11 @@ loadDismissedIds();
         if (notifyQuietStart) notifyQuietStart.value = profile.quiet_start_local || '22:00';
         if (notifyQuietEnd) notifyQuietEnd.value = profile.quiet_end_local || '07:00';
       }
-      const prefsResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}/preferences`);
+    } catch (err) {
+      console.warn('Failed to load notify profile', err);
+    }
+    try {
+      const prefsResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}/preferences`));
       if (prefsResp.ok) {
         const prefs = await prefsResp.json();
         if (Array.isArray(prefs)) applyPreferenceRows(prefs);
@@ -2240,7 +2612,7 @@ loadDismissedIds();
       setSettingsStatus('Loaded');
     } catch (err) {
       setSettingsStatus('Failed to load settings', true);
-      console.warn('Failed to load notify settings', err);
+      console.warn('Failed to load notify preferences', err);
     }
   }
 
@@ -2255,14 +2627,14 @@ loadDismissedIds();
         quiet_start_local: notifyQuietStart ? notifyQuietStart.value : null,
         quiet_end_local: notifyQuietEnd ? notifyQuietEnd.value : null,
       };
-      await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}`, {
+      await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(profilePayload),
       });
 
       const preferencesPayload = { preferences: readPreferenceRows() };
-      const prefResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}/preferences`, {
+      const prefResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}/preferences`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(preferencesPayload),
@@ -2282,7 +2654,7 @@ loadDismissedIds();
     try {
       const filter = messageFilter ? messageFilter.value : 'unread';
       const statusParam = filter === 'all' ? '' : 'unread';
-      const resp = await fetch(`${API_BASE_URL}/api/chat/messages?limit=50&status=${statusParam}`);
+      const resp = await hubFetch(apiUrl(`/api/chat/messages?limit=50&status=${statusParam}`));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2315,7 +2687,7 @@ loadDismissedIds();
 
   async function loadPendingAttention() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/attention?status=pending&limit=50`);
+      const resp = await hubFetch(apiUrl("/api/attention?status=pending&limit=50"));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2563,8 +2935,8 @@ loadDismissedIds();
 
     try {
       const [summaryResp, driftResp] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/topics/summary?${summaryParams.toString()}`),
-        fetch(`${API_BASE_URL}/api/topics/drift?${driftParams.toString()}`),
+        hubFetch(apiUrl(`/api/topics/summary?${summaryParams.toString()}`)),
+        hubFetch(apiUrl(`/api/topics/drift?${driftParams.toString()}`)),
       ]);
 
       if (!summaryResp.ok || !driftResp.ok) {
@@ -2692,7 +3064,7 @@ loadDismissedIds();
 
   async function loadCognitionLibrary() {
       try {
-          const res = await fetch(`${API_BASE_URL}/api/cognition/library`);
+          const res = await hubFetch(apiUrl("/api/cognition/library"));
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           cognitionLibrary = await res.json();
           renderPackButtons();
@@ -2836,11 +3208,9 @@ loadDismissedIds();
 
   // --- WebSocket ---
   function setupWebSocket() {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
-    
-    console.log(`[WS] Connecting to ${wsUrl}...`);
-    socket = new WebSocket(wsUrl);
+    const wsEndpoint = wsUrl("/ws");
+    console.log(`[WS] Connecting to ${wsEndpoint}...`);
+    socket = new WebSocket(wsEndpoint);
 
     socket.onopen = () => {
         console.log("[WS] Connected");
@@ -2915,7 +3285,7 @@ loadDismissedIds();
         if (noWriteToggle && noWriteToggle.checked) headers['X-Orion-No-Write'] = '1';
 
         // Fallback to HTTP if WS is down
-        fetch(`${API_BASE_URL}/api/chat`, {
+        hubFetch(apiUrl("/api/chat"), {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({messages:[{role:'user', content:text}], ...payload})
@@ -3032,7 +3402,7 @@ loadDismissedIds();
   async function initSession() {
     try {
        const sid = orionSessionId || localStorage.getItem('orion_sid');
-       const r = await fetch(`${API_BASE_URL}/api/session`, {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
+       const r = await hubFetch(apiUrl("/api/session"), {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
        const d = await r.json();
        if(d.session_id) {
          orionSessionId = d.session_id;
@@ -3136,7 +3506,7 @@ loadDismissedIds();
     async function postCollapse(payload) {
       setCollapseStatus("Submitting…");
       try {
-        const resp = await fetch("/submit-collapse", {
+        const resp = await hubFetch(apiUrl("/submit-collapse"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -3378,6 +3748,7 @@ loadDismissedIds();
     if (!tsStatusBadge) return;
     try {
       setLoading(tsStatusLoading, true);
+      setTopicStudioRenderStep("fetching /ready");
       const result = await topicFoundryFetch("/ready");
       const checks = result?.checks || {};
       formatStatusBadge(tsStatusBadge, result.ok, result.ok ? "Healthy" : "Degraded");
@@ -3387,6 +3758,9 @@ loadDismissedIds();
       if (tsStatusDetail) {
         tsStatusDetail.textContent = `PG: ${checks.pg?.detail || "--"} · Embedding: ${checks.embedding?.detail || "--"} · Model dir: ${checks.model_dir?.detail || "--"}`;
       }
+      renderEndpointWarning(tsReadyWarning, null, null);
+      recordTopicStudioFetchStatus("ready", 200, true);
+      setTopicStudioRenderStep("fetched /ready");
       setLoading(tsStatusLoading, false);
     } catch (err) {
       formatStatusBadge(tsStatusBadge, false, "Unreachable");
@@ -3394,6 +3768,9 @@ loadDismissedIds();
       formatStatusBadge(tsStatusEmbedding, null, "--");
       formatStatusBadge(tsStatusModelDir, null, "--");
       renderError(tsStatusDetail, err, "Failed to read /ready.");
+      renderEndpointWarning(tsReadyWarning, "/ready", err);
+      recordTopicStudioFetchStatus("ready", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /ready");
       setLoading(tsStatusLoading, false);
     }
   }
@@ -3444,19 +3821,22 @@ loadDismissedIds();
     }
     try {
       setLoading(tsStatusLoading, true, "Loading capabilities...");
+      setTopicStudioRenderStep("fetching /capabilities");
       const result = await topicFoundryFetch("/capabilities");
       topicStudioCapabilities = result;
       const modes = result.segmentation_modes_supported || [];
       renderSegmentationModes(modes, Boolean(result.llm_enabled));
       applyCapabilityDefaults(result.defaults || {});
+      renderEndpointWarning(tsCapabilitiesWarning, null, null);
+      recordTopicStudioFetchStatus("capabilities", 200, true);
+      setTopicStudioRenderStep("fetched /capabilities");
       setLoading(tsStatusLoading, false);
     } catch (err) {
       const fallbackModes = ["time_gap", "semantic", "hybrid"];
       renderSegmentationModes(fallbackModes, false);
-      if (tsCapabilitiesWarning) {
-        tsCapabilitiesWarning.textContent = `Capabilities unavailable. Falling back to safe defaults. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
-        tsCapabilitiesWarning.classList.remove("hidden");
-      }
+      renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
+      recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /capabilities");
       setLoading(tsStatusLoading, false);
     }
   }
@@ -3465,6 +3845,7 @@ loadDismissedIds();
     if (topicFoundryBaseLabel) {
       topicFoundryBaseLabel.textContent = TOPIC_FOUNDRY_PROXY_BASE;
     }
+    setTopicStudioRenderStep("refresh topic studio");
     await refreshTopicStudioCapabilities();
     await refreshTopicStudioStatus();
     try {
@@ -3505,8 +3886,12 @@ loadDismissedIds();
       if (tsKgRunId && !tsKgRunId.value && tsRunsSelect?.value) {
         tsKgRunId.value = tsRunsSelect.value;
       }
+      recordTopicStudioFetchStatus("runs", 200, true);
+      setTopicStudioRenderStep("fetched /runs");
     } catch (err) {
       console.warn("[TopicStudio] Failed to load runs", err);
+      recordTopicStudioFetchStatus("runs", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /runs");
       if (tsRunsWarning) {
         tsRunsWarning.textContent = `Failed to load runs. Enter a run id manually. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
         tsRunsWarning.classList.remove("hidden");
@@ -3521,23 +3906,24 @@ loadDismissedIds();
     tsUsePreviewSpec.disabled = true;
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
+  if (tsSkeletonRetry) {
+    tsSkeletonRetry.addEventListener("click", () => {
+      renderTopicStudioSkeleton("Loading...");
+      refreshTopicStudio().catch((err) => {
+        console.warn("[TopicStudio] Retry failed", err);
+      });
+    });
+  }
 
   if (hubTabButton && topicStudioTabButton) {
     hubTabButton.addEventListener("click", () => {
-      setActiveTab("hub");
-      history.replaceState(null, "", "#hub");
+      navigateToHash("#hub");
     });
     topicStudioTabButton.addEventListener("click", () => {
-      setActiveTab("topic-studio");
-      history.replaceState(null, "", "#topic-studio");
-      refreshTopicStudio();
+      navigateToHash("#topic-studio");
     });
-    if (window.location.hash === "#topic-studio") {
-      setActiveTab("topic-studio");
-      refreshTopicStudio();
-    } else {
-      setActiveTab("hub");
-    }
+    window.addEventListener("hashchange", handleHashRouting);
+    handleHashRouting();
   }
 
   if (tsDatasetSelect) {
@@ -4315,7 +4701,8 @@ loadDismissedIds();
         params.set("kind", kindValue);
       }
       const response = await topicFoundryFetch(`/events?${params.toString()}`);
-      topicStudioEventsPage = response.items || [];
+      const items = asItems(response);
+      topicStudioEventsPage = items.length > 0 ? items : Array.isArray(response?.events) ? response.events : [];
       renderEventsTable(topicStudioEventsPage);
       if (tsEventsStatus) tsEventsStatus.textContent = `Loaded ${topicStudioEventsPage.length} events.`;
     } catch (err) {
@@ -4405,7 +4792,8 @@ loadDismissedIds();
         params.set("q", tsKgQuery.value);
       }
       const response = await topicFoundryFetch(`/kg/edges?${params.toString()}`);
-      topicStudioKgEdgesPage = response.items || [];
+      const items = asItems(response);
+      topicStudioKgEdgesPage = items.length > 0 ? items : Array.isArray(response?.edges) ? response.edges : [];
       renderKgTable(topicStudioKgEdgesPage);
       if (tsKgStatus) tsKgStatus.textContent = `Loaded ${topicStudioKgEdgesPage.length} edges.`;
     } catch (err) {
@@ -4470,10 +4858,11 @@ loadDismissedIds();
         offset: tsTopicsOffset?.value || "0",
       });
       const response = await topicFoundryFetch(`/topics?${params.toString()}`);
-      const items = response.items || response.topics || [];
-      renderTopicsTable(items);
+      const items = asItems(response);
+      const topics = items.length > 0 ? items : Array.isArray(response?.topics) ? response.topics : [];
+      renderTopicsTable(topics);
       if (tsTopicsStatus) {
-        tsTopicsStatus.textContent = `Loaded ${items.length} topics.`;
+        tsTopicsStatus.textContent = `Loaded ${topics.length} topics.`;
       }
     } catch (err) {
       renderError(tsTopicsError, err);
@@ -4517,7 +4906,8 @@ loadDismissedIds();
         include_bounds: "true",
       });
       const response = await topicFoundryFetch(`/topics/${topicId}/segments?${params.toString()}`);
-      const segments = response.items || response.segments || [];
+      const items = asItems(response);
+      const segments = items.length > 0 ? items : Array.isArray(response?.segments) ? response.segments : [];
       renderTopicSegmentsTable(segments);
       if (tsTopicSegmentsStatus) {
         const rangeStart = segments.length === 0 ? 0 : topicStudioTopicSegmentsOffset + 1;
@@ -4694,15 +5084,10 @@ loadDismissedIds();
         params.set("q", query);
       }
       const { payload, headers } = await topicFoundryFetchWithHeaders(`/segments?${params.toString()}`);
-      const items = payload.items || payload.segments || payload;
-      topicStudioSegmentsPage = Array.isArray(items) ? items : [];
-      const totalValue = Number(payload.total);
-      if (Number.isFinite(totalValue)) {
-        topicStudioSegmentsTotal = totalValue;
-      } else {
-        const headerTotal = Number(headers.get("X-Total-Count"));
-        topicStudioSegmentsTotal = Number.isFinite(headerTotal) ? headerTotal : null;
-      }
+      const items = asItems(payload);
+      const segments = items.length > 0 ? items : Array.isArray(payload?.segments) ? payload.segments : Array.isArray(payload) ? payload : [];
+      topicStudioSegmentsPage = segments;
+      topicStudioSegmentsTotal = getTotal(headers, payload);
       const filtered = applySegmentsClientFilters(topicStudioSegmentsPage);
       topicStudioSegmentsDisplayed = filtered;
       renderSegmentsTable(filtered);

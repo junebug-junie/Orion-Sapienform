@@ -595,6 +595,12 @@
             <input id="tsDatasetTextColumns" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="user_text,assistant_text" />
           </div>
           <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Boundary column (optional)</label>
+            <select id="tsDatasetBoundaryColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="">No boundary</option>
+            </select>
+          </div>
+          <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Where SQL (optional)</label>
             <input id="tsDatasetWhereSql" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="channel = :channel" />
           </div>
@@ -624,11 +630,12 @@
           <div class="space-y-2">
             <div class="text-[10px] uppercase tracking-wide text-gray-500">Windowing</div>
             <div class="grid grid-cols-2 gap-2">
-              <select id="tsBlockMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <select id="tsWindowingMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
                 <option value="turn_pairs">turn_pairs</option>
-                <option value="triads">triads</option>
-                <option value="rows">rows</option>
-                <option value="group_by_column">group_by_column</option>
+                <option value="fixed_k_rows">fixed_k_rows</option>
+                <option value="time_gap">time_gap</option>
+                <option value="conversation_bound">conversation_bound</option>
+                <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
               </select>
               <select id="tsSegmentationMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
                 <option value="time_gap">time_gap</option>
@@ -640,12 +647,16 @@
             </div>
             <div id="tsLlmNote" class="text-[10px] text-amber-300 hidden">LLM disabled</div>
             <div id="tsGroupByRow" class="space-y-2 hidden">
-              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Group by column</label>
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Group by column (legacy)</label>
               <select id="tsGroupByColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
             </div>
             <div class="grid grid-cols-2 gap-2">
               <input id="tsTimeGap" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="time_gap_seconds" />
               <input id="tsMaxWindow" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="max_window_seconds" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsFixedKRows" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="fixed_k_rows" />
+              <input id="tsFixedKRowsStep" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="fixed_k_rows_step" />
             </div>
             <div class="grid grid-cols-2 gap-2">
               <input id="tsMinBlocks" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_blocks_per_segment" />
@@ -687,7 +698,9 @@
           </div>
           <div class="grid grid-cols-2 gap-2">
             <input id="tsModelMinCluster" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_cluster_size" />
-            <input id="tsModelMetric" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="metric (cosine)" />
+              <select id="tsModelMetric" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Select metric</option>
+              </select>
           </div>
           <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Params (JSON)</label>

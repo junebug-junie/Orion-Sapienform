@@ -119,3 +119,42 @@ def list_columns(schema: str = Query("public"), table: str = Query(...)) -> Dict
     payload = {"schema": schema, "table": table, "columns": columns}
     _set_cached(cache_key, payload)
     return payload
+
+
+@router.get("/introspect/table_fingerprint")
+def table_fingerprint(schema: str = Query("public"), table: str = Query(...)) -> Dict[str, Any]:
+    allowed = _allowed_schemas()
+    if schema not in allowed:
+        raise HTTPException(status_code=400, detail="Schema not allowlisted")
+    if not _IDENTIFIER_RE.match(table):
+        raise HTTPException(status_code=400, detail="Invalid table name")
+    cache_key = ("fingerprint", schema, table)
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+                """,
+                (schema, table),
+            )
+            exists = cur.fetchone()[0] > 0
+            cur.execute(
+                """
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s
+                ORDER BY ordinal_position
+                """,
+                (schema, table),
+            )
+            columns = [
+                {"column_name": row[0], "data_type": row[1], "is_nullable": row[2] == "YES"}
+                for row in cur.fetchall() or []
+            ]
+    payload = {"schema": schema, "table": table, "exists": exists, "columns": columns}
+    _set_cached(cache_key, payload)
+    return payload

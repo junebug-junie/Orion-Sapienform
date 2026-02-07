@@ -88,10 +88,24 @@ def get_segment_facets(
 
 
 @router.get("/segments/{segment_id}", response_model=SegmentRecord)
-def get_segment(segment_id: UUID) -> SegmentRecord:
+def get_segment(segment_id: UUID, include_full_text: bool = Query(default=False)) -> SegmentRecord:
     row = fetch_segment(segment_id)
     if not row:
         raise HTTPException(status_code=404, detail="Segment not found")
+    full_text = None
+    if include_full_text:
+        run = fetch_run(UUID(row["run_id"]))
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        dataset = fetch_dataset(UUID(run["dataset_id"]))
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        provenance = row.get("provenance") or {}
+        row_ids = provenance.get("row_ids") or []
+        if isinstance(row_ids, str):
+            row_ids = [row_ids]
+        rows = fetch_dataset_rows_by_ids(dataset=dataset, row_ids=row_ids)
+        full_text = build_full_text(rows, dataset.text_columns) if rows else (row.get("snippet") or "")
     return SegmentRecord(
         segment_id=UUID(row["segment_id"]),
         run_id=UUID(row["run_id"]),
@@ -114,6 +128,7 @@ def get_segment(segment_id: UUID) -> SegmentRecord:
         row_ids_count=row.get("row_ids_count"),
         start_at=row.get("start_at"),
         end_at=row.get("end_at"),
+        full_text=full_text,
     )
 
 

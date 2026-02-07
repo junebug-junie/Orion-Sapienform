@@ -14,6 +14,7 @@ from app.storage.ddl import (
     CONVERSATIONS_DDL,
     CONVERSATION_BLOCKS_DDL,
     CONVERSATION_OVERRIDES_DDL,
+    CONVERSATION_ROLLUPS_DDL,
     DATASETS_DDL,
     DRIFT_DDL,
     EVENTS_DDL,
@@ -22,6 +23,8 @@ from app.storage.ddl import (
     MODELS_DDL,
     RUNS_DDL,
     SEGMENTS_DDL,
+    TOPICS_DDL,
+    WINDOW_FILTERS_DDL,
 )
 from app.storage.pg import pg_conn
 
@@ -44,8 +47,12 @@ def ensure_tables() -> None:
             cur.execute(CONVERSATIONS_DDL)
             cur.execute(CONVERSATION_BLOCKS_DDL)
             cur.execute(CONVERSATION_OVERRIDES_DDL)
+            cur.execute(TOPICS_DDL)
+            cur.execute(WINDOW_FILTERS_DDL)
+            cur.execute(CONVERSATION_ROLLUPS_DDL)
             cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS spec_hash VARCHAR")
             cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS stage VARCHAR")
+            cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS run_scope VARCHAR")
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS ix_topic_foundry_runs_spec_hash ON topic_foundry_runs (spec_hash)"
             )
@@ -69,6 +76,15 @@ def ensure_tables() -> None:
                 "ON topic_foundry_segments (run_id, created_at)"
             )
             cur.execute("ALTER TABLE topic_foundry_models ADD COLUMN IF NOT EXISTS enrichment_spec JSONB")
+            cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS boundary_column VARCHAR")
+            cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS boundary_strategy VARCHAR")
+            cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS title TEXT")
+            cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS aspects JSONB")
+            cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS sentiment JSONB")
+            cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS meaning JSONB")
+            cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS enrichment JSONB")
+            cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS enrichment_version TEXT")
 
 
 def create_dataset(dataset: DatasetSpec) -> None:
@@ -78,8 +94,8 @@ def create_dataset(dataset: DatasetSpec) -> None:
                 """
                 INSERT INTO topic_foundry_datasets (
                     dataset_id, name, source_table, id_column, time_column, text_columns,
-                    where_sql, where_params, timezone, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    boundary_column, boundary_strategy, where_sql, where_params, timezone, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(dataset.dataset_id),
@@ -88,6 +104,8 @@ def create_dataset(dataset: DatasetSpec) -> None:
                     dataset.id_column,
                     dataset.time_column,
                     Json(dataset.text_columns),
+                    dataset.boundary_column,
+                    dataset.boundary_strategy,
                     dataset.where_sql,
                     Json(dataset.where_params or {}),
                     dataset.timezone,
@@ -113,6 +131,8 @@ def fetch_dataset(dataset_id: UUID) -> Optional[DatasetSpec]:
         id_column=row["id_column"],
         time_column=row["time_column"],
         text_columns=row["text_columns"],
+        boundary_column=row.get("boundary_column"),
+        boundary_strategy=row.get("boundary_strategy"),
         where_sql=row.get("where_sql"),
         where_params=row.get("where_params") or None,
         timezone=row["timezone"],
@@ -136,6 +156,8 @@ def list_datasets(*, limit: int = 200) -> List[DatasetSpec]:
             id_column=row["id_column"],
             time_column=row["time_column"],
             text_columns=row["text_columns"],
+            boundary_column=row.get("boundary_column"),
+            boundary_strategy=row.get("boundary_strategy"),
             where_sql=row.get("where_sql"),
             where_params=row.get("where_params") or None,
             timezone=row["timezone"],
@@ -231,9 +253,9 @@ def create_run(run: RunRecord) -> None:
             cur.execute(
                 """
                 INSERT INTO topic_foundry_runs (
-                    run_id, model_id, dataset_id, specs, spec_hash, status, stage, stats, artifact_paths,
+                    run_id, model_id, dataset_id, specs, spec_hash, status, stage, run_scope, stats, artifact_paths,
                     created_at, started_at, completed_at, error
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(run.run_id),
@@ -243,6 +265,7 @@ def create_run(run: RunRecord) -> None:
                     run.spec_hash,
                     run.status,
                     run.stage,
+                    run.run_scope,
                     Json(run.stats),
                     Json(run.artifact_paths),
                     run.created_at,
@@ -261,6 +284,7 @@ def update_run(run: RunRecord) -> None:
                 UPDATE topic_foundry_runs
                 SET status = %s,
                     stage = %s,
+                    run_scope = %s,
                     stats = %s,
                     artifact_paths = %s,
                     started_at = %s,
@@ -271,6 +295,7 @@ def update_run(run: RunRecord) -> None:
                 (
                     run.status,
                     run.stage,
+                    run.run_scope,
                     Json(run.stats),
                     Json(run.artifact_paths),
                     run.started_at,
@@ -314,6 +339,21 @@ def fetch_latest_completed_run(model_id: UUID) -> Optional[Dict[str, Any]]:
                 LIMIT 1
                 """,
                 (str(model_id),),
+            )
+            return cur.fetchone()
+
+
+def fetch_latest_completed_run_by_scope(model_id: UUID, scope: str) -> Optional[Dict[str, Any]]:
+    with pg_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT * FROM topic_foundry_runs
+                WHERE model_id = %s AND status = 'complete' AND run_scope = %s
+                ORDER BY completed_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+                """,
+                (str(model_id), scope),
             )
             return cur.fetchone()
 
@@ -508,25 +548,177 @@ def list_topics(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT topic_id,
-                       COUNT(*) AS count,
-                       SUM(CASE WHEN is_outlier THEN 1 ELSE 0 END) AS outliers
-                FROM topic_foundry_segments
+                SELECT topic_id, count, scope, parent_topic_id
+                FROM topic_foundry_topics
                 WHERE run_id = %s
-                GROUP BY topic_id
-                ORDER BY count DESC
+                ORDER BY count DESC NULLS LAST
                 LIMIT %s OFFSET %s
                 """,
                 (str(run_id), limit, offset),
             )
             rows = cur.fetchall() or []
-            cur.execute(
-                "SELECT COUNT(DISTINCT topic_id) AS total FROM topic_foundry_segments WHERE run_id = %s",
-                (str(run_id),),
-            )
-            total_row = cur.fetchone()
-            total = int(total_row["total"]) if total_row else None
+            if rows:
+                cur.execute(
+                    "SELECT COUNT(*) AS total FROM topic_foundry_topics WHERE run_id = %s",
+                    (str(run_id),),
+                )
+                total_row = cur.fetchone()
+                total = int(total_row["total"]) if total_row else None
+            else:
+                cur.execute(
+                    """
+                    SELECT topic_id,
+                           COUNT(*) AS count,
+                           SUM(CASE WHEN is_outlier THEN 1 ELSE 0 END) AS outliers
+                    FROM topic_foundry_segments
+                    WHERE run_id = %s
+                    GROUP BY topic_id
+                    ORDER BY count DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (str(run_id), limit, offset),
+                )
+                rows = cur.fetchall() or []
+                cur.execute(
+                    "SELECT COUNT(DISTINCT topic_id) AS total FROM topic_foundry_segments WHERE run_id = %s",
+                    (str(run_id),),
+                )
+                total_row = cur.fetchone()
+                total = int(total_row["total"]) if total_row else None
     return rows, total
+
+
+def insert_topics(run_id: UUID, topics: List[Dict[str, Any]]) -> None:
+    if not topics:
+        return
+    rows = [
+        (
+            str(run_id),
+            int(topic["topic_id"]),
+            topic.get("scope") or "macro",
+            topic.get("parent_topic_id"),
+            Json(topic.get("centroid")),
+            topic.get("count"),
+            topic.get("label"),
+        )
+        for topic in topics
+    ]
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO topic_foundry_topics (
+                    run_id, topic_id, scope, parent_topic_id, centroid, count, label
+                ) VALUES %s
+                ON CONFLICT (run_id, topic_id, scope) DO UPDATE SET
+                    parent_topic_id = EXCLUDED.parent_topic_id,
+                    centroid = EXCLUDED.centroid,
+                    count = EXCLUDED.count,
+                    label = EXCLUDED.label
+                """,
+                rows,
+            )
+
+
+def fetch_topics(run_id: UUID, scope: Optional[str] = None) -> List[Dict[str, Any]]:
+    query = "SELECT * FROM topic_foundry_topics WHERE run_id = %s"
+    params: List[Any] = [str(run_id)]
+    if scope:
+        query += " AND scope = %s"
+        params.append(scope)
+    with pg_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            return cur.fetchall() or []
+
+
+def update_topic_enrichment(
+    run_id: UUID,
+    topic_id: int,
+    scope: str,
+    *,
+    enrichment: Dict[str, Any],
+    enrichment_version: str,
+) -> None:
+    enriched_at = utc_now()
+    enrichment["enriched_at"] = enriched_at.isoformat()
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE topic_foundry_topics
+                SET title = %s,
+                    aspects = %s,
+                    sentiment = %s,
+                    meaning = %s,
+                    enrichment = %s,
+                    enriched_at = %s,
+                    enrichment_version = %s
+                WHERE run_id = %s AND topic_id = %s AND scope = %s
+                """,
+                (
+                    enrichment.get("title"),
+                    Json(enrichment.get("aspects")),
+                    Json(enrichment.get("sentiment")),
+                    Json(enrichment.get("meaning")),
+                    Json(enrichment),
+                    enriched_at,
+                    enrichment_version,
+                    str(run_id),
+                    int(topic_id),
+                    scope,
+                ),
+            )
+
+
+def insert_window_filters(run_id: Optional[UUID], filters: List[Dict[str, Any]]) -> None:
+    if not filters:
+        return
+    rows = [
+        (
+            str(uuid4()),
+            str(run_id) if run_id else None,
+            f.get("segment_id"),
+            f.get("policy") or "keep",
+            Json(f.get("decision") or {}),
+        )
+        for f in filters
+    ]
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO topic_foundry_window_filters (
+                    filter_id, run_id, segment_id, policy, decision
+                ) VALUES %s
+                """,
+                rows,
+            )
+
+
+def upsert_conversation_rollups(run_id: UUID, rollups: Dict[str, Any]) -> None:
+    if not rollups:
+        return
+    rows = [
+        (conversation_id, str(run_id), Json(payload))
+        for conversation_id, payload in rollups.items()
+    ]
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO topic_foundry_conversation_rollups (
+                    conversation_id, run_id, payload
+                ) VALUES %s
+                ON CONFLICT (conversation_id) DO UPDATE SET
+                    run_id = EXCLUDED.run_id,
+                    payload = EXCLUDED.payload
+                """,
+                rows,
+            )
 
 
 def fetch_topic_segments(
@@ -551,9 +743,10 @@ def list_aspect_counts(run_id: UUID) -> List[Dict[str, Any]]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT jsonb_array_elements_text(aspects) AS key, COUNT(*) AS count
-                FROM topic_foundry_segments
-                WHERE run_id = %s AND aspects IS NOT NULL
+                SELECT COALESCE(a.aspect, '(none)') AS key, COUNT(*) AS count
+                FROM topic_foundry_segments s
+                LEFT JOIN LATERAL jsonb_array_elements_text(s.aspects) AS a(aspect) ON TRUE
+                WHERE s.run_id = %s AND s.aspects IS NOT NULL
                 GROUP BY key
                 ORDER BY count DESC
                 """,

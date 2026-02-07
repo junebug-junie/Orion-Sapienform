@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.models import CapabilitiesResponse, ModelSpec, WindowingSpec
+from app.services.metrics import SUPPORTED_METRICS
 from app.settings import settings
 
 
@@ -32,7 +33,7 @@ def capabilities() -> CapabilitiesResponse:
         llm_reply_prefix=settings.topic_foundry_llm_reply_prefix if llm_transport == "bus" else None,
         segmentation_modes_supported=segmentation_modes,
         enricher_modes_supported=enricher_modes,
-        supported_metrics=["euclidean", "cosine"],
+        supported_metrics=sorted(SUPPORTED_METRICS),
         default_metric=ModelSpec.model_fields["metric"].default,
         cosine_impl_default=settings.topic_foundry_cosine_impl,
         defaults=defaults,

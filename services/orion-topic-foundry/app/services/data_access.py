@@ -38,13 +38,76 @@ def split_qualified_table(name: str) -> Tuple[Optional[str], str]:
 def _build_table_identifier(name: str) -> sql.Composable:
     schema, table = split_qualified_table(name)
     if schema:
-        return sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(table))
+        return sql.Identifier(schema, table)
     return sql.Identifier(table)
+
+
+def _table_exists(schema: Optional[str], table: str) -> bool:
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            if schema:
+                cur.execute(
+                    """
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = %s AND table_name = %s
+                    """,
+                    (schema, table),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = %s
+                    """,
+                    (table,),
+                )
+            return cur.fetchone() is not None
+
+
+def _fetch_table_columns(schema: Optional[str], table: str) -> List[str]:
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            if schema:
+                cur.execute(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (schema, table),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (table,),
+                )
+            rows = cur.fetchall() or []
+    return [row[0] for row in rows]
+
+
+def validate_dataset_columns(dataset: DatasetCreateRequest | DatasetSpec) -> None:
+    schema, table = split_qualified_table(dataset.source_table)
+    available = set(_fetch_table_columns(schema, table))
+    required = {dataset.id_column, dataset.time_column, *dataset.text_columns}
+    if dataset.boundary_column:
+        required.add(dataset.boundary_column)
+    missing = sorted(col for col in required if col not in available)
+    if missing:
+        detail = (
+            f"Missing columns for dataset_id={getattr(dataset, 'dataset_id', None)} "
+            f"source_table={dataset.source_table}: {', '.join(missing)}"
+        )
+        raise InvalidSourceTableError(detail)
 
 
 def validate_dataset_source_table(dataset: DatasetCreateRequest | DatasetSpec) -> None:
     dataset_id = getattr(dataset, "dataset_id", None)
     try:
+        schema, table = split_qualified_table(dataset.source_table)
         table_ident = _build_table_identifier(dataset.source_table)
     except InvalidSourceTableError:
         logger.exception(
@@ -53,6 +116,10 @@ def validate_dataset_source_table(dataset: DatasetCreateRequest | DatasetSpec) -
             dataset.source_table,
         )
         raise
+    if not _table_exists(schema, table):
+        detail = f"Missing relation {schema + '.' if schema else ''}{table} for dataset_id={dataset_id}"
+        logger.warning(detail)
+        raise InvalidSourceTableError(detail)
     query = sql.SQL("SELECT 1 FROM {table} LIMIT 1").format(table=table_ident)
     with pg_conn() as conn:
         with conn.cursor() as cur:

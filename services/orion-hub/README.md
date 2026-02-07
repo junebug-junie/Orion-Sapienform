@@ -195,7 +195,29 @@ curl "http://localhost:8080/api/topics/summary?window_minutes=1440&max_topics=20
 curl "http://localhost:8080/api/topics/drift?window_minutes=1440&min_turns=10&max_sessions=50"
 ```
 
-### 5. No-Write Debug Mode (skip memory publishing)
+### 6. Topic Foundry smokes (via Hub proxy)
+Hub proxies Topic Foundry under `/api/topic-foundry`, so smoke scripts can target the Hub host.
+
+**Via Hub proxy (recommended):**
+```bash
+scripts/smoke_topic_foundry_all.sh http://localhost:8080/api/topic-foundry
+```
+or:
+```bash
+HUB_BASE_URL=https://tailscale-host.example.com scripts/smoke_topic_foundry_introspect.sh
+```
+
+**Direct service port (optional):**
+```bash
+TOPIC_FOUNDRY_BASE_URL=http://127.0.0.1:8615 scripts/smoke_topic_foundry_preview.sh
+```
+
+**Inside Docker network (optional):**
+```bash
+TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615 scripts/smoke_topic_foundry_facets.sh
+```
+
+### 7. No-Write Debug Mode (skip memory publishing)
 Use the header + JSON flag to avoid publishing `orion:chat:history:*` events while still running recall/LLM:
 
 ```bash

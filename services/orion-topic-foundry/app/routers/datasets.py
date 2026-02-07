@@ -12,8 +12,9 @@ from app.models import (
     DatasetPreviewRequest,
     DatasetPreviewResponse,
     DatasetSpec,
+    WindowingSpec,
 )
-from app.services.data_access import InvalidSourceTableError
+from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
 from app.services.preview import preview_dataset
 from app.storage.repository import create_dataset, fetch_dataset, list_datasets, utc_now
 
@@ -25,6 +26,8 @@ router = APIRouter()
 
 @router.post("/datasets", response_model=DatasetCreateResponse)
 def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateResponse:
+    if payload.boundary_column and not payload.boundary_strategy:
+        payload.boundary_strategy = "column"
     dataset_id = uuid4()
     created_at = utc_now()
     dataset = DatasetSpec(
@@ -34,11 +37,20 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
         id_column=payload.id_column,
         time_column=payload.time_column,
         text_columns=payload.text_columns,
+        boundary_column=payload.boundary_column,
+        boundary_strategy=payload.boundary_strategy,
         where_sql=payload.where_sql,
         where_params=payload.where_params,
         timezone=payload.timezone,
         created_at=created_at,
     )
+    try:
+        validate_dataset_source_table(dataset)
+        validate_dataset_columns(dataset)
+    except (InvalidSourceTableError, ValueError) as exc:
+        detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
+        logger.warning("Create dataset failed due to invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
     create_dataset(dataset)
     return DatasetCreateResponse(dataset_id=dataset_id, created_at=created_at)
 
@@ -56,9 +68,7 @@ def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewRe
         dataset_spec = fetch_dataset(payload.dataset_id)
     if dataset_spec is None:
         raise HTTPException(status_code=422, detail="dataset or dataset_id required")
-    windowing_spec = payload.windowing or payload.windowing_spec
-    if windowing_spec is None:
-        raise HTTPException(status_code=422, detail="windowing or windowing_spec required")
+    windowing_spec = payload.windowing or payload.windowing_spec or WindowingSpec()
     resolved = DatasetPreviewRequest(
         dataset=dataset_spec,
         windowing=windowing_spec,
@@ -67,15 +77,24 @@ def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewRe
         limit=payload.limit,
     )
     try:
+        validate_dataset_source_table(dataset_spec)
+        validate_dataset_columns(dataset_spec)
+        if windowing_spec.windowing_mode.startswith("conversation") and not dataset_spec.boundary_column:
+            detail = {
+                "ok": False,
+                "error": "invalid_windowing",
+                "detail": f"boundary_column required for windowing_mode={windowing_spec.windowing_mode} dataset_id={dataset_spec.dataset_id}",
+            }
+            raise HTTPException(status_code=400, detail=detail)
         result = preview_dataset(resolved)
         return result
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {
             "ok": False,
-            "error": "invalid_source_table",
-            "detail": str(exc) or "Invalid source_table",
+            "error": "invalid_request",
+            "detail": str(exc) or "Invalid request",
         }
-        logger.warning("Preview failed due to invalid source_table", exc_info=True)
+        logger.warning("Preview failed due to invalid request", exc_info=True)
         raise HTTPException(status_code=400, detail=detail) from exc
     except (pg_errors.UndefinedTable, pg_errors.InvalidSchemaName, pg_errors.InvalidName) as exc:
         detail = {

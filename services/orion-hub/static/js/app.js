@@ -304,16 +304,19 @@ loadDismissedIds();
   const tsDatasetIdColumn = document.getElementById("tsDatasetIdColumn");
   const tsDatasetTimeColumn = document.getElementById("tsDatasetTimeColumn");
   const tsDatasetTextColumns = document.getElementById("tsDatasetTextColumns");
+  const tsDatasetBoundaryColumn = document.getElementById("tsDatasetBoundaryColumn");
   const tsDatasetWhereSql = document.getElementById("tsDatasetWhereSql");
   const tsDatasetTimezone = document.getElementById("tsDatasetTimezone");
   const tsStartAt = document.getElementById("tsStartAt");
   const tsEndAt = document.getElementById("tsEndAt");
-  const tsBlockMode = document.getElementById("tsBlockMode");
+  const tsWindowingMode = document.getElementById("tsWindowingMode");
   const tsGroupByRow = document.getElementById("tsGroupByRow");
   const tsGroupByColumn = document.getElementById("tsGroupByColumn");
   const tsSegmentationMode = document.getElementById("tsSegmentationMode");
   const tsTimeGap = document.getElementById("tsTimeGap");
   const tsMaxWindow = document.getElementById("tsMaxWindow");
+  const tsFixedKRows = document.getElementById("tsFixedKRows");
+  const tsFixedKRowsStep = document.getElementById("tsFixedKRowsStep");
   const tsMinBlocks = document.getElementById("tsMinBlocks");
   const tsMaxChars = document.getElementById("tsMaxChars");
   const tsRunPreset = document.getElementById("tsRunPreset");
@@ -881,15 +884,18 @@ loadDismissedIds();
         id_column: tsDatasetIdColumn?.value || "",
         time_column: tsDatasetTimeColumn?.value || "",
         text_columns: tsDatasetTextColumns?.value || "",
+        boundary_column: tsDatasetBoundaryColumn?.value || "",
         where_sql: tsDatasetWhereSql?.value || "",
         timezone: tsDatasetTimezone?.value || "",
       },
       windowing: {
-        block_mode: tsBlockMode?.value || "",
+        windowing_mode: tsWindowingMode?.value || "",
         group_by: tsGroupByColumn?.value || "",
         segmentation_mode: tsSegmentationMode?.value || "",
         time_gap_seconds: tsTimeGap?.value || "",
         max_window_seconds: tsMaxWindow?.value || "",
+        fixed_k_rows: tsFixedKRows?.value || "",
+        fixed_k_rows_step: tsFixedKRowsStep?.value || "",
         min_blocks_per_segment: tsMinBlocks?.value || "",
         max_chars: tsMaxChars?.value || "",
         preset: tsRunPreset?.value || "",
@@ -966,15 +972,18 @@ loadDismissedIds();
         if (tsDatasetIdColumn && state.dataset.id_column) tsDatasetIdColumn.value = state.dataset.id_column;
         if (tsDatasetTimeColumn && state.dataset.time_column) tsDatasetTimeColumn.value = state.dataset.time_column;
         if (tsDatasetTextColumns && state.dataset.text_columns) tsDatasetTextColumns.value = state.dataset.text_columns;
+        if (tsDatasetBoundaryColumn && state.dataset.boundary_column) tsDatasetBoundaryColumn.value = state.dataset.boundary_column;
         if (tsDatasetWhereSql && state.dataset.where_sql) tsDatasetWhereSql.value = state.dataset.where_sql;
         if (tsDatasetTimezone && state.dataset.timezone) tsDatasetTimezone.value = state.dataset.timezone;
       }
       if (state.windowing) {
-        if (tsBlockMode && state.windowing.block_mode) tsBlockMode.value = state.windowing.block_mode;
+        if (tsWindowingMode && state.windowing.windowing_mode) tsWindowingMode.value = state.windowing.windowing_mode;
         if (tsGroupByColumn && state.windowing.group_by) tsGroupByColumn.value = state.windowing.group_by;
         if (tsSegmentationMode && state.windowing.segmentation_mode) tsSegmentationMode.value = state.windowing.segmentation_mode;
         if (tsTimeGap && state.windowing.time_gap_seconds) tsTimeGap.value = state.windowing.time_gap_seconds;
         if (tsMaxWindow && state.windowing.max_window_seconds) tsMaxWindow.value = state.windowing.max_window_seconds;
+        if (tsFixedKRows && state.windowing.fixed_k_rows) tsFixedKRows.value = state.windowing.fixed_k_rows;
+        if (tsFixedKRowsStep && state.windowing.fixed_k_rows_step) tsFixedKRowsStep.value = state.windowing.fixed_k_rows_step;
         if (tsMinBlocks && state.windowing.min_blocks_per_segment) tsMinBlocks.value = state.windowing.min_blocks_per_segment;
         if (tsMaxChars && state.windowing.max_chars) tsMaxChars.value = state.windowing.max_chars;
         if (tsRunPreset && state.windowing.preset) tsRunPreset.value = state.windowing.preset;
@@ -1052,15 +1061,18 @@ loadDismissedIds();
       tsDatasetIdColumn,
       tsDatasetTimeColumn,
       tsDatasetTextColumns,
+      tsDatasetBoundaryColumn,
       tsDatasetWhereSql,
       tsDatasetTimezone,
       tsStartAt,
       tsEndAt,
-      tsBlockMode,
+      tsWindowingMode,
       tsGroupByColumn,
       tsSegmentationMode,
       tsTimeGap,
       tsMaxWindow,
+      tsFixedKRows,
+      tsFixedKRowsStep,
       tsMinBlocks,
       tsMaxChars,
       tsRunPreset,
@@ -1125,11 +1137,14 @@ loadDismissedIds();
   }
 
   function buildWindowingSpec() {
-    const blockMode = tsBlockMode?.value || "turn_pairs";
+    const windowingMode = tsWindowingMode?.value || "turn_pairs";
     const groupBy = tsGroupByColumn?.value || "";
     return {
-      block_mode: blockMode,
-      group_by: blockMode === "group_by_column" ? groupBy : null,
+      block_mode: windowingMode === "turn_pairs" ? "turn_pairs" : "rows",
+      windowing_mode: windowingMode,
+      fixed_k_rows: Number(tsFixedKRows?.value || 2),
+      fixed_k_rows_step: Number(tsFixedKRowsStep?.value || 0) || null,
+      group_by: windowingMode === "group_by_column" ? groupBy : null,
       segmentation_mode: tsSegmentationMode?.value || "time_gap",
       time_gap_seconds: Number(tsTimeGap?.value || 900),
       max_window_seconds: Number(tsMaxWindow?.value || 7200),
@@ -1140,7 +1155,7 @@ loadDismissedIds();
 
   function updateGroupByVisibility() {
     if (!tsGroupByRow) return;
-    const isGroupBy = tsBlockMode?.value === "group_by_column";
+    const isGroupBy = tsWindowingMode?.value === "group_by_column";
     tsGroupByRow.classList.toggle("hidden", !isGroupBy);
   }
 
@@ -1159,6 +1174,21 @@ loadDismissedIds();
     });
   }
 
+  function renderBoundaryOptions() {
+    if (!tsDatasetBoundaryColumn) return;
+    tsDatasetBoundaryColumn.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "No boundary";
+    tsDatasetBoundaryColumn.appendChild(placeholder);
+    topicStudioBoundaryCandidates.forEach((col) => {
+      const option = document.createElement("option");
+      option.value = col.column_name;
+      option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+      tsDatasetBoundaryColumn.appendChild(option);
+    });
+  }
+
   async function loadGroupByCandidates(schema, table) {
     if (!schema || !table) {
       topicStudioGroupByCandidates = [];
@@ -1171,12 +1201,21 @@ loadDismissedIds();
       topicStudioGroupByCandidates = columns.filter((col) => {
         const dataType = String(col.data_type || "").toLowerCase();
         const udt = String(col.udt_name || "").toLowerCase();
-        return dataType.includes("char") || dataType.includes("text") || udt === "uuid";
+        return (
+          dataType.includes("char") ||
+          dataType.includes("text") ||
+          dataType.includes("int") ||
+          udt === "uuid"
+        );
       });
       renderGroupByOptions();
+      topicStudioBoundaryCandidates = topicStudioGroupByCandidates;
+      renderBoundaryOptions();
     } catch (err) {
       topicStudioGroupByCandidates = [];
       renderGroupByOptions();
+      topicStudioBoundaryCandidates = [];
+      renderBoundaryOptions();
     }
   }
 
@@ -1289,14 +1328,15 @@ loadDismissedIds();
   function applyRunPreset(value) {
     if (!value) return;
     if (value === "conversation_view") {
-      if (tsBlockMode) tsBlockMode.value = "group_by_column";
+      if (tsWindowingMode) tsWindowingMode.value = "conversation_bound_then_time_gap";
       if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
       if (tsMaxChars) tsMaxChars.value = "6000";
       if (tsTimeGap) tsTimeGap.value = "900";
       if (tsMinBlocks) tsMinBlocks.value = "1";
+      if (tsFixedKRows) tsFixedKRows.value = "2";
     }
     if (value === "global_themes") {
-      if (tsBlockMode) tsBlockMode.value = "turn_pairs";
+      if (tsWindowingMode) tsWindowingMode.value = "turn_pairs";
       if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
       if (tsMaxChars) tsMaxChars.value = "12000";
       if (tsTimeGap) tsTimeGap.value = "900";
@@ -1317,6 +1357,8 @@ loadDismissedIds();
       id_column: tsDatasetIdColumn?.value?.trim() || "",
       time_column: tsDatasetTimeColumn?.value?.trim() || "",
       text_columns: textColumns,
+      boundary_column: tsDatasetBoundaryColumn?.value || null,
+      boundary_strategy: tsDatasetBoundaryColumn?.value ? "column" : null,
       where_sql: tsDatasetWhereSql?.value?.trim() || null,
       timezone: tsDatasetTimezone?.value?.trim() || "UTC",
     };
@@ -1446,6 +1488,7 @@ loadDismissedIds();
   let topicStudioKgEdgesPage = [];
   let topicStudioIntrospectionSchemas = [];
   let topicStudioGroupByCandidates = [];
+  let topicStudioBoundaryCandidates = [];
   let topicStudioSelectedSegment = null;
   let topicStudioSegmentFullText = "";
   let topicStudioSegmentFullTextExpanded = false;
@@ -2302,7 +2345,7 @@ loadDismissedIds();
       <table style="width:100%; border-collapse:collapse;">
         <thead><tr style="text-align:left; color:#888;">
           <th style="padding:4px;">segment_id</th>
-          <th style="padding:4px;">size</th>
+          <th style="padding:4px;">rows</th>
           <th style="padding:4px;">label</th>
           <th style="padding:4px;">bounds</th>
           <th style="padding:4px;">snippet</th>
@@ -2313,7 +2356,7 @@ loadDismissedIds();
               (segment) => `
                 <tr data-segment-id="${segment.segment_id}" style="cursor:pointer; border-top:1px solid #222;">
                   <td style="padding:4px; color:#7fd;">${segment.segment_id || "--"}</td>
-                  <td style="padding:4px;">${segment.size || "--"}</td>
+                  <td style="padding:4px;">${segment.row_ids_count ?? segment.size ?? "--"}</td>
                   <td style="padding:4px;">${segment.label || "--"}</td>
                   <td style="padding:4px;">${segment.bounds || segment.bounds_text || "--"}</td>
                   <td style="padding:4px;">${segment.snippet || "--"}</td>
@@ -2697,7 +2740,7 @@ loadDismissedIds();
       showToast("No segments to export.");
       return;
     }
-    const headers = ["segment_id", "size", "start_at", "end_at", "row_ids_count", "title", "aspects", "valence", "friction", "snippet"];
+    const headers = ["segment_id", "rows", "start_at", "end_at", "row_ids_count", "title", "aspects", "valence", "friction", "snippet"];
     const lines = [headers.join(",")];
     const escapeCsv = (value) => {
       if (value === null || value === undefined) return "";
@@ -2707,13 +2750,13 @@ loadDismissedIds();
     exportRows.forEach((segment) => {
       const sentiment = segment.sentiment || {};
       const aspects = Array.isArray(segment.aspects) ? segment.aspects.join("|") : "";
-      const rowIdsCount = segment.row_ids_count ?? "";
+      const rowIdsCount = segment.row_ids_count ?? segment.size ?? "";
       const row = [
         escapeCsv(segment.segment_id),
-        escapeCsv(segment.size ?? ""),
+        escapeCsv(rowIdsCount),
         escapeCsv(segment.start_at ?? ""),
         escapeCsv(segment.end_at ?? ""),
-        escapeCsv(rowIdsCount),
+        escapeCsv(segment.row_ids_count ?? ""),
         escapeCsv(segment.title || segment.label || ""),
         escapeCsv(aspects),
         escapeCsv(sentiment.valence ?? ""),
@@ -2918,6 +2961,7 @@ loadDismissedIds();
     if (tsDatasetIdColumn) tsDatasetIdColumn.value = dataset.id_column || "";
     if (tsDatasetTimeColumn) tsDatasetTimeColumn.value = dataset.time_column || "";
     if (tsDatasetTextColumns) tsDatasetTextColumns.value = (dataset.text_columns || []).join(", ");
+    if (tsDatasetBoundaryColumn) tsDatasetBoundaryColumn.value = dataset.boundary_column || "";
     if (tsDatasetWhereSql) tsDatasetWhereSql.value = dataset.where_sql || "";
     if (tsDatasetTimezone) tsDatasetTimezone.value = dataset.timezone || "UTC";
   }
@@ -4995,6 +5039,27 @@ loadDismissedIds();
     }
   }
 
+  function renderMetricOptions(metrics = [], defaultMetric = "") {
+    if (!tsModelMetric) return;
+    const current = tsModelMetric.value;
+    tsModelMetric.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select metric";
+    tsModelMetric.appendChild(placeholder);
+    metrics.forEach((metric) => {
+      const option = document.createElement("option");
+      option.value = metric;
+      option.textContent = metric;
+      tsModelMetric.appendChild(option);
+    });
+    if (current && metrics.includes(current)) {
+      tsModelMetric.value = current;
+    } else if (defaultMetric && metrics.includes(defaultMetric)) {
+      tsModelMetric.value = defaultMetric;
+    }
+  }
+
   function applyCapabilityDefaults(defaults = {}) {
     if (tsModelEmbeddingUrl && !tsModelEmbeddingUrl.value) {
       tsModelEmbeddingUrl.value = defaults.embedding_source_url || "";
@@ -5018,7 +5083,9 @@ loadDismissedIds();
       const result = await topicFoundryFetch("/capabilities");
       topicStudioCapabilities = result;
       const modes = result.segmentation_modes_supported || [];
+      const metrics = result.supported_metrics || [];
       renderSegmentationModes(modes, Boolean(result.llm_enabled));
+      renderMetricOptions(metrics, result.default_metric);
       applyCapabilityDefaults(result.defaults || {});
       if (tsEnrichRun) {
         const llmEnabled = Boolean(result.llm_enabled);
@@ -5031,7 +5098,9 @@ loadDismissedIds();
       setLoading(tsStatusLoading, false);
     } catch (err) {
       const fallbackModes = ["time_gap", "semantic", "hybrid"];
+      const fallbackMetrics = ["euclidean", "cosine"];
       renderSegmentationModes(fallbackModes, false);
+      renderMetricOptions(fallbackMetrics, "cosine");
       renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
       recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
       setTopicStudioRenderStep("failed /capabilities");
@@ -5168,8 +5237,8 @@ loadDismissedIds();
     });
   }
 
-  if (tsBlockMode) {
-    tsBlockMode.addEventListener("change", () => {
+  if (tsWindowingMode) {
+    tsWindowingMode.addEventListener("change", () => {
       updateGroupByVisibility();
       saveTopicStudioState();
     });
@@ -5816,9 +5885,10 @@ loadDismissedIds();
       const startAt = segment.start_at || "--";
       const endAt = segment.end_at || "--";
       const bounds = startAt === "--" && endAt === "--" ? "--" : `${startAt} → ${endAt}`;
+      const rowIdsCount = segment.row_ids_count ?? segment.size ?? "--";
       row.innerHTML = `
         <td class="py-2 pr-3">${segment.segment_id ?? "--"}</td>
-        <td class="py-2 pr-3">${segment.size ?? "--"}</td>
+        <td class="py-2 pr-3">${rowIdsCount}</td>
         <td class="py-2 pr-3">${segment.title || segment.label || "--"}</td>
         <td class="py-2 pr-3">${bounds}</td>
         <td class="py-2 pr-3">${snippet}</td>

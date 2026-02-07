@@ -24,6 +24,7 @@ def compute_spec_hash(
     windowing_spec: WindowingSpec,
     model_spec: ModelSpec,
     enrichment_spec: EnrichmentSpec,
+    run_scope: Optional[str] = None,
 ) -> str:
     payload: Dict[str, Any] = {
         "dataset_id": str(dataset_id),
@@ -33,6 +34,7 @@ def compute_spec_hash(
         "windowing_spec": windowing_spec.model_dump(mode="json"),
         "model_spec": model_spec.model_dump(mode="json"),
         "enrichment_spec": enrichment_spec.model_dump(mode="json"),
+        "run_scope": run_scope,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

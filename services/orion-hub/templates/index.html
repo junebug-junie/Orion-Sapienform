@@ -9,6 +9,10 @@
   <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
 </head>
 <body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}">
+  <div
+    id="hub-panel-host"
+    style="position:fixed; inset:0; padding:80px 24px 24px 24px; overflow:auto; z-index:10; pointer-events:none;"
+  ></div>
   <div id="toastContainer" class="fixed top-4 right-4 z-50 space-y-2"></div>
   <div class="w-full max-w-[98%] mx-auto flex flex-col gap-6">
     <button
@@ -24,7 +28,7 @@
       </svg>
     </button>
 
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2" style="position:relative; z-index:20;">
       <button
         id="hubTabButton"
         class="px-3 py-1.5 text-xs font-semibold rounded-full bg-indigo-600 text-white shadow border border-indigo-500"
@@ -1269,6 +1273,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.46" defer></script>
+  <script src="/static/js/app.js?v=1.0.47" defer></script>
 </body>
 </html>

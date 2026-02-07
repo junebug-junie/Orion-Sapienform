@@ -3,7 +3,57 @@
 // ───────────────────────────────────────────────────────────────
 // Global State
 // ───────────────────────────────────────────────────────────────
+window.__HUB_LAST_STEP = "boot";
 const HUB_CFG = window.__HUB_CFG__ || {};
+
+function setHubStep(step) {
+  window.__HUB_LAST_STEP = step;
+}
+
+function ensureHubPanelHost() {
+  let host = document.getElementById("hub-panel-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "hub-panel-host";
+    host.setAttribute(
+      "style",
+      "position:fixed; inset:0; padding:80px 24px 24px 24px; overflow:auto; z-index:10; pointer-events:none;"
+    );
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function truncateCrashText(value, maxLength = 4000) {
+  if (!value) return "";
+  const text = String(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function renderCrashOverlay(errorLike) {
+  const host = ensureHubPanelHost();
+  const message = errorLike?.message || errorLike?.toString?.() || "Unknown error";
+  const stack = errorLike?.stack ? String(errorLike.stack) : "";
+  host.style.pointerEvents = "auto";
+  host.innerHTML = `
+    <div style="color:#0f0; background:#111; border:2px solid #0f0; padding:16px; font-family:monospace; max-width:960px; margin:0 auto;">
+      <div style="font-size:18px; font-weight:bold; margin-bottom:8px;">HUB UI CRASH</div>
+      <div style="margin-bottom:8px;">${truncateCrashText(message)}</div>
+      <pre style="white-space:pre-wrap; margin:0 0 8px 0;">${truncateCrashText(stack)}</pre>
+      <div>href: ${truncateCrashText(window.location.href, 400)}</div>
+      <div>hash: ${truncateCrashText(window.location.hash, 200)}</div>
+      <div>lastStep: ${truncateCrashText(window.__HUB_LAST_STEP, 200)}</div>
+    </div>
+  `;
+}
+
+window.addEventListener("error", (event) => {
+  renderCrashOverlay(event.error || event.message || event);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  renderCrashOverlay(event.reason || event);
+});
 
 function hubOrigin() {
   return window.location.origin;
@@ -500,27 +550,42 @@ loadDismissedIds();
   }
 
   function renderTopicStudioSkeleton(message = "Loading...") {
-    if (tsSkeletonMain) {
-      tsSkeletonMain.classList.remove("hidden");
-    }
-    if (tsSkeletonStatus) {
-      tsSkeletonStatus.textContent = message;
-    }
-    if (tsSkeletonRetry) {
-      tsSkeletonRetry.classList.remove("hidden");
-    }
-    if (tsStatusBadge && !tsStatusBadge.textContent) {
-      tsStatusBadge.textContent = "Unknown";
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:960px; margin:0 auto; pointer-events:auto;">
+        <div style="font-size:20px; font-weight:600; margin-bottom:12px;">Topic Studio</div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+          <div><strong>Ready:</strong> <span id="ts-host-ready">loading</span></div>
+          <div><strong>Capabilities:</strong> <span id="ts-host-capabilities">loading</span></div>
+          <div><strong>Runs:</strong> <span id="ts-host-runs">loading</span></div>
+        </div>
+        <div id="ts-host-errors" style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;"></div>
+        <button id="ts-host-retry" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Retry</button>
+        <div style="margin-top:12px; font-size:12px; color:#888;">${message}</div>
+        <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-host-step">${window.__HUB_LAST_STEP}</span></div>
+      </div>
+    `;
+    const retryButton = document.getElementById("ts-host-retry");
+    if (retryButton) {
+      retryButton.addEventListener("click", () => {
+        renderTopicStudioSkeleton("Retrying...");
+        refreshTopicStudioRoute();
+      });
     }
     setTopicStudioRenderStep("mounted skeleton");
+    setHubStep("topic-skeleton-mounted");
   }
 
   function handleHashRouting() {
     if (!hubTabButton || !topicStudioTabButton) return;
     const hash = window.location.hash;
     if (hash === "#topic-studio") {
+      setHubStep("route:topic-studio");
       setActiveTab("topic-studio");
       renderTopicStudioSkeleton();
+      ensureTopicStudioSentinel();
+      refreshTopicStudioRoute();
       refreshTopicStudio().catch((err) => {
         console.warn("[TopicStudio] Refresh failed", err);
       });
@@ -536,6 +601,97 @@ loadDismissedIds();
       return;
     }
     window.location.hash = nextHash;
+  }
+
+  function ensureTopicStudioSentinel() {
+    let sentinel = document.getElementById("ts-route-sentinel");
+    if (!sentinel) {
+      sentinel = document.createElement("div");
+      sentinel.id = "ts-route-sentinel";
+      sentinel.textContent = "TOPIC STUDIO ACTIVE";
+      sentinel.setAttribute(
+        "style",
+        "position:fixed; top:56px; left:24px; z-index:99999; background:#111; color:#0f0; border:1px solid #0f0; padding:6px 10px; border-radius:10px; font-family:monospace;"
+      );
+      document.body.appendChild(sentinel);
+    }
+    sentinel.style.display = "block";
+  }
+
+  function updateTopicStudioHostStep() {
+    const stepEl = document.getElementById("ts-host-step");
+    if (stepEl) {
+      stepEl.textContent = window.__HUB_LAST_STEP || "";
+    }
+  }
+
+  function setTopicStudioHostStatus(id, value, color = "#ddd") {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.textContent = value;
+    target.style.color = color;
+  }
+
+  function appendTopicStudioHostError(label, err) {
+    const container = document.getElementById("ts-host-errors");
+    if (!container) return;
+    const message = err?.message || err?.toString?.() || "Request failed";
+    const detail = truncateCrashText(err?.body || err?.stack || message, 400);
+    const box = document.createElement("div");
+    box.setAttribute(
+      "style",
+      "background:#220; color:#f88; border:1px solid #a33; padding:8px; border-radius:8px; font-size:12px; font-family:monospace;"
+    );
+    box.textContent = `${label}: ${detail}`;
+    container.appendChild(box);
+  }
+
+  async function refreshTopicStudioRoute() {
+    setHubStep("fetch:ready");
+    updateTopicStudioHostStep();
+    setTopicStudioHostStatus("ts-host-ready", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-capabilities", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-runs", "loading", "#ddd");
+    const errorContainer = document.getElementById("ts-host-errors");
+    if (errorContainer) errorContainer.innerHTML = "";
+
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/ready"));
+      if (!resp.ok) throw new Error(`ready ${resp.status}`);
+      const data = await resp.json();
+      const status = data?.ok ? "ok" : "degraded";
+      setTopicStudioHostStatus("ts-host-ready", status, data?.ok ? "#6f6" : "#ff6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-ready", "error", "#f66");
+      appendTopicStudioHostError("ready", err);
+    }
+
+    setHubStep("fetch:capabilities");
+    updateTopicStudioHostStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/capabilities"));
+      if (!resp.ok) throw new Error(`capabilities ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-capabilities", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-capabilities", "error", "#f66");
+      appendTopicStudioHostError("capabilities", err);
+    }
+
+    setHubStep("fetch:runs");
+    updateTopicStudioHostStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/runs?limit=20"));
+      if (!resp.ok) throw new Error(`runs ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-runs", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-runs", "error", "#f66");
+      appendTopicStudioHostError("runs", err);
+    }
+
+    setHubStep("render:done");
+    updateTopicStudioHostStep();
   }
 
   function resolveTopicStudioSubview() {
@@ -2444,6 +2600,10 @@ loadDismissedIds();
         if (notifyQuietStart) notifyQuietStart.value = profile.quiet_start_local || '22:00';
         if (notifyQuietEnd) notifyQuietEnd.value = profile.quiet_end_local || '07:00';
       }
+    } catch (err) {
+      console.warn('Failed to load notify profile', err);
+    }
+    try {
       const prefsResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}/preferences`));
       if (prefsResp.ok) {
         const prefs = await prefsResp.json();
@@ -2452,7 +2612,7 @@ loadDismissedIds();
       setSettingsStatus('Loaded');
     } catch (err) {
       setSettingsStatus('Failed to load settings', true);
-      console.warn('Failed to load notify settings', err);
+      console.warn('Failed to load notify preferences', err);
     }
   }
 

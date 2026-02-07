@@ -2163,14 +2163,14 @@ loadDismissedIds();
   function asItems(value) {
     if (Array.isArray(value)) return value;
     if (value && Array.isArray(value.items)) return value.items;
+    if (value && Array.isArray(value.segments)) return value.segments;
     return [];
   }
 
-  function getTotal(resp, json) {
-    const totalValue = Number(json?.total);
-    if (Number.isFinite(totalValue)) return totalValue;
-    const headerValue = resp?.get ? Number(resp.get("X-Total-Count")) : Number.NaN;
-    return Number.isFinite(headerValue) ? headerValue : null;
+  function getTotal(data, items) {
+    if (data && data.total !== undefined) return Number(data.total);
+    if (data && data.count !== undefined) return Number(data.count);
+    return Array.isArray(items) ? items.length : 0;
   }
 
   function truncateText(value, maxLength = 200) {
@@ -5388,7 +5388,7 @@ loadDismissedIds();
     tsSegmentsTableBody.innerHTML = "";
     if (!segments || segments.length === 0) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="py-3 text-gray-500" colspan="9">No segments found.</td>';
+      row.innerHTML = '<td class="py-3 text-gray-500" colspan="9">0 segments returned.</td>';
       tsSegmentsTableBody.appendChild(row);
       return;
     }
@@ -5403,10 +5403,12 @@ loadDismissedIds();
       const startAt = segment.start_at || "--";
       const endAt = segment.end_at || "--";
       const bounds = startAt === "--" && endAt === "--" ? "--" : `${startAt} → ${endAt}`;
-      const snippet = truncate(segment.snippet || "", 200) || "--";
+      const snippet = truncate(segment.snippet || "", 160) || "--";
       const rowIdsCount = segment.row_ids_count ?? "--";
+      const segmentId = segment.segment_id || "--";
+      const shortId = segmentId !== "--" && segmentId.length > 10 ? `${segmentId.slice(0, 10)}…` : segmentId;
       row.innerHTML = `
-        <td class="py-2 pr-3 text-indigo-300 cursor-pointer" data-segment-id="${segment.segment_id}">${segment.segment_id}</td>
+        <td class="py-2 pr-3 text-indigo-300 cursor-pointer" data-segment-id="${segmentId}" title="${segmentId}">${shortId}</td>
         <td class="py-2 pr-3">${segment.size ?? "--"}</td>
         <td class="py-2 pr-3">${rowIdsCount}</td>
         <td class="py-2 pr-3">${segment.title || segment.label || "--"}</td>
@@ -6044,41 +6046,43 @@ loadDismissedIds();
         topicStudioSegmentsQueryKey = queryKey;
         resetSegmentsPaging();
       }
-      const sortValue = tsSegmentsSort?.value || "time_desc";
-      let sortBy = "created_at";
-      let sortDir = "desc";
-      if (sortValue === "friction_desc") {
-        sortBy = "friction";
-      } else if (sortValue === "size_desc") {
-        sortBy = "size";
-      } else if (sortValue === "time_asc") {
-        sortDir = "asc";
-      }
+      topicStudioSegmentsOffset = 0;
       const params = new URLSearchParams({
         run_id: tsSegmentsRunId.value,
         include_snippet: "true",
         include_bounds: "true",
-        limit: String(topicStudioSegmentsLimit),
-        offset: String(topicStudioSegmentsOffset),
+        limit: "50",
+        offset: "0",
         format: "wrapped",
-        sort_by: sortBy,
-        sort_dir: sortDir,
+        sort_by: "created_at",
+        sort_dir: "desc",
       });
-      if (tsSegmentsEnrichment?.value) {
-        params.set("has_enrichment", tsSegmentsEnrichment.value);
+      const enrichmentValue = tsSegmentsEnrichment?.value;
+      if (enrichmentValue && enrichmentValue !== "all") {
+        params.set("has_enrichment", enrichmentValue);
       }
-      if (tsSegmentsAspect?.value) {
-        params.set("aspect", tsSegmentsAspect.value);
+      const aspectValue = tsSegmentsAspect?.value?.trim();
+      if (aspectValue && aspectValue !== "all") {
+        params.set("aspect", aspectValue);
       }
       const query = tsSegmentsSearch?.value?.trim();
       if (query) {
         params.set("q", query);
       }
-      const { payload, headers } = await topicFoundryFetchWithHeaders(`/segments?${params.toString()}`);
+      const { payload } = await topicFoundryFetchWithHeaders(`/segments?${params.toString()}`);
       const items = asItems(payload);
-      const segments = items.length > 0 ? items : Array.isArray(payload?.segments) ? payload.segments : Array.isArray(payload) ? payload : [];
+      const segments = items;
       topicStudioSegmentsPage = segments;
-      topicStudioSegmentsTotal = getTotal(headers, payload);
+      topicStudioSegmentsTotal = getTotal(payload, items);
+      if (HUB_DEBUG) {
+        const keys = Object.keys(payload || {});
+        console.log("segments keys", keys, "items", items.length);
+        const debugEl = document.getElementById("tsSegmentsDebug");
+        if (debugEl) {
+          debugEl.textContent = `segments response keys: ${keys.join(", ") || "--"}`;
+          debugEl.classList.remove("hidden");
+        }
+      }
       const filtered = applySegmentsClientFilters(topicStudioSegmentsPage);
       topicStudioSegmentsDisplayed = filtered;
       renderSegmentsTable(filtered);

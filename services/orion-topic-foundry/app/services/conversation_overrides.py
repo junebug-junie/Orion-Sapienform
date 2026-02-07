@@ -40,32 +40,61 @@ def build_conversations(
 
     sorted_rows = sorted(rows, key=lambda r: r[time_column])
     conversations: List[List[Dict[str, Any]]] = []
-    current: List[Dict[str, Any]] = []
-    last_ts: Optional[datetime] = None
-    conv_start: Optional[datetime] = None
-    for row in sorted_rows:
-        ts = row[time_column]
-        if isinstance(ts, str):
-            ts = datetime.fromisoformat(ts)
-        if last_ts is None:
-            current.append(row)
+    if spec.block_mode == "group_by_column":
+        if not spec.group_by:
+            raise ValueError("group_by is required for group_by_column mode")
+        current: List[Dict[str, Any]] = []
+        current_key: Optional[str] = None
+        last_ts: Optional[datetime] = None
+        for row in sorted_rows:
+            ts = row[time_column]
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            key_val = row.get(spec.group_by)
+            key = str(key_val) if key_val is not None else "__none__"
+            if current_key is None:
+                current_key = key
+                current.append(row)
+                last_ts = ts
+                continue
+            gap_ok = (ts - last_ts).total_seconds() <= spec.time_gap_seconds if last_ts is not None else True
+            if key == current_key and gap_ok:
+                current.append(row)
+            else:
+                if current:
+                    conversations.append(current)
+                current = [row]
+                current_key = key
             last_ts = ts
-            conv_start = ts
-            continue
-        gap_ok = (ts - last_ts).total_seconds() <= spec.time_gap_seconds
-        span_ok = True
-        if conv_start is not None:
-            span_ok = (ts - conv_start).total_seconds() <= spec.max_window_seconds
-        if gap_ok and span_ok:
-            current.append(row)
-        else:
-            if current:
-                conversations.append(current)
-            current = [row]
-            conv_start = ts
-        last_ts = ts
-    if current:
-        conversations.append(current)
+        if current:
+            conversations.append(current)
+    else:
+        current = []
+        last_ts = None
+        conv_start: Optional[datetime] = None
+        for row in sorted_rows:
+            ts = row[time_column]
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            if last_ts is None:
+                current.append(row)
+                last_ts = ts
+                conv_start = ts
+                continue
+            gap_ok = (ts - last_ts).total_seconds() <= spec.time_gap_seconds
+            span_ok = True
+            if conv_start is not None:
+                span_ok = (ts - conv_start).total_seconds() <= spec.max_window_seconds
+            if gap_ok and span_ok:
+                current.append(row)
+            else:
+                if current:
+                    conversations.append(current)
+                current = [row]
+                conv_start = ts
+            last_ts = ts
+        if current:
+            conversations.append(current)
 
     out: List[Conversation] = []
     for convo_rows in conversations:

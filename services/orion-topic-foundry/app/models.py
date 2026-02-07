@@ -21,7 +21,8 @@ class DatasetSpec(BaseModel):
 
 
 class WindowingSpec(BaseModel):
-    block_mode: Literal["turn_pairs", "triads", "rows"] = "turn_pairs"
+    block_mode: Literal["turn_pairs", "triads", "rows", "group_by_column"] = "turn_pairs"
+    group_by: Optional[str] = None
     include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
     segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"
     semantic_split_threshold: float = 0.75
@@ -303,6 +304,14 @@ class RunCompareResponse(BaseModel):
 class SegmentRawResponse(BaseModel):
     segment_id: UUID
     provenance: Dict[str, Any]
+
+
+class SegmentFullTextResponse(BaseModel):
+    segment_id: UUID
+    run_id: UUID
+    full_text: str
+    chars: int
+    row_ids_count: int
 
 
 class CapabilitiesResponse(BaseModel):

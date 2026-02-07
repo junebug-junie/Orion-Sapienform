@@ -309,11 +309,14 @@ loadDismissedIds();
   const tsStartAt = document.getElementById("tsStartAt");
   const tsEndAt = document.getElementById("tsEndAt");
   const tsBlockMode = document.getElementById("tsBlockMode");
+  const tsGroupByRow = document.getElementById("tsGroupByRow");
+  const tsGroupByColumn = document.getElementById("tsGroupByColumn");
   const tsSegmentationMode = document.getElementById("tsSegmentationMode");
   const tsTimeGap = document.getElementById("tsTimeGap");
   const tsMaxWindow = document.getElementById("tsMaxWindow");
   const tsMinBlocks = document.getElementById("tsMinBlocks");
   const tsMaxChars = document.getElementById("tsMaxChars");
+  const tsRunPreset = document.getElementById("tsRunPreset");
   const tsCreateDataset = document.getElementById("tsCreateDataset");
   const tsPreviewDataset = document.getElementById("tsPreviewDataset");
   const tsPreviewDocs = document.getElementById("tsPreviewDocs");
@@ -360,7 +363,21 @@ loadDismissedIds();
   const tsLoadSegments = document.getElementById("tsLoadSegments");
   const tsSegmentsError = document.getElementById("tsSegmentsError");
   const tsSegmentsTableBody = document.getElementById("tsSegmentsTableBody");
-  const tsSegmentDetail = document.getElementById("tsSegmentDetail");
+  const tsSegmentDetailsPanel = document.getElementById("tsSegmentDetailsPanel");
+  const tsSegmentDetailHeader = document.getElementById("tsSegmentDetailHeader");
+  const tsSegmentDetailMeta = document.getElementById("tsSegmentDetailMeta");
+  const tsSegmentDetailSnippet = document.getElementById("tsSegmentDetailSnippet");
+  const tsSegmentDetailMeaning = document.getElementById("tsSegmentDetailMeaning");
+  const tsSegmentFullText = document.getElementById("tsSegmentFullText");
+  const tsSegmentFullTextStatus = document.getElementById("tsSegmentFullTextStatus");
+  const tsSegmentFullTextLoad = document.getElementById("tsSegmentFullTextLoad");
+  const tsSegmentFullTextExpand = document.getElementById("tsSegmentFullTextExpand");
+  const tsSegmentFullTextCopy = document.getElementById("tsSegmentFullTextCopy");
+  const tsDebugDrawer = document.getElementById("tsDebugDrawer");
+  const tsDebugPreview = document.getElementById("tsDebugPreview");
+  const tsDebugTrain = document.getElementById("tsDebugTrain");
+  const tsDebugEnrich = document.getElementById("tsDebugEnrich");
+  const tsDebugSegments = document.getElementById("tsDebugSegments");
   const tsSegmentsLoading = document.getElementById("tsSegmentsLoading");
   const tsSegmentsRefresh = document.getElementById("tsSegmentsRefresh");
   const tsSegmentsPageSize = document.getElementById("tsSegmentsPageSize");
@@ -869,11 +886,13 @@ loadDismissedIds();
       },
       windowing: {
         block_mode: tsBlockMode?.value || "",
+        group_by: tsGroupByColumn?.value || "",
         segmentation_mode: tsSegmentationMode?.value || "",
         time_gap_seconds: tsTimeGap?.value || "",
         max_window_seconds: tsMaxWindow?.value || "",
         min_blocks_per_segment: tsMinBlocks?.value || "",
         max_chars: tsMaxChars?.value || "",
+        preset: tsRunPreset?.value || "",
       },
       model: {
         name: tsModelName?.value || "",
@@ -952,11 +971,13 @@ loadDismissedIds();
       }
       if (state.windowing) {
         if (tsBlockMode && state.windowing.block_mode) tsBlockMode.value = state.windowing.block_mode;
+        if (tsGroupByColumn && state.windowing.group_by) tsGroupByColumn.value = state.windowing.group_by;
         if (tsSegmentationMode && state.windowing.segmentation_mode) tsSegmentationMode.value = state.windowing.segmentation_mode;
         if (tsTimeGap && state.windowing.time_gap_seconds) tsTimeGap.value = state.windowing.time_gap_seconds;
         if (tsMaxWindow && state.windowing.max_window_seconds) tsMaxWindow.value = state.windowing.max_window_seconds;
         if (tsMinBlocks && state.windowing.min_blocks_per_segment) tsMinBlocks.value = state.windowing.min_blocks_per_segment;
         if (tsMaxChars && state.windowing.max_chars) tsMaxChars.value = state.windowing.max_chars;
+        if (tsRunPreset && state.windowing.preset) tsRunPreset.value = state.windowing.preset;
       }
       if (state.model) {
         if (tsModelName && state.model.name) tsModelName.value = state.model.name;
@@ -1020,6 +1041,7 @@ loadDismissedIds();
     } catch (err) {
       console.warn("[TopicStudio] Failed to restore state", err);
     }
+    updateGroupByVisibility();
     topicStudioTopicSegmentsOffset = Number(tsTopicSegmentsOffset?.value || 0);
   }
 
@@ -1035,11 +1057,13 @@ loadDismissedIds();
       tsStartAt,
       tsEndAt,
       tsBlockMode,
+      tsGroupByColumn,
       tsSegmentationMode,
       tsTimeGap,
       tsMaxWindow,
       tsMinBlocks,
       tsMaxChars,
+      tsRunPreset,
       tsModelName,
       tsModelVersion,
       tsModelStage,
@@ -1101,14 +1125,185 @@ loadDismissedIds();
   }
 
   function buildWindowingSpec() {
+    const blockMode = tsBlockMode?.value || "turn_pairs";
+    const groupBy = tsGroupByColumn?.value || "";
     return {
-      block_mode: tsBlockMode?.value || "turn_pairs",
+      block_mode: blockMode,
+      group_by: blockMode === "group_by_column" ? groupBy : null,
       segmentation_mode: tsSegmentationMode?.value || "time_gap",
       time_gap_seconds: Number(tsTimeGap?.value || 900),
       max_window_seconds: Number(tsMaxWindow?.value || 7200),
       min_blocks_per_segment: Number(tsMinBlocks?.value || 1),
       max_chars: Number(tsMaxChars?.value || 6000),
     };
+  }
+
+  function updateGroupByVisibility() {
+    if (!tsGroupByRow) return;
+    const isGroupBy = tsBlockMode?.value === "group_by_column";
+    tsGroupByRow.classList.toggle("hidden", !isGroupBy);
+  }
+
+  function renderGroupByOptions() {
+    if (!tsGroupByColumn) return;
+    tsGroupByColumn.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select column…";
+    tsGroupByColumn.appendChild(placeholder);
+    topicStudioGroupByCandidates.forEach((col) => {
+      const option = document.createElement("option");
+      option.value = col.column_name;
+      option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+      tsGroupByColumn.appendChild(option);
+    });
+  }
+
+  async function loadGroupByCandidates(schema, table) {
+    if (!schema || !table) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+      return;
+    }
+    try {
+      const response = await topicFoundryFetch(`/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`);
+      const columns = response?.columns || [];
+      topicStudioGroupByCandidates = columns.filter((col) => {
+        const dataType = String(col.data_type || "").toLowerCase();
+        const udt = String(col.udt_name || "").toLowerCase();
+        return dataType.includes("char") || dataType.includes("text") || udt === "uuid";
+      });
+      renderGroupByOptions();
+    } catch (err) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+    }
+  }
+
+  async function loadGroupByCandidatesFromDataset(dataset) {
+    if (!dataset?.source_table) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+      return;
+    }
+    const parts = String(dataset.source_table).split(".");
+    if (parts.length === 2) {
+      await loadGroupByCandidates(parts[0], parts[1]);
+      return;
+    }
+    const schema = topicStudioIntrospectionSchemas[0] || "";
+    if (!schema) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+      return;
+    }
+    await loadGroupByCandidates(schema, parts[0]);
+  }
+
+  function recordTopicStudioDebug(panel, payload) {
+    if (!HUB_DEBUG) return;
+    if (tsDebugDrawer) tsDebugDrawer.classList.remove("hidden");
+    const pretty = JSON.stringify(payload, null, 2);
+    if (panel === "preview" && tsDebugPreview) tsDebugPreview.textContent = pretty;
+    if (panel === "train" && tsDebugTrain) tsDebugTrain.textContent = pretty;
+    if (panel === "enrich" && tsDebugEnrich) tsDebugEnrich.textContent = pretty;
+    if (panel === "segments" && tsDebugSegments) tsDebugSegments.textContent = pretty;
+  }
+
+  function renderSegmentDetailPanel(detail) {
+    topicStudioSelectedSegment = detail || null;
+    topicStudioSelectedSegmentId = detail?.segment_id || null;
+    if (tsSegmentDetailHeader) {
+      tsSegmentDetailHeader.textContent = detail?.segment_id || "Select a segment";
+    }
+    if (tsSegmentDetailMeta) {
+      if (!detail) {
+        tsSegmentDetailMeta.textContent = "--";
+      } else {
+        const meta = [
+          `run_id=${detail.run_id || "--"}`,
+          `created_at=${detail.created_at || "--"}`,
+          `rows=${detail.row_ids_count ?? detail.size ?? "--"}`,
+          `chars=${detail.chars ?? "--"}`,
+          `start=${detail.start_at || "--"}`,
+          `end=${detail.end_at || "--"}`,
+        ];
+        tsSegmentDetailMeta.textContent = meta.join(" · ");
+      }
+    }
+    if (tsSegmentDetailSnippet) {
+      tsSegmentDetailSnippet.textContent = detail?.snippet || detail?.text || "--";
+    }
+    if (tsSegmentDetailMeaning) {
+      if (!detail) {
+        tsSegmentDetailMeaning.textContent = "--";
+      } else {
+        const payload = {
+          title: detail.title || detail.label || null,
+          aspects: detail.aspects || null,
+          meaning: detail.meaning || null,
+          enrichment: detail.enrichment || null,
+          sentiment: detail.sentiment || null,
+          topic_id: detail.topic_id ?? null,
+          is_outlier: detail.is_outlier ?? null,
+        };
+        tsSegmentDetailMeaning.textContent = JSON.stringify(payload, null, 2);
+      }
+    }
+    if (tsSegmentFullTextStatus) {
+      tsSegmentFullTextStatus.textContent = detail ? "Full text not loaded." : "--";
+    }
+    if (tsSegmentFullText) {
+      tsSegmentFullText.textContent = detail ? "--" : "--";
+    }
+    topicStudioSegmentFullText = "";
+    topicStudioSegmentFullTextExpanded = false;
+    if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.textContent = "Expand";
+    if (tsSegmentFullTextLoad) tsSegmentFullTextLoad.disabled = !detail;
+    if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.disabled = !detail;
+    if (tsSegmentFullTextCopy) tsSegmentFullTextCopy.disabled = !detail;
+  }
+
+  function renderSegmentFullText() {
+    if (!tsSegmentFullText) return;
+    if (!topicStudioSegmentFullText) {
+      tsSegmentFullText.textContent = "--";
+      return;
+    }
+    if (tsSegmentFullTextExpand) {
+      tsSegmentFullTextExpand.disabled = topicStudioSegmentFullText.length <= 400;
+    }
+    if (topicStudioSegmentFullTextExpanded || topicStudioSegmentFullText.length <= 400) {
+      tsSegmentFullText.textContent = topicStudioSegmentFullText;
+      if (tsSegmentFullTextStatus && topicStudioSegmentFullText.length <= 400) {
+        tsSegmentFullTextStatus.textContent = `Full text (${topicStudioSegmentFullText.length} chars).`;
+      }
+      return;
+    }
+    tsSegmentFullText.textContent = `${topicStudioSegmentFullText.slice(0, 400)}…`;
+    if (tsSegmentFullTextStatus) {
+      tsSegmentFullTextStatus.textContent = `Full text preview (first 400 of ${topicStudioSegmentFullText.length} chars).`;
+    }
+  }
+
+  function applyRunPreset(value) {
+    if (!value) return;
+    if (value === "conversation_view") {
+      if (tsBlockMode) tsBlockMode.value = "group_by_column";
+      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsMaxChars) tsMaxChars.value = "6000";
+      if (tsTimeGap) tsTimeGap.value = "900";
+      if (tsMinBlocks) tsMinBlocks.value = "1";
+    }
+    if (value === "global_themes") {
+      if (tsBlockMode) tsBlockMode.value = "turn_pairs";
+      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsMaxChars) tsMaxChars.value = "12000";
+      if (tsTimeGap) tsTimeGap.value = "900";
+      if (tsMinBlocks) tsMinBlocks.value = "1";
+    }
+    updateGroupByVisibility();
+    saveTopicStudioState();
   }
 
   function buildDatasetSpec() {
@@ -1249,6 +1444,11 @@ loadDismissedIds();
   let topicStudioDriftPolling = false;
   let topicStudioEventsPage = [];
   let topicStudioKgEdgesPage = [];
+  let topicStudioIntrospectionSchemas = [];
+  let topicStudioGroupByCandidates = [];
+  let topicStudioSelectedSegment = null;
+  let topicStudioSegmentFullText = "";
+  let topicStudioSegmentFullTextExpanded = false;
   const TOPIC_STUDIO_RUN_ID_KEY = "topic_studio_run_id_v1";
   const topicStudioMvpState = {
     datasets: [],
@@ -2158,6 +2358,23 @@ loadDismissedIds();
     const status = error.status ? `status ${error.status}` : "status unknown";
     const detail = error.body || error.message || fallback;
     target.textContent = `${status}: ${detail}`;
+  }
+
+  function renderTopicStudioError(target, error, label, panel, request = null) {
+    if (target) {
+      target.textContent = `${label} failed.`;
+    }
+    showToast(`${label} failed.`);
+    if (HUB_DEBUG) {
+      recordTopicStudioDebug(panel, {
+        request,
+        error: {
+          status: error?.status,
+          message: error?.message || "",
+          body: error?.body || "",
+        },
+      });
+    }
   }
 
   function asItems(value) {
@@ -4803,6 +5020,11 @@ loadDismissedIds();
       const modes = result.segmentation_modes_supported || [];
       renderSegmentationModes(modes, Boolean(result.llm_enabled));
       applyCapabilityDefaults(result.defaults || {});
+      if (tsEnrichRun) {
+        const llmEnabled = Boolean(result.llm_enabled);
+        tsEnrichRun.disabled = !llmEnabled;
+        tsEnrichRun.title = llmEnabled ? "" : "LLM disabled";
+      }
       renderEndpointWarning(tsCapabilitiesWarning, null, null);
       recordTopicStudioFetchStatus("capabilities", 200, true);
       setTopicStudioRenderStep("fetched /capabilities");
@@ -4813,6 +5035,10 @@ loadDismissedIds();
       renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
       recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
       setTopicStudioRenderStep("failed /capabilities");
+      if (tsEnrichRun) {
+        tsEnrichRun.disabled = true;
+        tsEnrichRun.title = "LLM disabled";
+      }
       setLoading(tsStatusLoading, false);
     }
   }
@@ -4825,10 +5051,22 @@ loadDismissedIds();
     await refreshTopicStudioCapabilities();
     await refreshTopicStudioStatus();
     try {
+      const schemasResponse = await topicFoundryFetch("/introspect/schemas");
+      topicStudioIntrospectionSchemas = schemasResponse?.schemas || [];
+    } catch (err) {
+      topicStudioIntrospectionSchemas = [];
+    }
+    try {
       const datasetsResponse = await topicFoundryFetch("/datasets");
       topicStudioDatasets = parseDatasets(datasetsResponse);
       renderDatasetOptions();
       renderConversationDatasetOptions();
+      if (tsDatasetSelect?.value) {
+        const selected = topicStudioDatasets.find((dataset) => dataset.id === tsDatasetSelect.value);
+        if (selected?.raw) {
+          loadGroupByCandidatesFromDataset(selected.raw);
+        }
+      }
       if (HUB_DEBUG) {
         const debugLine = document.getElementById("tsDebugLine");
         if (debugLine) {
@@ -4893,6 +5131,9 @@ loadDismissedIds();
 
   applyTopicStudioState();
   bindTopicStudioPersistence();
+  if (HUB_DEBUG && tsDebugDrawer) {
+    tsDebugDrawer.classList.remove("hidden");
+  }
   if (tsUsePreviewSpec) {
     tsUsePreviewSpec.disabled = true;
   }
@@ -4922,8 +5163,26 @@ loadDismissedIds();
       const selected = topicStudioDatasets.find((dataset) => dataset.id === tsDatasetSelect.value);
       if (selected?.raw) {
         populateDatasetForm(selected.raw);
+        loadGroupByCandidatesFromDataset(selected.raw);
       }
     });
+  }
+
+  if (tsBlockMode) {
+    tsBlockMode.addEventListener("change", () => {
+      updateGroupByVisibility();
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsRunPreset) {
+    tsRunPreset.addEventListener("change", () => {
+      applyRunPreset(tsRunPreset.value);
+    });
+  }
+
+  if (tsGroupByColumn) {
+    tsGroupByColumn.addEventListener("change", saveTopicStudioState);
   }
 
   if (tsRunsSelect) {
@@ -5148,6 +5407,53 @@ loadDismissedIds();
     });
   }
 
+  if (tsSegmentFullTextLoad) {
+    tsSegmentFullTextLoad.addEventListener("click", async () => {
+      if (!topicStudioSelectedSegmentId) {
+        showToast("Select a segment first.");
+        return;
+      }
+      try {
+        if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Loading full text...";
+        const result = await topicFoundryFetch(`/segments/${topicStudioSelectedSegmentId}/full_text`);
+        topicStudioSegmentFullText = result.full_text || "";
+        topicStudioSegmentFullTextExpanded = false;
+        renderSegmentFullText();
+        if (tsSegmentFullTextStatus) {
+          tsSegmentFullTextStatus.textContent = `Loaded ${result.chars ?? topicStudioSegmentFullText.length} chars from ${result.row_ids_count ?? "--"} rows.`;
+        }
+        recordTopicStudioDebug("segments", {
+          request: `/segments/${topicStudioSelectedSegmentId}/full_text`,
+          response: result,
+        });
+      } catch (err) {
+        if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Failed to load full text.";
+        renderTopicStudioError(tsSegmentsError, err, "Load full text", "segments", {
+          request: `/segments/${topicStudioSelectedSegmentId}/full_text`,
+        });
+      }
+    });
+  }
+
+  if (tsSegmentFullTextExpand) {
+    tsSegmentFullTextExpand.addEventListener("click", () => {
+      if (!topicStudioSegmentFullText) return;
+      topicStudioSegmentFullTextExpanded = !topicStudioSegmentFullTextExpanded;
+      tsSegmentFullTextExpand.textContent = topicStudioSegmentFullTextExpanded ? "Collapse" : "Expand";
+      renderSegmentFullText();
+    });
+  }
+
+  if (tsSegmentFullTextCopy) {
+    tsSegmentFullTextCopy.addEventListener("click", () => {
+      if (!topicStudioSegmentFullText) {
+        showToast("Load full text first.");
+        return;
+      }
+      copyText(topicStudioSegmentFullText, "Full text copied.");
+    });
+  }
+
   if (tsCreateDataset) {
     tsCreateDataset.addEventListener("click", async () => {
       try {
@@ -5179,10 +5485,13 @@ loadDismissedIds();
           end_at: parseDateInput(tsEndAt?.value),
           limit: 200,
         };
-        await executePreview(payload);
+        recordTopicStudioDebug("preview", { request: "/datasets/preview", payload });
+        const result = await executePreview(payload);
+        recordTopicStudioDebug("preview", { request: "/datasets/preview", response: result });
       } catch (err) {
-        renderError(tsPreviewError, err, "Failed to preview dataset.");
-        showToast("Failed to preview dataset.");
+        renderTopicStudioError(tsPreviewError, err, "Preview", "preview", {
+          request: "/datasets/preview",
+        });
         setWarning(tsPreviewWarning, null);
         setLoading(tsPreviewLoading, false);
       }
@@ -5304,23 +5613,25 @@ loadDismissedIds();
       }
       try {
         setLoading(tsRunLoading, true);
+        const requestPayload = {
+          model_id: model.model_id,
+          dataset_id: model.dataset_id,
+          start_at: parseDateInput(tsStartAt?.value),
+          end_at: parseDateInput(tsEndAt?.value),
+        };
+        recordTopicStudioDebug("train", { request: "/runs/train", payload: requestPayload });
         const result = await topicFoundryFetch("/runs/train", {
           method: "POST",
-          body: JSON.stringify({
-            model_id: model.model_id,
-            dataset_id: model.dataset_id,
-            start_at: parseDateInput(tsStartAt?.value),
-            end_at: parseDateInput(tsEndAt?.value),
-          }),
+          body: JSON.stringify(requestPayload),
         });
+        recordTopicStudioDebug("train", { request: "/runs/train", response: result });
         if (tsRunId) tsRunId.value = result.run_id;
         if (tsRunError) tsRunError.textContent = "--";
         renderRunStatus(result);
         startRunPolling(result.run_id);
         await refreshTopicStudio();
       } catch (err) {
-        renderError(tsRunError, err);
-        showToast("Failed to start training run.");
+        renderTopicStudioError(tsRunError, err, "Train run", "train", { request: "/runs/train" });
         setLoading(tsRunLoading, false);
       }
     });
@@ -5339,8 +5650,7 @@ loadDismissedIds();
         await refreshTopicStudio();
         setLoading(tsRunLoading, false);
       } catch (err) {
-        renderError(tsRunError, err);
-        showToast("Failed to poll run status.");
+        renderTopicStudioError(tsRunError, err, "Poll run", "train", { request: `/runs/${tsRunId?.value}` });
         setLoading(tsRunLoading, false);
       }
     });
@@ -5359,10 +5669,12 @@ loadDismissedIds();
           enricher: tsEnrichEnricher?.value || "heuristic",
           force: Boolean(tsEnrichForce?.checked),
         };
+        recordTopicStudioDebug("enrich", { request: `/runs/${tsRunId.value}/enrich`, payload });
         const result = await topicFoundryFetch(`/runs/${tsRunId.value}/enrich`, {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        recordTopicStudioDebug("enrich", { request: `/runs/${tsRunId.value}/enrich`, response: result });
         if (tsEnrichStatus) {
           tsEnrichStatus.textContent = `enriched=${result.enriched_count ?? 0} failed=${result.failed_count ?? 0}`;
         }
@@ -5374,8 +5686,7 @@ loadDismissedIds();
         }
         startRunPolling(tsRunId.value);
       } catch (err) {
-        renderError(tsEnrichStatus, err);
-        showToast("Failed to start enrichment.");
+        renderTopicStudioError(tsEnrichStatus, err, "Enrich run", "enrich", { request: `/runs/${tsRunId?.value}/enrich` });
         setWarning(tsEnrichWarning, null);
         setLoading(tsEnrichLoading, false);
         topicStudioEnrichPolling = false;
@@ -5388,7 +5699,7 @@ loadDismissedIds();
     tsSegmentsTableBody.innerHTML = "";
     if (!segments || segments.length === 0) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="py-3 text-gray-500" colspan="9">0 segments returned.</td>';
+      row.innerHTML = '<td class="py-3 text-gray-500" colspan="11">0 segments returned.</td>';
       tsSegmentsTableBody.appendChild(row);
       return;
     }
@@ -5402,51 +5713,36 @@ loadDismissedIds();
         : "--";
       const startAt = segment.start_at || "--";
       const endAt = segment.end_at || "--";
-      const bounds = startAt === "--" && endAt === "--" ? "--" : `${startAt} → ${endAt}`;
       const snippet = truncate(segment.snippet || "", 160) || "--";
-      const rowIdsCount = segment.row_ids_count ?? "--";
+      const rowIdsCount = segment.row_ids_count ?? segment.size ?? "--";
+      const chars = segment.chars ?? "--";
+      const topicId = segment.topic_id ?? "--";
+      const outlier = segment.is_outlier === true ? "yes" : segment.is_outlier === false ? "no" : "--";
       const segmentId = segment.segment_id || "--";
       const shortId = segmentId !== "--" && segmentId.length > 10 ? `${segmentId.slice(0, 10)}…` : segmentId;
       row.innerHTML = `
         <td class="py-2 pr-3 text-indigo-300 cursor-pointer" data-segment-id="${segmentId}" title="${segmentId}">${shortId}</td>
-        <td class="py-2 pr-3">${segment.size ?? "--"}</td>
         <td class="py-2 pr-3">${rowIdsCount}</td>
+        <td class="py-2 pr-3">${chars}</td>
         <td class="py-2 pr-3">${segment.title || segment.label || "--"}</td>
         <td class="py-2 pr-3">${aspectChips}</td>
-        <td class="py-2 pr-3">${bounds}</td>
+        <td class="py-2 pr-3">${startAt}</td>
+        <td class="py-2 pr-3">${endAt}</td>
         <td class="py-2 pr-3">${snippet}</td>
+        <td class="py-2 pr-3">${topicId}</td>
+        <td class="py-2 pr-3">${outlier}</td>
         <td class="py-2 pr-3">${sentiment.friction ?? "--"}</td>
-        <td class="py-2 pr-3">${sentiment.valence ?? "--"}</td>
       `;
       row.querySelector("[data-segment-id]")?.addEventListener("click", async () => {
         try {
           topicStudioSelectedSegmentId = segment.segment_id;
           const detail = await topicFoundryFetch(`/segments/${segment.segment_id}`);
-          const meaning = detail.meaning || {};
-          const provenance = detail.provenance || {};
-          const rowIds = Array.isArray(provenance.row_ids) ? provenance.row_ids.length : provenance.row_ids_count;
-          const snippet = detail.snippet || detail.text || provenance.snippet || provenance.text || null;
-          const detailPayload = {
-            segment_id: detail.segment_id,
-            title: detail.title || detail.label || null,
-            meaning: {
-              intent: meaning.intent || null,
-              outcome: meaning.outcome || null,
-              questions: meaning.questions || null,
-              next_steps: meaning.next_steps || null,
-            },
-            provenance: {
-              row_ids_count: rowIds ?? null,
-              start_at: detail.start_at || provenance.start_at || null,
-              end_at: detail.end_at || provenance.end_at || null,
-            },
-            snippet: snippet || null,
-          };
-          if (tsSegmentDetail) {
-            tsSegmentDetail.textContent = JSON.stringify(detailPayload, null, 2);
-          }
+          renderSegmentDetailPanel(detail);
+          recordTopicStudioDebug("segments", { request: `/segments/${segment.segment_id}`, response: detail });
         } catch (err) {
-          renderError(tsSegmentDetail, err);
+          renderTopicStudioError(tsSegmentsError, err, "Load segment detail", "segments", {
+            request: `/segments/${segment.segment_id}`,
+          });
         }
       });
       tsSegmentsTableBody.appendChild(row);
@@ -5457,32 +5753,13 @@ loadDismissedIds();
     if (!segmentId) return;
     try {
       const detail = await topicFoundryFetch(`/segments/${segmentId}`);
-      const meaning = detail.meaning || {};
-      const provenance = detail.provenance || {};
-      const rowIds = Array.isArray(provenance.row_ids) ? provenance.row_ids.length : provenance.row_ids_count;
-      const snippet = detail.snippet || detail.text || provenance.snippet || provenance.text || null;
-      const detailPayload = {
-        segment_id: detail.segment_id,
-        title: detail.title || detail.label || null,
-        meaning: {
-          intent: meaning.intent || null,
-          outcome: meaning.outcome || null,
-          questions: meaning.questions || null,
-          next_steps: meaning.next_steps || null,
-        },
-        provenance: {
-          row_ids_count: rowIds ?? null,
-          start_at: detail.start_at || provenance.start_at || null,
-          end_at: detail.end_at || provenance.end_at || null,
-        },
-        snippet: snippet || null,
-      };
-      if (tsSegmentDetail) {
-        tsSegmentDetail.textContent = JSON.stringify(detailPayload, null, 2);
-      }
+      renderSegmentDetailPanel(detail);
+      recordTopicStudioDebug("segments", { request: `/segments/${segmentId}`, response: detail });
       setTopicStudioSubview("runs");
     } catch (err) {
-      renderError(tsSegmentDetail, err);
+      renderTopicStudioError(tsSegmentsError, err, "Load segment detail", "segments", {
+        request: `/segments/${segmentId}`,
+      });
     }
   }
 
@@ -6082,6 +6359,11 @@ loadDismissedIds();
           debugEl.textContent = `segments response keys: ${keys.join(", ") || "--"}`;
           debugEl.classList.remove("hidden");
         }
+        recordTopicStudioDebug("segments", {
+          request: `/segments?${params.toString()}`,
+          response_keys: keys,
+          items: items.length,
+        });
       }
       const filtered = applySegmentsClientFilters(topicStudioSegmentsPage);
       topicStudioSegmentsDisplayed = filtered;
@@ -6093,8 +6375,9 @@ loadDismissedIds();
       setLoading(tsSegmentsLoading, false);
       refreshSegmentFacets();
     } catch (err) {
-      renderError(tsSegmentsError, err);
-      showToast("Failed to load segments.");
+      renderTopicStudioError(tsSegmentsError, err, "Load segments", "segments", {
+        request: `/segments?${params?.toString?.() || ""}`,
+      });
       setLoading(tsSegmentsLoading, false);
     } finally {
       topicStudioSegmentsPolling = false;

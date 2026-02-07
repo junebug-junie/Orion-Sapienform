@@ -14,7 +14,7 @@
     style="position:fixed; inset:0; padding:80px 24px 24px 24px; overflow:auto; z-index:10; pointer-events:none;"
   ></div>
   <div id="toastContainer" class="fixed top-4 right-4 z-50 space-y-2"></div>
-  <div class="w-full max-w-[98%] mx-auto flex flex-col gap-6">
+  <div class="w-full max-w-[98%] mx-auto flex flex-col gap-6 pt-16">
     <div class="fixed top-0 left-0 right-0 z-40 bg-black/95 border-b border-gray-800 h-14 flex items-center justify-between px-6">
       <div class="flex items-center gap-3">
         <div class="text-sm font-semibold text-gray-200">Orion Hub</div>
@@ -540,6 +540,27 @@
       </div>
       <div id="tsReadyWarning" class="hidden bg-red-900/20 border border-red-700/60 rounded-xl px-4 py-2 text-[11px] text-red-200"></div>
       <div id="tsCapabilitiesWarning" class="hidden bg-amber-900/20 border border-amber-700/60 rounded-xl px-4 py-2 text-[11px] text-amber-200"></div>
+      <details id="tsDebugDrawer" class="hidden bg-gray-900/60 border border-gray-700 rounded-xl px-4 py-2 text-[11px] text-gray-200">
+        <summary class="cursor-pointer text-[10px] uppercase tracking-wide text-gray-400">Debug drawer</summary>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+          <div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Preview</div>
+            <pre id="tsDebugPreview" class="text-[10px] text-gray-200 bg-gray-950/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Train</div>
+            <pre id="tsDebugTrain" class="text-[10px] text-gray-200 bg-gray-950/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Enrich</div>
+            <pre id="tsDebugEnrich" class="text-[10px] text-gray-200 bg-gray-950/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Segments</div>
+            <pre id="tsDebugSegments" class="text-[10px] text-gray-200 bg-gray-950/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+          </div>
+        </div>
+      </details>
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
         <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4 overflow-y-auto">
@@ -593,12 +614,21 @@
           </div>
 
           <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Run preset</label>
+            <select id="tsRunPreset" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="">Custom</option>
+              <option value="conversation_view">Conversation view</option>
+              <option value="global_themes">Global themes</option>
+            </select>
+          </div>
+          <div class="space-y-2">
             <div class="text-[10px] uppercase tracking-wide text-gray-500">Windowing</div>
             <div class="grid grid-cols-2 gap-2">
               <select id="tsBlockMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
                 <option value="turn_pairs">turn_pairs</option>
                 <option value="triads">triads</option>
                 <option value="rows">rows</option>
+                <option value="group_by_column">group_by_column</option>
               </select>
               <select id="tsSegmentationMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
                 <option value="time_gap">time_gap</option>
@@ -609,6 +639,10 @@
               </select>
             </div>
             <div id="tsLlmNote" class="text-[10px] text-amber-300 hidden">LLM disabled</div>
+            <div id="tsGroupByRow" class="space-y-2 hidden">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Group by column</label>
+              <select id="tsGroupByColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+            </div>
             <div class="grid grid-cols-2 gap-2">
               <input id="tsTimeGap" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="time_gap_seconds" />
               <input id="tsMaxWindow" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="max_window_seconds" />
@@ -715,7 +749,8 @@
             <button id="tsSubviewKgBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">KG</button>
           </div>
 
-          <div id="tsSubviewRuns">
+          <div id="tsSubviewRuns" data-split-pane="true" class="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4">
+          <div class="space-y-4">
           <div class="flex items-center justify-between">
             <div class="text-xs uppercase tracking-wide text-gray-500">Preview Results</div>
             <span id="tsPreviewLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
@@ -861,24 +896,49 @@
                 <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
                   <tr>
                     <th class="py-2 pr-3">Segment</th>
-                    <th class="py-2 pr-3">Size</th>
                     <th class="py-2 pr-3">Rows</th>
+                    <th class="py-2 pr-3">Chars</th>
                     <th class="py-2 pr-3">Title</th>
                     <th class="py-2 pr-3">Aspects</th>
-                    <th class="py-2 pr-3">Bounds</th>
+                    <th class="py-2 pr-3">Start</th>
+                    <th class="py-2 pr-3">End</th>
                     <th class="py-2 pr-3">Snippet</th>
+                    <th class="py-2 pr-3">Topic</th>
+                    <th class="py-2 pr-3">Outlier</th>
                     <th class="py-2 pr-3">Friction</th>
-                    <th class="py-2 pr-3">Valence</th>
                   </tr>
                 </thead>
                 <tbody id="tsSegmentsTableBody" class="divide-y divide-gray-800"></tbody>
               </table>
             </div>
-            <div class="text-[10px] uppercase tracking-wide text-gray-500">Selected segment</div>
-            <div class="flex items-center gap-2 text-[10px] text-gray-400">
+          </div>
+          <div id="tsSegmentDetailsPanel" class="bg-gray-900/60 border border-gray-700 rounded-xl p-4 flex flex-col min-h-0 overflow-y-auto">
+            <div class="flex items-center justify-between">
+              <div class="text-xs uppercase tracking-wide text-gray-500">Segment Details</div>
               <button id="tsCopySegmentId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy segment id</button>
             </div>
-            <div id="tsSegmentDetail" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</div>
+            <div id="tsSegmentDetailHeader" class="text-sm font-semibold text-gray-200">Select a segment</div>
+            <div id="tsSegmentDetailMeta" class="text-[11px] text-gray-400">--</div>
+            <div class="space-y-2 pt-2 border-t border-gray-700">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Snippet</div>
+              <pre id="tsSegmentDetailSnippet" class="text-[11px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+            </div>
+            <div class="space-y-2 pt-2 border-t border-gray-700 flex-1 min-h-0">
+              <div class="flex items-center justify-between">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Full text</div>
+                <div class="flex items-center gap-2 text-[10px] text-gray-400">
+                  <button id="tsSegmentFullTextLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Load full text</button>
+                  <button id="tsSegmentFullTextExpand" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Expand</button>
+                  <button id="tsSegmentFullTextCopy" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy</button>
+                </div>
+              </div>
+              <div id="tsSegmentFullTextStatus" class="text-[10px] text-gray-500">--</div>
+              <pre id="tsSegmentFullText" class="text-[11px] text-gray-200 bg-gray-950/60 border border-gray-700 rounded p-2 whitespace-pre-wrap overflow-y-auto flex-1 min-h-0">--</pre>
+            </div>
+            <div class="space-y-2 pt-2 border-t border-gray-700">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Meaning & enrichment</div>
+              <pre id="tsSegmentDetailMeaning" class="text-[11px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+            </div>
           </div>
           </div>
 
@@ -1279,6 +1339,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.48" defer></script>
+  <script src="/static/js/app.js?v=1.0.49" defer></script>
 </body>
 </html>

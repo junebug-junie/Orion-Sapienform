@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     )
     LANDING_PAD_TIMEOUT_SEC: float = Field(default=5.0, alias="LANDING_PAD_TIMEOUT_SEC")
 
+    # --- Topic Foundry Integration ---
+    TOPIC_FOUNDRY_BASE_URL: str = Field(
+        default="http://orion-topic-foundry:8615",
+        alias="TOPIC_FOUNDRY_BASE_URL",
+    )
+
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")

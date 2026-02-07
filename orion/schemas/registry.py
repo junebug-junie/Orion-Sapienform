@@ -20,6 +20,8 @@ from orion.schemas.cortex.contracts import (
     CortexChatResult,
     RecallDirective,
 )
+from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
+from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
 from orion.schemas.vector.schemas import (
@@ -94,6 +96,12 @@ from orion.schemas.notify import (
     RecipientProfileUpdate,
 )
 from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
+from orion.schemas.topic_foundry import (
+    KgEdgeIngestV1,
+    TopicFoundryDriftAlertV1,
+    TopicFoundryEnrichCompleteV1,
+    TopicFoundryRunCompleteV1,
+)
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -111,6 +119,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallQueryV1": RecallQueryV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
+    "CortexExecRequestPayload": CortexExecRequestPayload,
+    "CortexExecResultPayload": CortexExecResultPayload,
+    "PlanExecutionRequest": PlanExecutionRequest,
+    "PlanExecutionResult": PlanExecutionResult,
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,  # change_type dict coercion support
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
@@ -193,6 +205,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,
     "TopicRailAssignedV1": TopicRailAssignedV1,
+    "TopicFoundryRunCompleteV1": TopicFoundryRunCompleteV1,
+    "TopicFoundryEnrichCompleteV1": TopicFoundryEnrichCompleteV1,
+    "TopicFoundryDriftAlertV1": TopicFoundryDriftAlertV1,
+    "KgEdgeIngestV1": KgEdgeIngestV1,
 
 }
 

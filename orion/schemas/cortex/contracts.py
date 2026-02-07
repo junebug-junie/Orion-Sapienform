@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from orion.core.bus.bus_schemas import LLMMessage
-from orion.schemas.cortex.schemas import StepExecutionResult
+from orion.schemas.cortex.types import StepExecutionResult
 
 
 class RecallDirective(BaseModel):

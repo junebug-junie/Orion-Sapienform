@@ -529,6 +529,7 @@
         </div>
         <div id="tsStatusDetail" class="text-[11px] text-gray-400">Ready status has not been checked yet.</div>
       </div>
+      <div id="tsReadyWarning" class="hidden bg-red-900/20 border border-red-700/60 rounded-xl px-4 py-2 text-[11px] text-red-200"></div>
       <div id="tsCapabilitiesWarning" class="hidden bg-amber-900/20 border border-amber-700/60 rounded-xl px-4 py-2 text-[11px] text-amber-200"></div>
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
@@ -691,6 +692,10 @@
         </div>
 
         <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4 overflow-y-auto">
+          <div id="tsSkeletonMain" class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-300">
+            <span id="tsSkeletonStatus">Loading...</span>
+            <button id="tsSkeletonRetry" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-[10px]">Retry</button>
+          </div>
           <div class="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-gray-500">
             <button id="tsSubviewRunsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-900/60 text-gray-200">Runs & Segments</button>
             <button id="tsSubviewConversationsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Conversations</button>
@@ -1261,6 +1266,6 @@
     </div>
   </div>
   
-  <script src="/static/js/app.js?v=1.0.44" defer></script>
+  <script src="/static/js/app.js?v=1.0.45" defer></script>
 </body>
 </html>

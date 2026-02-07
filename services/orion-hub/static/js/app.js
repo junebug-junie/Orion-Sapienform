@@ -331,9 +331,13 @@ loadDismissedIds();
   const tsStatusModelDir = document.getElementById("tsStatusModelDir");
   const tsStatusDetail = document.getElementById("tsStatusDetail");
   const tsStatusLoading = document.getElementById("tsStatusLoading");
+  const tsReadyWarning = document.getElementById("tsReadyWarning");
   const tsCapabilitiesWarning = document.getElementById("tsCapabilitiesWarning");
   const tsCopyReadyUrl = document.getElementById("tsCopyReadyUrl");
   const tsCopyCapabilitiesUrl = document.getElementById("tsCopyCapabilitiesUrl");
+  const tsSkeletonMain = document.getElementById("tsSkeletonMain");
+  const tsSkeletonStatus = document.getElementById("tsSkeletonStatus");
+  const tsSkeletonRetry = document.getElementById("tsSkeletonRetry");
   const tsLlmNote = document.getElementById("tsLlmNote");
   const tsPreviewLoading = document.getElementById("tsPreviewLoading");
   const tsRunLoading = document.getElementById("tsRunLoading");
@@ -421,6 +425,45 @@ loadDismissedIds();
     topicStudioTabButton.classList.toggle("bg-gray-800", isHub);
     topicStudioTabButton.classList.toggle("text-gray-200", isHub);
     topicStudioTabButton.classList.toggle("border-gray-700", isHub);
+  }
+
+  function renderTopicStudioSkeleton(message = "Loading...") {
+    if (tsSkeletonMain) {
+      tsSkeletonMain.classList.remove("hidden");
+    }
+    if (tsSkeletonStatus) {
+      tsSkeletonStatus.textContent = message;
+    }
+    if (tsSkeletonRetry) {
+      tsSkeletonRetry.classList.remove("hidden");
+    }
+    if (tsStatusBadge && !tsStatusBadge.textContent) {
+      tsStatusBadge.textContent = "Unknown";
+    }
+    setTopicStudioRenderStep("mounted skeleton");
+  }
+
+  function handleHashRouting() {
+    if (!hubTabButton || !topicStudioTabButton) return;
+    const hash = window.location.hash;
+    if (hash === "#topic-studio") {
+      setActiveTab("topic-studio");
+      renderTopicStudioSkeleton();
+      refreshTopicStudio().catch((err) => {
+        console.warn("[TopicStudio] Refresh failed", err);
+      });
+    } else {
+      setActiveTab("hub");
+    }
+    updateTopicStudioDebugOverlay();
+  }
+
+  function navigateToHash(nextHash) {
+    if (window.location.hash === nextHash) {
+      handleHashRouting();
+      return;
+    }
+    window.location.hash = nextHash;
   }
 
   function resolveTopicStudioSubview() {
@@ -848,6 +891,70 @@ loadDismissedIds();
   let topicStudioEventsPage = [];
   let topicStudioKgEdgesPage = [];
   const TOPIC_STUDIO_RUN_ID_KEY = "topic_studio_run_id_v1";
+  const topicStudioDebugState = {
+    enabled: new URLSearchParams(window.location.search).get("debug") === "1",
+    lastRenderStep: "init",
+    fetchStatus: {
+      ready: null,
+      capabilities: null,
+      runs: null,
+    },
+    overlay: null,
+    overlayBody: null,
+  };
+
+  function formatFetchStatus(status) {
+    if (!status) return "--";
+    const okLabel = status.ok === true ? "ok" : status.ok === false ? "fail" : "unknown";
+    const detail = status.detail ? ` · ${truncateText(status.detail, 80)}` : "";
+    return `${status.status ?? "--"} (${okLabel})${detail}`;
+  }
+
+  function ensureTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled || topicStudioDebugState.overlay) return;
+    const overlay = document.createElement("div");
+    overlay.className = "fixed bottom-3 right-3 z-50 bg-gray-900/95 border border-gray-700 rounded-lg px-3 py-2 text-[10px] text-gray-200 shadow-lg";
+    overlay.style.maxWidth = "240px";
+    overlay.innerHTML = `
+      <div class="flex items-center justify-between gap-2 mb-1">
+        <div class="font-semibold text-xs">Topic Studio Debug</div>
+        <button type="button" class="text-gray-400 hover:text-gray-200 text-[10px]" data-debug-hide>Hide</button>
+      </div>
+      <div data-debug-body class="space-y-1"></div>
+    `;
+    overlay.querySelector("[data-debug-hide]")?.addEventListener("click", () => {
+      overlay.classList.add("hidden");
+    });
+    topicStudioDebugState.overlay = overlay;
+    topicStudioDebugState.overlayBody = overlay.querySelector("[data-debug-body]");
+    document.body.appendChild(overlay);
+  }
+
+  function updateTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled) return;
+    ensureTopicStudioDebugOverlay();
+    if (!topicStudioDebugState.overlayBody) return;
+    const hash = window.location.hash || "(none)";
+    const exists = Boolean(topicStudioPanel);
+    topicStudioDebugState.overlayBody.innerHTML = `
+      <div>hash: <span class="text-gray-400">${hash}</span></div>
+      <div>container: <span class="text-gray-400">${exists ? "found" : "missing"}</span></div>
+      <div>step: <span class="text-gray-400">${topicStudioDebugState.lastRenderStep}</span></div>
+      <div>/ready: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.ready)}</span></div>
+      <div>/capabilities: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.capabilities)}</span></div>
+      <div>/runs: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.runs)}</span></div>
+    `;
+  }
+
+  function setTopicStudioRenderStep(step) {
+    topicStudioDebugState.lastRenderStep = step;
+    updateTopicStudioDebugOverlay();
+  }
+
+  function recordTopicStudioFetchStatus(key, status, ok, detail) {
+    topicStudioDebugState.fetchStatus[key] = { status, ok, detail };
+    updateTopicStudioDebugOverlay();
+  }
 
   function renderError(target, error, fallback = "Request failed.") {
     if (!target) return;
@@ -858,6 +965,39 @@ loadDismissedIds();
     const status = error.status ? `status ${error.status}` : "status unknown";
     const detail = error.body || error.message || fallback;
     target.textContent = `${status}: ${detail}`;
+  }
+
+  function asItems(value) {
+    if (Array.isArray(value)) return value;
+    if (value && Array.isArray(value.items)) return value.items;
+    return [];
+  }
+
+  function getTotal(resp, json) {
+    const totalValue = Number(json?.total);
+    if (Number.isFinite(totalValue)) return totalValue;
+    const headerValue = resp?.get ? Number(resp.get("X-Total-Count")) : Number.NaN;
+    return Number.isFinite(headerValue) ? headerValue : null;
+  }
+
+  function truncateText(value, maxLength = 200) {
+    if (!value) return "";
+    const trimmed = String(value).replace(/\s+/g, " ").trim();
+    if (trimmed.length <= maxLength) return trimmed;
+    return `${trimmed.slice(0, maxLength)}…`;
+  }
+
+  function renderEndpointWarning(target, endpoint, error) {
+    if (!target) return;
+    if (!error) {
+      target.textContent = "";
+      target.classList.add("hidden");
+      return;
+    }
+    const status = error.status ? `status ${error.status}` : "status unknown";
+    const detail = truncateText(error.body || error.message || "Request failed.");
+    target.textContent = `${endpoint} · ${status} · ${detail}`;
+    target.classList.remove("hidden");
   }
 
   function setWarning(target, message) {
@@ -920,8 +1060,8 @@ loadDismissedIds();
 
   function normalizeRunsResponse(response) {
     if (!response) return [];
-    if (Array.isArray(response)) return response;
-    if (Array.isArray(response.items)) return response.items;
+    const items = asItems(response);
+    if (items.length > 0) return items;
     if (Array.isArray(response.runs)) return response.runs;
     return [];
   }
@@ -3378,6 +3518,7 @@ loadDismissedIds();
     if (!tsStatusBadge) return;
     try {
       setLoading(tsStatusLoading, true);
+      setTopicStudioRenderStep("fetching /ready");
       const result = await topicFoundryFetch("/ready");
       const checks = result?.checks || {};
       formatStatusBadge(tsStatusBadge, result.ok, result.ok ? "Healthy" : "Degraded");
@@ -3387,6 +3528,9 @@ loadDismissedIds();
       if (tsStatusDetail) {
         tsStatusDetail.textContent = `PG: ${checks.pg?.detail || "--"} · Embedding: ${checks.embedding?.detail || "--"} · Model dir: ${checks.model_dir?.detail || "--"}`;
       }
+      renderEndpointWarning(tsReadyWarning, null, null);
+      recordTopicStudioFetchStatus("ready", 200, true);
+      setTopicStudioRenderStep("fetched /ready");
       setLoading(tsStatusLoading, false);
     } catch (err) {
       formatStatusBadge(tsStatusBadge, false, "Unreachable");
@@ -3394,6 +3538,9 @@ loadDismissedIds();
       formatStatusBadge(tsStatusEmbedding, null, "--");
       formatStatusBadge(tsStatusModelDir, null, "--");
       renderError(tsStatusDetail, err, "Failed to read /ready.");
+      renderEndpointWarning(tsReadyWarning, "/ready", err);
+      recordTopicStudioFetchStatus("ready", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /ready");
       setLoading(tsStatusLoading, false);
     }
   }
@@ -3444,19 +3591,22 @@ loadDismissedIds();
     }
     try {
       setLoading(tsStatusLoading, true, "Loading capabilities...");
+      setTopicStudioRenderStep("fetching /capabilities");
       const result = await topicFoundryFetch("/capabilities");
       topicStudioCapabilities = result;
       const modes = result.segmentation_modes_supported || [];
       renderSegmentationModes(modes, Boolean(result.llm_enabled));
       applyCapabilityDefaults(result.defaults || {});
+      renderEndpointWarning(tsCapabilitiesWarning, null, null);
+      recordTopicStudioFetchStatus("capabilities", 200, true);
+      setTopicStudioRenderStep("fetched /capabilities");
       setLoading(tsStatusLoading, false);
     } catch (err) {
       const fallbackModes = ["time_gap", "semantic", "hybrid"];
       renderSegmentationModes(fallbackModes, false);
-      if (tsCapabilitiesWarning) {
-        tsCapabilitiesWarning.textContent = `Capabilities unavailable. Falling back to safe defaults. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
-        tsCapabilitiesWarning.classList.remove("hidden");
-      }
+      renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
+      recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /capabilities");
       setLoading(tsStatusLoading, false);
     }
   }
@@ -3465,6 +3615,7 @@ loadDismissedIds();
     if (topicFoundryBaseLabel) {
       topicFoundryBaseLabel.textContent = TOPIC_FOUNDRY_PROXY_BASE;
     }
+    setTopicStudioRenderStep("refresh topic studio");
     await refreshTopicStudioCapabilities();
     await refreshTopicStudioStatus();
     try {
@@ -3505,8 +3656,12 @@ loadDismissedIds();
       if (tsKgRunId && !tsKgRunId.value && tsRunsSelect?.value) {
         tsKgRunId.value = tsRunsSelect.value;
       }
+      recordTopicStudioFetchStatus("runs", 200, true);
+      setTopicStudioRenderStep("fetched /runs");
     } catch (err) {
       console.warn("[TopicStudio] Failed to load runs", err);
+      recordTopicStudioFetchStatus("runs", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /runs");
       if (tsRunsWarning) {
         tsRunsWarning.textContent = `Failed to load runs. Enter a run id manually. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
         tsRunsWarning.classList.remove("hidden");
@@ -3521,23 +3676,24 @@ loadDismissedIds();
     tsUsePreviewSpec.disabled = true;
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
+  if (tsSkeletonRetry) {
+    tsSkeletonRetry.addEventListener("click", () => {
+      renderTopicStudioSkeleton("Loading...");
+      refreshTopicStudio().catch((err) => {
+        console.warn("[TopicStudio] Retry failed", err);
+      });
+    });
+  }
 
   if (hubTabButton && topicStudioTabButton) {
     hubTabButton.addEventListener("click", () => {
-      setActiveTab("hub");
-      history.replaceState(null, "", "#hub");
+      navigateToHash("#hub");
     });
     topicStudioTabButton.addEventListener("click", () => {
-      setActiveTab("topic-studio");
-      history.replaceState(null, "", "#topic-studio");
-      refreshTopicStudio();
+      navigateToHash("#topic-studio");
     });
-    if (window.location.hash === "#topic-studio") {
-      setActiveTab("topic-studio");
-      refreshTopicStudio();
-    } else {
-      setActiveTab("hub");
-    }
+    window.addEventListener("hashchange", handleHashRouting);
+    handleHashRouting();
   }
 
   if (tsDatasetSelect) {
@@ -4315,7 +4471,8 @@ loadDismissedIds();
         params.set("kind", kindValue);
       }
       const response = await topicFoundryFetch(`/events?${params.toString()}`);
-      topicStudioEventsPage = response.items || [];
+      const items = asItems(response);
+      topicStudioEventsPage = items.length > 0 ? items : Array.isArray(response?.events) ? response.events : [];
       renderEventsTable(topicStudioEventsPage);
       if (tsEventsStatus) tsEventsStatus.textContent = `Loaded ${topicStudioEventsPage.length} events.`;
     } catch (err) {
@@ -4405,7 +4562,8 @@ loadDismissedIds();
         params.set("q", tsKgQuery.value);
       }
       const response = await topicFoundryFetch(`/kg/edges?${params.toString()}`);
-      topicStudioKgEdgesPage = response.items || [];
+      const items = asItems(response);
+      topicStudioKgEdgesPage = items.length > 0 ? items : Array.isArray(response?.edges) ? response.edges : [];
       renderKgTable(topicStudioKgEdgesPage);
       if (tsKgStatus) tsKgStatus.textContent = `Loaded ${topicStudioKgEdgesPage.length} edges.`;
     } catch (err) {
@@ -4470,10 +4628,11 @@ loadDismissedIds();
         offset: tsTopicsOffset?.value || "0",
       });
       const response = await topicFoundryFetch(`/topics?${params.toString()}`);
-      const items = response.items || response.topics || [];
-      renderTopicsTable(items);
+      const items = asItems(response);
+      const topics = items.length > 0 ? items : Array.isArray(response?.topics) ? response.topics : [];
+      renderTopicsTable(topics);
       if (tsTopicsStatus) {
-        tsTopicsStatus.textContent = `Loaded ${items.length} topics.`;
+        tsTopicsStatus.textContent = `Loaded ${topics.length} topics.`;
       }
     } catch (err) {
       renderError(tsTopicsError, err);
@@ -4517,7 +4676,8 @@ loadDismissedIds();
         include_bounds: "true",
       });
       const response = await topicFoundryFetch(`/topics/${topicId}/segments?${params.toString()}`);
-      const segments = response.items || response.segments || [];
+      const items = asItems(response);
+      const segments = items.length > 0 ? items : Array.isArray(response?.segments) ? response.segments : [];
       renderTopicSegmentsTable(segments);
       if (tsTopicSegmentsStatus) {
         const rangeStart = segments.length === 0 ? 0 : topicStudioTopicSegmentsOffset + 1;
@@ -4694,15 +4854,10 @@ loadDismissedIds();
         params.set("q", query);
       }
       const { payload, headers } = await topicFoundryFetchWithHeaders(`/segments?${params.toString()}`);
-      const items = payload.items || payload.segments || payload;
-      topicStudioSegmentsPage = Array.isArray(items) ? items : [];
-      const totalValue = Number(payload.total);
-      if (Number.isFinite(totalValue)) {
-        topicStudioSegmentsTotal = totalValue;
-      } else {
-        const headerTotal = Number(headers.get("X-Total-Count"));
-        topicStudioSegmentsTotal = Number.isFinite(headerTotal) ? headerTotal : null;
-      }
+      const items = asItems(payload);
+      const segments = items.length > 0 ? items : Array.isArray(payload?.segments) ? payload.segments : Array.isArray(payload) ? payload : [];
+      topicStudioSegmentsPage = segments;
+      topicStudioSegmentsTotal = getTotal(headers, payload);
       const filtered = applySegmentsClientFilters(topicStudioSegmentsPage);
       topicStudioSegmentsDisplayed = filtered;
       renderSegmentsTable(filtered);

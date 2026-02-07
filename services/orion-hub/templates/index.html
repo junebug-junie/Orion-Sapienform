@@ -24,7 +24,21 @@
       </svg>
     </button>
 
-    <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
+    <div class="flex items-center gap-2">
+      <button
+        id="hubTabButton"
+        class="px-3 py-1.5 text-xs font-semibold rounded-full bg-indigo-600 text-white shadow border border-indigo-500"
+        type="button"
+      >Hub</button>
+      <button
+        id="topicStudioTabButton"
+        class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+        type="button"
+      >Topic Studio</button>
+    </div>
+
+    <div id="hubTabPanel" class="flex flex-col gap-6">
+      <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
       
       <div class="w-full md:w-2/3 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
         <h2 class="text-xl font-bold text-white mb-1">Cognitive EKG</h2>
@@ -477,7 +491,679 @@
         </div>
       </div>
     </div>
-  </div>
+
+    <div id="topicStudioPanel" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-6 min-h-[56rem]">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-xl font-bold text-white">Topic Studio</h2>
+          <p class="text-xs text-gray-400">Manage datasets, models, and runs for Topic Foundry.</p>
+        </div>
+        <div class="text-xs text-gray-500">Proxy: <span id="topicFoundryBaseLabel">/api/topic-foundry</span></div>
+      </div>
+
+      <div id="tsStatusBanner" class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <div class="text-sm font-semibold text-gray-200">Foundry Status</div>
+            <span id="tsStatusLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+          </div>
+          <span id="tsStatusBadge" class="text-[10px] uppercase tracking-wide px-2 py-1 rounded-full border border-gray-600 text-gray-300">Unknown</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-400">
+          <button id="tsCopyReadyUrl" class="bg-gray-900/60 hover:bg-gray-800 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy /ready URL</button>
+          <button id="tsCopyCapabilitiesUrl" class="bg-gray-900/60 hover:bg-gray-800 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy /capabilities URL</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-gray-300">
+          <div class="flex items-center justify-between bg-gray-900/60 border border-gray-800 rounded-lg px-2 py-1">
+            <span>Postgres</span>
+            <span id="tsStatusPg" class="text-[10px] font-semibold">--</span>
+          </div>
+          <div class="flex items-center justify-between bg-gray-900/60 border border-gray-800 rounded-lg px-2 py-1">
+            <span>Embedding</span>
+            <span id="tsStatusEmbedding" class="text-[10px] font-semibold">--</span>
+          </div>
+          <div class="flex items-center justify-between bg-gray-900/60 border border-gray-800 rounded-lg px-2 py-1">
+            <span>Model Dir</span>
+            <span id="tsStatusModelDir" class="text-[10px] font-semibold">--</span>
+          </div>
+        </div>
+        <div id="tsStatusDetail" class="text-[11px] text-gray-400">Ready status has not been checked yet.</div>
+      </div>
+      <div id="tsCapabilitiesWarning" class="hidden bg-amber-900/20 border border-amber-700/60 rounded-xl px-4 py-2 text-[11px] text-amber-200"></div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4 overflow-y-auto">
+          <div class="space-y-2">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Dataset Builder</div>
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Saved dataset</label>
+            <select id="tsDatasetSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="">New dataset…</option>
+            </select>
+          </div>
+
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Name</label>
+            <input id="tsDatasetName" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="support_chat_jan" />
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Source table</label>
+            <input id="tsDatasetTable" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="analytics.chat_logs" />
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">ID column</label>
+              <input id="tsDatasetIdColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="id" />
+            </div>
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Time column</label>
+              <input id="tsDatasetTimeColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="created_at" />
+            </div>
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Text columns (comma)</label>
+            <input id="tsDatasetTextColumns" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="user_text,assistant_text" />
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Where SQL (optional)</label>
+            <input id="tsDatasetWhereSql" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="channel = :channel" />
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Timezone</label>
+            <input id="tsDatasetTimezone" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="UTC" />
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Start at</label>
+              <input id="tsStartAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+            </div>
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">End at</label>
+              <input id="tsEndAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+            </div>
+          </div>
+
+          <div class="space-y-2">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Windowing</div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsBlockMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="turn_pairs">turn_pairs</option>
+                <option value="triads">triads</option>
+                <option value="rows">rows</option>
+              </select>
+              <select id="tsSegmentationMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="time_gap">time_gap</option>
+                <option value="semantic">semantic</option>
+                <option value="hybrid">hybrid</option>
+                <option value="llm_judge">llm_judge</option>
+                <option value="hybrid_llm">hybrid_llm</option>
+              </select>
+            </div>
+            <div id="tsLlmNote" class="text-[10px] text-amber-300 hidden">LLM disabled</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsTimeGap" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="time_gap_seconds" />
+              <input id="tsMaxWindow" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="max_window_seconds" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsMinBlocks" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_blocks_per_segment" />
+              <input id="tsMaxChars" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="max_chars" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2 pt-2">
+            <button id="tsCreateDataset" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Create Dataset</button>
+            <button id="tsPreviewDataset" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Preview</button>
+          </div>
+          <div id="tsPreviewWarning" class="text-[11px] text-amber-300 hidden"></div>
+        </div>
+
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4 overflow-y-auto">
+          <div class="text-xs uppercase tracking-wide text-gray-500">Model Registry</div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Model name</label>
+            <input id="tsModelName" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="support-topic-v1" />
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Version</label>
+              <input id="tsModelVersion" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="2024-04-01" />
+            </div>
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Stage</label>
+              <select id="tsModelStage" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="development">development</option>
+                <option value="candidate">candidate</option>
+                <option value="active">active</option>
+                <option value="archived">archived</option>
+              </select>
+            </div>
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Embedding source URL</label>
+            <input id="tsModelEmbeddingUrl" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="http://orion-vector-host:8030/embed" />
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <input id="tsModelMinCluster" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_cluster_size" />
+            <input id="tsModelMetric" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="metric (cosine)" />
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Params (JSON)</label>
+            <textarea id="tsModelParams" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" rows="2" placeholder='{"min_samples":5}'></textarea>
+          </div>
+          <button id="tsCreateModel" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Create Model</button>
+          <div class="flex items-center gap-2 text-[10px] text-gray-400">
+            <button id="tsCopyModelId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy model id</button>
+            <button id="tsCopyDatasetId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy dataset id</button>
+          </div>
+
+          <div class="pt-3 border-t border-gray-700 space-y-2">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Promote Model</div>
+            <select id="tsPromoteModelSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsPromoteStage" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="candidate">candidate</option>
+                <option value="active">active</option>
+                <option value="archived">archived</option>
+              </select>
+              <input id="tsPromoteReason" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="reason (optional)" />
+            </div>
+            <button id="tsPromoteModel" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Promote</button>
+          </div>
+
+          <div class="pt-3 border-t border-gray-700 space-y-2">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Enrichment</div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsEnrichEnricher" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="heuristic">heuristic</option>
+                <option value="llm">llm</option>
+              </select>
+              <label class="flex items-center gap-2 text-[10px] text-gray-400">
+                <input id="tsEnrichForce" type="checkbox" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
+                force
+              </label>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsEnrichRun" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Enrich Run</button>
+              <span id="tsEnrichLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+            </div>
+            <div id="tsEnrichStatus" class="text-[11px] text-gray-400">--</div>
+            <div id="tsEnrichWarning" class="text-[11px] text-amber-300 hidden"></div>
+          </div>
+        </div>
+
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4 overflow-y-auto">
+          <div class="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-gray-500">
+            <button id="tsSubviewRunsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-900/60 text-gray-200">Runs & Segments</button>
+            <button id="tsSubviewConversationsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Conversations</button>
+            <button id="tsSubviewTopicsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Topics</button>
+            <button id="tsSubviewCompareBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Compare</button>
+            <button id="tsSubviewDriftBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Drift</button>
+            <button id="tsSubviewEventsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Events</button>
+            <button id="tsSubviewKgBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">KG</button>
+          </div>
+
+          <div id="tsSubviewRuns">
+          <div class="flex items-center justify-between">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Preview Results</div>
+            <span id="tsPreviewLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2 text-xs text-gray-300">
+            <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+              <span>Docs</span>
+              <span id="tsPreviewDocs" class="font-semibold">--</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+              <span>Segments</span>
+              <span id="tsPreviewSegments" class="font-semibold">--</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+              <span>Avg chars</span>
+              <span id="tsPreviewAvgChars" class="font-semibold">--</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+              <span>P95 chars</span>
+              <span id="tsPreviewP95Chars" class="font-semibold">--</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+              <span>Max chars</span>
+              <span id="tsPreviewMaxChars" class="font-semibold">--</span>
+            </div>
+            <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+              <span>Observed range</span>
+              <span id="tsPreviewObserved" class="font-semibold">--</span>
+            </div>
+          </div>
+          <div class="space-y-2">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Sample snippets</div>
+            <div id="tsPreviewSamples" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-40 overflow-y-auto space-y-2">--</div>
+          </div>
+          <div id="tsPreviewError" class="text-[11px] text-red-300">--</div>
+
+          <div class="text-xs uppercase tracking-wide text-gray-500 pt-2 border-t border-gray-700">Runs + Segments</div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Model to train</label>
+            <select id="tsTrainModelSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="tsTrainRun" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Train</button>
+            <button id="tsUsePreviewSpec" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Use Preview Spec</button>
+          </div>
+          <div class="space-y-2 pt-2 border-t border-gray-700">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Run ID</label>
+            <div class="flex items-center gap-2">
+              <input id="tsRunId" class="flex-1 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+              <button id="tsCopyRunId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy</button>
+              <button id="tsCopyRunUrl" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy URL</button>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsPollRun" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Poll Status</button>
+              <span id="tsRunLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+            </div>
+            <div class="grid grid-cols-2 gap-2 text-[11px] text-gray-300">
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Status</span>
+                <span id="tsRunState" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Clusters</span>
+                <span id="tsRunClusters" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Docs</span>
+                <span id="tsRunDocs" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Segments</span>
+                <span id="tsRunSegments" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Outlier %</span>
+                <span id="tsRunOutliers" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Enriched</span>
+                <span id="tsRunEnriched" class="font-semibold">--</span>
+              </div>
+            </div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Artifacts</div>
+            <pre id="tsRunArtifacts" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+            <div class="flex items-center gap-2 text-[10px] text-gray-400">
+              <button id="tsCopyArtifacts" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy artifacts</button>
+            </div>
+            <div id="tsRunError" class="text-[11px] text-red-300">--</div>
+            <div id="tsRunWarning" class="text-[11px] text-amber-300 hidden"></div>
+          </div>
+
+          <div class="space-y-2 pt-2 border-t border-gray-700">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Recent runs</div>
+            <select id="tsRunsSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+            <div id="tsRunsWarning" class="text-[11px] text-amber-300 hidden"></div>
+          </div>
+
+          <div class="space-y-2 pt-2 border-t border-gray-700">
+            <div class="flex items-center justify-between">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Browse segments</div>
+              <button id="tsSegmentsRefresh" class="text-[10px] text-gray-300 hover:text-white">Refresh</button>
+            </div>
+            <input id="tsSegmentsRunId" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsSegmentsSearch" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="search segments" />
+              <select id="tsSegmentsSort" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="time_desc">time desc</option>
+                <option value="friction_desc">friction desc</option>
+                <option value="size_desc">size desc</option>
+              </select>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsSegmentsEnrichment" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">all</option>
+                <option value="true">has enrichment</option>
+                <option value="false">no enrichment</option>
+              </select>
+              <input id="tsSegmentsAspect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="aspect filter" />
+            </div>
+            <div id="tsSegmentsFacets" class="flex flex-wrap gap-2 text-[10px] text-gray-400"></div>
+            <div class="flex items-center gap-2">
+              <button id="tsLoadSegments" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Segments</button>
+              <span id="tsSegmentsLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-400">
+              <div class="flex items-center gap-2">
+                <label class="uppercase tracking-wide text-gray-500">Page size</label>
+                <select id="tsSegmentsPageSize" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                </select>
+                <button id="tsSegmentsPrev" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Prev</button>
+                <button id="tsSegmentsNext" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Next</button>
+              </div>
+              <div id="tsSegmentsRange" class="text-[10px] text-gray-500">Offset --</div>
+              <button id="tsSegmentsExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 text-xs">Export CSV</button>
+            </div>
+            <div id="tsSegmentsError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Segment</th>
+                    <th class="py-2 pr-3">Size</th>
+                    <th class="py-2 pr-3">Rows</th>
+                    <th class="py-2 pr-3">Title</th>
+                    <th class="py-2 pr-3">Aspects</th>
+                    <th class="py-2 pr-3">Bounds</th>
+                    <th class="py-2 pr-3">Snippet</th>
+                    <th class="py-2 pr-3">Friction</th>
+                    <th class="py-2 pr-3">Valence</th>
+                  </tr>
+                </thead>
+                <tbody id="tsSegmentsTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Selected segment</div>
+            <div class="flex items-center gap-2 text-[10px] text-gray-400">
+              <button id="tsCopySegmentId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy segment id</button>
+            </div>
+            <div id="tsSegmentDetail" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</div>
+          </div>
+          </div>
+
+          <div id="tsSubviewConversations" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Conversation Stitching</div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Dataset</label>
+                <select id="tsConvoDatasetSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+              </div>
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Limit</label>
+                <input id="tsConvoLimit" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="200" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Start at</label>
+                <input id="tsConvoStartAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+              </div>
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">End at</label>
+                <input id="tsConvoEndAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsConvoLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Conversations</button>
+              <button id="tsConvoRebuildPreview" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Rebuild Preview</button>
+              <span id="tsConvoLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Conversations</div>
+                <div class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-64 overflow-y-auto">
+                  <table class="w-full text-xs text-left text-gray-300">
+                    <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                      <tr>
+                        <th class="py-2 pr-2">Select</th>
+                        <th class="py-2 pr-2">Window</th>
+                        <th class="py-2 pr-2">Blocks</th>
+                        <th class="py-2 pr-2">Snippet</th>
+                        <th class="py-2 pr-2">ID</th>
+                      </tr>
+                    </thead>
+                    <tbody id="tsConvoList" class="divide-y divide-gray-800"></tbody>
+                  </table>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input id="tsConvoMergeReason" class="flex-1 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="merge reason (optional)" />
+                  <button id="tsConvoMerge" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 text-xs">Merge</button>
+                </div>
+                <div id="tsConvoMergeStatus" class="text-[11px] text-gray-400">--</div>
+              </div>
+              <div class="space-y-2">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Conversation Detail</div>
+                <div id="tsConvoDetail" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-64 overflow-y-auto">Select a conversation to view blocks.</div>
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Overrides</div>
+                <div id="tsConvoOverrides" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-40 overflow-y-auto">--</div>
+              </div>
+            </div>
+            <div id="tsConvoError" class="text-[11px] text-red-300">--</div>
+            </div>
+          </div>
+
+          <div id="tsSubviewTopics" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Topic Explorer</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsTopicsRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsTopicsLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="200" />
+                <input id="tsTopicsOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsTopicsLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Topics</button>
+              <span id="tsTopicsStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsTopicsError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Topic</th>
+                    <th class="py-2 pr-3">Docs</th>
+                    <th class="py-2 pr-3">Outlier %</th>
+                    <th class="py-2 pr-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="tsTopicsTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+
+            <div class="space-y-2 pt-2 border-t border-gray-700">
+              <div class="flex items-center justify-between">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Selected topic</div>
+                <div id="tsTopicSelectedId" class="text-[10px] text-gray-400">--</div>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Keywords</div>
+                <div id="tsTopicKeywords" class="flex flex-wrap gap-2 text-[10px] text-gray-300">--</div>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Segments</div>
+                <div class="flex items-center gap-2">
+                  <label class="text-[10px] uppercase tracking-wide text-gray-500">Offset</label>
+                  <input id="tsTopicSegmentsOffset" type="number" min="0" class="w-20 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+                  <select id="tsTopicSegmentsLimit" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                  </select>
+                  <button id="tsTopicSegmentsPrev" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Prev</button>
+                  <button id="tsTopicSegmentsNext" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Next</button>
+                </div>
+              </div>
+              <div id="tsTopicSegmentsStatus" class="text-[10px] text-gray-500">--</div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left text-gray-300">
+                  <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                    <tr>
+                      <th class="py-2 pr-3">Segment</th>
+                      <th class="py-2 pr-3">Size</th>
+                      <th class="py-2 pr-3">Title</th>
+                      <th class="py-2 pr-3">Bounds</th>
+                      <th class="py-2 pr-3">Snippet</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tsTopicSegmentsTableBody" class="divide-y divide-gray-800"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div id="tsSubviewCompare" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Run Compare</div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsCompareLeftRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Left run…</option>
+              </select>
+              <select id="tsCompareRightRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Right run…</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsCompareRun" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Compare Runs</button>
+              <span id="tsCompareStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsCompareError" class="text-[11px] text-red-300">--</div>
+            <div class="grid grid-cols-2 gap-2 text-xs text-gray-300">
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Docs</span>
+                <span id="tsCompareDocs" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Segments</span>
+                <span id="tsCompareSegments" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Clusters</span>
+                <span id="tsCompareClusters" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Outlier %</span>
+                <span id="tsCompareOutliers" class="font-semibold">--</span>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Metric</th>
+                    <th class="py-2 pr-3">Left</th>
+                    <th class="py-2 pr-3">Right</th>
+                    <th class="py-2 pr-3">Delta</th>
+                  </tr>
+                </thead>
+                <tbody id="tsCompareTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Top aspect deltas</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Aspect</th>
+                    <th class="py-2 pr-3">Left</th>
+                    <th class="py-2 pr-3">Right</th>
+                    <th class="py-2 pr-3">Delta</th>
+                  </tr>
+                </thead>
+                <tbody id="tsCompareAspectBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tsSubviewDrift" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Drift Monitor</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsDriftModelName" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="model name" />
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsDriftWindowHours" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="24" />
+                <input id="tsDriftLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="50" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsDriftLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Drift</button>
+              <button id="tsDriftRunNow" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Run Drift Now</button>
+              <span id="tsDriftStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsDriftError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Created</th>
+                    <th class="py-2 pr-3">JS</th>
+                    <th class="py-2 pr-3">Outlier %</th>
+                    <th class="py-2 pr-3">Δ Outlier</th>
+                    <th class="py-2 pr-3">Δ Top Topic</th>
+                    <th class="py-2 pr-3">Thresholds</th>
+                  </tr>
+                </thead>
+                <tbody id="tsDriftTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tsSubviewEvents" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Events</div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsEventsKind" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">All kinds</option>
+                <option value="run_complete">Run complete</option>
+                <option value="enrich_complete">Enrich complete</option>
+                <option value="drift_alert">Drift alert</option>
+              </select>
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsEventsLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="50" />
+                <input id="tsEventsOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsEventsLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Events</button>
+              <button id="tsEventsExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Export CSV</button>
+              <span id="tsEventsStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsEventsError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Created</th>
+                    <th class="py-2 pr-3">Kind</th>
+                    <th class="py-2 pr-3">Run</th>
+                    <th class="py-2 pr-3">Model</th>
+                    <th class="py-2 pr-3">Bus</th>
+                  </tr>
+                </thead>
+                <tbody id="tsEventsTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tsSubviewKg" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Knowledge Graph</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsKgRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsKgLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="100" />
+                <input id="tsKgOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsKgQuery" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="search subject/object" />
+              <input id="tsKgPredicate" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="predicate filter" />
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsKgLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Edges</button>
+              <button id="tsKgExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Export CSV</button>
+              <span id="tsKgStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsKgError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Subject</th>
+                    <th class="py-2 pr-3">Predicate</th>
+                    <th class="py-2 pr-3">Object</th>
+                    <th class="py-2 pr-3">Confidence</th>
+                    <th class="py-2 pr-3">Segment</th>
+                  </tr>
+                </thead>
+                <tbody id="tsKgTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
   <div id="toastContainer" class="fixed bottom-6 right-6 z-50 hidden">
     <div class="bg-red-700/90 text-white text-xs px-4 py-2 rounded-lg shadow-lg border border-red-500">

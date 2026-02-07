@@ -240,9 +240,13 @@ async def websocket_endpoint(websocket: WebSocket):
     cortex_client = scripts.main.cortex_client
     tts_client = scripts.main.tts_client
     biometrics_cache = scripts.main.biometrics_cache
+    notification_cache = scripts.main.notification_cache
+    presence_state = scripts.main.presence_state
 
     await websocket.accept()
     logger.info("WebSocket accepted.")
+    if presence_state:
+        presence_state.connected()
 
     client_meta = {
         "user_agent": websocket.headers.get("user-agent"),
@@ -265,6 +269,8 @@ async def websocket_endpoint(websocket: WebSocket):
     ]
 
     tts_q: asyncio.Queue = asyncio.Queue()
+    if notification_cache is not None:
+        notification_cache.register_queue(tts_q)
     drain_task = asyncio.create_task(drain_queue(websocket, tts_q, biometrics_cache))
     biometrics_task = asyncio.create_task(
         biometrics_heartbeat(
@@ -277,6 +283,8 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             raw = await websocket.receive_text()
+            if presence_state:
+                presence_state.heartbeat()
             try:
                 data: Dict[str, Any] = json.loads(raw)
             except json.JSONDecodeError:
@@ -600,3 +608,7 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         drain_task.cancel()
         biometrics_task.cancel()
+        if notification_cache is not None:
+            notification_cache.unregister_queue(tts_q)
+        if presence_state:
+            presence_state.disconnected()

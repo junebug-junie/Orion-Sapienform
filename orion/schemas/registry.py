@@ -20,6 +20,8 @@ from orion.schemas.cortex.contracts import (
     CortexChatResult,
     RecallDirective,
 )
+from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
+from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
 from orion.schemas.vector.schemas import (
@@ -73,7 +75,33 @@ from orion.schemas.tts import (
     STTRequestPayload,
     STTResultPayload,
 )
-from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1
+from orion.schemas.notify import (
+    ChatAttentionAck,
+    ChatAttentionRequest,
+    ChatAttentionState,
+    ChatMessageNotification,
+    ChatMessageReceipt,
+    ChatMessageState,
+    DeliveryAttempt,
+    HubNotificationEvent,
+    NotificationAccepted,
+    NotificationRecord,
+    NotificationReceiptEvent,
+    NotificationRequest,
+    NotificationPreference,
+    NotificationPreferencesUpdate,
+    PreferenceResolutionRequest,
+    PreferenceResolutionResponse,
+    RecipientProfile,
+    RecipientProfileUpdate,
+)
+from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
+from orion.schemas.topic_foundry import (
+    KgEdgeIngestV1,
+    TopicFoundryDriftAlertV1,
+    TopicFoundryEnrichCompleteV1,
+    TopicFoundryRunCompleteV1,
+)
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -91,6 +119,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallQueryV1": RecallQueryV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
+    "CortexExecRequestPayload": CortexExecRequestPayload,
+    "CortexExecResultPayload": CortexExecResultPayload,
+    "PlanExecutionRequest": PlanExecutionRequest,
+    "PlanExecutionResult": PlanExecutionResult,
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,  # change_type dict coercion support
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
@@ -152,8 +184,31 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TTSResultPayload": TTSResultPayload,
     "STTRequestPayload": STTRequestPayload,
     "STTResultPayload": STTResultPayload,
+    "NotificationRequest": NotificationRequest,
+    "NotificationAccepted": NotificationAccepted,
+    "NotificationRecord": NotificationRecord,
+    "NotificationReceiptEvent": NotificationReceiptEvent,
+    "DeliveryAttempt": DeliveryAttempt,
+    "HubNotificationEvent": HubNotificationEvent,
+    "ChatAttentionRequest": ChatAttentionRequest,
+    "ChatAttentionAck": ChatAttentionAck,
+    "ChatAttentionState": ChatAttentionState,
+    "ChatMessageNotification": ChatMessageNotification,
+    "ChatMessageReceipt": ChatMessageReceipt,
+    "ChatMessageState": ChatMessageState,
+    "RecipientProfile": RecipientProfile,
+    "RecipientProfileUpdate": RecipientProfileUpdate,
+    "NotificationPreference": NotificationPreference,
+    "NotificationPreferencesUpdate": NotificationPreferencesUpdate,
+    "PreferenceResolutionRequest": PreferenceResolutionRequest,
+    "PreferenceResolutionResponse": PreferenceResolutionResponse,
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,
+    "TopicRailAssignedV1": TopicRailAssignedV1,
+    "TopicFoundryRunCompleteV1": TopicFoundryRunCompleteV1,
+    "TopicFoundryEnrichCompleteV1": TopicFoundryEnrichCompleteV1,
+    "TopicFoundryDriftAlertV1": TopicFoundryDriftAlertV1,
+    "KgEdgeIngestV1": KgEdgeIngestV1,
 
 }
 

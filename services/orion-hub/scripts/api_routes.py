@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
-
 import aiohttp
-from fastapi import APIRouter, Header, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+
+from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from pydantic import BaseModel, Field
+import requests
 
 from .settings import settings
 from .session import ensure_session
@@ -14,11 +16,50 @@ from .chat_history import build_chat_history_envelope, publish_chat_history
 from .library import scan_cognition_library
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
+from orion.schemas.notify import (
+    ChatAttentionAck,
+    ChatMessageReceipt,
+    NotificationPreferencesUpdate,
+    PreferenceResolutionRequest,
+    RecipientProfileUpdate,
+)
 
 logger = logging.getLogger("orion-hub.api")
 
 router = APIRouter()
 
+class AttentionAckRequest(BaseModel):
+    ack_type: str = Field("seen")
+    note: Optional[str] = None
+
+
+class ChatMessageReceiptRequest(BaseModel):
+    session_id: str
+    receipt_type: str = Field("opened")
+
+
+class PreferencesResolveProxyRequest(BaseModel):
+    recipient_group: str
+    event_kind: str
+    severity: str
+
+
+async def _proxy_request(request: Request, base_url: str, path: str) -> Response:
+    url = f"{base_url.rstrip('/')}/{path}"
+    headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length"}}
+    body = await request.body()
+    timeout = aiohttp.ClientTimeout(total=settings.TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.request(
+            request.method,
+            url,
+            params=dict(request.query_params),
+            data=body if body else None,
+            headers=headers,
+        ) as response:
+            payload = await response.read()
+            content_type = response.headers.get("content-type", "application/json")
+            return Response(content=payload, status_code=response.status, media_type=content_type)
 async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     base_url = settings.LANDING_PAD_URL.rstrip("/")
     url = f"{base_url}{path}"
@@ -103,6 +144,245 @@ def health():
     """Simple health check endpoint."""
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
+@router.get("/api/notifications")
+async def api_notifications(limit: int = 50):
+    from .main import notification_cache
+    if not notification_cache:
+        return []
+    return await notification_cache.get_latest(limit)
+
+
+@router.get("/api/presence")
+def api_presence():
+    from .main import presence_state
+    if not presence_state:
+        return {"active": False, "last_seen": None, "active_connections": 0}
+    return presence_state.snapshot()
+
+
+@router.get("/api/notify/recipients")
+def api_notify_recipients():
+    if not settings.NOTIFY_BASE_URL:
+        return []
+    headers = {}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    try:
+        resp = requests.get(f"{settings.NOTIFY_BASE_URL}/recipients", headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch recipient profiles: %s", exc)
+        return []
+
+
+@router.get("/api/notify/recipients/{recipient_group}")
+def api_notify_recipient(recipient_group: str):
+    if not settings.NOTIFY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Notify base URL not configured")
+    headers = {}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    try:
+        resp = requests.get(
+            f"{settings.NOTIFY_BASE_URL}/recipients/{recipient_group}",
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch recipient profile %s: %s", recipient_group, exc)
+        raise HTTPException(status_code=502, detail="Failed to fetch recipient profile") from exc
+
+
+@router.api_route("/api/topic-foundry/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def proxy_topic_foundry(path: str, request: Request) -> Response:
+    if not settings.TOPIC_FOUNDRY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Topic Foundry base URL not configured")
+    try:
+        return await _proxy_request(request, settings.TOPIC_FOUNDRY_BASE_URL, path)
+    except aiohttp.ClientError as exc:
+        logger.warning("Topic Foundry proxy error: %s", exc)
+        raise HTTPException(status_code=502, detail="Topic Foundry proxy request failed") from exc
+
+
+@router.put("/api/notify/recipients/{recipient_group}")
+def api_notify_recipient_update(recipient_group: str, payload: RecipientProfileUpdate):
+    if not settings.NOTIFY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Notify base URL not configured")
+    headers = {"Content-Type": "application/json"}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    try:
+        resp = requests.put(
+            f"{settings.NOTIFY_BASE_URL}/recipients/{recipient_group}",
+            json=payload.model_dump(mode="json"),
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to update recipient profile %s: %s", recipient_group, exc)
+        raise HTTPException(status_code=502, detail="Failed to update recipient profile") from exc
+
+
+@router.get("/api/notify/recipients/{recipient_group}/preferences")
+def api_notify_preferences(recipient_group: str):
+    if not settings.NOTIFY_BASE_URL:
+        return []
+    headers = {}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    try:
+        resp = requests.get(
+            f"{settings.NOTIFY_BASE_URL}/recipients/{recipient_group}/preferences",
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch preferences for %s: %s", recipient_group, exc)
+        return []
+
+
+@router.put("/api/notify/recipients/{recipient_group}/preferences")
+def api_notify_preferences_update(recipient_group: str, payload: NotificationPreferencesUpdate):
+    if not settings.NOTIFY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Notify base URL not configured")
+    headers = {"Content-Type": "application/json"}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    try:
+        resp = requests.put(
+            f"{settings.NOTIFY_BASE_URL}/recipients/{recipient_group}/preferences",
+            json=payload.model_dump(mode="json"),
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to update preferences for %s: %s", recipient_group, exc)
+        raise HTTPException(status_code=502, detail="Failed to update preferences") from exc
+
+
+@router.post("/api/notify/preferences/resolve")
+def api_notify_preferences_resolve(payload: PreferencesResolveProxyRequest):
+    if not settings.NOTIFY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Notify base URL not configured")
+    headers = {"Content-Type": "application/json"}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    req = PreferenceResolutionRequest(
+        recipient_group=payload.recipient_group,
+        event_kind=payload.event_kind,
+        severity=payload.severity,
+    )
+    try:
+        resp = requests.post(
+            f"{settings.NOTIFY_BASE_URL}/preferences/resolve",
+            json=req.model_dump(mode="json"),
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to resolve preferences: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to resolve preferences") from exc
+
+
+@router.get("/api/attention")
+def api_attention(limit: int = 50, status: Optional[str] = None):
+    if not settings.NOTIFY_BASE_URL:
+        return []
+    headers = {}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    try:
+        resp = requests.get(
+            f"{settings.NOTIFY_BASE_URL}/attention",
+            params={"limit": limit, "status": status},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch attention list: %s", exc)
+        return []
+
+
+@router.post("/api/attention/{attention_id}/ack")
+def api_attention_ack(attention_id: str, payload: AttentionAckRequest):
+    if not settings.NOTIFY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Notify base URL not configured")
+    headers = {"Content-Type": "application/json"}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    ack = ChatAttentionAck(attention_id=attention_id, ack_type=payload.ack_type, note=payload.note)
+    try:
+        resp = requests.post(
+            f"{settings.NOTIFY_BASE_URL}/attention/{attention_id}/ack",
+            json=ack.model_dump(mode="json"),
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to acknowledge attention %s: %s", attention_id, exc)
+        raise HTTPException(status_code=502, detail="Failed to acknowledge attention") from exc
+
+
+@router.get("/api/chat/messages")
+def api_chat_messages(limit: int = 50, status: Optional[str] = None, session_id: Optional[str] = None):
+    if not settings.NOTIFY_BASE_URL:
+        return []
+    headers = {}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    try:
+        resp = requests.get(
+            f"{settings.NOTIFY_BASE_URL}/chat/messages",
+            params={"limit": limit, "status": status, "session_id": session_id},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch chat messages: %s", exc)
+        return []
+
+
+@router.post("/api/chat/message/{message_id}/receipt")
+def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest):
+    if not settings.NOTIFY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Notify base URL not configured")
+    headers = {"Content-Type": "application/json"}
+    if settings.NOTIFY_API_TOKEN:
+        headers["X-Orion-Notify-Token"] = settings.NOTIFY_API_TOKEN
+    receipt = ChatMessageReceipt(
+        message_id=message_id,
+        session_id=payload.session_id,
+        receipt_type=payload.receipt_type,
+    )
+    try:
+        resp = requests.post(
+            f"{settings.NOTIFY_BASE_URL}/chat/message/{message_id}/receipt",
+            json=receipt.model_dump(mode="json"),
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
+        raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
 # ======================================================================
 # 🧭 TOPIC RAIL (Landing Pad proxy)
 # ======================================================================

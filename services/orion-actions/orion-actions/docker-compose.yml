@@ -1,0 +1,45 @@
+services:
+  actions:
+    build:
+      context: ../..
+      dockerfile: services/orion-actions/Dockerfile
+    container_name: ${PROJECT}-actions
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ACTIONS_SUBSCRIBE_CHANNEL=${ACTIONS_SUBSCRIBE_CHANNEL}
+      - RECALL_RPC_CHANNEL=${RECALL_RPC_CHANNEL}
+      - LLM_RPC_CHANNEL=${LLM_RPC_CHANNEL}
+      - NOTIFY_URL=${NOTIFY_URL}
+      - NOTIFY_API_TOKEN=${NOTIFY_API_TOKEN}
+      - ACTIONS_RECIPIENT_GROUP=${ACTIONS_RECIPIENT_GROUP}
+      - ACTIONS_SESSION_ID=${ACTIONS_SESSION_ID}
+      - ACTIONS_DEDUPE_TTL_SECONDS=${ACTIONS_DEDUPE_TTL_SECONDS}
+      - ACTIONS_NOTIFY_DEDUPE_WINDOW_SECONDS=${ACTIONS_NOTIFY_DEDUPE_WINDOW_SECONDS}
+      - ACTIONS_MAX_CONCURRENCY=${ACTIONS_MAX_CONCURRENCY}
+      - ACTIONS_RECALL_PROFILE=${ACTIONS_RECALL_PROFILE}
+      - ACTIONS_RECALL_TIMEOUT_SECONDS=${ACTIONS_RECALL_TIMEOUT_SECONDS}
+      - ACTIONS_LLM_ROUTE=${ACTIONS_LLM_ROUTE}
+      - ACTIONS_LLM_TIMEOUT_SECONDS=${ACTIONS_LLM_TIMEOUT_SECONDS}
+    networks:
+      - app-net
+    ports:
+      - "7160:7160"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7160/health"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-net:
+    external: true

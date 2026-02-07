@@ -5,8 +5,10 @@ import logging
 from typing import Any, Dict
 from uuid import uuid4
 
+from pydantic import ValidationError
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.cortex.exec import CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 
@@ -73,7 +75,15 @@ class CortexExecClient:
 
         payload = decoded.envelope.payload
         if isinstance(payload, dict):
-            return payload.get("result") or payload
+            try:
+                exec_payload = CortexExecResultPayload.model_validate(payload)
+            except ValidationError:
+                return payload.get("result") or payload
+            if exec_payload.result is not None:
+                return exec_payload.result.model_dump(mode="json")
+            if exec_payload.error:
+                return {"ok": False, "error": exec_payload.error, "details": exec_payload.details}
+            return payload
 
         # Just in case Exec sends back something weird
         return decoded.envelope.model_dump(mode="json")

@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     topic_rail_bus_topic_shift_channel: str = Field(
         "orion:topic:shift.v1", alias="TOPIC_RAIL_BUS_TOPIC_SHIFT_CHANNEL"
     )
+    topic_rail_bus_topic_assigned_channel: str = Field(
+        "orion:topic:rail:assigned.v1", alias="TOPIC_RAIL_BUS_TOPIC_ASSIGNED_CHANNEL"
+    )
     topic_rail_shift_switch_rate_threshold: float = Field(
         0.35, alias="TOPIC_RAIL_SHIFT_SWITCH_RATE_THRESHOLD"
     )
@@ -196,6 +199,7 @@ class Settings(BaseSettings):
             "bus_publish_enabled": self.topic_rail_bus_publish_enabled,
             "bus_topic_summary_channel": self.topic_rail_bus_topic_summary_channel,
             "bus_topic_shift_channel": self.topic_rail_bus_topic_shift_channel,
+            "bus_topic_assigned_channel": self.topic_rail_bus_topic_assigned_channel,
             "shift_switch_rate_threshold": self.topic_rail_shift_switch_rate_threshold,
             "allow_embed_model_mismatch": self.topic_rail_allow_embed_model_mismatch,
             "refit_policy": self.topic_rail_refit_policy,

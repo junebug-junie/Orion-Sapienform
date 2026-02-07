@@ -105,7 +105,7 @@ channels:
 
   - name: "orion:cortex:exec:request"
     kind: "request"
-    schema_id: "GenericPayloadV1"
+    schema_id: "CortexExecRequestPayload"
     producer_services: ["orion-cortex-orch"]
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
@@ -134,7 +134,7 @@ channels:
 
   - name: "orion:exec:result:*"
     kind: "result"
-    schema_id: "GenericPayloadV1"
+    schema_id: "CortexExecResultPayload"
     producer_services: ["*"]
     consumer_services: ["*"]
     stability: "experimental"
@@ -201,6 +201,38 @@ channels:
     schema_id: "TopicShiftEventV1"
     producer_services: ["orion-topic-rail"]
     consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:topic:foundry:run:complete.v1"
+    kind: "event"
+    schema_id: "TopicFoundryRunCompleteV1"
+    producer_services: ["orion-topic-foundry"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:topic:foundry:enrich:complete.v1"
+    kind: "event"
+    schema_id: "TopicFoundryEnrichCompleteV1"
+    producer_services: ["orion-topic-foundry"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:topic:foundry:drift:alert.v1"
+    kind: "event"
+    schema_id: "TopicFoundryDriftAlertV1"
+    producer_services: ["orion-topic-foundry"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:kg:edge:ingest.v1"
+    kind: "event"
+    schema_id: "KgEdgeIngestV1"
+    producer_services: ["orion-topic-foundry"]
+    consumer_services: ["orion-rdf-writer", "orion-graphdb"]
     stability: "experimental"
     since: "2026-01-08"
 
@@ -312,7 +344,7 @@ channels:
     kind: "event"
     schema_id: "CollapseMirrorEntryV2"
     producer_services: ["orion-collapse-mirror"]
-    consumer_services: ["orion-meta-tags", "orion-vector-writer", "orion-sql-writer"]
+    consumer_services: ["orion-meta-tags", "orion-vector-writer", "orion-sql-writer", "orion-actions"]
     stability: "experimental"
     since: "2026-01-08"
 
@@ -347,6 +379,14 @@ channels:
     consumer_services: ["orion-collapse-mirror"]
     stability: "experimental"
     since: "2026-01-08"
+
+  - name: "orion:actions:audit"
+    kind: "event"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-actions"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-02-02"
 
   - name: "orion:equilibrium:snapshot"
     kind: "event"
@@ -485,6 +525,14 @@ channels:
     consumer_services: ["orion-security-watcher", "orion-vision-council"]
     stability: "experimental"
     since: "2026-01-08"
+
+  - name: "orion:topic:rail:assigned.v1"
+    kind: "event"
+    schema_id: "TopicRailAssignedV1"
+    producer_services: ["orion-topic-rail"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-02-04"
 
   - name: "orion:vision:edge:raw"
     kind: "event"
@@ -811,3 +859,47 @@ channels:
     schema_id: "STTResultPayload"
     producer_services: ["orion-whisper-tts"]
     consumer_services: ["orion-hub"]
+
+  - name: "orion:notify:in_app"
+    kind: "event"
+    schema_id: "HubNotificationEvent"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-02-01"
+
+  - name: "orion:notify:persistence:request"
+    kind: "event"
+    schema_id: "NotificationRecord"
+    message_kind: "notify.notification.request.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"
+
+  - name: "orion:notify:config:recipient"
+    kind: "event"
+    schema_id: "RecipientProfileUpdate"
+    message_kind: "notify.recipient.update.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"
+
+  - name: "orion:notify:config:preference"
+    kind: "event"
+    schema_id: "NotificationPreferencesUpdate"
+    message_kind: "notify.preference.update.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"
+
+  - name: "orion:notify:persistence:receipt"
+    kind: "event"
+    schema_id: "NotificationReceiptEvent"
+    message_kind: "notify.notification.receipt.v1"
+    producer_services: ["orion-notify"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-02-05"

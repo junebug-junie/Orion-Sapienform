@@ -32,3 +32,14 @@ class TopicShiftEventV1(BaseModel):
     switch_rate: float
     dominant_topic_id: Optional[int] = None
     dominant_pct: Optional[float] = None
+
+
+class TopicRailAssignedV1(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    model_version: str
+    node_name: str
+    doc_count: int
+    outlier_pct: float
+    top_topic_ids: List[int]
+    created_at: datetime

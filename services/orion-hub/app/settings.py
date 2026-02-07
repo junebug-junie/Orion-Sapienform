@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     )
     LANDING_PAD_TIMEOUT_SEC: float = Field(default=5.0, alias="LANDING_PAD_TIMEOUT_SEC")
 
+    # --- Topic Foundry Integration ---
+    TOPIC_FOUNDRY_BASE_URL: str = Field(
+        default="http://orion-topic-foundry:8615",
+        alias="TOPIC_FOUNDRY_BASE_URL",
+    )
+
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")
@@ -53,6 +59,14 @@ class Settings(BaseSettings):
         alias="BIOMETRICS_ROLE_WEIGHTS_JSON",
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
+
+    # --- In-app Notifications (Hub) ---
+    NOTIFY_IN_APP_ENABLED: bool = Field(default=True, alias="NOTIFY_IN_APP_ENABLED")
+    NOTIFY_IN_APP_CHANNEL: str = Field(default="orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")
+    NOTIFY_IN_APP_MAX: int = Field(default=200, alias="NOTIFY_IN_APP_MAX")
+    NOTIFY_TOAST_SECONDS: int = Field(default=8, alias="NOTIFY_TOAST_SECONDS")
+    NOTIFY_BASE_URL: str = Field(default="http://orion-notify:7140", alias="NOTIFY_BASE_URL")
+    NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
 
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(

@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # Notification mode
     NOTIFY_MODE: str = Field("inline", alias="NOTIFY_MODE")
 
+    # Notify service
+    NOTIFY_SERVICE_URL: str = Field("http://orion-notify:7140", alias="NOTIFY_SERVICE_URL")
+    NOTIFY_API_TOKEN: str = Field("", alias="NOTIFY_API_TOKEN")
+
     # Email config
     NOTIFY_EMAIL_SMTP_HOST: str = Field("", alias="NOTIFY_EMAIL_SMTP_HOST")
     NOTIFY_EMAIL_SMTP_PORT: int = Field(587, alias="NOTIFY_EMAIL_SMTP_PORT")

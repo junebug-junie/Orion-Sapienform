@@ -74,8 +74,11 @@ class Settings(BaseSettings):
             "spark.state.snapshot.v1": "SparkTelemetrySQL",
             "cognition.trace": "CognitionTraceSQL",
             "metacognition.tick.v1":"MetacognitionTickSQL",
-            "orion.metacog.trigger.v1": "MetacogTriggerSQL"
-
+            "orion.metacog.trigger.v1": "MetacogTriggerSQL",
+            "notify.notification.request.v1": "NotificationRequestDB",
+            "notify.notification.receipt.v1": "NotificationReceiptDB",
+            "notify.recipient.update.v1": "RecipientProfileDB",
+            "notify.preference.update.v1": "NotificationPreferenceDB"
         }),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from fastapi import APIRouter, HTTPException
+from psycopg2 import errors as pg_errors
 from uuid import uuid4
 
 from app.models import (
@@ -12,8 +13,9 @@ from app.models import (
     DatasetPreviewResponse,
     DatasetSpec,
 )
+from app.services.data_access import InvalidSourceTableError
 from app.services.preview import preview_dataset
-from app.storage.repository import create_dataset, list_datasets, utc_now
+from app.storage.repository import create_dataset, fetch_dataset, list_datasets, utc_now
 
 
 logger = logging.getLogger("topic-foundry.datasets")
@@ -49,5 +51,40 @@ def list_datasets_endpoint() -> DatasetListResponse:
 
 @router.post("/datasets/preview", response_model=DatasetPreviewResponse)
 def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
-    result = preview_dataset(payload)
-    return result
+    dataset_spec = payload.dataset
+    if dataset_spec is None and payload.dataset_id:
+        dataset_spec = fetch_dataset(payload.dataset_id)
+    if dataset_spec is None:
+        raise HTTPException(status_code=422, detail="dataset or dataset_id required")
+    windowing_spec = payload.windowing or payload.windowing_spec
+    if windowing_spec is None:
+        raise HTTPException(status_code=422, detail="windowing or windowing_spec required")
+    resolved = DatasetPreviewRequest(
+        dataset=dataset_spec,
+        windowing=windowing_spec,
+        start_at=payload.start_at,
+        end_at=payload.end_at,
+        limit=payload.limit,
+    )
+    try:
+        result = preview_dataset(resolved)
+        return result
+    except (InvalidSourceTableError, ValueError) as exc:
+        detail = {
+            "ok": False,
+            "error": "invalid_source_table",
+            "detail": str(exc) or "Invalid source_table",
+        }
+        logger.warning("Preview failed due to invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except (pg_errors.UndefinedTable, pg_errors.InvalidSchemaName, pg_errors.InvalidName) as exc:
+        detail = {
+            "ok": False,
+            "error": "invalid_source_table",
+            "detail": str(exc) or "Invalid source_table",
+        }
+        logger.warning("Preview failed due to missing/invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Preview failed unexpectedly")
+        raise HTTPException(status_code=500, detail="Preview failed") from exc

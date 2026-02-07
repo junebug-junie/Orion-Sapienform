@@ -41,6 +41,7 @@ Spec-driven service for building topic artifacts (runs, segments, model registry
 - `PORT`
 - `TOPIC_FOUNDRY_PG_DSN`
 - `TOPIC_FOUNDRY_EMBEDDING_URL`
+- `TOPIC_FOUNDRY_COSINE_IMPL`
 - `TOPIC_FOUNDRY_MODEL_DIR`
 - `TOPIC_FOUNDRY_LLM_BUS_ROUTE`
 - `TOPIC_FOUNDRY_LLM_TIMEOUT_SECS`
@@ -59,6 +60,26 @@ other active model with the same name to `candidate` and records the transition 
 `topic_foundry_model_events` for auditability.
 
 ## Artifact layout
+```
+
+### Preview example (canonical request)
+```bash
+curl -sS http://localhost:8615/datasets/preview \\
+  -H "content-type: application/json" \\
+  -d '{
+    "dataset_id": "00000000-0000-0000-0000-000000000000",
+    "windowing": {
+      "block_mode": "turn_pairs",
+      "segmentation_mode": "time_gap",
+      "time_gap_seconds": 900,
+      "max_window_seconds": 7200,
+      "min_blocks_per_segment": 1,
+      "max_chars": 6000
+    },
+    "start_at": null,
+    "end_at": null,
+    "limit": 200
+  }'
 ```
 ${TOPIC_FOUNDRY_MODEL_DIR}/
   registry/{model_name}/versions/{version}/
@@ -82,6 +103,7 @@ ${TOPIC_FOUNDRY_MODEL_DIR}/
 Run from repo root:
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_health.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_preview.sh`
+- `scripts/smoke_topic_foundry_train_cosine.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_train_and_poll.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_enrich.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_llm_segmentation.sh`
@@ -104,6 +126,7 @@ Environment overrides (common):
 - `docs_generated too low` — widen `START_AT/END_AT` to include more rows.
 - `embedding unreachable` — confirm `TOPIC_FOUNDRY_EMBEDDING_URL` and upstream service.
 - `pg unreachable` — check `TOPIC_FOUNDRY_PG_DSN` and DB connectivity.
+- `cosine metric errors` — cosine is implemented via L2-normalize + euclidean by default. Set `TOPIC_FOUNDRY_COSINE_IMPL=generic` to force HDBSCAN’s generic cosine implementation (slower but avoids tree metrics).
 
 ## Phase 2: Enrichment
 Phase 2 adds optional semantic segmentation and segment enrichment.

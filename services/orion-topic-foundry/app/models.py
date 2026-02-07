@@ -21,7 +21,8 @@ class DatasetSpec(BaseModel):
 
 
 class WindowingSpec(BaseModel):
-    block_mode: Literal["turn_pairs", "triads", "rows"] = "turn_pairs"
+    block_mode: Literal["turn_pairs", "triads", "rows", "group_by_column"] = "turn_pairs"
+    group_by: Optional[str] = None
     include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
     segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"
     semantic_split_threshold: float = 0.75
@@ -40,7 +41,7 @@ class WindowingSpec(BaseModel):
 
 class ModelSpec(BaseModel):
     algorithm: Literal["hdbscan"] = "hdbscan"
-    embedding_source_url: str
+    embedding_source_url: Optional[str] = None
     min_cluster_size: int = 15
     metric: str = "cosine"
     params: Dict[str, Any] = Field(default_factory=dict)
@@ -116,8 +117,10 @@ class DatasetCreateResponse(BaseModel):
 
 
 class DatasetPreviewRequest(BaseModel):
-    dataset: DatasetCreateRequest
-    windowing: WindowingSpec
+    dataset_id: Optional[UUID] = None
+    dataset: Optional[DatasetSpec] = None
+    windowing: Optional[WindowingSpec] = None
+    windowing_spec: Optional[WindowingSpec] = None
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
     limit: int = 200
@@ -303,6 +306,14 @@ class SegmentRawResponse(BaseModel):
     provenance: Dict[str, Any]
 
 
+class SegmentFullTextResponse(BaseModel):
+    segment_id: UUID
+    run_id: UUID
+    full_text: str
+    chars: int
+    row_ids_count: int
+
+
 class CapabilitiesResponse(BaseModel):
     service: str
     version: str
@@ -314,7 +325,12 @@ class CapabilitiesResponse(BaseModel):
     llm_reply_prefix: Optional[str] = None
     segmentation_modes_supported: List[str]
     enricher_modes_supported: List[str]
+    supported_metrics: Optional[List[str]] = None
+    default_metric: Optional[str] = None
+    cosine_impl_default: Optional[str] = None
     defaults: Dict[str, Any]
+    introspection: Optional[Dict[str, Any]] = None
+    default_embedding_url: Optional[str] = None
 
 
 class DriftRunRequest(BaseModel):

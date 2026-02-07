@@ -62,6 +62,56 @@ def build_blocks_for_conversation(
                     text=text,
                 )
             )
+    elif spec.block_mode == "group_by_column":
+        row_ids: List[str] = []
+        timestamps: List[str] = []
+        text_parts: List[str] = []
+        last_ts: Optional[datetime] = None
+        for row in convo_rows:
+            text = _row_text(row, text_columns)
+            if not text:
+                continue
+            ts = row[time_column]
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            if last_ts is not None and (ts - last_ts).total_seconds() > spec.time_gap_seconds and text_parts:
+                blocks.append(
+                    RowBlock(
+                        row_ids=row_ids,
+                        timestamps=timestamps,
+                        doc_id=str(uuid4()),
+                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                    )
+                )
+                row_ids = []
+                timestamps = []
+                text_parts = []
+            candidate_text = "\n".join([*text_parts, text]).strip()
+            if text_parts and len(candidate_text) > spec.max_chars:
+                blocks.append(
+                    RowBlock(
+                        row_ids=row_ids,
+                        timestamps=timestamps,
+                        doc_id=str(uuid4()),
+                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                    )
+                )
+                row_ids = []
+                timestamps = []
+                text_parts = []
+            row_ids.append(str(row[id_column]))
+            timestamps.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+            text_parts.append(text)
+            last_ts = ts
+        if text_parts:
+            blocks.append(
+                RowBlock(
+                    row_ids=row_ids,
+                    timestamps=timestamps,
+                    doc_id=str(uuid4()),
+                    text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                )
+            )
     else:
         idx = 0
         while idx < len(convo_rows) - 1:

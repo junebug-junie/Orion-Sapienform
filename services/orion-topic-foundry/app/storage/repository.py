@@ -569,26 +569,30 @@ def segment_facets(
     has_enrichment: Optional[bool] = None,
     q: Optional[str] = None,
 ) -> Dict[str, Any]:
-    base_query = "FROM topic_foundry_segments WHERE run_id = %s"
+    base_query = "FROM topic_foundry_segments s"
+    where_clauses = ["s.run_id = %s"]
     params: List[Any] = [str(run_id)]
     if has_enrichment is True:
-        base_query += " AND enriched_at IS NOT NULL"
+        where_clauses.append("s.enriched_at IS NOT NULL")
     elif has_enrichment is False:
-        base_query += " AND enriched_at IS NULL"
+        where_clauses.append("s.enriched_at IS NULL")
     if aspect:
-        base_query += " AND aspects @> %s::jsonb"
+        where_clauses.append("s.aspects @> %s::jsonb")
         params.append(json.dumps([aspect]))
     if q:
-        base_query += " AND (title ILIKE %s OR aspects::text ILIKE %s OR snippet ILIKE %s)"
+        where_clauses.append("(s.title ILIKE %s OR s.aspects::text ILIKE %s OR s.snippet ILIKE %s)")
         like = f"%{q}%"
         params.extend([like, like, like])
+    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 f"""
-                SELECT COALESCE(jsonb_array_elements_text(aspects), NULL) AS key, COUNT(*) AS count
-                {base_query} AND aspects IS NOT NULL
+                SELECT COALESCE(a.aspect, '(none)') AS key, COUNT(*) AS count
+                {base_query}
+                LEFT JOIN LATERAL jsonb_array_elements_text(s.aspects) AS a(aspect) ON TRUE
+                {where_sql}
                 GROUP BY key
                 ORDER BY count DESC
                 """,
@@ -598,8 +602,9 @@ def segment_facets(
 
             cur.execute(
                 f"""
-                SELECT (meaning->>'intent') AS key, COUNT(*) AS count
-                {base_query} AND meaning ? 'intent'
+                SELECT (s.meaning->>'intent') AS key, COUNT(*) AS count
+                {base_query}
+                {where_sql} AND s.meaning ? 'intent'
                 GROUP BY key
                 ORDER BY count DESC
                 """,
@@ -611,12 +616,13 @@ def segment_facets(
                 f"""
                 SELECT
                     CASE
-                        WHEN COALESCE((sentiment->>'friction')::float, 0) <= 0.3 THEN '0-0.3'
-                        WHEN COALESCE((sentiment->>'friction')::float, 0) <= 0.7 THEN '0.3-0.7'
+                        WHEN COALESCE((s.sentiment->>'friction')::float, 0) <= 0.3 THEN '0-0.3'
+                        WHEN COALESCE((s.sentiment->>'friction')::float, 0) <= 0.7 THEN '0.3-0.7'
                         ELSE '0.7-1.0'
                     END AS key,
                     COUNT(*) AS count
                 {base_query}
+                {where_sql}
                 GROUP BY key
                 ORDER BY key
                 """,
@@ -625,7 +631,7 @@ def segment_facets(
             friction = [dict(row) for row in cur.fetchall() or []]
 
             cur.execute(
-                f"SELECT COUNT(*) AS total, COUNT(enriched_at) AS enriched {base_query}",
+                f"SELECT COUNT(*) AS total, COUNT(enriched_at) AS enriched {base_query} {where_sql}",
                 params,
             )
             totals_row = cur.fetchone() or {}

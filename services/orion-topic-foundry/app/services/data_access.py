@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
@@ -12,6 +12,61 @@ from app.storage.pg import pg_conn
 
 
 logger = logging.getLogger("topic-foundry.data-access")
+
+class InvalidSourceTableError(ValueError):
+    pass
+
+
+def split_qualified_table(name: str) -> Tuple[Optional[str], str]:
+    cleaned = name.strip()
+    if not cleaned:
+        raise InvalidSourceTableError("source_table is empty")
+    if any(ch in cleaned for ch in ('"', "'", ";")) or any(ch.isspace() for ch in cleaned):
+        raise InvalidSourceTableError("source_table contains invalid characters")
+    if cleaned.startswith(".") or cleaned.endswith("."):
+        raise InvalidSourceTableError("source_table has invalid format")
+    if cleaned.count(".") > 1:
+        raise InvalidSourceTableError("source_table has too many qualifiers")
+    if "." in cleaned:
+        schema, table = cleaned.split(".", 1)
+        if not schema or not table:
+            raise InvalidSourceTableError("source_table has invalid format")
+        return schema, table
+    return None, cleaned
+
+
+def _build_table_identifier(name: str) -> sql.Composable:
+    schema, table = split_qualified_table(name)
+    if schema:
+        return sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(table))
+    return sql.Identifier(table)
+
+
+def validate_dataset_source_table(dataset: DatasetCreateRequest | DatasetSpec) -> None:
+    dataset_id = getattr(dataset, "dataset_id", None)
+    try:
+        table_ident = _build_table_identifier(dataset.source_table)
+    except InvalidSourceTableError:
+        logger.exception(
+            "Invalid source_table dataset_id=%s source_table=%s",
+            dataset_id,
+            dataset.source_table,
+        )
+        raise
+    query = sql.SQL("SELECT 1 FROM {table} LIMIT 1").format(table=table_ident)
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                query_str = query.as_string(conn)
+                cur.execute(query)
+            except Exception:
+                logger.exception(
+                    "Failed to validate source_table dataset_id=%s source_table=%s query=%s",
+                    dataset_id,
+                    dataset.source_table,
+                    query_str if "query_str" in locals() else "(unavailable)",
+                )
+                raise
 
 
 def fetch_dataset_rows(
@@ -23,10 +78,17 @@ def fetch_dataset_rows(
 ) -> List[Dict[str, Any]]:
     fields: List[str] = [dataset.id_column, dataset.time_column] + list(dataset.text_columns)
     select_fields = sql.SQL(", ").join([sql.Identifier(field) for field in fields])
-    query = sql.SQL("SELECT {fields} FROM {table}").format(
-        fields=select_fields,
-        table=sql.Identifier(dataset.source_table),
-    )
+    dataset_id = getattr(dataset, "dataset_id", None)
+    try:
+        table_ident = _build_table_identifier(dataset.source_table)
+    except InvalidSourceTableError:
+        logger.exception(
+            "Invalid source_table dataset_id=%s source_table=%s",
+            dataset_id,
+            dataset.source_table,
+        )
+        raise
+    query = sql.SQL("SELECT {fields} FROM {table}").format(fields=select_fields, table=table_ident)
 
     where_clauses: List[sql.SQL] = []
     params: Dict[str, Any] = {}
@@ -52,6 +114,75 @@ def fetch_dataset_rows(
 
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall() or []
+            try:
+                query_str = query.as_string(conn)
+                cur.execute(query, params)
+                rows = cur.fetchall() or []
+            except Exception:
+                logger.exception(
+                    "Failed to fetch dataset rows dataset_id=%s source_table=%s query=%s",
+                    dataset_id,
+                    dataset.source_table,
+                    query_str if "query_str" in locals() else "(unavailable)",
+                )
+                raise
     return rows
+
+
+def fetch_dataset_rows_by_ids(
+    *,
+    dataset: DatasetCreateRequest | DatasetSpec,
+    row_ids: Sequence[str],
+) -> List[Dict[str, Any]]:
+    if not row_ids:
+        return []
+    fields: List[str] = [dataset.id_column, dataset.time_column] + list(dataset.text_columns)
+    select_fields = sql.SQL(", ").join([sql.Identifier(field) for field in fields])
+    dataset_id = getattr(dataset, "dataset_id", None)
+    try:
+        table_ident = _build_table_identifier(dataset.source_table)
+    except InvalidSourceTableError:
+        logger.exception(
+            "Invalid source_table dataset_id=%s source_table=%s",
+            dataset_id,
+            dataset.source_table,
+        )
+        raise
+    query = sql.SQL("SELECT {fields} FROM {table} WHERE {id_col} = ANY(%(row_ids)s)").format(
+        fields=select_fields,
+        table=table_ident,
+        id_col=sql.Identifier(dataset.id_column),
+    )
+    query = query + sql.SQL(" ORDER BY {time_col} ASC, {id_col} ASC").format(
+        time_col=sql.Identifier(dataset.time_column),
+        id_col=sql.Identifier(dataset.id_column),
+    )
+    params: Dict[str, Any] = {"row_ids": list(row_ids)}
+    with pg_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                query_str = query.as_string(conn)
+                cur.execute(query, params)
+                rows = cur.fetchall() or []
+            except Exception:
+                logger.exception(
+                    "Failed to fetch dataset rows by ids dataset_id=%s source_table=%s query=%s",
+                    dataset_id,
+                    dataset.source_table,
+                    query_str if "query_str" in locals() else "(unavailable)",
+                )
+                raise
+    return rows
+
+
+def build_full_text(rows: Sequence[Dict[str, Any]], text_columns: Sequence[str]) -> str:
+    parts: List[str] = []
+    for row in rows:
+        for col in text_columns:
+            val = row.get(col)
+            if val is None:
+                continue
+            val_str = str(val).strip()
+            if val_str:
+                parts.append(val_str)
+    return "\n".join(parts).strip()

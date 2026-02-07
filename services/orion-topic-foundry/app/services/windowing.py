@@ -9,7 +9,10 @@ import numpy as np
 
 from app.models import WindowingSpec
 from app.services.boundary_judge import judge_boundaries
-from app.services.conversation_overrides import Conversation
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.conversation_overrides import Conversation
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.semantic_segmentation import SemanticConfig, split_blocks
 from app.services.types import BoundaryContext, RowBlock

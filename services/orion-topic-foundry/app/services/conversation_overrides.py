@@ -8,7 +8,6 @@ from uuid import UUID, NAMESPACE_DNS, uuid5
 
 from app.models import WindowingSpec
 from app.services.types import RowBlock
-from app.services.windowing import build_blocks_for_conversation
 
 
 @dataclass
@@ -37,6 +36,8 @@ def build_conversations(
     time_column: str,
     id_column: str,
 ) -> List[Conversation]:
+    from app.services.windowing import build_blocks_for_conversation
+
     sorted_rows = sorted(rows, key=lambda r: r[time_column])
     conversations: List[List[Dict[str, Any]]] = []
     current: List[Dict[str, Any]] = []

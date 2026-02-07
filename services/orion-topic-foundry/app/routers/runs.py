@@ -4,6 +4,7 @@ import logging
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from psycopg2 import errors as pg_errors
 
 from app.models import (
     EnrichmentSpec,
@@ -21,6 +22,7 @@ from app.models import (
     RunSpecSnapshot,
     WindowingSpec,
 )
+from app.services.data_access import InvalidSourceTableError, validate_dataset_source_table
 from app.services.enrichment import enqueue_enrichment
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
@@ -50,6 +52,27 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    try:
+        validate_dataset_source_table(dataset)
+    except (InvalidSourceTableError, ValueError) as exc:
+        detail = {
+            "ok": False,
+            "error": "invalid_source_table",
+            "detail": str(exc) or "Invalid source_table",
+        }
+        logger.warning("Training failed due to invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except (pg_errors.UndefinedTable, pg_errors.InvalidSchemaName, pg_errors.InvalidName) as exc:
+        detail = {
+            "ok": False,
+            "error": "invalid_source_table",
+            "detail": str(exc) or "Invalid source_table",
+        }
+        logger.warning("Training failed due to missing/invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Training validation failed unexpectedly")
+        raise HTTPException(status_code=500, detail="Training validation failed") from exc
 
     run_id = uuid4()
     created_at = utc_now()

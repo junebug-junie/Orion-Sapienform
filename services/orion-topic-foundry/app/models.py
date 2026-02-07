@@ -40,7 +40,7 @@ class WindowingSpec(BaseModel):
 
 class ModelSpec(BaseModel):
     algorithm: Literal["hdbscan"] = "hdbscan"
-    embedding_source_url: str
+    embedding_source_url: Optional[str] = None
     min_cluster_size: int = 15
     metric: str = "cosine"
     params: Dict[str, Any] = Field(default_factory=dict)
@@ -116,8 +116,10 @@ class DatasetCreateResponse(BaseModel):
 
 
 class DatasetPreviewRequest(BaseModel):
-    dataset: DatasetCreateRequest
-    windowing: WindowingSpec
+    dataset_id: Optional[UUID] = None
+    dataset: Optional[DatasetSpec] = None
+    windowing: Optional[WindowingSpec] = None
+    windowing_spec: Optional[WindowingSpec] = None
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
     limit: int = 200
@@ -315,6 +317,8 @@ class CapabilitiesResponse(BaseModel):
     segmentation_modes_supported: List[str]
     enricher_modes_supported: List[str]
     defaults: Dict[str, Any]
+    introspection: Optional[Dict[str, Any]] = None
+    default_embedding_url: Optional[str] = None
 
 
 class DriftRunRequest(BaseModel):

@@ -14,6 +14,7 @@ def capabilities() -> CapabilitiesResponse:
     segmentation_modes = list(WindowingSpec.model_fields["segmentation_mode"].annotation.__args__)
     enricher_modes = ["heuristic", "llm"]
     llm_transport = "bus" if settings.topic_foundry_llm_use_bus and settings.orion_bus_enabled else "http"
+    schemas = [s.strip() for s in settings.topic_foundry_introspect_schemas.split(",") if s.strip()]
     defaults = {
         "embedding_source_url": settings.topic_foundry_embedding_url,
         "metric": ModelSpec.model_fields["metric"].default,
@@ -32,4 +33,6 @@ def capabilities() -> CapabilitiesResponse:
         segmentation_modes_supported=segmentation_modes,
         enricher_modes_supported=enricher_modes,
         defaults=defaults,
+        introspection={"ok": bool(schemas), "schemas": schemas},
+        default_embedding_url=settings.topic_foundry_embedding_url,
     )

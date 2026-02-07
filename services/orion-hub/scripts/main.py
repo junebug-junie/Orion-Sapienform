@@ -1,5 +1,6 @@
 # scripts/main.py
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -138,6 +139,14 @@ async def startup_event():
         html_content = html_content.replace(
             "{{NOTIFY_TOAST_SECONDS}}",
             str(settings.NOTIFY_TOAST_SECONDS),
+        )
+        hub_cfg = {
+            "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
+            "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
+        }
+        html_content = html_content.replace(
+            "{{HUB_CFG}}",
+            json.dumps(hub_cfg),
         )
         logger.info("UI template loaded successfully.")
     except FileNotFoundError:

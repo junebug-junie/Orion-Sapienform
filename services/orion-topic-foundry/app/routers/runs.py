@@ -26,6 +26,7 @@ from app.services.data_access import InvalidSourceTableError, validate_dataset_c
 from app.services.enrichment import enqueue_enrichment
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
+from app.settings import settings
 from app.storage.repository import (
     create_run,
     fetch_dataset,
@@ -210,6 +211,11 @@ def enrich_run_endpoint(run_id: UUID, payload: RunEnrichRequest, background_task
     row = fetch_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
+    if payload.enricher == "llm" and not settings.topic_foundry_llm_enable:
+        raise HTTPException(
+            status_code=409,
+            detail="LLM enrichment is disabled. Enable TOPIC_FOUNDRY_LLM_ENABLE to use llm enricher.",
+        )
     enqueue_enrichment(
         background_tasks,
         run_id,

@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HUB_URL=${HUB_URL:-http://localhost:8080}
+BASE_URL="${1:-${HUB_BASE_URL:-http://127.0.0.1:8080}}"
+BASE_URL="${BASE_URL%/}"
 
-html=$(curl -fsS "${HUB_URL}/")
-if ! printf '%s' "$html" | rg -q "hub-panel-host"; then
-  echo "hub-panel-host not found in hub HTML." >&2
+html=$(curl -fsS "${BASE_URL}")
+app_js_path=$(echo "$html" | rg -o 'src="(/static/js/app\.js\?v=[^"\s]+)' -r '$1' | head -n 1)
+if [[ -z "$app_js_path" ]]; then
+  echo "FAIL: Unable to locate app.js script tag in hub HTML." >&2
   exit 1
 fi
 
-if ! rg -q "TOPIC STUDIO ACTIVE" services/orion-hub/static/js/app.js; then
-  echo "Topic Studio sentinel string not found in app.js." >&2
-  exit 1
-fi
+app_js_url="${BASE_URL}${app_js_path}"
+app_js=$(curl -fsS "${app_js_url}")
 
-echo "OK: hub-panel-host present and Topic Studio sentinel string found."
+checks=(
+  "TOPIC STUDIO SPLIT PANE v2 ACTIVE"
+  "Segment Details"
+  "include_full_text"
+)
+
+for needle in "${checks[@]}"; do
+  if ! rg -q --fixed-string "$needle" <<<"$app_js"; then
+    echo "FAIL: Missing '${needle}' in ${app_js_url}" >&2
+    exit 1
+  fi
+done
+
+echo "Topic Studio DOM smoke checks passed."

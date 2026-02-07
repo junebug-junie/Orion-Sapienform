@@ -550,6 +550,7 @@ loadDismissedIds();
   const TOPIC_FOUNDRY_PROXY_BASE = apiUrl("/api/topic-foundry");
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
+  const TOPIC_STUDIO_SPLIT_SENTINEL = "TOPIC STUDIO SPLIT PANE v2 ACTIVE";
 
   function setActiveTab(tabKey) {
     if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
@@ -606,6 +607,7 @@ loadDismissedIds();
         <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
           <div>
             <div style="font-size:20px; font-weight:600;">Topic Studio</div>
+            <div style="font-size:11px; color:#6ee7b7; font-family:monospace;">${TOPIC_STUDIO_SPLIT_SENTINEL}</div>
             <div style="font-size:12px; color:#888;">Manage datasets, models, runs, and segments.</div>
           </div>
           <div style="display:flex; gap:8px; align-items:center;">
@@ -653,7 +655,11 @@ loadDismissedIds();
               <input id="ts-mvp-preview-limit" value="200" placeholder="limit" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <select id="ts-mvp-preview-block" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
                 <option value="turn_pairs">turn_pairs</option>
-                <option value="conversation">conversation</option>
+                <option value="fixed_k_rows">fixed_k_rows</option>
+                <option value="time_gap">time_gap</option>
+                <option value="conversation_bound">conversation_bound</option>
+                <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
+                <option value="group_by_column">group_by_column</option>
               </select>
               <input id="ts-mvp-preview-gap" value="900" placeholder="time_gap_seconds" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-preview-maxchars" value="6000" placeholder="max_chars" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
@@ -695,21 +701,26 @@ loadDismissedIds();
           </div>
         </div>
 
-        <div style="margin-top:16px; border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
-          <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-            <div style="font-weight:600;">Segments</div>
-            <div style="display:flex; gap:8px; align-items:center;">
-              <select id="ts-mvp-segments-run" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
-              <select id="ts-mvp-segments-enriched" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
-                <option value="">all</option>
-                <option value="true">has_enrichment=true</option>
-                <option value="false">has_enrichment=false</option>
-              </select>
-              <button id="ts-mvp-load-segments" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Load</button>
+        <div style="margin-top:16px; display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:12px;">
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+              <div style="font-weight:600;">Segments</div>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <select id="ts-mvp-segments-run" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+                <select id="ts-mvp-segments-enriched" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
+                  <option value="">all</option>
+                  <option value="true">has_enrichment=true</option>
+                  <option value="false">has_enrichment=false</option>
+                </select>
+                <button id="ts-mvp-load-segments" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Load</button>
+              </div>
             </div>
+            <div id="ts-mvp-segments-table" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
           </div>
-          <div id="ts-mvp-segments-table" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
-          <div id="ts-mvp-segment-detail" style="margin-top:10px; font-size:12px; color:#bbb; border-top:1px solid #333; padding-top:8px;">Select a segment to view details.</div>
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111; display:flex; flex-direction:column; gap:8px; min-height:0;">
+            <div style="font-weight:600;">Segment Details</div>
+            <div id="ts-mvp-segment-detail" style="font-size:12px; color:#bbb;">Select a segment to view details.</div>
+          </div>
         </div>
         <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-mvp-step">${window.__HUB_LAST_STEP}</span></div>
       </div>
@@ -745,19 +756,23 @@ loadDismissedIds();
   }
 
   function ensureTopicStudioSentinel() {
-    if (!HUB_DEBUG) return;
+    const inlineSentinel = document.getElementById("tsSplitPaneSentinel");
+    if (inlineSentinel) {
+      inlineSentinel.textContent = TOPIC_STUDIO_SPLIT_SENTINEL;
+      inlineSentinel.classList.remove("hidden");
+    }
     let sentinel = document.getElementById("ts-route-sentinel");
     if (!sentinel) {
       sentinel = document.createElement("div");
       sentinel.id = "ts-route-sentinel";
-      sentinel.textContent = "TOPIC STUDIO ACTIVE";
       sentinel.setAttribute(
         "style",
-        "position:fixed; top:56px; left:24px; z-index:99999; background:#111; color:#0f0; border:1px solid #0f0; padding:6px 10px; border-radius:10px; font-family:monospace;"
+        "position:fixed; top:56px; left:24px; z-index:99999; background:#111; color:#6ee7b7; border:1px solid #6ee7b7; padding:6px 10px; border-radius:10px; font-family:monospace;"
       );
       document.body.appendChild(sentinel);
     }
-    sentinel.style.display = "block";
+    sentinel.textContent = TOPIC_STUDIO_SPLIT_SENTINEL;
+    sentinel.style.display = window.location.hash === "#topic-studio" ? "block" : "none";
   }
 
   function updateTopicStudioHostStep() {
@@ -1139,8 +1154,9 @@ loadDismissedIds();
   function buildWindowingSpec() {
     const windowingMode = tsWindowingMode?.value || "turn_pairs";
     const groupBy = tsGroupByColumn?.value || "";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
     return {
-      block_mode: windowingMode === "turn_pairs" ? "turn_pairs" : "rows",
+      block_mode: blockMode,
       windowing_mode: windowingMode,
       fixed_k_rows: Number(tsFixedKRows?.value || 2),
       fixed_k_rows_step: Number(tsFixedKRowsStep?.value || 0) || null,
@@ -1154,9 +1170,10 @@ loadDismissedIds();
   }
 
   function updateGroupByVisibility() {
-    if (!tsGroupByRow) return;
+    if (!tsGroupByRow || !tsGroupByColumn) return;
     const isGroupBy = tsWindowingMode?.value === "group_by_column";
-    tsGroupByRow.classList.toggle("hidden", !isGroupBy);
+    tsGroupByColumn.disabled = !isGroupBy;
+    tsGroupByColumn.classList.toggle("opacity-50", !isGroupBy);
   }
 
   function renderGroupByOptions() {
@@ -1249,7 +1266,7 @@ loadDismissedIds();
     if (panel === "segments" && tsDebugSegments) tsDebugSegments.textContent = pretty;
   }
 
-  function renderSegmentDetailPanel(detail) {
+  function renderSegmentDetailPanel(detail, options = {}) {
     topicStudioSelectedSegment = detail || null;
     topicStudioSelectedSegmentId = detail?.segment_id || null;
     if (tsSegmentDetailHeader) {
@@ -1285,19 +1302,36 @@ loadDismissedIds();
           sentiment: detail.sentiment || null,
           topic_id: detail.topic_id ?? null,
           is_outlier: detail.is_outlier ?? null,
+          provenance: detail.provenance || null,
         };
         tsSegmentDetailMeaning.textContent = JSON.stringify(payload, null, 2);
       }
     }
-    if (tsSegmentFullTextStatus) {
-      tsSegmentFullTextStatus.textContent = detail ? "Full text not loaded." : "--";
+    const requestedFullText = options.include_full_text === true;
+    if (!detail) {
+      topicStudioSegmentFullText = "";
+      if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "--";
+    } else if (requestedFullText) {
+      const hasFullText = Object.prototype.hasOwnProperty.call(detail, "full_text");
+      if (!hasFullText) {
+        topicStudioSegmentFullText = "";
+        if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "backend missing include_full_text support";
+      } else {
+        topicStudioSegmentFullText = detail.full_text || "";
+        if (tsSegmentFullTextStatus) {
+          tsSegmentFullTextStatus.textContent = `Full text loaded (${topicStudioSegmentFullText.length} chars).`;
+        }
+      }
+    } else {
+      topicStudioSegmentFullText = "";
+      if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Full text not loaded.";
     }
-    if (tsSegmentFullText) {
-      tsSegmentFullText.textContent = detail ? "--" : "--";
-    }
-    topicStudioSegmentFullText = "";
     topicStudioSegmentFullTextExpanded = false;
     if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.textContent = "Expand";
+    if (tsSegmentFullText) {
+      tsSegmentFullText.style.maxHeight = "320px";
+    }
+    renderSegmentFullText();
     if (tsSegmentFullTextLoad) tsSegmentFullTextLoad.disabled = !detail;
     if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.disabled = !detail;
     if (tsSegmentFullTextCopy) tsSegmentFullTextCopy.disabled = !detail;
@@ -1309,19 +1343,12 @@ loadDismissedIds();
       tsSegmentFullText.textContent = "--";
       return;
     }
+    tsSegmentFullText.textContent = topicStudioSegmentFullText;
     if (tsSegmentFullTextExpand) {
-      tsSegmentFullTextExpand.disabled = topicStudioSegmentFullText.length <= 400;
+      tsSegmentFullTextExpand.disabled = false;
     }
-    if (topicStudioSegmentFullTextExpanded || topicStudioSegmentFullText.length <= 400) {
-      tsSegmentFullText.textContent = topicStudioSegmentFullText;
-      if (tsSegmentFullTextStatus && topicStudioSegmentFullText.length <= 400) {
-        tsSegmentFullTextStatus.textContent = `Full text (${topicStudioSegmentFullText.length} chars).`;
-      }
-      return;
-    }
-    tsSegmentFullText.textContent = `${topicStudioSegmentFullText.slice(0, 400)}…`;
-    if (tsSegmentFullTextStatus) {
-      tsSegmentFullTextStatus.textContent = `Full text preview (first 400 of ${topicStudioSegmentFullText.length} chars).`;
+    if (tsSegmentFullTextStatus && !topicStudioSegmentFullTextExpanded) {
+      tsSegmentFullTextStatus.textContent = `Full text loaded (${topicStudioSegmentFullText.length} chars).`;
     }
   }
 
@@ -2150,8 +2177,11 @@ loadDismissedIds();
       setMvpError("Select a dataset to preview.");
       return;
     }
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
     const windowing = {
-      block_mode: document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs",
+      block_mode: blockMode,
+      windowing_mode: windowingMode,
       time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
       max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
     };
@@ -2210,6 +2240,8 @@ loadDismissedIds();
       setMvpError("Model params must be valid JSON.");
       return;
     }
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
     const payload = {
       name,
       version,
@@ -2222,7 +2254,8 @@ loadDismissedIds();
         params,
       },
       windowing_spec: {
-        block_mode: document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs",
+        block_mode: blockMode,
+        windowing_mode: windowingMode,
         time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
         max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
       },
@@ -2378,17 +2411,35 @@ loadDismissedIds();
   async function loadSegmentDetail(segmentId) {
     const detailEl = document.getElementById("ts-mvp-segment-detail");
     if (!detailEl) return;
-    const result = await safeJsonFetch(`/api/topic-foundry/segments/${segmentId}`);
+    const result = await safeJsonFetch(`/api/topic-foundry/segments/${segmentId}?include_full_text=true`);
     if (!result.ok) {
       detailEl.textContent = "Failed to load segment detail.";
       setMvpError(formatHttpError("segment detail", result.error));
       return;
     }
     const seg = result.json || {};
+    const hasFullText = Object.prototype.hasOwnProperty.call(seg, "full_text");
+    const provenance = seg.provenance ? JSON.stringify(seg.provenance, null, 2) : "--";
+    const meaningPayload = {
+      title: seg.title || seg.label || null,
+      aspects: seg.aspects || null,
+      meaning: seg.meaning || null,
+      enrichment: seg.enrichment || null,
+      sentiment: seg.sentiment || null,
+      topic_id: seg.topic_id ?? null,
+      is_outlier: seg.is_outlier ?? null,
+    };
+    const fullTextLabel = hasFullText ? "Full text" : "Full text (error)";
+    const fullTextValue = hasFullText ? seg.full_text || "--" : "backend missing include_full_text support";
     detailEl.innerHTML = `
       <div><strong>${seg.segment_id || ""}</strong></div>
       <div style="margin-top:4px;">${seg.text || seg.snippet || "--"}</div>
-      <div style="margin-top:6px; color:#777;">${seg.provenance || "--"}</div>
+      <div style="margin-top:6px; color:#777;">Provenance</div>
+      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${provenance}</pre>
+      <div style="margin-top:6px; color:#777;">Meaning & enrichment</div>
+      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${JSON.stringify(meaningPayload, null, 2)}</pre>
+      <div style="margin-top:6px; color:#777;">${fullTextLabel}</div>
+      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${fullTextValue}</pre>
     `;
   }
 
@@ -5484,21 +5535,16 @@ loadDismissedIds();
       }
       try {
         if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Loading full text...";
-        const result = await topicFoundryFetch(`/segments/${topicStudioSelectedSegmentId}/full_text`);
-        topicStudioSegmentFullText = result.full_text || "";
-        topicStudioSegmentFullTextExpanded = false;
-        renderSegmentFullText();
-        if (tsSegmentFullTextStatus) {
-          tsSegmentFullTextStatus.textContent = `Loaded ${result.chars ?? topicStudioSegmentFullText.length} chars from ${result.row_ids_count ?? "--"} rows.`;
-        }
+        const result = await topicFoundryFetch(`/segments/${topicStudioSelectedSegmentId}?include_full_text=true`);
+        renderSegmentDetailPanel(result, { include_full_text: true });
         recordTopicStudioDebug("segments", {
-          request: `/segments/${topicStudioSelectedSegmentId}/full_text`,
+          request: `/segments/${topicStudioSelectedSegmentId}?include_full_text=true`,
           response: result,
         });
       } catch (err) {
         if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Failed to load full text.";
         renderTopicStudioError(tsSegmentsError, err, "Load full text", "segments", {
-          request: `/segments/${topicStudioSelectedSegmentId}/full_text`,
+          request: `/segments/${topicStudioSelectedSegmentId}?include_full_text=true`,
         });
       }
     });
@@ -5509,6 +5555,9 @@ loadDismissedIds();
       if (!topicStudioSegmentFullText) return;
       topicStudioSegmentFullTextExpanded = !topicStudioSegmentFullTextExpanded;
       tsSegmentFullTextExpand.textContent = topicStudioSegmentFullTextExpanded ? "Collapse" : "Expand";
+      if (tsSegmentFullText) {
+        tsSegmentFullText.style.maxHeight = topicStudioSegmentFullTextExpanded ? "none" : "320px";
+      }
       renderSegmentFullText();
     });
   }
@@ -5755,6 +5804,8 @@ loadDismissedIds();
         }
         startRunPolling(tsRunId.value);
       } catch (err) {
+        const errorMsg = formatHttpError("enrich", err);
+        if (tsEnrichStatus) tsEnrichStatus.textContent = errorMsg;
         renderTopicStudioError(tsEnrichStatus, err, "Enrich run", "enrich", { request: `/runs/${tsRunId?.value}/enrich` });
         setWarning(tsEnrichWarning, null);
         setLoading(tsEnrichLoading, false);
@@ -5805,12 +5856,12 @@ loadDismissedIds();
       row.querySelector("[data-segment-id]")?.addEventListener("click", async () => {
         try {
           topicStudioSelectedSegmentId = segment.segment_id;
-          const detail = await topicFoundryFetch(`/segments/${segment.segment_id}`);
-          renderSegmentDetailPanel(detail);
-          recordTopicStudioDebug("segments", { request: `/segments/${segment.segment_id}`, response: detail });
+          const detail = await topicFoundryFetch(`/segments/${segment.segment_id}?include_full_text=true`);
+          renderSegmentDetailPanel(detail, { include_full_text: true });
+          recordTopicStudioDebug("segments", { request: `/segments/${segment.segment_id}?include_full_text=true`, response: detail });
         } catch (err) {
           renderTopicStudioError(tsSegmentsError, err, "Load segment detail", "segments", {
-            request: `/segments/${segment.segment_id}`,
+            request: `/segments/${segment.segment_id}?include_full_text=true`,
           });
         }
       });
@@ -5821,13 +5872,13 @@ loadDismissedIds();
   async function showSegmentDetailFromId(segmentId) {
     if (!segmentId) return;
     try {
-      const detail = await topicFoundryFetch(`/segments/${segmentId}`);
-      renderSegmentDetailPanel(detail);
-      recordTopicStudioDebug("segments", { request: `/segments/${segmentId}`, response: detail });
+      const detail = await topicFoundryFetch(`/segments/${segmentId}?include_full_text=true`);
+      renderSegmentDetailPanel(detail, { include_full_text: true });
+      recordTopicStudioDebug("segments", { request: `/segments/${segmentId}?include_full_text=true`, response: detail });
       setTopicStudioSubview("runs");
     } catch (err) {
       renderTopicStudioError(tsSegmentsError, err, "Load segment detail", "segments", {
-        request: `/segments/${segmentId}`,
+        request: `/segments/${segmentId}?include_full_text=true`,
       });
     }
   }
@@ -5847,8 +5898,10 @@ loadDismissedIds();
       const pct = Number.isFinite(topic.outlier_pct) ? `${(topic.outlier_pct * 100).toFixed(1)}%` : "--";
       row.innerHTML = `
         <td class="py-2 pr-3 text-indigo-300">${topic.topic_id ?? "--"}</td>
+        <td class="py-2 pr-3">${topic.scope ?? "--"}</td>
         <td class="py-2 pr-3">${topic.count ?? "--"}</td>
         <td class="py-2 pr-3">${pct}</td>
+        <td class="py-2 pr-3">${topic.parent_topic_id ?? "--"}</td>
         <td class="py-2 pr-3"><button class="text-indigo-300 hover:text-indigo-200" data-topic-id="${topic.topic_id}">View</button></td>
       `;
       row.querySelector("[data-topic-id]")?.addEventListener("click", () => {

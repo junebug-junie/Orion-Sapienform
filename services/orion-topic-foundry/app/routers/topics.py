@@ -28,7 +28,7 @@ def list_topics_endpoint(
     for row in rows:
         count = int(row.get("count") or 0)
         outliers = int(row.get("outliers") or 0)
-        outlier_pct = float(outliers) / float(count) if count else 0.0
+        outlier_pct = float(outliers) / float(count) if count and outliers else None
         topic_id = row.get("topic_id")
         items.append(
             TopicSummaryItem(
@@ -36,6 +36,8 @@ def list_topics_endpoint(
                 count=count,
                 outlier_pct=outlier_pct,
                 label=None,
+                scope=row.get("scope"),
+                parent_topic_id=row.get("parent_topic_id"),
             )
         )
     return TopicSummaryPage(items=items, limit=limit, offset=offset, total=total)

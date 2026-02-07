@@ -14,22 +14,83 @@ from app.services.bus_events import get_bus_publisher
 from app.services.kg_edges import generate_edges_for_run
 from app.services.llm_client import get_llm_client
 from app.settings import settings
-from app.storage.repository import create_event, fetch_model, fetch_run, fetch_segments, update_run, update_segment_enrichment, utc_now
+from app.storage.repository import (
+    create_event,
+    fetch_model,
+    fetch_run,
+    fetch_segments,
+    fetch_topic_segments,
+    fetch_topics,
+    update_run,
+    update_segment_enrichment,
+    update_topic_enrichment,
+    utc_now,
+)
 from orion.schemas.topic_foundry import TopicFoundryEnrichCompleteV1
 
 
 logger = logging.getLogger("topic-foundry.enrichment")
 
 
-def enqueue_enrichment(background_tasks, run_id: UUID, *, force: bool, enricher: Optional[str], limit: Optional[int]) -> None:
-    background_tasks.add_task(_run_enrichment, run_id, force=force, enricher=enricher, limit=limit)
+def enqueue_enrichment(
+    background_tasks,
+    run_id: UUID,
+    *,
+    force: bool,
+    enricher: Optional[str],
+    limit: Optional[int],
+    target: str,
+    fields: List[str],
+    llm_backend: Optional[str],
+    prompt_template: Optional[str],
+) -> None:
+    background_tasks.add_task(
+        _run_enrichment,
+        run_id,
+        force=force,
+        enricher=enricher,
+        limit=limit,
+        target=target,
+        fields=fields,
+        llm_backend=llm_backend,
+        prompt_template=prompt_template,
+    )
 
 
-def run_enrichment_sync(run_id: UUID, *, force: bool, enricher: Optional[str], limit: Optional[int]) -> None:
-    _run_enrichment(run_id, force=force, enricher=enricher, limit=limit)
+def run_enrichment_sync(
+    run_id: UUID,
+    *,
+    force: bool,
+    enricher: Optional[str],
+    limit: Optional[int],
+    target: str,
+    fields: List[str],
+    llm_backend: Optional[str],
+    prompt_template: Optional[str],
+) -> None:
+    _run_enrichment(
+        run_id,
+        force=force,
+        enricher=enricher,
+        limit=limit,
+        target=target,
+        fields=fields,
+        llm_backend=llm_backend,
+        prompt_template=prompt_template,
+    )
 
 
-def _run_enrichment(run_id: UUID, *, force: bool, enricher: Optional[str], limit: Optional[int]) -> None:
+def _run_enrichment(
+    run_id: UUID,
+    *,
+    force: bool,
+    enricher: Optional[str],
+    limit: Optional[int],
+    target: str,
+    fields: List[str],
+    llm_backend: Optional[str],
+    prompt_template: Optional[str],
+) -> None:
     run_row = fetch_run(run_id)
     if not run_row:
         return
@@ -47,25 +108,50 @@ def _run_enrichment(run_id: UUID, *, force: bool, enricher: Optional[str], limit
     taxonomy = load_taxonomy(spec.aspect_taxonomy)
     chosen_enricher = enricher or ("llm" if settings.topic_foundry_llm_enable else "heuristic")
 
-    segments = fetch_segments(UUID(run_row["run_id"]), has_enrichment=None)
-    if not force:
-        segments = [seg for seg in segments if seg.get("enriched_at") is None]
-    if limit:
-        segments = segments[:limit]
-    text_map = _load_segment_text_map(run_row)
-
     enriched_count = 0
     failed_count = 0
     enriched_payloads: List[Dict[str, Any]] = []
-    for segment in segments:
-        try:
-            enrichment = _enrich_segment(segment, taxonomy, chosen_enricher, text_map)
-            update_segment_enrichment(UUID(segment["segment_id"]), enrichment=enrichment, enrichment_version="v1")
-            enriched_count += 1
-            enriched_payloads.append({"segment_id": segment["segment_id"], "enrichment": enrichment})
-        except Exception as exc:  # noqa: BLE001
-            failed_count += 1
-            logger.warning("Enrichment failed segment_id=%s error=%s", segment.get("segment_id"), exc)
+    if target in {"segments", "both"}:
+        segments = fetch_segments(UUID(run_row["run_id"]), has_enrichment=None)
+        if not force:
+            segments = [seg for seg in segments if seg.get("enriched_at") is None]
+        if limit:
+            segments = segments[:limit]
+        text_map = _load_segment_text_map(run_row)
+        for segment in segments:
+            try:
+                enrichment = _enrich_segment(segment, taxonomy, chosen_enricher, text_map, prompt_template)
+                enrichment = _select_fields(enrichment, fields)
+                update_segment_enrichment(UUID(segment["segment_id"]), enrichment=enrichment, enrichment_version="v1")
+                enriched_count += 1
+                enriched_payloads.append({"segment_id": segment["segment_id"], "enrichment": enrichment})
+            except Exception as exc:  # noqa: BLE001
+                failed_count += 1
+                logger.warning("Enrichment failed segment_id=%s error=%s", segment.get("segment_id"), exc)
+    if target in {"topics", "both"}:
+        topics = fetch_topics(UUID(run_row["run_id"]))
+        if not force:
+            topics = [topic for topic in topics if topic.get("enriched_at") is None]
+        if limit:
+            topics = topics[:limit]
+        for topic in topics:
+            try:
+                enrichment = _enrich_topic(UUID(run_row["run_id"]), topic, taxonomy, chosen_enricher, prompt_template)
+                enrichment = _select_fields(enrichment, fields)
+                update_topic_enrichment(
+                    UUID(run_row["run_id"]),
+                    int(topic["topic_id"]),
+                    topic.get("scope") or "macro",
+                    enrichment=enrichment,
+                    enrichment_version="v1",
+                )
+                enriched_count += 1
+                enriched_payloads.append(
+                    {"topic_id": topic.get("topic_id"), "scope": topic.get("scope"), "enrichment": enrichment}
+                )
+            except Exception as exc:  # noqa: BLE001
+                failed_count += 1
+                logger.warning("Enrichment failed topic_id=%s error=%s", topic.get("topic_id"), exc)
 
     stats["segments_enriched"] = stats.get("segments_enriched", 0) + enriched_count
     stats["enrichment_failed"] = stats.get("enrichment_failed", 0) + failed_count
@@ -129,10 +215,12 @@ def _build_run_record_for_update(run_row: Dict[str, Any], *, stage: str, status:
             windowing=WindowingSpec(**specs["windowing"]),
             model=ModelSpec(**specs["model"]),
             enrichment=EnrichmentSpec(**specs.get("enrichment", {})),
+            run_scope=specs.get("run_scope"),
         ),
         spec_hash=run_row.get("spec_hash"),
         status=status,
         stage=stage,
+        run_scope=run_row.get("run_scope"),
         stats=run_row.get("stats") or {},
         artifact_paths=run_row.get("artifact_paths") or {},
         created_at=run_row.get("created_at"),
@@ -150,11 +238,15 @@ def _load_enrichment_spec(run_row: Dict[str, Any]) -> EnrichmentSpec:
 
 
 def _enrich_segment(
-    segment: Dict[str, Any], taxonomy: List[str], enricher: str, text_map: Dict[str, str]
+    segment: Dict[str, Any],
+    taxonomy: List[str],
+    enricher: str,
+    text_map: Dict[str, str],
+    prompt_template: Optional[str],
 ) -> Dict[str, Any]:
     text = _segment_text(segment, text_map)
     if enricher == "llm" and settings.topic_foundry_llm_enable:
-        result = _llm_enrich(text, taxonomy)
+        result = _llm_enrich(text, taxonomy, prompt_template)
         if result is not None:
             return _finalize_enrichment(result)
     return _finalize_enrichment(_heuristic_enrich(text, taxonomy))
@@ -194,13 +286,13 @@ def _heuristic_enrich(text: str, taxonomy: List[str]) -> Dict[str, Any]:
     }
 
 
-def _llm_enrich(text: str, taxonomy: List[str]) -> Optional[Dict[str, Any]]:
+def _llm_enrich(text: str, taxonomy: List[str], prompt_template: Optional[str]) -> Optional[Dict[str, Any]]:
     if not text:
         return None
     try:
         return get_llm_client().request_json(
             system_prompt="You are an analyst. Return STRICT JSON only.",
-            user_prompt=_llm_prompt(text, taxonomy),
+            user_prompt=prompt_template or _llm_prompt(text, taxonomy),
             temperature=0.2,
             max_tokens=None,
         )
@@ -214,6 +306,42 @@ def _llm_prompt(text: str, taxonomy: List[str]) -> str:
         "Enrich this segment. Provide JSON with keys: title, aspects, aspect_scores, sentiment, meaning, evidence_spans."
         f"\nTaxonomy: {taxonomy}\nText:\n{text}\n"
     )
+
+
+def _enrich_topic(
+    run_id: UUID,
+    topic: Dict[str, Any],
+    taxonomy: List[str],
+    enricher: str,
+    prompt_template: Optional[str],
+) -> Dict[str, Any]:
+    topic_id = int(topic.get("topic_id") or -1)
+    scope = topic.get("scope") or "macro"
+    segments = fetch_topic_segments(UUID(run_id), topic_id, limit=20, offset=0)
+    text = "\n".join(seg.get("snippet") or "" for seg in segments if seg.get("snippet"))
+    text = text.strip()
+    if enricher == "llm" and settings.topic_foundry_llm_enable:
+        result = _llm_enrich(text, taxonomy, prompt_template)
+        if result is not None:
+            result["scope"] = scope
+            result["topic_id"] = topic_id
+            return _finalize_enrichment(result)
+    result = _heuristic_enrich(text, taxonomy)
+    result["scope"] = scope
+    result["topic_id"] = topic_id
+    return _finalize_enrichment(result)
+
+
+def _select_fields(enrichment: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
+    if not fields:
+        return enrichment
+    selected = {}
+    for field in fields:
+        if field in enrichment:
+            selected[field] = enrichment[field]
+    if "title" not in selected and "title" in enrichment:
+        selected["title"] = enrichment["title"]
+    return selected
 
 
 def _extract_evidence(text: str) -> List[str]:

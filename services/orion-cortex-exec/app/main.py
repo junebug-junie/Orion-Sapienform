@@ -10,13 +10,14 @@ import logging
 import time
 from typing import Any, Dict
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import Field, ValidationError
 
 # IMPORTS UPDATED: Added Envelope for generic typing
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef, CausalityLink
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime
 
+from orion.schemas.cortex.exec import CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
@@ -37,11 +38,6 @@ logger = logging.getLogger("orion.cortex.exec.main")
 class CortexExecRequest(BaseEnvelope):
     kind: str = Field("cortex.exec.request", frozen=True)
     payload: PlanExecutionRequest
-
-
-class CortexExecResultPayload(BaseModel):
-    ok: bool = True
-    result: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CortexExecResult(BaseEnvelope):
@@ -195,7 +191,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             source=_source(),
             correlation_id=corr_id,
             causality_chain=env.causality_chain,
-            payload=CortexExecResultPayload(ok=False, result={"error": str(e)}),
+            payload=CortexExecResultPayload(ok=False, error=str(e)),
         )
 
 

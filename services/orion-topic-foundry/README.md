@@ -41,6 +41,7 @@ Spec-driven service for building topic artifacts (runs, segments, model registry
 - `PORT`
 - `TOPIC_FOUNDRY_PG_DSN`
 - `TOPIC_FOUNDRY_EMBEDDING_URL`
+- `TOPIC_FOUNDRY_COSINE_IMPL`
 - `TOPIC_FOUNDRY_MODEL_DIR`
 - `TOPIC_FOUNDRY_LLM_BUS_ROUTE`
 - `TOPIC_FOUNDRY_LLM_TIMEOUT_SECS`
@@ -102,6 +103,7 @@ ${TOPIC_FOUNDRY_MODEL_DIR}/
 Run from repo root:
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_health.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_preview.sh`
+- `scripts/smoke_topic_foundry_train_cosine.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_train_and_poll.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_enrich.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_llm_segmentation.sh`
@@ -124,6 +126,7 @@ Environment overrides (common):
 - `docs_generated too low` — widen `START_AT/END_AT` to include more rows.
 - `embedding unreachable` — confirm `TOPIC_FOUNDRY_EMBEDDING_URL` and upstream service.
 - `pg unreachable` — check `TOPIC_FOUNDRY_PG_DSN` and DB connectivity.
+- `cosine metric errors` — cosine is implemented via L2-normalize + euclidean by default. Set `TOPIC_FOUNDRY_COSINE_IMPL=generic` to force HDBSCAN’s generic cosine implementation (slower but avoids tree metrics).
 
 ## Phase 2: Enrichment
 Phase 2 adds optional semantic segmentation and segment enrichment.

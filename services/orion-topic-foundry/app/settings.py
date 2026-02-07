@@ -23,6 +23,10 @@ class Settings(BaseSettings):
         "http://orion-vector-host:8320/embedding",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_URL"),
     )
+    topic_foundry_cosine_impl: str = Field(
+        "normalize_euclidean",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_COSINE_IMPL"),
+    )
     topic_foundry_model_dir: str = Field(
         "/mnt/telemetry/models/topic-foundry",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_MODEL_DIR"),

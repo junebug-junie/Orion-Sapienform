@@ -316,6 +316,9 @@ class CapabilitiesResponse(BaseModel):
     llm_reply_prefix: Optional[str] = None
     segmentation_modes_supported: List[str]
     enricher_modes_supported: List[str]
+    supported_metrics: Optional[List[str]] = None
+    default_metric: Optional[str] = None
+    cosine_impl_default: Optional[str] = None
     defaults: Dict[str, Any]
     introspection: Optional[Dict[str, Any]] = None
     default_embedding_url: Optional[str] = None

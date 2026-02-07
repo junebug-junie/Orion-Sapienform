@@ -34,4 +34,5 @@ def capabilities() -> CapabilitiesResponse:
         enricher_modes_supported=enricher_modes,
         defaults=defaults,
         introspection={"ok": bool(schemas), "schemas": schemas},
+        default_embedding_url=settings.topic_foundry_embedding_url,
     )

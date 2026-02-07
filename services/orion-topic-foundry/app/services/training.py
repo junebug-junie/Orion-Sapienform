@@ -12,6 +12,7 @@ import numpy as np
 from hdbscan import HDBSCAN
 from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import normalize
 
 from app.models import DatasetSpec, EnrichmentSpec, ModelSpec, RunRecord, RunSpecSnapshot, RunTrainRequest, SegmentRecord, WindowingSpec
 from app.services.data_access import fetch_dataset_rows
@@ -20,6 +21,7 @@ from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.bus_events import get_bus_publisher
 from app.services.enrichment import run_enrichment_sync
 from app.services.types import BoundaryContext, RowBlock
+from app.services.metrics import normalize_metric, validate_metric
 from app.services.windowing import build_segments_with_stats
 from app.settings import settings
 from app.storage.repository import create_event, fetch_run, insert_segments, list_conversation_overrides, update_run, utc_now
@@ -121,6 +123,17 @@ def _run_training(
     update_run(run)
 
     try:
+        requested_metric = normalize_metric(run.specs.model.metric)
+        try:
+            validate_metric(requested_metric)
+        except ValueError as exc:
+            run.status = "failed"
+            run.stage = "failed"
+            run.error = f"unsupported_metric: {requested_metric}"
+            run.completed_at = utc_now()
+            update_run(run)
+            logger.warning("Unsupported metric requested: %s", requested_metric)
+            return
         start = time.monotonic()
         segments, blocks_generated = _prepare_segments(run, payload)
         if not segments:
@@ -132,13 +145,41 @@ def _run_training(
         embed_secs = time.monotonic() - embed_start
 
         cluster_start = time.monotonic()
-        clusterer = _build_clusterer(run.specs.model)
+        cosine_impl = settings.topic_foundry_cosine_impl.lower().strip()
+        effective_metric = requested_metric
+        algorithm_override = None
+        metric_stats = {
+            "metric_requested": requested_metric,
+            "metric_effective": requested_metric,
+        }
+        if requested_metric == "cosine":
+            if cosine_impl == "generic":
+                effective_metric = "cosine"
+                algorithm_override = "generic"
+                metric_stats.update(
+                    {
+                        "metric_effective": effective_metric,
+                        "cosine_impl": "generic",
+                    }
+                )
+            else:
+                embeddings = normalize(embeddings, norm="l2")
+                effective_metric = "euclidean"
+                metric_stats.update(
+                    {
+                        "metric_effective": effective_metric,
+                        "cosine_impl": "normalize_euclidean",
+                    }
+                )
+
+        clusterer = _build_clusterer(run.specs.model, metric=effective_metric, algorithm=algorithm_override)
         labels = clusterer.fit_predict(embeddings)
         probabilities = getattr(clusterer, "probabilities_", None)
         cluster_secs = time.monotonic() - cluster_start
 
         stats = _compute_stats(labels, segments)
         stats["blocks_generated"] = blocks_generated
+        stats.update(metric_stats)
         stats.update(
             {
                 "embed_secs": embed_secs,
@@ -306,9 +347,16 @@ def _prepare_segments(run: RunRecord, payload: RunTrainRequest) -> tuple[List[Ro
     return segments, blocks_generated
 
 
-def _build_clusterer(spec: ModelSpec) -> HDBSCAN:
-    params = {"min_cluster_size": spec.min_cluster_size, "metric": spec.metric}
-    params.update(spec.params)
+def _build_clusterer(spec: ModelSpec, *, metric: str, algorithm: Optional[str] = None) -> HDBSCAN:
+    params = {"min_cluster_size": spec.min_cluster_size, "metric": metric}
+    extra_params = dict(spec.params or {})
+    if "metric" in extra_params:
+        logger.warning("Ignoring metric override in model params.")
+        extra_params.pop("metric", None)
+    if algorithm:
+        extra_params.pop("algorithm", None)
+        extra_params["algorithm"] = algorithm
+    params.update(extra_params)
     params.setdefault("prediction_data", True)
     return HDBSCAN(**params)
 

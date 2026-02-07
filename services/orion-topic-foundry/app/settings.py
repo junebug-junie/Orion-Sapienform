@@ -23,6 +23,10 @@ class Settings(BaseSettings):
         "http://orion-vector-host:8320/embedding",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_URL"),
     )
+    topic_foundry_cosine_impl: str = Field(
+        "normalize_euclidean",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_COSINE_IMPL"),
+    )
     topic_foundry_model_dir: str = Field(
         "/mnt/telemetry/models/topic-foundry",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_MODEL_DIR"),
@@ -76,6 +80,22 @@ class Settings(BaseSettings):
     topic_foundry_drift_window_hours: int = Field(
         24,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS"),
+    )
+    topic_foundry_introspect_schemas: str = Field(
+        "public",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_INTROSPECT_SCHEMAS"),
+    )
+    topic_foundry_introspect_cache_secs: int = Field(
+        30,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_INTROSPECT_CACHE_SECS"),
+    )
+    topic_foundry_introspect_max_tables: int = Field(
+        5000,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_INTROSPECT_MAX_TABLES"),
+    )
+    topic_foundry_introspect_max_columns: int = Field(
+        5000,
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_INTROSPECT_MAX_COLUMNS"),
     )
 
 

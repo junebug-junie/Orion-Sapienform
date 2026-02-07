@@ -142,7 +142,13 @@ LANDING_PAD_TIMEOUT_SEC=5
 
 # Topic Studio (Topic Foundry proxy)
 TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
+
+# Optional overrides (serve-mode edge cases)
+HUB_API_BASE_OVERRIDE=
+HUB_WS_BASE_OVERRIDE=
 ```
+
+Tailscale Serve / TLS works out of the box: Hub derives API and WS bases from the current origin (same-origin `/api/...` and `ws://`/`wss://`). For edge cases (reverse proxies or nonstandard routing), set `HUB_API_BASE_OVERRIDE` and/or `HUB_WS_BASE_OVERRIDE` to override the base URLs; otherwise leave them blank. 
 
 Topic Rail endpoints are proxied through Landing Pad. Ensure `POSTGRES_URI` is set on the Landing Pad service so it can read the `chat_topic_summary` and `chat_topic_session_drift` tables.
 

@@ -40,7 +40,7 @@ class WindowingSpec(BaseModel):
 
 class ModelSpec(BaseModel):
     algorithm: Literal["hdbscan"] = "hdbscan"
-    embedding_source_url: str
+    embedding_source_url: Optional[str] = None
     min_cluster_size: int = 15
     metric: str = "cosine"
     params: Dict[str, Any] = Field(default_factory=dict)
@@ -318,6 +318,7 @@ class CapabilitiesResponse(BaseModel):
     enricher_modes_supported: List[str]
     defaults: Dict[str, Any]
     introspection: Optional[Dict[str, Any]] = None
+    default_embedding_url: Optional[str] = None
 
 
 class DriftRunRequest(BaseModel):

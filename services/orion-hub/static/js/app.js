@@ -653,9 +653,12 @@ loadDismissedIds();
               <input id="ts-mvp-model-version" placeholder="version" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-model-stage" value="development" placeholder="stage" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <select id="ts-mvp-model-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <div style="font-size:11px; color:#888;">Min cluster size (HDBSCAN)</div>
               <input id="ts-mvp-model-mincluster" value="20" placeholder="min_cluster_size" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-model-metric" value="cosine" placeholder="metric" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
-              <textarea id="ts-mvp-model-params" rows="2" placeholder='params JSON' style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></textarea>
+              <div style="font-size:11px; color:#888;">Advanced params (optional)</div>
+              <textarea id="ts-mvp-model-params" rows="2" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">{}</textarea>
+              <div id="ts-mvp-embed-hint" style="font-size:11px; color:#666;"></div>
               <button id="ts-mvp-create-model" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create model</button>
             </div>
 
@@ -1259,6 +1262,7 @@ loadDismissedIds();
     schemas: [],
     tables: [],
     columns: [],
+    defaultEmbeddingUrl: "",
   };
   const topicStudioDebugState = {
     enabled: new URLSearchParams(window.location.search).get("debug") === "1",
@@ -1335,6 +1339,12 @@ loadDismissedIds();
     );
     box.textContent = message;
     container.appendChild(box);
+  }
+
+  function formatHttpError(label, error) {
+    const status = error?.status ? `status ${error.status}` : "status unknown";
+    const detail = truncateCrashText(error?.body || error?.message || "", 300);
+    return `${label}: ${status} ${detail}`.trim();
   }
 
   function setIntrospectionWarning(message) {
@@ -1582,23 +1592,28 @@ loadDismissedIds();
   }
 
   function updateMvpSelectors() {
+    const datasetItems = topicStudioMvpState.datasets.map((ds) => ({
+      ...ds,
+      _value: ds.dataset_id || ds.id || "",
+      _label: ds.name || ds.dataset_name || ds.dataset_id || ds.id || "--",
+    }));
     updateSelectOptions(
       "ts-mvp-preview-dataset",
-      topicStudioMvpState.datasets,
-      "dataset_id",
-      (ds) => `${ds.name || ds.dataset_id}`
+      datasetItems,
+      "_value",
+      (ds) => `${ds._label}`
     );
     updateSelectOptions(
       "ts-mvp-model-dataset",
-      topicStudioMvpState.datasets,
-      "dataset_id",
-      (ds) => `${ds.name || ds.dataset_id}`
+      datasetItems,
+      "_value",
+      (ds) => `${ds._label}`
     );
     updateSelectOptions(
       "ts-mvp-run-dataset",
-      topicStudioMvpState.datasets,
-      "dataset_id",
-      (ds) => `${ds.name || ds.dataset_id}`
+      datasetItems,
+      "_value",
+      (ds) => `${ds._label}`
     );
     updateSelectOptions(
       "ts-mvp-run-model",
@@ -1712,7 +1727,7 @@ loadDismissedIds();
       } else {
         readyEl.textContent = "error";
         readyEl.style.color = "#f66";
-        setMvpError(`ready ${readyResult.error?.status || ""} ${truncateCrashText(readyResult.error?.body || readyResult.error?.message)}`);
+        setMvpError(formatHttpError("ready", readyResult.error));
       }
     }
 
@@ -1726,6 +1741,13 @@ loadDismissedIds();
         capEl.style.color = "#6f6";
         const introspection = capResult.json?.introspection;
         topicStudioMvpState.introspectionOk = Boolean(introspection?.ok);
+        topicStudioMvpState.defaultEmbeddingUrl = capResult.json?.default_embedding_url || "";
+        const embedHint = document.getElementById("ts-mvp-embed-hint");
+        if (embedHint) {
+          embedHint.textContent = topicStudioMvpState.defaultEmbeddingUrl
+            ? `Embedding URL (default): ${topicStudioMvpState.defaultEmbeddingUrl}`
+            : "";
+        }
         if (topicStudioMvpState.introspectionOk) {
           topicStudioMvpState.schemas = introspection.schemas || [];
           await loadSchemas();
@@ -1740,7 +1762,7 @@ loadDismissedIds();
       } else {
         capEl.textContent = "error";
         capEl.style.color = "#f66";
-        setMvpError(`capabilities ${capResult.error?.status || ""} ${truncateCrashText(capResult.error?.body || capResult.error?.message)}`);
+        setMvpError(formatHttpError("capabilities", capResult.error));
         setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
         setManualDatasetFields(true);
       }
@@ -1756,7 +1778,7 @@ loadDismissedIds();
     } else {
       topicStudioMvpState.datasets = [];
       renderDatasetList();
-      setMvpError(`datasets ${datasetResult.error?.status || ""} ${truncateCrashText(datasetResult.error?.body || datasetResult.error?.message)}`);
+      setMvpError(formatHttpError("datasets", datasetResult.error));
     }
 
     setHubStep("fetch:models");
@@ -1769,7 +1791,7 @@ loadDismissedIds();
     } else {
       topicStudioMvpState.models = [];
       renderModelList();
-      setMvpError(`models ${modelResult.error?.status || ""} ${truncateCrashText(modelResult.error?.body || modelResult.error?.message)}`);
+      setMvpError(formatHttpError("models", modelResult.error));
     }
 
     setHubStep("fetch:runs");
@@ -1782,7 +1804,7 @@ loadDismissedIds();
     } else {
       topicStudioMvpState.runs = [];
       renderRunsList();
-      setMvpError(`runs ${runsResult.error?.status || ""} ${truncateCrashText(runsResult.error?.body || runsResult.error?.message)}`);
+      setMvpError(formatHttpError("runs", runsResult.error));
     }
 
     setHubStep("render:done");
@@ -1838,7 +1860,7 @@ loadDismissedIds();
       body: JSON.stringify(payload),
     });
     if (!result.ok) {
-      setMvpError(`create dataset ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      setMvpError(formatHttpError("create dataset", result.error));
       return;
     }
     await refreshTopicStudioMvp();
@@ -1875,7 +1897,7 @@ loadDismissedIds();
     if (!result.ok) {
       if (statsEl) statsEl.textContent = "--";
       if (samplesEl) samplesEl.textContent = "--";
-      setMvpError(`preview ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      setMvpError(formatHttpError("preview", result.error));
       return;
     }
     const stats = result.json?.stats || {};
@@ -1935,7 +1957,7 @@ loadDismissedIds();
       body: JSON.stringify(payload),
     });
     if (!result.ok) {
-      setMvpError(`create model ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      setMvpError(formatHttpError("create model", result.error));
       return;
     }
     await refreshTopicStudioMvp();
@@ -1964,7 +1986,7 @@ loadDismissedIds();
       body: JSON.stringify(payload),
     });
     if (!result.ok) {
-      setMvpError(`train run ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      setMvpError(formatHttpError("train run", result.error));
       return;
     }
     await refreshTopicStudioMvp();
@@ -1986,7 +2008,7 @@ loadDismissedIds();
       body: JSON.stringify({ enricher: "heuristic" }),
     });
     if (!result.ok) {
-      setMvpError(`enrich ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      setMvpError(formatHttpError("enrich", result.error));
       return;
     }
     await refreshTopicStudioMvp();
@@ -1999,7 +2021,7 @@ loadDismissedIds();
     topicStudioMvpState.runPoller = setInterval(async () => {
       const result = await safeJsonFetch(`/api/topic-foundry/runs/${runId}`);
       if (!result.ok) {
-        setMvpError(`run poll ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+        setMvpError(formatHttpError("run poll", result.error));
         clearInterval(topicStudioMvpState.runPoller);
         topicStudioMvpState.runPoller = null;
         return;
@@ -2035,7 +2057,7 @@ loadDismissedIds();
     if (!table) return;
     if (!result.ok) {
       table.textContent = "--";
-      setMvpError(`segments ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      setMvpError(formatHttpError("segments", result.error));
       return;
     }
     const items = asItems(result.json);
@@ -2083,7 +2105,7 @@ loadDismissedIds();
     const result = await safeJsonFetch(`/api/topic-foundry/segments/${segmentId}`);
     if (!result.ok) {
       detailEl.textContent = "Failed to load segment detail.";
-      setMvpError(`segment detail ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      setMvpError(formatHttpError("segment detail", result.error));
       return;
     }
     const seg = result.json || {};

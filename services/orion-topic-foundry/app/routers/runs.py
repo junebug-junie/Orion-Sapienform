@@ -4,6 +4,7 @@ import logging
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from psycopg2 import errors as pg_errors
 
 from app.models import (
     EnrichmentSpec,
@@ -21,6 +22,7 @@ from app.models import (
     RunSpecSnapshot,
     WindowingSpec,
 )
+from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
 from app.services.enrichment import enqueue_enrichment
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
@@ -50,6 +52,28 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    try:
+        validate_dataset_source_table(dataset)
+        validate_dataset_columns(dataset)
+    except (InvalidSourceTableError, ValueError) as exc:
+        detail = {
+            "ok": False,
+            "error": "invalid_source_table",
+            "detail": str(exc) or "Invalid source_table",
+        }
+        logger.warning("Training failed due to invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except (pg_errors.UndefinedTable, pg_errors.InvalidSchemaName, pg_errors.InvalidName) as exc:
+        detail = {
+            "ok": False,
+            "error": "invalid_source_table",
+            "detail": str(exc) or "Invalid source_table",
+        }
+        logger.warning("Training failed due to missing/invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Training validation failed unexpectedly")
+        raise HTTPException(status_code=500, detail="Training validation failed") from exc
 
     run_id = uuid4()
     created_at = utc_now()
@@ -58,7 +82,17 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         windowing=WindowingSpec(**model_row["windowing_spec"]),
         model=ModelSpec(**model_row["model_spec"]),
         enrichment=EnrichmentSpec(**model_row["enrichment_spec"]) if model_row.get("enrichment_spec") else EnrichmentSpec(),
+        run_scope=payload.run_scope,
     )
+    if specs.run_scope is None:
+        specs.run_scope = "micro" if specs.windowing.windowing_mode.startswith("conversation") else "macro"
+    if specs.windowing.windowing_mode.startswith("conversation") and not dataset.boundary_column:
+        detail = {
+            "ok": False,
+            "error": "invalid_windowing",
+            "detail": f"boundary_column required for windowing_mode={specs.windowing.windowing_mode} dataset_id={dataset.dataset_id}",
+        }
+        raise HTTPException(status_code=400, detail=detail)
     spec_hash = compute_spec_hash(
         dataset_id=payload.dataset_id,
         model_id=payload.model_id,
@@ -67,6 +101,7 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         windowing_spec=specs.windowing,
         model_spec=specs.model,
         enrichment_spec=specs.enrichment,
+        run_scope=specs.run_scope,
     )
     existing = fetch_run_by_spec_hash(spec_hash)
     if existing:
@@ -79,6 +114,7 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         spec_hash=spec_hash,
         status="queued",
         stage="training",
+        run_scope=payload.run_scope,
         stats={},
         artifact_paths={},
         created_at=created_at,
@@ -174,7 +210,17 @@ def enrich_run_endpoint(run_id: UUID, payload: RunEnrichRequest, background_task
     row = fetch_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
-    enqueue_enrichment(background_tasks, run_id, force=payload.force, enricher=payload.enricher, limit=payload.limit)
+    enqueue_enrichment(
+        background_tasks,
+        run_id,
+        force=payload.force,
+        enricher=payload.enricher,
+        limit=payload.limit,
+        target=payload.target,
+        fields=payload.fields,
+        llm_backend=payload.llm_backend,
+        prompt_template=payload.prompt_template,
+    )
     stats = row.get("stats") or {}
     return RunEnrichResponse(
         run_id=run_id,

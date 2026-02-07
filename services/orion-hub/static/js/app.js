@@ -1254,6 +1254,7 @@ loadDismissedIds();
     datasets: [],
     models: [],
     runs: [],
+    previewDatasetId: "",
     selectedDatasetId: "",
     selectedModelId: "",
     selectedRunId: "",
@@ -1339,6 +1340,26 @@ loadDismissedIds();
     );
     box.textContent = message;
     container.appendChild(box);
+  }
+
+  function parseDatasets(json) {
+    const arr = json && Array.isArray(json.datasets)
+      ? json.datasets
+      : json && Array.isArray(json.items)
+        ? json.items
+        : Array.isArray(json)
+          ? json
+          : [];
+    return arr
+      .map((d) => {
+        const id = d.dataset_id || d.id;
+        return {
+          id,
+          name: d.name || id,
+          raw: d,
+        };
+      })
+      .filter((x) => x.id);
   }
 
   function formatHttpError(label, error) {
@@ -1547,7 +1568,7 @@ loadDismissedIds();
       return;
     }
     container.innerHTML = topicStudioMvpState.datasets
-      .map((ds) => `${ds.name || ds.dataset_id} (${ds.dataset_id})`)
+      .map((ds) => `${ds.name} (${ds.id})`)
       .join("<br />");
   }
 
@@ -1592,28 +1613,23 @@ loadDismissedIds();
   }
 
   function updateMvpSelectors() {
-    const datasetItems = topicStudioMvpState.datasets.map((ds) => ({
-      ...ds,
-      _value: ds.dataset_id || ds.id || "",
-      _label: ds.name || ds.dataset_name || ds.dataset_id || ds.id || "--",
-    }));
     updateSelectOptions(
       "ts-mvp-preview-dataset",
-      datasetItems,
-      "_value",
-      (ds) => `${ds._label}`
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
     );
     updateSelectOptions(
       "ts-mvp-model-dataset",
-      datasetItems,
-      "_value",
-      (ds) => `${ds._label}`
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
     );
     updateSelectOptions(
       "ts-mvp-run-dataset",
-      datasetItems,
-      "_value",
-      (ds) => `${ds._label}`
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
     );
     updateSelectOptions(
       "ts-mvp-run-model",
@@ -1629,10 +1645,24 @@ loadDismissedIds();
     );
     const previewSelect = document.getElementById("ts-mvp-preview-dataset");
     const previewButton = document.getElementById("ts-mvp-preview");
+    if (previewSelect) {
+      const validIds = new Set(topicStudioMvpState.datasets.map((ds) => ds.id));
+      if (!validIds.has(topicStudioMvpState.previewDatasetId)) {
+        topicStudioMvpState.previewDatasetId = "";
+      }
+      previewSelect.value = topicStudioMvpState.previewDatasetId;
+    }
     if (previewSelect && previewButton) {
-      previewButton.disabled = !previewSelect.value;
-      previewButton.style.opacity = previewSelect.value ? "1" : "0.6";
-      previewButton.style.cursor = previewSelect.value ? "pointer" : "not-allowed";
+      const enabled = Boolean(topicStudioMvpState.previewDatasetId);
+      previewButton.disabled = !enabled;
+      previewButton.style.opacity = enabled ? "1" : "0.6";
+      previewButton.style.cursor = enabled ? "pointer" : "not-allowed";
+    }
+    if (HUB_DEBUG) {
+      const debugEl = document.getElementById("ts-mvp-preview-debug");
+      if (debugEl) {
+        debugEl.textContent = `datasetsList count = ${topicStudioMvpState.datasets.length}`;
+      }
     }
   }
 
@@ -1680,6 +1710,7 @@ loadDismissedIds();
     const previewSelect = document.getElementById("ts-mvp-preview-dataset");
     if (previewSelect) {
       previewSelect.addEventListener("change", () => {
+        topicStudioMvpState.previewDatasetId = previewSelect.value;
         updateMvpSelectors();
       });
     }
@@ -1772,7 +1803,7 @@ loadDismissedIds();
     updateTopicStudioPanelStep();
     const datasetResult = await safeJsonFetch("/api/topic-foundry/datasets");
     if (datasetResult.ok) {
-      topicStudioMvpState.datasets = datasetResult.json?.datasets || [];
+      topicStudioMvpState.datasets = parseDatasets(datasetResult.json);
       renderDatasetList();
       updateMvpSelectors();
     } else {
@@ -1871,21 +1902,23 @@ loadDismissedIds();
   }
 
   async function previewDataset() {
-    const datasetId = document.getElementById("ts-mvp-preview-dataset")?.value;
+    const datasetId = topicStudioMvpState.previewDatasetId || document.getElementById("ts-mvp-preview-dataset")?.value;
     if (!datasetId) {
       setMvpError("Select a dataset to preview.");
       return;
     }
+    const windowing = {
+      block_mode: document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs",
+      time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
+      max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
+    };
     const payload = {
       dataset_id: datasetId,
       start_at: document.getElementById("ts-mvp-preview-start")?.value || null,
       end_at: document.getElementById("ts-mvp-preview-end")?.value || null,
       limit: Number(document.getElementById("ts-mvp-preview-limit")?.value || 200),
-      windowing: {
-        block_mode: document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs",
-        time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
-        max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
-      },
+      windowing,
+      windowing_spec: windowing,
     };
     const result = await safeJsonFetch("/api/topic-foundry/datasets/preview", {
       method: "POST",
@@ -2176,8 +2209,8 @@ loadDismissedIds();
     tsDatasetSelect.innerHTML = '<option value="">New dataset…</option>';
     topicStudioDatasets.forEach((dataset) => {
       const option = document.createElement("option");
-      option.value = dataset.dataset_id;
-      option.textContent = `${dataset.name} (${dataset.dataset_id})`;
+      option.value = dataset.id;
+      option.textContent = `${dataset.name} (${dataset.id})`;
       tsDatasetSelect.appendChild(option);
     });
   }
@@ -2290,8 +2323,8 @@ loadDismissedIds();
     tsConvoDatasetSelect.innerHTML = '<option value="">Select dataset…</option>';
     topicStudioDatasets.forEach((dataset) => {
       const option = document.createElement("option");
-      option.value = dataset.dataset_id;
-      option.textContent = `${dataset.name} (${dataset.dataset_id})`;
+      option.value = dataset.id;
+      option.textContent = `${dataset.name} (${dataset.id})`;
       tsConvoDatasetSelect.appendChild(option);
     });
     if (current) {
@@ -2301,7 +2334,7 @@ loadDismissedIds();
       if (tsDatasetSelect?.value) {
         tsConvoDatasetSelect.value = tsDatasetSelect.value;
       } else if (topicStudioDatasets.length > 0) {
-        tsConvoDatasetSelect.value = topicStudioDatasets[0].dataset_id;
+        tsConvoDatasetSelect.value = topicStudioDatasets[0].id;
       }
     }
   }
@@ -2508,6 +2541,17 @@ loadDismissedIds();
     if (!tsSegmentsFacets) return;
     tsSegmentsFacets.innerHTML = "";
     if (!facets) {
+      const note = document.createElement("div");
+      note.className = "text-[10px] text-gray-500";
+      note.textContent = "Facets unavailable";
+      tsSegmentsFacets.appendChild(note);
+      return;
+    }
+    if (facets.ok === false) {
+      const note = document.createElement("div");
+      note.className = "text-[10px] text-gray-500";
+      note.textContent = "Facets unavailable";
+      tsSegmentsFacets.appendChild(note);
       return;
     }
     const makeChip = (label, type, value) => {
@@ -4782,11 +4826,26 @@ loadDismissedIds();
     await refreshTopicStudioStatus();
     try {
       const datasetsResponse = await topicFoundryFetch("/datasets");
-      topicStudioDatasets = datasetsResponse?.datasets || [];
+      topicStudioDatasets = parseDatasets(datasetsResponse);
       renderDatasetOptions();
       renderConversationDatasetOptions();
+      if (HUB_DEBUG) {
+        const debugLine = document.getElementById("tsDebugLine");
+        if (debugLine) {
+          const firstId = topicStudioDatasets[0]?.id || "--";
+          debugLine.textContent = `datasetsCount=${topicStudioDatasets.length} first=${firstId}`;
+          debugLine.classList.remove("hidden");
+        }
+      }
     } catch (err) {
       console.warn("[TopicStudio] Failed to load datasets", err);
+      if (HUB_DEBUG) {
+        const debugLine = document.getElementById("tsDebugLine");
+        if (debugLine) {
+          debugLine.textContent = "datasetsCount=0 first=--";
+          debugLine.classList.remove("hidden");
+        }
+      }
     }
     try {
       const modelsResponse = await topicFoundryFetch("/models");
@@ -4860,9 +4919,9 @@ loadDismissedIds();
 
   if (tsDatasetSelect) {
     tsDatasetSelect.addEventListener("change", () => {
-      const selected = topicStudioDatasets.find((dataset) => dataset.dataset_id === tsDatasetSelect.value);
-      if (selected) {
-        populateDatasetForm(selected);
+      const selected = topicStudioDatasets.find((dataset) => dataset.id === tsDatasetSelect.value);
+      if (selected?.raw) {
+        populateDatasetForm(selected.raw);
       }
     });
   }
@@ -6055,10 +6114,17 @@ loadDismissedIds();
         params.set("aspect", tsSegmentsAspect.value);
       }
       const facets = await topicFoundryFetch(`/segments/facets?${params.toString()}`);
+      if (!facets || facets.ok === false) {
+        topicStudioSegmentsLastFacets = null;
+        renderSegmentsFacets(null);
+        return;
+      }
       topicStudioSegmentsLastFacets = facets;
       renderSegmentsFacets(facets);
     } catch (err) {
       console.warn("[TopicStudio] Failed to load segment facets", err);
+      topicStudioSegmentsLastFacets = null;
+      renderSegmentsFacets(null);
     }
   }
 

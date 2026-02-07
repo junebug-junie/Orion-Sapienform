@@ -4,6 +4,7 @@
 // Global State
 // ───────────────────────────────────────────────────────────────
 window.__HUB_LAST_STEP = "boot";
+const HUB_DEBUG = new URLSearchParams(window.location.search).get("debug") === "1";
 const HUB_CFG = window.__HUB_CFG__ || {};
 
 function setHubStep(step) {
@@ -577,15 +578,123 @@ loadDismissedIds();
     setHubStep("topic-skeleton-mounted");
   }
 
+  function renderTopicStudioPanel() {
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:1200px; margin:0 auto; pointer-events:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:20px; font-weight:600;">Topic Studio</div>
+            <div style="font-size:12px; color:#888;">Manage datasets, models, runs, and segments.</div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span id="ts-mvp-last-refresh" style="font-size:11px; color:#777;">Last refresh: --</span>
+            <button id="ts-mvp-refresh" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Refresh</button>
+          </div>
+        </div>
+        <div style="margin-top:12px; padding:10px; border:1px solid #333; border-radius:10px; background:#111;">
+          <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px;">
+            <div>Ready: <span id="ts-mvp-ready">loading</span></div>
+            <div>Capabilities: <span id="ts-mvp-capabilities">loading</span></div>
+            <div>Details: <span id="ts-mvp-ready-detail">--</span></div>
+          </div>
+        </div>
+        <div id="ts-mvp-errors" style="margin-top:10px; display:flex; flex-direction:column; gap:8px;"></div>
+
+        <div style="margin-top:16px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="font-weight:600; margin-bottom:8px;">Datasets</div>
+            <div id="ts-mvp-datasets-list" style="font-size:12px; color:#aaa; margin-bottom:8px;">(loading)</div>
+            <div style="font-size:12px; margin-bottom:6px;">Create dataset</div>
+            <div style="display:grid; gap:6px;">
+              <input id="ts-mvp-dataset-name" placeholder="name" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-table" placeholder="source_table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-id" placeholder="id_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-time" placeholder="time_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-text" placeholder="text_columns (comma)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-where" placeholder="where_sql (optional)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-tz" value="UTC" placeholder="timezone" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-create-dataset" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create dataset</button>
+            </div>
+            <div style="margin-top:12px; font-weight:600;">Preview</div>
+            <div style="display:grid; gap:6px; margin-top:6px;">
+              <select id="ts-mvp-preview-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <input id="ts-mvp-preview-start" placeholder="start_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-end" placeholder="end_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-limit" value="200" placeholder="limit" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-preview-block" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
+                <option value="turn_pairs">turn_pairs</option>
+                <option value="conversation">conversation</option>
+              </select>
+              <input id="ts-mvp-preview-gap" value="900" placeholder="time_gap_seconds" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-maxchars" value="6000" placeholder="max_chars" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-preview" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Preview</button>
+            </div>
+            <div id="ts-mvp-preview-stats" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
+            <div id="ts-mvp-preview-samples" style="margin-top:6px; font-size:12px; color:#aaa;">--</div>
+          </div>
+
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="font-weight:600; margin-bottom:8px;">Models</div>
+            <div id="ts-mvp-models-list" style="font-size:12px; color:#aaa; margin-bottom:8px;">(loading)</div>
+            <div style="font-size:12px; margin-bottom:6px;">Create model</div>
+            <div style="display:grid; gap:6px;">
+              <input id="ts-mvp-model-name" placeholder="name" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-version" placeholder="version" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-stage" value="development" placeholder="stage" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-model-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <input id="ts-mvp-model-mincluster" value="20" placeholder="min_cluster_size" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-metric" value="cosine" placeholder="metric" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <textarea id="ts-mvp-model-params" rows="2" placeholder='params JSON' style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></textarea>
+              <button id="ts-mvp-create-model" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create model</button>
+            </div>
+
+            <div style="margin-top:12px; font-weight:600;">Runs</div>
+            <div style="display:grid; gap:6px; margin-top:6px;">
+              <select id="ts-mvp-run-model" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-run-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <input id="ts-mvp-run-start" placeholder="start_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-run-end" placeholder="end_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-train-run" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Train run</button>
+              <button id="ts-mvp-enrich-run" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Enrich run</button>
+            </div>
+            <div id="ts-mvp-runs-list" style="margin-top:8px; font-size:12px; color:#aaa;">(loading)</div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px; border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+          <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+            <div style="font-weight:600;">Segments</div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <select id="ts-mvp-segments-run" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-segments-enriched" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
+                <option value="">all</option>
+                <option value="true">has_enrichment=true</option>
+                <option value="false">has_enrichment=false</option>
+              </select>
+              <button id="ts-mvp-load-segments" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Load</button>
+            </div>
+          </div>
+          <div id="ts-mvp-segments-table" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
+          <div id="ts-mvp-segment-detail" style="margin-top:10px; font-size:12px; color:#bbb; border-top:1px solid #333; padding-top:8px;">Select a segment to view details.</div>
+        </div>
+        <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-mvp-step">${window.__HUB_LAST_STEP}</span></div>
+      </div>
+    `;
+  }
+
   function handleHashRouting() {
     if (!hubTabButton || !topicStudioTabButton) return;
     const hash = window.location.hash;
     if (hash === "#topic-studio") {
       setHubStep("route:topic-studio");
       setActiveTab("topic-studio");
-      renderTopicStudioSkeleton();
+      renderTopicStudioPanel();
       ensureTopicStudioSentinel();
+      bindTopicStudioPanel();
       refreshTopicStudioRoute();
+      refreshTopicStudioMvp();
       refreshTopicStudio().catch((err) => {
         console.warn("[TopicStudio] Refresh failed", err);
       });
@@ -604,6 +713,7 @@ loadDismissedIds();
   }
 
   function ensureTopicStudioSentinel() {
+    if (!HUB_DEBUG) return;
     let sentinel = document.getElementById("ts-route-sentinel");
     if (!sentinel) {
       sentinel = document.createElement("div");
@@ -623,6 +733,11 @@ loadDismissedIds();
     if (stepEl) {
       stepEl.textContent = window.__HUB_LAST_STEP || "";
     }
+  }
+
+  function updateTopicStudioPanelStep() {
+    const stepEl = document.getElementById("ts-mvp-step");
+    if (stepEl) stepEl.textContent = window.__HUB_LAST_STEP || "";
   }
 
   function setTopicStudioHostStatus(id, value, color = "#ddd") {
@@ -649,6 +764,7 @@ loadDismissedIds();
   async function refreshTopicStudioRoute() {
     setHubStep("fetch:ready");
     updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
     setTopicStudioHostStatus("ts-host-ready", "loading", "#ddd");
     setTopicStudioHostStatus("ts-host-capabilities", "loading", "#ddd");
     setTopicStudioHostStatus("ts-host-runs", "loading", "#ddd");
@@ -668,6 +784,7 @@ loadDismissedIds();
 
     setHubStep("fetch:capabilities");
     updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
     try {
       const resp = await hubFetch(apiUrl("/api/topic-foundry/capabilities"));
       if (!resp.ok) throw new Error(`capabilities ${resp.status}`);
@@ -680,6 +797,7 @@ loadDismissedIds();
 
     setHubStep("fetch:runs");
     updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
     try {
       const resp = await hubFetch(apiUrl("/api/topic-foundry/runs?limit=20"));
       if (!resp.ok) throw new Error(`runs ${resp.status}`);
@@ -692,6 +810,7 @@ loadDismissedIds();
 
     setHubStep("render:done");
     updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
   }
 
   function resolveTopicStudioSubview() {
@@ -1119,6 +1238,15 @@ loadDismissedIds();
   let topicStudioEventsPage = [];
   let topicStudioKgEdgesPage = [];
   const TOPIC_STUDIO_RUN_ID_KEY = "topic_studio_run_id_v1";
+  const topicStudioMvpState = {
+    datasets: [],
+    models: [],
+    runs: [],
+    selectedDatasetId: "",
+    selectedModelId: "",
+    selectedRunId: "",
+    runPoller: null,
+  };
   const topicStudioDebugState = {
     enabled: new URLSearchParams(window.location.search).get("debug") === "1",
     lastRenderStep: "init",
@@ -1182,6 +1310,545 @@ loadDismissedIds();
   function recordTopicStudioFetchStatus(key, status, ok, detail) {
     topicStudioDebugState.fetchStatus[key] = { status, ok, detail };
     updateTopicStudioDebugOverlay();
+  }
+
+  function setMvpError(message) {
+    const container = document.getElementById("ts-mvp-errors");
+    if (!container) return;
+    const box = document.createElement("div");
+    box.setAttribute(
+      "style",
+      "background:#220; color:#f88; border:1px solid #a33; padding:8px; border-radius:8px; font-size:12px; font-family:monospace;"
+    );
+    box.textContent = message;
+    container.appendChild(box);
+  }
+
+  function clearMvpErrors() {
+    const container = document.getElementById("ts-mvp-errors");
+    if (container) container.innerHTML = "";
+  }
+
+  async function safeJsonFetch(path, options) {
+    try {
+      const resp = await hubFetch(apiUrl(path), options);
+      const text = await resp.text();
+      let json = null;
+      if (text) {
+        try {
+          json = JSON.parse(text);
+        } catch (err) {
+          json = text;
+        }
+      }
+      if (!resp.ok) {
+        const error = new Error(`status ${resp.status}`);
+        error.status = resp.status;
+        error.body = text;
+        return { ok: false, resp, json, error };
+      }
+      return { ok: true, resp, json };
+    } catch (err) {
+      return { ok: false, resp: null, json: null, error: err };
+    }
+  }
+
+  function renderDatasetList() {
+    const container = document.getElementById("ts-mvp-datasets-list");
+    if (!container) return;
+    if (topicStudioMvpState.datasets.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.datasets
+      .map((ds) => `${ds.name || ds.dataset_id} (${ds.dataset_id})`)
+      .join("<br />");
+  }
+
+  function renderModelList() {
+    const container = document.getElementById("ts-mvp-models-list");
+    if (!container) return;
+    if (topicStudioMvpState.models.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.models
+      .map((model) => `${model.name || model.model_id} ${model.version || ""} (${model.model_id})`)
+      .join("<br />");
+  }
+
+  function renderRunsList() {
+    const container = document.getElementById("ts-mvp-runs-list");
+    if (!container) return;
+    if (topicStudioMvpState.runs.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.runs
+      .map((run) => `${run.run_id} · ${run.status || "--"} ${run.stage || ""} · ${run.created_at || "--"}`)
+      .join("<br />");
+  }
+
+  function updateSelectOptions(selectId, items, valueKey, labelFn) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select…";
+    select.appendChild(placeholder);
+    items.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item[valueKey];
+      option.textContent = labelFn(item);
+      select.appendChild(option);
+    });
+  }
+
+  function updateMvpSelectors() {
+    updateSelectOptions(
+      "ts-mvp-preview-dataset",
+      topicStudioMvpState.datasets,
+      "dataset_id",
+      (ds) => `${ds.name || ds.dataset_id}`
+    );
+    updateSelectOptions(
+      "ts-mvp-model-dataset",
+      topicStudioMvpState.datasets,
+      "dataset_id",
+      (ds) => `${ds.name || ds.dataset_id}`
+    );
+    updateSelectOptions(
+      "ts-mvp-run-dataset",
+      topicStudioMvpState.datasets,
+      "dataset_id",
+      (ds) => `${ds.name || ds.dataset_id}`
+    );
+    updateSelectOptions(
+      "ts-mvp-run-model",
+      topicStudioMvpState.models,
+      "model_id",
+      (model) => `${model.name || model.model_id}`
+    );
+    updateSelectOptions(
+      "ts-mvp-segments-run",
+      topicStudioMvpState.runs,
+      "run_id",
+      (run) => `${run.run_id}`
+    );
+  }
+
+  function setLastRefresh() {
+    const el = document.getElementById("ts-mvp-last-refresh");
+    if (el) el.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+  }
+
+  function bindTopicStudioPanel() {
+    const refreshButton = document.getElementById("ts-mvp-refresh");
+    if (refreshButton) {
+      refreshButton.addEventListener("click", () => {
+        clearMvpErrors();
+        refreshTopicStudioMvp();
+      });
+    }
+    const createDatasetBtn = document.getElementById("ts-mvp-create-dataset");
+    if (createDatasetBtn) {
+      createDatasetBtn.addEventListener("click", () => {
+        createDataset().catch((err) => setMvpError(err?.message || "Failed to create dataset"));
+      });
+    }
+    const previewBtn = document.getElementById("ts-mvp-preview");
+    if (previewBtn) {
+      previewBtn.addEventListener("click", () => {
+        previewDataset().catch((err) => setMvpError(err?.message || "Failed to preview dataset"));
+      });
+    }
+    const createModelBtn = document.getElementById("ts-mvp-create-model");
+    if (createModelBtn) {
+      createModelBtn.addEventListener("click", () => {
+        createModel().catch((err) => setMvpError(err?.message || "Failed to create model"));
+      });
+    }
+    const trainRunBtn = document.getElementById("ts-mvp-train-run");
+    if (trainRunBtn) {
+      trainRunBtn.addEventListener("click", () => {
+        trainRun().catch((err) => setMvpError(err?.message || "Failed to train run"));
+      });
+    }
+    const enrichBtn = document.getElementById("ts-mvp-enrich-run");
+    if (enrichBtn) {
+      enrichBtn.addEventListener("click", () => {
+        enrichRun().catch((err) => setMvpError(err?.message || "Failed to enrich run"));
+      });
+    }
+    const loadSegmentsBtn = document.getElementById("ts-mvp-load-segments");
+    if (loadSegmentsBtn) {
+      loadSegmentsBtn.addEventListener("click", () => {
+        loadSegmentsMvp().catch((err) => setMvpError(err?.message || "Failed to load segments"));
+      });
+    }
+  }
+
+  async function refreshTopicStudioMvp() {
+    clearMvpErrors();
+    setHubStep("fetch:ready");
+    updateTopicStudioPanelStep();
+    const readyResult = await safeJsonFetch("/api/topic-foundry/ready");
+    const readyEl = document.getElementById("ts-mvp-ready");
+    const readyDetail = document.getElementById("ts-mvp-ready-detail");
+    if (readyEl) {
+      if (readyResult.ok && readyResult.json) {
+        readyEl.textContent = readyResult.json.ok ? "ok" : "degraded";
+        readyEl.style.color = readyResult.json.ok ? "#6f6" : "#ff6";
+        if (readyDetail) {
+          const checks = readyResult.json.checks || {};
+          readyDetail.textContent = `PG:${checks.pg?.detail || "--"} · Embed:${checks.embedding?.detail || "--"}`;
+        }
+      } else {
+        readyEl.textContent = "error";
+        readyEl.style.color = "#f66";
+        setMvpError(`ready ${readyResult.error?.status || ""} ${truncateCrashText(readyResult.error?.body || readyResult.error?.message)}`);
+      }
+    }
+
+    setHubStep("fetch:capabilities");
+    updateTopicStudioPanelStep();
+    const capResult = await safeJsonFetch("/api/topic-foundry/capabilities");
+    const capEl = document.getElementById("ts-mvp-capabilities");
+    if (capEl) {
+      if (capResult.ok) {
+        capEl.textContent = "ok";
+        capEl.style.color = "#6f6";
+      } else {
+        capEl.textContent = "error";
+        capEl.style.color = "#f66";
+        setMvpError(`capabilities ${capResult.error?.status || ""} ${truncateCrashText(capResult.error?.body || capResult.error?.message)}`);
+      }
+    }
+
+    setHubStep("fetch:datasets");
+    updateTopicStudioPanelStep();
+    const datasetResult = await safeJsonFetch("/api/topic-foundry/datasets");
+    if (datasetResult.ok) {
+      topicStudioMvpState.datasets = datasetResult.json?.datasets || [];
+      renderDatasetList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.datasets = [];
+      renderDatasetList();
+      setMvpError(`datasets ${datasetResult.error?.status || ""} ${truncateCrashText(datasetResult.error?.body || datasetResult.error?.message)}`);
+    }
+
+    setHubStep("fetch:models");
+    updateTopicStudioPanelStep();
+    const modelResult = await safeJsonFetch("/api/topic-foundry/models");
+    if (modelResult.ok) {
+      topicStudioMvpState.models = modelResult.json?.models || [];
+      renderModelList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.models = [];
+      renderModelList();
+      setMvpError(`models ${modelResult.error?.status || ""} ${truncateCrashText(modelResult.error?.body || modelResult.error?.message)}`);
+    }
+
+    setHubStep("fetch:runs");
+    updateTopicStudioPanelStep();
+    const runsResult = await safeJsonFetch("/api/topic-foundry/runs?limit=20");
+    if (runsResult.ok) {
+      topicStudioMvpState.runs = normalizeRunsResponse(runsResult.json);
+      renderRunsList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.runs = [];
+      renderRunsList();
+      setMvpError(`runs ${runsResult.error?.status || ""} ${truncateCrashText(runsResult.error?.body || runsResult.error?.message)}`);
+    }
+
+    setHubStep("render:done");
+    updateTopicStudioPanelStep();
+    setLastRefresh();
+  }
+
+  async function createDataset() {
+    const name = document.getElementById("ts-mvp-dataset-name")?.value?.trim() || "";
+    const sourceTable = document.getElementById("ts-mvp-dataset-table")?.value?.trim() || "";
+    if (!name || !sourceTable) {
+      setMvpError("Dataset name and source_table are required.");
+      return;
+    }
+    const payload = {
+      name,
+      source_table: sourceTable,
+      id_column: document.getElementById("ts-mvp-dataset-id")?.value?.trim() || null,
+      time_column: document.getElementById("ts-mvp-dataset-time")?.value?.trim() || null,
+      text_columns: (document.getElementById("ts-mvp-dataset-text")?.value || "")
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean),
+      where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || null,
+      timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/datasets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(`create dataset ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      return;
+    }
+    await refreshTopicStudioMvp();
+    if (result.json?.dataset_id) {
+      topicStudioMvpState.selectedDatasetId = result.json.dataset_id;
+      updateMvpSelectors();
+    }
+  }
+
+  async function previewDataset() {
+    const datasetId = document.getElementById("ts-mvp-preview-dataset")?.value;
+    if (!datasetId) {
+      setMvpError("Select a dataset to preview.");
+      return;
+    }
+    const payload = {
+      dataset_id: datasetId,
+      start_at: document.getElementById("ts-mvp-preview-start")?.value || null,
+      end_at: document.getElementById("ts-mvp-preview-end")?.value || null,
+      limit: Number(document.getElementById("ts-mvp-preview-limit")?.value || 200),
+      windowing_spec: {
+        block_mode: document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs",
+        time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
+        max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
+      },
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/datasets/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const statsEl = document.getElementById("ts-mvp-preview-stats");
+    const samplesEl = document.getElementById("ts-mvp-preview-samples");
+    if (!result.ok) {
+      if (statsEl) statsEl.textContent = "--";
+      if (samplesEl) samplesEl.textContent = "--";
+      setMvpError(`preview ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      return;
+    }
+    const stats = result.json?.stats || {};
+    if (statsEl) {
+      statsEl.textContent = `docs=${stats.docs_generated ?? "--"} segments=${stats.segments_generated ?? "--"} avg_chars=${stats.avg_chars ?? "--"}`;
+    }
+    if (samplesEl) {
+      const samples = result.json?.samples || result.json?.segments || [];
+      if (!samples.length) {
+        samplesEl.textContent = "(none)";
+      } else {
+        samplesEl.innerHTML = samples
+          .slice(0, 5)
+          .map((s) => `${s.segment_id || ""} · ${s.snippet || s.text || ""}`)
+          .join("<br />");
+      }
+    }
+  }
+
+  async function createModel() {
+    const name = document.getElementById("ts-mvp-model-name")?.value?.trim() || "";
+    const version = document.getElementById("ts-mvp-model-version")?.value?.trim() || "";
+    const stage = document.getElementById("ts-mvp-model-stage")?.value?.trim() || "development";
+    const datasetId = document.getElementById("ts-mvp-model-dataset")?.value;
+    if (!name || !version || !datasetId) {
+      setMvpError("Model name, version, and dataset are required.");
+      return;
+    }
+    let params = {};
+    try {
+      const raw = document.getElementById("ts-mvp-model-params")?.value?.trim();
+      params = raw ? JSON.parse(raw) : {};
+    } catch (err) {
+      setMvpError("Model params must be valid JSON.");
+      return;
+    }
+    const payload = {
+      name,
+      version,
+      stage,
+      dataset_id: datasetId,
+      model_spec: {
+        algorithm: "hdbscan",
+        min_cluster_size: Number(document.getElementById("ts-mvp-model-mincluster")?.value || 20),
+        metric: document.getElementById("ts-mvp-model-metric")?.value || "cosine",
+        params,
+      },
+      windowing_spec: {
+        block_mode: document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs",
+        time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
+        max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
+      },
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(`create model ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      return;
+    }
+    await refreshTopicStudioMvp();
+    if (result.json?.model_id) {
+      topicStudioMvpState.selectedModelId = result.json.model_id;
+      updateMvpSelectors();
+    }
+  }
+
+  async function trainRun() {
+    const modelId = document.getElementById("ts-mvp-run-model")?.value;
+    const datasetId = document.getElementById("ts-mvp-run-dataset")?.value;
+    if (!modelId || !datasetId) {
+      setMvpError("Select a model and dataset to train.");
+      return;
+    }
+    const payload = {
+      model_id: modelId,
+      dataset_id: datasetId,
+      start_at: document.getElementById("ts-mvp-run-start")?.value || null,
+      end_at: document.getElementById("ts-mvp-run-end")?.value || null,
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/runs/train", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(`train run ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      return;
+    }
+    await refreshTopicStudioMvp();
+    const runId = result.json?.run_id;
+    if (runId) {
+      startRunPolling(runId);
+    }
+  }
+
+  async function enrichRun() {
+    const targetRun = document.getElementById("ts-mvp-segments-run")?.value;
+    if (!targetRun) {
+      setMvpError("Select a run to enrich.");
+      return;
+    }
+    const result = await safeJsonFetch(`/api/topic-foundry/runs/${targetRun}/enrich`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enricher: "heuristic" }),
+    });
+    if (!result.ok) {
+      setMvpError(`enrich ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      return;
+    }
+    await refreshTopicStudioMvp();
+  }
+
+  function startRunPolling(runId) {
+    if (topicStudioMvpState.runPoller) {
+      clearInterval(topicStudioMvpState.runPoller);
+    }
+    topicStudioMvpState.runPoller = setInterval(async () => {
+      const result = await safeJsonFetch(`/api/topic-foundry/runs/${runId}`);
+      if (!result.ok) {
+        setMvpError(`run poll ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+        clearInterval(topicStudioMvpState.runPoller);
+        topicStudioMvpState.runPoller = null;
+        return;
+      }
+      const run = result.json;
+      const idx = topicStudioMvpState.runs.findIndex((r) => r.run_id === runId);
+      if (idx >= 0) {
+        topicStudioMvpState.runs[idx] = run;
+        renderRunsList();
+      }
+      if (["complete", "failed"].includes((run.status || "").toLowerCase())) {
+        clearInterval(topicStudioMvpState.runPoller);
+        topicStudioMvpState.runPoller = null;
+      }
+    }, 2000);
+  }
+
+  async function loadSegmentsMvp() {
+    const runId = document.getElementById("ts-mvp-segments-run")?.value;
+    if (!runId) {
+      setMvpError("Select a run to load segments.");
+      return;
+    }
+    const enriched = document.getElementById("ts-mvp-segments-enriched")?.value;
+    const params = new URLSearchParams({
+      run_id: runId,
+      include_snippet: "true",
+      include_bounds: "true",
+    });
+    if (enriched) params.set("has_enrichment", enriched);
+    const result = await safeJsonFetch(`/api/topic-foundry/segments?${params.toString()}`);
+    const table = document.getElementById("ts-mvp-segments-table");
+    if (!table) return;
+    if (!result.ok) {
+      table.textContent = "--";
+      setMvpError(`segments ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      return;
+    }
+    const items = asItems(result.json);
+    if (!items.length) {
+      table.textContent = "(none)";
+      return;
+    }
+    table.innerHTML = `
+      <table style="width:100%; border-collapse:collapse;">
+        <thead><tr style="text-align:left; color:#888;">
+          <th style="padding:4px;">segment_id</th>
+          <th style="padding:4px;">size</th>
+          <th style="padding:4px;">label</th>
+          <th style="padding:4px;">bounds</th>
+          <th style="padding:4px;">snippet</th>
+        </tr></thead>
+        <tbody>
+          ${items
+            .map(
+              (segment) => `
+                <tr data-segment-id="${segment.segment_id}" style="cursor:pointer; border-top:1px solid #222;">
+                  <td style="padding:4px; color:#7fd;">${segment.segment_id || "--"}</td>
+                  <td style="padding:4px;">${segment.size || "--"}</td>
+                  <td style="padding:4px;">${segment.label || "--"}</td>
+                  <td style="padding:4px;">${segment.bounds || segment.bounds_text || "--"}</td>
+                  <td style="padding:4px;">${segment.snippet || "--"}</td>
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
+    table.querySelectorAll("[data-segment-id]").forEach((row) => {
+      row.addEventListener("click", () => {
+        const id = row.getAttribute("data-segment-id");
+        if (id) loadSegmentDetail(id);
+      });
+    });
+  }
+
+  async function loadSegmentDetail(segmentId) {
+    const detailEl = document.getElementById("ts-mvp-segment-detail");
+    if (!detailEl) return;
+    const result = await safeJsonFetch(`/api/topic-foundry/segments/${segmentId}`);
+    if (!result.ok) {
+      detailEl.textContent = "Failed to load segment detail.";
+      setMvpError(`segment detail ${result.error?.status || ""} ${truncateCrashText(result.error?.body || result.error?.message)}`);
+      return;
+    }
+    const seg = result.json || {};
+    detailEl.innerHTML = `
+      <div><strong>${seg.segment_id || ""}</strong></div>
+      <div style="margin-top:4px;">${seg.text || seg.snippet || "--"}</div>
+      <div style="margin-top:6px; color:#777;">${seg.provenance || "--"}</div>
+    `;
   }
 
   function renderError(target, error, fallback = "Request failed.") {

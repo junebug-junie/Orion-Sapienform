@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import numpy as np
 
-from app.services.windowing import RowBlock
+from app.services.types import RowBlock
 
 
 logger = logging.getLogger("topic-foundry.semantic")

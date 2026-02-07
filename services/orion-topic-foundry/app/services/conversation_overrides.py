@@ -7,7 +7,8 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, NAMESPACE_DNS, uuid5
 
 from app.models import WindowingSpec
-from app.services.windowing import RowBlock, build_blocks_for_conversation
+from app.services.types import RowBlock
+from app.services.windowing import build_blocks_for_conversation
 
 
 @dataclass

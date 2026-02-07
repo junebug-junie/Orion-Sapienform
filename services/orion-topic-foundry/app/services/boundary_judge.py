@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -11,20 +10,11 @@ from uuid import UUID
 from app.models import WindowingSpec
 from app.settings import settings
 from app.storage.repository import fetch_boundary_cache, insert_boundary_cache, utc_now
-from app.services.windowing import RowBlock
 from app.services.llm_client import get_llm_client
+from app.services.types import BoundaryContext, RowBlock
 
 
 logger = logging.getLogger("topic-foundry.boundary-judge")
-
-
-@dataclass
-class BoundaryContext:
-    run_id: Optional[UUID]
-    spec_hash: Optional[str]
-    dataset_id: Optional[UUID]
-    model_id: Optional[UUID]
-    run_dir: Optional[str]
 
 
 def judge_boundaries(

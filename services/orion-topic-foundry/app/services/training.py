@@ -18,9 +18,9 @@ from app.services.data_access import fetch_dataset_rows
 from app.services.conversation_overrides import OverrideRecord, apply_overrides, build_conversations
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.bus_events import get_bus_publisher
-from app.services.boundary_judge import BoundaryContext
 from app.services.enrichment import run_enrichment_sync
-from app.services.windowing import RowBlock, build_segments_with_stats
+from app.services.types import BoundaryContext, RowBlock
+from app.services.windowing import build_segments_with_stats
 from app.settings import settings
 from app.storage.repository import create_event, fetch_run, insert_segments, list_conversation_overrides, update_run, utc_now
 from orion.schemas.topic_foundry import TopicFoundryRunCompleteV1

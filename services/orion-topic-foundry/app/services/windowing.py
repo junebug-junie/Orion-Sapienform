@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 from uuid import uuid4, UUID
@@ -9,23 +8,14 @@ from uuid import uuid4, UUID
 import numpy as np
 
 from app.models import WindowingSpec
-from app.services.boundary_judge import BoundaryContext, judge_boundaries
+from app.services.boundary_judge import judge_boundaries
 from app.services.conversation_overrides import Conversation
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.semantic_segmentation import SemanticConfig, split_blocks
+from app.services.types import BoundaryContext, RowBlock
 
 
 logger = logging.getLogger("topic-foundry.windowing")
-
-
-@dataclass
-class RowBlock:
-    row_ids: List[str]
-    timestamps: List[str]
-    doc_id: str
-    text: str
-    conversation_id: Optional[UUID] = None
-    block_index: Optional[int] = None
 
 
 def build_blocks_for_conversation(

@@ -315,6 +315,7 @@ class CapabilitiesResponse(BaseModel):
     segmentation_modes_supported: List[str]
     enricher_modes_supported: List[str]
     defaults: Dict[str, Any]
+    introspection: Optional[Dict[str, Any]] = None
 
 
 class DriftRunRequest(BaseModel):

@@ -606,13 +606,21 @@ loadDismissedIds();
           <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
             <div style="font-weight:600; margin-bottom:8px;">Datasets</div>
             <div id="ts-mvp-datasets-list" style="font-size:12px; color:#aaa; margin-bottom:8px;">(loading)</div>
+            <div id="ts-mvp-introspect-warning" style="display:none; font-size:12px; color:#fbb; margin-bottom:8px;"></div>
             <div style="font-size:12px; margin-bottom:6px;">Create dataset</div>
             <div style="display:grid; gap:6px;">
               <input id="ts-mvp-dataset-name" placeholder="name" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
-              <input id="ts-mvp-dataset-table" placeholder="source_table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
-              <input id="ts-mvp-dataset-id" placeholder="id_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
-              <input id="ts-mvp-dataset-time" placeholder="time_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
-              <input id="ts-mvp-dataset-text" placeholder="text_columns (comma)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-schema" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-column-id" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-column-time" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <div id="ts-mvp-column-texts" style="border:1px solid #333; padding:6px; border-radius:6px; color:#aaa; font-size:12px; max-height:140px; overflow:auto;">(no columns)</div>
+              <div id="ts-mvp-manual-fields" style="display:none; gap:6px; flex-direction:column;">
+                <input id="ts-mvp-dataset-table" placeholder="source_table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-id" placeholder="id_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-time" placeholder="time_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-text" placeholder="text_columns (comma)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              </div>
               <input id="ts-mvp-dataset-where" placeholder="where_sql (optional)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-dataset-tz" value="UTC" placeholder="timezone" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <button id="ts-mvp-create-dataset" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create dataset</button>
@@ -1246,6 +1254,10 @@ loadDismissedIds();
     selectedModelId: "",
     selectedRunId: "",
     runPoller: null,
+    introspectionOk: false,
+    schemas: [],
+    tables: [],
+    columns: [],
   };
   const topicStudioDebugState = {
     enabled: new URLSearchParams(window.location.search).get("debug") === "1",
@@ -1322,6 +1334,169 @@ loadDismissedIds();
     );
     box.textContent = message;
     container.appendChild(box);
+  }
+
+  function setIntrospectionWarning(message) {
+    const warning = document.getElementById("ts-mvp-introspect-warning");
+    if (!warning) return;
+    if (!message) {
+      warning.style.display = "none";
+      warning.textContent = "";
+      return;
+    }
+    warning.style.display = "block";
+    warning.textContent = message;
+  }
+
+  function setManualDatasetFields(enabled) {
+    const manual = document.getElementById("ts-mvp-manual-fields");
+    const schemaSelect = document.getElementById("ts-mvp-schema");
+    const tableSelect = document.getElementById("ts-mvp-table");
+    const idSelect = document.getElementById("ts-mvp-column-id");
+    const timeSelect = document.getElementById("ts-mvp-column-time");
+    const textList = document.getElementById("ts-mvp-column-texts");
+    if (manual) {
+      manual.style.display = enabled ? "flex" : "none";
+    }
+    if (schemaSelect) schemaSelect.disabled = enabled;
+    if (tableSelect) tableSelect.disabled = enabled;
+    if (idSelect) idSelect.disabled = enabled;
+    if (timeSelect) timeSelect.disabled = enabled;
+    if (textList) textList.style.opacity = enabled ? "0.6" : "1";
+  }
+
+  function renderSchemaOptions() {
+    const select = document.getElementById("ts-mvp-schema");
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select schema…";
+    select.appendChild(placeholder);
+    topicStudioMvpState.schemas.forEach((schema) => {
+      const option = document.createElement("option");
+      option.value = schema;
+      option.textContent = schema;
+      select.appendChild(option);
+    });
+    const preferred = topicStudioMvpState.schemas.includes("public") ? "public" : topicStudioMvpState.schemas[0];
+    if (preferred) {
+      select.value = preferred;
+    }
+  }
+
+  function renderTableOptions() {
+    const select = document.getElementById("ts-mvp-table");
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select table…";
+    select.appendChild(placeholder);
+    topicStudioMvpState.tables.forEach((table) => {
+      const option = document.createElement("option");
+      option.value = table.table_name;
+      option.textContent = `${table.table_name} (${table.table_type})`;
+      select.appendChild(option);
+    });
+  }
+
+  function renderColumnOptions() {
+    const idSelect = document.getElementById("ts-mvp-column-id");
+    const timeSelect = document.getElementById("ts-mvp-column-time");
+    const textList = document.getElementById("ts-mvp-column-texts");
+    if (idSelect) {
+      idSelect.innerHTML = '<option value="">Select id column…</option>';
+    }
+    if (timeSelect) {
+      timeSelect.innerHTML = '<option value="">Select time column…</option>';
+    }
+    if (textList) {
+      textList.innerHTML = "";
+    }
+    if (topicStudioMvpState.columns.length === 0) {
+      if (textList) textList.textContent = "(no columns)";
+      return;
+    }
+    topicStudioMvpState.columns.forEach((col) => {
+      const label = `${col.column_name} (${col.data_type}/${col.udt_name})${col.is_nullable ? "" : " [not null]"}`;
+      if (idSelect) {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = label;
+        idSelect.appendChild(option);
+      }
+      if (timeSelect) {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = label;
+        timeSelect.appendChild(option);
+      }
+      if (textList) {
+        const row = document.createElement("label");
+        row.style.display = "flex";
+        row.style.gap = "6px";
+        row.style.alignItems = "center";
+        row.style.marginBottom = "4px";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = col.column_name;
+        const span = document.createElement("span");
+        span.textContent = label;
+        row.appendChild(checkbox);
+        row.appendChild(span);
+        textList.appendChild(row);
+      }
+    });
+  }
+
+  async function loadSchemas() {
+    const result = await safeJsonFetch("/api/topic-foundry/introspect/schemas");
+    if (!result.ok) {
+      topicStudioMvpState.schemas = [];
+      setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.schemas = result.json?.schemas || [];
+    if (topicStudioMvpState.schemas.length === 0) {
+      setIntrospectionWarning("No schemas available; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    setIntrospectionWarning("");
+    setManualDatasetFields(false);
+    renderSchemaOptions();
+  }
+
+  async function loadTables(schema) {
+    if (!schema) return;
+    const result = await safeJsonFetch(`/api/topic-foundry/introspect/tables?schema=${encodeURIComponent(schema)}`);
+    if (!result.ok) {
+      topicStudioMvpState.tables = [];
+      renderTableOptions();
+      setIntrospectionWarning("Failed to load tables; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.tables = result.json?.tables || [];
+    renderTableOptions();
+  }
+
+  async function loadColumns(schema, table) {
+    if (!schema || !table) return;
+    const result = await safeJsonFetch(
+      `/api/topic-foundry/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`
+    );
+    if (!result.ok) {
+      topicStudioMvpState.columns = [];
+      renderColumnOptions();
+      setIntrospectionWarning("Failed to load columns; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.columns = result.json?.columns || [];
+    renderColumnOptions();
   }
 
   function clearMvpErrors() {
@@ -1451,6 +1626,22 @@ loadDismissedIds();
         refreshTopicStudioMvp();
       });
     }
+    const schemaSelect = document.getElementById("ts-mvp-schema");
+    if (schemaSelect) {
+      schemaSelect.addEventListener("change", () => {
+        const schema = schemaSelect.value;
+        loadTables(schema);
+        topicStudioMvpState.columns = [];
+        renderColumnOptions();
+      });
+    }
+    const tableSelect = document.getElementById("ts-mvp-table");
+    if (tableSelect) {
+      tableSelect.addEventListener("change", () => {
+        const schema = schemaSelect ? schemaSelect.value : "";
+        loadColumns(schema, tableSelect.value);
+      });
+    }
     const createDatasetBtn = document.getElementById("ts-mvp-create-dataset");
     if (createDatasetBtn) {
       createDatasetBtn.addEventListener("click", () => {
@@ -1519,10 +1710,25 @@ loadDismissedIds();
       if (capResult.ok) {
         capEl.textContent = "ok";
         capEl.style.color = "#6f6";
+        const introspection = capResult.json?.introspection;
+        topicStudioMvpState.introspectionOk = Boolean(introspection?.ok);
+        if (topicStudioMvpState.introspectionOk) {
+          topicStudioMvpState.schemas = introspection.schemas || [];
+          await loadSchemas();
+          const schemaSelect = document.getElementById("ts-mvp-schema");
+          if (schemaSelect && schemaSelect.value) {
+            await loadTables(schemaSelect.value);
+          }
+        } else {
+          setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+          setManualDatasetFields(true);
+        }
       } else {
         capEl.textContent = "error";
         capEl.style.color = "#f66";
         setMvpError(`capabilities ${capResult.error?.status || ""} ${truncateCrashText(capResult.error?.body || capResult.error?.message)}`);
+        setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+        setManualDatasetFields(true);
       }
     }
 
@@ -1572,7 +1778,33 @@ loadDismissedIds();
 
   async function createDataset() {
     const name = document.getElementById("ts-mvp-dataset-name")?.value?.trim() || "";
-    const sourceTable = document.getElementById("ts-mvp-dataset-table")?.value?.trim() || "";
+    let sourceTable = "";
+    let idColumn = null;
+    let timeColumn = null;
+    let textColumns = [];
+    if (topicStudioMvpState.introspectionOk) {
+      const schema = document.getElementById("ts-mvp-schema")?.value;
+      const table = document.getElementById("ts-mvp-table")?.value;
+      if (schema && table) {
+        sourceTable = `${schema}.${table}`;
+      }
+      idColumn = document.getElementById("ts-mvp-column-id")?.value || null;
+      timeColumn = document.getElementById("ts-mvp-column-time")?.value || null;
+      const textList = document.getElementById("ts-mvp-column-texts");
+      if (textList) {
+        textColumns = Array.from(textList.querySelectorAll("input[type=checkbox]"))
+          .filter((input) => input.checked)
+          .map((input) => input.value);
+      }
+    } else {
+      sourceTable = document.getElementById("ts-mvp-dataset-table")?.value?.trim() || "";
+      idColumn = document.getElementById("ts-mvp-dataset-id")?.value?.trim() || null;
+      timeColumn = document.getElementById("ts-mvp-dataset-time")?.value?.trim() || null;
+      textColumns = (document.getElementById("ts-mvp-dataset-text")?.value || "")
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean);
+    }
     if (!name || !sourceTable) {
       setMvpError("Dataset name and source_table are required.");
       return;
@@ -1580,12 +1812,9 @@ loadDismissedIds();
     const payload = {
       name,
       source_table: sourceTable,
-      id_column: document.getElementById("ts-mvp-dataset-id")?.value?.trim() || null,
-      time_column: document.getElementById("ts-mvp-dataset-time")?.value?.trim() || null,
-      text_columns: (document.getElementById("ts-mvp-dataset-text")?.value || "")
-        .split(",")
-        .map((c) => c.trim())
-        .filter(Boolean),
+      id_column: idColumn,
+      time_column: timeColumn,
+      text_columns: textColumns,
       where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || null,
       timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
     };

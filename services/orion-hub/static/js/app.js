@@ -635,13 +635,15 @@ loadDismissedIds();
   }
 
   function normalizeHash(hash) {
-    if (!hash) return "#hub";
-    return hash === "#topic-studio" || hash === "#hub" ? hash : "#hub";
+    const cleaned = (hash || "").replace("#", "");
+    if (!cleaned) return "hub";
+    if (cleaned === "hub" || cleaned === "topic-studio" || cleaned === "topics") return cleaned;
+    return "hub";
   }
 
-  function setActiveNav(activeHash) {
-    const isHub = activeHash === "#hub";
-    const isTopicStudio = activeHash === "#topic-studio";
+  function setActiveNav(activeKey) {
+    const isHub = activeKey === "hub";
+    const isTopicStudio = activeKey === "topic-studio";
     if (hubTabButton) {
       hubTabButton.classList.toggle("bg-indigo-600", isHub);
       hubTabButton.classList.toggle("text-white", isHub);
@@ -684,22 +686,23 @@ loadDismissedIds();
     await refreshTopicStudio();
   }
 
-  function showPanel(hash) {
+  function showPanel(panelKey) {
     if (!hubPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
-    const normalized = normalizeHash(hash);
-    const panels = Array.from(document.querySelectorAll("[data-panel]"));
+    const panels = Array.from(document.querySelectorAll("#appPanels section[data-panel]"));
     panels.forEach((panel) => panel.classList.add("hidden"));
-    const panelName = normalized.replace("#", "");
-    const target = document.getElementById(panelName);
+    const target = document.querySelector(`#appPanels section[data-panel="${panelKey}"]`);
     if (target) {
       target.classList.remove("hidden");
+    } else if (panelKey !== "hub") {
+      showPanel("hub");
+      return;
     }
-    setActiveNav(normalized);
-    if (normalized !== "#topic-studio") {
+    setActiveNav(panelKey);
+    if (panelKey !== "topic-studio") {
       teardownTopicStudioUI();
     } else {
       initTopicStudioUI().catch((err) => {
-        renderPanelError("topic-studio", err, "Retry", () => showPanel("#topic-studio"));
+        renderPanelError("topic-studio", err, "Retry", () => showPanel("topic-studio"));
         window.location.hash = "#hub";
       });
     }
@@ -876,20 +879,26 @@ loadDismissedIds();
     }
   }
 
-  function handleHashRouting() {
+  function routeFromHash() {
     if (!hubTabButton || !topicStudioTabButton) return;
-    const hash = normalizeHash(window.location.hash);
-    if (window.location.hash !== hash) {
-      window.location.hash = hash;
+    const panelKey = normalizeHash(window.location.hash);
+    const nextHash = `#${panelKey}`;
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
       return;
     }
-    showPanel(hash);
+    const target = document.querySelector(`#appPanels section[data-panel="${panelKey}"]`);
+    if (!target) {
+      window.location.hash = "#hub";
+      return;
+    }
+    showPanel(panelKey);
     updateTopicStudioDebugOverlay();
   }
 
   function navigateToHash(nextHash) {
     if (window.location.hash === nextHash) {
-      handleHashRouting();
+      routeFromHash();
       return;
     }
     window.location.hash = nextHash;
@@ -2665,15 +2674,6 @@ loadDismissedIds();
     const runId = result.json?.run_id;
     if (runId) {
       startRunPolling(runId);
-    }
-    const result = await safeJsonFetch(`/api/topic-foundry/runs/${targetRun}/enrich`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enricher: "heuristic" }),
-    });
-    if (!result.ok) {
-      setMvpError(formatHttpError("enrich", result.error));
-      return;
     }
     await refreshTopicStudioMvp();
   }
@@ -5686,20 +5686,11 @@ loadDismissedIds();
     event.preventDefault();
     navigateToHash(hash);
   });
-  window.addEventListener("hashchange", handleHashRouting);
-  window.addEventListener("DOMContentLoaded", () => {
-    if (!window.location.hash) {
-      window.location.hash = "#hub";
-      return;
-    }
-    handleHashRouting();
-  });
-  if (document.readyState !== "loading") {
-    if (!window.location.hash) {
-      window.location.hash = "#hub";
-    } else {
-      handleHashRouting();
-    }
+  window.addEventListener("hashchange", routeFromHash);
+  if (!window.location.hash) {
+    window.location.hash = "#hub";
+  } else {
+    routeFromHash();
   }
 
   if (tsDatasetSelect) {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 from uuid import uuid4, UUID
@@ -9,6 +11,9 @@ import numpy as np
 
 from app.models import WindowingSpec
 from app.services.boundary_judge import judge_boundaries
+from app.services.llm_client import get_llm_client
+from app.settings import settings
+from app.storage.repository import insert_window_filters
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,7 +35,127 @@ def build_blocks_for_conversation(
     id_column: str,
 ) -> List[RowBlock]:
     blocks: List[RowBlock] = []
-    if spec.block_mode == "rows":
+    mode = spec.windowing_mode
+    if mode == "turn_pairs" and spec.block_mode != "turn_pairs":
+        if spec.block_mode == "rows":
+            mode = "fixed_k_rows"
+            spec.fixed_k_rows = 1
+        elif spec.block_mode == "triads":
+            mode = "fixed_k_rows"
+            spec.fixed_k_rows = 3
+        elif spec.block_mode == "group_by_column":
+            mode = "conversation_bound_then_time_gap"
+    if mode == "fixed_k_rows":
+        step = spec.fixed_k_rows_step or spec.fixed_k_rows
+        for idx in range(0, len(convo_rows), step):
+            chunk = convo_rows[idx : idx + spec.fixed_k_rows]
+            if not chunk:
+                continue
+            text = _make_block_text(chunk, text_columns, spec)
+            if not text:
+                continue
+            blocks.append(
+                RowBlock(
+                    row_ids=[str(row[id_column]) for row in chunk],
+                    timestamps=[
+                        row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
+                        for row in chunk
+                    ],
+                    doc_id=str(uuid4()),
+                    text=text,
+                )
+            )
+    elif mode == "time_gap" or mode == "conversation_bound_then_time_gap":
+        row_ids: List[str] = []
+        timestamps: List[str] = []
+        text_parts: List[str] = []
+        last_ts: Optional[datetime] = None
+        for row in convo_rows:
+            text = _row_text(row, text_columns)
+            if not text:
+                continue
+            ts = row[time_column]
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            if last_ts is not None and (ts - last_ts).total_seconds() > spec.time_gap_seconds and text_parts:
+                blocks.append(
+                    RowBlock(
+                        row_ids=row_ids,
+                        timestamps=timestamps,
+                        doc_id=str(uuid4()),
+                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                    )
+                )
+                row_ids = []
+                timestamps = []
+                text_parts = []
+            candidate_text = "\n".join([*text_parts, text]).strip()
+            if text_parts and len(candidate_text) > spec.max_chars:
+                blocks.append(
+                    RowBlock(
+                        row_ids=row_ids,
+                        timestamps=timestamps,
+                        doc_id=str(uuid4()),
+                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                    )
+                )
+                row_ids = []
+                timestamps = []
+                text_parts = []
+            row_ids.append(str(row[id_column]))
+            timestamps.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+            text_parts.append(text)
+            last_ts = ts
+        if text_parts:
+            blocks.append(
+                RowBlock(
+                    row_ids=row_ids,
+                    timestamps=timestamps,
+                    doc_id=str(uuid4()),
+                    text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                )
+            )
+    elif mode == "turn_pairs":
+        idx = 0
+        while idx < len(convo_rows) - 1:
+            first = convo_rows[idx]
+            second = convo_rows[idx + 1]
+            role_first = _role_of(first)
+            role_second = _role_of(second)
+            if spec.include_roles and role_first and role_second:
+                if role_first not in spec.include_roles or role_second not in spec.include_roles:
+                    idx += 1
+                    continue
+            text = _make_block_text([first, second], text_columns, spec)
+            if text:
+                blocks.append(
+                    RowBlock(
+                        row_ids=[str(first[id_column]), str(second[id_column])],
+                        timestamps=[
+                            first[time_column].isoformat() if hasattr(first[time_column], "isoformat") else str(first[time_column]),
+                            second[time_column].isoformat() if hasattr(second[time_column], "isoformat") else str(second[time_column]),
+                        ],
+                        doc_id=str(uuid4()),
+                        text=text,
+                    )
+                )
+            idx += 2
+    elif mode == "conversation_bound":
+        if convo_rows:
+            text = _make_block_text(convo_rows, text_columns, spec)
+            if text:
+                blocks.append(
+                    RowBlock(
+                        row_ids=[str(row[id_column]) for row in convo_rows],
+                        timestamps=[
+                            row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
+                            for row in convo_rows
+                        ],
+                        doc_id=str(uuid4()),
+                        text=text,
+                    )
+                )
+    elif spec.block_mode == "rows":
         for row in convo_rows:
             text = _row_text(row, text_columns)
             if not text:
@@ -62,31 +187,69 @@ def build_blocks_for_conversation(
                     text=text,
                 )
             )
-    else:
-        idx = 0
-        while idx < len(convo_rows) - 1:
-            first = convo_rows[idx]
-            second = convo_rows[idx + 1]
-            role_first = _role_of(first)
-            role_second = _role_of(second)
-            if spec.include_roles and role_first and role_second:
-                if role_first not in spec.include_roles or role_second not in spec.include_roles:
-                    idx += 1
-                    continue
-            text = _make_block_text([first, second], text_columns, spec)
-            if text:
+    elif spec.block_mode == "group_by_column":
+        row_ids: List[str] = []
+        timestamps: List[str] = []
+        text_parts: List[str] = []
+        last_ts: Optional[datetime] = None
+        for row in convo_rows:
+            text = _row_text(row, text_columns)
+            if not text:
+                continue
+            ts = row[time_column]
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            if last_ts is not None and (ts - last_ts).total_seconds() > spec.time_gap_seconds and text_parts:
                 blocks.append(
                     RowBlock(
-                        row_ids=[str(first[id_column]), str(second[id_column])],
-                        timestamps=[
-                            first[time_column].isoformat() if hasattr(first[time_column], "isoformat") else str(first[time_column]),
-                            second[time_column].isoformat() if hasattr(second[time_column], "isoformat") else str(second[time_column]),
-                        ],
+                        row_ids=row_ids,
+                        timestamps=timestamps,
                         doc_id=str(uuid4()),
-                        text=text,
+                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
                     )
                 )
-            idx += 2
+                row_ids = []
+                timestamps = []
+                text_parts = []
+            candidate_text = "\n".join([*text_parts, text]).strip()
+            if text_parts and len(candidate_text) > spec.max_chars:
+                blocks.append(
+                    RowBlock(
+                        row_ids=row_ids,
+                        timestamps=timestamps,
+                        doc_id=str(uuid4()),
+                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                    )
+                )
+                row_ids = []
+                timestamps = []
+                text_parts = []
+            row_ids.append(str(row[id_column]))
+            timestamps.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+            text_parts.append(text)
+            last_ts = ts
+        if text_parts:
+            blocks.append(
+                RowBlock(
+                    row_ids=row_ids,
+                    timestamps=timestamps,
+                    doc_id=str(uuid4()),
+                    text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
+                )
+            )
+    else:
+        for row in convo_rows:
+            text = _row_text(row, text_columns)
+            if not text:
+                continue
+            blocks.append(
+                RowBlock(
+                    row_ids=[str(row[id_column])],
+                    timestamps=[row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])],
+                    doc_id=str(uuid4()),
+                    text=_truncate(text, spec.max_chars),
+                )
+            )
     return blocks
 
 
@@ -163,6 +326,7 @@ def _build_segments_internal(
     spec: WindowingSpec,
     embedding_url: Optional[str] = None,
     boundary_context: Optional[BoundaryContext] = None,
+    run_id: Optional[UUID] = None,
 ) -> tuple[List[RowBlock], int]:
     segments: List[RowBlock] = []
     blocks_generated = 0
@@ -196,6 +360,10 @@ def _build_segments_internal(
             continue
 
         segments.extend(_chunk_blocks(blocks, spec))
+    if spec.llm_filter_enabled:
+        segments, filters = _apply_llm_filter(segments, spec)
+        if run_id and filters:
+            insert_window_filters(run_id, filters)
     return segments, blocks_generated
 
 
@@ -205,12 +373,14 @@ def build_segments_from_conversations(
     spec: WindowingSpec,
     embedding_url: Optional[str] = None,
     boundary_context: Optional[BoundaryContext] = None,
+    run_id: Optional[UUID] = None,
 ) -> tuple[List[RowBlock], int]:
     return _build_segments_internal(
         conversations,
         spec=spec,
         embedding_url=embedding_url,
         boundary_context=boundary_context,
+        run_id=run_id,
     )
 
 
@@ -220,13 +390,89 @@ def build_segments_with_stats(
     spec: WindowingSpec,
     embedding_url: Optional[str] = None,
     boundary_context: Optional[BoundaryContext] = None,
+    run_id: Optional[UUID] = None,
 ) -> tuple[List[RowBlock], int]:
     return _build_segments_internal(
         conversations,
         spec=spec,
         embedding_url=embedding_url,
         boundary_context=boundary_context,
+        run_id=run_id,
     )
+
+
+def _apply_llm_filter(
+    segments: List[RowBlock],
+    spec: WindowingSpec,
+) -> tuple[List[RowBlock], List[Dict[str, Any]]]:
+    kept: List[RowBlock] = []
+    decisions: List[Dict[str, Any]] = []
+    max_windows = max(0, int(spec.llm_filter_max_windows))
+    use_llm = settings.topic_foundry_llm_enable
+    client = get_llm_client() if use_llm else None
+    for idx, segment in enumerate(segments):
+        heuristic_score = _heuristic_gate_score(segment.text or "")
+        heuristic_keep = heuristic_score >= float(spec.llm_filter_min_score or 0.0)
+        decision = {
+            "heuristic_score": heuristic_score,
+            "heuristic_keep": heuristic_keep,
+        }
+        keep = heuristic_keep
+        if max_windows and idx >= max_windows:
+            decision["skipped"] = True
+            decisions.append(
+                {
+                    "segment_id": segment.doc_id,
+                    "policy": spec.llm_filter_policy,
+                    "decision": decision,
+                }
+            )
+            kept.append(segment)
+            continue
+        if use_llm:
+            prompt = spec.llm_filter_prompt_template.format(window_text=segment.text[:2000])
+            response = client.request_json(system_prompt="You are a filtering assistant.", user_prompt=prompt, temperature=0.0)
+            llm_decision = response or {}
+            decision["llm_decision"] = llm_decision
+            keep = bool(llm_decision.get("keep", True))
+            if spec.llm_filter_policy == "reject":
+                keep = not keep
+            if spec.llm_filter_policy == "score":
+                keep = float(llm_decision.get("score") or 0) >= 0.5
+            keep = keep and heuristic_keep
+        decisions.append(
+            {
+                "segment_id": segment.doc_id,
+                "policy": spec.llm_filter_policy,
+                "decision": decision,
+            }
+        )
+        if keep:
+            kept.append(segment)
+    return kept, decisions
+
+
+def _heuristic_gate_score(text: str) -> float:
+    if not text:
+        return 0.0
+    clean_text = text.strip()
+    length_score = min(len(clean_text) / 800.0, 1.0)
+    tokens = re.findall(r"\w+", clean_text.lower())
+    if tokens:
+        novelty = len(set(tokens)) / max(len(tokens), 1)
+    else:
+        novelty = 0.0
+    char_counts: Dict[str, int] = {}
+    for ch in clean_text:
+        char_counts[ch] = char_counts.get(ch, 0) + 1
+    total = len(clean_text)
+    entropy = 0.0
+    if total > 0 and len(char_counts) > 1:
+        for count in char_counts.values():
+            prob = count / total
+            entropy -= prob * math.log(prob, 2)
+        entropy /= math.log(len(char_counts), 2)
+    return max(0.0, min(1.0, (0.4 * length_score) + (0.3 * novelty) + (0.3 * entropy)))
 
 
 def _llm_segmentation(

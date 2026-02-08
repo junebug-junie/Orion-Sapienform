@@ -381,6 +381,7 @@ loadDismissedIds();
   const tsSegmentFullTextLoad = document.getElementById("tsSegmentFullTextLoad");
   const tsSegmentFullTextExpand = document.getElementById("tsSegmentFullTextExpand");
   const tsSegmentFullTextCopy = document.getElementById("tsSegmentFullTextCopy");
+  const tsRouteError = document.getElementById("tsRouteError");
   const tsDebugDrawer = document.getElementById("tsDebugDrawer");
   const tsDebugPreview = document.getElementById("tsDebugPreview");
   const tsDebugTrain = document.getElementById("tsDebugTrain");
@@ -597,10 +598,25 @@ loadDismissedIds();
   }
 
   function renderPanelError(tabKey, error, retryLabel = "Retry", retryFn) {
-    const host = ensureHubPanelHost();
-    host.style.pointerEvents = "auto";
     const message = error?.message || error?.toString?.() || "Unknown error";
     const stack = error?.stack ? String(error.stack) : "";
+    if (tabKey === "topic-studio" && tsRouteError) {
+      tsRouteError.classList.remove("hidden");
+      tsRouteError.innerHTML = `
+        <div class="flex items-center justify-between gap-2">
+          <div><strong>Topic Studio error:</strong> ${truncateCrashText(message)}</div>
+          <button id="ts-route-retry" class="bg-gray-900/60 hover:bg-gray-800 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">${retryLabel}</button>
+        </div>
+        <pre class="mt-2 text-[10px] whitespace-pre-wrap">${truncateCrashText(stack)}</pre>
+      `;
+      const retryButton = document.getElementById("ts-route-retry");
+      if (retryButton && typeof retryFn === "function") {
+        retryButton.addEventListener("click", retryFn);
+      }
+      return;
+    }
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
     host.innerHTML = `
       <div style="color:#86efac; background:#000; border:2px solid #ef4444; padding:16px; font-family:monospace; max-width:960px; margin:0 auto; border-radius:12px;">
         <div style="font-size:18px; font-weight:bold; margin-bottom:8px; color:#86efac;">${tabKey.toUpperCase()} PANEL ERROR</div>
@@ -823,6 +839,10 @@ loadDismissedIds();
     renderPanelWithBoundary("hub", () => {
       setHubStep("route:hub");
       setActiveTab("hub");
+      if (tsRouteError) {
+        tsRouteError.classList.add("hidden");
+        tsRouteError.textContent = "";
+      }
       const host = ensureHubPanelHost();
       host.style.pointerEvents = "none";
       host.innerHTML = '<div style="display:none;">HUB ACTIVE</div>';
@@ -833,7 +853,13 @@ loadDismissedIds();
     renderPanelWithBoundary("topic-studio", () => {
       setHubStep("route:topic-studio");
       setActiveTab("topic-studio");
-      renderPanelSentinel("topic-studio", "TOPIC STUDIO ACTIVE", "Loading Topic Studio...");
+      if (tsRouteError) {
+        tsRouteError.classList.add("hidden");
+        tsRouteError.textContent = "";
+      }
+      const host = ensureHubPanelHost();
+      host.style.pointerEvents = "none";
+      host.innerHTML = "";
       ensureTopicStudioSentinel();
       return refreshTopicStudio();
     });
@@ -1611,10 +1637,10 @@ loadDismissedIds();
       topicStudioSegmentFullText = "";
       if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Full text not loaded.";
     }
-    topicStudioSegmentFullTextExpanded = false;
-    if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.textContent = "Expand";
+    topicStudioSegmentFullTextExpanded = true;
+    if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.textContent = "Collapse";
     if (tsSegmentFullText) {
-      tsSegmentFullText.style.maxHeight = "320px";
+      tsSegmentFullText.style.maxHeight = "none";
     }
     renderSegmentFullText();
     if (tsSegmentFullTextLoad) tsSegmentFullTextLoad.disabled = !detail;
@@ -6181,6 +6207,7 @@ loadDismissedIds();
           dataset_id: model.dataset_id,
           start_at: parseDateInput(tsStartAt?.value),
           end_at: parseDateInput(tsEndAt?.value),
+          windowing_spec: buildWindowingSpec(),
         };
         recordTopicStudioDebug("train", { request: "/runs/train", payload: requestPayload });
         const result = await topicFoundryFetch("/runs/train", {

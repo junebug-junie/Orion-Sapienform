@@ -154,6 +154,11 @@ Topic Rail endpoints are proxied through Landing Pad. Ensure `POSTGRES_URI` is s
 
 Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
 
+### Manual UI checklist
+- Navigate between **Hub** and **Topic Studio** tabs; ensure no overlays block pointer events on Hub.
+- In Topic Studio, run **Preview** with `turn_pairs`, then switch to `conversation_bound` after setting a `boundary_column`.
+- Train a run, poll for completion, then load segments and click a segment to confirm full text renders in the detail pane.
+
 ---
 
 ## 🧪 Verification & Smoke Tests

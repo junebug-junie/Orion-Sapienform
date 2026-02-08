@@ -263,6 +263,7 @@ class RunTrainRequest(BaseModel):
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
     run_scope: Optional[Literal["micro", "macro"]] = None
+    windowing_spec: Optional[WindowingSpec] = None
 
 
 class RunEnrichRequest(BaseModel):

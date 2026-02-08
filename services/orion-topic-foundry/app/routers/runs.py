@@ -53,7 +53,7 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    windowing_spec = WindowingSpec(**model_row["windowing_spec"])
+    windowing_spec = payload.windowing_spec or WindowingSpec(**model_row["windowing_spec"])
     effective_boundary = windowing_spec.boundary_column or dataset.boundary_column
     dataset_for_validation = dataset
     if effective_boundary and dataset.boundary_column != effective_boundary:

@@ -3,9 +3,132 @@
 // ───────────────────────────────────────────────────────────────
 // Global State
 // ───────────────────────────────────────────────────────────────
-const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
-const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
-const API_BASE_URL = window.location.origin + URL_PREFIX;
+window.__HUB_LAST_STEP = "boot";
+const HUB_DEBUG = new URLSearchParams(window.location.search).get("debug") === "1";
+const HUB_CFG = window.__HUB_CFG__ || {};
+
+function setHubStep(step) {
+  window.__HUB_LAST_STEP = step;
+}
+
+function ensureHubPanelHost() {
+  let host = document.getElementById("hub-panel-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "hub-panel-host";
+    host.setAttribute(
+      "style",
+      "position:fixed; inset:0; padding:80px 24px 24px 24px; overflow:auto; z-index:10; pointer-events:none;"
+    );
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function truncateCrashText(value, maxLength = 4000) {
+  if (!value) return "";
+  const text = String(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function renderCrashOverlay(errorLike) {
+  const host = ensureHubPanelHost();
+  const message = errorLike?.message || errorLike?.toString?.() || "Unknown error";
+  const stack = errorLike?.stack ? String(errorLike.stack) : "";
+  host.style.pointerEvents = "auto";
+  host.innerHTML = `
+    <div style="color:#0f0; background:#111; border:2px solid #0f0; padding:16px; font-family:monospace; max-width:960px; margin:0 auto;">
+      <div style="font-size:18px; font-weight:bold; margin-bottom:8px;">HUB UI CRASH</div>
+      <div style="margin-bottom:8px;">${truncateCrashText(message)}</div>
+      <pre style="white-space:pre-wrap; margin:0 0 8px 0;">${truncateCrashText(stack)}</pre>
+      <div>href: ${truncateCrashText(window.location.href, 400)}</div>
+      <div>hash: ${truncateCrashText(window.location.hash, 200)}</div>
+      <div>lastStep: ${truncateCrashText(window.__HUB_LAST_STEP, 200)}</div>
+    </div>
+  `;
+}
+
+window.addEventListener("error", (event) => {
+  renderCrashOverlay(event.error || event.message || event);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  renderCrashOverlay(event.reason || event);
+});
+
+function hubOrigin() {
+  return window.location.origin;
+}
+
+function apiUrl(path) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (HUB_API_BASE_OVERRIDE) {
+    return `${HUB_API_BASE_OVERRIDE}${normalized}`;
+  }
+  return normalized;
+}
+
+function wsProto() {
+  return window.location.protocol === "https:" ? "wss:" : "ws:";
+}
+
+function wsBase() {
+  if (HUB_WS_BASE_OVERRIDE) {
+    return HUB_WS_BASE_OVERRIDE;
+  }
+  return `${wsProto()}//${window.location.host}`;
+}
+
+function wsUrl(path) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${wsBase()}${normalized}`;
+}
+
+function normalizeApiBaseOverride(value) {
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("/")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  return `/${trimmed.replace(/\/+$/, "")}`;
+}
+
+function normalizeWsBaseOverride(value) {
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/^http/, "ws").replace(/\/+$/, "");
+  }
+  if (trimmed.startsWith("/")) {
+    return `${wsProto()}//${window.location.host}${trimmed.replace(/\/+$/, "")}`;
+  }
+  return "";
+}
+
+const HUB_API_BASE_OVERRIDE = normalizeApiBaseOverride(HUB_CFG.apiBaseOverride);
+const HUB_WS_BASE_OVERRIDE = normalizeWsBaseOverride(HUB_CFG.wsBaseOverride);
+const DEV_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const IS_DEV = DEV_HOSTS.has(window.location.hostname);
+
+function warnIfCrossOrigin(url) {
+  if (!IS_DEV) return;
+  if ((url.startsWith("http://") || url.startsWith("https://")) && !url.startsWith(hubOrigin())) {
+    console.warn(`[Hub] Cross-origin fetch detected: ${url}`);
+  }
+}
+
+function hubFetch(url, options) {
+  warnIfCrossOrigin(url);
+  return fetch(url, options);
+}
 const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
 
 let socket;
@@ -172,25 +295,37 @@ loadDismissedIds();
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
-  const hubTabPanel = document.getElementById("hubTabPanel");
-  const topicStudioPanel = document.getElementById("topicStudioPanel");
+  const appPanels = document.getElementById("appPanels");
+  const hubPanel = document.getElementById("hub");
+  const topicStudioPanel = document.getElementById("topic-studio");
+  const topicStudioRoot = document.getElementById("topicStudioRoot");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
+  const tsDatasetSchema = document.getElementById("tsDatasetSchema");
+  const tsDatasetTableSelect = document.getElementById("tsDatasetTableSelect");
   const tsDatasetTable = document.getElementById("tsDatasetTable");
   const tsDatasetIdColumn = document.getElementById("tsDatasetIdColumn");
   const tsDatasetTimeColumn = document.getElementById("tsDatasetTimeColumn");
   const tsDatasetTextColumns = document.getElementById("tsDatasetTextColumns");
+  const tsDatasetBoundaryColumn = document.getElementById("tsDatasetBoundaryColumn");
   const tsDatasetWhereSql = document.getElementById("tsDatasetWhereSql");
   const tsDatasetTimezone = document.getElementById("tsDatasetTimezone");
+  const tsSaveDataset = document.getElementById("tsSaveDataset");
+  const tsDatasetSaveStatus = document.getElementById("tsDatasetSaveStatus");
   const tsStartAt = document.getElementById("tsStartAt");
   const tsEndAt = document.getElementById("tsEndAt");
-  const tsBlockMode = document.getElementById("tsBlockMode");
+  const tsWindowingMode = document.getElementById("tsWindowingMode");
+  const tsGroupByRow = document.getElementById("tsGroupByRow");
+  const tsGroupByColumn = document.getElementById("tsGroupByColumn");
   const tsSegmentationMode = document.getElementById("tsSegmentationMode");
   const tsTimeGap = document.getElementById("tsTimeGap");
   const tsMaxWindow = document.getElementById("tsMaxWindow");
+  const tsFixedKRows = document.getElementById("tsFixedKRows");
+  const tsFixedKRowsStep = document.getElementById("tsFixedKRowsStep");
   const tsMinBlocks = document.getElementById("tsMinBlocks");
   const tsMaxChars = document.getElementById("tsMaxChars");
+  const tsRunPreset = document.getElementById("tsRunPreset");
   const tsCreateDataset = document.getElementById("tsCreateDataset");
   const tsPreviewDataset = document.getElementById("tsPreviewDataset");
   const tsPreviewDocs = document.getElementById("tsPreviewDocs");
@@ -237,7 +372,22 @@ loadDismissedIds();
   const tsLoadSegments = document.getElementById("tsLoadSegments");
   const tsSegmentsError = document.getElementById("tsSegmentsError");
   const tsSegmentsTableBody = document.getElementById("tsSegmentsTableBody");
-  const tsSegmentDetail = document.getElementById("tsSegmentDetail");
+  const tsSegmentDetailsPanel = document.getElementById("tsSegmentDetailsPanel");
+  const tsSegmentDetailHeader = document.getElementById("tsSegmentDetailHeader");
+  const tsSegmentDetailMeta = document.getElementById("tsSegmentDetailMeta");
+  const tsSegmentDetailSnippet = document.getElementById("tsSegmentDetailSnippet");
+  const tsSegmentDetailMeaning = document.getElementById("tsSegmentDetailMeaning");
+  const tsSegmentFullText = document.getElementById("tsSegmentFullText");
+  const tsSegmentFullTextStatus = document.getElementById("tsSegmentFullTextStatus");
+  const tsSegmentFullTextLoad = document.getElementById("tsSegmentFullTextLoad");
+  const tsSegmentFullTextExpand = document.getElementById("tsSegmentFullTextExpand");
+  const tsSegmentFullTextCopy = document.getElementById("tsSegmentFullTextCopy");
+  const topicStudioError = document.getElementById("topicStudioError");
+  const tsDebugDrawer = document.getElementById("tsDebugDrawer");
+  const tsDebugPreview = document.getElementById("tsDebugPreview");
+  const tsDebugTrain = document.getElementById("tsDebugTrain");
+  const tsDebugEnrich = document.getElementById("tsDebugEnrich");
+  const tsDebugSegments = document.getElementById("tsDebugSegments");
   const tsSegmentsLoading = document.getElementById("tsSegmentsLoading");
   const tsSegmentsRefresh = document.getElementById("tsSegmentsRefresh");
   const tsSegmentsPageSize = document.getElementById("tsSegmentsPageSize");
@@ -260,6 +410,7 @@ loadDismissedIds();
   const tsSubviewEvents = document.getElementById("tsSubviewEvents");
   const tsSubviewKg = document.getElementById("tsSubviewKg");
   const tsTopicsRunId = document.getElementById("tsTopicsRunId");
+  const tsTopicsScope = document.getElementById("tsTopicsScope");
   const tsTopicsLimit = document.getElementById("tsTopicsLimit");
   const tsTopicsOffset = document.getElementById("tsTopicsOffset");
   const tsTopicsLoad = document.getElementById("tsTopicsLoad");
@@ -331,9 +482,13 @@ loadDismissedIds();
   const tsStatusModelDir = document.getElementById("tsStatusModelDir");
   const tsStatusDetail = document.getElementById("tsStatusDetail");
   const tsStatusLoading = document.getElementById("tsStatusLoading");
+  const tsReadyWarning = document.getElementById("tsReadyWarning");
   const tsCapabilitiesWarning = document.getElementById("tsCapabilitiesWarning");
   const tsCopyReadyUrl = document.getElementById("tsCopyReadyUrl");
   const tsCopyCapabilitiesUrl = document.getElementById("tsCopyCapabilitiesUrl");
+  const tsSkeletonMain = document.getElementById("tsSkeletonMain");
+  const tsSkeletonStatus = document.getElementById("tsSkeletonStatus");
+  const tsSkeletonRetry = document.getElementById("tsSkeletonRetry");
   const tsLlmNote = document.getElementById("tsLlmNote");
   const tsPreviewLoading = document.getElementById("tsPreviewLoading");
   const tsRunLoading = document.getElementById("tsRunLoading");
@@ -400,27 +555,452 @@ loadDismissedIds();
     }
   }
 
-  const TOPIC_FOUNDRY_PROXY_BASE = `${API_BASE_URL}/api/topic-foundry`;
+  const TOPIC_FOUNDRY_PROXY_BASE = apiUrl("/api/topic-foundry");
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
+  const TOPIC_STUDIO_SPLIT_SENTINEL = "TOPIC STUDIO SPLIT PANE v2 ACTIVE";
 
-  function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
-    const isHub = tabKey === "hub";
-    hubTabPanel.classList.toggle("hidden", !isHub);
-    topicStudioPanel.classList.toggle("hidden", isHub);
-    hubTabButton.classList.toggle("bg-indigo-600", isHub);
-    hubTabButton.classList.toggle("text-white", isHub);
-    hubTabButton.classList.toggle("border-indigo-500", isHub);
-    hubTabButton.classList.toggle("bg-gray-800", !isHub);
-    hubTabButton.classList.toggle("text-gray-200", !isHub);
-    hubTabButton.classList.toggle("border-gray-700", !isHub);
-    topicStudioTabButton.classList.toggle("bg-indigo-600", !isHub);
-    topicStudioTabButton.classList.toggle("text-white", !isHub);
-    topicStudioTabButton.classList.toggle("border-indigo-500", !isHub);
-    topicStudioTabButton.classList.toggle("bg-gray-800", isHub);
-    topicStudioTabButton.classList.toggle("text-gray-200", isHub);
-    topicStudioTabButton.classList.toggle("border-gray-700", isHub);
+  const panelRenderSteps = {
+    hub: [],
+    "topic-studio": [],
+  };
+
+  function resetPanelSteps(tabKey) {
+    panelRenderSteps[tabKey] = [];
+  }
+
+  function recordPanelStep(tabKey, step) {
+    if (!panelRenderSteps[tabKey]) {
+      panelRenderSteps[tabKey] = [];
+    }
+    panelRenderSteps[tabKey].push(step);
+    updatePanelDebug(tabKey);
+  }
+
+  function panelDebugMarkup(tabKey) {
+    if (!HUB_DEBUG) return "";
+    const steps = panelRenderSteps[tabKey] || [];
+    const lastStep = steps.length ? steps[steps.length - 1] : "--";
+    const items = steps.length ? steps.map((step) => `<li>${step}</li>`).join("") : "<li>--</li>";
+    return `
+      <div style="margin-top:12px; font-size:11px; color:#9ca3af;">
+        <div style="font-weight:600; margin-bottom:4px;">Render steps (last: ${lastStep})</div>
+        <ul style="padding-left:18px; margin:0; line-height:1.4;">${items}</ul>
+      </div>
+    `;
+  }
+
+  function updatePanelDebug(tabKey) {
+    if (!HUB_DEBUG) return;
+    const debugEl = document.getElementById(`hub-panel-debug-${tabKey}`);
+    if (debugEl) {
+      debugEl.innerHTML = panelDebugMarkup(tabKey);
+    }
+  }
+
+  function renderPanelError(tabKey, error, retryLabel = "Retry", retryFn) {
+    const message = error?.message || error?.toString?.() || "Unknown error";
+    const stack = error?.stack ? String(error.stack) : "";
+    if (tabKey === "topic-studio" && topicStudioError) {
+      topicStudioError.classList.remove("hidden");
+      topicStudioError.innerHTML = `
+        <div class="flex items-center justify-between gap-2">
+          <div><strong>Topic Studio error:</strong> ${truncateCrashText(message)}</div>
+          <button id="ts-route-retry" class="bg-gray-900/60 hover:bg-gray-800 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">${retryLabel}</button>
+        </div>
+        <pre class="mt-2 text-[10px] whitespace-pre-wrap">${truncateCrashText(stack)}</pre>
+      `;
+      const retryButton = document.getElementById("ts-route-retry");
+      if (retryButton && typeof retryFn === "function") {
+        retryButton.addEventListener("click", retryFn);
+      }
+      return;
+    }
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#86efac; background:#000; border:2px solid #ef4444; padding:16px; font-family:monospace; max-width:960px; margin:0 auto; border-radius:12px;">
+        <div style="font-size:18px; font-weight:bold; margin-bottom:8px; color:#86efac;">${tabKey.toUpperCase()} PANEL ERROR</div>
+        <div style="margin-bottom:8px; color:#fca5a5;">${truncateCrashText(message)}</div>
+        <pre style="white-space:pre-wrap; margin:0 0 8px 0; color:#fca5a5;">${truncateCrashText(stack)}</pre>
+        <button id="hub-panel-retry" style="background:#111; color:#86efac; border:1px solid #86efac; padding:6px 12px; border-radius:8px; cursor:pointer;">${retryLabel}</button>
+        <div id="hub-panel-debug-${tabKey}">${panelDebugMarkup(tabKey)}</div>
+      </div>
+    `;
+    const retryButton = document.getElementById("hub-panel-retry");
+    if (retryButton && typeof retryFn === "function") {
+      retryButton.addEventListener("click", retryFn);
+    }
+  }
+
+  function normalizeHash(hash) {
+    const cleaned = (hash || "").replace("#", "");
+    if (!cleaned) return "hub";
+    if (cleaned === "hub" || cleaned === "topic-studio" || cleaned === "topics") return cleaned;
+    return "hub";
+  }
+
+  function setActiveNav(activeKey) {
+    const isHub = activeKey === "hub";
+    const isTopicStudio = activeKey === "topic-studio";
+    if (hubTabButton) {
+      hubTabButton.classList.toggle("bg-indigo-600", isHub);
+      hubTabButton.classList.toggle("text-white", isHub);
+      hubTabButton.classList.toggle("border-indigo-500", isHub);
+      hubTabButton.classList.toggle("bg-gray-800", !isHub);
+      hubTabButton.classList.toggle("text-gray-200", !isHub);
+      hubTabButton.classList.toggle("border-gray-700", !isHub);
+    }
+    if (topicStudioTabButton) {
+      topicStudioTabButton.classList.toggle("bg-indigo-600", isTopicStudio);
+      topicStudioTabButton.classList.toggle("text-white", isTopicStudio);
+      topicStudioTabButton.classList.toggle("border-indigo-500", isTopicStudio);
+      topicStudioTabButton.classList.toggle("bg-gray-800", !isTopicStudio);
+      topicStudioTabButton.classList.toggle("text-gray-200", !isTopicStudio);
+      topicStudioTabButton.classList.toggle("border-gray-700", !isTopicStudio);
+    }
+  }
+
+  function teardownTopicStudioUI() {
+    const inlineSentinel = document.getElementById("tsSplitPaneSentinel");
+    if (inlineSentinel) inlineSentinel.classList.add("hidden");
+    if (topicStudioError) {
+      topicStudioError.classList.add("hidden");
+      topicStudioError.textContent = "";
+    }
+    if (topicStudioDebugState.overlay) {
+      topicStudioDebugState.overlay.remove();
+      topicStudioDebugState.overlay = null;
+      topicStudioDebugState.overlayBody = null;
+    }
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "none";
+    host.innerHTML = "";
+  }
+
+  async function initTopicStudioUI() {
+    if (!topicStudioRoot) {
+      throw new Error("Topic Studio root not found.");
+    }
+    if (topicStudioError) {
+      topicStudioError.classList.add("hidden");
+      topicStudioError.textContent = "";
+    }
+    ensureTopicStudioSentinel();
+    await refreshTopicStudio();
+  }
+
+  function showPanel(panelKey) {
+    if (!hubPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
+    const panels = Array.from(document.querySelectorAll("#appPanels section[data-panel]"));
+    panels.forEach((panel) => panel.classList.add("hidden"));
+    const target = document.querySelector(`#appPanels section[data-panel="${panelKey}"]`);
+    if (target) {
+      target.classList.remove("hidden");
+    } else if (panelKey !== "hub") {
+      showPanel("hub");
+      return;
+    }
+    setActiveNav(panelKey);
+    if (panelKey !== "topic-studio") {
+      teardownTopicStudioUI();
+    } else {
+      initTopicStudioUI().catch((err) => {
+        renderPanelError("topic-studio", err, "Retry", () => showPanel("topic-studio"));
+        window.location.hash = "#hub";
+      });
+    }
+  }
+
+  function renderTopicStudioSkeleton(message = "Loading...") {
+    const host = topicStudioRoot;
+    if (!host) return;
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:960px; margin:0 auto; pointer-events:auto;">
+        <div style="font-size:20px; font-weight:600; margin-bottom:12px;">Topic Studio</div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+          <div><strong>Ready:</strong> <span id="ts-host-ready">loading</span></div>
+          <div><strong>Capabilities:</strong> <span id="ts-host-capabilities">loading</span></div>
+          <div><strong>Runs:</strong> <span id="ts-host-runs">loading</span></div>
+        </div>
+        <div id="ts-host-errors" style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;"></div>
+        <button id="ts-host-retry" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Retry</button>
+        <div style="margin-top:12px; font-size:12px; color:#888;">${message}</div>
+        <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-host-step">${window.__HUB_LAST_STEP}</span></div>
+      </div>
+    `;
+    const retryButton = document.getElementById("ts-host-retry");
+    if (retryButton) {
+      retryButton.addEventListener("click", () => {
+        renderTopicStudioSkeleton("Retrying...");
+        refreshTopicStudioRoute();
+      });
+    }
+    setTopicStudioRenderStep("mounted skeleton");
+    setHubStep("topic-skeleton-mounted");
+  }
+
+  function renderTopicStudioPanel() {
+    const host = topicStudioRoot;
+    if (!host) return;
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:1200px; margin:0 auto; pointer-events:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:20px; font-weight:600;">Topic Studio</div>
+            <div style="font-size:11px; color:#6ee7b7; font-family:monospace;">${TOPIC_STUDIO_SPLIT_SENTINEL}</div>
+            <div style="font-size:12px; color:#888;">Manage datasets, models, runs, and segments.</div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span id="ts-mvp-last-refresh" style="font-size:11px; color:#777;">Last refresh: --</span>
+            <button id="ts-mvp-refresh" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Refresh</button>
+          </div>
+        </div>
+        <div style="margin-top:12px; padding:10px; border:1px solid #333; border-radius:10px; background:#111;">
+          <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px;">
+            <div>Ready: <span id="ts-mvp-ready">loading</span></div>
+            <div>Capabilities: <span id="ts-mvp-capabilities">loading</span></div>
+            <div>Details: <span id="ts-mvp-ready-detail">--</span></div>
+          </div>
+        </div>
+        <div id="ts-mvp-errors" style="margin-top:10px; display:flex; flex-direction:column; gap:8px;"></div>
+
+        <div style="margin-top:16px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="font-weight:600; margin-bottom:8px;">Datasets</div>
+            <div id="ts-mvp-datasets-list" style="font-size:12px; color:#aaa; margin-bottom:8px;">(loading)</div>
+            <div id="ts-mvp-introspect-warning" style="display:none; font-size:12px; color:#fbb; margin-bottom:8px;"></div>
+            <div style="font-size:12px; margin-bottom:6px;">Create dataset</div>
+            <div style="display:grid; gap:6px;">
+              <input id="ts-mvp-dataset-name" placeholder="name" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-schema" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-column-id" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-column-time" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <div id="ts-mvp-column-texts" style="border:1px solid #333; padding:6px; border-radius:6px; color:#aaa; font-size:12px; max-height:140px; overflow:auto;">(no columns)</div>
+              <div id="ts-mvp-manual-fields" style="display:none; gap:6px; flex-direction:column;">
+                <input id="ts-mvp-dataset-table" placeholder="source_table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-id" placeholder="id_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-time" placeholder="time_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-text" placeholder="text_columns (comma)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              </div>
+              <input id="ts-mvp-dataset-where" placeholder="where_sql (optional)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-tz" value="UTC" placeholder="timezone" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-create-dataset" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create dataset</button>
+            </div>
+            <div style="margin-top:12px; font-weight:600;">Preview</div>
+            <div style="display:grid; gap:6px; margin-top:6px;">
+              <select id="ts-mvp-preview-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <input id="ts-mvp-preview-start" placeholder="start_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-end" placeholder="end_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-limit" value="200" placeholder="limit" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-preview-block" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
+                <option value="turn_pairs">turn_pairs</option>
+                <option value="fixed_k_rows">fixed_k_rows</option>
+                <option value="time_gap">time_gap</option>
+                <option value="conversation_bound">conversation_bound</option>
+                <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
+                <option value="group_by_column">group_by_column</option>
+              </select>
+              <input id="ts-mvp-preview-gap" value="900" placeholder="time_gap_seconds" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-maxchars" value="6000" placeholder="max_chars" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-preview" disabled style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer; opacity:0.6;">Preview</button>
+            </div>
+            <div style="margin-top:6px; font-size:11px; color:#666;">Tip: set a start/end range for faster previews.</div>
+            <div id="ts-mvp-preview-stats" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
+            <div id="ts-mvp-preview-samples" style="margin-top:6px; font-size:12px; color:#aaa;">--</div>
+          </div>
+
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="font-weight:600; margin-bottom:8px;">Models</div>
+            <div id="ts-mvp-models-list" style="font-size:12px; color:#aaa; margin-bottom:8px;">(loading)</div>
+            <div style="font-size:12px; margin-bottom:6px;">Create model</div>
+            <div style="display:grid; gap:6px;">
+              <input id="ts-mvp-model-name" placeholder="name" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-version" placeholder="version" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-stage" value="development" placeholder="stage" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-model-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <div style="font-size:11px; color:#888;">Min cluster size (HDBSCAN)</div>
+              <input id="ts-mvp-model-mincluster" value="20" placeholder="min_cluster_size" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-metric" value="cosine" placeholder="metric" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <div style="font-size:11px; color:#888;">Advanced params (optional)</div>
+              <textarea id="ts-mvp-model-params" rows="2" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">{}</textarea>
+              <div id="ts-mvp-embed-hint" style="font-size:11px; color:#666;"></div>
+              <button id="ts-mvp-create-model" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create model</button>
+            </div>
+
+            <div style="margin-top:12px; font-weight:600;">Runs</div>
+            <div style="display:grid; gap:6px; margin-top:6px;">
+              <select id="ts-mvp-run-model" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-run-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <input id="ts-mvp-run-start" placeholder="start_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-run-end" placeholder="end_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-train-run" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Train run</button>
+              <button id="ts-mvp-enrich-run" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Enrich run</button>
+            </div>
+            <div id="ts-mvp-runs-list" style="margin-top:8px; font-size:12px; color:#aaa;">(loading)</div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px; display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:12px;">
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+              <div style="font-weight:600;">Segments</div>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <select id="ts-mvp-segments-run" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+                <select id="ts-mvp-segments-enriched" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
+                  <option value="">all</option>
+                  <option value="true">has_enrichment=true</option>
+                  <option value="false">has_enrichment=false</option>
+                </select>
+                <button id="ts-mvp-load-segments" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Load</button>
+              </div>
+            </div>
+            <div id="ts-mvp-segments-table" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
+          </div>
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111; display:flex; flex-direction:column; gap:8px; min-height:0;">
+            <div style="font-weight:600;">Segment Details</div>
+            <div id="ts-mvp-segment-detail" style="font-size:12px; color:#bbb;">Select a segment to view details.</div>
+          </div>
+        </div>
+        <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-mvp-step">${window.__HUB_LAST_STEP}</span></div>
+      </div>
+    `;
+  }
+
+  function renderPanelWithBoundary(tabKey, renderFn) {
+    resetPanelSteps(tabKey);
+    recordPanelStep(tabKey, "route matched");
+    try {
+      const result = renderFn();
+      if (result && typeof result.then === "function") {
+        result.catch((err) => {
+          renderPanelError(tabKey, err, "Retry", () => renderPanelWithBoundary(tabKey, renderFn));
+        });
+      }
+    } catch (err) {
+      renderPanelError(tabKey, err, "Retry", () => renderPanelWithBoundary(tabKey, renderFn));
+    }
+  }
+
+  function routeFromHash() {
+    if (!hubTabButton || !topicStudioTabButton) return;
+    const panelKey = normalizeHash(window.location.hash);
+    const nextHash = `#${panelKey}`;
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+      return;
+    }
+    const target = document.querySelector(`#appPanels section[data-panel="${panelKey}"]`);
+    if (!target) {
+      window.location.hash = "#hub";
+      return;
+    }
+    showPanel(panelKey);
+    updateTopicStudioDebugOverlay();
+  }
+
+  function navigateToHash(nextHash) {
+    if (window.location.hash === nextHash) {
+      routeFromHash();
+      return;
+    }
+    window.location.hash = nextHash;
+  }
+
+  function ensureTopicStudioSentinel() {
+    const inlineSentinel = document.getElementById("tsSplitPaneSentinel");
+    if (inlineSentinel) {
+      inlineSentinel.textContent = TOPIC_STUDIO_SPLIT_SENTINEL;
+      inlineSentinel.classList.remove("hidden");
+    }
+  }
+
+  function updateTopicStudioHostStep() {
+    const stepEl = document.getElementById("ts-host-step");
+    if (stepEl) {
+      stepEl.textContent = window.__HUB_LAST_STEP || "";
+    }
+  }
+
+  function updateTopicStudioPanelStep() {
+    const stepEl = document.getElementById("ts-mvp-step");
+    if (stepEl) stepEl.textContent = window.__HUB_LAST_STEP || "";
+  }
+
+  function setTopicStudioHostStatus(id, value, color = "#ddd") {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.textContent = value;
+    target.style.color = color;
+  }
+
+  function appendTopicStudioHostError(label, err) {
+    const container = document.getElementById("ts-host-errors");
+    if (!container) return;
+    const message = err?.message || err?.toString?.() || "Request failed";
+    const detail = truncateCrashText(err?.body || err?.stack || message, 400);
+    const box = document.createElement("div");
+    box.setAttribute(
+      "style",
+      "background:#220; color:#f88; border:1px solid #a33; padding:8px; border-radius:8px; font-size:12px; font-family:monospace;"
+    );
+    box.textContent = `${label}: ${detail}`;
+    container.appendChild(box);
+  }
+
+  async function refreshTopicStudioRoute() {
+    setHubStep("fetch:ready");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
+    setTopicStudioHostStatus("ts-host-ready", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-capabilities", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-runs", "loading", "#ddd");
+    const errorContainer = document.getElementById("ts-host-errors");
+    if (errorContainer) errorContainer.innerHTML = "";
+
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/ready"));
+      if (!resp.ok) throw new Error(`ready ${resp.status}`);
+      const data = await resp.json();
+      const status = data?.ok ? "ok" : "degraded";
+      setTopicStudioHostStatus("ts-host-ready", status, data?.ok ? "#6f6" : "#ff6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-ready", "error", "#f66");
+      appendTopicStudioHostError("ready", err);
+    }
+
+    setHubStep("fetch:capabilities");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/capabilities"));
+      if (!resp.ok) throw new Error(`capabilities ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-capabilities", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-capabilities", "error", "#f66");
+      appendTopicStudioHostError("capabilities", err);
+    }
+
+    setHubStep("fetch:runs");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/runs?limit=20"));
+      if (!resp.ok) throw new Error(`runs ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-runs", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-runs", "error", "#f66");
+      appendTopicStudioHostError("runs", err);
+    }
+
+    setHubStep("render:done");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
   }
 
   function resolveTopicStudioSubview() {
@@ -458,20 +1038,27 @@ loadDismissedIds();
     const state = {
       dataset: {
         name: tsDatasetName?.value || "",
+        schema: tsDatasetSchema?.value || "",
+        table: tsDatasetTableSelect?.value || "",
         source_table: tsDatasetTable?.value || "",
         id_column: tsDatasetIdColumn?.value || "",
         time_column: tsDatasetTimeColumn?.value || "",
-        text_columns: tsDatasetTextColumns?.value || "",
+        text_columns: tsDatasetTextColumns ? getSelectedValues(tsDatasetTextColumns) : tsDatasetTextColumns?.value || "",
+        boundary_column: tsDatasetBoundaryColumn?.value || "",
         where_sql: tsDatasetWhereSql?.value || "",
         timezone: tsDatasetTimezone?.value || "",
       },
       windowing: {
-        block_mode: tsBlockMode?.value || "",
+        windowing_mode: tsWindowingMode?.value || "",
+        group_by: tsGroupByColumn?.value || "",
         segmentation_mode: tsSegmentationMode?.value || "",
         time_gap_seconds: tsTimeGap?.value || "",
         max_window_seconds: tsMaxWindow?.value || "",
+        fixed_k_rows: tsFixedKRows?.value || "",
+        fixed_k_rows_step: tsFixedKRowsStep?.value || "",
         min_blocks_per_segment: tsMinBlocks?.value || "",
         max_chars: tsMaxChars?.value || "",
+        preset: tsRunPreset?.value || "",
       },
       model: {
         name: tsModelName?.value || "",
@@ -503,6 +1090,7 @@ loadDismissedIds();
       },
       topics: {
         run_id: tsTopicsRunId?.value || "",
+        scope: tsTopicsScope?.value || "",
         limit: tsTopicsLimit?.value || "",
         offset: tsTopicsOffset?.value || "",
         segment_limit: tsTopicSegmentsLimit?.value || "",
@@ -541,20 +1129,33 @@ loadDismissedIds();
       const state = JSON.parse(raw);
       if (state.dataset) {
         if (tsDatasetName && state.dataset.name) tsDatasetName.value = state.dataset.name;
+        if (tsDatasetSchema && state.dataset.schema) tsDatasetSchema.value = state.dataset.schema;
+        if (tsDatasetTableSelect && state.dataset.table) tsDatasetTableSelect.value = state.dataset.table;
         if (tsDatasetTable && state.dataset.source_table) tsDatasetTable.value = state.dataset.source_table;
         if (tsDatasetIdColumn && state.dataset.id_column) tsDatasetIdColumn.value = state.dataset.id_column;
         if (tsDatasetTimeColumn && state.dataset.time_column) tsDatasetTimeColumn.value = state.dataset.time_column;
-        if (tsDatasetTextColumns && state.dataset.text_columns) tsDatasetTextColumns.value = state.dataset.text_columns;
+        if (tsDatasetTextColumns && state.dataset.text_columns) {
+          const values = Array.isArray(state.dataset.text_columns)
+            ? state.dataset.text_columns
+            : String(state.dataset.text_columns).split(",").map((col) => col.trim()).filter(Boolean);
+          setSelectedValues(tsDatasetTextColumns, values);
+        }
+        if (tsDatasetBoundaryColumn && state.dataset.boundary_column) tsDatasetBoundaryColumn.value = state.dataset.boundary_column;
         if (tsDatasetWhereSql && state.dataset.where_sql) tsDatasetWhereSql.value = state.dataset.where_sql;
         if (tsDatasetTimezone && state.dataset.timezone) tsDatasetTimezone.value = state.dataset.timezone;
+        updateSourceTableInput();
       }
       if (state.windowing) {
-        if (tsBlockMode && state.windowing.block_mode) tsBlockMode.value = state.windowing.block_mode;
+        if (tsWindowingMode && state.windowing.windowing_mode) tsWindowingMode.value = state.windowing.windowing_mode;
+        if (tsGroupByColumn && state.windowing.group_by) tsGroupByColumn.value = state.windowing.group_by;
         if (tsSegmentationMode && state.windowing.segmentation_mode) tsSegmentationMode.value = state.windowing.segmentation_mode;
         if (tsTimeGap && state.windowing.time_gap_seconds) tsTimeGap.value = state.windowing.time_gap_seconds;
         if (tsMaxWindow && state.windowing.max_window_seconds) tsMaxWindow.value = state.windowing.max_window_seconds;
+        if (tsFixedKRows && state.windowing.fixed_k_rows) tsFixedKRows.value = state.windowing.fixed_k_rows;
+        if (tsFixedKRowsStep && state.windowing.fixed_k_rows_step) tsFixedKRowsStep.value = state.windowing.fixed_k_rows_step;
         if (tsMinBlocks && state.windowing.min_blocks_per_segment) tsMinBlocks.value = state.windowing.min_blocks_per_segment;
         if (tsMaxChars && state.windowing.max_chars) tsMaxChars.value = state.windowing.max_chars;
+        if (tsRunPreset && state.windowing.preset) tsRunPreset.value = state.windowing.preset;
       }
       if (state.model) {
         if (tsModelName && state.model.name) tsModelName.value = state.model.name;
@@ -586,6 +1187,7 @@ loadDismissedIds();
       }
       if (state.topics) {
         if (tsTopicsRunId && state.topics.run_id) tsTopicsRunId.value = state.topics.run_id;
+        if (tsTopicsScope && state.topics.scope) tsTopicsScope.value = state.topics.scope;
         if (tsTopicsLimit && state.topics.limit) tsTopicsLimit.value = state.topics.limit;
         if (tsTopicsOffset && state.topics.offset) tsTopicsOffset.value = state.topics.offset;
         if (tsTopicSegmentsLimit && state.topics.segment_limit) tsTopicSegmentsLimit.value = state.topics.segment_limit;
@@ -618,26 +1220,34 @@ loadDismissedIds();
     } catch (err) {
       console.warn("[TopicStudio] Failed to restore state", err);
     }
+    updateGroupByVisibility();
     topicStudioTopicSegmentsOffset = Number(tsTopicSegmentsOffset?.value || 0);
   }
 
   function bindTopicStudioPersistence() {
     const inputs = [
       tsDatasetName,
+      tsDatasetSchema,
+      tsDatasetTableSelect,
       tsDatasetTable,
       tsDatasetIdColumn,
       tsDatasetTimeColumn,
       tsDatasetTextColumns,
+      tsDatasetBoundaryColumn,
       tsDatasetWhereSql,
       tsDatasetTimezone,
       tsStartAt,
       tsEndAt,
-      tsBlockMode,
+      tsWindowingMode,
+      tsGroupByColumn,
       tsSegmentationMode,
       tsTimeGap,
       tsMaxWindow,
+      tsFixedKRows,
+      tsFixedKRowsStep,
       tsMinBlocks,
       tsMaxChars,
+      tsRunPreset,
       tsModelName,
       tsModelVersion,
       tsModelStage,
@@ -657,6 +1267,7 @@ loadDismissedIds();
       tsConvoEndAt,
       tsConvoLimit,
       tsTopicsRunId,
+      tsTopicsScope,
       tsTopicsLimit,
       tsTopicsOffset,
       tsTopicSegmentsLimit,
@@ -699,8 +1310,16 @@ loadDismissedIds();
   }
 
   function buildWindowingSpec() {
+    const windowingMode = tsWindowingMode?.value || "turn_pairs";
+    const groupBy = tsGroupByColumn?.value || "";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
     return {
-      block_mode: tsBlockMode?.value || "turn_pairs",
+      block_mode: blockMode,
+      windowing_mode: windowingMode,
+      fixed_k_rows: Number(tsFixedKRows?.value || 2),
+      fixed_k_rows_step: Number(tsFixedKRowsStep?.value || 0) || null,
+      boundary_column: tsDatasetBoundaryColumn?.value || null,
+      group_by: windowingMode === "group_by_column" ? groupBy : null,
       segmentation_mode: tsSegmentationMode?.value || "time_gap",
       time_gap_seconds: Number(tsTimeGap?.value || 900),
       max_window_seconds: Number(tsMaxWindow?.value || 7200),
@@ -709,24 +1328,426 @@ loadDismissedIds();
     };
   }
 
+  function boundaryColumnRequired() {
+    const mode = tsWindowingMode?.value || "turn_pairs";
+    return mode.startsWith("conversation");
+  }
+
+  function updateBoundaryRequirement() {
+    const required = boundaryColumnRequired();
+    const boundaryValue = tsDatasetBoundaryColumn?.value || "";
+    const missing = required && !boundaryValue;
+    if (tsPreviewDataset) tsPreviewDataset.disabled = missing;
+    if (tsTrainRun) tsTrainRun.disabled = missing;
+    if (missing) {
+      const action = tsDatasetSelect?.value
+        ? "Save the dataset after selecting a boundary column."
+        : "Select a boundary column and save the dataset.";
+      setWarning(tsPreviewWarning, `Boundary column required for conversation-bound windowing. ${action}`);
+      setWarning(tsRunWarning, `Boundary column required for conversation-bound windowing. ${action}`);
+    } else {
+      setWarning(tsPreviewWarning, null);
+      setWarning(tsRunWarning, null);
+    }
+  }
+
+  function updateGroupByVisibility() {
+    if (!tsGroupByRow || !tsGroupByColumn) return;
+    const isGroupBy = tsWindowingMode?.value === "group_by_column";
+    tsGroupByColumn.disabled = !isGroupBy;
+    tsGroupByColumn.classList.toggle("opacity-50", !isGroupBy);
+  }
+
+  function renderGroupByOptions() {
+    if (!tsGroupByColumn) return;
+    tsGroupByColumn.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select column…";
+    tsGroupByColumn.appendChild(placeholder);
+    topicStudioGroupByCandidates.forEach((col) => {
+      const option = document.createElement("option");
+      option.value = col.column_name;
+      option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+      tsGroupByColumn.appendChild(option);
+    });
+  }
+
+  function renderBoundaryOptions() {
+    if (!tsDatasetBoundaryColumn) return;
+    tsDatasetBoundaryColumn.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "No boundary";
+    tsDatasetBoundaryColumn.appendChild(placeholder);
+    topicStudioBoundaryCandidates.forEach((col) => {
+      const option = document.createElement("option");
+      option.value = col.column_name;
+      option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+      tsDatasetBoundaryColumn.appendChild(option);
+    });
+  }
+
+  function renderSchemaOptionsForDataset() {
+    if (!tsDatasetSchema) return;
+    tsDatasetSchema.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select schema…";
+    tsDatasetSchema.appendChild(placeholder);
+    topicStudioIntrospectionSchemas.forEach((schema) => {
+      const option = document.createElement("option");
+      option.value = schema;
+      option.textContent = schema;
+      tsDatasetSchema.appendChild(option);
+    });
+  }
+
+  function renderTableOptionsForDataset() {
+    if (!tsDatasetTableSelect) return;
+    tsDatasetTableSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select table…";
+    tsDatasetTableSelect.appendChild(placeholder);
+    topicStudioIntrospectionTables.forEach((table) => {
+      const option = document.createElement("option");
+      option.value = table.table_name;
+      option.textContent = table.table_name;
+      tsDatasetTableSelect.appendChild(option);
+    });
+  }
+
+  function updateSourceTableInput() {
+    if (!tsDatasetTable) return;
+    if (!tsDatasetTable.readOnly) return;
+    const schema = tsDatasetSchema?.value || "";
+    const table = tsDatasetTableSelect?.value || "";
+    if (schema && table) {
+      tsDatasetTable.value = `${schema}.${table}`;
+    } else if (table) {
+      tsDatasetTable.value = table;
+    } else {
+      tsDatasetTable.value = "";
+    }
+  }
+
+  function setDatasetSourceEditable(enabled) {
+    if (!tsDatasetTable) return;
+    tsDatasetTable.readOnly = !enabled;
+    tsDatasetTable.classList.toggle("opacity-60", !enabled);
+  }
+
+  function renderDatasetColumnOptions() {
+    if (tsDatasetIdColumn) {
+      tsDatasetIdColumn.innerHTML = '<option value="">Select id column…</option>';
+    }
+    if (tsDatasetTimeColumn) {
+      tsDatasetTimeColumn.innerHTML = '<option value="">Select time column…</option>';
+    }
+    if (tsDatasetTextColumns) {
+      tsDatasetTextColumns.innerHTML = "";
+    }
+    if (!topicStudioDatasetColumns.length) {
+      renderBoundaryOptions();
+      return;
+    }
+    if (tsDatasetIdColumn) {
+      topicStudioDatasetColumns.forEach((col) => {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+        tsDatasetIdColumn.appendChild(option);
+      });
+    }
+    if (tsDatasetTimeColumn) {
+      topicStudioDatasetColumns.forEach((col) => {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+        tsDatasetTimeColumn.appendChild(option);
+      });
+    }
+    if (tsDatasetTextColumns) {
+      topicStudioDatasetColumns.forEach((col) => {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+        tsDatasetTextColumns.appendChild(option);
+      });
+    }
+    renderBoundaryOptions();
+  }
+
+  function parseSourceTableValue(value) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return { schema: "", table: "" };
+    if (trimmed.includes(".")) {
+      const [schema, table] = trimmed.split(".", 2);
+      return { schema, table };
+    }
+    const schema = topicStudioIntrospectionSchemas[0] || "";
+    return { schema, table: trimmed };
+  }
+
+  async function loadDatasetColumnsFromSourceTable(sourceTable) {
+    const { schema, table } = parseSourceTableValue(sourceTable);
+    if (!schema || !table) {
+      topicStudioDatasetColumns = [];
+      renderDatasetColumnOptions();
+      return;
+    }
+    try {
+      const response = await topicFoundryFetch(`/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`);
+      topicStudioDatasetColumns = response?.columns || [];
+      topicStudioGroupByCandidates = [...topicStudioDatasetColumns];
+      topicStudioBoundaryCandidates = [...topicStudioDatasetColumns];
+      renderGroupByOptions();
+      renderDatasetColumnOptions();
+    } catch (err) {
+      topicStudioDatasetColumns = [];
+      topicStudioGroupByCandidates = [];
+      topicStudioBoundaryCandidates = [];
+      renderGroupByOptions();
+      renderDatasetColumnOptions();
+    }
+  }
+
+  async function loadDatasetTables(schema) {
+    if (!schema) {
+      topicStudioIntrospectionTables = [];
+      renderTableOptionsForDataset();
+      return;
+    }
+    try {
+      const priorTable = tsDatasetTableSelect?.value || "";
+      const response = await topicFoundryFetch(`/introspect/tables?schema=${encodeURIComponent(schema)}`);
+      topicStudioIntrospectionTables = response?.tables || [];
+      renderTableOptionsForDataset();
+      if (tsDatasetTableSelect && priorTable) {
+        const exists = topicStudioIntrospectionTables.some((table) => table.table_name === priorTable);
+        if (exists) tsDatasetTableSelect.value = priorTable;
+      }
+    } catch (err) {
+      topicStudioIntrospectionTables = [];
+      renderTableOptionsForDataset();
+    }
+  }
+
+  async function loadGroupByCandidates(schema, table) {
+    if (!schema || !table) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+      return;
+    }
+    try {
+      const response = await topicFoundryFetch(`/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`);
+      const columns = response?.columns || [];
+      topicStudioGroupByCandidates = [...columns];
+      renderGroupByOptions();
+      topicStudioBoundaryCandidates = topicStudioGroupByCandidates;
+      renderBoundaryOptions();
+    } catch (err) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+      topicStudioBoundaryCandidates = [];
+      renderBoundaryOptions();
+    }
+  }
+
+  async function loadGroupByCandidatesFromDataset(dataset) {
+    if (!dataset?.source_table) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+      return;
+    }
+    const parts = String(dataset.source_table).split(".");
+    if (parts.length === 2) {
+      await loadGroupByCandidates(parts[0], parts[1]);
+      return;
+    }
+    const schema = topicStudioIntrospectionSchemas[0] || "";
+    if (!schema) {
+      topicStudioGroupByCandidates = [];
+      renderGroupByOptions();
+      return;
+    }
+    await loadGroupByCandidates(schema, parts[0]);
+  }
+
+  function recordTopicStudioDebug(panel, payload) {
+    if (!HUB_DEBUG) return;
+    if (tsDebugDrawer) tsDebugDrawer.classList.remove("hidden");
+    const pretty = JSON.stringify(payload, null, 2);
+    if (panel === "preview" && tsDebugPreview) tsDebugPreview.textContent = pretty;
+    if (panel === "train" && tsDebugTrain) tsDebugTrain.textContent = pretty;
+    if (panel === "enrich" && tsDebugEnrich) tsDebugEnrich.textContent = pretty;
+    if (panel === "segments" && tsDebugSegments) tsDebugSegments.textContent = pretty;
+  }
+
+  function formatDetailValue(value) {
+    if (value === null || value === undefined || value === "") return "--";
+    if (typeof value === "string") return value;
+    return JSON.stringify(value, null, 2);
+  }
+
+  function renderSegmentDetailPanel(detail, options = {}) {
+    topicStudioSelectedSegment = detail || null;
+    topicStudioSelectedSegmentId = detail?.segment_id || null;
+    if (tsSegmentDetailHeader) {
+      tsSegmentDetailHeader.textContent = detail?.segment_id || "Select a segment";
+    }
+    if (tsSegmentDetailMeta) {
+      if (!detail) {
+        tsSegmentDetailMeta.textContent = "--";
+      } else {
+        const meta = [
+          `run_id=${detail.run_id || "--"}`,
+          `created_at=${detail.created_at || "--"}`,
+          `rows=${detail.row_ids_count ?? detail.size ?? "--"}`,
+          `chars=${detail.chars ?? "--"}`,
+          `start=${detail.start_at || "--"}`,
+          `end=${detail.end_at || "--"}`,
+        ];
+        tsSegmentDetailMeta.textContent = meta.join(" · ");
+      }
+    }
+    if (tsSegmentDetailSnippet) {
+      tsSegmentDetailSnippet.textContent = formatDetailValue(detail?.snippet || detail?.text);
+    }
+    if (tsSegmentDetailMeaning) {
+      if (!detail) {
+        tsSegmentDetailMeaning.textContent = "--";
+      } else {
+        const payload = {
+          title: detail.title || detail.label || null,
+          aspects: detail.aspects || null,
+          meaning: detail.meaning || null,
+          enrichment: detail.enrichment || null,
+          sentiment: detail.sentiment || null,
+          topic_id: detail.topic_id ?? null,
+          is_outlier: detail.is_outlier ?? null,
+          provenance: detail.provenance || null,
+        };
+        tsSegmentDetailMeaning.textContent = JSON.stringify(payload, null, 2);
+      }
+    }
+    const requestedFullText = options.include_full_text === true;
+    if (!detail) {
+      topicStudioSegmentFullText = "";
+      if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "--";
+    } else if (requestedFullText) {
+      const hasFullText = Object.prototype.hasOwnProperty.call(detail, "full_text");
+      if (!hasFullText) {
+        topicStudioSegmentFullText = "";
+        if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "backend missing include_full_text support";
+      } else {
+        topicStudioSegmentFullText = detail.full_text || "";
+        if (tsSegmentFullTextStatus) {
+          tsSegmentFullTextStatus.textContent = `Full text loaded (${topicStudioSegmentFullText.length} chars).`;
+        }
+      }
+    } else {
+      topicStudioSegmentFullText = "";
+      if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Full text not loaded.";
+    }
+    topicStudioSegmentFullTextExpanded = true;
+    if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.textContent = "Collapse";
+    if (tsSegmentFullText) {
+      tsSegmentFullText.style.maxHeight = "none";
+    }
+    renderSegmentFullText();
+    if (tsSegmentFullTextLoad) tsSegmentFullTextLoad.disabled = !detail;
+    if (tsSegmentFullTextExpand) tsSegmentFullTextExpand.disabled = !detail;
+    if (tsSegmentFullTextCopy) tsSegmentFullTextCopy.disabled = !detail;
+  }
+
+  function renderSegmentFullText() {
+    if (!tsSegmentFullText) return;
+    if (!topicStudioSegmentFullText) {
+      tsSegmentFullText.textContent = "--";
+      return;
+    }
+    tsSegmentFullText.textContent = topicStudioSegmentFullText;
+    if (tsSegmentFullTextExpand) {
+      tsSegmentFullTextExpand.disabled = false;
+    }
+    if (tsSegmentFullTextStatus && !topicStudioSegmentFullTextExpanded) {
+      tsSegmentFullTextStatus.textContent = `Full text loaded (${topicStudioSegmentFullText.length} chars).`;
+    }
+  }
+
+  function applyRunPreset(value) {
+    if (!value) return;
+    if (value === "conversation_view") {
+      if (tsWindowingMode) tsWindowingMode.value = "conversation_bound_then_time_gap";
+      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsMaxChars) tsMaxChars.value = "6000";
+      if (tsTimeGap) tsTimeGap.value = "900";
+      if (tsMinBlocks) tsMinBlocks.value = "1";
+      if (tsFixedKRows) tsFixedKRows.value = "2";
+    }
+    if (value === "global_themes") {
+      if (tsWindowingMode) tsWindowingMode.value = "turn_pairs";
+      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsMaxChars) tsMaxChars.value = "12000";
+      if (tsTimeGap) tsTimeGap.value = "900";
+      if (tsMinBlocks) tsMinBlocks.value = "1";
+    }
+    updateGroupByVisibility();
+    saveTopicStudioState();
+  }
+
+  function getSelectedValues(selectEl) {
+    if (!selectEl) return [];
+    return Array.from(selectEl.selectedOptions || []).map((option) => option.value).filter(Boolean);
+  }
+
+  function setSelectedValues(selectEl, values) {
+    if (!selectEl) return;
+    const valueSet = new Set(values || []);
+    Array.from(selectEl.options || []).forEach((option) => {
+      option.selected = valueSet.has(option.value);
+    });
+  }
+
+  function resolveDatasetSourceTable() {
+    const schema = tsDatasetSchema?.value?.trim() || "";
+    const table = tsDatasetTableSelect?.value?.trim() || "";
+    if (schema && table) return `${schema}.${table}`;
+    if (table) return table;
+    return tsDatasetTable?.value?.trim() || "";
+  }
+
   function buildDatasetSpec() {
-    const textColumns = (tsDatasetTextColumns?.value || "")
-      .split(",")
-      .map((col) => col.trim())
-      .filter(Boolean);
+    const textColumns = tsDatasetTextColumns
+      ? getSelectedValues(tsDatasetTextColumns)
+      : (tsDatasetTextColumns?.value || "")
+          .split(",")
+          .map((col) => col.trim())
+          .filter(Boolean);
     return {
       name: tsDatasetName?.value?.trim() || "",
-      source_table: tsDatasetTable?.value?.trim() || "",
+      source_table: resolveDatasetSourceTable(),
       id_column: tsDatasetIdColumn?.value?.trim() || "",
       time_column: tsDatasetTimeColumn?.value?.trim() || "",
       text_columns: textColumns,
+      boundary_column: tsDatasetBoundaryColumn?.value || null,
+      boundary_strategy: tsDatasetBoundaryColumn?.value ? "column" : null,
       where_sql: tsDatasetWhereSql?.value?.trim() || null,
       timezone: tsDatasetTimezone?.value?.trim() || "UTC",
     };
   }
 
+  function setDatasetSaveStatus(message, isError = false) {
+    if (!tsDatasetSaveStatus) return;
+    tsDatasetSaveStatus.textContent = message || "--";
+    tsDatasetSaveStatus.classList.toggle("text-red-400", isError);
+    tsDatasetSaveStatus.classList.toggle("text-gray-500", !isError);
+  }
+
   async function topicFoundryFetch(path, options = {}) {
-    const response = await fetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -754,7 +1775,7 @@ loadDismissedIds();
   }
 
   async function topicFoundryFetchWithHeaders(path, options = {}) {
-    const response = await fetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -847,7 +1868,965 @@ loadDismissedIds();
   let topicStudioDriftPolling = false;
   let topicStudioEventsPage = [];
   let topicStudioKgEdgesPage = [];
+  let topicStudioIntrospectionSchemas = [];
+  let topicStudioIntrospectionTables = [];
+  let topicStudioGroupByCandidates = [];
+  let topicStudioBoundaryCandidates = [];
+  let topicStudioDatasetColumns = [];
+  let topicStudioSelectedSegment = null;
+  let topicStudioSegmentFullText = "";
+  let topicStudioSegmentFullTextExpanded = false;
   const TOPIC_STUDIO_RUN_ID_KEY = "topic_studio_run_id_v1";
+  const topicStudioMvpState = {
+    datasets: [],
+    models: [],
+    runs: [],
+    previewDatasetId: "",
+    selectedDatasetId: "",
+    selectedModelId: "",
+    selectedRunId: "",
+    runPoller: null,
+    introspectionOk: false,
+    schemas: [],
+    tables: [],
+    columns: [],
+    defaultEmbeddingUrl: "",
+  };
+  const topicStudioDebugState = {
+    enabled: new URLSearchParams(window.location.search).get("debug") === "1",
+    lastRenderStep: "init",
+    fetchStatus: {
+      ready: null,
+      capabilities: null,
+      runs: null,
+    },
+    overlay: null,
+    overlayBody: null,
+  };
+
+  function formatFetchStatus(status) {
+    if (!status) return "--";
+    const okLabel = status.ok === true ? "ok" : status.ok === false ? "fail" : "unknown";
+    const detail = status.detail ? ` · ${truncateText(status.detail, 80)}` : "";
+    return `${status.status ?? "--"} (${okLabel})${detail}`;
+  }
+
+  function ensureTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled || topicStudioDebugState.overlay || !topicStudioPanel) return;
+    const overlay = document.createElement("div");
+    overlay.className = "fixed bottom-3 right-3 z-50 bg-gray-900/95 border border-gray-700 rounded-lg px-3 py-2 text-[10px] text-gray-200 shadow-lg";
+    overlay.style.maxWidth = "240px";
+    overlay.innerHTML = `
+      <div class="flex items-center justify-between gap-2 mb-1">
+        <div class="font-semibold text-xs">Topic Studio Debug</div>
+        <button type="button" class="text-gray-400 hover:text-gray-200 text-[10px]" data-debug-hide>Hide</button>
+      </div>
+      <div data-debug-body class="space-y-1"></div>
+    `;
+    overlay.querySelector("[data-debug-hide]")?.addEventListener("click", () => {
+      overlay.classList.add("hidden");
+    });
+    topicStudioDebugState.overlay = overlay;
+    topicStudioDebugState.overlayBody = overlay.querySelector("[data-debug-body]");
+    topicStudioPanel.appendChild(overlay);
+  }
+
+  function updateTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled) return;
+    if (window.location.hash !== "#topic-studio") {
+      topicStudioDebugState.overlay?.classList.add("hidden");
+      return;
+    }
+    ensureTopicStudioDebugOverlay();
+    topicStudioDebugState.overlay?.classList.remove("hidden");
+    if (!topicStudioDebugState.overlayBody) return;
+    const hash = window.location.hash || "(none)";
+    const exists = Boolean(topicStudioPanel);
+    topicStudioDebugState.overlayBody.innerHTML = `
+      <div>hash: <span class="text-gray-400">${hash}</span></div>
+      <div>container: <span class="text-gray-400">${exists ? "found" : "missing"}</span></div>
+      <div>step: <span class="text-gray-400">${topicStudioDebugState.lastRenderStep}</span></div>
+      <div>/ready: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.ready)}</span></div>
+      <div>/capabilities: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.capabilities)}</span></div>
+      <div>/runs: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.runs)}</span></div>
+    `;
+  }
+
+  function setTopicStudioRenderStep(step) {
+    topicStudioDebugState.lastRenderStep = step;
+    updateTopicStudioDebugOverlay();
+  }
+
+  function recordTopicStudioFetchStatus(key, status, ok, detail) {
+    topicStudioDebugState.fetchStatus[key] = { status, ok, detail };
+    updateTopicStudioDebugOverlay();
+  }
+
+  function setMvpError(message) {
+    const container = document.getElementById("ts-mvp-errors");
+    if (!container) return;
+    const box = document.createElement("div");
+    box.setAttribute(
+      "style",
+      "background:#220; color:#f88; border:1px solid #a33; padding:8px; border-radius:8px; font-size:12px; font-family:monospace;"
+    );
+    box.textContent = message;
+    container.appendChild(box);
+  }
+
+  function parseDatasets(json) {
+    const arr = json && Array.isArray(json.datasets)
+      ? json.datasets
+      : json && Array.isArray(json.items)
+        ? json.items
+        : Array.isArray(json)
+          ? json
+          : [];
+    return arr
+      .map((d) => {
+        const id = d.dataset_id || d.id;
+        return {
+          id,
+          name: d.name || id,
+          raw: d,
+        };
+      })
+      .filter((x) => x.id);
+  }
+
+  function formatHttpError(label, error) {
+    const status = error?.status ? `status ${error.status}` : "status unknown";
+    let detail = error?.body || error?.message || "";
+    if (typeof detail === "string") {
+      try {
+        const parsed = JSON.parse(detail);
+        detail = parsed?.detail || parsed?.error || detail;
+      } catch (err) {
+        detail = detail;
+      }
+    }
+    detail = truncateCrashText(detail, 300);
+    return `${label}: ${status} ${detail}`.trim();
+  }
+
+  function setIntrospectionWarning(message) {
+    const warning = document.getElementById("ts-mvp-introspect-warning");
+    if (!warning) return;
+    if (!message) {
+      warning.style.display = "none";
+      warning.textContent = "";
+      return;
+    }
+    warning.style.display = "block";
+    warning.textContent = message;
+  }
+
+  function setManualDatasetFields(enabled) {
+    const manual = document.getElementById("ts-mvp-manual-fields");
+    const schemaSelect = document.getElementById("ts-mvp-schema");
+    const tableSelect = document.getElementById("ts-mvp-table");
+    const idSelect = document.getElementById("ts-mvp-column-id");
+    const timeSelect = document.getElementById("ts-mvp-column-time");
+    const textList = document.getElementById("ts-mvp-column-texts");
+    if (manual) {
+      manual.style.display = enabled ? "flex" : "none";
+    }
+    if (schemaSelect) schemaSelect.disabled = enabled;
+    if (tableSelect) tableSelect.disabled = enabled;
+    if (idSelect) idSelect.disabled = enabled;
+    if (timeSelect) timeSelect.disabled = enabled;
+    if (textList) textList.style.opacity = enabled ? "0.6" : "1";
+  }
+
+  function renderSchemaOptions() {
+    const select = document.getElementById("ts-mvp-schema");
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select schema…";
+    select.appendChild(placeholder);
+    topicStudioMvpState.schemas.forEach((schema) => {
+      const option = document.createElement("option");
+      option.value = schema;
+      option.textContent = schema;
+      select.appendChild(option);
+    });
+    const preferred = topicStudioMvpState.schemas.includes("public") ? "public" : topicStudioMvpState.schemas[0];
+    if (preferred) {
+      select.value = preferred;
+    }
+  }
+
+  function renderTableOptions() {
+    const select = document.getElementById("ts-mvp-table");
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select table…";
+    select.appendChild(placeholder);
+    topicStudioMvpState.tables.forEach((table) => {
+      const option = document.createElement("option");
+      option.value = table.table_name;
+      option.textContent = `${table.table_name} (${table.table_type})`;
+      select.appendChild(option);
+    });
+  }
+
+  function renderColumnOptions() {
+    const idSelect = document.getElementById("ts-mvp-column-id");
+    const timeSelect = document.getElementById("ts-mvp-column-time");
+    const textList = document.getElementById("ts-mvp-column-texts");
+    if (idSelect) {
+      idSelect.innerHTML = '<option value="">Select id column…</option>';
+    }
+    if (timeSelect) {
+      timeSelect.innerHTML = '<option value="">Select time column…</option>';
+    }
+    if (textList) {
+      textList.innerHTML = "";
+    }
+    if (topicStudioMvpState.columns.length === 0) {
+      if (textList) textList.textContent = "(no columns)";
+      return;
+    }
+    topicStudioMvpState.columns.forEach((col) => {
+      const label = `${col.column_name} (${col.data_type}/${col.udt_name})${col.is_nullable ? "" : " [not null]"}`;
+      if (idSelect) {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = label;
+        idSelect.appendChild(option);
+      }
+      if (timeSelect) {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = label;
+        timeSelect.appendChild(option);
+      }
+      if (textList) {
+        const row = document.createElement("label");
+        row.style.display = "flex";
+        row.style.gap = "6px";
+        row.style.alignItems = "center";
+        row.style.marginBottom = "4px";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = col.column_name;
+        const span = document.createElement("span");
+        span.textContent = label;
+        row.appendChild(checkbox);
+        row.appendChild(span);
+        textList.appendChild(row);
+      }
+    });
+  }
+
+  async function loadSchemas() {
+    const result = await safeJsonFetch("/api/topic-foundry/introspect/schemas");
+    if (!result.ok) {
+      topicStudioMvpState.schemas = [];
+      setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.schemas = result.json?.schemas || [];
+    if (topicStudioMvpState.schemas.length === 0) {
+      setIntrospectionWarning("No schemas available; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    setIntrospectionWarning("");
+    setManualDatasetFields(false);
+    renderSchemaOptions();
+  }
+
+  async function loadTables(schema) {
+    if (!schema) return;
+    const result = await safeJsonFetch(`/api/topic-foundry/introspect/tables?schema=${encodeURIComponent(schema)}`);
+    if (!result.ok) {
+      topicStudioMvpState.tables = [];
+      renderTableOptions();
+      setIntrospectionWarning("Failed to load tables; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.tables = result.json?.tables || [];
+    renderTableOptions();
+  }
+
+  async function loadColumns(schema, table) {
+    if (!schema || !table) return;
+    const result = await safeJsonFetch(
+      `/api/topic-foundry/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`
+    );
+    if (!result.ok) {
+      topicStudioMvpState.columns = [];
+      renderColumnOptions();
+      setIntrospectionWarning("Failed to load columns; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.columns = result.json?.columns || [];
+    renderColumnOptions();
+  }
+
+  function clearMvpErrors() {
+    const container = document.getElementById("ts-mvp-errors");
+    if (container) container.innerHTML = "";
+  }
+
+  async function safeJsonFetch(path, options) {
+    try {
+      const resp = await hubFetch(apiUrl(path), options);
+      const text = await resp.text();
+      let json = null;
+      if (text) {
+        try {
+          json = JSON.parse(text);
+        } catch (err) {
+          json = text;
+        }
+      }
+      if (!resp.ok) {
+        const error = new Error(`status ${resp.status}`);
+        error.status = resp.status;
+        error.body = text;
+        return { ok: false, resp, json, error };
+      }
+      return { ok: true, resp, json };
+    } catch (err) {
+      return { ok: false, resp: null, json: null, error: err };
+    }
+  }
+
+  function renderDatasetList() {
+    const container = document.getElementById("ts-mvp-datasets-list");
+    if (!container) return;
+    if (topicStudioMvpState.datasets.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.datasets
+      .map((ds) => `${ds.name} (${ds.id})`)
+      .join("<br />");
+  }
+
+  function renderModelList() {
+    const container = document.getElementById("ts-mvp-models-list");
+    if (!container) return;
+    if (topicStudioMvpState.models.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.models
+      .map((model) => `${model.name || model.model_id} ${model.version || ""} (${model.model_id})`)
+      .join("<br />");
+  }
+
+  function renderRunsList() {
+    const container = document.getElementById("ts-mvp-runs-list");
+    if (!container) return;
+    if (topicStudioMvpState.runs.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.runs
+      .map((run) => `${run.run_id} · ${run.status || "--"} ${run.stage || ""} · ${run.created_at || "--"}`)
+      .join("<br />");
+  }
+
+  function updateSelectOptions(selectId, items, valueKey, labelFn) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select…";
+    select.appendChild(placeholder);
+    items.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item[valueKey];
+      option.textContent = labelFn(item);
+      select.appendChild(option);
+    });
+  }
+
+  function updateMvpSelectors() {
+    updateSelectOptions(
+      "ts-mvp-preview-dataset",
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
+    );
+    updateSelectOptions(
+      "ts-mvp-model-dataset",
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
+    );
+    updateSelectOptions(
+      "ts-mvp-run-dataset",
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
+    );
+    updateSelectOptions(
+      "ts-mvp-run-model",
+      topicStudioMvpState.models,
+      "model_id",
+      (model) => `${model.name || model.model_id}`
+    );
+    updateSelectOptions(
+      "ts-mvp-segments-run",
+      topicStudioMvpState.runs,
+      "run_id",
+      (run) => `${run.run_id}`
+    );
+    const previewSelect = document.getElementById("ts-mvp-preview-dataset");
+    const previewButton = document.getElementById("ts-mvp-preview");
+    if (previewSelect) {
+      const validIds = new Set(topicStudioMvpState.datasets.map((ds) => ds.id));
+      if (!validIds.has(topicStudioMvpState.previewDatasetId)) {
+        topicStudioMvpState.previewDatasetId = "";
+      }
+      previewSelect.value = topicStudioMvpState.previewDatasetId;
+    }
+    if (previewSelect && previewButton) {
+      const enabled = Boolean(topicStudioMvpState.previewDatasetId);
+      previewButton.disabled = !enabled;
+      previewButton.style.opacity = enabled ? "1" : "0.6";
+      previewButton.style.cursor = enabled ? "pointer" : "not-allowed";
+    }
+    if (HUB_DEBUG) {
+      const debugEl = document.getElementById("ts-mvp-preview-debug");
+      if (debugEl) {
+        debugEl.textContent = `datasetsList count = ${topicStudioMvpState.datasets.length}`;
+      }
+    }
+  }
+
+  function setLastRefresh() {
+    const el = document.getElementById("ts-mvp-last-refresh");
+    if (el) el.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+  }
+
+  function setTopicStudioDebugLine(message) {
+    if (!tsDebugLine) return;
+    tsDebugLine.textContent = message || "";
+    tsDebugLine.classList.toggle("hidden", !message);
+  }
+
+  function bindTopicStudioPanel() {
+    const refreshButton = document.getElementById("ts-mvp-refresh");
+    if (refreshButton) {
+      refreshButton.addEventListener("click", () => {
+        clearMvpErrors();
+        refreshTopicStudioMvp();
+      });
+    }
+    const schemaSelect = document.getElementById("ts-mvp-schema");
+    if (schemaSelect) {
+      schemaSelect.addEventListener("change", () => {
+        const schema = schemaSelect.value;
+        loadTables(schema);
+        topicStudioMvpState.columns = [];
+        renderColumnOptions();
+      });
+    }
+    const tableSelect = document.getElementById("ts-mvp-table");
+    if (tableSelect) {
+      tableSelect.addEventListener("change", () => {
+        const schema = schemaSelect ? schemaSelect.value : "";
+        loadColumns(schema, tableSelect.value);
+      });
+    }
+    const createDatasetBtn = document.getElementById("ts-mvp-create-dataset");
+    if (createDatasetBtn) {
+      createDatasetBtn.addEventListener("click", () => {
+        createDataset().catch((err) => setMvpError(err?.message || "Failed to create dataset"));
+      });
+    }
+    const previewBtn = document.getElementById("ts-mvp-preview");
+    if (previewBtn) {
+      previewBtn.addEventListener("click", () => {
+        previewDataset().catch((err) => setMvpError(err?.message || "Failed to preview dataset"));
+      });
+    }
+    const previewSelect = document.getElementById("ts-mvp-preview-dataset");
+    if (previewSelect) {
+      previewSelect.addEventListener("change", () => {
+        topicStudioMvpState.previewDatasetId = previewSelect.value;
+        updateMvpSelectors();
+      });
+    }
+    try {
+      const qs = new URLSearchParams();
+      qs.set("run_id", "debug");
+      setTopicStudioDebugLine(`Topic Studio ready (segments qs ok: ${qs.toString()})`);
+    } catch (err) {
+      setTopicStudioDebugLine(`Topic Studio init error: ${err?.message || err}`);
+    }
+    updateBoundaryRequirement();
+    const createModelBtn = document.getElementById("ts-mvp-create-model");
+    if (createModelBtn) {
+      createModelBtn.addEventListener("click", () => {
+        createModel().catch((err) => setMvpError(err?.message || "Failed to create model"));
+      });
+    }
+    const trainRunBtn = document.getElementById("ts-mvp-train-run");
+    if (trainRunBtn) {
+      trainRunBtn.addEventListener("click", () => {
+        trainRun().catch((err) => setMvpError(err?.message || "Failed to train run"));
+      });
+    }
+    const enrichBtn = document.getElementById("ts-mvp-enrich-run");
+    if (enrichBtn) {
+      enrichBtn.addEventListener("click", () => {
+        enrichRun().catch((err) => setMvpError(err?.message || "Failed to enrich run"));
+      });
+    }
+    const loadSegmentsBtn = document.getElementById("ts-mvp-load-segments");
+    if (loadSegmentsBtn) {
+      loadSegmentsBtn.addEventListener("click", () => {
+        loadSegmentsMvp().catch((err) => setMvpError(err?.message || "Failed to load segments"));
+      });
+    }
+  }
+
+  async function refreshTopicStudioMvp() {
+    clearMvpErrors();
+    setHubStep("fetch:ready");
+    updateTopicStudioPanelStep();
+    const readyResult = await safeJsonFetch("/api/topic-foundry/ready");
+    const readyEl = document.getElementById("ts-mvp-ready");
+    const readyDetail = document.getElementById("ts-mvp-ready-detail");
+    if (readyEl) {
+      if (readyResult.ok && readyResult.json) {
+        readyEl.textContent = readyResult.json.ok ? "ok" : "degraded";
+        readyEl.style.color = readyResult.json.ok ? "#6f6" : "#ff6";
+        if (readyDetail) {
+          const checks = readyResult.json.checks || {};
+          readyDetail.textContent = `PG:${checks.pg?.detail || "--"} · Embed:${checks.embedding?.detail || "--"}`;
+        }
+      } else {
+        readyEl.textContent = "error";
+        readyEl.style.color = "#f66";
+        setMvpError(formatHttpError("ready", readyResult.error));
+      }
+    }
+
+    setHubStep("fetch:capabilities");
+    updateTopicStudioPanelStep();
+    const capResult = await safeJsonFetch("/api/topic-foundry/capabilities");
+    const capEl = document.getElementById("ts-mvp-capabilities");
+    if (capEl) {
+      if (capResult.ok) {
+        capEl.textContent = "ok";
+        capEl.style.color = "#6f6";
+        const introspection = capResult.json?.introspection;
+        topicStudioMvpState.introspectionOk = Boolean(introspection?.ok);
+        topicStudioMvpState.defaultEmbeddingUrl = capResult.json?.default_embedding_url || "";
+        const embedHint = document.getElementById("ts-mvp-embed-hint");
+        if (embedHint) {
+          embedHint.textContent = topicStudioMvpState.defaultEmbeddingUrl
+            ? `Embedding URL (default): ${topicStudioMvpState.defaultEmbeddingUrl}`
+            : "";
+        }
+        if (topicStudioMvpState.introspectionOk) {
+          topicStudioMvpState.schemas = introspection.schemas || [];
+          await loadSchemas();
+          const schemaSelect = document.getElementById("ts-mvp-schema");
+          if (schemaSelect && schemaSelect.value) {
+            await loadTables(schemaSelect.value);
+          }
+        } else {
+          setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+          setManualDatasetFields(true);
+        }
+      } else {
+        capEl.textContent = "error";
+        capEl.style.color = "#f66";
+        setMvpError(formatHttpError("capabilities", capResult.error));
+        setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+        setManualDatasetFields(true);
+      }
+    }
+
+    setHubStep("fetch:datasets");
+    updateTopicStudioPanelStep();
+    const datasetResult = await safeJsonFetch("/api/topic-foundry/datasets");
+    if (datasetResult.ok) {
+      topicStudioMvpState.datasets = parseDatasets(datasetResult.json);
+      renderDatasetList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.datasets = [];
+      renderDatasetList();
+      setMvpError(formatHttpError("datasets", datasetResult.error));
+    }
+
+    setHubStep("fetch:models");
+    updateTopicStudioPanelStep();
+    const modelResult = await safeJsonFetch("/api/topic-foundry/models");
+    if (modelResult.ok) {
+      topicStudioMvpState.models = modelResult.json?.models || [];
+      renderModelList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.models = [];
+      renderModelList();
+      setMvpError(formatHttpError("models", modelResult.error));
+    }
+
+    setHubStep("fetch:runs");
+    updateTopicStudioPanelStep();
+    const runsResult = await safeJsonFetch("/api/topic-foundry/runs?limit=20");
+    if (runsResult.ok) {
+      topicStudioMvpState.runs = normalizeRunsResponse(runsResult.json);
+      renderRunsList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.runs = [];
+      renderRunsList();
+      setMvpError(formatHttpError("runs", runsResult.error));
+    }
+
+    setHubStep("render:done");
+    updateTopicStudioPanelStep();
+    setLastRefresh();
+  }
+
+  async function createDataset() {
+    const name = document.getElementById("ts-mvp-dataset-name")?.value?.trim() || "";
+    let sourceTable = "";
+    let idColumn = null;
+    let timeColumn = null;
+    let textColumns = [];
+    if (topicStudioMvpState.introspectionOk) {
+      const schema = document.getElementById("ts-mvp-schema")?.value;
+      const table = document.getElementById("ts-mvp-table")?.value;
+      if (schema && table) {
+        sourceTable = `${schema}.${table}`;
+      }
+      idColumn = document.getElementById("ts-mvp-column-id")?.value || null;
+      timeColumn = document.getElementById("ts-mvp-column-time")?.value || null;
+      const textList = document.getElementById("ts-mvp-column-texts");
+      if (textList) {
+        textColumns = Array.from(textList.querySelectorAll("input[type=checkbox]"))
+          .filter((input) => input.checked)
+          .map((input) => input.value);
+      }
+    } else {
+      sourceTable = document.getElementById("ts-mvp-dataset-table")?.value?.trim() || "";
+      idColumn = document.getElementById("ts-mvp-dataset-id")?.value?.trim() || null;
+      timeColumn = document.getElementById("ts-mvp-dataset-time")?.value?.trim() || null;
+      textColumns = (document.getElementById("ts-mvp-dataset-text")?.value || "")
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean);
+    }
+    if (!name || !sourceTable) {
+      setMvpError("Dataset name and source_table are required.");
+      return;
+    }
+    const payload = {
+      name,
+      source_table: sourceTable,
+      id_column: idColumn,
+      time_column: timeColumn,
+      text_columns: textColumns,
+      where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || null,
+      timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/datasets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("create dataset", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
+    if (result.json?.dataset_id) {
+      topicStudioMvpState.selectedDatasetId = result.json.dataset_id;
+      updateMvpSelectors();
+    }
+  }
+
+  async function previewDataset() {
+    const datasetId = topicStudioMvpState.previewDatasetId || document.getElementById("ts-mvp-preview-dataset")?.value;
+    if (!datasetId) {
+      setMvpError("Select a dataset to preview.");
+      return;
+    }
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
+    const windowing = {
+      block_mode: blockMode,
+      windowing_mode: windowingMode,
+      time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
+      max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
+    };
+    const payload = {
+      dataset_id: datasetId,
+      start_at: document.getElementById("ts-mvp-preview-start")?.value || null,
+      end_at: document.getElementById("ts-mvp-preview-end")?.value || null,
+      limit: Number(document.getElementById("ts-mvp-preview-limit")?.value || 200),
+      windowing,
+      windowing_spec: windowing,
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/datasets/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const statsEl = document.getElementById("ts-mvp-preview-stats");
+    const samplesEl = document.getElementById("ts-mvp-preview-samples");
+    if (!result.ok) {
+      if (statsEl) statsEl.textContent = "--";
+      if (samplesEl) samplesEl.textContent = "--";
+      setMvpError(formatHttpError("preview", result.error));
+      return;
+    }
+    const stats = result.json?.stats || {};
+    if (statsEl) {
+      statsEl.textContent = `docs=${stats.docs_generated ?? "--"} segments=${stats.segments_generated ?? "--"} avg_chars=${stats.avg_chars ?? "--"}`;
+    }
+    if (samplesEl) {
+      const samples = result.json?.samples || result.json?.segments || [];
+      if (!samples.length) {
+        samplesEl.textContent = "(none)";
+      } else {
+        samplesEl.innerHTML = samples
+          .slice(0, 5)
+          .map((s) => `${s.segment_id || ""} · ${s.snippet || s.text || ""}`)
+          .join("<br />");
+      }
+    }
+  }
+
+  async function createModel() {
+    const name = document.getElementById("ts-mvp-model-name")?.value?.trim() || "";
+    const version = document.getElementById("ts-mvp-model-version")?.value?.trim() || "";
+    const stage = document.getElementById("ts-mvp-model-stage")?.value?.trim() || "development";
+    const datasetId = document.getElementById("ts-mvp-model-dataset")?.value;
+    if (!name || !version || !datasetId) {
+      setMvpError("Model name, version, and dataset are required.");
+      return;
+    }
+    let params = {};
+    try {
+      const raw = document.getElementById("ts-mvp-model-params")?.value?.trim();
+      params = raw ? JSON.parse(raw) : {};
+    } catch (err) {
+      setMvpError("Model params must be valid JSON.");
+      return;
+    }
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
+    const payload = {
+      name,
+      version,
+      stage,
+      dataset_id: datasetId,
+      model_spec: {
+        algorithm: "hdbscan",
+        min_cluster_size: Number(document.getElementById("ts-mvp-model-mincluster")?.value || 20),
+        metric: document.getElementById("ts-mvp-model-metric")?.value || "cosine",
+        params,
+      },
+      windowing_spec: {
+        block_mode: blockMode,
+        windowing_mode: windowingMode,
+        time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
+        max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
+      },
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("create model", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
+    if (result.json?.model_id) {
+      topicStudioMvpState.selectedModelId = result.json.model_id;
+      updateMvpSelectors();
+    }
+  }
+
+  async function trainRun() {
+    const modelId = document.getElementById("ts-mvp-run-model")?.value;
+    const datasetId = document.getElementById("ts-mvp-run-dataset")?.value;
+    if (!modelId || !datasetId) {
+      setMvpError("Select a model and dataset to train.");
+      return;
+    }
+    const payload = {
+      model_id: modelId,
+      dataset_id: datasetId,
+      start_at: document.getElementById("ts-mvp-run-start")?.value || null,
+      end_at: document.getElementById("ts-mvp-run-end")?.value || null,
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/runs/train", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("train run", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
+    const runId = result.json?.run_id;
+    if (runId) {
+      startRunPolling(runId);
+    }
+  }
+
+  async function enrichRun() {
+    const targetRun = document.getElementById("ts-mvp-segments-run")?.value;
+    if (!targetRun) {
+      setMvpError("Select a run to enrich.");
+      return;
+    }
+    const result = await safeJsonFetch(`/api/topic-foundry/runs/${targetRun}/enrich`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enricher: "heuristic" }),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("enrich", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
+  }
+
+  function startRunPolling(runId) {
+    if (topicStudioMvpState.runPoller) {
+      clearInterval(topicStudioMvpState.runPoller);
+    }
+    topicStudioMvpState.runPoller = setInterval(async () => {
+      const result = await safeJsonFetch(`/api/topic-foundry/runs/${runId}`);
+      if (!result.ok) {
+        setMvpError(formatHttpError("run poll", result.error));
+        clearInterval(topicStudioMvpState.runPoller);
+        topicStudioMvpState.runPoller = null;
+        return;
+      }
+      const run = result.json;
+      const idx = topicStudioMvpState.runs.findIndex((r) => r.run_id === runId);
+      if (idx >= 0) {
+        topicStudioMvpState.runs[idx] = run;
+        renderRunsList();
+      }
+      if (["complete", "failed"].includes((run.status || "").toLowerCase())) {
+        clearInterval(topicStudioMvpState.runPoller);
+        topicStudioMvpState.runPoller = null;
+      }
+    }, 2000);
+  }
+
+  async function loadSegmentsMvp() {
+    const runId = document.getElementById("ts-mvp-segments-run")?.value;
+    if (!runId) {
+      setMvpError("Select a run to load segments.");
+      return;
+    }
+    const enriched = document.getElementById("ts-mvp-segments-enriched")?.value;
+    const params = new URLSearchParams({
+      run_id: runId,
+      include_snippet: "true",
+      include_bounds: "true",
+    });
+    if (enriched) params.set("has_enrichment", enriched);
+    const result = await safeJsonFetch(`/api/topic-foundry/segments?${params.toString()}`);
+    const table = document.getElementById("ts-mvp-segments-table");
+    if (!table) return;
+    if (!result.ok) {
+      table.textContent = "--";
+      setMvpError(formatHttpError("segments", result.error));
+      return;
+    }
+    const items = asItems(result.json);
+    if (!items.length) {
+      table.textContent = "(none)";
+      return;
+    }
+    table.innerHTML = `
+      <table style="width:100%; border-collapse:collapse;">
+        <thead><tr style="text-align:left; color:#888;">
+          <th style="padding:4px;">segment_id</th>
+          <th style="padding:4px;">rows</th>
+          <th style="padding:4px;">label</th>
+          <th style="padding:4px;">bounds</th>
+          <th style="padding:4px;">snippet</th>
+        </tr></thead>
+        <tbody>
+          ${items
+            .map(
+              (segment) => `
+                <tr data-segment-id="${segment.segment_id}" style="cursor:pointer; border-top:1px solid #222;">
+                  <td style="padding:4px; color:#7fd;">${segment.segment_id || "--"}</td>
+                  <td style="padding:4px;">${segment.row_ids_count ?? segment.size ?? "--"}</td>
+                  <td style="padding:4px;">${segment.label || "--"}</td>
+                  <td style="padding:4px;">${segment.bounds || segment.bounds_text || "--"}</td>
+                  <td style="padding:4px;">${segment.snippet || "--"}</td>
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
+    table.querySelectorAll("[data-segment-id]").forEach((row) => {
+      row.addEventListener("click", () => {
+        const id = row.getAttribute("data-segment-id");
+        if (id) loadSegmentDetail(id);
+      });
+    });
+  }
+
+  async function loadSegmentDetail(segmentId) {
+    const detailEl = document.getElementById("ts-mvp-segment-detail");
+    if (!detailEl) return;
+    const result = await safeJsonFetch(`/api/topic-foundry/segments/${segmentId}?include_full_text=true`);
+    if (!result.ok) {
+      detailEl.textContent = "Failed to load segment detail.";
+      setMvpError(formatHttpError("segment detail", result.error));
+      return;
+    }
+    const seg = result.json || {};
+    const hasFullText = Object.prototype.hasOwnProperty.call(seg, "full_text");
+    const provenance = seg.provenance ? JSON.stringify(seg.provenance, null, 2) : "--";
+    const meaningPayload = {
+      title: seg.title || seg.label || null,
+      aspects: seg.aspects || null,
+      meaning: seg.meaning || null,
+      enrichment: seg.enrichment || null,
+      sentiment: seg.sentiment || null,
+      topic_id: seg.topic_id ?? null,
+      is_outlier: seg.is_outlier ?? null,
+    };
+    const fullTextLabel = hasFullText ? "Full text" : "Full text (error)";
+    const fullTextValue = hasFullText ? seg.full_text || "--" : "backend missing include_full_text support";
+    detailEl.innerHTML = `
+      <div><strong>${seg.segment_id || ""}</strong></div>
+      <div style="margin-top:4px;">${seg.text || seg.snippet || "--"}</div>
+      <div style="margin-top:6px; color:#777;">Provenance</div>
+      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${provenance}</pre>
+      <div style="margin-top:6px; color:#777;">Meaning & enrichment</div>
+      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${JSON.stringify(meaningPayload, null, 2)}</pre>
+      <div style="margin-top:6px; color:#777;">${fullTextLabel}</div>
+      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${fullTextValue}</pre>
+    `;
+  }
 
   function renderError(target, error, fallback = "Request failed.") {
     if (!target) return;
@@ -858,6 +2837,56 @@ loadDismissedIds();
     const status = error.status ? `status ${error.status}` : "status unknown";
     const detail = error.body || error.message || fallback;
     target.textContent = `${status}: ${detail}`;
+  }
+
+  function renderTopicStudioError(target, error, label, panel, request = null) {
+    if (target) {
+      target.textContent = `${label} failed.`;
+    }
+    showToast(`${label} failed.`);
+    if (HUB_DEBUG) {
+      recordTopicStudioDebug(panel, {
+        request,
+        error: {
+          status: error?.status,
+          message: error?.message || "",
+          body: error?.body || "",
+        },
+      });
+    }
+  }
+
+  function asItems(value) {
+    if (Array.isArray(value)) return value;
+    if (value && Array.isArray(value.items)) return value.items;
+    if (value && Array.isArray(value.segments)) return value.segments;
+    return [];
+  }
+
+  function getTotal(data, items) {
+    if (data && data.total !== undefined) return Number(data.total);
+    if (data && data.count !== undefined) return Number(data.count);
+    return Array.isArray(items) ? items.length : 0;
+  }
+
+  function truncateText(value, maxLength = 200) {
+    if (!value) return "";
+    const trimmed = String(value).replace(/\s+/g, " ").trim();
+    if (trimmed.length <= maxLength) return trimmed;
+    return `${trimmed.slice(0, maxLength)}…`;
+  }
+
+  function renderEndpointWarning(target, endpoint, error) {
+    if (!target) return;
+    if (!error) {
+      target.textContent = "";
+      target.classList.add("hidden");
+      return;
+    }
+    const status = error.status ? `status ${error.status}` : "status unknown";
+    const detail = truncateText(error.body || error.message || "Request failed.");
+    target.textContent = `${endpoint} · ${status} · ${detail}`;
+    target.classList.remove("hidden");
   }
 
   function setWarning(target, message) {
@@ -876,8 +2905,8 @@ loadDismissedIds();
     tsDatasetSelect.innerHTML = '<option value="">New dataset…</option>';
     topicStudioDatasets.forEach((dataset) => {
       const option = document.createElement("option");
-      option.value = dataset.dataset_id;
-      option.textContent = `${dataset.name} (${dataset.dataset_id})`;
+      option.value = dataset.id;
+      option.textContent = `${dataset.name} (${dataset.id})`;
       tsDatasetSelect.appendChild(option);
     });
   }
@@ -920,8 +2949,8 @@ loadDismissedIds();
 
   function normalizeRunsResponse(response) {
     if (!response) return [];
-    if (Array.isArray(response)) return response;
-    if (Array.isArray(response.items)) return response.items;
+    const items = asItems(response);
+    if (items.length > 0) return items;
     if (Array.isArray(response.runs)) return response.runs;
     return [];
   }
@@ -990,8 +3019,8 @@ loadDismissedIds();
     tsConvoDatasetSelect.innerHTML = '<option value="">Select dataset…</option>';
     topicStudioDatasets.forEach((dataset) => {
       const option = document.createElement("option");
-      option.value = dataset.dataset_id;
-      option.textContent = `${dataset.name} (${dataset.dataset_id})`;
+      option.value = dataset.id;
+      option.textContent = `${dataset.name} (${dataset.id})`;
       tsConvoDatasetSelect.appendChild(option);
     });
     if (current) {
@@ -1001,7 +3030,7 @@ loadDismissedIds();
       if (tsDatasetSelect?.value) {
         tsConvoDatasetSelect.value = tsDatasetSelect.value;
       } else if (topicStudioDatasets.length > 0) {
-        tsConvoDatasetSelect.value = topicStudioDatasets[0].dataset_id;
+        tsConvoDatasetSelect.value = topicStudioDatasets[0].id;
       }
     }
   }
@@ -1147,7 +3176,7 @@ loadDismissedIds();
       showToast("No segments to export.");
       return;
     }
-    const headers = ["segment_id", "size", "start_at", "end_at", "row_ids_count", "title", "aspects", "valence", "friction", "snippet"];
+    const headers = ["segment_id", "rows", "start_at", "end_at", "row_ids_count", "title", "aspects", "valence", "friction", "snippet"];
     const lines = [headers.join(",")];
     const escapeCsv = (value) => {
       if (value === null || value === undefined) return "";
@@ -1157,13 +3186,13 @@ loadDismissedIds();
     exportRows.forEach((segment) => {
       const sentiment = segment.sentiment || {};
       const aspects = Array.isArray(segment.aspects) ? segment.aspects.join("|") : "";
-      const rowIdsCount = segment.row_ids_count ?? "";
+      const rowIdsCount = segment.row_ids_count ?? segment.size ?? "";
       const row = [
         escapeCsv(segment.segment_id),
-        escapeCsv(segment.size ?? ""),
+        escapeCsv(rowIdsCount),
         escapeCsv(segment.start_at ?? ""),
         escapeCsv(segment.end_at ?? ""),
-        escapeCsv(rowIdsCount),
+        escapeCsv(segment.row_ids_count ?? ""),
         escapeCsv(segment.title || segment.label || ""),
         escapeCsv(aspects),
         escapeCsv(sentiment.valence ?? ""),
@@ -1208,6 +3237,17 @@ loadDismissedIds();
     if (!tsSegmentsFacets) return;
     tsSegmentsFacets.innerHTML = "";
     if (!facets) {
+      const note = document.createElement("div");
+      note.className = "text-[10px] text-gray-500";
+      note.textContent = "Facets unavailable";
+      tsSegmentsFacets.appendChild(note);
+      return;
+    }
+    if (facets.ok === false) {
+      const note = document.createElement("div");
+      note.className = "text-[10px] text-gray-500";
+      note.textContent = "Facets unavailable";
+      tsSegmentsFacets.appendChild(note);
       return;
     }
     const makeChip = (label, type, value) => {
@@ -1350,15 +3390,37 @@ loadDismissedIds();
     }
   }
 
-  function populateDatasetForm(dataset) {
+  async function populateDatasetForm(dataset) {
     if (!dataset) return;
     if (tsDatasetName) tsDatasetName.value = dataset.name || "";
     if (tsDatasetTable) tsDatasetTable.value = dataset.source_table || "";
+    const sourceTable = dataset.source_table || "";
+    const [schemaPart, tablePart] = sourceTable.includes(".") ? sourceTable.split(".", 2) : ["", sourceTable];
+    if (tsDatasetSchema) {
+      if (!topicStudioIntrospectionSchemas.includes(schemaPart)) {
+        renderSchemaOptionsForDataset();
+      }
+      tsDatasetSchema.value = schemaPart || tsDatasetSchema.value || "";
+    }
+    if (tsDatasetSchema?.value) {
+      await loadDatasetTables(tsDatasetSchema.value);
+    }
+    if (tsDatasetTableSelect) {
+      tsDatasetTableSelect.value = tablePart || "";
+    }
+    updateSourceTableInput();
+    if (tsDatasetSchema?.value && tsDatasetTableSelect?.value) {
+      await loadDatasetColumnsFromSourceTable(`${tsDatasetSchema.value}.${tsDatasetTableSelect.value}`);
+    } else if (sourceTable) {
+      await loadDatasetColumnsFromSourceTable(sourceTable);
+    }
     if (tsDatasetIdColumn) tsDatasetIdColumn.value = dataset.id_column || "";
     if (tsDatasetTimeColumn) tsDatasetTimeColumn.value = dataset.time_column || "";
-    if (tsDatasetTextColumns) tsDatasetTextColumns.value = (dataset.text_columns || []).join(", ");
+    if (tsDatasetTextColumns) setSelectedValues(tsDatasetTextColumns, dataset.text_columns || []);
+    if (tsDatasetBoundaryColumn) tsDatasetBoundaryColumn.value = dataset.boundary_column || "";
     if (tsDatasetWhereSql) tsDatasetWhereSql.value = dataset.where_sql || "";
     if (tsDatasetTimezone) tsDatasetTimezone.value = dataset.timezone || "UTC";
+    setDatasetSaveStatus("--");
   }
 
   function clearPreview() {
@@ -1906,7 +3968,7 @@ loadDismissedIds();
   async function handleAttentionAck(attentionId, ackType, note) {
     if (!attentionId) return;
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/attention/${attentionId}/ack`, {
+      const resp = await hubFetch(apiUrl(`/api/attention/${attentionId}/ack`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ack_type: ackType, note }),
@@ -1927,7 +3989,7 @@ loadDismissedIds();
     if (window.__orionReceiptInFlight.has(key)) return;
     window.__orionReceiptInFlight.add(key);
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/chat/message/${messageId}/receipt`, {
+      const resp = await hubFetch(apiUrl(`/api/chat/message/${messageId}/receipt`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, receipt_type: receiptType }),
@@ -2140,7 +4202,7 @@ loadDismissedIds();
 
   async function loadNotifications() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/notifications?limit=50`);
+      const resp = await hubFetch(apiUrl("/api/notifications?limit=50"));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2223,7 +4285,7 @@ loadDismissedIds();
 
   async function loadNotifySettings() {
     try {
-      const profileResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}`);
+      const profileResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}`));
       if (profileResp.ok) {
         const profile = await profileResp.json();
         if (notifyDisplayName) notifyDisplayName.value = profile.display_name || '';
@@ -2232,7 +4294,11 @@ loadDismissedIds();
         if (notifyQuietStart) notifyQuietStart.value = profile.quiet_start_local || '22:00';
         if (notifyQuietEnd) notifyQuietEnd.value = profile.quiet_end_local || '07:00';
       }
-      const prefsResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}/preferences`);
+    } catch (err) {
+      console.warn('Failed to load notify profile', err);
+    }
+    try {
+      const prefsResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}/preferences`));
       if (prefsResp.ok) {
         const prefs = await prefsResp.json();
         if (Array.isArray(prefs)) applyPreferenceRows(prefs);
@@ -2240,7 +4306,7 @@ loadDismissedIds();
       setSettingsStatus('Loaded');
     } catch (err) {
       setSettingsStatus('Failed to load settings', true);
-      console.warn('Failed to load notify settings', err);
+      console.warn('Failed to load notify preferences', err);
     }
   }
 
@@ -2255,14 +4321,14 @@ loadDismissedIds();
         quiet_start_local: notifyQuietStart ? notifyQuietStart.value : null,
         quiet_end_local: notifyQuietEnd ? notifyQuietEnd.value : null,
       };
-      await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}`, {
+      await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(profilePayload),
       });
 
       const preferencesPayload = { preferences: readPreferenceRows() };
-      const prefResp = await fetch(`${API_BASE_URL}/api/notify/recipients/${RECIPIENT_GROUP}/preferences`, {
+      const prefResp = await hubFetch(apiUrl(`/api/notify/recipients/${RECIPIENT_GROUP}/preferences`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(preferencesPayload),
@@ -2282,7 +4348,7 @@ loadDismissedIds();
     try {
       const filter = messageFilter ? messageFilter.value : 'unread';
       const statusParam = filter === 'all' ? '' : 'unread';
-      const resp = await fetch(`${API_BASE_URL}/api/chat/messages?limit=50&status=${statusParam}`);
+      const resp = await hubFetch(apiUrl(`/api/chat/messages?limit=50&status=${statusParam}`));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2315,7 +4381,7 @@ loadDismissedIds();
 
   async function loadPendingAttention() {
     try {
-      const resp = await fetch(`${API_BASE_URL}/api/attention?status=pending&limit=50`);
+      const resp = await hubFetch(apiUrl("/api/attention?status=pending&limit=50"));
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
@@ -2563,8 +4629,8 @@ loadDismissedIds();
 
     try {
       const [summaryResp, driftResp] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/topics/summary?${summaryParams.toString()}`),
-        fetch(`${API_BASE_URL}/api/topics/drift?${driftParams.toString()}`),
+        hubFetch(apiUrl(`/api/topics/summary?${summaryParams.toString()}`)),
+        hubFetch(apiUrl(`/api/topics/drift?${driftParams.toString()}`)),
       ]);
 
       if (!summaryResp.ok || !driftResp.ok) {
@@ -2692,7 +4758,7 @@ loadDismissedIds();
 
   async function loadCognitionLibrary() {
       try {
-          const res = await fetch(`${API_BASE_URL}/api/cognition/library`);
+          const res = await hubFetch(apiUrl("/api/cognition/library"));
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           cognitionLibrary = await res.json();
           renderPackButtons();
@@ -2836,11 +4902,9 @@ loadDismissedIds();
 
   // --- WebSocket ---
   function setupWebSocket() {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
-    
-    console.log(`[WS] Connecting to ${wsUrl}...`);
-    socket = new WebSocket(wsUrl);
+    const wsEndpoint = wsUrl("/ws");
+    console.log(`[WS] Connecting to ${wsEndpoint}...`);
+    socket = new WebSocket(wsEndpoint);
 
     socket.onopen = () => {
         console.log("[WS] Connected");
@@ -2915,7 +4979,7 @@ loadDismissedIds();
         if (noWriteToggle && noWriteToggle.checked) headers['X-Orion-No-Write'] = '1';
 
         // Fallback to HTTP if WS is down
-        fetch(`${API_BASE_URL}/api/chat`, {
+        hubFetch(apiUrl("/api/chat"), {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({messages:[{role:'user', content:text}], ...payload})
@@ -3032,7 +5096,7 @@ loadDismissedIds();
   async function initSession() {
     try {
        const sid = orionSessionId || localStorage.getItem('orion_sid');
-       const r = await fetch(`${API_BASE_URL}/api/session`, {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
+       const r = await hubFetch(apiUrl("/api/session"), {headers: sid ? {'X-Orion-Session-Id': sid} : {}});
        const d = await r.json();
        if(d.session_id) {
          orionSessionId = d.session_id;
@@ -3136,7 +5200,7 @@ loadDismissedIds();
     async function postCollapse(payload) {
       setCollapseStatus("Submitting…");
       try {
-        const resp = await fetch("/submit-collapse", {
+        const resp = await hubFetch(apiUrl("/submit-collapse"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -3378,15 +5442,19 @@ loadDismissedIds();
     if (!tsStatusBadge) return;
     try {
       setLoading(tsStatusLoading, true);
+      setTopicStudioRenderStep("fetching /ready");
       const result = await topicFoundryFetch("/ready");
       const checks = result?.checks || {};
-      formatStatusBadge(tsStatusBadge, result.ok, result.ok ? "Healthy" : "Degraded");
+      formatStatusBadge(tsStatusBadge, true, "Reachable");
       formatStatusBadge(tsStatusPg, checks.pg?.ok, checks.pg?.ok ? "ok" : "fail");
       formatStatusBadge(tsStatusEmbedding, checks.embedding?.ok, checks.embedding?.ok ? "ok" : "fail");
       formatStatusBadge(tsStatusModelDir, checks.model_dir?.ok, checks.model_dir?.ok ? "ok" : "fail");
       if (tsStatusDetail) {
         tsStatusDetail.textContent = `PG: ${checks.pg?.detail || "--"} · Embedding: ${checks.embedding?.detail || "--"} · Model dir: ${checks.model_dir?.detail || "--"}`;
       }
+      renderEndpointWarning(tsReadyWarning, null, null);
+      recordTopicStudioFetchStatus("ready", 200, true);
+      setTopicStudioRenderStep("fetched /ready");
       setLoading(tsStatusLoading, false);
     } catch (err) {
       formatStatusBadge(tsStatusBadge, false, "Unreachable");
@@ -3394,6 +5462,9 @@ loadDismissedIds();
       formatStatusBadge(tsStatusEmbedding, null, "--");
       formatStatusBadge(tsStatusModelDir, null, "--");
       renderError(tsStatusDetail, err, "Failed to read /ready.");
+      renderEndpointWarning(tsReadyWarning, "/ready", err);
+      recordTopicStudioFetchStatus("ready", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /ready");
       setLoading(tsStatusLoading, false);
     }
   }
@@ -3425,6 +5496,27 @@ loadDismissedIds();
     }
   }
 
+  function renderMetricOptions(metrics = [], defaultMetric = "") {
+    if (!tsModelMetric) return;
+    const current = tsModelMetric.value;
+    tsModelMetric.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select metric";
+    tsModelMetric.appendChild(placeholder);
+    metrics.forEach((metric) => {
+      const option = document.createElement("option");
+      option.value = metric;
+      option.textContent = metric;
+      tsModelMetric.appendChild(option);
+    });
+    if (current && metrics.includes(current)) {
+      tsModelMetric.value = current;
+    } else if (defaultMetric && metrics.includes(defaultMetric)) {
+      tsModelMetric.value = defaultMetric;
+    }
+  }
+
   function applyCapabilityDefaults(defaults = {}) {
     if (tsModelEmbeddingUrl && !tsModelEmbeddingUrl.value) {
       tsModelEmbeddingUrl.value = defaults.embedding_source_url || "";
@@ -3444,18 +5536,34 @@ loadDismissedIds();
     }
     try {
       setLoading(tsStatusLoading, true, "Loading capabilities...");
+      setTopicStudioRenderStep("fetching /capabilities");
       const result = await topicFoundryFetch("/capabilities");
       topicStudioCapabilities = result;
       const modes = result.segmentation_modes_supported || [];
+      const metrics = result.supported_metrics || [];
       renderSegmentationModes(modes, Boolean(result.llm_enabled));
+      renderMetricOptions(metrics, result.default_metric);
       applyCapabilityDefaults(result.defaults || {});
+      if (tsEnrichRun) {
+        const llmEnabled = Boolean(result.llm_enabled);
+        tsEnrichRun.disabled = !llmEnabled;
+        tsEnrichRun.title = llmEnabled ? "" : "LLM disabled";
+      }
+      renderEndpointWarning(tsCapabilitiesWarning, null, null);
+      recordTopicStudioFetchStatus("capabilities", 200, true);
+      setTopicStudioRenderStep("fetched /capabilities");
       setLoading(tsStatusLoading, false);
     } catch (err) {
       const fallbackModes = ["time_gap", "semantic", "hybrid"];
+      const fallbackMetrics = ["euclidean", "cosine"];
       renderSegmentationModes(fallbackModes, false);
-      if (tsCapabilitiesWarning) {
-        tsCapabilitiesWarning.textContent = `Capabilities unavailable. Falling back to safe defaults. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
-        tsCapabilitiesWarning.classList.remove("hidden");
+      renderMetricOptions(fallbackMetrics, "cosine");
+      renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
+      recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /capabilities");
+      if (tsEnrichRun) {
+        tsEnrichRun.disabled = true;
+        tsEnrichRun.title = "LLM disabled";
       }
       setLoading(tsStatusLoading, false);
     }
@@ -3465,15 +5573,60 @@ loadDismissedIds();
     if (topicFoundryBaseLabel) {
       topicFoundryBaseLabel.textContent = TOPIC_FOUNDRY_PROXY_BASE;
     }
+    setTopicStudioRenderStep("refresh topic studio");
     await refreshTopicStudioCapabilities();
     await refreshTopicStudioStatus();
     try {
+      const schemasResponse = await topicFoundryFetch("/introspect/schemas");
+      topicStudioIntrospectionSchemas = schemasResponse?.schemas || [];
+      const priorSchema = tsDatasetSchema?.value || "";
+      renderSchemaOptionsForDataset();
+      setDatasetSourceEditable(topicStudioIntrospectionSchemas.length === 0);
+      if (tsDatasetSchema && priorSchema && topicStudioIntrospectionSchemas.includes(priorSchema)) {
+        tsDatasetSchema.value = priorSchema;
+      }
+      if (tsDatasetSchema && !tsDatasetSchema.value && topicStudioIntrospectionSchemas.length > 0) {
+        tsDatasetSchema.value = topicStudioIntrospectionSchemas[0];
+      }
+      if (tsDatasetSchema?.value) {
+        await loadDatasetTables(tsDatasetSchema.value);
+      }
+      if (tsDatasetSchema?.value && tsDatasetTableSelect?.value) {
+        updateSourceTableInput();
+        await loadDatasetColumnsFromSourceTable(`${tsDatasetSchema.value}.${tsDatasetTableSelect.value}`);
+      }
+    } catch (err) {
+      topicStudioIntrospectionSchemas = [];
+      setDatasetSourceEditable(true);
+    }
+    try {
       const datasetsResponse = await topicFoundryFetch("/datasets");
-      topicStudioDatasets = datasetsResponse?.datasets || [];
+      topicStudioDatasets = parseDatasets(datasetsResponse);
       renderDatasetOptions();
       renderConversationDatasetOptions();
+      if (tsDatasetSelect?.value) {
+        const selected = topicStudioDatasets.find((dataset) => dataset.id === tsDatasetSelect.value);
+        if (selected?.raw) {
+          loadGroupByCandidatesFromDataset(selected.raw);
+        }
+      }
+      if (HUB_DEBUG) {
+        const debugLine = document.getElementById("tsDebugLine");
+        if (debugLine) {
+          const firstId = topicStudioDatasets[0]?.id || "--";
+          debugLine.textContent = `datasetsCount=${topicStudioDatasets.length} first=${firstId}`;
+          debugLine.classList.remove("hidden");
+        }
+      }
     } catch (err) {
       console.warn("[TopicStudio] Failed to load datasets", err);
+      if (HUB_DEBUG) {
+        const debugLine = document.getElementById("tsDebugLine");
+        if (debugLine) {
+          debugLine.textContent = "datasetsCount=0 first=--";
+          debugLine.classList.remove("hidden");
+        }
+      }
     }
     try {
       const modelsResponse = await topicFoundryFetch("/models");
@@ -3505,8 +5658,12 @@ loadDismissedIds();
       if (tsKgRunId && !tsKgRunId.value && tsRunsSelect?.value) {
         tsKgRunId.value = tsRunsSelect.value;
       }
+      recordTopicStudioFetchStatus("runs", 200, true);
+      setTopicStudioRenderStep("fetched /runs");
     } catch (err) {
       console.warn("[TopicStudio] Failed to load runs", err);
+      recordTopicStudioFetchStatus("runs", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /runs");
       if (tsRunsWarning) {
         tsRunsWarning.textContent = `Failed to load runs. Enter a run id manually. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
         tsRunsWarning.classList.remove("hidden");
@@ -3517,35 +5674,91 @@ loadDismissedIds();
 
   applyTopicStudioState();
   bindTopicStudioPersistence();
+  if (HUB_DEBUG && tsDebugDrawer) {
+    tsDebugDrawer.classList.remove("hidden");
+  }
   if (tsUsePreviewSpec) {
     tsUsePreviewSpec.disabled = true;
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
+  if (tsSkeletonRetry) {
+    tsSkeletonRetry.addEventListener("click", () => {
+      renderTopicStudioSkeleton("Loading...");
+      refreshTopicStudio().catch((err) => {
+        console.warn("[TopicStudio] Retry failed", err);
+      });
+    });
+  }
 
-  if (hubTabButton && topicStudioTabButton) {
-    hubTabButton.addEventListener("click", () => {
-      setActiveTab("hub");
-      history.replaceState(null, "", "#hub");
-    });
-    topicStudioTabButton.addEventListener("click", () => {
-      setActiveTab("topic-studio");
-      history.replaceState(null, "", "#topic-studio");
-      refreshTopicStudio();
-    });
-    if (window.location.hash === "#topic-studio") {
-      setActiveTab("topic-studio");
-      refreshTopicStudio();
-    } else {
-      setActiveTab("hub");
-    }
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-hash-target]") : null;
+    if (!target) return;
+    const hash = target.getAttribute("data-hash-target");
+    if (!hash) return;
+    event.preventDefault();
+    navigateToHash(hash);
+  });
+  window.addEventListener("hashchange", routeFromHash);
+  if (!window.location.hash) {
+    window.location.hash = "#hub";
+  } else {
+    routeFromHash();
   }
 
   if (tsDatasetSelect) {
-    tsDatasetSelect.addEventListener("change", () => {
-      const selected = topicStudioDatasets.find((dataset) => dataset.dataset_id === tsDatasetSelect.value);
-      if (selected) {
-        populateDatasetForm(selected);
+    tsDatasetSelect.addEventListener("change", async () => {
+      const selected = topicStudioDatasets.find((dataset) => dataset.id === tsDatasetSelect.value);
+      if (selected?.raw) {
+        await populateDatasetForm(selected.raw);
+        loadGroupByCandidatesFromDataset(selected.raw);
+        updateBoundaryRequirement();
       }
+    });
+  }
+
+  if (tsWindowingMode) {
+    tsWindowingMode.addEventListener("change", () => {
+      updateGroupByVisibility();
+      updateBoundaryRequirement();
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsRunPreset) {
+    tsRunPreset.addEventListener("change", () => {
+      applyRunPreset(tsRunPreset.value);
+      updateBoundaryRequirement();
+    });
+  }
+
+  if (tsDatasetSchema) {
+    tsDatasetSchema.addEventListener("change", async () => {
+      await loadDatasetTables(tsDatasetSchema.value);
+      topicStudioDatasetColumns = [];
+      renderDatasetColumnOptions();
+      updateSourceTableInput();
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsDatasetTableSelect) {
+    tsDatasetTableSelect.addEventListener("change", async () => {
+      updateSourceTableInput();
+      if (tsDatasetSchema?.value && tsDatasetTableSelect.value) {
+        await loadDatasetColumnsFromSourceTable(`${tsDatasetSchema.value}.${tsDatasetTableSelect.value}`);
+      }
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsGroupByColumn) {
+    tsGroupByColumn.addEventListener("change", saveTopicStudioState);
+  }
+
+  if (tsDatasetBoundaryColumn) {
+    tsDatasetBoundaryColumn.addEventListener("change", () => {
+      updateBoundaryRequirement();
+      saveTopicStudioState();
     });
   }
 
@@ -3771,6 +5984,51 @@ loadDismissedIds();
     });
   }
 
+  if (tsSegmentFullTextLoad) {
+    tsSegmentFullTextLoad.addEventListener("click", async () => {
+      if (!topicStudioSelectedSegmentId) {
+        showToast("Select a segment first.");
+        return;
+      }
+      try {
+        if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Loading full text...";
+        const result = await topicFoundryFetch(`/segments/${topicStudioSelectedSegmentId}?include_full_text=true`);
+        renderSegmentDetailPanel(result, { include_full_text: true });
+        recordTopicStudioDebug("segments", {
+          request: `/segments/${topicStudioSelectedSegmentId}?include_full_text=true`,
+          response: result,
+        });
+      } catch (err) {
+        if (tsSegmentFullTextStatus) tsSegmentFullTextStatus.textContent = "Failed to load full text.";
+        renderTopicStudioError(tsSegmentsError, err, "Load full text", "segments", {
+          request: `/segments/${topicStudioSelectedSegmentId}?include_full_text=true`,
+        });
+      }
+    });
+  }
+
+  if (tsSegmentFullTextExpand) {
+    tsSegmentFullTextExpand.addEventListener("click", () => {
+      if (!topicStudioSegmentFullText) return;
+      topicStudioSegmentFullTextExpanded = !topicStudioSegmentFullTextExpanded;
+      tsSegmentFullTextExpand.textContent = topicStudioSegmentFullTextExpanded ? "Collapse" : "Expand";
+      if (tsSegmentFullText) {
+        tsSegmentFullText.style.maxHeight = topicStudioSegmentFullTextExpanded ? "none" : "320px";
+      }
+      renderSegmentFullText();
+    });
+  }
+
+  if (tsSegmentFullTextCopy) {
+    tsSegmentFullTextCopy.addEventListener("click", () => {
+      if (!topicStudioSegmentFullText) {
+        showToast("Load full text first.");
+        return;
+      }
+      copyText(topicStudioSegmentFullText, "Full text copied.");
+    });
+  }
+
   if (tsCreateDataset) {
     tsCreateDataset.addEventListener("click", async () => {
       try {
@@ -3780,12 +6038,37 @@ loadDismissedIds();
           body: JSON.stringify(payload),
         });
         showToast("Dataset created.");
+        setDatasetSaveStatus("Dataset created.");
         await refreshTopicStudio();
         if (response?.dataset_id && tsDatasetSelect) {
           tsDatasetSelect.value = response.dataset_id;
         }
       } catch (err) {
         showToast("Failed to create dataset.");
+        setDatasetSaveStatus("Failed to create dataset.", true);
+      }
+    });
+  }
+
+  if (tsSaveDataset) {
+    tsSaveDataset.addEventListener("click", async () => {
+      if (!tsDatasetSelect?.value) {
+        showToast("Select a dataset to save.");
+        setDatasetSaveStatus("Select a dataset to save.", true);
+        return;
+      }
+      try {
+        const payload = buildDatasetSpec();
+        await topicFoundryFetch(`/datasets/${tsDatasetSelect.value}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+        showToast("Dataset saved.");
+        setDatasetSaveStatus("Dataset saved.");
+        await refreshTopicStudio();
+      } catch (err) {
+        showToast("Failed to save dataset.");
+        setDatasetSaveStatus("Failed to save dataset.", true);
       }
     });
   }
@@ -3793,6 +6076,10 @@ loadDismissedIds();
   if (tsPreviewDataset) {
     tsPreviewDataset.addEventListener("click", async () => {
       try {
+        if (boundaryColumnRequired() && !tsDatasetBoundaryColumn?.value) {
+          setWarning(tsPreviewWarning, "Boundary column required. Select a boundary column and save the dataset before previewing.");
+          return;
+        }
         setLoading(tsPreviewLoading, true);
         clearPreview();
         const payload = {
@@ -3802,10 +6089,16 @@ loadDismissedIds();
           end_at: parseDateInput(tsEndAt?.value),
           limit: 200,
         };
-        await executePreview(payload);
+        recordTopicStudioDebug("preview", { request: "/datasets/preview", payload });
+        const result = await executePreview(payload);
+        recordTopicStudioDebug("preview", { request: "/datasets/preview", response: result });
       } catch (err) {
-        renderError(tsPreviewError, err, "Failed to preview dataset.");
-        showToast("Failed to preview dataset.");
+        if (tsPreviewError) {
+          tsPreviewError.textContent = formatHttpError("preview", err);
+        }
+        renderTopicStudioError(tsPreviewError, err, "Preview", "preview", {
+          request: "/datasets/preview",
+        });
         setWarning(tsPreviewWarning, null);
         setLoading(tsPreviewLoading, false);
       }
@@ -3925,25 +6218,33 @@ loadDismissedIds();
         showToast("Select a model to train.");
         return;
       }
+      if (boundaryColumnRequired() && !tsDatasetBoundaryColumn?.value) {
+        setWarning(tsRunWarning, "Boundary column required. Select a boundary column and save the dataset before training.");
+        return;
+      }
       try {
         setLoading(tsRunLoading, true);
+        const requestPayload = {
+          model_id: model.model_id,
+          dataset_id: model.dataset_id,
+          start_at: parseDateInput(tsStartAt?.value),
+          end_at: parseDateInput(tsEndAt?.value),
+          windowing_spec: buildWindowingSpec(),
+        };
+        recordTopicStudioDebug("train", { request: "/runs/train", payload: requestPayload });
         const result = await topicFoundryFetch("/runs/train", {
           method: "POST",
-          body: JSON.stringify({
-            model_id: model.model_id,
-            dataset_id: model.dataset_id,
-            start_at: parseDateInput(tsStartAt?.value),
-            end_at: parseDateInput(tsEndAt?.value),
-          }),
+          body: JSON.stringify(requestPayload),
         });
+        recordTopicStudioDebug("train", { request: "/runs/train", response: result });
         if (tsRunId) tsRunId.value = result.run_id;
         if (tsRunError) tsRunError.textContent = "--";
         renderRunStatus(result);
         startRunPolling(result.run_id);
         await refreshTopicStudio();
       } catch (err) {
-        renderError(tsRunError, err);
-        showToast("Failed to start training run.");
+        if (tsRunError) tsRunError.textContent = formatHttpError("train", err);
+        renderTopicStudioError(tsRunError, err, "Train run", "train", { request: "/runs/train" });
         setLoading(tsRunLoading, false);
       }
     });
@@ -3962,8 +6263,7 @@ loadDismissedIds();
         await refreshTopicStudio();
         setLoading(tsRunLoading, false);
       } catch (err) {
-        renderError(tsRunError, err);
-        showToast("Failed to poll run status.");
+        renderTopicStudioError(tsRunError, err, "Poll run", "train", { request: `/runs/${tsRunId?.value}` });
         setLoading(tsRunLoading, false);
       }
     });
@@ -3982,10 +6282,12 @@ loadDismissedIds();
           enricher: tsEnrichEnricher?.value || "heuristic",
           force: Boolean(tsEnrichForce?.checked),
         };
+        recordTopicStudioDebug("enrich", { request: `/runs/${tsRunId.value}/enrich`, payload });
         const result = await topicFoundryFetch(`/runs/${tsRunId.value}/enrich`, {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        recordTopicStudioDebug("enrich", { request: `/runs/${tsRunId.value}/enrich`, response: result });
         if (tsEnrichStatus) {
           tsEnrichStatus.textContent = `enriched=${result.enriched_count ?? 0} failed=${result.failed_count ?? 0}`;
         }
@@ -3997,8 +6299,9 @@ loadDismissedIds();
         }
         startRunPolling(tsRunId.value);
       } catch (err) {
-        renderError(tsEnrichStatus, err);
-        showToast("Failed to start enrichment.");
+        const errorMsg = formatHttpError("enrich", err);
+        if (tsEnrichStatus) tsEnrichStatus.textContent = errorMsg;
+        renderTopicStudioError(tsEnrichStatus, err, "Enrich run", "enrich", { request: `/runs/${tsRunId?.value}/enrich` });
         setWarning(tsEnrichWarning, null);
         setLoading(tsEnrichLoading, false);
         topicStudioEnrichPolling = false;
@@ -4011,7 +6314,7 @@ loadDismissedIds();
     tsSegmentsTableBody.innerHTML = "";
     if (!segments || segments.length === 0) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="py-3 text-gray-500" colspan="9">No segments found.</td>';
+      row.innerHTML = '<td class="py-3 text-gray-500" colspan="13">0 segments returned.</td>';
       tsSegmentsTableBody.appendChild(row);
       return;
     }
@@ -4025,49 +6328,41 @@ loadDismissedIds();
         : "--";
       const startAt = segment.start_at || "--";
       const endAt = segment.end_at || "--";
-      const bounds = startAt === "--" && endAt === "--" ? "--" : `${startAt} → ${endAt}`;
-      const snippet = truncate(segment.snippet || "", 200) || "--";
+      const snippet = truncate(segment.snippet || "", 160) || "--";
       const rowIdsCount = segment.row_ids_count ?? "--";
+      const size = segment.size ?? rowIdsCount ?? "--";
+      const chars = segment.chars ?? "--";
+      const topicId = segment.topic_id ?? "--";
+      const topicProbValue = segment.topic_prob;
+      const topicProb = Number.isFinite(topicProbValue) ? Number(topicProbValue).toFixed(3) : topicProbValue ?? "--";
+      const outlier = segment.is_outlier === true ? "yes" : segment.is_outlier === false ? "no" : "--";
+      const segmentId = segment.segment_id || "--";
+      const shortId = segmentId !== "--" && segmentId.length > 10 ? `${segmentId.slice(0, 10)}…` : segmentId;
       row.innerHTML = `
-        <td class="py-2 pr-3 text-indigo-300 cursor-pointer" data-segment-id="${segment.segment_id}">${segment.segment_id}</td>
-        <td class="py-2 pr-3">${segment.size ?? "--"}</td>
+        <td class="py-2 pr-3 text-indigo-300 cursor-pointer" data-segment-id="${segmentId}" title="${segmentId}">${shortId}</td>
+        <td class="py-2 pr-3">${size}</td>
         <td class="py-2 pr-3">${rowIdsCount}</td>
+        <td class="py-2 pr-3">${chars}</td>
         <td class="py-2 pr-3">${segment.title || segment.label || "--"}</td>
         <td class="py-2 pr-3">${aspectChips}</td>
-        <td class="py-2 pr-3">${bounds}</td>
+        <td class="py-2 pr-3">${startAt}</td>
+        <td class="py-2 pr-3">${endAt}</td>
         <td class="py-2 pr-3">${snippet}</td>
+        <td class="py-2 pr-3">${topicId}</td>
+        <td class="py-2 pr-3">${topicProb}</td>
+        <td class="py-2 pr-3">${outlier}</td>
         <td class="py-2 pr-3">${sentiment.friction ?? "--"}</td>
-        <td class="py-2 pr-3">${sentiment.valence ?? "--"}</td>
       `;
       row.querySelector("[data-segment-id]")?.addEventListener("click", async () => {
         try {
           topicStudioSelectedSegmentId = segment.segment_id;
-          const detail = await topicFoundryFetch(`/segments/${segment.segment_id}`);
-          const meaning = detail.meaning || {};
-          const provenance = detail.provenance || {};
-          const rowIds = Array.isArray(provenance.row_ids) ? provenance.row_ids.length : provenance.row_ids_count;
-          const snippet = detail.snippet || detail.text || provenance.snippet || provenance.text || null;
-          const detailPayload = {
-            segment_id: detail.segment_id,
-            title: detail.title || detail.label || null,
-            meaning: {
-              intent: meaning.intent || null,
-              outcome: meaning.outcome || null,
-              questions: meaning.questions || null,
-              next_steps: meaning.next_steps || null,
-            },
-            provenance: {
-              row_ids_count: rowIds ?? null,
-              start_at: detail.start_at || provenance.start_at || null,
-              end_at: detail.end_at || provenance.end_at || null,
-            },
-            snippet: snippet || null,
-          };
-          if (tsSegmentDetail) {
-            tsSegmentDetail.textContent = JSON.stringify(detailPayload, null, 2);
-          }
+          const detail = await topicFoundryFetch(`/segments/${segment.segment_id}?include_full_text=true`);
+          renderSegmentDetailPanel(detail, { include_full_text: true });
+          recordTopicStudioDebug("segments", { request: `/segments/${segment.segment_id}?include_full_text=true`, response: detail });
         } catch (err) {
-          renderError(tsSegmentDetail, err);
+          renderTopicStudioError(tsSegmentsError, err, "Load segment detail", "segments", {
+            request: `/segments/${segment.segment_id}?include_full_text=true`,
+          });
         }
       });
       tsSegmentsTableBody.appendChild(row);
@@ -4077,33 +6372,14 @@ loadDismissedIds();
   async function showSegmentDetailFromId(segmentId) {
     if (!segmentId) return;
     try {
-      const detail = await topicFoundryFetch(`/segments/${segmentId}`);
-      const meaning = detail.meaning || {};
-      const provenance = detail.provenance || {};
-      const rowIds = Array.isArray(provenance.row_ids) ? provenance.row_ids.length : provenance.row_ids_count;
-      const snippet = detail.snippet || detail.text || provenance.snippet || provenance.text || null;
-      const detailPayload = {
-        segment_id: detail.segment_id,
-        title: detail.title || detail.label || null,
-        meaning: {
-          intent: meaning.intent || null,
-          outcome: meaning.outcome || null,
-          questions: meaning.questions || null,
-          next_steps: meaning.next_steps || null,
-        },
-        provenance: {
-          row_ids_count: rowIds ?? null,
-          start_at: detail.start_at || provenance.start_at || null,
-          end_at: detail.end_at || provenance.end_at || null,
-        },
-        snippet: snippet || null,
-      };
-      if (tsSegmentDetail) {
-        tsSegmentDetail.textContent = JSON.stringify(detailPayload, null, 2);
-      }
+      const detail = await topicFoundryFetch(`/segments/${segmentId}?include_full_text=true`);
+      renderSegmentDetailPanel(detail, { include_full_text: true });
+      recordTopicStudioDebug("segments", { request: `/segments/${segmentId}?include_full_text=true`, response: detail });
       setTopicStudioSubview("runs");
     } catch (err) {
-      renderError(tsSegmentDetail, err);
+      renderTopicStudioError(tsSegmentsError, err, "Load segment detail", "segments", {
+        request: `/segments/${segmentId}?include_full_text=true`,
+      });
     }
   }
 
@@ -4122,8 +6398,10 @@ loadDismissedIds();
       const pct = Number.isFinite(topic.outlier_pct) ? `${(topic.outlier_pct * 100).toFixed(1)}%` : "--";
       row.innerHTML = `
         <td class="py-2 pr-3 text-indigo-300">${topic.topic_id ?? "--"}</td>
+        <td class="py-2 pr-3">${topic.scope ?? "--"}</td>
         <td class="py-2 pr-3">${topic.count ?? "--"}</td>
         <td class="py-2 pr-3">${pct}</td>
+        <td class="py-2 pr-3">${topic.parent_topic_id ?? "--"}</td>
         <td class="py-2 pr-3"><button class="text-indigo-300 hover:text-indigo-200" data-topic-id="${topic.topic_id}">View</button></td>
       `;
       row.querySelector("[data-topic-id]")?.addEventListener("click", () => {
@@ -4160,9 +6438,10 @@ loadDismissedIds();
       const startAt = segment.start_at || "--";
       const endAt = segment.end_at || "--";
       const bounds = startAt === "--" && endAt === "--" ? "--" : `${startAt} → ${endAt}`;
+      const rowIdsCount = segment.row_ids_count ?? segment.size ?? "--";
       row.innerHTML = `
         <td class="py-2 pr-3">${segment.segment_id ?? "--"}</td>
-        <td class="py-2 pr-3">${segment.size ?? "--"}</td>
+        <td class="py-2 pr-3">${rowIdsCount}</td>
         <td class="py-2 pr-3">${segment.title || segment.label || "--"}</td>
         <td class="py-2 pr-3">${bounds}</td>
         <td class="py-2 pr-3">${snippet}</td>
@@ -4315,7 +6594,8 @@ loadDismissedIds();
         params.set("kind", kindValue);
       }
       const response = await topicFoundryFetch(`/events?${params.toString()}`);
-      topicStudioEventsPage = response.items || [];
+      const items = asItems(response);
+      topicStudioEventsPage = items.length > 0 ? items : Array.isArray(response?.events) ? response.events : [];
       renderEventsTable(topicStudioEventsPage);
       if (tsEventsStatus) tsEventsStatus.textContent = `Loaded ${topicStudioEventsPage.length} events.`;
     } catch (err) {
@@ -4405,7 +6685,8 @@ loadDismissedIds();
         params.set("q", tsKgQuery.value);
       }
       const response = await topicFoundryFetch(`/kg/edges?${params.toString()}`);
-      topicStudioKgEdgesPage = response.items || [];
+      const items = asItems(response);
+      topicStudioKgEdgesPage = items.length > 0 ? items : Array.isArray(response?.edges) ? response.edges : [];
       renderKgTable(topicStudioKgEdgesPage);
       if (tsKgStatus) tsKgStatus.textContent = `Loaded ${topicStudioKgEdgesPage.length} edges.`;
     } catch (err) {
@@ -4469,11 +6750,15 @@ loadDismissedIds();
         limit: tsTopicsLimit?.value || "200",
         offset: tsTopicsOffset?.value || "0",
       });
+      if (tsTopicsScope?.value) {
+        params.set("scope", tsTopicsScope.value);
+      }
       const response = await topicFoundryFetch(`/topics?${params.toString()}`);
-      const items = response.items || response.topics || [];
-      renderTopicsTable(items);
+      const items = asItems(response);
+      const topics = items.length > 0 ? items : Array.isArray(response?.topics) ? response.topics : [];
+      renderTopicsTable(topics);
       if (tsTopicsStatus) {
-        tsTopicsStatus.textContent = `Loaded ${items.length} topics.`;
+        tsTopicsStatus.textContent = `Loaded ${topics.length} topics.`;
       }
     } catch (err) {
       renderError(tsTopicsError, err);
@@ -4517,7 +6802,8 @@ loadDismissedIds();
         include_bounds: "true",
       });
       const response = await topicFoundryFetch(`/topics/${topicId}/segments?${params.toString()}`);
-      const segments = response.items || response.segments || [];
+      const items = asItems(response);
+      const segments = items.length > 0 ? items : Array.isArray(response?.segments) ? response.segments : [];
       renderTopicSegmentsTable(segments);
       if (tsTopicSegmentsStatus) {
         const rangeStart = segments.length === 0 ? 0 : topicStudioTopicSegmentsOffset + 1;
@@ -4655,6 +6941,7 @@ loadDismissedIds();
       return;
     }
     topicStudioSegmentsPolling = true;
+    const qs = new URLSearchParams();
     try {
       setLoading(tsSegmentsLoading, true);
       if (tsSegmentsError) tsSegmentsError.textContent = "--";
@@ -4663,45 +6950,45 @@ loadDismissedIds();
         topicStudioSegmentsQueryKey = queryKey;
         resetSegmentsPaging();
       }
-      const sortValue = tsSegmentsSort?.value || "time_desc";
-      let sortBy = "created_at";
-      let sortDir = "desc";
-      if (sortValue === "friction_desc") {
-        sortBy = "friction";
-      } else if (sortValue === "size_desc") {
-        sortBy = "size";
-      } else if (sortValue === "time_asc") {
-        sortDir = "asc";
+      topicStudioSegmentsOffset = 0;
+      qs.set("run_id", tsSegmentsRunId.value);
+      qs.set("include_snippet", "true");
+      qs.set("include_bounds", "true");
+      qs.set("limit", "50");
+      qs.set("offset", "0");
+      qs.set("format", "wrapped");
+      qs.set("sort_by", "created_at");
+      qs.set("sort_dir", "desc");
+      const enrichmentValue = tsSegmentsEnrichment?.value;
+      if (enrichmentValue && enrichmentValue !== "all") {
+        qs.set("has_enrichment", enrichmentValue);
       }
-      const params = new URLSearchParams({
-        run_id: tsSegmentsRunId.value,
-        include_snippet: "true",
-        include_bounds: "true",
-        limit: String(topicStudioSegmentsLimit),
-        offset: String(topicStudioSegmentsOffset),
-        format: "wrapped",
-        sort_by: sortBy,
-        sort_dir: sortDir,
-      });
-      if (tsSegmentsEnrichment?.value) {
-        params.set("has_enrichment", tsSegmentsEnrichment.value);
-      }
-      if (tsSegmentsAspect?.value) {
-        params.set("aspect", tsSegmentsAspect.value);
+      const aspectValue = tsSegmentsAspect?.value?.trim();
+      if (aspectValue && aspectValue !== "all") {
+        qs.set("aspect", aspectValue);
       }
       const query = tsSegmentsSearch?.value?.trim();
       if (query) {
-        params.set("q", query);
+        qs.set("q", query);
       }
-      const { payload, headers } = await topicFoundryFetchWithHeaders(`/segments?${params.toString()}`);
-      const items = payload.items || payload.segments || payload;
-      topicStudioSegmentsPage = Array.isArray(items) ? items : [];
-      const totalValue = Number(payload.total);
-      if (Number.isFinite(totalValue)) {
-        topicStudioSegmentsTotal = totalValue;
-      } else {
-        const headerTotal = Number(headers.get("X-Total-Count"));
-        topicStudioSegmentsTotal = Number.isFinite(headerTotal) ? headerTotal : null;
+      const { payload } = await topicFoundryFetchWithHeaders(`/segments?${qs.toString()}`);
+      const items = asItems(payload);
+      const segments = items;
+      topicStudioSegmentsPage = segments;
+      topicStudioSegmentsTotal = getTotal(payload, items);
+      if (HUB_DEBUG) {
+        const keys = Object.keys(payload || {});
+        console.log("segments keys", keys, "items", items.length);
+        const debugEl = document.getElementById("tsSegmentsDebug");
+        if (debugEl) {
+          debugEl.textContent = `segments response keys: ${keys.join(", ") || "--"}`;
+          debugEl.classList.remove("hidden");
+        }
+        recordTopicStudioDebug("segments", {
+          request: `/segments?${qs.toString()}`,
+          response_keys: keys,
+          items: items.length,
+        });
       }
       const filtered = applySegmentsClientFilters(topicStudioSegmentsPage);
       topicStudioSegmentsDisplayed = filtered;
@@ -4713,8 +7000,9 @@ loadDismissedIds();
       setLoading(tsSegmentsLoading, false);
       refreshSegmentFacets();
     } catch (err) {
-      renderError(tsSegmentsError, err);
-      showToast("Failed to load segments.");
+      renderTopicStudioError(tsSegmentsError, err, "Load segments", "segments", {
+        request: `/segments?${qs.toString()}`,
+      });
       setLoading(tsSegmentsLoading, false);
     } finally {
       topicStudioSegmentsPolling = false;
@@ -4738,10 +7026,17 @@ loadDismissedIds();
         params.set("aspect", tsSegmentsAspect.value);
       }
       const facets = await topicFoundryFetch(`/segments/facets?${params.toString()}`);
+      if (!facets || facets.ok === false) {
+        topicStudioSegmentsLastFacets = null;
+        renderSegmentsFacets(null);
+        return;
+      }
       topicStudioSegmentsLastFacets = facets;
       renderSegmentsFacets(facets);
     } catch (err) {
       console.warn("[TopicStudio] Failed to load segment facets", err);
+      topicStudioSegmentsLastFacets = null;
+      renderSegmentsFacets(null);
     }
   }
 

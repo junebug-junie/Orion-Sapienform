@@ -22,8 +22,9 @@ def list_topics_endpoint(
     run_id: UUID,
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    scope: str | None = Query(default=None),
 ):
-    rows, total = list_topics(run_id, limit=limit, offset=offset)
+    rows, total = list_topics(run_id, limit=limit, offset=offset, scope=scope)
     items = []
     for row in rows:
         count = int(row.get("count") or 0)

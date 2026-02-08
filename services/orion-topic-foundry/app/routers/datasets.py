@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from fastapi import APIRouter, HTTPException
 from psycopg2 import errors as pg_errors
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.models import (
     DatasetCreateRequest,
@@ -12,11 +12,12 @@ from app.models import (
     DatasetPreviewRequest,
     DatasetPreviewResponse,
     DatasetSpec,
+    DatasetUpdateRequest,
     WindowingSpec,
 )
 from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
 from app.services.preview import preview_dataset
-from app.storage.repository import create_dataset, fetch_dataset, list_datasets, utc_now
+from app.storage.repository import create_dataset, fetch_dataset, list_datasets, update_dataset, utc_now
 
 
 logger = logging.getLogger("topic-foundry.datasets")
@@ -59,6 +60,28 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
 def list_datasets_endpoint() -> DatasetListResponse:
     datasets = list_datasets()
     return DatasetListResponse(datasets=datasets)
+
+
+@router.patch("/datasets/{dataset_id}", response_model=DatasetSpec)
+def update_dataset_endpoint(dataset_id: UUID, payload: DatasetUpdateRequest) -> DatasetSpec:
+    dataset = fetch_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if "boundary_column" in updates and updates.get("boundary_column") and not updates.get("boundary_strategy"):
+        updates["boundary_strategy"] = "column"
+    if "boundary_column" in updates and not updates.get("boundary_column"):
+        updates["boundary_strategy"] = None
+    updated = dataset.copy(update=updates)
+    try:
+        validate_dataset_source_table(updated)
+        validate_dataset_columns(updated)
+    except (InvalidSourceTableError, ValueError) as exc:
+        detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
+        logger.warning("Update dataset failed due to invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    update_dataset(updated)
+    return updated
 
 
 @router.post("/datasets/preview", response_model=DatasetPreviewResponse)

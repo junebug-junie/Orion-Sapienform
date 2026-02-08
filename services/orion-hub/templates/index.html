@@ -579,9 +579,23 @@
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Name</label>
             <input id="tsDatasetName" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="support_chat_jan" />
           </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Schema</label>
+              <select id="tsDatasetSchema" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Select schema…</option>
+              </select>
+            </div>
+            <div class="space-y-2">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Table</label>
+              <select id="tsDatasetTableSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Select table…</option>
+              </select>
+            </div>
+          </div>
           <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Source table</label>
-            <input id="tsDatasetTable" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="analytics.chat_logs" />
+            <input id="tsDatasetTable" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="analytics.chat_logs" readonly />
           </div>
           <div class="grid grid-cols-2 gap-2">
             <div class="space-y-2">
@@ -598,15 +612,9 @@
             </div>
           </div>
           <div class="space-y-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Text columns (comma)</label>
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Text columns</label>
             <select id="tsDatasetTextColumns" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" multiple size="4"></select>
             <div class="text-[10px] text-gray-500">Use Ctrl/Cmd to select multiple columns.</div>
-          </div>
-          <div class="space-y-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Boundary column (optional)</label>
-            <select id="tsDatasetBoundaryColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="">No boundary</option>
-            </select>
           </div>
           <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Boundary column (optional)</label>
@@ -684,7 +692,11 @@
 
           <div class="grid grid-cols-2 gap-2 pt-2">
             <button id="tsCreateDataset" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Create Dataset</button>
+            <button id="tsSaveDataset" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Save Dataset</button>
+          </div>
+          <div class="grid grid-cols-2 gap-2 pt-2">
             <button id="tsPreviewDataset" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Preview</button>
+            <div id="tsDatasetSaveStatus" class="text-[10px] text-gray-500 self-center">--</div>
           </div>
           <div id="tsPreviewWarning" class="text-[11px] text-amber-300 hidden"></div>
         </div>
@@ -922,12 +934,14 @@
             </div>
             <div id="tsSegmentsError" class="text-[11px] text-red-300">--</div>
             <div id="tsSegmentsDebug" class="text-[10px] text-gray-500 hidden"></div>
+            <div class="text-[10px] text-gray-400">size = number of dataset rows included in the window.</div>
             <div class="overflow-x-auto">
               <table class="w-full text-xs text-left text-gray-300">
                 <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
                   <tr>
                     <th class="py-2 pr-3">Segment</th>
-                    <th class="py-2 pr-3">Rows</th>
+                    <th class="py-2 pr-3">Size</th>
+                    <th class="py-2 pr-3">Row IDs</th>
                     <th class="py-2 pr-3">Chars</th>
                     <th class="py-2 pr-3">Title</th>
                     <th class="py-2 pr-3">Aspects</th>
@@ -935,6 +949,7 @@
                     <th class="py-2 pr-3">End</th>
                     <th class="py-2 pr-3">Snippet</th>
                     <th class="py-2 pr-3">Topic</th>
+                    <th class="py-2 pr-3">Topic prob</th>
                     <th class="py-2 pr-3">Outlier</th>
                     <th class="py-2 pr-3">Friction</th>
                   </tr>
@@ -1008,8 +1023,13 @@
 
           <div id="tsSubviewTopics" class="hidden space-y-4">
             <div class="text-xs uppercase tracking-wide text-gray-500">Topic Explorer</div>
-            <div class="grid grid-cols-2 gap-2">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
               <input id="tsTopicsRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+              <select id="tsTopicsScope" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">All scopes</option>
+                <option value="macro">Macro topics</option>
+                <option value="micro">Micro topics</option>
+              </select>
               <div class="grid grid-cols-2 gap-2">
                 <input id="tsTopicsLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="200" />
                 <input id="tsTopicsOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
@@ -1244,7 +1264,7 @@
           </div>
         </div>
 
-        <div class="w-full lg:w-[360px] bg-gray-900/60 border border-gray-700 rounded-xl p-4 flex flex-col min-h-0 overflow-y-auto">
+        <div class="w-full lg:w-[360px] bg-gray-900/60 border border-gray-700 rounded-xl p-4 flex flex-col min-h-0 overflow-y-auto lg:sticky lg:top-20">
           <div id="tsSegmentDetailsPanel" class="flex flex-col gap-3 min-h-0">
             <div class="flex items-center justify-between">
               <div class="text-xs uppercase tracking-wide text-gray-500">Segment Details</div>
@@ -1376,6 +1396,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.52" defer></script>
+  <script src="/static/js/app.js?v=1.0.54" defer></script>
 </body>
 </html>

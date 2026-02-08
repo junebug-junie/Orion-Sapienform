@@ -25,7 +25,9 @@ echo "Using BASE_URL=${BASE_URL}"
 
 scripts=(
   "scripts/smoke_topic_foundry_introspect.sh"
+  "scripts/smoke_topic_foundry_dataset_update.sh"
   "scripts/smoke_topic_foundry_preview.sh"
+  "scripts/smoke_topic_foundry_preview_conversation_bound.sh"
   "scripts/smoke_topic_foundry_train.sh"
   "scripts/smoke_topic_foundry_facets.sh"
   "scripts/smoke_topic_foundry_enrich.sh"

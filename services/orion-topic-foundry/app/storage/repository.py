@@ -114,6 +114,40 @@ def create_dataset(dataset: DatasetSpec) -> None:
             )
 
 
+def update_dataset(dataset: DatasetSpec) -> None:
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE topic_foundry_datasets
+                SET name = %s,
+                    source_table = %s,
+                    id_column = %s,
+                    time_column = %s,
+                    text_columns = %s,
+                    boundary_column = %s,
+                    boundary_strategy = %s,
+                    where_sql = %s,
+                    where_params = %s,
+                    timezone = %s
+                WHERE dataset_id = %s
+                """,
+                (
+                    dataset.name,
+                    dataset.source_table,
+                    dataset.id_column,
+                    dataset.time_column,
+                    Json(dataset.text_columns),
+                    dataset.boundary_column,
+                    dataset.boundary_strategy,
+                    dataset.where_sql,
+                    Json(dataset.where_params or {}),
+                    dataset.timezone,
+                    str(dataset.dataset_id),
+                ),
+            )
+
+
 def fetch_dataset(dataset_id: UUID) -> Optional[DatasetSpec]:
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -543,25 +577,30 @@ def list_topics(
     *,
     limit: int = 200,
     offset: int = 0,
+    scope: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], Optional[int]]:
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            query = """
                 SELECT topic_id, count, scope, parent_topic_id
                 FROM topic_foundry_topics
                 WHERE run_id = %s
-                ORDER BY count DESC NULLS LAST
-                LIMIT %s OFFSET %s
-                """,
-                (str(run_id), limit, offset),
-            )
+            """
+            params: List[Any] = [str(run_id)]
+            if scope:
+                query += " AND scope = %s"
+                params.append(scope)
+            query += " ORDER BY count DESC NULLS LAST LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+            cur.execute(query, params)
             rows = cur.fetchall() or []
             if rows:
-                cur.execute(
-                    "SELECT COUNT(*) AS total FROM topic_foundry_topics WHERE run_id = %s",
-                    (str(run_id),),
-                )
+                count_query = "SELECT COUNT(*) AS total FROM topic_foundry_topics WHERE run_id = %s"
+                count_params: List[Any] = [str(run_id)]
+                if scope:
+                    count_query += " AND scope = %s"
+                    count_params.append(scope)
+                cur.execute(count_query, count_params)
                 total_row = cur.fetchone()
                 total = int(total_row["total"]) if total_row else None
             else:
@@ -745,7 +784,9 @@ def list_aspect_counts(run_id: UUID) -> List[Dict[str, Any]]:
                 """
                 SELECT COALESCE(a.aspect, '(none)') AS key, COUNT(*) AS count
                 FROM topic_foundry_segments s
-                LEFT JOIN LATERAL jsonb_array_elements_text(s.aspects) AS a(aspect) ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_array_elements_text(COALESCE(s.aspects, '[]'::jsonb)) AS aspect
+                ) AS a ON TRUE
                 WHERE s.run_id = %s AND s.aspects IS NOT NULL
                 GROUP BY key
                 ORDER BY count DESC
@@ -784,7 +825,9 @@ def segment_facets(
                 f"""
                 SELECT COALESCE(a.aspect, '(none)') AS key, COUNT(*) AS count
                 {base_query}
-                LEFT JOIN LATERAL jsonb_array_elements_text(s.aspects) AS a(aspect) ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_array_elements_text(COALESCE(s.aspects, '[]'::jsonb)) AS aspect
+                ) AS a ON TRUE
                 {where_sql}
                 GROUP BY key
                 ORDER BY count DESC

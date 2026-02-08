@@ -56,6 +56,7 @@ class WindowingSpec(BaseModel):
         "Window text:\n{window_text}"
     )
     llm_filter_max_windows: int = 200
+    llm_filter_min_score: float = 0.0
     llm_filter_policy: Literal["keep", "reject", "score"] = "keep"
 
 
@@ -134,6 +135,19 @@ class DatasetCreateRequest(BaseModel):
     where_sql: Optional[str] = None
     where_params: Optional[Dict[str, Any]] = None
     timezone: str = "UTC"
+
+
+class DatasetUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    source_table: Optional[str] = None
+    id_column: Optional[str] = None
+    time_column: Optional[str] = None
+    text_columns: Optional[List[str]] = None
+    boundary_column: Optional[str] = None
+    boundary_strategy: Optional[Literal["column"]] = None
+    where_sql: Optional[str] = None
+    where_params: Optional[Dict[str, Any]] = None
+    timezone: Optional[str] = None
 
 
 class DatasetCreateResponse(BaseModel):

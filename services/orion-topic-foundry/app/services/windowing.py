@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 from uuid import uuid4, UUID
@@ -139,25 +141,20 @@ def build_blocks_for_conversation(
                 )
             idx += 2
     elif mode == "conversation_bound":
-        step = spec.fixed_k_rows_step or spec.fixed_k_rows
-        for idx in range(0, len(convo_rows), step):
-            chunk = convo_rows[idx : idx + spec.fixed_k_rows]
-            if not chunk:
-                continue
-            text = _make_block_text(chunk, text_columns, spec)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column]) for row in chunk],
-                    timestamps=[
-                        row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
-                        for row in chunk
-                    ],
-                    doc_id=str(uuid4()),
-                    text=text,
+        if convo_rows:
+            text = _make_block_text(convo_rows, text_columns, spec)
+            if text:
+                blocks.append(
+                    RowBlock(
+                        row_ids=[str(row[id_column]) for row in convo_rows],
+                        timestamps=[
+                            row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
+                            for row in convo_rows
+                        ],
+                        doc_id=str(uuid4()),
+                        text=text,
+                    )
                 )
-            )
     elif spec.block_mode == "rows":
         for row in convo_rows:
             text = _row_text(row, text_columns)
@@ -408,24 +405,41 @@ def _apply_llm_filter(
     segments: List[RowBlock],
     spec: WindowingSpec,
 ) -> tuple[List[RowBlock], List[Dict[str, Any]]]:
-    if not settings.topic_foundry_llm_enable:
-        return segments, []
-    client = get_llm_client()
     kept: List[RowBlock] = []
     decisions: List[Dict[str, Any]] = []
     max_windows = max(0, int(spec.llm_filter_max_windows))
+    use_llm = settings.topic_foundry_llm_enable
+    client = get_llm_client() if use_llm else None
     for idx, segment in enumerate(segments):
+        heuristic_score = _heuristic_gate_score(segment.text or "")
+        heuristic_keep = heuristic_score >= float(spec.llm_filter_min_score or 0.0)
+        decision = {
+            "heuristic_score": heuristic_score,
+            "heuristic_keep": heuristic_keep,
+        }
+        keep = heuristic_keep
         if max_windows and idx >= max_windows:
+            decision["skipped"] = True
+            decisions.append(
+                {
+                    "segment_id": segment.doc_id,
+                    "policy": spec.llm_filter_policy,
+                    "decision": decision,
+                }
+            )
             kept.append(segment)
             continue
-        prompt = spec.llm_filter_prompt_template.format(window_text=segment.text[:2000])
-        response = client.request_json(system_prompt="You are a filtering assistant.", user_prompt=prompt, temperature=0.0)
-        decision = response or {}
-        keep = bool(decision.get("keep", True))
-        if spec.llm_filter_policy == "reject":
-            keep = not keep
-        if spec.llm_filter_policy == "score":
-            keep = float(decision.get("score") or 0) >= 0.5
+        if use_llm:
+            prompt = spec.llm_filter_prompt_template.format(window_text=segment.text[:2000])
+            response = client.request_json(system_prompt="You are a filtering assistant.", user_prompt=prompt, temperature=0.0)
+            llm_decision = response or {}
+            decision["llm_decision"] = llm_decision
+            keep = bool(llm_decision.get("keep", True))
+            if spec.llm_filter_policy == "reject":
+                keep = not keep
+            if spec.llm_filter_policy == "score":
+                keep = float(llm_decision.get("score") or 0) >= 0.5
+            keep = keep and heuristic_keep
         decisions.append(
             {
                 "segment_id": segment.doc_id,
@@ -436,6 +450,29 @@ def _apply_llm_filter(
         if keep:
             kept.append(segment)
     return kept, decisions
+
+
+def _heuristic_gate_score(text: str) -> float:
+    if not text:
+        return 0.0
+    clean_text = text.strip()
+    length_score = min(len(clean_text) / 800.0, 1.0)
+    tokens = re.findall(r"\w+", clean_text.lower())
+    if tokens:
+        novelty = len(set(tokens)) / max(len(tokens), 1)
+    else:
+        novelty = 0.0
+    char_counts: Dict[str, int] = {}
+    for ch in clean_text:
+        char_counts[ch] = char_counts.get(ch, 0) + 1
+    total = len(clean_text)
+    entropy = 0.0
+    if total > 0 and len(char_counts) > 1:
+        for count in char_counts.values():
+            prob = count / total
+            entropy -= prob * math.log(prob, 2)
+        entropy /= math.log(len(char_counts), 2)
+    return max(0.0, min(1.0, (0.4 * length_score) + (0.3 * novelty) + (0.3 * entropy)))
 
 
 def _llm_segmentation(

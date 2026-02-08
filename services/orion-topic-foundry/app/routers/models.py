@@ -15,6 +15,8 @@ from app.models import (
     ModelVersionEntry,
     ModelVersionsResponse,
 )
+from app.services.metrics import normalize_metric, validate_metric
+from app.settings import settings
 from app.storage.repository import (
     create_model,
     fetch_active_model_by_name,
@@ -37,6 +39,14 @@ def create_model_endpoint(payload: ModelCreateRequest) -> ModelCreateResponse:
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    try:
+        metric = normalize_metric(payload.model_spec.metric)
+        validate_metric(metric)
+        payload.model_spec.metric = metric
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not payload.model_spec.embedding_source_url:
+        payload.model_spec.embedding_source_url = settings.topic_foundry_embedding_url
     model_id = uuid4()
     created_at = utc_now()
     create_model(model_id, payload, created_at)

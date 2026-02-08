@@ -19,16 +19,20 @@
       <div class="flex items-center gap-3">
         <div class="text-sm font-semibold text-gray-200">Orion Hub</div>
         <div class="flex items-center gap-2">
-          <button
+          <a
             id="hubTabButton"
+            href="#hub"
+            data-hash-target="#hub"
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-indigo-600 text-white shadow border border-indigo-500"
-            type="button"
-          >Hub</button>
-          <button
+            role="button"
+          >Hub</a>
+          <a
             id="topicStudioTabButton"
+            href="#topic-studio"
+            data-hash-target="#topic-studio"
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
-            type="button"
-          >Topic Studio</button>
+            role="button"
+          >Topic Studio</a>
         </div>
       </div>
       <button
@@ -1396,6 +1400,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.54" defer></script>
+  <script src="/static/js/app.js?v=1.0.55" defer></script>
 </body>
 </html>

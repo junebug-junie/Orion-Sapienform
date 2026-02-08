@@ -33,6 +33,7 @@ class WindowingSpec(BaseModel):
     ] = "turn_pairs"
     fixed_k_rows: int = 2
     fixed_k_rows_step: Optional[int] = None
+    boundary_column: Optional[str] = None
     group_by: Optional[str] = None
     include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
     segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"

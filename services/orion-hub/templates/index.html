@@ -586,16 +586,27 @@
           <div class="grid grid-cols-2 gap-2">
             <div class="space-y-2">
               <label class="block text-[10px] uppercase tracking-wide text-gray-500">ID column</label>
-              <input id="tsDatasetIdColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="id" />
+              <select id="tsDatasetIdColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Select id column…</option>
+              </select>
             </div>
             <div class="space-y-2">
               <label class="block text-[10px] uppercase tracking-wide text-gray-500">Time column</label>
-              <input id="tsDatasetTimeColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="created_at" />
+              <select id="tsDatasetTimeColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Select time column…</option>
+              </select>
             </div>
           </div>
           <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Text columns (comma)</label>
-            <input id="tsDatasetTextColumns" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="user_text,assistant_text" />
+            <select id="tsDatasetTextColumns" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" multiple size="4"></select>
+            <div class="text-[10px] text-gray-500">Use Ctrl/Cmd to select multiple columns.</div>
+          </div>
+          <div class="space-y-2">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Boundary column (optional)</label>
+            <select id="tsDatasetBoundaryColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="">No boundary</option>
+            </select>
           </div>
           <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Boundary column (optional)</label>

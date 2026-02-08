@@ -51,7 +51,7 @@ def build_conversations(
             spec.fixed_k_rows = 3
         elif spec.block_mode == "group_by_column":
             mode = "conversation_bound_then_time_gap"
-    effective_boundary = boundary_column or spec.group_by
+    effective_boundary = boundary_column or spec.boundary_column or spec.group_by
     if mode in {"conversation_bound", "conversation_bound_then_time_gap"}:
         if not effective_boundary:
             raise ValueError(f"boundary_column is required for {mode} dataset_id={dataset_id}")

@@ -69,17 +69,21 @@ def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewRe
     if dataset_spec is None:
         raise HTTPException(status_code=422, detail="dataset or dataset_id required")
     windowing_spec = payload.windowing or payload.windowing_spec or WindowingSpec()
+    effective_boundary = windowing_spec.boundary_column or dataset_spec.boundary_column
+    dataset_for_preview = dataset_spec
+    if effective_boundary and dataset_spec.boundary_column != effective_boundary:
+        dataset_for_preview = dataset_spec.copy(update={"boundary_column": effective_boundary})
     resolved = DatasetPreviewRequest(
-        dataset=dataset_spec,
+        dataset=dataset_for_preview,
         windowing=windowing_spec,
         start_at=payload.start_at,
         end_at=payload.end_at,
         limit=payload.limit,
     )
     try:
-        validate_dataset_source_table(dataset_spec)
-        validate_dataset_columns(dataset_spec)
-        if windowing_spec.windowing_mode.startswith("conversation") and not dataset_spec.boundary_column:
+        validate_dataset_source_table(dataset_for_preview)
+        validate_dataset_columns(dataset_for_preview)
+        if windowing_spec.windowing_mode.startswith("conversation") and not effective_boundary:
             detail = {
                 "ok": False,
                 "error": "invalid_windowing",

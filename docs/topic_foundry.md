@@ -13,6 +13,43 @@ Topic Foundry now exposes explicit windowing modes that are persisted with each 
 Datasets can optionally declare a `boundary_column` (and `boundary_strategy="column"`). These are validated
 against Postgres introspection metadata and are required for `conversation_bound*` windowing modes.
 
+#### Conversation-bound preview example (via Hub proxy)
+```bash
+# Discover columns
+curl "http://localhost:8080/api/topic-foundry/introspect/columns?schema=public&table=chat_logs"
+
+# Create dataset with boundary_column
+curl -sS -X POST "http://localhost:8080/api/topic-foundry/datasets" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "support_chat",
+    "source_table": "public.chat_logs",
+    "id_column": "id",
+    "time_column": "created_at",
+    "text_columns": ["user_text", "assistant_text"],
+    "boundary_column": "conversation_id",
+    "boundary_strategy": "column",
+    "timezone": "UTC"
+  }'
+
+# Preview with conversation_bound windowing
+curl -sS -X POST "http://localhost:8080/api/topic-foundry/datasets/preview" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataset_id": "<dataset_id>",
+    "windowing": {
+      "windowing_mode": "conversation_bound",
+      "boundary_column": "conversation_id",
+      "fixed_k_rows": 2,
+      "time_gap_seconds": 900,
+      "max_window_seconds": 7200,
+      "min_blocks_per_segment": 1,
+      "max_chars": 1200
+    },
+    "limit": 100
+  }'
+```
+
 ## LLM gating (optional)
 Windowing can optionally apply LLM gating after candidate windows are built:
 

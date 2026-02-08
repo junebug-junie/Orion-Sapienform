@@ -53,9 +53,14 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    windowing_spec = WindowingSpec(**model_row["windowing_spec"])
+    effective_boundary = windowing_spec.boundary_column or dataset.boundary_column
+    dataset_for_validation = dataset
+    if effective_boundary and dataset.boundary_column != effective_boundary:
+        dataset_for_validation = dataset.copy(update={"boundary_column": effective_boundary})
     try:
-        validate_dataset_source_table(dataset)
-        validate_dataset_columns(dataset)
+        validate_dataset_source_table(dataset_for_validation)
+        validate_dataset_columns(dataset_for_validation)
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {
             "ok": False,
@@ -78,16 +83,19 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
 
     run_id = uuid4()
     created_at = utc_now()
+    dataset_for_spec = dataset
+    if effective_boundary and dataset.boundary_column != effective_boundary:
+        dataset_for_spec = dataset.copy(update={"boundary_column": effective_boundary})
     specs = RunSpecSnapshot(
-        dataset=dataset,
-        windowing=WindowingSpec(**model_row["windowing_spec"]),
+        dataset=dataset_for_spec,
+        windowing=windowing_spec,
         model=ModelSpec(**model_row["model_spec"]),
         enrichment=EnrichmentSpec(**model_row["enrichment_spec"]) if model_row.get("enrichment_spec") else EnrichmentSpec(),
         run_scope=payload.run_scope,
     )
     if specs.run_scope is None:
         specs.run_scope = "micro" if specs.windowing.windowing_mode.startswith("conversation") else "macro"
-    if specs.windowing.windowing_mode.startswith("conversation") and not dataset.boundary_column:
+    if specs.windowing.windowing_mode.startswith("conversation") and not effective_boundary:
         detail = {
             "ok": False,
             "error": "invalid_windowing",

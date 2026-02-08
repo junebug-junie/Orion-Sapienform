@@ -1160,6 +1160,7 @@ loadDismissedIds();
       windowing_mode: windowingMode,
       fixed_k_rows: Number(tsFixedKRows?.value || 2),
       fixed_k_rows_step: Number(tsFixedKRowsStep?.value || 0) || null,
+      boundary_column: tsDatasetBoundaryColumn?.value || null,
       group_by: windowingMode === "group_by_column" ? groupBy : null,
       segmentation_mode: tsSegmentationMode?.value || "time_gap",
       time_gap_seconds: Number(tsTimeGap?.value || 900),
@@ -1167,6 +1168,26 @@ loadDismissedIds();
       min_blocks_per_segment: Number(tsMinBlocks?.value || 1),
       max_chars: Number(tsMaxChars?.value || 6000),
     };
+  }
+
+  function boundaryColumnRequired() {
+    const mode = tsWindowingMode?.value || "turn_pairs";
+    return mode.startsWith("conversation");
+  }
+
+  function updateBoundaryRequirement() {
+    const required = boundaryColumnRequired();
+    const boundaryValue = tsDatasetBoundaryColumn?.value || "";
+    const missing = required && !boundaryValue;
+    if (tsPreviewDataset) tsPreviewDataset.disabled = missing;
+    if (tsTrainRun) tsTrainRun.disabled = missing;
+    if (missing) {
+      setWarning(tsPreviewWarning, "Select a conversation boundary column for conversation-bound windowing.");
+      setWarning(tsRunWarning, "Conversation-bound windowing requires a boundary column.");
+    } else {
+      setWarning(tsPreviewWarning, null);
+      setWarning(tsRunWarning, null);
+    }
   }
 
   function updateGroupByVisibility() {
@@ -1204,6 +1225,87 @@ loadDismissedIds();
       option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
       tsDatasetBoundaryColumn.appendChild(option);
     });
+  }
+
+  function renderDatasetColumnOptions() {
+    if (!topicStudioDatasetColumns.length) return;
+    if (tsDatasetIdColumn) {
+      tsDatasetIdColumn.innerHTML = '<option value="">Select id column…</option>';
+      topicStudioDatasetColumns
+        .filter((col) => /uuid|int/i.test(col.udt_name || col.data_type || ""))
+        .forEach((col) => {
+          const option = document.createElement("option");
+          option.value = col.column_name;
+          option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+          tsDatasetIdColumn.appendChild(option);
+        });
+    }
+    if (tsDatasetTimeColumn) {
+      tsDatasetTimeColumn.innerHTML = '<option value="">Select time column…</option>';
+      topicStudioDatasetColumns
+        .filter((col) => /timestamp|date|time/i.test(col.data_type || col.udt_name || ""))
+        .forEach((col) => {
+          const option = document.createElement("option");
+          option.value = col.column_name;
+          option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+          tsDatasetTimeColumn.appendChild(option);
+        });
+    }
+    if (tsDatasetTextColumns) {
+      tsDatasetTextColumns.innerHTML = "";
+      topicStudioDatasetColumns
+        .filter((col) => /text|char|varchar/i.test(col.data_type || col.udt_name || ""))
+        .forEach((col) => {
+          const option = document.createElement("option");
+          option.value = col.column_name;
+          option.textContent = `${col.column_name} (${col.data_type || col.udt_name || "--"})`;
+          tsDatasetTextColumns.appendChild(option);
+        });
+    }
+    renderBoundaryOptions();
+  }
+
+  function parseSourceTableValue(value) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return { schema: "", table: "" };
+    if (trimmed.includes(".")) {
+      const [schema, table] = trimmed.split(".", 2);
+      return { schema, table };
+    }
+    const schema = topicStudioIntrospectionSchemas[0] || "";
+    return { schema, table: trimmed };
+  }
+
+  async function loadDatasetColumnsFromSourceTable(sourceTable) {
+    const { schema, table } = parseSourceTableValue(sourceTable);
+    if (!schema || !table) {
+      topicStudioDatasetColumns = [];
+      renderDatasetColumnOptions();
+      return;
+    }
+    try {
+      const response = await topicFoundryFetch(`/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`);
+      topicStudioDatasetColumns = response?.columns || [];
+      topicStudioGroupByCandidates = topicStudioDatasetColumns.filter((col) => {
+        const dataType = String(col.data_type || "").toLowerCase();
+        const udt = String(col.udt_name || "").toLowerCase();
+        return (
+          dataType.includes("char") ||
+          dataType.includes("text") ||
+          dataType.includes("int") ||
+          udt === "uuid"
+        );
+      });
+      topicStudioBoundaryCandidates = topicStudioGroupByCandidates;
+      renderGroupByOptions();
+      renderDatasetColumnOptions();
+    } catch (err) {
+      topicStudioDatasetColumns = [];
+      topicStudioGroupByCandidates = [];
+      topicStudioBoundaryCandidates = [];
+      renderGroupByOptions();
+      renderDatasetColumnOptions();
+    }
   }
 
   async function loadGroupByCandidates(schema, table) {
@@ -1516,6 +1618,7 @@ loadDismissedIds();
   let topicStudioIntrospectionSchemas = [];
   let topicStudioGroupByCandidates = [];
   let topicStudioBoundaryCandidates = [];
+  let topicStudioDatasetColumns = [];
   let topicStudioSelectedSegment = null;
   let topicStudioSegmentFullText = "";
   let topicStudioSegmentFullTextExpanded = false;
@@ -1634,7 +1737,16 @@ loadDismissedIds();
 
   function formatHttpError(label, error) {
     const status = error?.status ? `status ${error.status}` : "status unknown";
-    const detail = truncateCrashText(error?.body || error?.message || "", 300);
+    let detail = error?.body || error?.message || "";
+    if (typeof detail === "string") {
+      try {
+        const parsed = JSON.parse(detail);
+        detail = parsed?.detail || parsed?.error || detail;
+      } catch (err) {
+        detail = detail;
+      }
+    }
+    detail = truncateCrashText(detail, 300);
     return `${label}: ${status} ${detail}`.trim();
   }
 
@@ -1997,6 +2109,7 @@ loadDismissedIds();
     } catch (err) {
       setTopicStudioDebugLine(`Topic Studio init error: ${err?.message || err}`);
     }
+    updateBoundaryRequirement();
     const createModelBtn = document.getElementById("ts-mvp-create-model");
     if (createModelBtn) {
       createModelBtn.addEventListener("click", () => {
@@ -5297,6 +5410,7 @@ loadDismissedIds();
       if (selected?.raw) {
         populateDatasetForm(selected.raw);
         loadGroupByCandidatesFromDataset(selected.raw);
+        updateBoundaryRequirement();
       }
     });
   }
@@ -5304,6 +5418,7 @@ loadDismissedIds();
   if (tsWindowingMode) {
     tsWindowingMode.addEventListener("change", () => {
       updateGroupByVisibility();
+      updateBoundaryRequirement();
       saveTopicStudioState();
     });
   }
@@ -5311,11 +5426,19 @@ loadDismissedIds();
   if (tsRunPreset) {
     tsRunPreset.addEventListener("change", () => {
       applyRunPreset(tsRunPreset.value);
+      updateBoundaryRequirement();
     });
   }
 
   if (tsGroupByColumn) {
     tsGroupByColumn.addEventListener("change", saveTopicStudioState);
+  }
+
+  if (tsDatasetBoundaryColumn) {
+    tsDatasetBoundaryColumn.addEventListener("change", () => {
+      updateBoundaryRequirement();
+      saveTopicStudioState();
+    });
   }
 
   if (tsRunsSelect) {
@@ -5607,6 +5730,10 @@ loadDismissedIds();
   if (tsPreviewDataset) {
     tsPreviewDataset.addEventListener("click", async () => {
       try {
+        if (boundaryColumnRequired() && !tsDatasetBoundaryColumn?.value) {
+          setWarning(tsPreviewWarning, "Select a conversation boundary column before previewing.");
+          return;
+        }
         setLoading(tsPreviewLoading, true);
         clearPreview();
         const payload = {
@@ -5620,6 +5747,9 @@ loadDismissedIds();
         const result = await executePreview(payload);
         recordTopicStudioDebug("preview", { request: "/datasets/preview", response: result });
       } catch (err) {
+        if (tsPreviewError) {
+          tsPreviewError.textContent = formatHttpError("preview", err);
+        }
         renderTopicStudioError(tsPreviewError, err, "Preview", "preview", {
           request: "/datasets/preview",
         });
@@ -5742,6 +5872,10 @@ loadDismissedIds();
         showToast("Select a model to train.");
         return;
       }
+      if (boundaryColumnRequired() && !tsDatasetBoundaryColumn?.value) {
+        setWarning(tsRunWarning, "Select a conversation boundary column before training.");
+        return;
+      }
       try {
         setLoading(tsRunLoading, true);
         const requestPayload = {
@@ -5762,6 +5896,7 @@ loadDismissedIds();
         startRunPolling(result.run_id);
         await refreshTopicStudio();
       } catch (err) {
+        if (tsRunError) tsRunError.textContent = formatHttpError("train", err);
         renderTopicStudioError(tsRunError, err, "Train run", "train", { request: "/runs/train" });
         setLoading(tsRunLoading, false);
       }

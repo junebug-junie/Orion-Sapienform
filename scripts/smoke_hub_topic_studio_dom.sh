@@ -14,6 +14,13 @@ fi
 app_js_url="${BASE_URL}${app_js_path}"
 app_js=$(curl -fsS "${app_js_url}")
 
+if command -v node >/dev/null 2>&1; then
+  temp_js="$(mktemp)"
+  printf "%s" "$app_js" > "$temp_js"
+  node --check "$temp_js"
+  rm -f "$temp_js"
+fi
+
 checks=(
   "TOPIC STUDIO SPLIT PANE v2 ACTIVE"
   "Segment Details"

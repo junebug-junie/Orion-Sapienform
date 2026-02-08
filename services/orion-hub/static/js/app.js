@@ -294,6 +294,7 @@ loadDismissedIds();
 
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
+  const topicsTabButton = document.getElementById("topicsTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const hubTabPanel = document.getElementById("hubTabPanel");
   const topicStudioPanel = document.getElementById("topicStudioPanel");
@@ -557,23 +558,643 @@ loadDismissedIds();
   const MIN_PREVIEW_DOCS = 20;
   const TOPIC_STUDIO_SPLIT_SENTINEL = "TOPIC STUDIO SPLIT PANE v2 ACTIVE";
 
+  const panelRenderSteps = {
+    hub: [],
+    topics: [],
+    "topic-studio": [],
+  };
+
+  function resetPanelSteps(tabKey) {
+    panelRenderSteps[tabKey] = [];
+  }
+
+  function recordPanelStep(tabKey, step) {
+    if (!panelRenderSteps[tabKey]) {
+      panelRenderSteps[tabKey] = [];
+    }
+    panelRenderSteps[tabKey].push(step);
+    updatePanelDebug(tabKey);
+  }
+
+  function panelDebugMarkup(tabKey) {
+    if (!HUB_DEBUG) return "";
+    const steps = panelRenderSteps[tabKey] || [];
+    const lastStep = steps.length ? steps[steps.length - 1] : "--";
+    const items = steps.length ? steps.map((step) => `<li>${step}</li>`).join("") : "<li>--</li>";
+    return `
+      <div style="margin-top:12px; font-size:11px; color:#9ca3af;">
+        <div style="font-weight:600; margin-bottom:4px;">Render steps (last: ${lastStep})</div>
+        <ul style="padding-left:18px; margin:0; line-height:1.4;">${items}</ul>
+      </div>
+    `;
+  }
+
+  function updatePanelDebug(tabKey) {
+    if (!HUB_DEBUG) return;
+    const debugEl = document.getElementById(`hub-panel-debug-${tabKey}`);
+    if (debugEl) {
+      debugEl.innerHTML = panelDebugMarkup(tabKey);
+    }
+  }
+
+  function renderPanelError(tabKey, error, retryLabel = "Retry", retryFn) {
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    const message = error?.message || error?.toString?.() || "Unknown error";
+    const stack = error?.stack ? String(error.stack) : "";
+    host.innerHTML = `
+      <div style="color:#86efac; background:#000; border:2px solid #ef4444; padding:16px; font-family:monospace; max-width:960px; margin:0 auto; border-radius:12px;">
+        <div style="font-size:18px; font-weight:bold; margin-bottom:8px; color:#86efac;">${tabKey.toUpperCase()} PANEL ERROR</div>
+        <div style="margin-bottom:8px; color:#fca5a5;">${truncateCrashText(message)}</div>
+        <pre style="white-space:pre-wrap; margin:0 0 8px 0; color:#fca5a5;">${truncateCrashText(stack)}</pre>
+        <button id="hub-panel-retry" style="background:#111; color:#86efac; border:1px solid #86efac; padding:6px 12px; border-radius:8px; cursor:pointer;">${retryLabel}</button>
+        <div id="hub-panel-debug-${tabKey}">${panelDebugMarkup(tabKey)}</div>
+      </div>
+    `;
+    const retryButton = document.getElementById("hub-panel-retry");
+    if (retryButton && typeof retryFn === "function") {
+      retryButton.addEventListener("click", retryFn);
+    }
+  }
+
+  function renderPanelSentinel(tabKey, label, details = "") {
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#6ee7b7; background:#0b0b0b; border:1px solid #1f2937; border-radius:12px; padding:16px; font-family:monospace; max-width:960px; margin:0 auto;">
+        <div style="font-size:18px; font-weight:bold; margin-bottom:6px;">${label}</div>
+        ${details ? `<div style="font-size:12px; color:#9ca3af;">${details}</div>` : ""}
+        <div id="hub-panel-debug-${tabKey}">${panelDebugMarkup(tabKey)}</div>
+      </div>
+    `;
+  }
+
   function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
+    if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicsTabButton || !topicStudioTabButton) return;
     const isHub = tabKey === "hub";
+    const isTopics = tabKey === "topics";
+    const isTopicStudio = tabKey === "topic-studio";
     hubTabPanel.classList.toggle("hidden", !isHub);
-    topicStudioPanel.classList.toggle("hidden", isHub);
+    topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     hubTabButton.classList.toggle("bg-indigo-600", isHub);
     hubTabButton.classList.toggle("text-white", isHub);
     hubTabButton.classList.toggle("border-indigo-500", isHub);
     hubTabButton.classList.toggle("bg-gray-800", !isHub);
     hubTabButton.classList.toggle("text-gray-200", !isHub);
     hubTabButton.classList.toggle("border-gray-700", !isHub);
-    topicStudioTabButton.classList.toggle("bg-indigo-600", !isHub);
-    topicStudioTabButton.classList.toggle("text-white", !isHub);
-    topicStudioTabButton.classList.toggle("border-indigo-500", !isHub);
-    topicStudioTabButton.classList.toggle("bg-gray-800", isHub);
-    topicStudioTabButton.classList.toggle("text-gray-200", isHub);
-    topicStudioTabButton.classList.toggle("border-gray-700", isHub);
+    topicsTabButton.classList.toggle("bg-indigo-600", isTopics);
+    topicsTabButton.classList.toggle("text-white", isTopics);
+    topicsTabButton.classList.toggle("border-indigo-500", isTopics);
+    topicsTabButton.classList.toggle("bg-gray-800", !isTopics);
+    topicsTabButton.classList.toggle("text-gray-200", !isTopics);
+    topicsTabButton.classList.toggle("border-gray-700", !isTopics);
+    topicStudioTabButton.classList.toggle("bg-indigo-600", isTopicStudio);
+    topicStudioTabButton.classList.toggle("text-white", isTopicStudio);
+    topicStudioTabButton.classList.toggle("border-indigo-500", isTopicStudio);
+    topicStudioTabButton.classList.toggle("bg-gray-800", !isTopicStudio);
+    topicStudioTabButton.classList.toggle("text-gray-200", !isTopicStudio);
+    topicStudioTabButton.classList.toggle("border-gray-700", !isTopicStudio);
+  }
+
+  function renderTopicStudioSkeleton(message = "Loading...") {
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:960px; margin:0 auto; pointer-events:auto;">
+        <div style="font-size:20px; font-weight:600; margin-bottom:12px;">Topic Studio</div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+          <div><strong>Ready:</strong> <span id="ts-host-ready">loading</span></div>
+          <div><strong>Capabilities:</strong> <span id="ts-host-capabilities">loading</span></div>
+          <div><strong>Runs:</strong> <span id="ts-host-runs">loading</span></div>
+        </div>
+        <div id="ts-host-errors" style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;"></div>
+        <button id="ts-host-retry" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Retry</button>
+        <div style="margin-top:12px; font-size:12px; color:#888;">${message}</div>
+        <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-host-step">${window.__HUB_LAST_STEP}</span></div>
+      </div>
+    `;
+    const retryButton = document.getElementById("ts-host-retry");
+    if (retryButton) {
+      retryButton.addEventListener("click", () => {
+        renderTopicStudioSkeleton("Retrying...");
+        refreshTopicStudioRoute();
+      });
+    }
+    setTopicStudioRenderStep("mounted skeleton");
+    setHubStep("topic-skeleton-mounted");
+  }
+
+  function renderTopicStudioPanel() {
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:1200px; margin:0 auto; pointer-events:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:20px; font-weight:600;">Topic Studio</div>
+            <div style="font-size:11px; color:#6ee7b7; font-family:monospace;">${TOPIC_STUDIO_SPLIT_SENTINEL}</div>
+            <div style="font-size:12px; color:#888;">Manage datasets, models, runs, and segments.</div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span id="ts-mvp-last-refresh" style="font-size:11px; color:#777;">Last refresh: --</span>
+            <button id="ts-mvp-refresh" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Refresh</button>
+          </div>
+        </div>
+        <div style="margin-top:12px; padding:10px; border:1px solid #333; border-radius:10px; background:#111;">
+          <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px;">
+            <div>Ready: <span id="ts-mvp-ready">loading</span></div>
+            <div>Capabilities: <span id="ts-mvp-capabilities">loading</span></div>
+            <div>Details: <span id="ts-mvp-ready-detail">--</span></div>
+          </div>
+        </div>
+        <div id="ts-mvp-errors" style="margin-top:10px; display:flex; flex-direction:column; gap:8px;"></div>
+
+        <div style="margin-top:16px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="font-weight:600; margin-bottom:8px;">Datasets</div>
+            <div id="ts-mvp-datasets-list" style="font-size:12px; color:#aaa; margin-bottom:8px;">(loading)</div>
+            <div id="ts-mvp-introspect-warning" style="display:none; font-size:12px; color:#fbb; margin-bottom:8px;"></div>
+            <div style="font-size:12px; margin-bottom:6px;">Create dataset</div>
+            <div style="display:grid; gap:6px;">
+              <input id="ts-mvp-dataset-name" placeholder="name" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-schema" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-column-id" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-column-time" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <div id="ts-mvp-column-texts" style="border:1px solid #333; padding:6px; border-radius:6px; color:#aaa; font-size:12px; max-height:140px; overflow:auto;">(no columns)</div>
+              <div id="ts-mvp-manual-fields" style="display:none; gap:6px; flex-direction:column;">
+                <input id="ts-mvp-dataset-table" placeholder="source_table" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-id" placeholder="id_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-time" placeholder="time_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+                <input id="ts-mvp-dataset-text" placeholder="text_columns (comma)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              </div>
+              <input id="ts-mvp-dataset-where" placeholder="where_sql (optional)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-dataset-tz" value="UTC" placeholder="timezone" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-create-dataset" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create dataset</button>
+            </div>
+            <div style="margin-top:12px; font-weight:600;">Preview</div>
+            <div style="display:grid; gap:6px; margin-top:6px;">
+              <select id="ts-mvp-preview-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <input id="ts-mvp-preview-start" placeholder="start_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-end" placeholder="end_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-limit" value="200" placeholder="limit" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-preview-block" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
+                <option value="turn_pairs">turn_pairs</option>
+                <option value="fixed_k_rows">fixed_k_rows</option>
+                <option value="time_gap">time_gap</option>
+                <option value="conversation_bound">conversation_bound</option>
+                <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
+                <option value="group_by_column">group_by_column</option>
+              </select>
+              <input id="ts-mvp-preview-gap" value="900" placeholder="time_gap_seconds" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-preview-maxchars" value="6000" placeholder="max_chars" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-preview" disabled style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer; opacity:0.6;">Preview</button>
+            </div>
+            <div style="margin-top:6px; font-size:11px; color:#666;">Tip: set a start/end range for faster previews.</div>
+            <div id="ts-mvp-preview-stats" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
+            <div id="ts-mvp-preview-samples" style="margin-top:6px; font-size:12px; color:#aaa;">--</div>
+          </div>
+
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="font-weight:600; margin-bottom:8px;">Models</div>
+            <div id="ts-mvp-models-list" style="font-size:12px; color:#aaa; margin-bottom:8px;">(loading)</div>
+            <div style="font-size:12px; margin-bottom:6px;">Create model</div>
+            <div style="display:grid; gap:6px;">
+              <input id="ts-mvp-model-name" placeholder="name" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-version" placeholder="version" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-stage" value="development" placeholder="stage" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <select id="ts-mvp-model-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <div style="font-size:11px; color:#888;">Min cluster size (HDBSCAN)</div>
+              <input id="ts-mvp-model-mincluster" value="20" placeholder="min_cluster_size" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-model-metric" value="cosine" placeholder="metric" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <div style="font-size:11px; color:#888;">Advanced params (optional)</div>
+              <textarea id="ts-mvp-model-params" rows="2" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">{}</textarea>
+              <div id="ts-mvp-embed-hint" style="font-size:11px; color:#666;"></div>
+              <button id="ts-mvp-create-model" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create model</button>
+            </div>
+
+            <div style="margin-top:12px; font-weight:600;">Runs</div>
+            <div style="display:grid; gap:6px; margin-top:6px;">
+              <select id="ts-mvp-run-model" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <select id="ts-mvp-run-dataset" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+              <input id="ts-mvp-run-start" placeholder="start_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <input id="ts-mvp-run-end" placeholder="end_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
+              <button id="ts-mvp-train-run" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Train run</button>
+              <button id="ts-mvp-enrich-run" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Enrich run</button>
+            </div>
+            <div id="ts-mvp-runs-list" style="margin-top:8px; font-size:12px; color:#aaa;">(loading)</div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px; display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:12px;">
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+              <div style="font-weight:600;">Segments</div>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <select id="ts-mvp-segments-run" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
+                <select id="ts-mvp-segments-enriched" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
+                  <option value="">all</option>
+                  <option value="true">has_enrichment=true</option>
+                  <option value="false">has_enrichment=false</option>
+                </select>
+                <button id="ts-mvp-load-segments" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Load</button>
+              </div>
+            </div>
+            <div id="ts-mvp-segments-table" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
+          </div>
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111; display:flex; flex-direction:column; gap:8px; min-height:0;">
+            <div style="font-weight:600;">Segment Details</div>
+            <div id="ts-mvp-segment-detail" style="font-size:12px; color:#bbb;">Select a segment to view details.</div>
+          </div>
+        </div>
+        <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-mvp-step">${window.__HUB_LAST_STEP}</span></div>
+      </div>
+    `;
+  }
+
+  function renderTopicsPanelShell() {
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "auto";
+    host.innerHTML = `
+      <div style="color:#ddd; background:#0b0b0b; border:1px solid #1f2937; border-radius:12px; padding:16px; max-width:1200px; margin:0 auto; pointer-events:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div>
+            <div style="font-size:20px; font-weight:600; color:#6ee7b7;">TOPICS ACTIVE</div>
+            <div style="font-size:12px; color:#888;">Topic Rail summary + drift analytics.</div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span id="topics-panel-status" style="font-size:11px; color:#777;">Loading...</span>
+            <button id="topics-panel-retry" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Retry</button>
+          </div>
+        </div>
+        <div id="topics-panel-error" style="margin-top:10px; font-size:12px; color:#fca5a5;"></div>
+        <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+              <div style="font-weight:600;">Top Topics</div>
+              <div id="topics-panel-summary-meta" style="font-size:10px; color:#777;"></div>
+            </div>
+            <div style="overflow-x:auto;">
+              <table style="width:100%; font-size:12px; color:#cbd5f5;">
+                <thead style="font-size:10px; text-transform:uppercase; color:#6b7280; border-bottom:1px solid #374151;">
+                  <tr>
+                    <th style="padding:6px 8px; text-align:left;">Topic</th>
+                    <th style="padding:6px 8px; text-align:left;">Keywords</th>
+                    <th style="padding:6px 8px; text-align:left;">Docs</th>
+                    <th style="padding:6px 8px; text-align:left;">Pct</th>
+                    <th style="padding:6px 8px; text-align:left;">Outliers</th>
+                  </tr>
+                </thead>
+                <tbody id="topics-panel-summary-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+              <div style="font-weight:600;">Top Drift Sessions</div>
+              <div id="topics-panel-drift-meta" style="font-size:10px; color:#777;"></div>
+            </div>
+            <div style="overflow-x:auto;">
+              <table style="width:100%; font-size:12px; color:#cbd5f5;">
+                <thead style="font-size:10px; text-transform:uppercase; color:#6b7280; border-bottom:1px solid #374151;">
+                  <tr>
+                    <th style="padding:6px 8px; text-align:left;">Session</th>
+                    <th style="padding:6px 8px; text-align:left;">Turns</th>
+                    <th style="padding:6px 8px; text-align:left;">Topics</th>
+                    <th style="padding:6px 8px; text-align:left;">Entropy</th>
+                    <th style="padding:6px 8px; text-align:left;">Switch</th>
+                    <th style="padding:6px 8px; text-align:left;">Dominant</th>
+                  </tr>
+                </thead>
+                <tbody id="topics-panel-drift-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div id="hub-panel-debug-topics">${panelDebugMarkup("topics")}</div>
+      </div>
+    `;
+    return {
+      status: document.getElementById("topics-panel-status"),
+      retry: document.getElementById("topics-panel-retry"),
+      error: document.getElementById("topics-panel-error"),
+      summaryBody: document.getElementById("topics-panel-summary-body"),
+      summaryMeta: document.getElementById("topics-panel-summary-meta"),
+      driftBody: document.getElementById("topics-panel-drift-body"),
+      driftMeta: document.getElementById("topics-panel-drift-meta"),
+    };
+  }
+
+  function renderTopicsPanelSummary(topics, summaryBody) {
+    if (!summaryBody) return;
+    summaryBody.innerHTML = "";
+    if (!topics || topics.length === 0) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td colspan="5" style="padding:10px; color:#9ca3af; text-align:center;">No topics yet.</td>`;
+      summaryBody.appendChild(row);
+      return;
+    }
+    topics.forEach((topic) => {
+      const row = document.createElement("tr");
+      const keywords = parseKeywords(topic.topic_keywords);
+      const outlierPct = topic.outlier_pct;
+      const outlierCount = topic.outlier_count;
+      const outlierValue =
+        outlierPct !== null && outlierPct !== undefined
+          ? formatPercent(outlierPct, 1)
+          : outlierCount !== null && outlierCount !== undefined
+            ? `${outlierCount}`
+            : "--";
+      const label = topic.topic_label || "Untitled";
+      const topicId = topic.topic_id !== null && topic.topic_id !== undefined ? String(topic.topic_id) : "--";
+      const keywordChips = keywords.length
+        ? keywords
+            .slice(0, 5)
+            .map(
+              (word) =>
+                `<span style="display:inline-flex; align-items:center; border-radius:9999px; background:#374151; padding:2px 6px; font-size:10px; color:#e5e7eb; margin-right:4px;">${word}</span>`,
+            )
+            .join(" ")
+        : `<span style="color:#6b7280;">--</span>`;
+      row.innerHTML = `
+        <td style="padding:6px 8px;">
+          <div style="color:#e5e7eb;">${label}</div>
+          <div style="font-size:10px; color:#6b7280;">#${topicId}</div>
+        </td>
+        <td style="padding:6px 8px;">${keywordChips}</td>
+        <td style="padding:6px 8px;">${topic.doc_count ?? "--"}</td>
+        <td style="padding:6px 8px;">${formatPercent(topic.pct_of_window, 1)}</td>
+        <td style="padding:6px 8px;">${outlierValue}</td>
+      `;
+      summaryBody.appendChild(row);
+    });
+  }
+
+  function renderTopicsPanelDrift(sessions, driftBody, topicLabelMap) {
+    if (!driftBody) return;
+    driftBody.innerHTML = "";
+    if (!sessions || sessions.length === 0) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td colspan="6" style="padding:10px; color:#9ca3af; text-align:center;">No drift sessions yet.</td>`;
+      driftBody.appendChild(row);
+      return;
+    }
+    sessions.forEach((session) => {
+      const row = document.createElement("tr");
+      const sessionId = session.session_id || "--";
+      const shortId = sessionId.length > 10 ? `${sessionId.slice(0, 10)}…` : sessionId;
+      const switchRate = Number(session.switch_rate);
+      const entropy = Number(session.entropy);
+      const switchClass = switchRate >= 0.35 ? "color:#fde68a; font-weight:600;" : "";
+      const entropyClass = entropy >= 1.5 ? "color:#fca5a5; font-weight:600;" : "";
+      const dominantId = session.dominant_topic_id;
+      const dominantLabel = dominantId !== null && dominantId !== undefined ? topicLabelMap.get(dominantId) : null;
+      const dominantDisplay = dominantLabel ? `${dominantLabel} (#${dominantId})` : dominantId ?? "--";
+      row.innerHTML = `
+        <td style="padding:6px 8px;" title="${sessionId}">${shortId}</td>
+        <td style="padding:6px 8px;">${session.turns ?? "--"}</td>
+        <td style="padding:6px 8px;">${session.unique_topics ?? "--"}</td>
+        <td style="padding:6px 8px; ${entropyClass}">${formatNumber(entropy)}</td>
+        <td style="padding:6px 8px; ${switchClass}">${formatPercent(switchRate, 1)}</td>
+        <td style="padding:6px 8px;">
+          <div>${dominantDisplay ?? "--"}</div>
+          <div style="font-size:10px; color:#6b7280;">${formatPercent(session.dominant_pct, 1)}</div>
+        </td>
+      `;
+      driftBody.appendChild(row);
+    });
+  }
+
+  async function renderTopicsPanel() {
+    recordPanelStep("topics", "host found");
+    const elements = renderTopicsPanelShell();
+    recordPanelStep("topics", "topics render start");
+    if (elements.retry) {
+      elements.retry.addEventListener("click", () => {
+        renderTopicsRoute();
+      });
+    }
+    try {
+      const summaryParams = new URLSearchParams({ window_minutes: "1440", max_topics: "20" });
+      const driftParams = new URLSearchParams({ window_minutes: "1440", min_turns: "10" });
+      const [summaryResp, driftResp] = await Promise.all([
+        hubFetch(apiUrl(`/api/topics/summary?${summaryParams.toString()}`)),
+        hubFetch(apiUrl(`/api/topics/drift?${driftParams.toString()}`)),
+      ]);
+      if (!summaryResp.ok || !driftResp.ok) {
+        if (elements.error) {
+          elements.error.textContent = `Failed to load topics. ${summaryResp.status}/${driftResp.status}`.trim();
+        }
+        renderTopicsPanelSummary([], elements.summaryBody);
+        renderTopicsPanelDrift([], elements.driftBody, new Map());
+        if (elements.status) {
+          elements.status.textContent = "Failed to load topics.";
+        }
+        return;
+      }
+      const summaryPayload = await summaryResp.json();
+      const driftPayload = await driftResp.json();
+      recordPanelStep("topics", "topics data fetched");
+      const topics = Array.isArray(summaryPayload?.topics) ? summaryPayload.topics : [];
+      const sessions = Array.isArray(driftPayload?.sessions) ? driftPayload.sessions : [];
+      if (elements.summaryMeta) {
+        elements.summaryMeta.textContent = `model: ${summaryPayload?.model_version || "latest"}`;
+      }
+      if (elements.driftMeta) {
+        elements.driftMeta.textContent = `model: ${driftPayload?.model_version || "latest"}`;
+      }
+      const topicLabelMap = new Map();
+      topics.forEach((topic) => {
+        if (topic.topic_id !== null && topic.topic_id !== undefined) {
+          topicLabelMap.set(topic.topic_id, topic.topic_label || `Topic ${topic.topic_id}`);
+        }
+      });
+      renderTopicsPanelSummary(topics, elements.summaryBody);
+      renderTopicsPanelDrift(sessions, elements.driftBody, topicLabelMap);
+      if (elements.status) {
+        elements.status.textContent = `Updated ${new Date().toLocaleTimeString()}.`;
+      }
+      recordPanelStep("topics", "topics render complete");
+    } catch (err) {
+      if (elements.error) {
+        elements.error.textContent = `Failed to load topics. ${err?.message || ""}`.trim();
+      }
+      renderTopicsPanelSummary([], elements.summaryBody);
+      renderTopicsPanelDrift([], elements.driftBody, new Map());
+      if (elements.status) {
+        elements.status.textContent = "Failed to load topics.";
+      }
+      throw err;
+    }
+  }
+
+  function renderPanelWithBoundary(tabKey, renderFn) {
+    resetPanelSteps(tabKey);
+    recordPanelStep(tabKey, "route matched");
+    try {
+      const result = renderFn();
+      if (result && typeof result.then === "function") {
+        result.catch((err) => {
+          renderPanelError(tabKey, err, "Retry", () => renderPanelWithBoundary(tabKey, renderFn));
+        });
+      }
+    } catch (err) {
+      renderPanelError(tabKey, err, "Retry", () => renderPanelWithBoundary(tabKey, renderFn));
+    }
+  }
+
+  function renderTopicsRoute() {
+    renderPanelWithBoundary("topics", () => {
+      setActiveTab("topics");
+      renderPanelSentinel("topics", "TOPICS ACTIVE", "Loading topics...");
+      return renderTopicsPanel();
+    });
+  }
+
+  function renderHubRoute() {
+    renderPanelWithBoundary("hub", () => {
+      setHubStep("route:hub");
+      setActiveTab("hub");
+      const host = ensureHubPanelHost();
+      host.style.pointerEvents = "none";
+      host.innerHTML = '<div style="display:none;">HUB ACTIVE</div>';
+    });
+  }
+
+  function renderTopicStudioRoute() {
+    renderPanelWithBoundary("topic-studio", () => {
+      setHubStep("route:topic-studio");
+      setActiveTab("topic-studio");
+      renderPanelSentinel("topic-studio", "TOPIC STUDIO ACTIVE", "Loading Topic Studio...");
+      ensureTopicStudioSentinel();
+      return refreshTopicStudio();
+    });
+  }
+
+  function handleHashRouting() {
+    if (!hubTabButton || !topicsTabButton || !topicStudioTabButton) return;
+    const hash = window.location.hash;
+    if (hash === "#topic-studio") {
+      renderTopicStudioRoute();
+    } else if (hash === "#topics") {
+      renderTopicsRoute();
+    } else {
+      renderHubRoute();
+    }
+    updateTopicStudioDebugOverlay();
+  }
+
+  function navigateToHash(nextHash) {
+    if (window.location.hash === nextHash) {
+      handleHashRouting();
+      return;
+    }
+    window.location.hash = nextHash;
+  }
+
+  function ensureTopicStudioSentinel() {
+    const inlineSentinel = document.getElementById("tsSplitPaneSentinel");
+    if (inlineSentinel) {
+      inlineSentinel.textContent = TOPIC_STUDIO_SPLIT_SENTINEL;
+      inlineSentinel.classList.remove("hidden");
+    }
+    let sentinel = document.getElementById("ts-route-sentinel");
+    if (!sentinel) {
+      sentinel = document.createElement("div");
+      sentinel.id = "ts-route-sentinel";
+      sentinel.setAttribute(
+        "style",
+        "position:fixed; top:56px; left:24px; z-index:99999; background:#111; color:#6ee7b7; border:1px solid #6ee7b7; padding:6px 10px; border-radius:10px; font-family:monospace;"
+      );
+      document.body.appendChild(sentinel);
+    }
+    sentinel.textContent = TOPIC_STUDIO_SPLIT_SENTINEL;
+    sentinel.style.display = window.location.hash === "#topic-studio" ? "block" : "none";
+  }
+
+  function updateTopicStudioHostStep() {
+    const stepEl = document.getElementById("ts-host-step");
+    if (stepEl) {
+      stepEl.textContent = window.__HUB_LAST_STEP || "";
+    }
+  }
+
+  function updateTopicStudioPanelStep() {
+    const stepEl = document.getElementById("ts-mvp-step");
+    if (stepEl) stepEl.textContent = window.__HUB_LAST_STEP || "";
+  }
+
+  function setTopicStudioHostStatus(id, value, color = "#ddd") {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.textContent = value;
+    target.style.color = color;
+  }
+
+  function appendTopicStudioHostError(label, err) {
+    const container = document.getElementById("ts-host-errors");
+    if (!container) return;
+    const message = err?.message || err?.toString?.() || "Request failed";
+    const detail = truncateCrashText(err?.body || err?.stack || message, 400);
+    const box = document.createElement("div");
+    box.setAttribute(
+      "style",
+      "background:#220; color:#f88; border:1px solid #a33; padding:8px; border-radius:8px; font-size:12px; font-family:monospace;"
+    );
+    box.textContent = `${label}: ${detail}`;
+    container.appendChild(box);
+  }
+
+  async function refreshTopicStudioRoute() {
+    setHubStep("fetch:ready");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
+    setTopicStudioHostStatus("ts-host-ready", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-capabilities", "loading", "#ddd");
+    setTopicStudioHostStatus("ts-host-runs", "loading", "#ddd");
+    const errorContainer = document.getElementById("ts-host-errors");
+    if (errorContainer) errorContainer.innerHTML = "";
+
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/ready"));
+      if (!resp.ok) throw new Error(`ready ${resp.status}`);
+      const data = await resp.json();
+      const status = data?.ok ? "ok" : "degraded";
+      setTopicStudioHostStatus("ts-host-ready", status, data?.ok ? "#6f6" : "#ff6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-ready", "error", "#f66");
+      appendTopicStudioHostError("ready", err);
+    }
+
+    setHubStep("fetch:capabilities");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/capabilities"));
+      if (!resp.ok) throw new Error(`capabilities ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-capabilities", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-capabilities", "error", "#f66");
+      appendTopicStudioHostError("capabilities", err);
+    }
+
+    setHubStep("fetch:runs");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
+    try {
+      const resp = await hubFetch(apiUrl("/api/topic-foundry/runs?limit=20"));
+      if (!resp.ok) throw new Error(`runs ${resp.status}`);
+      await resp.json();
+      setTopicStudioHostStatus("ts-host-runs", "ok", "#6f6");
+    } catch (err) {
+      setTopicStudioHostStatus("ts-host-runs", "error", "#f66");
+      appendTopicStudioHostError("runs", err);
+    }
+
+    setHubStep("render:done");
+    updateTopicStudioHostStep();
+    updateTopicStudioPanelStep();
   }
 
   function renderTopicStudioSkeleton(message = "Loading...") {
@@ -5544,7 +6165,7 @@ loadDismissedIds();
   }
 
   document.addEventListener("click", (event) => {
-    const target = event.target.closest("[data-hash-target]");
+    const target = event.target instanceof Element ? event.target.closest("[data-hash-target]") : null;
     if (!target) return;
     const hash = target.getAttribute("data-hash-target");
     if (!hash) return;
@@ -5552,7 +6173,10 @@ loadDismissedIds();
     navigateToHash(hash);
   });
   window.addEventListener("hashchange", handleHashRouting);
-  handleHashRouting();
+  window.addEventListener("DOMContentLoaded", handleHashRouting);
+  if (document.readyState !== "loading") {
+    handleHashRouting();
+  }
 
   if (tsDatasetSelect) {
     tsDatasetSelect.addEventListener("change", async () => {

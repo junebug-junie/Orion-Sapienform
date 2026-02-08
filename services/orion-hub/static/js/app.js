@@ -669,6 +669,11 @@ loadDismissedIds();
       topicStudioError.classList.add("hidden");
       topicStudioError.textContent = "";
     }
+    if (topicStudioDebugState.overlay) {
+      topicStudioDebugState.overlay.remove();
+      topicStudioDebugState.overlay = null;
+      topicStudioDebugState.overlayBody = null;
+    }
     const host = ensureHubPanelHost();
     host.style.pointerEvents = "none";
     host.innerHTML = "";
@@ -709,7 +714,8 @@ loadDismissedIds();
   }
 
   function renderTopicStudioSkeleton(message = "Loading...") {
-    const host = topicStudioRoot || ensureHubPanelHost();
+    const host = topicStudioRoot;
+    if (!host) return;
     host.style.pointerEvents = "auto";
     host.innerHTML = `
       <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:960px; margin:0 auto; pointer-events:auto;">
@@ -737,7 +743,8 @@ loadDismissedIds();
   }
 
   function renderTopicStudioPanel() {
-    const host = topicStudioRoot || ensureHubPanelHost();
+    const host = topicStudioRoot;
+    if (!host) return;
     host.style.pointerEvents = "auto";
     host.innerHTML = `
       <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:1200px; margin:0 auto; pointer-events:auto;">
@@ -1904,7 +1911,7 @@ loadDismissedIds();
   }
 
   function ensureTopicStudioDebugOverlay() {
-    if (!topicStudioDebugState.enabled || topicStudioDebugState.overlay) return;
+    if (!topicStudioDebugState.enabled || topicStudioDebugState.overlay || !topicStudioPanel) return;
     const overlay = document.createElement("div");
     overlay.className = "fixed bottom-3 right-3 z-50 bg-gray-900/95 border border-gray-700 rounded-lg px-3 py-2 text-[10px] text-gray-200 shadow-lg";
     overlay.style.maxWidth = "240px";
@@ -1920,12 +1927,17 @@ loadDismissedIds();
     });
     topicStudioDebugState.overlay = overlay;
     topicStudioDebugState.overlayBody = overlay.querySelector("[data-debug-body]");
-    document.body.appendChild(overlay);
+    topicStudioPanel.appendChild(overlay);
   }
 
   function updateTopicStudioDebugOverlay() {
     if (!topicStudioDebugState.enabled) return;
+    if (window.location.hash !== "#topic-studio") {
+      topicStudioDebugState.overlay?.classList.add("hidden");
+      return;
+    }
     ensureTopicStudioDebugOverlay();
+    topicStudioDebugState.overlay?.classList.remove("hidden");
     if (!topicStudioDebugState.overlayBody) return;
     const hash = window.location.hash || "(none)";
     const exists = Boolean(topicStudioPanel);
@@ -5433,7 +5445,7 @@ loadDismissedIds();
       setTopicStudioRenderStep("fetching /ready");
       const result = await topicFoundryFetch("/ready");
       const checks = result?.checks || {};
-      formatStatusBadge(tsStatusBadge, result.ok, result.ok ? "Healthy" : "Degraded");
+      formatStatusBadge(tsStatusBadge, true, "Reachable");
       formatStatusBadge(tsStatusPg, checks.pg?.ok, checks.pg?.ok ? "ok" : "fail");
       formatStatusBadge(tsStatusEmbedding, checks.embedding?.ok, checks.embedding?.ok ? "ok" : "fail");
       formatStatusBadge(tsStatusModelDir, checks.model_dir?.ok, checks.model_dir?.ok ? "ok" : "fail");

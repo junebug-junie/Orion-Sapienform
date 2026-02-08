@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     NODE_NAME: str = Field(default="athena", alias="ORION_NODE_NAME")
     SERVICE_VERSION: str = Field(default="0.3.0", alias="SERVICE_VERSION")
     HUB_PORT: int = Field(default=8080, alias="HUB_PORT")
+    HUB_API_BASE_OVERRIDE: str = Field(default="", alias="HUB_API_BASE_OVERRIDE")
+    HUB_WS_BASE_OVERRIDE: str = Field(default="", alias="HUB_WS_BASE_OVERRIDE")
 
     # --- Whisper Transcription Settings (LEGACY/UNUSED - Hub uses Bus RPC now) ---
     WHISPER_MODEL_SIZE: str = Field(default="distil-medium.en", alias="WHISPER_MODEL_SIZE")

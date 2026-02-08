@@ -41,6 +41,7 @@ Spec-driven service for building topic artifacts (runs, segments, model registry
 - `PORT`
 - `TOPIC_FOUNDRY_PG_DSN`
 - `TOPIC_FOUNDRY_EMBEDDING_URL`
+- `TOPIC_FOUNDRY_COSINE_IMPL`
 - `TOPIC_FOUNDRY_MODEL_DIR`
 - `TOPIC_FOUNDRY_LLM_BUS_ROUTE`
 - `TOPIC_FOUNDRY_LLM_TIMEOUT_SECS`
@@ -59,6 +60,26 @@ other active model with the same name to `candidate` and records the transition 
 `topic_foundry_model_events` for auditability.
 
 ## Artifact layout
+```
+
+### Preview example (canonical request)
+```bash
+curl -sS http://localhost:8615/datasets/preview \\
+  -H "content-type: application/json" \\
+  -d '{
+    "dataset_id": "00000000-0000-0000-0000-000000000000",
+    "windowing": {
+      "block_mode": "turn_pairs",
+      "segmentation_mode": "time_gap",
+      "time_gap_seconds": 900,
+      "max_window_seconds": 7200,
+      "min_blocks_per_segment": 1,
+      "max_chars": 6000
+    },
+    "start_at": null,
+    "end_at": null,
+    "limit": 200
+  }'
 ```
 ${TOPIC_FOUNDRY_MODEL_DIR}/
   registry/{model_name}/versions/{version}/
@@ -80,8 +101,10 @@ ${TOPIC_FOUNDRY_MODEL_DIR}/
 
 ## Smoke scripts
 Run from repo root:
+- `scripts/smoke_topic_foundry_all.sh` (runs introspect → preview → train → facets → enrich)
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_health.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_preview.sh`
+- `scripts/smoke_topic_foundry_train_cosine.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_train_and_poll.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_enrich.sh`
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_llm_segmentation.sh`
@@ -96,14 +119,42 @@ Run from repo root:
 - `services/orion-topic-foundry/scripts/smoke_topic_foundry_topics.sh`
 
 Environment overrides (common):
-- `TOPIC_FOUNDRY_BASE_URL` (default `http://localhost:${PORT}`)
-- `PORT` (default `8615`)
+- `TOPIC_FOUNDRY_BASE_URL` (defaults to Hub proxy if available)
+- `HUB_BASE_URL` (derives `TOPIC_FOUNDRY_BASE_URL=$HUB_BASE_URL/api/topic-foundry`)
+- `PORT` (default `8615`, only used by service-local scripts)
 - `START_AT`, `END_AT`, `LIMIT`, `MIN_DOCS`, `TIMEOUT_SECS`, `SLEEP_SECS`
+
+Smoke base URL resolution for scripts under `/scripts` (in order):
+1) CLI arg (BASE_URL)
+2) `TOPIC_FOUNDRY_BASE_URL`
+3) `HUB_BASE_URL` → `${HUB_BASE_URL}/api/topic-foundry`
+4) `http://127.0.0.1:8080/api/topic-foundry`
+
+### Running smokes
+**Via Hub proxy (recommended):**
+```bash
+scripts/smoke_topic_foundry_all.sh https://tailscale-host.example.com/api/topic-foundry
+```
+or:
+```bash
+HUB_BASE_URL=https://tailscale-host.example.com scripts/smoke_topic_foundry_introspect.sh
+```
+
+**Direct service port (optional):**
+```bash
+TOPIC_FOUNDRY_BASE_URL=http://127.0.0.1:8615 scripts/smoke_topic_foundry_preview.sh
+```
+
+**Inside Docker network (optional):**
+```bash
+TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615 scripts/smoke_topic_foundry_facets.sh
+```
 
 ## Troubleshooting
 - `docs_generated too low` — widen `START_AT/END_AT` to include more rows.
 - `embedding unreachable` — confirm `TOPIC_FOUNDRY_EMBEDDING_URL` and upstream service.
 - `pg unreachable` — check `TOPIC_FOUNDRY_PG_DSN` and DB connectivity.
+- `cosine metric errors` — cosine is implemented via L2-normalize + euclidean by default. Set `TOPIC_FOUNDRY_COSINE_IMPL=generic` to force HDBSCAN’s generic cosine implementation (slower but avoids tree metrics).
 
 ## Phase 2: Enrichment
 Phase 2 adds optional semantic segmentation and segment enrichment.

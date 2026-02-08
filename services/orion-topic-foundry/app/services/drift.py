@@ -230,6 +230,7 @@ def _compute_current_distribution(
         text_columns=dataset_spec.text_columns,
         time_column=dataset_spec.time_column,
         id_column=dataset_spec.id_column,
+        boundary_column=dataset_spec.boundary_column,
     )
     overrides = [
         OverrideRecord(
@@ -247,6 +248,7 @@ def _compute_current_distribution(
         conversations,
         spec=windowing_spec,
         embedding_url=model_spec.embedding_source_url,
+        run_id=None,
     )
     if not segments:
         return {}, 0.0, 0.0

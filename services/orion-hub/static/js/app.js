@@ -296,8 +296,10 @@ loadDismissedIds();
   const hubTabButton = document.getElementById("hubTabButton");
   const topicsTabButton = document.getElementById("topicsTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
-  const hubTabPanel = document.getElementById("hubTabPanel");
-  const topicStudioPanel = document.getElementById("topicStudioPanel");
+  const appPanels = document.getElementById("appPanels");
+  const hubPanel = document.getElementById("hub");
+  const topicStudioPanel = document.getElementById("topic-studio");
+  const topicStudioRoot = document.getElementById("topicStudioRoot");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -381,7 +383,7 @@ loadDismissedIds();
   const tsSegmentFullTextLoad = document.getElementById("tsSegmentFullTextLoad");
   const tsSegmentFullTextExpand = document.getElementById("tsSegmentFullTextExpand");
   const tsSegmentFullTextCopy = document.getElementById("tsSegmentFullTextCopy");
-  const tsRouteError = document.getElementById("tsRouteError");
+  const topicStudioError = document.getElementById("topicStudioError");
   const tsDebugDrawer = document.getElementById("tsDebugDrawer");
   const tsDebugPreview = document.getElementById("tsDebugPreview");
   const tsDebugTrain = document.getElementById("tsDebugTrain");
@@ -600,9 +602,9 @@ loadDismissedIds();
   function renderPanelError(tabKey, error, retryLabel = "Retry", retryFn) {
     const message = error?.message || error?.toString?.() || "Unknown error";
     const stack = error?.stack ? String(error.stack) : "";
-    if (tabKey === "topic-studio" && tsRouteError) {
-      tsRouteError.classList.remove("hidden");
-      tsRouteError.innerHTML = `
+    if (tabKey === "topic-studio" && topicStudioError) {
+      topicStudioError.classList.remove("hidden");
+      topicStudioError.innerHTML = `
         <div class="flex items-center justify-between gap-2">
           <div><strong>Topic Studio error:</strong> ${truncateCrashText(message)}</div>
           <button id="ts-route-retry" class="bg-gray-900/60 hover:bg-gray-800 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">${retryLabel}</button>
@@ -632,40 +634,79 @@ loadDismissedIds();
     }
   }
 
-  function renderPanelSentinel(tabKey, label, details = "") {
-    const host = ensureHubPanelHost();
-    host.style.pointerEvents = "auto";
-    host.innerHTML = `
-      <div style="color:#6ee7b7; background:#0b0b0b; border:1px solid #1f2937; border-radius:12px; padding:16px; font-family:monospace; max-width:960px; margin:0 auto;">
-        <div style="font-size:18px; font-weight:bold; margin-bottom:6px;">${label}</div>
-        ${details ? `<div style="font-size:12px; color:#9ca3af;">${details}</div>` : ""}
-        <div id="hub-panel-debug-${tabKey}">${panelDebugMarkup(tabKey)}</div>
-      </div>
-    `;
+  function normalizeHash(hash) {
+    if (!hash) return "#hub";
+    return hash === "#topic-studio" || hash === "#hub" ? hash : "#hub";
   }
 
-  function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicsTabButton || !topicStudioTabButton) return;
-    const isHub = tabKey === "hub";
-    const isTopicStudio = tabKey === "topic-studio";
-    hubTabPanel.classList.toggle("hidden", !isHub);
-    topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
-    hubTabButton.classList.toggle("bg-indigo-600", isHub);
-    hubTabButton.classList.toggle("text-white", isHub);
-    hubTabButton.classList.toggle("border-indigo-500", isHub);
-    hubTabButton.classList.toggle("bg-gray-800", !isHub);
-    hubTabButton.classList.toggle("text-gray-200", !isHub);
-    hubTabButton.classList.toggle("border-gray-700", !isHub);
-    topicStudioTabButton.classList.toggle("bg-indigo-600", isTopicStudio);
-    topicStudioTabButton.classList.toggle("text-white", isTopicStudio);
-    topicStudioTabButton.classList.toggle("border-indigo-500", isTopicStudio);
-    topicStudioTabButton.classList.toggle("bg-gray-800", !isTopicStudio);
-    topicStudioTabButton.classList.toggle("text-gray-200", !isTopicStudio);
-    topicStudioTabButton.classList.toggle("border-gray-700", !isTopicStudio);
+  function setActiveNav(activeHash) {
+    const isHub = activeHash === "#hub";
+    const isTopicStudio = activeHash === "#topic-studio";
+    if (hubTabButton) {
+      hubTabButton.classList.toggle("bg-indigo-600", isHub);
+      hubTabButton.classList.toggle("text-white", isHub);
+      hubTabButton.classList.toggle("border-indigo-500", isHub);
+      hubTabButton.classList.toggle("bg-gray-800", !isHub);
+      hubTabButton.classList.toggle("text-gray-200", !isHub);
+      hubTabButton.classList.toggle("border-gray-700", !isHub);
+    }
+    if (topicStudioTabButton) {
+      topicStudioTabButton.classList.toggle("bg-indigo-600", isTopicStudio);
+      topicStudioTabButton.classList.toggle("text-white", isTopicStudio);
+      topicStudioTabButton.classList.toggle("border-indigo-500", isTopicStudio);
+      topicStudioTabButton.classList.toggle("bg-gray-800", !isTopicStudio);
+      topicStudioTabButton.classList.toggle("text-gray-200", !isTopicStudio);
+      topicStudioTabButton.classList.toggle("border-gray-700", !isTopicStudio);
+    }
+  }
+
+  function teardownTopicStudioUI() {
+    const inlineSentinel = document.getElementById("tsSplitPaneSentinel");
+    if (inlineSentinel) inlineSentinel.classList.add("hidden");
+    if (topicStudioError) {
+      topicStudioError.classList.add("hidden");
+      topicStudioError.textContent = "";
+    }
+    const host = ensureHubPanelHost();
+    host.style.pointerEvents = "none";
+    host.innerHTML = "";
+  }
+
+  async function initTopicStudioUI() {
+    if (!topicStudioRoot) {
+      throw new Error("Topic Studio root not found.");
+    }
+    if (topicStudioError) {
+      topicStudioError.classList.add("hidden");
+      topicStudioError.textContent = "";
+    }
+    ensureTopicStudioSentinel();
+    await refreshTopicStudio();
+  }
+
+  function showPanel(hash) {
+    if (!hubPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
+    const normalized = normalizeHash(hash);
+    const panels = Array.from(document.querySelectorAll("[data-panel]"));
+    panels.forEach((panel) => panel.classList.add("hidden"));
+    const panelName = normalized.replace("#", "");
+    const target = document.getElementById(panelName);
+    if (target) {
+      target.classList.remove("hidden");
+    }
+    setActiveNav(normalized);
+    if (normalized !== "#topic-studio") {
+      teardownTopicStudioUI();
+    } else {
+      initTopicStudioUI().catch((err) => {
+        renderPanelError("topic-studio", err, "Retry", () => showPanel("#topic-studio"));
+        window.location.hash = "#hub";
+      });
+    }
   }
 
   function renderTopicStudioSkeleton(message = "Loading...") {
-    const host = ensureHubPanelHost();
+    const host = topicStudioRoot || ensureHubPanelHost();
     host.style.pointerEvents = "auto";
     host.innerHTML = `
       <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:960px; margin:0 auto; pointer-events:auto;">
@@ -693,7 +734,7 @@ loadDismissedIds();
   }
 
   function renderTopicStudioPanel() {
-    const host = ensureHubPanelHost();
+    const host = topicStudioRoot || ensureHubPanelHost();
     host.style.pointerEvents = "auto";
     host.innerHTML = `
       <div style="color:#ddd; background:#0b0b0b; border:1px solid #333; border-radius:12px; padding:16px; max-width:1200px; margin:0 auto; pointer-events:auto;">
@@ -835,44 +876,14 @@ loadDismissedIds();
     }
   }
 
-  function renderHubRoute() {
-    renderPanelWithBoundary("hub", () => {
-      setHubStep("route:hub");
-      setActiveTab("hub");
-      if (tsRouteError) {
-        tsRouteError.classList.add("hidden");
-        tsRouteError.textContent = "";
-      }
-      const host = ensureHubPanelHost();
-      host.style.pointerEvents = "none";
-      host.innerHTML = '<div style="display:none;">HUB ACTIVE</div>';
-    });
-  }
-
-  function renderTopicStudioRoute() {
-    renderPanelWithBoundary("topic-studio", () => {
-      setHubStep("route:topic-studio");
-      setActiveTab("topic-studio");
-      if (tsRouteError) {
-        tsRouteError.classList.add("hidden");
-        tsRouteError.textContent = "";
-      }
-      const host = ensureHubPanelHost();
-      host.style.pointerEvents = "none";
-      host.innerHTML = "";
-      ensureTopicStudioSentinel();
-      return refreshTopicStudio();
-    });
-  }
-
   function handleHashRouting() {
     if (!hubTabButton || !topicStudioTabButton) return;
-    const hash = window.location.hash;
-    if (hash === "#topic-studio") {
-      renderTopicStudioRoute();
-    } else {
-      renderHubRoute();
+    const hash = normalizeHash(window.location.hash);
+    if (window.location.hash !== hash) {
+      window.location.hash = hash;
+      return;
     }
+    showPanel(hash);
     updateTopicStudioDebugOverlay();
   }
 
@@ -890,18 +901,6 @@ loadDismissedIds();
       inlineSentinel.textContent = TOPIC_STUDIO_SPLIT_SENTINEL;
       inlineSentinel.classList.remove("hidden");
     }
-    let sentinel = document.getElementById("ts-route-sentinel");
-    if (!sentinel) {
-      sentinel = document.createElement("div");
-      sentinel.id = "ts-route-sentinel";
-      sentinel.setAttribute(
-        "style",
-        "position:fixed; top:56px; left:24px; z-index:99999; background:#111; color:#6ee7b7; border:1px solid #6ee7b7; padding:6px 10px; border-radius:10px; font-family:monospace;"
-      );
-      document.body.appendChild(sentinel);
-    }
-    sentinel.textContent = TOPIC_STUDIO_SPLIT_SENTINEL;
-    sentinel.style.display = window.location.hash === "#topic-studio" ? "block" : "none";
   }
 
   function updateTopicStudioHostStep() {
@@ -2667,6 +2666,900 @@ loadDismissedIds();
     if (runId) {
       startRunPolling(runId);
     }
+  }
+
+  function formatStatusBadge(target, ok, label) {
+    if (!target) return;
+    target.textContent = label;
+    target.classList.remove("text-green-300", "text-yellow-300", "text-red-300");
+    if (ok === true) {
+      target.classList.add("text-green-300");
+    } else if (ok === false) {
+      target.classList.add("text-red-300");
+    } else {
+      target.classList.add("text-yellow-300");
+    }
+  }
+
+  function setLoading(target, isLoading, label = "Loading...") {
+    if (!target) return;
+    target.textContent = label;
+    target.classList.toggle("hidden", !isLoading);
+  }
+
+  function debounce(fn, wait = 300) {
+    let timer = null;
+    return (...args) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), wait);
+    };
+  }
+
+  async function copyText(value, successMessage = "Copied to clipboard.") {
+    if (!value) {
+      showToast("Nothing to copy.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(String(value));
+      showToast(successMessage);
+    } catch (err) {
+      console.warn("[TopicStudio] Clipboard copy failed", err);
+      showToast("Failed to copy.");
+    }
+  }
+
+  let topicStudioDatasets = [];
+  let topicStudioModels = [];
+  let topicStudioRuns = [];
+  let topicStudioRunPoller = null;
+  let topicStudioCapabilities = null;
+  let topicStudioSegmentsPolling = false;
+  let topicStudioEnrichPolling = false;
+  let topicStudioSegmentsOffset = 0;
+  let topicStudioSegmentsLimit = 50;
+  let topicStudioSegmentsTotal = null;
+  let topicStudioSegmentsPage = [];
+  let topicStudioSegmentsDisplayed = [];
+  let topicStudioSegmentsQueryKey = null;
+  let topicStudioLastPreview = null;
+  let topicStudioLastSubview = "runs";
+  let topicStudioSelectedSegmentId = null;
+  let topicStudioSegmentsFacetFilter = null;
+  let topicStudioSegmentsLastFacets = null;
+  let topicStudioConversations = [];
+  let topicStudioConversationSelection = new Set();
+  let topicStudioSelectedConversationId = null;
+  let topicStudioSelectedTopicId = null;
+  let topicStudioTopicSegmentsOffset = 0;
+  let topicStudioDriftPolling = false;
+  let topicStudioEventsPage = [];
+  let topicStudioKgEdgesPage = [];
+  let topicStudioIntrospectionSchemas = [];
+  let topicStudioIntrospectionTables = [];
+  let topicStudioGroupByCandidates = [];
+  let topicStudioBoundaryCandidates = [];
+  let topicStudioDatasetColumns = [];
+  let topicStudioSelectedSegment = null;
+  let topicStudioSegmentFullText = "";
+  let topicStudioSegmentFullTextExpanded = false;
+  const TOPIC_STUDIO_RUN_ID_KEY = "topic_studio_run_id_v1";
+  const topicStudioMvpState = {
+    datasets: [],
+    models: [],
+    runs: [],
+    previewDatasetId: "",
+    selectedDatasetId: "",
+    selectedModelId: "",
+    selectedRunId: "",
+    runPoller: null,
+    introspectionOk: false,
+    schemas: [],
+    tables: [],
+    columns: [],
+    defaultEmbeddingUrl: "",
+  };
+  const topicStudioDebugState = {
+    enabled: new URLSearchParams(window.location.search).get("debug") === "1",
+    lastRenderStep: "init",
+    fetchStatus: {
+      ready: null,
+      capabilities: null,
+      runs: null,
+    },
+    overlay: null,
+    overlayBody: null,
+  };
+
+  function formatFetchStatus(status) {
+    if (!status) return "--";
+    const okLabel = status.ok === true ? "ok" : status.ok === false ? "fail" : "unknown";
+    const detail = status.detail ? ` · ${truncateText(status.detail, 80)}` : "";
+    return `${status.status ?? "--"} (${okLabel})${detail}`;
+  }
+
+  function ensureTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled || topicStudioDebugState.overlay) return;
+    const overlay = document.createElement("div");
+    overlay.className = "fixed bottom-3 right-3 z-50 bg-gray-900/95 border border-gray-700 rounded-lg px-3 py-2 text-[10px] text-gray-200 shadow-lg";
+    overlay.style.maxWidth = "240px";
+    overlay.innerHTML = `
+      <div class="flex items-center justify-between gap-2 mb-1">
+        <div class="font-semibold text-xs">Topic Studio Debug</div>
+        <button type="button" class="text-gray-400 hover:text-gray-200 text-[10px]" data-debug-hide>Hide</button>
+      </div>
+      <div data-debug-body class="space-y-1"></div>
+    `;
+    overlay.querySelector("[data-debug-hide]")?.addEventListener("click", () => {
+      overlay.classList.add("hidden");
+    });
+    topicStudioDebugState.overlay = overlay;
+    topicStudioDebugState.overlayBody = overlay.querySelector("[data-debug-body]");
+    document.body.appendChild(overlay);
+  }
+
+  function updateTopicStudioDebugOverlay() {
+    if (!topicStudioDebugState.enabled) return;
+    ensureTopicStudioDebugOverlay();
+    if (!topicStudioDebugState.overlayBody) return;
+    const hash = window.location.hash || "(none)";
+    const exists = Boolean(topicStudioPanel);
+    topicStudioDebugState.overlayBody.innerHTML = `
+      <div>hash: <span class="text-gray-400">${hash}</span></div>
+      <div>container: <span class="text-gray-400">${exists ? "found" : "missing"}</span></div>
+      <div>step: <span class="text-gray-400">${topicStudioDebugState.lastRenderStep}</span></div>
+      <div>/ready: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.ready)}</span></div>
+      <div>/capabilities: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.capabilities)}</span></div>
+      <div>/runs: <span class="text-gray-400">${formatFetchStatus(topicStudioDebugState.fetchStatus.runs)}</span></div>
+    `;
+  }
+
+  function setTopicStudioRenderStep(step) {
+    topicStudioDebugState.lastRenderStep = step;
+    updateTopicStudioDebugOverlay();
+  }
+
+  function recordTopicStudioFetchStatus(key, status, ok, detail) {
+    topicStudioDebugState.fetchStatus[key] = { status, ok, detail };
+    updateTopicStudioDebugOverlay();
+  }
+
+  function setMvpError(message) {
+    const container = document.getElementById("ts-mvp-errors");
+    if (!container) return;
+    const box = document.createElement("div");
+    box.setAttribute(
+      "style",
+      "background:#220; color:#f88; border:1px solid #a33; padding:8px; border-radius:8px; font-size:12px; font-family:monospace;"
+    );
+    box.textContent = message;
+    container.appendChild(box);
+  }
+
+  function parseDatasets(json) {
+    const arr = json && Array.isArray(json.datasets)
+      ? json.datasets
+      : json && Array.isArray(json.items)
+        ? json.items
+        : Array.isArray(json)
+          ? json
+          : [];
+    return arr
+      .map((d) => {
+        const id = d.dataset_id || d.id;
+        return {
+          id,
+          name: d.name || id,
+          raw: d,
+        };
+      })
+      .filter((x) => x.id);
+  }
+
+  function formatHttpError(label, error) {
+    const status = error?.status ? `status ${error.status}` : "status unknown";
+    let detail = error?.body || error?.message || "";
+    if (typeof detail === "string") {
+      try {
+        const parsed = JSON.parse(detail);
+        detail = parsed?.detail || parsed?.error || detail;
+      } catch (err) {
+        detail = detail;
+      }
+    }
+    detail = truncateCrashText(detail, 300);
+    return `${label}: ${status} ${detail}`.trim();
+  }
+
+  function setIntrospectionWarning(message) {
+    const warning = document.getElementById("ts-mvp-introspect-warning");
+    if (!warning) return;
+    if (!message) {
+      warning.style.display = "none";
+      warning.textContent = "";
+      return;
+    }
+    warning.style.display = "block";
+    warning.textContent = message;
+  }
+
+  function setManualDatasetFields(enabled) {
+    const manual = document.getElementById("ts-mvp-manual-fields");
+    const schemaSelect = document.getElementById("ts-mvp-schema");
+    const tableSelect = document.getElementById("ts-mvp-table");
+    const idSelect = document.getElementById("ts-mvp-column-id");
+    const timeSelect = document.getElementById("ts-mvp-column-time");
+    const textList = document.getElementById("ts-mvp-column-texts");
+    if (manual) {
+      manual.style.display = enabled ? "flex" : "none";
+    }
+    if (schemaSelect) schemaSelect.disabled = enabled;
+    if (tableSelect) tableSelect.disabled = enabled;
+    if (idSelect) idSelect.disabled = enabled;
+    if (timeSelect) timeSelect.disabled = enabled;
+    if (textList) textList.style.opacity = enabled ? "0.6" : "1";
+  }
+
+  function renderSchemaOptions() {
+    const select = document.getElementById("ts-mvp-schema");
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select schema…";
+    select.appendChild(placeholder);
+    topicStudioMvpState.schemas.forEach((schema) => {
+      const option = document.createElement("option");
+      option.value = schema;
+      option.textContent = schema;
+      select.appendChild(option);
+    });
+    const preferred = topicStudioMvpState.schemas.includes("public") ? "public" : topicStudioMvpState.schemas[0];
+    if (preferred) {
+      select.value = preferred;
+    }
+  }
+
+  function renderTableOptions() {
+    const select = document.getElementById("ts-mvp-table");
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select table…";
+    select.appendChild(placeholder);
+    topicStudioMvpState.tables.forEach((table) => {
+      const option = document.createElement("option");
+      option.value = table.table_name;
+      option.textContent = `${table.table_name} (${table.table_type})`;
+      select.appendChild(option);
+    });
+  }
+
+  function renderColumnOptions() {
+    const idSelect = document.getElementById("ts-mvp-column-id");
+    const timeSelect = document.getElementById("ts-mvp-column-time");
+    const textList = document.getElementById("ts-mvp-column-texts");
+    if (idSelect) {
+      idSelect.innerHTML = '<option value="">Select id column…</option>';
+    }
+    if (timeSelect) {
+      timeSelect.innerHTML = '<option value="">Select time column…</option>';
+    }
+    if (textList) {
+      textList.innerHTML = "";
+    }
+    if (topicStudioMvpState.columns.length === 0) {
+      if (textList) textList.textContent = "(no columns)";
+      return;
+    }
+    topicStudioMvpState.columns.forEach((col) => {
+      const label = `${col.column_name} (${col.data_type}/${col.udt_name})${col.is_nullable ? "" : " [not null]"}`;
+      if (idSelect) {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = label;
+        idSelect.appendChild(option);
+      }
+      if (timeSelect) {
+        const option = document.createElement("option");
+        option.value = col.column_name;
+        option.textContent = label;
+        timeSelect.appendChild(option);
+      }
+      if (textList) {
+        const row = document.createElement("label");
+        row.style.display = "flex";
+        row.style.gap = "6px";
+        row.style.alignItems = "center";
+        row.style.marginBottom = "4px";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = col.column_name;
+        const span = document.createElement("span");
+        span.textContent = label;
+        row.appendChild(checkbox);
+        row.appendChild(span);
+        textList.appendChild(row);
+      }
+    });
+  }
+
+  async function loadSchemas() {
+    const result = await safeJsonFetch("/api/topic-foundry/introspect/schemas");
+    if (!result.ok) {
+      topicStudioMvpState.schemas = [];
+      setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.schemas = result.json?.schemas || [];
+    if (topicStudioMvpState.schemas.length === 0) {
+      setIntrospectionWarning("No schemas available; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    setIntrospectionWarning("");
+    setManualDatasetFields(false);
+    renderSchemaOptions();
+  }
+
+  async function loadTables(schema) {
+    if (!schema) return;
+    const result = await safeJsonFetch(`/api/topic-foundry/introspect/tables?schema=${encodeURIComponent(schema)}`);
+    if (!result.ok) {
+      topicStudioMvpState.tables = [];
+      renderTableOptions();
+      setIntrospectionWarning("Failed to load tables; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.tables = result.json?.tables || [];
+    renderTableOptions();
+  }
+
+  async function loadColumns(schema, table) {
+    if (!schema || !table) return;
+    const result = await safeJsonFetch(
+      `/api/topic-foundry/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`
+    );
+    if (!result.ok) {
+      topicStudioMvpState.columns = [];
+      renderColumnOptions();
+      setIntrospectionWarning("Failed to load columns; manual entry enabled.");
+      setManualDatasetFields(true);
+      return;
+    }
+    topicStudioMvpState.columns = result.json?.columns || [];
+    renderColumnOptions();
+  }
+
+  function clearMvpErrors() {
+    const container = document.getElementById("ts-mvp-errors");
+    if (container) container.innerHTML = "";
+  }
+
+  async function safeJsonFetch(path, options) {
+    try {
+      const resp = await hubFetch(apiUrl(path), options);
+      const text = await resp.text();
+      let json = null;
+      if (text) {
+        try {
+          json = JSON.parse(text);
+        } catch (err) {
+          json = text;
+        }
+      }
+      if (!resp.ok) {
+        const error = new Error(`status ${resp.status}`);
+        error.status = resp.status;
+        error.body = text;
+        return { ok: false, resp, json, error };
+      }
+      return { ok: true, resp, json };
+    } catch (err) {
+      return { ok: false, resp: null, json: null, error: err };
+    }
+  }
+
+  function renderDatasetList() {
+    const container = document.getElementById("ts-mvp-datasets-list");
+    if (!container) return;
+    if (topicStudioMvpState.datasets.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.datasets
+      .map((ds) => `${ds.name} (${ds.id})`)
+      .join("<br />");
+  }
+
+  function renderModelList() {
+    const container = document.getElementById("ts-mvp-models-list");
+    if (!container) return;
+    if (topicStudioMvpState.models.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.models
+      .map((model) => `${model.name || model.model_id} ${model.version || ""} (${model.model_id})`)
+      .join("<br />");
+  }
+
+  function renderRunsList() {
+    const container = document.getElementById("ts-mvp-runs-list");
+    if (!container) return;
+    if (topicStudioMvpState.runs.length === 0) {
+      container.textContent = "(none)";
+      return;
+    }
+    container.innerHTML = topicStudioMvpState.runs
+      .map((run) => `${run.run_id} · ${run.status || "--"} ${run.stage || ""} · ${run.created_at || "--"}`)
+      .join("<br />");
+  }
+
+  function updateSelectOptions(selectId, items, valueKey, labelFn) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select…";
+    select.appendChild(placeholder);
+    items.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item[valueKey];
+      option.textContent = labelFn(item);
+      select.appendChild(option);
+    });
+  }
+
+  function updateMvpSelectors() {
+    updateSelectOptions(
+      "ts-mvp-preview-dataset",
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
+    );
+    updateSelectOptions(
+      "ts-mvp-model-dataset",
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
+    );
+    updateSelectOptions(
+      "ts-mvp-run-dataset",
+      topicStudioMvpState.datasets,
+      "id",
+      (ds) => `${ds.name}`
+    );
+    updateSelectOptions(
+      "ts-mvp-run-model",
+      topicStudioMvpState.models,
+      "model_id",
+      (model) => `${model.name || model.model_id}`
+    );
+    updateSelectOptions(
+      "ts-mvp-segments-run",
+      topicStudioMvpState.runs,
+      "run_id",
+      (run) => `${run.run_id}`
+    );
+    const previewSelect = document.getElementById("ts-mvp-preview-dataset");
+    const previewButton = document.getElementById("ts-mvp-preview");
+    if (previewSelect) {
+      const validIds = new Set(topicStudioMvpState.datasets.map((ds) => ds.id));
+      if (!validIds.has(topicStudioMvpState.previewDatasetId)) {
+        topicStudioMvpState.previewDatasetId = "";
+      }
+      previewSelect.value = topicStudioMvpState.previewDatasetId;
+    }
+    if (previewSelect && previewButton) {
+      const enabled = Boolean(topicStudioMvpState.previewDatasetId);
+      previewButton.disabled = !enabled;
+      previewButton.style.opacity = enabled ? "1" : "0.6";
+      previewButton.style.cursor = enabled ? "pointer" : "not-allowed";
+    }
+    if (HUB_DEBUG) {
+      const debugEl = document.getElementById("ts-mvp-preview-debug");
+      if (debugEl) {
+        debugEl.textContent = `datasetsList count = ${topicStudioMvpState.datasets.length}`;
+      }
+    }
+  }
+
+  function setLastRefresh() {
+    const el = document.getElementById("ts-mvp-last-refresh");
+    if (el) el.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+  }
+
+  function setTopicStudioDebugLine(message) {
+    if (!tsDebugLine) return;
+    tsDebugLine.textContent = message || "";
+    tsDebugLine.classList.toggle("hidden", !message);
+  }
+
+  function bindTopicStudioPanel() {
+    const refreshButton = document.getElementById("ts-mvp-refresh");
+    if (refreshButton) {
+      refreshButton.addEventListener("click", () => {
+        clearMvpErrors();
+        refreshTopicStudioMvp();
+      });
+    }
+    const schemaSelect = document.getElementById("ts-mvp-schema");
+    if (schemaSelect) {
+      schemaSelect.addEventListener("change", () => {
+        const schema = schemaSelect.value;
+        loadTables(schema);
+        topicStudioMvpState.columns = [];
+        renderColumnOptions();
+      });
+    }
+    const tableSelect = document.getElementById("ts-mvp-table");
+    if (tableSelect) {
+      tableSelect.addEventListener("change", () => {
+        const schema = schemaSelect ? schemaSelect.value : "";
+        loadColumns(schema, tableSelect.value);
+      });
+    }
+    const createDatasetBtn = document.getElementById("ts-mvp-create-dataset");
+    if (createDatasetBtn) {
+      createDatasetBtn.addEventListener("click", () => {
+        createDataset().catch((err) => setMvpError(err?.message || "Failed to create dataset"));
+      });
+    }
+    const previewBtn = document.getElementById("ts-mvp-preview");
+    if (previewBtn) {
+      previewBtn.addEventListener("click", () => {
+        previewDataset().catch((err) => setMvpError(err?.message || "Failed to preview dataset"));
+      });
+    }
+    const previewSelect = document.getElementById("ts-mvp-preview-dataset");
+    if (previewSelect) {
+      previewSelect.addEventListener("change", () => {
+        topicStudioMvpState.previewDatasetId = previewSelect.value;
+        updateMvpSelectors();
+      });
+    }
+    try {
+      const qs = new URLSearchParams();
+      qs.set("run_id", "debug");
+      setTopicStudioDebugLine(`Topic Studio ready (segments qs ok: ${qs.toString()})`);
+    } catch (err) {
+      setTopicStudioDebugLine(`Topic Studio init error: ${err?.message || err}`);
+    }
+    updateBoundaryRequirement();
+    const createModelBtn = document.getElementById("ts-mvp-create-model");
+    if (createModelBtn) {
+      createModelBtn.addEventListener("click", () => {
+        createModel().catch((err) => setMvpError(err?.message || "Failed to create model"));
+      });
+    }
+    const trainRunBtn = document.getElementById("ts-mvp-train-run");
+    if (trainRunBtn) {
+      trainRunBtn.addEventListener("click", () => {
+        trainRun().catch((err) => setMvpError(err?.message || "Failed to train run"));
+      });
+    }
+    const enrichBtn = document.getElementById("ts-mvp-enrich-run");
+    if (enrichBtn) {
+      enrichBtn.addEventListener("click", () => {
+        enrichRun().catch((err) => setMvpError(err?.message || "Failed to enrich run"));
+      });
+    }
+    const loadSegmentsBtn = document.getElementById("ts-mvp-load-segments");
+    if (loadSegmentsBtn) {
+      loadSegmentsBtn.addEventListener("click", () => {
+        loadSegmentsMvp().catch((err) => setMvpError(err?.message || "Failed to load segments"));
+      });
+    }
+  }
+
+  async function refreshTopicStudioMvp() {
+    clearMvpErrors();
+    setHubStep("fetch:ready");
+    updateTopicStudioPanelStep();
+    const readyResult = await safeJsonFetch("/api/topic-foundry/ready");
+    const readyEl = document.getElementById("ts-mvp-ready");
+    const readyDetail = document.getElementById("ts-mvp-ready-detail");
+    if (readyEl) {
+      if (readyResult.ok && readyResult.json) {
+        readyEl.textContent = readyResult.json.ok ? "ok" : "degraded";
+        readyEl.style.color = readyResult.json.ok ? "#6f6" : "#ff6";
+        if (readyDetail) {
+          const checks = readyResult.json.checks || {};
+          readyDetail.textContent = `PG:${checks.pg?.detail || "--"} · Embed:${checks.embedding?.detail || "--"}`;
+        }
+      } else {
+        readyEl.textContent = "error";
+        readyEl.style.color = "#f66";
+        setMvpError(formatHttpError("ready", readyResult.error));
+      }
+    }
+
+    setHubStep("fetch:capabilities");
+    updateTopicStudioPanelStep();
+    const capResult = await safeJsonFetch("/api/topic-foundry/capabilities");
+    const capEl = document.getElementById("ts-mvp-capabilities");
+    if (capEl) {
+      if (capResult.ok) {
+        capEl.textContent = "ok";
+        capEl.style.color = "#6f6";
+        const introspection = capResult.json?.introspection;
+        topicStudioMvpState.introspectionOk = Boolean(introspection?.ok);
+        topicStudioMvpState.defaultEmbeddingUrl = capResult.json?.default_embedding_url || "";
+        const embedHint = document.getElementById("ts-mvp-embed-hint");
+        if (embedHint) {
+          embedHint.textContent = topicStudioMvpState.defaultEmbeddingUrl
+            ? `Embedding URL (default): ${topicStudioMvpState.defaultEmbeddingUrl}`
+            : "";
+        }
+        if (topicStudioMvpState.introspectionOk) {
+          topicStudioMvpState.schemas = introspection.schemas || [];
+          await loadSchemas();
+          const schemaSelect = document.getElementById("ts-mvp-schema");
+          if (schemaSelect && schemaSelect.value) {
+            await loadTables(schemaSelect.value);
+          }
+        } else {
+          setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+          setManualDatasetFields(true);
+        }
+      } else {
+        capEl.textContent = "error";
+        capEl.style.color = "#f66";
+        setMvpError(formatHttpError("capabilities", capResult.error));
+        setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
+        setManualDatasetFields(true);
+      }
+    }
+
+    setHubStep("fetch:datasets");
+    updateTopicStudioPanelStep();
+    const datasetResult = await safeJsonFetch("/api/topic-foundry/datasets");
+    if (datasetResult.ok) {
+      topicStudioMvpState.datasets = parseDatasets(datasetResult.json);
+      renderDatasetList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.datasets = [];
+      renderDatasetList();
+      setMvpError(formatHttpError("datasets", datasetResult.error));
+    }
+
+    setHubStep("fetch:models");
+    updateTopicStudioPanelStep();
+    const modelResult = await safeJsonFetch("/api/topic-foundry/models");
+    if (modelResult.ok) {
+      topicStudioMvpState.models = modelResult.json?.models || [];
+      renderModelList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.models = [];
+      renderModelList();
+      setMvpError(formatHttpError("models", modelResult.error));
+    }
+
+    setHubStep("fetch:runs");
+    updateTopicStudioPanelStep();
+    const runsResult = await safeJsonFetch("/api/topic-foundry/runs?limit=20");
+    if (runsResult.ok) {
+      topicStudioMvpState.runs = normalizeRunsResponse(runsResult.json);
+      renderRunsList();
+      updateMvpSelectors();
+    } else {
+      topicStudioMvpState.runs = [];
+      renderRunsList();
+      setMvpError(formatHttpError("runs", runsResult.error));
+    }
+
+    setHubStep("render:done");
+    updateTopicStudioPanelStep();
+    setLastRefresh();
+  }
+
+  async function createDataset() {
+    const name = document.getElementById("ts-mvp-dataset-name")?.value?.trim() || "";
+    let sourceTable = "";
+    let idColumn = null;
+    let timeColumn = null;
+    let textColumns = [];
+    if (topicStudioMvpState.introspectionOk) {
+      const schema = document.getElementById("ts-mvp-schema")?.value;
+      const table = document.getElementById("ts-mvp-table")?.value;
+      if (schema && table) {
+        sourceTable = `${schema}.${table}`;
+      }
+      idColumn = document.getElementById("ts-mvp-column-id")?.value || null;
+      timeColumn = document.getElementById("ts-mvp-column-time")?.value || null;
+      const textList = document.getElementById("ts-mvp-column-texts");
+      if (textList) {
+        textColumns = Array.from(textList.querySelectorAll("input[type=checkbox]"))
+          .filter((input) => input.checked)
+          .map((input) => input.value);
+      }
+    } else {
+      sourceTable = document.getElementById("ts-mvp-dataset-table")?.value?.trim() || "";
+      idColumn = document.getElementById("ts-mvp-dataset-id")?.value?.trim() || null;
+      timeColumn = document.getElementById("ts-mvp-dataset-time")?.value?.trim() || null;
+      textColumns = (document.getElementById("ts-mvp-dataset-text")?.value || "")
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean);
+    }
+    if (!name || !sourceTable) {
+      setMvpError("Dataset name and source_table are required.");
+      return;
+    }
+    const payload = {
+      name,
+      source_table: sourceTable,
+      id_column: idColumn,
+      time_column: timeColumn,
+      text_columns: textColumns,
+      where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || null,
+      timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/datasets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("create dataset", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
+    if (result.json?.dataset_id) {
+      topicStudioMvpState.selectedDatasetId = result.json.dataset_id;
+      updateMvpSelectors();
+    }
+  }
+
+  async function previewDataset() {
+    const datasetId = topicStudioMvpState.previewDatasetId || document.getElementById("ts-mvp-preview-dataset")?.value;
+    if (!datasetId) {
+      setMvpError("Select a dataset to preview.");
+      return;
+    }
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
+    const windowing = {
+      block_mode: blockMode,
+      windowing_mode: windowingMode,
+      time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
+      max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
+    };
+    const payload = {
+      dataset_id: datasetId,
+      start_at: document.getElementById("ts-mvp-preview-start")?.value || null,
+      end_at: document.getElementById("ts-mvp-preview-end")?.value || null,
+      limit: Number(document.getElementById("ts-mvp-preview-limit")?.value || 200),
+      windowing,
+      windowing_spec: windowing,
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/datasets/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const statsEl = document.getElementById("ts-mvp-preview-stats");
+    const samplesEl = document.getElementById("ts-mvp-preview-samples");
+    if (!result.ok) {
+      if (statsEl) statsEl.textContent = "--";
+      if (samplesEl) samplesEl.textContent = "--";
+      setMvpError(formatHttpError("preview", result.error));
+      return;
+    }
+    const stats = result.json?.stats || {};
+    if (statsEl) {
+      statsEl.textContent = `docs=${stats.docs_generated ?? "--"} segments=${stats.segments_generated ?? "--"} avg_chars=${stats.avg_chars ?? "--"}`;
+    }
+    if (samplesEl) {
+      const samples = result.json?.samples || result.json?.segments || [];
+      if (!samples.length) {
+        samplesEl.textContent = "(none)";
+      } else {
+        samplesEl.innerHTML = samples
+          .slice(0, 5)
+          .map((s) => `${s.segment_id || ""} · ${s.snippet || s.text || ""}`)
+          .join("<br />");
+      }
+    }
+  }
+
+  async function createModel() {
+    const name = document.getElementById("ts-mvp-model-name")?.value?.trim() || "";
+    const version = document.getElementById("ts-mvp-model-version")?.value?.trim() || "";
+    const stage = document.getElementById("ts-mvp-model-stage")?.value?.trim() || "development";
+    const datasetId = document.getElementById("ts-mvp-model-dataset")?.value;
+    if (!name || !version || !datasetId) {
+      setMvpError("Model name, version, and dataset are required.");
+      return;
+    }
+    let params = {};
+    try {
+      const raw = document.getElementById("ts-mvp-model-params")?.value?.trim();
+      params = raw ? JSON.parse(raw) : {};
+    } catch (err) {
+      setMvpError("Model params must be valid JSON.");
+      return;
+    }
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
+    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
+    const payload = {
+      name,
+      version,
+      stage,
+      dataset_id: datasetId,
+      model_spec: {
+        algorithm: "hdbscan",
+        min_cluster_size: Number(document.getElementById("ts-mvp-model-mincluster")?.value || 20),
+        metric: document.getElementById("ts-mvp-model-metric")?.value || "cosine",
+        params,
+      },
+      windowing_spec: {
+        block_mode: blockMode,
+        windowing_mode: windowingMode,
+        time_gap_seconds: Number(document.getElementById("ts-mvp-preview-gap")?.value || 900),
+        max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
+      },
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("create model", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
+    if (result.json?.model_id) {
+      topicStudioMvpState.selectedModelId = result.json.model_id;
+      updateMvpSelectors();
+    }
+  }
+
+  async function trainRun() {
+    const modelId = document.getElementById("ts-mvp-run-model")?.value;
+    const datasetId = document.getElementById("ts-mvp-run-dataset")?.value;
+    if (!modelId || !datasetId) {
+      setMvpError("Select a model and dataset to train.");
+      return;
+    }
+    const payload = {
+      model_id: modelId,
+      dataset_id: datasetId,
+      start_at: document.getElementById("ts-mvp-run-start")?.value || null,
+      end_at: document.getElementById("ts-mvp-run-end")?.value || null,
+    };
+    const result = await safeJsonFetch("/api/topic-foundry/runs/train", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("train run", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
+    const runId = result.json?.run_id;
+    if (runId) {
+      startRunPolling(runId);
+    }
+    const result = await safeJsonFetch(`/api/topic-foundry/runs/${targetRun}/enrich`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enricher: "heuristic" }),
+    });
+    if (!result.ok) {
+      setMvpError(formatHttpError("enrich", result.error));
+      return;
+    }
+    await refreshTopicStudioMvp();
   }
 
   async function enrichRun() {
@@ -5678,9 +6571,19 @@ loadDismissedIds();
     navigateToHash(hash);
   });
   window.addEventListener("hashchange", handleHashRouting);
-  window.addEventListener("DOMContentLoaded", handleHashRouting);
-  if (document.readyState !== "loading") {
+  window.addEventListener("DOMContentLoaded", () => {
+    if (!window.location.hash) {
+      window.location.hash = "#hub";
+      return;
+    }
     handleHashRouting();
+  });
+  if (document.readyState !== "loading") {
+    if (!window.location.hash) {
+      window.location.hash = "#hub";
+    } else {
+      handleHashRouting();
+    }
   }
 
   if (tsDatasetSelect) {

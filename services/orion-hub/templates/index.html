@@ -49,7 +49,9 @@
       </button>
     </div>
 
-    <div id="hubTabPanel" class="flex flex-col gap-6">
+    <div id="appPanels">
+      <section id="hub" data-panel="hub">
+        <div id="hubTabPanel" class="flex flex-col gap-6">
       <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
       
       <div class="w-full md:w-2/3 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
@@ -504,17 +506,21 @@
       </div>
     </div>
 
-    <div id="topicStudioPanel" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-6 min-h-[56rem]">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-xl font-bold text-white">Topic Studio</h2>
-          <p class="text-xs text-gray-400">Manage datasets, models, and runs for Topic Foundry.</p>
-          <div id="tsSplitPaneSentinel" class="text-[10px] font-mono text-emerald-400">TOPIC STUDIO SPLIT PANE v2 ACTIVE</div>
-          <div id="tsDebugLine" class="text-[10px] text-gray-500 hidden"></div>
         </div>
-        <div class="text-xs text-gray-500">Proxy: <span id="topicFoundryBaseLabel">/api/topic-foundry</span></div>
-      </div>
-      <div id="tsRouteError" class="hidden bg-red-900/20 border border-red-700/60 rounded-xl px-4 py-2 text-[11px] text-red-200"></div>
+      </section>
+
+      <section id="topic-studio" data-panel="topic-studio" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-6 min-h-[56rem]">
+        <div id="topicStudioError" class="hidden bg-red-900/20 border border-red-700/60 rounded-xl px-4 py-2 text-[11px] text-red-200"></div>
+        <div id="topicStudioRoot">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-xl font-bold text-white">Topic Studio</h2>
+              <p class="text-xs text-gray-400">Manage datasets, models, and runs for Topic Foundry.</p>
+              <div id="tsSplitPaneSentinel" class="text-[10px] font-mono text-emerald-400">TOPIC STUDIO SPLIT PANE v2 ACTIVE</div>
+              <div id="tsDebugLine" class="text-[10px] text-gray-500 hidden"></div>
+            </div>
+            <div class="text-xs text-gray-500">Proxy: <span id="topicFoundryBaseLabel">/api/topic-foundry</span></div>
+          </div>
 
       <div id="tsStatusBanner" class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-3">
         <div class="flex items-center justify-between">
@@ -1300,6 +1306,8 @@
           </div>
         </div>
       </div>
+        </div>
+      </section>
     </div>
 
   <div id="toastContainer" class="fixed bottom-6 right-6 z-50 hidden">
@@ -1401,6 +1409,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.56" defer></script>
+  <script src="/static/js/app.js?v=1.0.57" defer></script>
 </body>
 </html>

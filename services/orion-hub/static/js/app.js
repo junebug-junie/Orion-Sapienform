@@ -683,6 +683,10 @@ loadDismissedIds();
     if (!topicStudioRoot) {
       throw new Error("Topic Studio root not found.");
     }
+    if (!window.__topicStudioInitDone) {
+      window.__topicStudioInitDone = true;
+      bindTopicStudioPanel();
+    }
     if (topicStudioError) {
       topicStudioError.classList.add("hidden");
       topicStudioError.textContent = "";
@@ -963,9 +967,7 @@ loadDismissedIds();
     if (errorContainer) errorContainer.innerHTML = "";
 
     try {
-      const resp = await hubFetch(apiUrl("/api/topic-foundry/ready"));
-      if (!resp.ok) throw new Error(`ready ${resp.status}`);
-      const data = await resp.json();
+      const data = await tfFetchJson("/ready");
       const status = data?.ok ? "ok" : "degraded";
       setTopicStudioHostStatus("ts-host-ready", status, data?.ok ? "#6f6" : "#ff6");
     } catch (err) {
@@ -977,9 +979,7 @@ loadDismissedIds();
     updateTopicStudioHostStep();
     updateTopicStudioPanelStep();
     try {
-      const resp = await hubFetch(apiUrl("/api/topic-foundry/capabilities"));
-      if (!resp.ok) throw new Error(`capabilities ${resp.status}`);
-      await resp.json();
+      await tfFetchJson("/capabilities");
       setTopicStudioHostStatus("ts-host-capabilities", "ok", "#6f6");
     } catch (err) {
       setTopicStudioHostStatus("ts-host-capabilities", "error", "#f66");
@@ -990,9 +990,7 @@ loadDismissedIds();
     updateTopicStudioHostStep();
     updateTopicStudioPanelStep();
     try {
-      const resp = await hubFetch(apiUrl("/api/topic-foundry/runs?limit=20"));
-      if (!resp.ok) throw new Error(`runs ${resp.status}`);
-      await resp.json();
+      await tfFetchJson("/runs?limit=20");
       setTopicStudioHostStatus("ts-host-runs", "ok", "#6f6");
     } catch (err) {
       setTopicStudioHostStatus("ts-host-runs", "error", "#f66");
@@ -1747,8 +1745,9 @@ loadDismissedIds();
     tsDatasetSaveStatus.classList.toggle("text-gray-500", !isError);
   }
 
-  async function topicFoundryFetch(path, options = {}) {
-    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+  async function tfFetchJson(path, options = {}) {
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${normalizedPath}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -1757,20 +1756,28 @@ loadDismissedIds();
     });
     const payloadText = await response.text();
     const contentType = response.headers.get("content-type", "");
-    let payload = payloadText;
+    let payload = null;
     if (payloadText && contentType.includes("application/json")) {
       try {
         payload = JSON.parse(payloadText);
       } catch (err) {
-        payload = payloadText;
+        payload = null;
       }
     }
     if (!response.ok) {
-      const error = new Error(payloadText || response.statusText || `Request failed (${response.status})`);
-      error.status = response.status;
-      error.body = payloadText;
+      const error = {
+        status: response.status,
+        body: payloadText,
+        message: payloadText || response.statusText || `Request failed (${response.status})`,
+      };
       throw error;
     }
+    if (response.status === 204) return {};
+    return payload || {};
+  }
+
+  async function topicFoundryFetch(path, options = {}) {
+    return tfFetchJson(path, options);
   }
 
   async function topicFoundryFetchWithHeaders(path, options = {}) {
@@ -2123,52 +2130,52 @@ loadDismissedIds();
   }
 
   async function loadSchemas() {
-    const result = await safeJsonFetch("/api/topic-foundry/introspect/schemas");
-    if (!result.ok) {
+    try {
+      const result = await tfFetchJson("/introspect/schemas");
+      topicStudioMvpState.schemas = result?.schemas || [];
+      if (topicStudioMvpState.schemas.length === 0) {
+        setIntrospectionWarning("No schemas available; manual entry enabled.");
+        setManualDatasetFields(true);
+        return;
+      }
+      setIntrospectionWarning("");
+      setManualDatasetFields(false);
+      renderSchemaOptions();
+    } catch (err) {
       topicStudioMvpState.schemas = [];
       setIntrospectionWarning("Introspection unavailable; manual entry enabled.");
       setManualDatasetFields(true);
-      return;
     }
-    topicStudioMvpState.schemas = result.json?.schemas || [];
-    if (topicStudioMvpState.schemas.length === 0) {
-      setIntrospectionWarning("No schemas available; manual entry enabled.");
-      setManualDatasetFields(true);
-      return;
-    }
-    setIntrospectionWarning("");
-    setManualDatasetFields(false);
-    renderSchemaOptions();
   }
 
   async function loadTables(schema) {
     if (!schema) return;
-    const result = await safeJsonFetch(`/api/topic-foundry/introspect/tables?schema=${encodeURIComponent(schema)}`);
-    if (!result.ok) {
+    try {
+      const result = await tfFetchJson(`/introspect/tables?schema=${encodeURIComponent(schema)}`);
+      topicStudioMvpState.tables = result?.tables || [];
+      renderTableOptions();
+    } catch (err) {
       topicStudioMvpState.tables = [];
       renderTableOptions();
       setIntrospectionWarning("Failed to load tables; manual entry enabled.");
       setManualDatasetFields(true);
-      return;
     }
-    topicStudioMvpState.tables = result.json?.tables || [];
-    renderTableOptions();
   }
 
   async function loadColumns(schema, table) {
     if (!schema || !table) return;
-    const result = await safeJsonFetch(
-      `/api/topic-foundry/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`
-    );
-    if (!result.ok) {
+    try {
+      const result = await tfFetchJson(
+        `/introspect/columns?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`
+      );
+      topicStudioMvpState.columns = result?.columns || [];
+      renderColumnOptions();
+    } catch (err) {
       topicStudioMvpState.columns = [];
       renderColumnOptions();
       setIntrospectionWarning("Failed to load columns; manual entry enabled.");
       setManualDatasetFields(true);
-      return;
     }
-    topicStudioMvpState.columns = result.json?.columns || [];
-    renderColumnOptions();
   }
 
   function clearMvpErrors() {
@@ -2398,7 +2405,13 @@ loadDismissedIds();
     clearMvpErrors();
     setHubStep("fetch:ready");
     updateTopicStudioPanelStep();
-    const readyResult = await safeJsonFetch("/api/topic-foundry/ready");
+    let readyResult = { ok: false, json: null, error: null };
+    try {
+      const json = await tfFetchJson("/ready");
+      readyResult = { ok: true, json, error: null };
+    } catch (err) {
+      readyResult = { ok: false, json: null, error: err };
+    }
     const readyEl = document.getElementById("ts-mvp-ready");
     const readyDetail = document.getElementById("ts-mvp-ready-detail");
     if (readyEl) {
@@ -2418,7 +2431,13 @@ loadDismissedIds();
 
     setHubStep("fetch:capabilities");
     updateTopicStudioPanelStep();
-    const capResult = await safeJsonFetch("/api/topic-foundry/capabilities");
+    let capResult = { ok: false, json: null, error: null };
+    try {
+      const json = await tfFetchJson("/capabilities");
+      capResult = { ok: true, json, error: null };
+    } catch (err) {
+      capResult = { ok: false, json: null, error: err };
+    }
     const capEl = document.getElementById("ts-mvp-capabilities");
     if (capEl) {
       if (capResult.ok) {
@@ -2426,7 +2445,8 @@ loadDismissedIds();
         capEl.style.color = "#6f6";
         const introspection = capResult.json?.introspection;
         topicStudioMvpState.introspectionOk = Boolean(introspection?.ok);
-        topicStudioMvpState.defaultEmbeddingUrl = capResult.json?.default_embedding_url || "";
+        topicStudioMvpState.defaultEmbeddingUrl =
+          capResult.json?.defaults?.embedding_source_url || capResult.json?.default_embedding_url || "";
         const embedHint = document.getElementById("ts-mvp-embed-hint");
         if (embedHint) {
           embedHint.textContent = topicStudioMvpState.defaultEmbeddingUrl
@@ -2455,41 +2475,41 @@ loadDismissedIds();
 
     setHubStep("fetch:datasets");
     updateTopicStudioPanelStep();
-    const datasetResult = await safeJsonFetch("/api/topic-foundry/datasets");
-    if (datasetResult.ok) {
-      topicStudioMvpState.datasets = parseDatasets(datasetResult.json);
+    try {
+      const datasetResult = await tfFetchJson("/datasets");
+      topicStudioMvpState.datasets = parseDatasets(datasetResult);
       renderDatasetList();
       updateMvpSelectors();
-    } else {
+    } catch (err) {
       topicStudioMvpState.datasets = [];
       renderDatasetList();
-      setMvpError(formatHttpError("datasets", datasetResult.error));
+      setMvpError(formatHttpError("datasets", err));
     }
 
     setHubStep("fetch:models");
     updateTopicStudioPanelStep();
-    const modelResult = await safeJsonFetch("/api/topic-foundry/models");
-    if (modelResult.ok) {
-      topicStudioMvpState.models = modelResult.json?.models || [];
+    try {
+      const modelResult = await tfFetchJson("/models");
+      topicStudioMvpState.models = modelResult?.models || [];
       renderModelList();
       updateMvpSelectors();
-    } else {
+    } catch (err) {
       topicStudioMvpState.models = [];
       renderModelList();
-      setMvpError(formatHttpError("models", modelResult.error));
+      setMvpError(formatHttpError("models", err));
     }
 
     setHubStep("fetch:runs");
     updateTopicStudioPanelStep();
-    const runsResult = await safeJsonFetch("/api/topic-foundry/runs?limit=20");
-    if (runsResult.ok) {
-      topicStudioMvpState.runs = normalizeRunsResponse(runsResult.json);
+    try {
+      const runsResult = await tfFetchJson("/runs?limit=20");
+      topicStudioMvpState.runs = normalizeRunsResponse(runsResult);
       renderRunsList();
       updateMvpSelectors();
-    } else {
+    } catch (err) {
       topicStudioMvpState.runs = [];
       renderRunsList();
-      setMvpError(formatHttpError("runs", runsResult.error));
+      setMvpError(formatHttpError("runs", err));
     }
 
     setHubStep("render:done");
@@ -2539,18 +2559,20 @@ loadDismissedIds();
       where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || null,
       timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
     };
-    const result = await safeJsonFetch("/api/topic-foundry/datasets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!result.ok) {
-      setMvpError(formatHttpError("create dataset", result.error));
+    let result = null;
+    try {
+      result = await tfFetchJson("/datasets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      setMvpError(formatHttpError("create dataset", err));
       return;
     }
     await refreshTopicStudioMvp();
-    if (result.json?.dataset_id) {
-      topicStudioMvpState.selectedDatasetId = result.json.dataset_id;
+    if (result?.dataset_id) {
+      topicStudioMvpState.selectedDatasetId = result.dataset_id;
       updateMvpSelectors();
     }
   }
@@ -2577,25 +2599,27 @@ loadDismissedIds();
       windowing,
       windowing_spec: windowing,
     };
-    const result = await safeJsonFetch("/api/topic-foundry/datasets/preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const statsEl = document.getElementById("ts-mvp-preview-stats");
-    const samplesEl = document.getElementById("ts-mvp-preview-samples");
-    if (!result.ok) {
+    let result = null;
+    try {
+      result = await tfFetchJson("/datasets/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
       if (statsEl) statsEl.textContent = "--";
       if (samplesEl) samplesEl.textContent = "--";
-      setMvpError(formatHttpError("preview", result.error));
+      setMvpError(formatHttpError("preview", err));
       return;
     }
-    const stats = result.json?.stats || {};
+    const statsEl = document.getElementById("ts-mvp-preview-stats");
+    const samplesEl = document.getElementById("ts-mvp-preview-samples");
+    const stats = result?.stats || {};
     if (statsEl) {
       statsEl.textContent = `docs=${stats.docs_generated ?? "--"} segments=${stats.segments_generated ?? "--"} avg_chars=${stats.avg_chars ?? "--"}`;
     }
     if (samplesEl) {
-      const samples = result.json?.samples || result.json?.segments || [];
+      const samples = result?.samples || result?.segments || [];
       if (!samples.length) {
         samplesEl.textContent = "(none)";
       } else {
@@ -2644,18 +2668,20 @@ loadDismissedIds();
         max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
       },
     };
-    const result = await safeJsonFetch("/api/topic-foundry/models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!result.ok) {
-      setMvpError(formatHttpError("create model", result.error));
+    let result = null;
+    try {
+      result = await tfFetchJson("/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      setMvpError(formatHttpError("create model", err));
       return;
     }
     await refreshTopicStudioMvp();
-    if (result.json?.model_id) {
-      topicStudioMvpState.selectedModelId = result.json.model_id;
+    if (result?.model_id) {
+      topicStudioMvpState.selectedModelId = result.model_id;
       updateMvpSelectors();
     }
   }
@@ -2673,17 +2699,19 @@ loadDismissedIds();
       start_at: document.getElementById("ts-mvp-run-start")?.value || null,
       end_at: document.getElementById("ts-mvp-run-end")?.value || null,
     };
-    const result = await safeJsonFetch("/api/topic-foundry/runs/train", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!result.ok) {
-      setMvpError(formatHttpError("train run", result.error));
+    let result = null;
+    try {
+      result = await tfFetchJson("/runs/train", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      setMvpError(formatHttpError("train run", err));
       return;
     }
     await refreshTopicStudioMvp();
-    const runId = result.json?.run_id;
+    const runId = result?.run_id;
     if (runId) {
       startRunPolling(runId);
     }
@@ -2696,13 +2724,14 @@ loadDismissedIds();
       setMvpError("Select a run to enrich.");
       return;
     }
-    const result = await safeJsonFetch(`/api/topic-foundry/runs/${targetRun}/enrich`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enricher: "heuristic" }),
-    });
-    if (!result.ok) {
-      setMvpError(formatHttpError("enrich", result.error));
+    try {
+      await tfFetchJson(`/runs/${targetRun}/enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enricher: "heuristic" }),
+      });
+    } catch (err) {
+      setMvpError(formatHttpError("enrich", err));
       return;
     }
     await refreshTopicStudioMvp();
@@ -2713,14 +2742,15 @@ loadDismissedIds();
       clearInterval(topicStudioMvpState.runPoller);
     }
     topicStudioMvpState.runPoller = setInterval(async () => {
-      const result = await safeJsonFetch(`/api/topic-foundry/runs/${runId}`);
-      if (!result.ok) {
-        setMvpError(formatHttpError("run poll", result.error));
+      let run = null;
+      try {
+        run = await tfFetchJson(`/runs/${runId}`);
+      } catch (err) {
+        setMvpError(formatHttpError("run poll", err));
         clearInterval(topicStudioMvpState.runPoller);
         topicStudioMvpState.runPoller = null;
         return;
       }
-      const run = result.json;
       const idx = topicStudioMvpState.runs.findIndex((r) => r.run_id === runId);
       if (idx >= 0) {
         topicStudioMvpState.runs[idx] = run;
@@ -2746,15 +2776,17 @@ loadDismissedIds();
       include_bounds: "true",
     });
     if (enriched) params.set("has_enrichment", enriched);
-    const result = await safeJsonFetch(`/api/topic-foundry/segments?${params.toString()}`);
-    const table = document.getElementById("ts-mvp-segments-table");
-    if (!table) return;
-    if (!result.ok) {
+    let result = null;
+    try {
+      result = await tfFetchJson(`/segments?${params.toString()}`);
+    } catch (err) {
       table.textContent = "--";
-      setMvpError(formatHttpError("segments", result.error));
+      setMvpError(formatHttpError("segments", err));
       return;
     }
-    const items = asItems(result.json);
+    const table = document.getElementById("ts-mvp-segments-table");
+    if (!table) return;
+    const items = asItems(result);
     if (!items.length) {
       table.textContent = "(none)";
       return;
@@ -2796,13 +2828,14 @@ loadDismissedIds();
   async function loadSegmentDetail(segmentId) {
     const detailEl = document.getElementById("ts-mvp-segment-detail");
     if (!detailEl) return;
-    const result = await safeJsonFetch(`/api/topic-foundry/segments/${segmentId}?include_full_text=true`);
-    if (!result.ok) {
+    let seg = null;
+    try {
+      seg = await tfFetchJson(`/segments/${segmentId}?include_full_text=true`);
+    } catch (err) {
       detailEl.textContent = "Failed to load segment detail.";
-      setMvpError(formatHttpError("segment detail", result.error));
+      setMvpError(formatHttpError("segment detail", err));
       return;
     }
-    const seg = result.json || {};
     const hasFullText = Object.prototype.hasOwnProperty.call(seg, "full_text");
     const provenance = seg.provenance ? JSON.stringify(seg.provenance, null, 2) : "--";
     const meaningPayload = {
@@ -5445,10 +5478,13 @@ loadDismissedIds();
       setTopicStudioRenderStep("fetching /ready");
       const result = await topicFoundryFetch("/ready");
       const checks = result?.checks || {};
+      const pgOk = typeof checks.pg?.ok === "boolean" ? checks.pg.ok : null;
+      const embeddingOk = typeof checks.embedding?.ok === "boolean" ? checks.embedding.ok : null;
+      const modelDirOk = typeof checks.model_dir?.ok === "boolean" ? checks.model_dir.ok : null;
       formatStatusBadge(tsStatusBadge, true, "Reachable");
-      formatStatusBadge(tsStatusPg, checks.pg?.ok, checks.pg?.ok ? "ok" : "fail");
-      formatStatusBadge(tsStatusEmbedding, checks.embedding?.ok, checks.embedding?.ok ? "ok" : "fail");
-      formatStatusBadge(tsStatusModelDir, checks.model_dir?.ok, checks.model_dir?.ok ? "ok" : "fail");
+      formatStatusBadge(tsStatusPg, pgOk, pgOk === null ? "--" : pgOk ? "ok" : "fail");
+      formatStatusBadge(tsStatusEmbedding, embeddingOk, embeddingOk === null ? "--" : embeddingOk ? "ok" : "fail");
+      formatStatusBadge(tsStatusModelDir, modelDirOk, modelDirOk === null ? "--" : modelDirOk ? "ok" : "fail");
       if (tsStatusDetail) {
         tsStatusDetail.textContent = `PG: ${checks.pg?.detail || "--"} · Embedding: ${checks.embedding?.detail || "--"} · Model dir: ${checks.model_dir?.detail || "--"}`;
       }
@@ -5517,9 +5553,13 @@ loadDismissedIds();
     }
   }
 
-  function applyCapabilityDefaults(defaults = {}) {
-    if (tsModelEmbeddingUrl && !tsModelEmbeddingUrl.value) {
-      tsModelEmbeddingUrl.value = defaults.embedding_source_url || "";
+  function applyCapabilityDefaults(defaults = {}, embeddingDefault = "") {
+    if (tsModelEmbeddingUrl) {
+      const current = tsModelEmbeddingUrl.value || "";
+      const isStale = current.includes("orion-vector-host");
+      if (!current || isStale) {
+        tsModelEmbeddingUrl.value = embeddingDefault || defaults.embedding_source_url || "";
+      }
     }
     if (tsModelMetric && !tsModelMetric.value) {
       tsModelMetric.value = defaults.metric || "";
@@ -5539,11 +5579,12 @@ loadDismissedIds();
       setTopicStudioRenderStep("fetching /capabilities");
       const result = await topicFoundryFetch("/capabilities");
       topicStudioCapabilities = result;
-      const modes = result.segmentation_modes_supported || [];
+      const modes = result?.segmentation_modes_supported ?? [];
       const metrics = result.supported_metrics || [];
       renderSegmentationModes(modes, Boolean(result.llm_enabled));
       renderMetricOptions(metrics, result.default_metric);
-      applyCapabilityDefaults(result.defaults || {});
+      const embeddingDefault = result?.defaults?.embedding_source_url || result?.default_embedding_url || "";
+      applyCapabilityDefaults(result.defaults || {}, embeddingDefault);
       if (tsEnrichRun) {
         const llmEnabled = Boolean(result.llm_enabled);
         tsEnrichRun.disabled = !llmEnabled;

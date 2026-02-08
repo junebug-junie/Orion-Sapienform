@@ -30,6 +30,7 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
         text_columns=payload.dataset.text_columns,
         time_column=payload.dataset.time_column,
         id_column=payload.dataset.id_column,
+        boundary_column=payload.dataset.boundary_column,
     )
     overrides = [
         OverrideRecord(
@@ -46,6 +47,7 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
         conversations,
         spec=payload.windowing,
         embedding_url=settings.topic_foundry_embedding_url,
+        run_id=None,
     )
     observed_start_at: Optional[str] = None
     observed_end_at: Optional[str] = None

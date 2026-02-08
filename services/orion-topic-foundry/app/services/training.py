@@ -12,6 +12,8 @@ import numpy as np
 from hdbscan import HDBSCAN
 from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_distances
+from sklearn.preprocessing import normalize
 
 from app.models import DatasetSpec, EnrichmentSpec, ModelSpec, RunRecord, RunSpecSnapshot, RunTrainRequest, SegmentRecord, WindowingSpec
 from app.services.data_access import fetch_dataset_rows
@@ -20,9 +22,21 @@ from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.bus_events import get_bus_publisher
 from app.services.enrichment import run_enrichment_sync
 from app.services.types import BoundaryContext, RowBlock
+from app.services.metrics import normalize_metric, validate_metric
 from app.services.windowing import build_segments_with_stats
 from app.settings import settings
-from app.storage.repository import create_event, fetch_run, insert_segments, list_conversation_overrides, update_run, utc_now
+from app.storage.repository import (
+    create_event,
+    fetch_latest_completed_run_by_scope,
+    fetch_run,
+    fetch_topics,
+    insert_segments,
+    insert_topics,
+    list_conversation_overrides,
+    update_run,
+    upsert_conversation_rollups,
+    utc_now,
+)
 from orion.schemas.topic_foundry import TopicFoundryRunCompleteV1
 
 
@@ -121,24 +135,73 @@ def _run_training(
     update_run(run)
 
     try:
+        requested_metric = normalize_metric(run.specs.model.metric)
+        try:
+            validate_metric(requested_metric)
+        except ValueError as exc:
+            run.status = "failed"
+            run.stage = "failed"
+            run.error = f"unsupported_metric: {requested_metric}"
+            run.completed_at = utc_now()
+            update_run(run)
+            logger.warning("Unsupported metric requested: %s", requested_metric)
+            return
         start = time.monotonic()
         segments, blocks_generated = _prepare_segments(run, payload)
         if not segments:
             raise RuntimeError("No documents available for training")
         doc_texts = [seg.text for seg in segments]
-        embedder = VectorHostEmbeddingProvider(run.specs.model.embedding_source_url)
+        embedding_url = run.specs.model.embedding_source_url or settings.topic_foundry_embedding_url
+        embedder = VectorHostEmbeddingProvider(embedding_url)
         embed_start = time.monotonic()
         embeddings = np.array(embedder.embed_texts(doc_texts), dtype=np.float32)
+        embedding_vectors = embeddings.copy()
         embed_secs = time.monotonic() - embed_start
 
         cluster_start = time.monotonic()
-        clusterer = _build_clusterer(run.specs.model)
+        cosine_impl = settings.topic_foundry_cosine_impl.lower().strip()
+        effective_metric = requested_metric
+        algorithm_override = None
+        metric_stats = {
+            "metric_requested": requested_metric,
+            "metric_effective": requested_metric,
+        }
+        if requested_metric == "cosine":
+            if cosine_impl == "generic":
+                embeddings = cosine_distances(embeddings)
+                effective_metric = "precomputed"
+                algorithm_override = "generic"
+                metric_stats.update(
+                    {
+                        "metric_effective": effective_metric,
+                        "cosine_impl": "generic",
+                    }
+                )
+            else:
+                embeddings = normalize(embeddings, norm="l2")
+                effective_metric = "euclidean"
+                metric_stats.update(
+                    {
+                        "metric_effective": effective_metric,
+                        "cosine_impl": "normalize_euclidean",
+                    }
+                )
+
+        clusterer = _build_clusterer(run.specs.model, metric=effective_metric, algorithm=algorithm_override)
         labels = clusterer.fit_predict(embeddings)
         probabilities = getattr(clusterer, "probabilities_", None)
         cluster_secs = time.monotonic() - cluster_start
 
         stats = _compute_stats(labels, segments)
         stats["blocks_generated"] = blocks_generated
+        if segments:
+            row_counts = [len(seg.row_ids) for seg in segments]
+            stats["avg_rows_per_segment"] = float(np.mean(row_counts))
+            stats["min_rows_per_segment"] = int(min(row_counts))
+            stats["max_rows_per_segment"] = int(max(row_counts))
+        stats["windowing_mode"] = run.specs.windowing.windowing_mode
+        stats["run_scope"] = run.run_scope
+        stats.update(metric_stats)
         stats.update(
             {
                 "embed_secs": embed_secs,
@@ -159,6 +222,7 @@ def _run_training(
         )
 
         segment_records = []
+        rollups: Dict[str, Any] = {}
         for idx, seg in enumerate(segments):
             start_at, end_at = _timestamp_bounds(seg.timestamps)
             snippet = _snippet(seg.text or "")
@@ -176,6 +240,7 @@ def _run_training(
                         "row_ids": seg.row_ids,
                         "timestamps": seg.timestamps,
                         "doc_ids": [seg.doc_id],
+                        "conversation_id": str(seg.conversation_id) if seg.conversation_id else None,
                     },
                     topic_id=label,
                     topic_prob=topic_prob,
@@ -188,13 +253,47 @@ def _run_training(
                     created_at=utc_now(),
                 )
             )
+            if seg.conversation_id:
+                convo_key = str(seg.conversation_id)
+                convo = rollups.setdefault(
+                    convo_key,
+                    {"conversation_id": convo_key, "topic_counts": {}, "segment_count": 0},
+                )
+                convo["segment_count"] = convo.get("segment_count", 0) + 1
+                counts = convo.setdefault("topic_counts", {})
+                counts[str(label)] = counts.get(str(label), 0) + 1
         insert_segments(segment_records)
+        if rollups:
+            for payload in rollups.values():
+                counts = payload.get("topic_counts", {})
+                payload["top_topics"] = sorted(
+                    [{"topic_id": int(k), "count": v} for k, v in counts.items()],
+                    key=lambda x: -x["count"],
+                )[:5]
+            upsert_conversation_rollups(run.run_id, rollups)
+
+        topic_payloads = _build_topic_payloads(labels, embedding_vectors, scope=run.run_scope or "macro")
+        if run.run_scope == "micro":
+            macro_run = fetch_latest_completed_run_by_scope(run.model_id, "macro")
+            if macro_run:
+                macro_topics = fetch_topics(UUID(macro_run["run_id"]), scope="macro")
+                _map_micro_to_macro(topic_payloads, macro_topics)
+        insert_topics(run.run_id, topic_payloads)
 
         run.stage = "trained"
         if run.specs.enrichment.enable_enrichment:
             run.stage = "enriching"
             update_run(run)
-            run_enrichment_sync(run.run_id, force=False, enricher=run.specs.enrichment.enricher, limit=None)
+            run_enrichment_sync(
+                run.run_id,
+                force=False,
+                enricher=run.specs.enrichment.enricher,
+                limit=None,
+                target="segments",
+                fields=[],
+                llm_backend=None,
+                prompt_template=None,
+            )
             run.stage = "enriched"
             latest = fetch_run(run.run_id)
             if latest and latest.get("stats"):
@@ -249,7 +348,10 @@ def _build_run_record(
         windowing=WindowingSpec(**model_row["windowing_spec"]),
         model=ModelSpec(**model_row["model_spec"]),
         enrichment=EnrichmentSpec(**model_row["enrichment_spec"]) if model_row.get("enrichment_spec") else EnrichmentSpec(),
+        run_scope=payload.run_scope,
     )
+    if specs.run_scope is None:
+        specs.run_scope = "micro" if specs.windowing.windowing_mode.startswith("conversation") else "macro"
     return RunRecord(
         run_id=run_id,
         model_id=UUID(model_row["model_id"]),
@@ -257,6 +359,7 @@ def _build_run_record(
         specs=specs,
         spec_hash=spec_hash,
         status="queued",
+        run_scope=specs.run_scope,
         stats={},
         artifact_paths={},
         created_at=utc_now(),
@@ -277,6 +380,7 @@ def _prepare_segments(run: RunRecord, payload: RunTrainRequest) -> tuple[List[Ro
         text_columns=run.specs.dataset.text_columns,
         time_column=run.specs.dataset.time_column,
         id_column=run.specs.dataset.id_column,
+        boundary_column=run.specs.dataset.boundary_column,
     )
     overrides = [
         OverrideRecord(
@@ -300,15 +404,23 @@ def _prepare_segments(run: RunRecord, payload: RunTrainRequest) -> tuple[List[Ro
     segments, blocks_generated = build_segments_with_stats(
         conversations,
         spec=run.specs.windowing,
-        embedding_url=run.specs.model.embedding_source_url,
+        embedding_url=run.specs.model.embedding_source_url or settings.topic_foundry_embedding_url,
         boundary_context=boundary_context,
+        run_id=run.run_id,
     )
     return segments, blocks_generated
 
 
-def _build_clusterer(spec: ModelSpec) -> HDBSCAN:
-    params = {"min_cluster_size": spec.min_cluster_size, "metric": spec.metric}
-    params.update(spec.params)
+def _build_clusterer(spec: ModelSpec, *, metric: str, algorithm: Optional[str] = None) -> HDBSCAN:
+    params = {"min_cluster_size": spec.min_cluster_size, "metric": metric}
+    extra_params = dict(spec.params or {})
+    if "metric" in extra_params:
+        logger.warning("Ignoring metric override in model params.")
+        extra_params.pop("metric", None)
+    if algorithm:
+        extra_params.pop("algorithm", None)
+        extra_params["algorithm"] = algorithm
+    params.update(extra_params)
     params.setdefault("prediction_data", True)
     return HDBSCAN(**params)
 
@@ -327,6 +439,54 @@ def _compute_stats(labels: np.ndarray, segments: List[RowBlock]) -> Dict[str, An
         "cluster_count": cluster_count,
         "outlier_pct": outlier_pct,
     }
+
+
+def _build_topic_payloads(labels: np.ndarray, embeddings: np.ndarray, *, scope: str) -> List[Dict[str, Any]]:
+    payloads: List[Dict[str, Any]] = []
+    if embeddings.size == 0:
+        return payloads
+    unique_labels = sorted(set(int(label) for label in labels))
+    for label in unique_labels:
+        mask = labels == label
+        if not mask.any():
+            continue
+        count = int(mask.sum())
+        centroid = embeddings[mask].mean(axis=0).tolist()
+        payloads.append(
+            {
+                "topic_id": int(label),
+                "scope": scope,
+                "parent_topic_id": None,
+                "centroid": centroid,
+                "count": count,
+                "label": None,
+            }
+        )
+    return payloads
+
+
+def _map_micro_to_macro(micro_topics: List[Dict[str, Any]], macro_topics: List[Dict[str, Any]]) -> None:
+    if not macro_topics:
+        return
+    macro_centroids = {
+        int(topic["topic_id"]): np.array(topic["centroid"], dtype=np.float32)
+        for topic in macro_topics
+        if topic.get("centroid") is not None
+    }
+    if not macro_centroids:
+        return
+    macro_ids = list(macro_centroids.keys())
+    macro_matrix = np.stack([macro_centroids[tid] for tid in macro_ids], axis=0)
+    macro_norms = np.linalg.norm(macro_matrix, axis=1)
+    for topic in micro_topics:
+        centroid = topic.get("centroid")
+        if centroid is None:
+            continue
+        vec = np.array(centroid, dtype=np.float32)
+        denom = np.linalg.norm(vec) * macro_norms
+        scores = (macro_matrix @ vec) / np.where(denom == 0, 1.0, denom)
+        idx = int(np.argmax(scores))
+        topic["parent_topic_id"] = int(macro_ids[idx])
 
 
 def _write_artifacts(

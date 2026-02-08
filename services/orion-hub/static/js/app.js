@@ -294,6 +294,7 @@ loadDismissedIds();
 
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
+  const topicsTabButton = document.getElementById("topicsTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const hubTabPanel = document.getElementById("hubTabPanel");
   const topicStudioPanel = document.getElementById("topicStudioPanel");
@@ -644,7 +645,7 @@ loadDismissedIds();
   }
 
   function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
+    if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicsTabButton || !topicStudioTabButton) return;
     const isHub = tabKey === "hub";
     const isTopicStudio = tabKey === "topic-studio";
     hubTabPanel.classList.toggle("hidden", !isHub);
@@ -1755,8 +1756,6 @@ loadDismissedIds();
       error.body = payloadText;
       throw error;
     }
-    if (response.status === 204) return null;
-    return payload;
   }
 
   async function topicFoundryFetchWithHeaders(path, options = {}) {

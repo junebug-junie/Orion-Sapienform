@@ -7,8 +7,9 @@ from typing import Union
 
 from fastapi import APIRouter, HTTPException, Query, Response
 
-from app.models import SegmentFacetsResponse, SegmentListPage, SegmentListResponse, SegmentRawResponse, SegmentRecord
-from app.storage.repository import count_segments, fetch_segment, fetch_segments, segment_facets
+from app.models import SegmentFacetsResponse, SegmentFullTextResponse, SegmentListPage, SegmentListResponse, SegmentRawResponse, SegmentRecord
+from app.services.data_access import build_full_text, fetch_dataset_rows_by_ids
+from app.storage.repository import count_segments, fetch_dataset, fetch_run, fetch_segment, fetch_segments, segment_facets
 
 
 logger = logging.getLogger("topic-foundry.segments")
@@ -87,10 +88,24 @@ def get_segment_facets(
 
 
 @router.get("/segments/{segment_id}", response_model=SegmentRecord)
-def get_segment(segment_id: UUID) -> SegmentRecord:
+def get_segment(segment_id: UUID, include_full_text: bool = Query(default=False)) -> SegmentRecord:
     row = fetch_segment(segment_id)
     if not row:
         raise HTTPException(status_code=404, detail="Segment not found")
+    full_text = None
+    if include_full_text:
+        run = fetch_run(UUID(row["run_id"]))
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        dataset = fetch_dataset(UUID(run["dataset_id"]))
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        provenance = row.get("provenance") or {}
+        row_ids = provenance.get("row_ids") or []
+        if isinstance(row_ids, str):
+            row_ids = [row_ids]
+        rows = fetch_dataset_rows_by_ids(dataset=dataset, row_ids=row_ids)
+        full_text = build_full_text(rows, dataset.text_columns) if rows else (row.get("snippet") or "")
     return SegmentRecord(
         segment_id=UUID(row["segment_id"]),
         run_id=UUID(row["run_id"]),
@@ -113,6 +128,7 @@ def get_segment(segment_id: UUID) -> SegmentRecord:
         row_ids_count=row.get("row_ids_count"),
         start_at=row.get("start_at"),
         end_at=row.get("end_at"),
+        full_text=full_text,
     )
 
 
@@ -122,3 +138,29 @@ def get_segment_raw(segment_id: UUID) -> SegmentRawResponse:
     if not row:
         raise HTTPException(status_code=404, detail="Segment not found")
     return SegmentRawResponse(segment_id=segment_id, provenance=row["provenance"])
+
+
+@router.get("/segments/{segment_id}/full_text", response_model=SegmentFullTextResponse)
+def get_segment_full_text(segment_id: UUID) -> SegmentFullTextResponse:
+    row = fetch_segment(segment_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    run = fetch_run(UUID(row["run_id"]))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    dataset = fetch_dataset(UUID(run["dataset_id"]))
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    provenance = row.get("provenance") or {}
+    row_ids = provenance.get("row_ids") or []
+    if isinstance(row_ids, str):
+        row_ids = [row_ids]
+    rows = fetch_dataset_rows_by_ids(dataset=dataset, row_ids=row_ids)
+    full_text = build_full_text(rows, dataset.text_columns) if rows else (row.get("snippet") or "")
+    return SegmentFullTextResponse(
+        segment_id=segment_id,
+        run_id=UUID(row["run_id"]),
+        full_text=full_text,
+        chars=len(full_text),
+        row_ids_count=len(row_ids),
+    )

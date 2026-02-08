@@ -22,13 +22,14 @@ def list_topics_endpoint(
     run_id: UUID,
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    scope: str | None = Query(default=None),
 ):
-    rows, total = list_topics(run_id, limit=limit, offset=offset)
+    rows, total = list_topics(run_id, limit=limit, offset=offset, scope=scope)
     items = []
     for row in rows:
         count = int(row.get("count") or 0)
         outliers = int(row.get("outliers") or 0)
-        outlier_pct = float(outliers) / float(count) if count else 0.0
+        outlier_pct = float(outliers) / float(count) if count and outliers else None
         topic_id = row.get("topic_id")
         items.append(
             TopicSummaryItem(
@@ -36,6 +37,8 @@ def list_topics_endpoint(
                 count=count,
                 outlier_pct=outlier_pct,
                 label=None,
+                scope=row.get("scope"),
+                parent_topic_id=row.get("parent_topic_id"),
             )
         )
     return TopicSummaryPage(items=items, limit=limit, offset=offset, total=total)

@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS topic_foundry_datasets (
     id_column     VARCHAR NOT NULL,
     time_column   VARCHAR NOT NULL,
     text_columns  JSONB NOT NULL,
+    boundary_column VARCHAR,
+    boundary_strategy VARCHAR,
     where_sql     TEXT,
     where_params  JSONB,
     timezone      VARCHAR NOT NULL,
@@ -43,6 +45,7 @@ CREATE TABLE IF NOT EXISTS topic_foundry_runs (
     spec_hash      VARCHAR,
     status         VARCHAR NOT NULL,
     stage          VARCHAR,
+    run_scope      VARCHAR,
     stats          JSONB NOT NULL,
     artifact_paths JSONB NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -88,6 +91,54 @@ CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_start_at ON topic_fo
 CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_end_at ON topic_foundry_segments (run_id, end_at);
 CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_topic_id ON topic_foundry_segments (run_id, topic_id);
 CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_aspects ON topic_foundry_segments USING GIN (aspects);
+"""
+
+TOPICS_DDL = """
+CREATE TABLE IF NOT EXISTS topic_foundry_topics (
+    run_id UUID NOT NULL,
+    topic_id INTEGER NOT NULL,
+    scope VARCHAR NOT NULL,
+    parent_topic_id INTEGER,
+    centroid JSONB,
+    count INTEGER,
+    label TEXT,
+    title TEXT,
+    aspects JSONB,
+    sentiment JSONB,
+    meaning JSONB,
+    enrichment JSONB,
+    enriched_at TIMESTAMPTZ,
+    enrichment_version TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (run_id, topic_id, scope)
+);
+
+CREATE INDEX IF NOT EXISTS ix_topic_foundry_topics_run_id ON topic_foundry_topics (run_id);
+CREATE INDEX IF NOT EXISTS ix_topic_foundry_topics_scope ON topic_foundry_topics (scope);
+"""
+
+WINDOW_FILTERS_DDL = """
+CREATE TABLE IF NOT EXISTS topic_foundry_window_filters (
+    filter_id UUID PRIMARY KEY,
+    run_id UUID,
+    segment_id UUID,
+    policy VARCHAR NOT NULL,
+    decision JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_topic_foundry_window_filters_run_id ON topic_foundry_window_filters (run_id);
+"""
+
+CONVERSATION_ROLLUPS_DDL = """
+CREATE TABLE IF NOT EXISTS topic_foundry_conversation_rollups (
+    conversation_id UUID PRIMARY KEY,
+    run_id UUID NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_topic_foundry_conversation_rollups_run_id ON topic_foundry_conversation_rollups (run_id);
 """
 
 BOUNDARY_CACHE_DDL = """

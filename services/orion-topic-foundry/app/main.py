@@ -12,6 +12,7 @@ from app.routers.datasets import router as datasets_router
 from app.routers.drift import router as drift_router
 from app.routers.edges import router as edges_router
 from app.routers.events import router as events_router
+from app.routers.introspect import router as introspect_router
 from app.routers.models import router as models_router
 from app.routers.runs import router as runs_router
 from app.routers.segments import router as segments_router
@@ -70,3 +71,4 @@ app.include_router(models_router)
 app.include_router(runs_router)
 app.include_router(segments_router)
 app.include_router(topics_router)
+app.include_router(introspect_router)

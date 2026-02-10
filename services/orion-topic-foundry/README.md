@@ -172,3 +172,91 @@ Phase 2 adds optional semantic segmentation and segment enrichment.
 - `llm_candidate_top_k` (default 200)
 - `llm_candidate_strategy` (`semantic_low_sim` | `all_edges`)
 - `llm_candidate_threshold` (defaults to `semantic_split_threshold`)
+
+## Capabilities Contract
+
+`GET /capabilities` is implemented in `app/routers/capabilities.py` and returns runtime UI contract values (service/version/node, LLM flags, segmentation/enricher modes, metric support, defaults, and introspection summary).
+
+Example (truncated, representative):
+
+```json
+{
+  "service": "orion-topic-foundry",
+  "version": "0.1.0",
+  "node": "...",
+  "llm_enabled": false,
+  "llm_transport": "bus",
+  "llm_bus_route": "LLMGatewayService",
+  "llm_intake_channel": "orion:exec:request:LLMGatewayService",
+  "llm_reply_prefix": "orion:llm:reply",
+  "segmentation_modes_supported": ["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"],
+  "enricher_modes_supported": ["heuristic", "llm"],
+  "supported_metrics": ["cosine", "euclidean", "l1", "l2", "manhattan"],
+  "default_metric": "cosine",
+  "cosine_impl_default": "normalize_euclidean",
+  "defaults": {
+    "embedding_source_url": "http://orion-vector-host:8320/embedding",
+    "metric": "cosine",
+    "min_cluster_size": 15,
+    "llm_bus_route": "LLMGatewayService"
+  },
+  "introspection": {
+    "ok": true,
+    "schemas": ["public"]
+  },
+  "default_embedding_url": "http://orion-vector-host:8320/embedding"
+}
+```
+
+### Key env knobs backing `/capabilities`
+- `TOPIC_FOUNDRY_LLM_ENABLE` → `llm_enabled`
+- `TOPIC_FOUNDRY_LLM_USE_BUS` + `ORION_BUS_ENABLED` → `llm_transport` (`bus` vs `http`)
+- `TOPIC_FOUNDRY_LLM_BUS_ROUTE` → `llm_bus_route` and `defaults.llm_bus_route`
+- `TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL`, `TOPIC_FOUNDRY_LLM_REPLY_PREFIX` → bus fields (only emitted when transport is `bus`)
+- `TOPIC_FOUNDRY_EMBEDDING_URL` → `defaults.embedding_source_url` and `default_embedding_url`
+- `TOPIC_FOUNDRY_COSINE_IMPL` → `cosine_impl_default`
+- `TOPIC_FOUNDRY_INTROSPECT_SCHEMAS` → `introspection.ok` / `introspection.schemas`
+
+## LLM over bus
+
+LLM path is considered usable when:
+1. `TOPIC_FOUNDRY_LLM_ENABLE=true` (feature enabled), and
+2. `TOPIC_FOUNDRY_LLM_USE_BUS=true` and `ORION_BUS_ENABLED=true` (transport resolves to bus).
+
+Recommended env example:
+
+```env
+TOPIC_FOUNDRY_LLM_ENABLE=true
+TOPIC_FOUNDRY_LLM_USE_BUS=true
+ORION_BUS_ENABLED=true
+ORION_BUS_URL=redis://<tailnet-redis-host>:6379/0
+TOPIC_FOUNDRY_LLM_BUS_ROUTE=LLMGatewayService
+TOPIC_FOUNDRY_LLM_INTAKE_CHANNEL=orion:exec:request:LLMGatewayService
+TOPIC_FOUNDRY_LLM_REPLY_PREFIX=orion:llm:reply
+TOPIC_FOUNDRY_LLM_TIMEOUT_SECS=60
+TOPIC_FOUNDRY_LLM_MAX_CONCURRENCY=4
+```
+
+Reply correlation:
+- Foundry creates `correlation_id` per request.
+- It sets `reply_to = <TOPIC_FOUNDRY_LLM_REPLY_PREFIX>:<correlation_id>`.
+- RPC response is matched using that reply channel + envelope correlation metadata.
+
+## Troubleshooting
+
+### `LLM disabled` in Hub Topic Studio
+- Verify `TOPIC_FOUNDRY_LLM_ENABLE=true` in Topic Foundry runtime env.
+- Check `/capabilities` returns `"llm_enabled": true`.
+- If `llm_enabled=true` but `llm_transport` is not `bus`, check `TOPIC_FOUNDRY_LLM_USE_BUS` and `ORION_BUS_ENABLED`.
+
+### Capabilities missing keys
+- Confirm you are hitting this service’s `/capabilities` route (not stale proxy target).
+- Check service logs for startup/env load errors.
+- Validate required env vars above, especially embedding + introspection settings.
+
+### Hub proxy issues
+- Hub uses `TOPIC_FOUNDRY_BASE_URL` to proxy `/api/topic-foundry/*`.
+- If direct service works but Hub doesn’t, test:
+  - `curl "$HUB_BASE/api/topic-foundry/ready"`
+  - `curl "$HUB_BASE/api/topic-foundry/capabilities"`
+

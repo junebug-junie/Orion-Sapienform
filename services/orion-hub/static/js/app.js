@@ -689,6 +689,7 @@ loadDismissedIds();
     if (!topicStudioRoot) {
       throw new Error("Topic Studio root not found.");
     }
+    assertTopicStudioWiring();
     if (!window.__topicStudioInitDone) {
       window.__topicStudioInitDone = true;
       bindTopicStudioPanel();
@@ -699,6 +700,38 @@ loadDismissedIds();
     }
     ensureTopicStudioSentinel();
     await refreshTopicStudio();
+  }
+
+  const topicStudioWiringErrors = new Set();
+
+  function reportTopicStudioWiringError(id) {
+    if (topicStudioWiringErrors.has(id)) return;
+    topicStudioWiringErrors.add(id);
+    const message = `Topic Studio wiring error: missing #${id}`;
+    console.error(`[TopicStudio] ${message}`);
+    showToast(message);
+    if (topicStudioError) {
+      topicStudioError.classList.remove("hidden");
+      topicStudioError.textContent = message;
+    } else if (tsRunError) {
+      tsRunError.textContent = message;
+    }
+  }
+
+  function assertTopicStudioWiring() {
+    const required = [
+      ["tsCreateModel", tsCreateModel],
+      ["tsSkeletonRetry", tsSkeletonRetry],
+      ["tsLoadSegments", tsLoadSegments],
+    ];
+    required.forEach(([id, el]) => {
+      if (!el) reportTopicStudioWiringError(id);
+    });
+  }
+
+  function setSkeletonStatus(message) {
+    if (!tsSkeletonStatus) return;
+    tsSkeletonStatus.textContent = message;
   }
 
   function showPanel(panelKey) {
@@ -1753,7 +1786,8 @@ loadDismissedIds();
 
   async function tfFetchJson(path, options = {}) {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${normalizedPath}`, {
+    const requestUrl = `${TOPIC_FOUNDRY_PROXY_BASE}${normalizedPath}`;
+    const response = await hubFetch(requestUrl, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -1771,11 +1805,10 @@ loadDismissedIds();
       }
     }
     if (!response.ok) {
-      const error = {
-        status: response.status,
-        body: payloadText,
-        message: payloadText || response.statusText || `Request failed (${response.status})`,
-      };
+      const error = new Error(payloadText || response.statusText || `Request failed (${response.status})`);
+      error.status = response.status;
+      error.url = requestUrl;
+      error.body = payloadText;
       throw error;
     }
     if (response.status === 204) return {};
@@ -1787,7 +1820,8 @@ loadDismissedIds();
   }
 
   async function topicFoundryFetchWithHeaders(path, options = {}) {
-    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const requestUrl = `${TOPIC_FOUNDRY_PROXY_BASE}${path}`;
+    const response = await hubFetch(requestUrl, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -1807,6 +1841,7 @@ loadDismissedIds();
     if (!response.ok) {
       const error = new Error(payloadText || response.statusText || `Request failed (${response.status})`);
       error.status = response.status;
+      error.url = requestUrl;
       error.body = payloadText;
       throw error;
     }
@@ -2217,10 +2252,11 @@ loadDismissedIds();
       if (!resp.ok) {
         const error = new Error(`status ${resp.status}`);
         error.status = resp.status;
+        error.url = apiUrl(path);
         error.body = text;
         return { ok: false, resp, json, error };
       }
-      return { ok: true, resp, json };
+      return { ok: true, resp, json: json ?? {} };
     } catch (err) {
       return { ok: false, resp: null, json: null, error: err };
     }
@@ -5653,10 +5689,12 @@ loadDismissedIds();
     if (topicFoundryBaseLabel) {
       topicFoundryBaseLabel.textContent = TOPIC_FOUNDRY_PROXY_BASE;
     }
+    setSkeletonStatus("Loading...");
     setTopicStudioRenderStep("refresh topic studio");
-    await refreshTopicStudioCapabilities();
-    await refreshTopicStudioStatus();
     try {
+      await refreshTopicStudioCapabilities();
+      await refreshTopicStudioStatus();
+      try {
       const schemasResponse = await topicFoundryFetch("/introspect/schemas");
       topicStudioIntrospectionSchemas = schemasResponse?.schemas || [];
       const priorSchema = tsDatasetSchema?.value || "";
@@ -5675,11 +5713,11 @@ loadDismissedIds();
         updateSourceTableInput();
         await loadDatasetColumnsFromSourceTable(`${tsDatasetSchema.value}.${tsDatasetTableSelect.value}`);
       }
-    } catch (err) {
+      } catch (err) {
       topicStudioIntrospectionSchemas = [];
       setDatasetSourceEditable(true);
-    }
-    try {
+      }
+      try {
       const datasetsResponse = await topicFoundryFetch("/datasets");
       topicStudioDatasets = parseDatasets(datasetsResponse);
       topicStudioMvpState.datasets = topicStudioDatasets;
@@ -5699,7 +5737,7 @@ loadDismissedIds();
           debugLine.classList.remove("hidden");
         }
       }
-    } catch (err) {
+      } catch (err) {
       console.warn("[TopicStudio] Failed to load datasets", err);
       if (HUB_DEBUG) {
         const debugLine = document.getElementById("tsDebugLine");
@@ -5708,8 +5746,8 @@ loadDismissedIds();
           debugLine.classList.remove("hidden");
         }
       }
-    }
-    try {
+      }
+      try {
       const modelsResponse = await topicFoundryFetch("/models");
       topicStudioModels = modelsResponse?.models || [];
       renderModelOptions();
@@ -5720,10 +5758,10 @@ loadDismissedIds();
           tsDriftModelName.value = tsModelName.value;
         }
       }
-    } catch (err) {
+      } catch (err) {
       console.warn("[TopicStudio] Failed to load models", err);
-    }
-    try {
+      }
+      try {
       if (tsRunsWarning) {
         tsRunsWarning.classList.add("hidden");
         tsRunsWarning.textContent = "";
@@ -5741,7 +5779,7 @@ loadDismissedIds();
       }
       recordTopicStudioFetchStatus("runs", 200, true);
       setTopicStudioRenderStep("fetched /runs");
-    } catch (err) {
+      } catch (err) {
       console.warn("[TopicStudio] Failed to load runs", err);
       recordTopicStudioFetchStatus("runs", err.status ?? "error", false, err.body || err.message);
       setTopicStudioRenderStep("failed /runs");
@@ -5749,8 +5787,13 @@ loadDismissedIds();
         tsRunsWarning.textContent = `Failed to load runs. Enter a run id manually. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
         tsRunsWarning.classList.remove("hidden");
       }
+      }
+      setTopicStudioSubview(resolveTopicStudioSubview());
+      setSkeletonStatus("Ready");
+    } catch (err) {
+      setSkeletonStatus("Failed. Retry.");
+      throw err;
     }
-    setTopicStudioSubview(resolveTopicStudioSubview());
   }
 
   applyTopicStudioState();
@@ -5764,11 +5807,13 @@ loadDismissedIds();
   setTopicStudioSubview(resolveTopicStudioSubview());
   if (tsSkeletonRetry) {
     tsSkeletonRetry.addEventListener("click", () => {
-      renderTopicStudioSkeleton("Loading...");
+      setSkeletonStatus("Retrying...");
       refreshTopicStudio().catch((err) => {
         console.warn("[TopicStudio] Retry failed", err);
       });
     });
+  } else {
+    reportTopicStudioWiringError("tsSkeletonRetry");
   }
 
   document.addEventListener("click", (event) => {
@@ -6212,6 +6257,9 @@ loadDismissedIds();
         showToast(message);
         return;
       }
+      const originalCreateLabel = tsCreateModel.textContent;
+      tsCreateModel.disabled = true;
+      tsCreateModel.textContent = "Creating...";
       try {
         if (tsRunError) tsRunError.textContent = "--";
         const payload = {
@@ -6237,11 +6285,22 @@ loadDismissedIds();
         console.log("[TopicStudio] create model response", response);
         showToast("Model created.");
         await refreshTopicStudio();
+        if (response?.model_id && tsPromoteModelSelect) {
+          tsPromoteModelSelect.value = response.model_id;
+        }
+        if (response?.model_id && tsTrainModelSelect) {
+          tsTrainModelSelect.value = response.model_id;
+        }
       } catch (err) {
         console.error("[TopicStudio] create model failed", err);
         renderTopicStudioError(tsRunError, err, "Create model", "train", { request: "/models" });
+      } finally {
+        tsCreateModel.disabled = false;
+        tsCreateModel.textContent = originalCreateLabel;
       }
     });
+  } else {
+    reportTopicStudioWiringError("tsCreateModel");
   }
 
   if (tsUsePreviewSpec) {
@@ -7153,7 +7212,9 @@ loadDismissedIds();
   }
 
   if (tsLoadSegments) {
-    tsLoadSegments.addEventListener("click", retrySegmentsLoad);
+    tsLoadSegments.addEventListener("click", loadSegments);
+  } else {
+    reportTopicStudioWiringError("tsLoadSegments");
   }
 
   if (tsSegmentsRefresh) {

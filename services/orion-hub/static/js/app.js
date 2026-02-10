@@ -7144,8 +7144,16 @@ loadDismissedIds();
     }
   }
 
+  function retrySegmentsLoad() {
+    topicStudioSegmentsPolling = false;
+    setLoading(tsSegmentsLoading, false);
+    if (tsSegmentsError) tsSegmentsError.textContent = "--";
+    loadSegments();
+    refreshSegmentFacets();
+  }
+
   if (tsLoadSegments) {
-    tsLoadSegments.addEventListener("click", loadSegments);
+    tsLoadSegments.addEventListener("click", retrySegmentsLoad);
   }
 
   if (tsSegmentsRefresh) {

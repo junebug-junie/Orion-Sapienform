@@ -248,3 +248,44 @@ Hub is intentionally thin:
 All real cognition, memory, and embodiment live elsewhere in the mesh. Hub just gives you a clean window into Oríon’s head.
 
 The UI now includes a **Topic Rail** panel (below Vision/Collapse) that shows the top topics and most drifting sessions for a selected window. Use the window/max-topic/min-turn controls and the optional model version field to query the Hub proxy endpoints. Auto-refresh is enabled by default (60s) and can be toggled off.
+
+## Topic Studio Integration Contract
+
+Topic Studio does **not** call Topic Foundry directly from browser; it always goes through Hub proxy:
+- `GET /api/topic-foundry/ready`
+- `GET /api/topic-foundry/capabilities`
+
+Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
+
+### Expected capability keys used by active Topic Studio UI
+- `segmentation_modes_supported` (array): drives segmentation mode select options.
+- `supported_metrics` (array): drives model metric select options.
+- `default_metric` (string): preferred metric if available in supported list.
+- `defaults.embedding_source_url` (string): embedding URL default/hint.
+- `defaults.metric`, `defaults.min_cluster_size`: form prefill defaults.
+- `default_embedding_url` (string): fallback for embedding default.
+- `llm_enabled` (boolean): disables LLM segmentation options + enrich button when false.
+
+### UI behavior when keys are missing
+- Missing `segmentation_modes_supported` / `supported_metrics`: selector may appear empty.
+- Capability fetch failure: UI applies hardcoded fallback modes/metrics and marks endpoint warning.
+- Missing `llm_enabled`: treated as false (`Boolean(undefined)`), so UI shows effectively disabled LLM controls.
+- `/ready` fetch failure: status badge becomes **Unreachable**.
+- `/ready` success with degraded checks: status badge stays reachable but check-level badges can show fail.
+
+## Topic Studio Troubleshooting
+
+### `REACHABLE` but capability parse appears broken
+- `REACHABLE` is computed from successful `/ready` fetch, not `/capabilities` parse.
+- Check `Topic Foundry /capabilities` payload for arrays/keys listed above.
+- Inspect `#tsCapabilitiesWarning` and browser console for endpoint parse/fetch errors.
+
+### `LLM disabled` shown unexpectedly
+- Hub uses `/capabilities.llm_enabled` directly.
+- Verify Foundry env `TOPIC_FOUNDRY_LLM_ENABLE=true` and confirm payload returns `"llm_enabled": true`.
+- For bus mode, also ensure `TOPIC_FOUNDRY_LLM_USE_BUS=true` + `ORION_BUS_ENABLED=true` in Foundry.
+
+### Static JS cache/version notes
+- Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
+- If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
+

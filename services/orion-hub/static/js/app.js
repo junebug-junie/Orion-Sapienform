@@ -556,6 +556,12 @@ loadDismissedIds();
     }
   }
 
+  function truncate(s, n = 240) {
+    const text = s == null ? "" : String(s);
+    if (text.length <= n) return text;
+    return `${text.slice(0, Math.max(0, n - 1))}…`;
+  }
+
   const TOPIC_FOUNDRY_PROXY_BASE = apiUrl("/api/topic-foundry");
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
@@ -6223,13 +6229,16 @@ loadDismissedIds();
           windowing_spec: buildWindowingSpec(),
           metadata: {},
         };
-        await topicFoundryFetch("/models", {
+        console.log("[TopicStudio] create model payload", payload);
+        const response = await topicFoundryFetch("/models", {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        console.log("[TopicStudio] create model response", response);
         showToast("Model created.");
         await refreshTopicStudio();
       } catch (err) {
+        console.error("[TopicStudio] create model failed", err);
         renderTopicStudioError(tsRunError, err, "Create model", "train", { request: "/models" });
       }
     });
@@ -7093,14 +7102,13 @@ loadDismissedIds();
       topicStudioLastSubview = "runs";
       saveTopicStudioState();
       updateSegmentsRange();
-      setLoading(tsSegmentsLoading, false);
       refreshSegmentFacets();
     } catch (err) {
       renderTopicStudioError(tsSegmentsError, err, "Load segments", "segments", {
         request: `/segments?${qs.toString()}`,
       });
-      setLoading(tsSegmentsLoading, false);
     } finally {
+      setLoading(tsSegmentsLoading, false);
       topicStudioSegmentsPolling = false;
     }
   }
@@ -7149,7 +7157,7 @@ loadDismissedIds();
   }
 
   if (tsSegmentsRefresh) {
-    tsSegmentsRefresh.addEventListener("click", retrySegmentsLoad);
+    tsSegmentsRefresh.addEventListener("click", loadSegments);
   }
 
   const debouncedSegmentSearch = debounce(() => {

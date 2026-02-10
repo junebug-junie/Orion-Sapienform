@@ -556,6 +556,12 @@ loadDismissedIds();
     }
   }
 
+  function truncate(s, n = 240) {
+    const text = s == null ? "" : String(s);
+    if (text.length <= n) return text;
+    return `${text.slice(0, Math.max(0, n - 1))}…`;
+  }
+
   const TOPIC_FOUNDRY_PROXY_BASE = apiUrl("/api/topic-foundry");
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
@@ -683,6 +689,7 @@ loadDismissedIds();
     if (!topicStudioRoot) {
       throw new Error("Topic Studio root not found.");
     }
+    assertTopicStudioWiring();
     if (!window.__topicStudioInitDone) {
       window.__topicStudioInitDone = true;
       bindTopicStudioPanel();
@@ -693,6 +700,38 @@ loadDismissedIds();
     }
     ensureTopicStudioSentinel();
     await refreshTopicStudio();
+  }
+
+  const topicStudioWiringErrors = new Set();
+
+  function reportTopicStudioWiringError(id) {
+    if (topicStudioWiringErrors.has(id)) return;
+    topicStudioWiringErrors.add(id);
+    const message = `Topic Studio wiring error: missing #${id}`;
+    console.error(`[TopicStudio] ${message}`);
+    showToast(message);
+    if (topicStudioError) {
+      topicStudioError.classList.remove("hidden");
+      topicStudioError.textContent = message;
+    } else if (tsRunError) {
+      tsRunError.textContent = message;
+    }
+  }
+
+  function assertTopicStudioWiring() {
+    const required = [
+      ["tsCreateModel", tsCreateModel],
+      ["tsSkeletonRetry", tsSkeletonRetry],
+      ["tsLoadSegments", tsLoadSegments],
+    ];
+    required.forEach(([id, el]) => {
+      if (!el) reportTopicStudioWiringError(id);
+    });
+  }
+
+  function setSkeletonStatus(message) {
+    if (!tsSkeletonStatus) return;
+    tsSkeletonStatus.textContent = message;
   }
 
   function showPanel(panelKey) {
@@ -1733,7 +1772,7 @@ loadDismissedIds();
       text_columns: textColumns,
       boundary_column: tsDatasetBoundaryColumn?.value || null,
       boundary_strategy: tsDatasetBoundaryColumn?.value ? "column" : null,
-      where_sql: tsDatasetWhereSql?.value?.trim() || null,
+      where_sql: tsDatasetWhereSql?.value?.trim() || "",
       timezone: tsDatasetTimezone?.value?.trim() || "UTC",
     };
   }
@@ -1747,7 +1786,8 @@ loadDismissedIds();
 
   async function tfFetchJson(path, options = {}) {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${normalizedPath}`, {
+    const requestUrl = `${TOPIC_FOUNDRY_PROXY_BASE}${normalizedPath}`;
+    const response = await hubFetch(requestUrl, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -1765,11 +1805,10 @@ loadDismissedIds();
       }
     }
     if (!response.ok) {
-      const error = {
-        status: response.status,
-        body: payloadText,
-        message: payloadText || response.statusText || `Request failed (${response.status})`,
-      };
+      const error = new Error(payloadText || response.statusText || `Request failed (${response.status})`);
+      error.status = response.status;
+      error.url = requestUrl;
+      error.body = payloadText;
       throw error;
     }
     if (response.status === 204) return {};
@@ -1781,7 +1820,8 @@ loadDismissedIds();
   }
 
   async function topicFoundryFetchWithHeaders(path, options = {}) {
-    const response = await hubFetch(`${TOPIC_FOUNDRY_PROXY_BASE}${path}`, {
+    const requestUrl = `${TOPIC_FOUNDRY_PROXY_BASE}${path}`;
+    const response = await hubFetch(requestUrl, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -1801,6 +1841,7 @@ loadDismissedIds();
     if (!response.ok) {
       const error = new Error(payloadText || response.statusText || `Request failed (${response.status})`);
       error.status = response.status;
+      error.url = requestUrl;
       error.body = payloadText;
       throw error;
     }
@@ -2002,17 +2043,30 @@ loadDismissedIds();
 
   function formatHttpError(label, error) {
     const status = error?.status ? `status ${error.status}` : "status unknown";
+    let detail = extractHttpErrorDetail(error);
+    detail = truncateCrashText(detail, 300);
+    return `${label}: ${status} ${detail}`.trim();
+  }
+
+  function extractHttpErrorDetail(error) {
     let detail = error?.body || error?.message || "";
     if (typeof detail === "string") {
       try {
         const parsed = JSON.parse(detail);
-        detail = parsed?.detail || parsed?.error || detail;
+        if (parsed?.detail !== undefined) {
+          detail = typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
+        } else if (parsed?.error !== undefined) {
+          detail = typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error);
+        } else {
+          detail = JSON.stringify(parsed);
+        }
       } catch (err) {
         detail = detail;
       }
+    } else if (detail && typeof detail === "object") {
+      detail = JSON.stringify(detail);
     }
-    detail = truncateCrashText(detail, 300);
-    return `${label}: ${status} ${detail}`.trim();
+    return detail || "Request failed.";
   }
 
   function setIntrospectionWarning(message) {
@@ -2198,10 +2252,11 @@ loadDismissedIds();
       if (!resp.ok) {
         const error = new Error(`status ${resp.status}`);
         error.status = resp.status;
+        error.url = apiUrl(path);
         error.body = text;
         return { ok: false, resp, json, error };
       }
-      return { ok: true, resp, json };
+      return { ok: true, resp, json: json ?? {} };
     } catch (err) {
       return { ok: false, resp: null, json: null, error: err };
     }
@@ -2556,7 +2611,7 @@ loadDismissedIds();
       id_column: idColumn,
       time_column: timeColumn,
       text_columns: textColumns,
-      where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || null,
+      where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || "",
       timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
     };
     let result = null;
@@ -2579,8 +2634,13 @@ loadDismissedIds();
 
   async function previewDataset() {
     const datasetId = topicStudioMvpState.previewDatasetId || document.getElementById("ts-mvp-preview-dataset")?.value;
+    const savedDataset = topicStudioMvpState.datasets.find((ds) => ds.id === datasetId)?.raw || null;
     if (!datasetId) {
-      setMvpError("Select a dataset to preview.");
+      setMvpError("Select a saved dataset first.");
+      return;
+    }
+    if (!savedDataset) {
+      setMvpError("Select a saved dataset first.");
       return;
     }
     const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
@@ -2592,7 +2652,7 @@ loadDismissedIds();
       max_chars: Number(document.getElementById("ts-mvp-preview-maxchars")?.value || 6000),
     };
     const payload = {
-      dataset_id: datasetId,
+      dataset: savedDataset,
       start_at: document.getElementById("ts-mvp-preview-start")?.value || null,
       end_at: document.getElementById("ts-mvp-preview-end")?.value || null,
       limit: Number(document.getElementById("ts-mvp-preview-limit")?.value || 200),
@@ -2607,9 +2667,13 @@ loadDismissedIds();
         body: JSON.stringify(payload),
       });
     } catch (err) {
+      const statsEl = document.getElementById("ts-mvp-preview-stats");
+      const samplesEl = document.getElementById("ts-mvp-preview-samples");
       if (statsEl) statsEl.textContent = "--";
       if (samplesEl) samplesEl.textContent = "--";
-      setMvpError(formatHttpError("preview", err));
+      const message = formatHttpError("preview", err);
+      setMvpError(message);
+      showToast(message);
       return;
     }
     const statsEl = document.getElementById("ts-mvp-preview-stats");
@@ -2873,10 +2937,11 @@ loadDismissedIds();
   }
 
   function renderTopicStudioError(target, error, label, panel, request = null) {
+    const detail = formatHttpError(label.toLowerCase(), error);
     if (target) {
-      target.textContent = `${label} failed.`;
+      target.textContent = detail;
     }
-    showToast(`${label} failed.`);
+    showToast(detail);
     if (HUB_DEBUG) {
       recordTopicStudioDebug(panel, {
         request,
@@ -2884,6 +2949,7 @@ loadDismissedIds();
           status: error?.status,
           message: error?.message || "",
           body: error?.body || "",
+          detail,
         },
       });
     }
@@ -2938,10 +3004,19 @@ loadDismissedIds();
     tsDatasetSelect.innerHTML = '<option value="">New dataset…</option>';
     topicStudioDatasets.forEach((dataset) => {
       const option = document.createElement("option");
-      option.value = dataset.id;
+      option.value = dataset.raw?.dataset_id || dataset.id;
       option.textContent = `${dataset.name} (${dataset.id})`;
       tsDatasetSelect.appendChild(option);
     });
+  }
+
+  function getSelectedSavedDataset() {
+    const selectedDatasetId = tsDatasetSelect?.value || "";
+    if (!selectedDatasetId) return null;
+    const dataset = topicStudioDatasets.find(
+      (item) => (item.raw?.dataset_id || item.id) === selectedDatasetId
+    );
+    return dataset?.raw || null;
   }
 
   function renderModelOptions() {
@@ -5614,10 +5689,12 @@ loadDismissedIds();
     if (topicFoundryBaseLabel) {
       topicFoundryBaseLabel.textContent = TOPIC_FOUNDRY_PROXY_BASE;
     }
+    setSkeletonStatus("Loading...");
     setTopicStudioRenderStep("refresh topic studio");
-    await refreshTopicStudioCapabilities();
-    await refreshTopicStudioStatus();
     try {
+      await refreshTopicStudioCapabilities();
+      await refreshTopicStudioStatus();
+      try {
       const schemasResponse = await topicFoundryFetch("/introspect/schemas");
       topicStudioIntrospectionSchemas = schemasResponse?.schemas || [];
       const priorSchema = tsDatasetSchema?.value || "";
@@ -5636,13 +5713,14 @@ loadDismissedIds();
         updateSourceTableInput();
         await loadDatasetColumnsFromSourceTable(`${tsDatasetSchema.value}.${tsDatasetTableSelect.value}`);
       }
-    } catch (err) {
+      } catch (err) {
       topicStudioIntrospectionSchemas = [];
       setDatasetSourceEditable(true);
-    }
-    try {
+      }
+      try {
       const datasetsResponse = await topicFoundryFetch("/datasets");
       topicStudioDatasets = parseDatasets(datasetsResponse);
+      topicStudioMvpState.datasets = topicStudioDatasets;
       renderDatasetOptions();
       renderConversationDatasetOptions();
       if (tsDatasetSelect?.value) {
@@ -5659,7 +5737,7 @@ loadDismissedIds();
           debugLine.classList.remove("hidden");
         }
       }
-    } catch (err) {
+      } catch (err) {
       console.warn("[TopicStudio] Failed to load datasets", err);
       if (HUB_DEBUG) {
         const debugLine = document.getElementById("tsDebugLine");
@@ -5668,8 +5746,8 @@ loadDismissedIds();
           debugLine.classList.remove("hidden");
         }
       }
-    }
-    try {
+      }
+      try {
       const modelsResponse = await topicFoundryFetch("/models");
       topicStudioModels = modelsResponse?.models || [];
       renderModelOptions();
@@ -5680,10 +5758,10 @@ loadDismissedIds();
           tsDriftModelName.value = tsModelName.value;
         }
       }
-    } catch (err) {
+      } catch (err) {
       console.warn("[TopicStudio] Failed to load models", err);
-    }
-    try {
+      }
+      try {
       if (tsRunsWarning) {
         tsRunsWarning.classList.add("hidden");
         tsRunsWarning.textContent = "";
@@ -5701,7 +5779,7 @@ loadDismissedIds();
       }
       recordTopicStudioFetchStatus("runs", 200, true);
       setTopicStudioRenderStep("fetched /runs");
-    } catch (err) {
+      } catch (err) {
       console.warn("[TopicStudio] Failed to load runs", err);
       recordTopicStudioFetchStatus("runs", err.status ?? "error", false, err.body || err.message);
       setTopicStudioRenderStep("failed /runs");
@@ -5709,8 +5787,13 @@ loadDismissedIds();
         tsRunsWarning.textContent = `Failed to load runs. Enter a run id manually. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
         tsRunsWarning.classList.remove("hidden");
       }
+      }
+      setTopicStudioSubview(resolveTopicStudioSubview());
+      setSkeletonStatus("Ready");
+    } catch (err) {
+      setSkeletonStatus("Failed. Retry.");
+      throw err;
     }
-    setTopicStudioSubview(resolveTopicStudioSubview());
   }
 
   applyTopicStudioState();
@@ -5724,11 +5807,13 @@ loadDismissedIds();
   setTopicStudioSubview(resolveTopicStudioSubview());
   if (tsSkeletonRetry) {
     tsSkeletonRetry.addEventListener("click", () => {
-      renderTopicStudioSkeleton("Loading...");
+      setSkeletonStatus("Retrying...");
       refreshTopicStudio().catch((err) => {
         console.warn("[TopicStudio] Retry failed", err);
       });
     });
+  } else {
+    reportTopicStudioWiringError("tsSkeletonRetry");
   }
 
   document.addEventListener("click", (event) => {
@@ -6117,6 +6202,14 @@ loadDismissedIds();
   if (tsPreviewDataset) {
     tsPreviewDataset.addEventListener("click", async () => {
       try {
+        const savedDataset = getSelectedSavedDataset();
+        if (!savedDataset) {
+          const message = "Select a saved dataset first.";
+          if (tsPreviewError) tsPreviewError.textContent = message;
+          setWarning(tsPreviewWarning, message);
+          showToast(message);
+          return;
+        }
         if (boundaryColumnRequired() && !tsDatasetBoundaryColumn?.value) {
           setWarning(tsPreviewWarning, "Boundary column required. Select a boundary column and save the dataset before previewing.");
           return;
@@ -6124,7 +6217,7 @@ loadDismissedIds();
         setLoading(tsPreviewLoading, true);
         clearPreview();
         const payload = {
-          dataset: buildDatasetSpec(),
+          dataset: savedDataset,
           windowing: buildWindowingSpec(),
           start_at: parseDateInput(tsStartAt?.value),
           end_at: parseDateInput(tsEndAt?.value),
@@ -6134,9 +6227,11 @@ loadDismissedIds();
         const result = await executePreview(payload);
         recordTopicStudioDebug("preview", { request: "/datasets/preview", response: result });
       } catch (err) {
+        const detail = formatHttpError("preview", err);
         if (tsPreviewError) {
-          tsPreviewError.textContent = formatHttpError("preview", err);
+          tsPreviewError.textContent = detail;
         }
+        showToast(detail);
         renderTopicStudioError(tsPreviewError, err, "Preview", "preview", {
           request: "/datasets/preview",
         });
@@ -6149,13 +6244,27 @@ loadDismissedIds();
   if (tsCreateModel) {
     tsCreateModel.addEventListener("click", async () => {
       if (!tsDatasetSelect?.value) {
-        showToast("Select a dataset before creating a model.");
+        const message = "Select a dataset before creating a model.";
+        if (tsRunError) tsRunError.textContent = message;
+        showToast(message);
         return;
       }
+      const modelName = tsModelName?.value?.trim() || "";
+      const modelVersion = tsModelVersion?.value?.trim() || "";
+      if (!modelName || !modelVersion) {
+        const message = "Model name and version are required.";
+        if (tsRunError) tsRunError.textContent = message;
+        showToast(message);
+        return;
+      }
+      const originalCreateLabel = tsCreateModel.textContent;
+      tsCreateModel.disabled = true;
+      tsCreateModel.textContent = "Creating...";
       try {
+        if (tsRunError) tsRunError.textContent = "--";
         const payload = {
-          name: tsModelName?.value?.trim() || "",
-          version: tsModelVersion?.value?.trim() || "",
+          name: modelName,
+          version: modelVersion,
           stage: tsModelStage?.value || "candidate",
           dataset_id: tsDatasetSelect.value,
           model_spec: {
@@ -6168,16 +6277,30 @@ loadDismissedIds();
           windowing_spec: buildWindowingSpec(),
           metadata: {},
         };
-        await topicFoundryFetch("/models", {
+        console.log("[TopicStudio] create model payload", payload);
+        const response = await topicFoundryFetch("/models", {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        console.log("[TopicStudio] create model response", response);
         showToast("Model created.");
         await refreshTopicStudio();
+        if (response?.model_id && tsPromoteModelSelect) {
+          tsPromoteModelSelect.value = response.model_id;
+        }
+        if (response?.model_id && tsTrainModelSelect) {
+          tsTrainModelSelect.value = response.model_id;
+        }
       } catch (err) {
-        showToast("Failed to create model.");
+        console.error("[TopicStudio] create model failed", err);
+        renderTopicStudioError(tsRunError, err, "Create model", "train", { request: "/models" });
+      } finally {
+        tsCreateModel.disabled = false;
+        tsCreateModel.textContent = originalCreateLabel;
       }
     });
+  } else {
+    reportTopicStudioWiringError("tsCreateModel");
   }
 
   if (tsUsePreviewSpec) {
@@ -7038,14 +7161,13 @@ loadDismissedIds();
       topicStudioLastSubview = "runs";
       saveTopicStudioState();
       updateSegmentsRange();
-      setLoading(tsSegmentsLoading, false);
       refreshSegmentFacets();
     } catch (err) {
       renderTopicStudioError(tsSegmentsError, err, "Load segments", "segments", {
         request: `/segments?${qs.toString()}`,
       });
-      setLoading(tsSegmentsLoading, false);
     } finally {
+      setLoading(tsSegmentsLoading, false);
       topicStudioSegmentsPolling = false;
     }
   }
@@ -7083,13 +7205,12 @@ loadDismissedIds();
 
   if (tsLoadSegments) {
     tsLoadSegments.addEventListener("click", loadSegments);
+  } else {
+    reportTopicStudioWiringError("tsLoadSegments");
   }
 
   if (tsSegmentsRefresh) {
-    tsSegmentsRefresh.addEventListener("click", () => {
-      loadSegments();
-      refreshSegmentFacets();
-    });
+    tsSegmentsRefresh.addEventListener("click", loadSegments);
   }
 
   const debouncedSegmentSearch = debounce(() => {

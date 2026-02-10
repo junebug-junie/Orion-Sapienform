@@ -2895,10 +2895,11 @@ loadDismissedIds();
   }
 
   function renderTopicStudioError(target, error, label, panel, request = null) {
+    const detail = formatHttpError(label.toLowerCase(), error);
     if (target) {
-      target.textContent = `${label} failed.`;
+      target.textContent = detail;
     }
-    showToast(`${label} failed.`);
+    showToast(detail);
     if (HUB_DEBUG) {
       recordTopicStudioDebug(panel, {
         request,
@@ -2906,6 +2907,7 @@ loadDismissedIds();
           status: error?.status,
           message: error?.message || "",
           body: error?.body || "",
+          detail,
         },
       });
     }
@@ -6191,13 +6193,24 @@ loadDismissedIds();
   if (tsCreateModel) {
     tsCreateModel.addEventListener("click", async () => {
       if (!tsDatasetSelect?.value) {
-        showToast("Select a dataset before creating a model.");
+        const message = "Select a dataset before creating a model.";
+        if (tsRunError) tsRunError.textContent = message;
+        showToast(message);
+        return;
+      }
+      const modelName = tsModelName?.value?.trim() || "";
+      const modelVersion = tsModelVersion?.value?.trim() || "";
+      if (!modelName || !modelVersion) {
+        const message = "Model name and version are required.";
+        if (tsRunError) tsRunError.textContent = message;
+        showToast(message);
         return;
       }
       try {
+        if (tsRunError) tsRunError.textContent = "--";
         const payload = {
-          name: tsModelName?.value?.trim() || "",
-          version: tsModelVersion?.value?.trim() || "",
+          name: modelName,
+          version: modelVersion,
           stage: tsModelStage?.value || "candidate",
           dataset_id: tsDatasetSelect.value,
           model_spec: {
@@ -6217,7 +6230,7 @@ loadDismissedIds();
         showToast("Model created.");
         await refreshTopicStudio();
       } catch (err) {
-        showToast("Failed to create model.");
+        renderTopicStudioError(tsRunError, err, "Create model", "train", { request: "/models" });
       }
     });
   }
@@ -7123,15 +7136,20 @@ loadDismissedIds();
     }
   }
 
+  function retrySegmentsLoad() {
+    topicStudioSegmentsPolling = false;
+    setLoading(tsSegmentsLoading, false);
+    if (tsSegmentsError) tsSegmentsError.textContent = "--";
+    loadSegments();
+    refreshSegmentFacets();
+  }
+
   if (tsLoadSegments) {
-    tsLoadSegments.addEventListener("click", loadSegments);
+    tsLoadSegments.addEventListener("click", retrySegmentsLoad);
   }
 
   if (tsSegmentsRefresh) {
-    tsSegmentsRefresh.addEventListener("click", () => {
-      loadSegments();
-      refreshSegmentFacets();
-    });
+    tsSegmentsRefresh.addEventListener("click", retrySegmentsLoad);
   }
 
   const debouncedSegmentSearch = debounce(() => {

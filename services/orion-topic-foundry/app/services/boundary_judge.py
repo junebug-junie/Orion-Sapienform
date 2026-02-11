@@ -67,8 +67,9 @@ def judge_boundaries(
 
 
 def _build_prompt(blocks: List[RowBlock], boundary_index: int, spec: WindowingSpec) -> str:
-    start = max(0, boundary_index - spec.llm_boundary_context_blocks + 1)
-    end = min(len(blocks), boundary_index + spec.llm_boundary_context_blocks + 1)
+    context_blocks = 3
+    start = max(0, boundary_index - context_blocks + 1)
+    end = min(len(blocks), boundary_index + context_blocks + 1)
     selected = blocks[start:end]
 
     payload = {
@@ -83,8 +84,9 @@ def _build_prompt(blocks: List[RowBlock], boundary_index: int, spec: WindowingSp
         ],
     }
     serialized = json.dumps(payload, ensure_ascii=False)
-    if len(serialized) > spec.llm_boundary_max_chars:
-        serialized = serialized[: spec.llm_boundary_max_chars]
+    max_chars = 4000
+    if len(serialized) > max_chars:
+        serialized = serialized[:max_chars]
 
     return (
         "Decide if there is a topic boundary between the two blocks surrounding boundary_index.\n"
@@ -107,7 +109,7 @@ def _call_llm(prompt: str) -> Optional[Dict[str, Any]]:
 
 
 def _cache_key(spec: WindowingSpec, context: BoundaryContext, boundary_index: int, context_hash: str) -> str:
-    raw = f"{context.spec_hash}:{boundary_index}:{context_hash}:{settings.topic_foundry_llm_bus_route}:{spec.segmentation_mode}"
+    raw = f"{context.spec_hash}:{boundary_index}:{context_hash}:{spec.windowing_mode}"
     return _hash_text(raw)
 
 

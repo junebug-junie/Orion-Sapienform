@@ -412,99 +412,7 @@
       </div>
     </div>
 
-    <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
-      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 class="text-xl font-bold text-white">Topic Rail</h2>
-          <p class="text-xs text-gray-400">Summary + drift analytics from recent chats.</p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2 text-xs">
-          <label class="text-gray-400" for="topicWindowSelect">Window</label>
-          <select id="topicWindowSelect" class="bg-gray-800 text-gray-200 rounded-lg px-2 py-1 border border-gray-700">
-            <option value="60">60m</option>
-            <option value="360">6h</option>
-            <option value="1440" selected>24h</option>
-            <option value="10080">7d</option>
-          </select>
-
-          <label class="text-gray-400" for="topicMaxSelect">Max topics</label>
-          <select id="topicMaxSelect" class="bg-gray-800 text-gray-200 rounded-lg px-2 py-1 border border-gray-700">
-            <option value="10">10</option>
-            <option value="20" selected>20</option>
-            <option value="50">50</option>
-          </select>
-
-          <label class="text-gray-400" for="topicMinTurnsSelect">Min turns</label>
-          <select id="topicMinTurnsSelect" class="bg-gray-800 text-gray-200 rounded-lg px-2 py-1 border border-gray-700">
-            <option value="5">5</option>
-            <option value="10" selected>10</option>
-            <option value="20">20</option>
-          </select>
-
-          <input
-            id="topicModelVersion"
-            class="bg-gray-800 text-gray-200 rounded-lg px-2 py-1 border border-gray-700"
-            placeholder="model_version (optional)"
-          />
-
-          <button id="topicRefreshButton" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Refresh</button>
-          <label class="flex items-center gap-2 text-gray-400">
-            <input id="topicAutoRefresh" type="checkbox" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" checked />
-            Auto (60s)
-          </label>
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between text-xs text-gray-400">
-        <div id="topicRailStatus">Loading...</div>
-        <button id="topicRailRetry" class="hidden text-xs text-indigo-300 hover:text-indigo-200">Retry</button>
-      </div>
-
-      <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-3">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-gray-200">Top Topics</h3>
-            <span id="topicSummaryMeta" class="text-[10px] text-gray-500"></span>
-          </div>
-          <div class="overflow-x-auto">
-            <table class="w-full text-xs text-left text-gray-300">
-              <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                <tr>
-                  <th class="py-2 pr-3">Topic</th>
-                  <th class="py-2 pr-3">Keywords</th>
-                  <th class="py-2 pr-3">Docs</th>
-                  <th class="py-2 pr-3">Pct</th>
-                  <th class="py-2 pr-3">Outliers</th>
-                </tr>
-              </thead>
-              <tbody id="topicSummaryBody" class="divide-y divide-gray-800"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-3">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-gray-200">Top Drift Sessions</h3>
-            <span id="topicDriftMeta" class="text-[10px] text-gray-500"></span>
-          </div>
-          <div class="overflow-x-auto">
-            <table class="w-full text-xs text-left text-gray-300">
-              <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                <tr>
-                  <th class="py-2 pr-3">Session</th>
-                  <th class="py-2 pr-3">Turns</th>
-                  <th class="py-2 pr-3">Topics</th>
-                  <th class="py-2 pr-3">Entropy</th>
-                  <th class="py-2 pr-3">Switch</th>
-                  <th class="py-2 pr-3">Dominant</th>
-                </tr>
-              </thead>
-              <tbody id="topicDriftBody" class="divide-y divide-gray-800"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
+    
 
         </div>
       </section>
@@ -633,14 +541,6 @@
               <option value="">No boundary</option>
             </select>
           </div>
-          <div class="space-y-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Where SQL (optional)</label>
-            <input id="tsDatasetWhereSql" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="channel = :channel" />
-          </div>
-          <div class="space-y-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Timezone</label>
-            <input id="tsDatasetTimezone" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="UTC" />
-          </div>
           <div class="grid grid-cols-2 gap-2">
             <div class="space-y-2">
               <label class="block text-[10px] uppercase tracking-wide text-gray-500">Start at</label>
@@ -651,15 +551,6 @@
               <input id="tsEndAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
             </div>
           </div>
-
-          <div class="space-y-2">
-            <label class="block text-[10px] uppercase tracking-wide text-gray-500">Run preset</label>
-            <select id="tsRunPreset" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="">Custom</option>
-              <option value="conversation_view">Conversation view</option>
-              <option value="global_themes">Global themes</option>
-            </select>
-          </div>
           <div class="space-y-2">
             <div class="flex items-center gap-2 text-[10px] uppercase tracking-wide text-gray-500">
               <span>Windowing</span>
@@ -667,36 +558,27 @@
             </div>
             <div class="grid grid-cols-2 gap-2">
               <select id="tsWindowingMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="turn_pairs">turn_pairs</option>
+                <option value="turn_pairs">document</option>
                 <option value="group_by_column">group_by_column</option>
                 <option value="fixed_k_rows">fixed_k_rows</option>
                 <option value="time_gap">time_gap</option>
                 <option value="conversation_bound">conversation_bound</option>
                 <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
               </select>
-              <select id="tsSegmentationMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="time_gap">time_gap</option>
-                <option value="semantic">semantic</option>
-                <option value="hybrid">hybrid</option>
-                <option value="llm_judge">llm_judge</option>
-                <option value="hybrid_llm">hybrid_llm</option>
-              </select>
+              
             </div>
-            <div id="tsLlmNote" class="text-[10px] text-amber-300 hidden">LLM disabled</div>
-            <div id="tsGroupByRow" class="space-y-2">
-              <label class="block text-[10px] uppercase tracking-wide text-gray-500">Group by column</label>
-              <select id="tsGroupByColumn" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+            
+            
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsTimeGap" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="time_gap_minutes" />
+              
             </div>
             <div class="grid grid-cols-2 gap-2">
-              <input id="tsTimeGap" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="time_gap_seconds" />
-              <input id="tsMaxWindow" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="max_window_seconds" />
+              
+              
             </div>
             <div class="grid grid-cols-2 gap-2">
-              <input id="tsFixedKRows" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="fixed_k_rows" />
-              <input id="tsFixedKRowsStep" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="fixed_k_rows_step" />
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <input id="tsMinBlocks" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_blocks_per_segment" />
+              
               <input id="tsMaxChars" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="max_chars" />
             </div>
           </div>
@@ -754,20 +636,6 @@
           </div>
 
           <div class="pt-3 border-t border-gray-700 space-y-2">
-            <div class="text-[10px] uppercase tracking-wide text-gray-500">Promote Model</div>
-            <select id="tsPromoteModelSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
-            <div class="grid grid-cols-2 gap-2">
-              <select id="tsPromoteStage" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="candidate">candidate</option>
-                <option value="active">active</option>
-                <option value="archived">archived</option>
-              </select>
-              <input id="tsPromoteReason" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="reason (optional)" />
-            </div>
-            <button id="tsPromoteModel" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Promote</button>
-          </div>
-
-          <div class="pt-3 border-t border-gray-700 space-y-2">
             <div class="text-[10px] uppercase tracking-wide text-gray-500">Enrichment</div>
             <div class="grid grid-cols-2 gap-2">
               <select id="tsEnrichEnricher" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
@@ -795,12 +663,12 @@
           </div>
           <div class="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-gray-500">
             <button id="tsSubviewRunsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-900/60 text-gray-200">Runs & Segments</button>
-            <button id="tsSubviewConversationsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Conversations</button>
-            <button id="tsSubviewTopicsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Topics</button>
-            <button id="tsSubviewCompareBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Compare</button>
-            <button id="tsSubviewDriftBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Drift</button>
-            <button id="tsSubviewEventsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Events</button>
-            <button id="tsSubviewKgBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">KG</button>
+            
+            
+            
+            
+            
+            
           </div>
 
           <div id="tsSubviewRuns" data-split-pane="true" class="space-y-4">
@@ -846,9 +714,8 @@
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Model to train</label>
             <select id="tsTrainModelSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
           </div>
-          <div class="grid grid-cols-2 gap-2">
+          <div class="grid grid-cols-1 gap-2">
             <button id="tsTrainRun" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Train</button>
-            <button id="tsUsePreviewSpec" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Use Preview Spec</button>
           </div>
           <div class="space-y-2 pt-2 border-t border-gray-700">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Run ID</label>
@@ -971,312 +838,7 @@
           </div>
           </div>
 
-        <div id="tsSubviewConversations" class="hidden space-y-4">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Conversation Stitching</div>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="space-y-2">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Dataset</label>
-                <select id="tsConvoDatasetSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
-              </div>
-              <div class="space-y-2">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Limit</label>
-                <input id="tsConvoLimit" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="200" />
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="space-y-2">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Start at</label>
-                <input id="tsConvoStartAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
-              </div>
-              <div class="space-y-2">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">End at</label>
-                <input id="tsConvoEndAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
-              </div>
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="tsConvoLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Conversations</button>
-              <button id="tsConvoRebuildPreview" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Rebuild Preview</button>
-              <span id="tsConvoLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-              <div class="space-y-2">
-                <div class="text-[10px] uppercase tracking-wide text-gray-500">Conversations</div>
-                <div class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-64 overflow-y-auto">
-                  <table class="w-full text-xs text-left text-gray-300">
-                    <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                      <tr>
-                        <th class="py-2 pr-2">Select</th>
-                        <th class="py-2 pr-2">Window</th>
-                        <th class="py-2 pr-2">Blocks</th>
-                        <th class="py-2 pr-2">Snippet</th>
-                        <th class="py-2 pr-2">ID</th>
-                      </tr>
-                    </thead>
-                    <tbody id="tsConvoList" class="divide-y divide-gray-800"></tbody>
-                  </table>
-                </div>
-                <div class="flex items-center gap-2">
-                  <input id="tsConvoMergeReason" class="flex-1 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="merge reason (optional)" />
-                  <button id="tsConvoMerge" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 text-xs">Merge</button>
-                </div>
-                <div id="tsConvoMergeStatus" class="text-[11px] text-gray-400">--</div>
-              </div>
-              <div class="space-y-2">
-                <div class="text-[10px] uppercase tracking-wide text-gray-500">Conversation Detail</div>
-                <div id="tsConvoDetail" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-64 overflow-y-auto">Select a conversation to view blocks.</div>
-                <div class="text-[10px] uppercase tracking-wide text-gray-500">Overrides</div>
-                <div id="tsConvoOverrides" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-40 overflow-y-auto">--</div>
-              </div>
-            </div>
-            <div id="tsConvoError" class="text-[11px] text-red-300">--</div>
-            </div>
-          </div>
-
-          <div id="tsSubviewTopics" class="hidden space-y-4">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Topic Explorer</div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
-              <input id="tsTopicsRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
-              <select id="tsTopicsScope" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="">All scopes</option>
-                <option value="macro">Macro topics</option>
-                <option value="micro">Micro topics</option>
-              </select>
-              <div class="grid grid-cols-2 gap-2">
-                <input id="tsTopicsLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="200" />
-                <input id="tsTopicsOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
-              </div>
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="tsTopicsLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Topics</button>
-              <span id="tsTopicsStatus" class="text-[10px] text-gray-500">--</span>
-            </div>
-            <div id="tsTopicsError" class="text-[11px] text-red-300">--</div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left text-gray-300">
-                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                  <tr>
-                    <th class="py-2 pr-3">Topic</th>
-                    <th class="py-2 pr-3">Scope</th>
-                    <th class="py-2 pr-3">Docs</th>
-                    <th class="py-2 pr-3">Outlier %</th>
-                    <th class="py-2 pr-3">Parent</th>
-                    <th class="py-2 pr-3">Action</th>
-                  </tr>
-                </thead>
-                <tbody id="tsTopicsTableBody" class="divide-y divide-gray-800"></tbody>
-              </table>
-            </div>
-
-            <div class="space-y-2 pt-2 border-t border-gray-700">
-              <div class="flex items-center justify-between">
-                <div class="text-[10px] uppercase tracking-wide text-gray-500">Selected topic</div>
-                <div id="tsTopicSelectedId" class="text-[10px] text-gray-400">--</div>
-              </div>
-              <div>
-                <div class="text-[10px] uppercase tracking-wide text-gray-500">Keywords</div>
-                <div id="tsTopicKeywords" class="flex flex-wrap gap-2 text-[10px] text-gray-300">--</div>
-              </div>
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <div class="text-[10px] uppercase tracking-wide text-gray-500">Segments</div>
-                <div class="flex items-center gap-2">
-                  <label class="text-[10px] uppercase tracking-wide text-gray-500">Offset</label>
-                  <input id="tsTopicSegmentsOffset" type="number" min="0" class="w-20 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
-                  <select id="tsTopicSegmentsLimit" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                    <option value="25">25</option>
-                    <option value="50" selected>50</option>
-                    <option value="100">100</option>
-                  </select>
-                  <button id="tsTopicSegmentsPrev" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Prev</button>
-                  <button id="tsTopicSegmentsNext" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Next</button>
-                </div>
-              </div>
-              <div id="tsTopicSegmentsStatus" class="text-[10px] text-gray-500">--</div>
-              <div class="overflow-x-auto">
-                <table class="w-full text-xs text-left text-gray-300">
-                  <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                    <tr>
-                      <th class="py-2 pr-3">Segment</th>
-                      <th class="py-2 pr-3">Size</th>
-                      <th class="py-2 pr-3">Title</th>
-                      <th class="py-2 pr-3">Bounds</th>
-                      <th class="py-2 pr-3">Snippet</th>
-                    </tr>
-                  </thead>
-                  <tbody id="tsTopicSegmentsTableBody" class="divide-y divide-gray-800"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <div id="tsSubviewCompare" class="hidden space-y-4">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Run Compare</div>
-            <div class="grid grid-cols-2 gap-2">
-              <select id="tsCompareLeftRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="">Left run…</option>
-              </select>
-              <select id="tsCompareRightRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="">Right run…</option>
-              </select>
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="tsCompareRun" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Compare Runs</button>
-              <span id="tsCompareStatus" class="text-[10px] text-gray-500">--</span>
-            </div>
-            <div id="tsCompareError" class="text-[11px] text-red-300">--</div>
-            <div class="grid grid-cols-2 gap-2 text-xs text-gray-300">
-              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
-                <span>Docs</span>
-                <span id="tsCompareDocs" class="font-semibold">--</span>
-              </div>
-              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
-                <span>Segments</span>
-                <span id="tsCompareSegments" class="font-semibold">--</span>
-              </div>
-              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
-                <span>Clusters</span>
-                <span id="tsCompareClusters" class="font-semibold">--</span>
-              </div>
-              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
-                <span>Outlier %</span>
-                <span id="tsCompareOutliers" class="font-semibold">--</span>
-              </div>
-            </div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left text-gray-300">
-                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                  <tr>
-                    <th class="py-2 pr-3">Metric</th>
-                    <th class="py-2 pr-3">Left</th>
-                    <th class="py-2 pr-3">Right</th>
-                    <th class="py-2 pr-3">Delta</th>
-                  </tr>
-                </thead>
-                <tbody id="tsCompareTableBody" class="divide-y divide-gray-800"></tbody>
-              </table>
-            </div>
-            <div class="text-[10px] uppercase tracking-wide text-gray-500">Top aspect deltas</div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left text-gray-300">
-                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                  <tr>
-                    <th class="py-2 pr-3">Aspect</th>
-                    <th class="py-2 pr-3">Left</th>
-                    <th class="py-2 pr-3">Right</th>
-                    <th class="py-2 pr-3">Delta</th>
-                  </tr>
-                </thead>
-                <tbody id="tsCompareAspectBody" class="divide-y divide-gray-800"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="tsSubviewDrift" class="hidden space-y-4">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Drift Monitor</div>
-            <div class="grid grid-cols-2 gap-2">
-              <input id="tsDriftModelName" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="model name" />
-              <div class="grid grid-cols-2 gap-2">
-                <input id="tsDriftWindowHours" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="24" />
-                <input id="tsDriftLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="50" />
-              </div>
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="tsDriftLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Drift</button>
-              <button id="tsDriftRunNow" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Run Drift Now</button>
-              <span id="tsDriftStatus" class="text-[10px] text-gray-500">--</span>
-            </div>
-            <div id="tsDriftError" class="text-[11px] text-red-300">--</div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left text-gray-300">
-                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                  <tr>
-                    <th class="py-2 pr-3">Created</th>
-                    <th class="py-2 pr-3">JS</th>
-                    <th class="py-2 pr-3">Outlier %</th>
-                    <th class="py-2 pr-3">Δ Outlier</th>
-                    <th class="py-2 pr-3">Δ Top Topic</th>
-                    <th class="py-2 pr-3">Thresholds</th>
-                  </tr>
-                </thead>
-                <tbody id="tsDriftTableBody" class="divide-y divide-gray-800"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="tsSubviewEvents" class="hidden space-y-4">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Events</div>
-            <div class="grid grid-cols-2 gap-2">
-              <select id="tsEventsKind" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="">All kinds</option>
-                <option value="run_complete">Run complete</option>
-                <option value="enrich_complete">Enrich complete</option>
-                <option value="drift_alert">Drift alert</option>
-              </select>
-              <div class="grid grid-cols-2 gap-2">
-                <input id="tsEventsLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="50" />
-                <input id="tsEventsOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
-              </div>
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="tsEventsLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Events</button>
-              <button id="tsEventsExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Export CSV</button>
-              <span id="tsEventsStatus" class="text-[10px] text-gray-500">--</span>
-            </div>
-            <div id="tsEventsError" class="text-[11px] text-red-300">--</div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left text-gray-300">
-                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                  <tr>
-                    <th class="py-2 pr-3">Created</th>
-                    <th class="py-2 pr-3">Kind</th>
-                    <th class="py-2 pr-3">Run</th>
-                    <th class="py-2 pr-3">Model</th>
-                    <th class="py-2 pr-3">Bus</th>
-                  </tr>
-                </thead>
-                <tbody id="tsEventsTableBody" class="divide-y divide-gray-800"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="tsSubviewKg" class="hidden space-y-4">
-            <div class="text-xs uppercase tracking-wide text-gray-500">Knowledge Graph</div>
-            <div class="grid grid-cols-2 gap-2">
-              <input id="tsKgRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
-              <div class="grid grid-cols-2 gap-2">
-                <input id="tsKgLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="100" />
-                <input id="tsKgOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <input id="tsKgQuery" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="search subject/object" />
-              <input id="tsKgPredicate" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="predicate filter" />
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="tsKgLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Edges</button>
-              <button id="tsKgExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Export CSV</button>
-              <span id="tsKgStatus" class="text-[10px] text-gray-500">--</span>
-            </div>
-            <div id="tsKgError" class="text-[11px] text-red-300">--</div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left text-gray-300">
-                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                  <tr>
-                    <th class="py-2 pr-3">Subject</th>
-                    <th class="py-2 pr-3">Predicate</th>
-                    <th class="py-2 pr-3">Object</th>
-                    <th class="py-2 pr-3">Confidence</th>
-                    <th class="py-2 pr-3">Segment</th>
-                  </tr>
-                </thead>
-                <tbody id="tsKgTableBody" class="divide-y divide-gray-800"></tbody>
-              </table>
-            </div>
-          </div>
-          </div>
-        </div>
-
-        <div class="w-full lg:w-[360px] bg-gray-900/60 border border-gray-700 rounded-xl p-4 flex flex-col min-h-0 overflow-y-auto lg:sticky lg:top-20">
-          <div id="tsSegmentDetailsPanel" class="flex flex-col gap-3 min-h-0">
+        <div id="tsSegmentDetailsPanel" class="flex flex-col gap-3 min-h-0">
             <div class="flex items-center justify-between">
               <div class="text-xs uppercase tracking-wide text-gray-500">Segment Details</div>
               <button id="tsCopySegmentId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy segment id</button>
@@ -1409,6 +971,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.60" defer></script>
+  <script src="/static/js/app.js?v=1.0.61" defer></script>
 </body>
 </html>

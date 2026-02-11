@@ -94,8 +94,8 @@ def create_dataset(dataset: DatasetSpec) -> None:
                 """
                 INSERT INTO topic_foundry_datasets (
                     dataset_id, name, source_table, id_column, time_column, text_columns,
-                    boundary_column, boundary_strategy, where_sql, where_params, timezone, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    boundary_column, boundary_strategy, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(dataset.dataset_id),
@@ -106,9 +106,6 @@ def create_dataset(dataset: DatasetSpec) -> None:
                     Json(dataset.text_columns),
                     dataset.boundary_column,
                     dataset.boundary_strategy,
-                    dataset.where_sql,
-                    Json(dataset.where_params or {}),
-                    dataset.timezone,
                     dataset.created_at,
                 ),
             )
@@ -126,10 +123,7 @@ def update_dataset(dataset: DatasetSpec) -> None:
                     time_column = %s,
                     text_columns = %s,
                     boundary_column = %s,
-                    boundary_strategy = %s,
-                    where_sql = %s,
-                    where_params = %s,
-                    timezone = %s
+                    boundary_strategy = %s
                 WHERE dataset_id = %s
                 """,
                 (
@@ -140,9 +134,6 @@ def update_dataset(dataset: DatasetSpec) -> None:
                     Json(dataset.text_columns),
                     dataset.boundary_column,
                     dataset.boundary_strategy,
-                    dataset.where_sql,
-                    Json(dataset.where_params or {}),
-                    dataset.timezone,
                     str(dataset.dataset_id),
                 ),
             )
@@ -167,9 +158,6 @@ def fetch_dataset(dataset_id: UUID) -> Optional[DatasetSpec]:
         text_columns=row["text_columns"],
         boundary_column=row.get("boundary_column"),
         boundary_strategy=row.get("boundary_strategy"),
-        where_sql=row.get("where_sql"),
-        where_params=row.get("where_params") or None,
-        timezone=row["timezone"],
         created_at=row["created_at"],
     )
 
@@ -192,9 +180,6 @@ def list_datasets(*, limit: int = 200) -> List[DatasetSpec]:
             text_columns=row["text_columns"],
             boundary_column=row.get("boundary_column"),
             boundary_strategy=row.get("boundary_strategy"),
-            where_sql=row.get("where_sql"),
-            where_params=row.get("where_params") or None,
-            timezone=row["timezone"],
             created_at=row["created_at"],
         )
         for row in rows

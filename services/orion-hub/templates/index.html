@@ -171,7 +171,7 @@
             <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
             <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
               <option value="auto" selected>Auto</option>
-              <option value="hybrid">Hybrid</option>
+              <option value="blend">Blend</option>
               <option value="deep">Deep</option>
               <option value="graph">Graph</option>
             </select>
@@ -558,12 +558,9 @@
             </div>
             <div class="grid grid-cols-2 gap-2">
               <select id="tsWindowingMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="turn_pairs">document</option>
-                <option value="group_by_column">group_by_column</option>
-                <option value="fixed_k_rows">fixed_k_rows</option>
+                <option value="document">document</option>
                 <option value="time_gap">time_gap</option>
                 <option value="conversation_bound">conversation_bound</option>
-                <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
               </select>
               
             </div>
@@ -971,6 +968,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.61" defer></script>
+  <script src="/static/js/app.js?v=1.0.65" defer></script>
 </body>
 </html>

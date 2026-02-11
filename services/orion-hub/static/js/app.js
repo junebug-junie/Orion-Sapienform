@@ -163,6 +163,7 @@ const CHAT_MESSAGE_EVENT_KIND = "orion.chat.message";
 const RECIPIENT_GROUP = "juniper_primary";
 
 document.addEventListener("DOMContentLoaded", () => {
+  console.log("app init start");
   console.log("[Main] DOM Content Loaded - Initializing UI...");
 
 // --- 0. Local persistence for message dismissals ---
@@ -281,13 +282,19 @@ loadDismissedIds();
 
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
-  const topicsTabButton = document.getElementById("topicsTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const appPanels = document.getElementById("appPanels");
   const hubPanel = document.getElementById("hub");
   const topicStudioPanel = document.getElementById("topic-studio");
   const topicStudioRoot = document.getElementById("topicStudioRoot");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
+
+  console.log("[HubTabs] element presence", {
+    hubTab: !!hubTabButton,
+    studioTab: !!topicStudioTabButton,
+    hubPanel: !!hubPanel,
+    studioPanel: !!topicStudioPanel,
+  });
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
   const tsDatasetSchema = document.getElementById("tsDatasetSchema");
@@ -305,7 +312,6 @@ loadDismissedIds();
   const tsEndAt = document.getElementById("tsEndAt");
   const tsWindowingMode = document.getElementById("tsWindowingMode");
   const tsGroupByColumn = document.getElementById("tsGroupByColumn");
-  const tsSegmentationMode = document.getElementById("tsSegmentationMode");
   const tsGroupByRow = document.getElementById("tsGroupByRow");
   const tsTimeGap = document.getElementById("tsTimeGap");
   const tsMaxWindow = document.getElementById("tsMaxWindow");
@@ -1136,7 +1142,6 @@ loadDismissedIds();
       if (state.windowing) {
         if (tsWindowingMode && state.windowing.windowing_mode) tsWindowingMode.value = state.windowing.windowing_mode;
         if (tsGroupByColumn && state.windowing.group_by) tsGroupByColumn.value = state.windowing.group_by;
-        if (tsSegmentationMode && state.windowing.segmentation_mode) tsSegmentationMode.value = state.windowing.segmentation_mode;
         if (tsTimeGap && (state.windowing.time_gap_minutes || state.windowing.time_gap_seconds)) tsTimeGap.value = state.windowing.time_gap_minutes || state.windowing.time_gap_seconds;
         if (tsMaxWindow && state.windowing.max_window_seconds) tsMaxWindow.value = state.windowing.max_window_seconds;
         if (tsFixedKRows && state.windowing.fixed_k_rows) tsFixedKRows.value = state.windowing.fixed_k_rows;
@@ -1228,7 +1233,6 @@ loadDismissedIds();
       tsEndAt,
       tsWindowingMode,
       tsGroupByColumn,
-      tsSegmentationMode,
       tsTimeGap,
       tsMaxWindow,
       tsFixedKRows,
@@ -1298,21 +1302,19 @@ loadDismissedIds();
   }
 
   function buildWindowingSpec() {
-    const windowingMode = tsWindowingMode?.value || "turn_pairs";
-    const blockMode = windowingMode === "conversation_bound" ? "rows" : "turn_pairs";
+    const windowingMode = tsWindowingMode?.value || "document";
     const timeGapMinutes = Number(tsTimeGap?.value || 15);
     return {
-      block_mode: blockMode,
       windowing_mode: windowingMode,
-      include_roles: ["user", "assistant"],
       time_gap_minutes: timeGapMinutes,
-      time_gap_seconds: timeGapMinutes * 60,
       max_chars: Number(tsMaxChars?.value || 6000),
+      conversation_bound: tsDatasetBoundaryColumn?.value || "",
+      boundary_column: tsDatasetBoundaryColumn?.value || "",
     };
   }
 
   function boundaryColumnRequired() {
-    const mode = tsWindowingMode?.value || "turn_pairs";
+    const mode = tsWindowingMode?.value || "document";
     return mode.startsWith("conversation");
   }
 
@@ -1336,7 +1338,7 @@ loadDismissedIds();
 
   function updateGroupByVisibility() {
     if (!tsGroupByRow || !tsGroupByColumn) return;
-    const isGroupBy = tsWindowingMode?.value === "group_by_column";
+    const isGroupBy = false;
     tsGroupByColumn.disabled = !isGroupBy;
     tsGroupByColumn.classList.toggle("opacity-50", !isGroupBy);
   }
@@ -1663,19 +1665,14 @@ loadDismissedIds();
   function applyRunPreset(value) {
     if (!value) return;
     if (value === "conversation_view") {
-      if (tsWindowingMode) tsWindowingMode.value = "conversation_bound_then_time_gap";
-      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsWindowingMode) tsWindowingMode.value = "conversation_bound";
       if (tsMaxChars) tsMaxChars.value = "6000";
-      if (tsTimeGap) tsTimeGap.value = "900";
-      if (tsMinBlocks) tsMinBlocks.value = "1";
-      if (tsFixedKRows) tsFixedKRows.value = "2";
+      if (tsTimeGap) tsTimeGap.value = "15";
     }
     if (value === "global_themes") {
-      if (tsWindowingMode) tsWindowingMode.value = "turn_pairs";
-      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsWindowingMode) tsWindowingMode.value = "document";
       if (tsMaxChars) tsMaxChars.value = "12000";
-      if (tsTimeGap) tsTimeGap.value = "900";
-      if (tsMinBlocks) tsMinBlocks.value = "1";
+      if (tsTimeGap) tsTimeGap.value = "15";
     }
     updateGroupByVisibility();
     saveTopicStudioState();
@@ -5285,30 +5282,21 @@ loadDismissedIds();
     }
   }
 
-  function renderSegmentationModes(modes = [], llmEnabled = true) {
-    if (!tsSegmentationMode) return;
-    tsSegmentationMode.innerHTML = "";
-    modes.forEach((mode) => {
+  function renderWindowingModes(modes = []) {
+    if (!tsWindowingMode) return;
+    const allowed = ["document", "time_gap", "conversation_bound"];
+    const normalized = modes.filter((mode) => allowed.includes(mode));
+    const finalModes = normalized.length ? normalized : allowed;
+    const current = tsWindowingMode.value;
+    tsWindowingMode.innerHTML = "";
+    finalModes.forEach((mode) => {
       const option = document.createElement("option");
       option.value = mode;
       option.textContent = mode;
-      if (!llmEnabled && (mode.includes("llm"))) {
-        option.disabled = true;
-      }
-      tsSegmentationMode.appendChild(option);
+      tsWindowingMode.appendChild(option);
     });
-    if (!llmEnabled) {
-      if (tsLlmNote) tsLlmNote.classList.remove("hidden");
-    } else if (tsLlmNote) {
-      tsLlmNote.classList.add("hidden");
-    }
-    const current = tsSegmentationMode.value;
-    const selectedOption = tsSegmentationMode.querySelector(`option[value="${current}"]`);
-    if (selectedOption && selectedOption.disabled) {
-      const firstEnabled = Array.from(tsSegmentationMode.options).find((opt) => !opt.disabled);
-      if (firstEnabled) {
-        tsSegmentationMode.value = firstEnabled.value;
-      }
+    if (current && finalModes.includes(current)) {
+      tsWindowingMode.value = current;
     }
   }
 
@@ -5359,9 +5347,9 @@ loadDismissedIds();
       setTopicStudioRenderStep("fetching /capabilities");
       const result = await topicFoundryFetch("/capabilities");
       topicStudioCapabilities = result;
-      const modes = result?.segmentation_modes_supported ?? [];
+      const modes = result?.windowing_modes_supported ?? result?.segmentation_modes_supported ?? [];
       const metrics = result.supported_metrics || [];
-      renderSegmentationModes(modes, Boolean(result.llm_enabled));
+      renderWindowingModes(modes);
       renderMetricOptions(metrics, result.default_metric);
       const embeddingDefault = result?.defaults?.embedding_source_url || result?.default_embedding_url || "";
       applyCapabilityDefaults(result.defaults || {}, embeddingDefault);
@@ -5375,9 +5363,9 @@ loadDismissedIds();
       setTopicStudioRenderStep("fetched /capabilities");
       setLoading(tsStatusLoading, false);
     } catch (err) {
-      const fallbackModes = ["time_gap", "semantic", "hybrid"];
+      const fallbackModes = ["document", "time_gap", "conversation_bound"];
       const fallbackMetrics = ["euclidean", "cosine"];
-      renderSegmentationModes(fallbackModes, false);
+      renderWindowingModes(fallbackModes);
       renderMetricOptions(fallbackMetrics, "cosine");
       renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
       recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
@@ -5501,31 +5489,14 @@ loadDismissedIds();
     }
   }
 
-  applyTopicStudioState();
-  bindTopicStudioPersistence();
-  if (HUB_DEBUG && tsDebugDrawer) {
-    tsDebugDrawer.classList.remove("hidden");
-  }
-  if (tsUsePreviewSpec) {
-    tsUsePreviewSpec.disabled = true;
-  }
-  setTopicStudioSubview(resolveTopicStudioSubview());
-  if (tsSkeletonRetry) {
-    tsSkeletonRetry.addEventListener("click", () => {
-      setSkeletonStatus("Retrying...");
-      refreshTopicStudio().catch((err) => {
-        console.warn("[TopicStudio] Retry failed", err);
-      });
-    });
-  } else {
-    reportTopicStudioWiringError("tsSkeletonRetry");
-  }
-
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-hash-target]") : null;
     if (!target) return;
     const hash = target.getAttribute("data-hash-target");
     if (!hash) return;
+    if (hash === "#topic-studio") {
+      console.log("topic studio tab click");
+    }
     event.preventDefault();
     navigateToHash(hash);
   });
@@ -5534,6 +5505,30 @@ loadDismissedIds();
     window.location.hash = "#hub";
   } else {
     routeFromHash();
+  }
+
+  try {
+    applyTopicStudioState();
+    bindTopicStudioPersistence();
+    if (HUB_DEBUG && tsDebugDrawer) {
+      tsDebugDrawer.classList.remove("hidden");
+    }
+    if (tsUsePreviewSpec) {
+      tsUsePreviewSpec.disabled = true;
+    }
+    setTopicStudioSubview(resolveTopicStudioSubview());
+    if (tsSkeletonRetry) {
+      tsSkeletonRetry.addEventListener("click", () => {
+        setSkeletonStatus("Retrying...");
+        refreshTopicStudio().catch((err) => {
+          console.warn("[TopicStudio] Retry failed", err);
+        });
+      });
+    } else {
+      reportTopicStudioWiringError("tsSkeletonRetry");
+    }
+  } catch (err) {
+    console.error("[TopicStudio] initialization error", err);
   }
 
   if (tsDatasetSelect) {
@@ -5608,46 +5603,6 @@ loadDismissedIds();
     });
   }
 
-  if (tsSubviewConversationsBtn) {
-    tsSubviewConversationsBtn.addEventListener("click", () => {
-      setTopicStudioSubview("conversations");
-      loadConversations();
-    });
-  }
-
-  if (tsSubviewTopicsBtn) {
-    tsSubviewTopicsBtn.addEventListener("click", () => {
-      setTopicStudioSubview("topics");
-    });
-  }
-
-  if (tsSubviewCompareBtn) {
-    tsSubviewCompareBtn.addEventListener("click", () => {
-      setTopicStudioSubview("compare");
-    });
-  }
-
-  if (tsSubviewDriftBtn) {
-    tsSubviewDriftBtn.addEventListener("click", () => {
-      setTopicStudioSubview("drift");
-      loadDriftRecords();
-    });
-  }
-
-  if (tsSubviewEventsBtn) {
-    tsSubviewEventsBtn.addEventListener("click", () => {
-      setTopicStudioSubview("events");
-      loadEvents();
-    });
-  }
-
-  if (tsSubviewKgBtn) {
-    tsSubviewKgBtn.addEventListener("click", () => {
-      setTopicStudioSubview("kg");
-      loadKgEdges();
-    });
-  }
-
   if (tsConvoDatasetSelect) {
     tsConvoDatasetSelect.addEventListener("change", () => {
       saveTopicStudioState();
@@ -5694,3 +5649,5 @@ loadDismissedIds();
     });
   }
 
+
+});

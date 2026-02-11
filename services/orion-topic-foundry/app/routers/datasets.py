@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from fastapi import APIRouter, HTTPException
+from psycopg2 import OperationalError
 from psycopg2 import errors as pg_errors
 from uuid import UUID, uuid4
 
@@ -27,6 +28,13 @@ router = APIRouter()
 
 @router.post("/datasets", response_model=DatasetCreateResponse)
 def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateResponse:
+    logger.info(
+        "Create dataset request received",
+        extra={
+            "payload_keys": sorted(payload.model_dump(exclude_none=True).keys()),
+            "source_table": payload.source_table,
+        },
+    )
     if payload.boundary_column and not payload.boundary_strategy:
         payload.boundary_strategy = "column"
     dataset_id = uuid4()
@@ -49,6 +57,17 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
         detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
         logger.warning("Create dataset failed due to invalid source_table", exc_info=True)
         raise HTTPException(status_code=400, detail=detail) from exc
+    except (pg_errors.UndefinedTable, pg_errors.InvalidSchemaName, pg_errors.InvalidName) as exc:
+        detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
+        logger.warning("Create dataset failed due to missing/invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except OperationalError as exc:
+        detail = {"ok": False, "error": "db_unavailable", "detail": "Topic Foundry database unavailable"}
+        logger.exception("Create dataset failed due to database connectivity error")
+        raise HTTPException(status_code=503, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Create dataset failed unexpectedly")
+        raise HTTPException(status_code=500, detail="Create dataset failed") from exc
     create_dataset(dataset)
     return DatasetCreateResponse(dataset_id=dataset_id, created_at=created_at)
 
@@ -77,6 +96,17 @@ def update_dataset_endpoint(dataset_id: UUID, payload: DatasetUpdateRequest) -> 
         detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
         logger.warning("Update dataset failed due to invalid source_table", exc_info=True)
         raise HTTPException(status_code=400, detail=detail) from exc
+    except (pg_errors.UndefinedTable, pg_errors.InvalidSchemaName, pg_errors.InvalidName) as exc:
+        detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
+        logger.warning("Update dataset failed due to missing/invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except OperationalError as exc:
+        detail = {"ok": False, "error": "db_unavailable", "detail": "Topic Foundry database unavailable"}
+        logger.exception("Update dataset failed due to database connectivity error")
+        raise HTTPException(status_code=503, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Update dataset failed unexpectedly")
+        raise HTTPException(status_code=500, detail="Update dataset failed") from exc
     update_dataset(updated)
     return updated
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 from uuid import UUID, uuid4
 
@@ -78,6 +78,10 @@ def ensure_tables() -> None:
             cur.execute("ALTER TABLE topic_foundry_models ADD COLUMN IF NOT EXISTS enrichment_spec JSONB")
             cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS boundary_column VARCHAR")
             cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS boundary_strategy VARCHAR")
+            cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS timezone VARCHAR")
+            cur.execute("UPDATE topic_foundry_datasets SET timezone = 'UTC' WHERE timezone IS NULL")
+            cur.execute("ALTER TABLE topic_foundry_datasets ALTER COLUMN timezone SET DEFAULT 'UTC'")
+            cur.execute("ALTER TABLE topic_foundry_datasets ALTER COLUMN timezone SET NOT NULL")
             cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS title TEXT")
             cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS aspects JSONB")
             cur.execute("ALTER TABLE topic_foundry_topics ADD COLUMN IF NOT EXISTS sentiment JSONB")
@@ -93,9 +97,9 @@ def create_dataset(dataset: DatasetSpec) -> None:
             cur.execute(
                 """
                 INSERT INTO topic_foundry_datasets (
-                    dataset_id, name, source_table, id_column, time_column, text_columns,
+                    dataset_id, name, source_table, id_column, time_column, text_columns, timezone,
                     boundary_column, boundary_strategy, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(dataset.dataset_id),
@@ -104,6 +108,7 @@ def create_dataset(dataset: DatasetSpec) -> None:
                     dataset.id_column,
                     dataset.time_column,
                     Json(dataset.text_columns),
+                    dataset.timezone or "UTC",
                     dataset.boundary_column,
                     dataset.boundary_strategy,
                     dataset.created_at,
@@ -122,6 +127,7 @@ def update_dataset(dataset: DatasetSpec) -> None:
                     id_column = %s,
                     time_column = %s,
                     text_columns = %s,
+                    timezone = %s,
                     boundary_column = %s,
                     boundary_strategy = %s
                 WHERE dataset_id = %s
@@ -132,6 +138,7 @@ def update_dataset(dataset: DatasetSpec) -> None:
                     dataset.id_column,
                     dataset.time_column,
                     Json(dataset.text_columns),
+                    dataset.timezone or "UTC",
                     dataset.boundary_column,
                     dataset.boundary_strategy,
                     str(dataset.dataset_id),
@@ -156,6 +163,7 @@ def fetch_dataset(dataset_id: UUID) -> Optional[DatasetSpec]:
         id_column=row["id_column"],
         time_column=row["time_column"],
         text_columns=row["text_columns"],
+        timezone=row.get("timezone") or "UTC",
         boundary_column=row.get("boundary_column"),
         boundary_strategy=row.get("boundary_strategy"),
         created_at=row["created_at"],
@@ -178,6 +186,7 @@ def list_datasets(*, limit: int = 200) -> List[DatasetSpec]:
             id_column=row["id_column"],
             time_column=row["time_column"],
             text_columns=row["text_columns"],
+            timezone=row.get("timezone") or "UTC",
             boundary_column=row.get("boundary_column"),
             boundary_strategy=row.get("boundary_strategy"),
             created_at=row["created_at"],
@@ -802,7 +811,7 @@ def segment_facets(
         where_clauses.append("(s.title ILIKE %s OR s.aspects::text ILIKE %s OR s.snippet ILIKE %s)")
         like = f"%{q}%"
         params.extend([like, like, like])
-    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    where_clause_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -813,7 +822,7 @@ def segment_facets(
                 LEFT JOIN LATERAL (
                     SELECT jsonb_array_elements_text(COALESCE(s.aspects, '[]'::jsonb)) AS aspect
                 ) AS a ON TRUE
-                {where_sql}
+                {where_clause_sql}
                 GROUP BY key
                 ORDER BY count DESC
                 """,
@@ -825,7 +834,7 @@ def segment_facets(
                 f"""
                 SELECT (s.meaning->>'intent') AS key, COUNT(*) AS count
                 {base_query}
-                {where_sql} AND s.meaning ? 'intent'
+                {where_clause_sql} AND s.meaning ? 'intent'
                 GROUP BY key
                 ORDER BY count DESC
                 """,
@@ -843,7 +852,7 @@ def segment_facets(
                     END AS key,
                     COUNT(*) AS count
                 {base_query}
-                {where_sql}
+                {where_clause_sql}
                 GROUP BY key
                 ORDER BY key
                 """,
@@ -852,7 +861,7 @@ def segment_facets(
             friction = [dict(row) for row in cur.fetchall() or []]
 
             cur.execute(
-                f"SELECT COUNT(*) AS total, COUNT(enriched_at) AS enriched {base_query} {where_sql}",
+                f"SELECT COUNT(*) AS total, COUNT(enriched_at) AS enriched {base_query} {where_clause_sql}",
                 params,
             )
             totals_row = cur.fetchone() or {}
@@ -1361,5 +1370,8 @@ def list_conversation_overrides(dataset_id: UUID) -> List[Dict[str, Any]]:
             return cur.fetchall() or []
 
 
+UTC_TZINFO = datetime.fromisoformat("1970-01-01T00:00:00+00:00").tzinfo
+
+
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.utcnow().replace(tzinfo=UTC_TZINFO)

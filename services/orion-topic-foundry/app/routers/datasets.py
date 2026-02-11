@@ -40,9 +40,6 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
         text_columns=payload.text_columns,
         boundary_column=payload.boundary_column,
         boundary_strategy=payload.boundary_strategy,
-        where_sql=payload.where_sql,
-        where_params=payload.where_params,
-        timezone=payload.timezone,
         created_at=created_at,
     )
     try:

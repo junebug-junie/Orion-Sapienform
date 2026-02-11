@@ -29,7 +29,6 @@ from app.storage.repository import (
     fetch_run_by_spec_hash,
     list_runs,
     list_runs_paginated,
-    list_aspect_counts,
     utc_now,
 )
 
@@ -206,5 +205,4 @@ def list_runs_endpoint(
             )
         )
     return RunListPage(items=items, limit=limit, offset=offset, total=total)
-
 

@@ -5251,3 +5251,446 @@ loadDismissedIds();
   })();
 
 
+  async function refreshTopicStudioStatus() {
+    if (!tsStatusBadge) return;
+    try {
+      setLoading(tsStatusLoading, true);
+      setTopicStudioRenderStep("fetching /ready");
+      const result = await topicFoundryFetch("/ready");
+      const checks = result?.checks || {};
+      const pgOk = typeof checks.pg?.ok === "boolean" ? checks.pg.ok : null;
+      const embeddingOk = typeof checks.embedding?.ok === "boolean" ? checks.embedding.ok : null;
+      const modelDirOk = typeof checks.model_dir?.ok === "boolean" ? checks.model_dir.ok : null;
+      formatStatusBadge(tsStatusBadge, true, "Reachable");
+      formatStatusBadge(tsStatusPg, pgOk, pgOk === null ? "--" : pgOk ? "ok" : "fail");
+      formatStatusBadge(tsStatusEmbedding, embeddingOk, embeddingOk === null ? "--" : embeddingOk ? "ok" : "fail");
+      formatStatusBadge(tsStatusModelDir, modelDirOk, modelDirOk === null ? "--" : modelDirOk ? "ok" : "fail");
+      if (tsStatusDetail) {
+        tsStatusDetail.textContent = `PG: ${checks.pg?.detail || "--"} · Embedding: ${checks.embedding?.detail || "--"} · Model dir: ${checks.model_dir?.detail || "--"}`;
+      }
+      renderEndpointWarning(tsReadyWarning, null, null);
+      recordTopicStudioFetchStatus("ready", 200, true);
+      setTopicStudioRenderStep("fetched /ready");
+      setLoading(tsStatusLoading, false);
+    } catch (err) {
+      formatStatusBadge(tsStatusBadge, false, "Unreachable");
+      formatStatusBadge(tsStatusPg, null, "--");
+      formatStatusBadge(tsStatusEmbedding, null, "--");
+      formatStatusBadge(tsStatusModelDir, null, "--");
+      renderError(tsStatusDetail, err, "Failed to read /ready.");
+      renderEndpointWarning(tsReadyWarning, "/ready", err);
+      recordTopicStudioFetchStatus("ready", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /ready");
+      setLoading(tsStatusLoading, false);
+    }
+  }
+
+  function renderSegmentationModes(modes = [], llmEnabled = true) {
+    if (!tsSegmentationMode) return;
+    tsSegmentationMode.innerHTML = "";
+    modes.forEach((mode) => {
+      const option = document.createElement("option");
+      option.value = mode;
+      option.textContent = mode;
+      if (!llmEnabled && (mode.includes("llm"))) {
+        option.disabled = true;
+      }
+      tsSegmentationMode.appendChild(option);
+    });
+    if (!llmEnabled) {
+      if (tsLlmNote) tsLlmNote.classList.remove("hidden");
+    } else if (tsLlmNote) {
+      tsLlmNote.classList.add("hidden");
+    }
+    const current = tsSegmentationMode.value;
+    const selectedOption = tsSegmentationMode.querySelector(`option[value="${current}"]`);
+    if (selectedOption && selectedOption.disabled) {
+      const firstEnabled = Array.from(tsSegmentationMode.options).find((opt) => !opt.disabled);
+      if (firstEnabled) {
+        tsSegmentationMode.value = firstEnabled.value;
+      }
+    }
+  }
+
+  function renderMetricOptions(metrics = [], defaultMetric = "") {
+    if (!tsModelMetric) return;
+    const current = tsModelMetric.value;
+    tsModelMetric.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select metric";
+    tsModelMetric.appendChild(placeholder);
+    metrics.forEach((metric) => {
+      const option = document.createElement("option");
+      option.value = metric;
+      option.textContent = metric;
+      tsModelMetric.appendChild(option);
+    });
+    if (current && metrics.includes(current)) {
+      tsModelMetric.value = current;
+    } else if (defaultMetric && metrics.includes(defaultMetric)) {
+      tsModelMetric.value = defaultMetric;
+    }
+  }
+
+  function applyCapabilityDefaults(defaults = {}, embeddingDefault = "") {
+    if (tsModelEmbeddingUrl) {
+      const current = tsModelEmbeddingUrl.value || "";
+      const isStale = current.includes("orion-vector-host");
+      if (!current || isStale) {
+        tsModelEmbeddingUrl.value = embeddingDefault || defaults.embedding_source_url || "";
+      }
+    }
+    if (tsModelMetric && !tsModelMetric.value) {
+      tsModelMetric.value = defaults.metric || "";
+    }
+    if (tsModelMinCluster && !tsModelMinCluster.value && defaults.min_cluster_size) {
+      tsModelMinCluster.value = defaults.min_cluster_size;
+    }
+  }
+
+  async function refreshTopicStudioCapabilities() {
+    if (tsCapabilitiesWarning) {
+      tsCapabilitiesWarning.classList.add("hidden");
+      tsCapabilitiesWarning.textContent = "";
+    }
+    try {
+      setLoading(tsStatusLoading, true, "Loading capabilities...");
+      setTopicStudioRenderStep("fetching /capabilities");
+      const result = await topicFoundryFetch("/capabilities");
+      topicStudioCapabilities = result;
+      const modes = result?.segmentation_modes_supported ?? [];
+      const metrics = result.supported_metrics || [];
+      renderSegmentationModes(modes, Boolean(result.llm_enabled));
+      renderMetricOptions(metrics, result.default_metric);
+      const embeddingDefault = result?.defaults?.embedding_source_url || result?.default_embedding_url || "";
+      applyCapabilityDefaults(result.defaults || {}, embeddingDefault);
+      if (tsEnrichRun) {
+        const llmEnabled = Boolean(result.llm_enabled);
+        tsEnrichRun.disabled = !llmEnabled;
+        tsEnrichRun.title = llmEnabled ? "" : "LLM disabled";
+      }
+      renderEndpointWarning(tsCapabilitiesWarning, null, null);
+      recordTopicStudioFetchStatus("capabilities", 200, true);
+      setTopicStudioRenderStep("fetched /capabilities");
+      setLoading(tsStatusLoading, false);
+    } catch (err) {
+      const fallbackModes = ["time_gap", "semantic", "hybrid"];
+      const fallbackMetrics = ["euclidean", "cosine"];
+      renderSegmentationModes(fallbackModes, false);
+      renderMetricOptions(fallbackMetrics, "cosine");
+      renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
+      recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /capabilities");
+      if (tsEnrichRun) {
+        tsEnrichRun.disabled = true;
+        tsEnrichRun.title = "LLM disabled";
+      }
+      setLoading(tsStatusLoading, false);
+    }
+  }
+
+  async function refreshTopicStudio() {
+    if (topicFoundryBaseLabel) {
+      topicFoundryBaseLabel.textContent = TOPIC_FOUNDRY_PROXY_BASE;
+    }
+    setSkeletonStatus("Loading...");
+    setTopicStudioRenderStep("refresh topic studio");
+    try {
+      await refreshTopicStudioCapabilities();
+      await refreshTopicStudioStatus();
+      try {
+      const schemasResponse = await topicFoundryFetch("/introspect/schemas");
+      topicStudioIntrospectionSchemas = schemasResponse?.schemas || [];
+      const priorSchema = tsDatasetSchema?.value || "";
+      renderSchemaOptionsForDataset();
+      setDatasetSourceEditable(topicStudioIntrospectionSchemas.length === 0);
+      if (tsDatasetSchema && priorSchema && topicStudioIntrospectionSchemas.includes(priorSchema)) {
+        tsDatasetSchema.value = priorSchema;
+      }
+      if (tsDatasetSchema && !tsDatasetSchema.value && topicStudioIntrospectionSchemas.length > 0) {
+        tsDatasetSchema.value = topicStudioIntrospectionSchemas[0];
+      }
+      if (tsDatasetSchema?.value) {
+        await loadDatasetTables(tsDatasetSchema.value);
+      }
+      if (tsDatasetSchema?.value && tsDatasetTableSelect?.value) {
+        updateSourceTableInput();
+        await loadDatasetColumnsFromSourceTable(`${tsDatasetSchema.value}.${tsDatasetTableSelect.value}`);
+      }
+      } catch (err) {
+      topicStudioIntrospectionSchemas = [];
+      setDatasetSourceEditable(true);
+      }
+      try {
+      const datasetsResponse = await topicFoundryFetch("/datasets");
+      topicStudioDatasets = parseDatasets(datasetsResponse);
+      topicStudioMvpState.datasets = topicStudioDatasets;
+      renderDatasetOptions();
+      renderConversationDatasetOptions();
+      if (tsDatasetSelect?.value) {
+        const selected = topicStudioDatasets.find((dataset) => dataset.id === tsDatasetSelect.value);
+        if (selected?.raw) {
+          loadGroupByCandidatesFromDataset(selected.raw);
+        }
+      }
+      if (HUB_DEBUG) {
+        const debugLine = document.getElementById("tsDebugLine");
+        if (debugLine) {
+          const firstId = topicStudioDatasets[0]?.id || "--";
+          debugLine.textContent = `datasetsCount=${topicStudioDatasets.length} first=${firstId}`;
+          debugLine.classList.remove("hidden");
+        }
+      }
+      } catch (err) {
+      console.warn("[TopicStudio] Failed to load datasets", err);
+      if (HUB_DEBUG) {
+        const debugLine = document.getElementById("tsDebugLine");
+        if (debugLine) {
+          debugLine.textContent = "datasetsCount=0 first=--";
+          debugLine.classList.remove("hidden");
+        }
+      }
+      }
+      try {
+      const modelsResponse = await topicFoundryFetch("/models");
+      topicStudioModels = modelsResponse?.models || [];
+      renderModelOptions();
+      if (tsDriftModelName && !tsDriftModelName.value) {
+        if (topicStudioModels.length > 0) {
+          tsDriftModelName.value = topicStudioModels[0].name || "";
+        } else if (tsModelName?.value) {
+          tsDriftModelName.value = tsModelName.value;
+        }
+      }
+      } catch (err) {
+      console.warn("[TopicStudio] Failed to load models", err);
+      }
+      try {
+      if (tsRunsWarning) {
+        tsRunsWarning.classList.add("hidden");
+        tsRunsWarning.textContent = "";
+      }
+      const runsResponse = await topicFoundryFetch("/runs?limit=20");
+      topicStudioRuns = normalizeRunsResponse(runsResponse);
+      renderRunsSelect();
+      renderCompareRunOptions();
+      if (tsRunsSelect?.value) {
+        setSelectedRun(tsRunsSelect.value);
+        loadSegments();
+      }
+      if (tsKgRunId && !tsKgRunId.value && tsRunsSelect?.value) {
+        tsKgRunId.value = tsRunsSelect.value;
+      }
+      recordTopicStudioFetchStatus("runs", 200, true);
+      setTopicStudioRenderStep("fetched /runs");
+      } catch (err) {
+      console.warn("[TopicStudio] Failed to load runs", err);
+      recordTopicStudioFetchStatus("runs", err.status ?? "error", false, err.body || err.message);
+      setTopicStudioRenderStep("failed /runs");
+      if (tsRunsWarning) {
+        tsRunsWarning.textContent = `Failed to load runs. Enter a run id manually. ${err.status ? `status ${err.status}` : ""} ${err.body || err.message || ""}`.trim();
+        tsRunsWarning.classList.remove("hidden");
+      }
+      }
+      setTopicStudioSubview(resolveTopicStudioSubview());
+      setSkeletonStatus("Ready");
+    } catch (err) {
+      setSkeletonStatus("Failed. Retry.");
+      throw err;
+    }
+  }
+
+  applyTopicStudioState();
+  bindTopicStudioPersistence();
+  if (HUB_DEBUG && tsDebugDrawer) {
+    tsDebugDrawer.classList.remove("hidden");
+  }
+  if (tsUsePreviewSpec) {
+    tsUsePreviewSpec.disabled = true;
+  }
+  setTopicStudioSubview(resolveTopicStudioSubview());
+  if (tsSkeletonRetry) {
+    tsSkeletonRetry.addEventListener("click", () => {
+      setSkeletonStatus("Retrying...");
+      refreshTopicStudio().catch((err) => {
+        console.warn("[TopicStudio] Retry failed", err);
+      });
+    });
+  } else {
+    reportTopicStudioWiringError("tsSkeletonRetry");
+  }
+
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-hash-target]") : null;
+    if (!target) return;
+    const hash = target.getAttribute("data-hash-target");
+    if (!hash) return;
+    event.preventDefault();
+    navigateToHash(hash);
+  });
+  window.addEventListener("hashchange", routeFromHash);
+  if (!window.location.hash) {
+    window.location.hash = "#hub";
+  } else {
+    routeFromHash();
+  }
+
+  if (tsDatasetSelect) {
+    tsDatasetSelect.addEventListener("change", async () => {
+      const selected = topicStudioDatasets.find((dataset) => dataset.id === tsDatasetSelect.value);
+      if (selected?.raw) {
+        await populateDatasetForm(selected.raw);
+        loadGroupByCandidatesFromDataset(selected.raw);
+        updateBoundaryRequirement();
+      }
+    });
+  }
+
+  if (tsWindowingMode) {
+    tsWindowingMode.addEventListener("change", () => {
+      updateGroupByVisibility();
+      updateBoundaryRequirement();
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsRunPreset) {
+    tsRunPreset.addEventListener("change", () => {
+      applyRunPreset(tsRunPreset.value);
+      updateBoundaryRequirement();
+    });
+  }
+
+  if (tsDatasetSchema) {
+    tsDatasetSchema.addEventListener("change", async () => {
+      await loadDatasetTables(tsDatasetSchema.value);
+      topicStudioDatasetColumns = [];
+      renderDatasetColumnOptions();
+      updateSourceTableInput();
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsDatasetTableSelect) {
+    tsDatasetTableSelect.addEventListener("change", async () => {
+      updateSourceTableInput();
+      if (tsDatasetSchema?.value && tsDatasetTableSelect.value) {
+        await loadDatasetColumnsFromSourceTable(`${tsDatasetSchema.value}.${tsDatasetTableSelect.value}`);
+      }
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsGroupByColumn) {
+    tsGroupByColumn.addEventListener("change", saveTopicStudioState);
+  }
+
+  if (tsDatasetBoundaryColumn) {
+    tsDatasetBoundaryColumn.addEventListener("change", () => {
+      updateBoundaryRequirement();
+      saveTopicStudioState();
+    });
+  }
+
+  if (tsRunsSelect) {
+    tsRunsSelect.addEventListener("change", () => {
+      if (!tsRunsSelect.value) return;
+      setSelectedRun(tsRunsSelect.value);
+      resetSegmentsPaging();
+      loadSegments();
+    });
+  }
+
+  if (tsSubviewRunsBtn) {
+    tsSubviewRunsBtn.addEventListener("click", () => {
+      setTopicStudioSubview("runs");
+    });
+  }
+
+  if (tsSubviewConversationsBtn) {
+    tsSubviewConversationsBtn.addEventListener("click", () => {
+      setTopicStudioSubview("conversations");
+      loadConversations();
+    });
+  }
+
+  if (tsSubviewTopicsBtn) {
+    tsSubviewTopicsBtn.addEventListener("click", () => {
+      setTopicStudioSubview("topics");
+    });
+  }
+
+  if (tsSubviewCompareBtn) {
+    tsSubviewCompareBtn.addEventListener("click", () => {
+      setTopicStudioSubview("compare");
+    });
+  }
+
+  if (tsSubviewDriftBtn) {
+    tsSubviewDriftBtn.addEventListener("click", () => {
+      setTopicStudioSubview("drift");
+      loadDriftRecords();
+    });
+  }
+
+  if (tsSubviewEventsBtn) {
+    tsSubviewEventsBtn.addEventListener("click", () => {
+      setTopicStudioSubview("events");
+      loadEvents();
+    });
+  }
+
+  if (tsSubviewKgBtn) {
+    tsSubviewKgBtn.addEventListener("click", () => {
+      setTopicStudioSubview("kg");
+      loadKgEdges();
+    });
+  }
+
+  if (tsConvoDatasetSelect) {
+    tsConvoDatasetSelect.addEventListener("change", () => {
+      saveTopicStudioState();
+      loadConversations();
+    });
+  }
+
+  if (tsConvoLoad) {
+    tsConvoLoad.addEventListener("click", () => {
+      loadConversations();
+    });
+  }
+
+  if (tsTopicsLoad) {
+    tsTopicsLoad.addEventListener("click", () => {
+      loadTopicExplorer();
+    });
+  }
+
+  if (tsTopicSegmentsLimit) {
+    tsTopicSegmentsLimit.addEventListener("change", () => {
+      saveTopicStudioState();
+      updateTopicSegmentsOffset(0);
+    });
+  }
+
+  if (tsTopicSegmentsOffset) {
+    tsTopicSegmentsOffset.addEventListener("change", () => {
+      updateTopicSegmentsOffset(Number(tsTopicSegmentsOffset.value || 0));
+    });
+  }
+
+  if (tsTopicSegmentsPrev) {
+    tsTopicSegmentsPrev.addEventListener("click", () => {
+      const limit = Number(tsTopicSegmentsLimit?.value || 50);
+      updateTopicSegmentsOffset(Math.max(0, topicStudioTopicSegmentsOffset - limit));
+    });
+  }
+
+  if (tsTopicSegmentsNext) {
+    tsTopicSegmentsNext.addEventListener("click", () => {
+      const limit = Number(tsTopicSegmentsLimit?.value || 50);
+      updateTopicSegmentsOffset(topicStudioTopicSegmentsOffset + limit);
+    });
+  }
+

@@ -1274,6 +1274,18 @@ loadDismissedIds();
     }
   }
 
+  function parseJson(value, fallback = null, label = "JSON") {
+    if (!value || !value.trim()) return fallback;
+    try {
+      return JSON.parse(value);
+    } catch (err) {
+      const message = `Invalid ${label}. Please enter valid JSON.`;
+      const parseError = new Error(message);
+      parseError.cause = err;
+      throw parseError;
+    }
+  }
+
   function parseDateInput(value) {
     if (!value) return null;
     const parsed = new Date(value);
@@ -3480,6 +3492,14 @@ loadDismissedIds();
       showToast("Select a dataset before creating a model.");
       return;
     }
+    let modelParams = {};
+    try {
+      modelParams = parseJson(tsModelParams?.value, {}, "model params JSON");
+    } catch (err) {
+      renderError(tsRunError, err, "Failed to create model.");
+      showToast(err?.message || "Invalid model params JSON.");
+      return;
+    }
     const payload = {
       name: tsModelName?.value?.trim() || "",
       version: tsModelVersion?.value?.trim() || "",
@@ -3490,7 +3510,7 @@ loadDismissedIds();
         embedding_source_url: tsModelEmbeddingUrl?.value?.trim() || null,
         min_cluster_size: Number(tsModelMinCluster?.value || 15),
         metric: tsModelMetric?.value || "cosine",
-        params: parseJson(tsModelParams?.value, {}),
+        params: modelParams,
       },
       windowing_spec: buildWindowingSpec(),
       metadata: {},

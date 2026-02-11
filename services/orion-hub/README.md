@@ -136,23 +136,6 @@ ORION_BUS_URL=redis://localhost:6379/0
 CORTEX_GATEWAY_REQUEST_CHANNEL=orion-cortex-gateway:request
 TTS_REQUEST_CHANNEL=orion:tts:intake
 
-# Landing Pad (Topic Rail)
-LANDING_PAD_URL=http://orion-landing-pad:8370
-LANDING_PAD_TIMEOUT_SEC=5
-
-# Topic Studio (Topic Foundry proxy)
-TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
-
-# Optional overrides (serve-mode edge cases)
-HUB_API_BASE_OVERRIDE=
-HUB_WS_BASE_OVERRIDE=
-```
-
-Tailscale Serve / TLS works out of the box: Hub derives API and WS bases from the current origin (same-origin `/api/...` and `ws://`/`wss://`). For edge cases (reverse proxies or nonstandard routing), set `HUB_API_BASE_OVERRIDE` and/or `HUB_WS_BASE_OVERRIDE` to override the base URLs; otherwise leave them blank. 
-
-Topic Rail endpoints are proxied through Landing Pad. Ensure `POSTGRES_URI` is set on the Landing Pad service so it can read the `chat_topic_summary` and `chat_topic_session_drift` tables.
-
-Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
 
 ### Manual UI checklist
 - Navigate between **Hub** and **Topic Studio** tabs; ensure no overlays block pointer events on Hub.
@@ -194,11 +177,6 @@ Expected lines include:
 {"channel":"orion:chat:history:turn","kind":"chat.history", ...}
 ```
 
-### 5. Topic Rail Summary + Drift
-```bash
-curl "http://localhost:8080/api/topics/summary?window_minutes=1440&max_topics=20"
-curl "http://localhost:8080/api/topics/drift?window_minutes=1440&min_turns=10&max_sessions=50"
-```
 
 ### 6. Topic Foundry smokes (via Hub proxy)
 Hub proxies Topic Foundry under `/api/topic-foundry`, so smoke scripts can target the Hub host.
@@ -247,7 +225,6 @@ Hub is intentionally thin:
 
 All real cognition, memory, and embodiment live elsewhere in the mesh. Hub just gives you a clean window into Oríon’s head.
 
-The UI now includes a **Topic Rail** panel (below Vision/Collapse) that shows the top topics and most drifting sessions for a selected window. Use the window/max-topic/min-turn controls and the optional model version field to query the Hub proxy endpoints. Auto-refresh is enabled by default (60s) and can be toggled off.
 
 ## Topic Studio Integration Contract
 
@@ -289,3 +266,19 @@ Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
 - Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
 - If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
 
+
+## Topic Studio: BERTopic Capabilities + Model Swap
+
+Topic Studio reads `/api/topic-foundry/capabilities` and dynamically enables/disables topic-mode options.
+
+- Class-based Topic Modeling
+- Long-document Topic Modeling
+- Hierarchical Topic Modeling
+- Dynamic Topic Modeling
+- Guided Topic Modeling
+- Zero-shot Topic Modeling
+
+Model Registry now includes a **Topic Modeling** block for engine/backend/reducer/clusterer/representation/topic-mode selection. Training sends `topic_mode` and `topic_mode_params` per run so one model can be reused with different BERTopic modes.
+
+### LLM representation
+If `representation=llm` is selected, Topic Foundry requires LLM integration enabled (`TOPIC_FOUNDRY_LLM_ENABLE=true`) and routed through your configured LLM bus settings.

@@ -16,48 +16,14 @@ class DatasetSpec(BaseModel):
     text_columns: List[str]
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
-    where_sql: Optional[str] = None
-    where_params: Optional[Dict[str, Any]] = None
-    timezone: str = "UTC"
     created_at: datetime
 
 
 class WindowingSpec(BaseModel):
-    block_mode: Literal["turn_pairs", "triads", "rows", "group_by_column"] = "turn_pairs"
-    windowing_mode: Literal[
-        "turn_pairs",
-        "fixed_k_rows",
-        "time_gap",
-        "conversation_bound",
-        "conversation_bound_then_time_gap",
-    ] = "turn_pairs"
-    fixed_k_rows: int = 2
-    fixed_k_rows_step: Optional[int] = None
+    windowing_mode: Literal["document", "time_gap", "conversation_bound"] = "document"
     boundary_column: Optional[str] = None
-    group_by: Optional[str] = None
-    include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
-    segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"
-    semantic_split_threshold: float = 0.75
-    confirm_edges_k: int = 2
-    smoothing_window: int = 3
-    llm_boundary_context_blocks: int = 3
-    llm_boundary_max_chars: int = 4000
-    llm_candidate_top_k: int = 200
-    llm_candidate_strategy: Literal["semantic_low_sim", "all_edges"] = "semantic_low_sim"
-    llm_candidate_threshold: Optional[float] = None
-    time_gap_seconds: int = 900
-    max_window_seconds: int = 7200
-    min_blocks_per_segment: int = 1
+    time_gap_minutes: int = 15
     max_chars: int = 6000
-    llm_filter_enabled: bool = False
-    llm_filter_prompt_template: str = (
-        "You are filtering candidate topic windows. Respond with JSON: "
-        '{"keep": true|false, "reason": "...", "score": 0-1}. '
-        "Window text:\n{window_text}"
-    )
-    llm_filter_max_windows: int = 200
-    llm_filter_min_score: float = 0.0
-    llm_filter_policy: Literal["keep", "reject", "score"] = "keep"
 
 
 class ModelSpec(BaseModel):
@@ -66,6 +32,7 @@ class ModelSpec(BaseModel):
     min_cluster_size: int = 15
     metric: str = "cosine"
     params: Dict[str, Any] = Field(default_factory=dict)
+    model_meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class EnrichmentSpec(BaseModel):
@@ -132,9 +99,6 @@ class DatasetCreateRequest(BaseModel):
     text_columns: List[str]
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
-    where_sql: Optional[str] = None
-    where_params: Optional[Dict[str, Any]] = None
-    timezone: str = "UTC"
 
 
 class DatasetUpdateRequest(BaseModel):
@@ -145,9 +109,6 @@ class DatasetUpdateRequest(BaseModel):
     text_columns: Optional[List[str]] = None
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
-    where_sql: Optional[str] = None
-    where_params: Optional[Dict[str, Any]] = None
-    timezone: Optional[str] = None
 
 
 class DatasetCreateResponse(BaseModel):
@@ -251,6 +212,10 @@ class RunSummary(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    doc_count: Optional[int] = None
+    segment_count: Optional[int] = None
+    cluster_count: Optional[int] = None
+    outlier_rate: Optional[float] = None
 
 
 class RunListResponse(BaseModel):
@@ -264,6 +229,8 @@ class RunTrainRequest(BaseModel):
     end_at: Optional[datetime] = None
     run_scope: Optional[Literal["micro", "macro"]] = None
     windowing_spec: Optional[WindowingSpec] = None
+    topic_mode: Optional[Literal["standard", "guided", "zeroshot", "class_based", "long_document", "hierarchical", "dynamic"]] = "standard"
+    topic_mode_params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RunEnrichRequest(BaseModel):
@@ -378,6 +345,8 @@ class CapabilitiesResponse(BaseModel):
     defaults: Dict[str, Any]
     introspection: Optional[Dict[str, Any]] = None
     default_embedding_url: Optional[str] = None
+    capabilities: Optional[Dict[str, Any]] = None
+    backends: Optional[Dict[str, List[str]]] = None
 
 
 class DriftRunRequest(BaseModel):

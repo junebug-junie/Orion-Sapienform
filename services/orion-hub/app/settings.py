@@ -39,7 +39,6 @@ class Settings(BaseSettings):
         alias="ORION_BUS_URL",
     )
 
-    # --- Landing Pad Integration (Topic Rail) ---
     LANDING_PAD_URL: str = Field(
         default="http://orion-landing-pad:8370",
         alias="LANDING_PAD_URL",

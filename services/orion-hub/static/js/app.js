@@ -161,7 +161,6 @@ let notificationToastSeconds = 8;
 const ATTENTION_EVENT_KIND = "orion.chat.attention";
 const CHAT_MESSAGE_EVENT_KIND = "orion.chat.message";
 const RECIPIENT_GROUP = "juniper_primary";
-let topicAutoRefreshTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
@@ -276,20 +275,6 @@ loadDismissedIds();
   const bioHomeostasisTrend = document.getElementById("bioHomeostasisTrend");
   const bioStabilityValue = document.getElementById("bioStabilityValue");
   const bioStabilityTrend = document.getElementById("bioStabilityTrend");
-
-  // Topic Rail
-  const topicWindowSelect = document.getElementById("topicWindowSelect");
-  const topicMaxSelect = document.getElementById("topicMaxSelect");
-  const topicMinTurnsSelect = document.getElementById("topicMinTurnsSelect");
-  const topicModelVersion = document.getElementById("topicModelVersion");
-  const topicRefreshButton = document.getElementById("topicRefreshButton");
-  const topicAutoRefresh = document.getElementById("topicAutoRefresh");
-  const topicRailStatus = document.getElementById("topicRailStatus");
-  const topicRailRetry = document.getElementById("topicRailRetry");
-  const topicSummaryBody = document.getElementById("topicSummaryBody");
-  const topicDriftBody = document.getElementById("topicDriftBody");
-  const topicSummaryMeta = document.getElementById("topicSummaryMeta");
-  const topicDriftMeta = document.getElementById("topicDriftMeta");
   const toastMessage = document.getElementById("toastMessage");
 
   // Topic Studio
@@ -310,23 +295,21 @@ loadDismissedIds();
   const tsDatasetTimeColumn = document.getElementById("tsDatasetTimeColumn");
   const tsDatasetTextColumns = document.getElementById("tsDatasetTextColumns");
   const tsDatasetBoundaryColumn = document.getElementById("tsDatasetBoundaryColumn");
-  const tsDatasetWhereSql = document.getElementById("tsDatasetWhereSql");
-  const tsDatasetTimezone = document.getElementById("tsDatasetTimezone");
   const tsSaveDataset = document.getElementById("tsSaveDataset");
   const tsDatasetSaveStatus = document.getElementById("tsDatasetSaveStatus");
   const tsStartAt = document.getElementById("tsStartAt");
   const tsEndAt = document.getElementById("tsEndAt");
   const tsWindowingMode = document.getElementById("tsWindowingMode");
   const tsGroupByRow = document.getElementById("tsGroupByRow");
-  const tsGroupByColumn = document.getElementById("tsGroupByColumn");
-  const tsSegmentationMode = document.getElementById("tsSegmentationMode");
-  const tsTimeGap = document.getElementById("tsTimeGap");
-  const tsMaxWindow = document.getElementById("tsMaxWindow");
-  const tsFixedKRows = document.getElementById("tsFixedKRows");
-  const tsFixedKRowsStep = document.getElementById("tsFixedKRowsStep");
-  const tsMinBlocks = document.getElementById("tsMinBlocks");
-  const tsMaxChars = document.getElementById("tsMaxChars");
-  const tsRunPreset = document.getElementById("tsRunPreset");
+      const tsTimeGapMinutes = document.getElementById("tsTimeGapMinutes");
+          const tsMaxChars = document.getElementById("tsMaxChars");
+  const tsGroupByColumn = null;
+  const tsSegmentationMode = null;
+  const tsMaxWindow = null;
+  const tsFixedKRows = null;
+  const tsFixedKRowsStep = null;
+  const tsMinBlocks = null;
+  const tsTimeGap = tsTimeGapMinutes;
   const tsCreateDataset = document.getElementById("tsCreateDataset");
   const tsPreviewDataset = document.getElementById("tsPreviewDataset");
   const tsPreviewDocs = document.getElementById("tsPreviewDocs");
@@ -340,15 +323,35 @@ loadDismissedIds();
   const tsModelName = document.getElementById("tsModelName");
   const tsModelVersion = document.getElementById("tsModelVersion");
   const tsModelStage = document.getElementById("tsModelStage");
+  const tsModelEngine = document.getElementById("tsModelEngine");
+  const tsModelEmbeddingBackend = document.getElementById("tsModelEmbeddingBackend");
+  const tsModelEmbeddingModel = document.getElementById("tsModelEmbeddingModel");
+  const tsModelReducer = document.getElementById("tsModelReducer");
+  const tsModelClusterer = document.getElementById("tsModelClusterer");
+  const tsModelUmapNeighbors = document.getElementById("tsModelUmapNeighbors");
+  const tsModelUmapComponents = document.getElementById("tsModelUmapComponents");
+  const tsModelHdbscanMinClusterSize = document.getElementById("tsModelHdbscanMinClusterSize");
+  const tsModelHdbscanMinSamples = document.getElementById("tsModelHdbscanMinSamples");
+  const tsModelRepresentation = document.getElementById("tsModelRepresentation");
+  const tsTopicMode = document.getElementById("tsTopicMode");
+  const tsModeGuidedSeeds = document.getElementById("tsModeGuidedSeeds");
+  const tsModeZeroshotTopics = document.getElementById("tsModeZeroshotTopics");
+  const tsModeDynamicBins = document.getElementById("tsModeDynamicBins");
+  const tsModeChunkSize = document.getElementById("tsModeChunkSize");
+  const tsModeChunkOverlap = document.getElementById("tsModeChunkOverlap");
+  const tsModeClassLabels = document.getElementById("tsModeClassLabels");
+  const tsModeClassColumn = document.getElementById("tsModeClassColumn");
+  const tsCapClassBased = document.getElementById("tsCapClassBased");
+  const tsCapLongDocument = document.getElementById("tsCapLongDocument");
+  const tsCapHierarchical = document.getElementById("tsCapHierarchical");
+  const tsCapDynamic = document.getElementById("tsCapDynamic");
+  const tsCapGuided = document.getElementById("tsCapGuided");
+  const tsCapZeroshot = document.getElementById("tsCapZeroshot");
   const tsModelEmbeddingUrl = document.getElementById("tsModelEmbeddingUrl");
   const tsModelMinCluster = document.getElementById("tsModelMinCluster");
   const tsModelMetric = document.getElementById("tsModelMetric");
   const tsModelParams = document.getElementById("tsModelParams");
   const tsCreateModel = document.getElementById("tsCreateModel");
-  const tsPromoteModelSelect = document.getElementById("tsPromoteModelSelect");
-  const tsPromoteStage = document.getElementById("tsPromoteStage");
-  const tsPromoteReason = document.getElementById("tsPromoteReason");
-  const tsPromoteModel = document.getElementById("tsPromoteModel");
   const tsEnrichEnricher = document.getElementById("tsEnrichEnricher");
   const tsEnrichForce = document.getElementById("tsEnrichForce");
   const tsEnrichRun = document.getElementById("tsEnrichRun");
@@ -495,7 +498,6 @@ loadDismissedIds();
   const tsRunLoading = document.getElementById("tsRunLoading");
   const tsEnrichLoading = document.getElementById("tsEnrichLoading");
   const tsPreviewWarning = document.getElementById("tsPreviewWarning");
-  const tsUsePreviewSpec = document.getElementById("tsUsePreviewSpec");
   const tsRunWarning = document.getElementById("tsRunWarning");
   const tsEnrichWarning = document.getElementById("tsEnrichWarning");
   const tsCopyRunId = document.getElementById("tsCopyRunId");
@@ -830,7 +832,6 @@ loadDismissedIds();
                 <input id="ts-mvp-dataset-time" placeholder="time_column" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
                 <input id="ts-mvp-dataset-text" placeholder="text_columns (comma)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               </div>
-              <input id="ts-mvp-dataset-where" placeholder="where_sql (optional)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-dataset-tz" value="UTC" placeholder="timezone" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <button id="ts-mvp-create-dataset" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create dataset</button>
             </div>
@@ -1083,20 +1084,17 @@ loadDismissedIds();
         time_column: tsDatasetTimeColumn?.value || "",
         text_columns: tsDatasetTextColumns ? getSelectedValues(tsDatasetTextColumns) : tsDatasetTextColumns?.value || "",
         boundary_column: tsDatasetBoundaryColumn?.value || "",
-        where_sql: tsDatasetWhereSql?.value || "",
-        timezone: tsDatasetTimezone?.value || "",
       },
       windowing: {
         windowing_mode: tsWindowingMode?.value || "",
         group_by: tsGroupByColumn?.value || "",
         segmentation_mode: tsSegmentationMode?.value || "",
-        time_gap_seconds: tsTimeGap?.value || "",
+        time_gap_seconds: tsTimeGapMinutes?.value || "",
         max_window_seconds: tsMaxWindow?.value || "",
         fixed_k_rows: tsFixedKRows?.value || "",
         fixed_k_rows_step: tsFixedKRowsStep?.value || "",
         min_blocks_per_segment: tsMinBlocks?.value || "",
         max_chars: tsMaxChars?.value || "",
-        preset: tsRunPreset?.value || "",
       },
       model: {
         name: tsModelName?.value || "",
@@ -1179,8 +1177,6 @@ loadDismissedIds();
           setSelectedValues(tsDatasetTextColumns, values);
         }
         if (tsDatasetBoundaryColumn && state.dataset.boundary_column) tsDatasetBoundaryColumn.value = state.dataset.boundary_column;
-        if (tsDatasetWhereSql && state.dataset.where_sql) tsDatasetWhereSql.value = state.dataset.where_sql;
-        if (tsDatasetTimezone && state.dataset.timezone) tsDatasetTimezone.value = state.dataset.timezone;
         updateSourceTableInput();
       }
       if (state.windowing) {
@@ -1193,7 +1189,6 @@ loadDismissedIds();
         if (tsFixedKRowsStep && state.windowing.fixed_k_rows_step) tsFixedKRowsStep.value = state.windowing.fixed_k_rows_step;
         if (tsMinBlocks && state.windowing.min_blocks_per_segment) tsMinBlocks.value = state.windowing.min_blocks_per_segment;
         if (tsMaxChars && state.windowing.max_chars) tsMaxChars.value = state.windowing.max_chars;
-        if (tsRunPreset && state.windowing.preset) tsRunPreset.value = state.windowing.preset;
       }
       if (state.model) {
         if (tsModelName && state.model.name) tsModelName.value = state.model.name;
@@ -1272,8 +1267,6 @@ loadDismissedIds();
       tsDatasetTimeColumn,
       tsDatasetTextColumns,
       tsDatasetBoundaryColumn,
-      tsDatasetWhereSql,
-      tsDatasetTimezone,
       tsStartAt,
       tsEndAt,
       tsWindowingMode,
@@ -1285,7 +1278,6 @@ loadDismissedIds();
       tsFixedKRowsStep,
       tsMinBlocks,
       tsMaxChars,
-      tsRunPreset,
       tsModelName,
       tsModelVersion,
       tsModelStage,
@@ -1352,16 +1344,9 @@ loadDismissedIds();
     const groupBy = tsGroupByColumn?.value || "";
     const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
     return {
-      block_mode: blockMode,
-      windowing_mode: windowingMode,
-      fixed_k_rows: Number(tsFixedKRows?.value || 2),
-      fixed_k_rows_step: Number(tsFixedKRowsStep?.value || 0) || null,
+      windowing_mode: (tsWindowingMode?.value || "document"),
       boundary_column: tsDatasetBoundaryColumn?.value || null,
-      group_by: windowingMode === "group_by_column" ? groupBy : null,
-      segmentation_mode: tsSegmentationMode?.value || "time_gap",
-      time_gap_seconds: Number(tsTimeGap?.value || 900),
-      max_window_seconds: Number(tsMaxWindow?.value || 7200),
-      min_blocks_per_segment: Number(tsMinBlocks?.value || 1),
+      time_gap_minutes: Number(tsTimeGapMinutes?.value || 15),
       max_chars: Number(tsMaxChars?.value || 6000),
     };
   }
@@ -1714,27 +1699,7 @@ loadDismissedIds();
       tsSegmentFullTextStatus.textContent = `Full text loaded (${topicStudioSegmentFullText.length} chars).`;
     }
   }
-
-  function applyRunPreset(value) {
-    if (!value) return;
-    if (value === "conversation_view") {
-      if (tsWindowingMode) tsWindowingMode.value = "conversation_bound_then_time_gap";
-      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
-      if (tsMaxChars) tsMaxChars.value = "6000";
-      if (tsTimeGap) tsTimeGap.value = "900";
-      if (tsMinBlocks) tsMinBlocks.value = "1";
-      if (tsFixedKRows) tsFixedKRows.value = "2";
-    }
-    if (value === "global_themes") {
-      if (tsWindowingMode) tsWindowingMode.value = "turn_pairs";
-      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
-      if (tsMaxChars) tsMaxChars.value = "12000";
-      if (tsTimeGap) tsTimeGap.value = "900";
-      if (tsMinBlocks) tsMinBlocks.value = "1";
-    }
-    updateGroupByVisibility();
-    saveTopicStudioState();
-  }
+  function applyRunPreset() {}
 
   function getSelectedValues(selectEl) {
     if (!selectEl) return [];
@@ -1772,8 +1737,6 @@ loadDismissedIds();
       text_columns: textColumns,
       boundary_column: tsDatasetBoundaryColumn?.value || null,
       boundary_strategy: tsDatasetBoundaryColumn?.value ? "column" : null,
-      where_sql: tsDatasetWhereSql?.value?.trim() || "",
-      timezone: tsDatasetTimezone?.value?.trim() || "UTC",
     };
   }
 
@@ -2611,7 +2574,6 @@ loadDismissedIds();
       id_column: idColumn,
       time_column: timeColumn,
       text_columns: textColumns,
-      where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || "",
       timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
     };
     let result = null;
@@ -3020,15 +2982,6 @@ loadDismissedIds();
   }
 
   function renderModelOptions() {
-    if (tsPromoteModelSelect) {
-      tsPromoteModelSelect.innerHTML = "";
-      topicStudioModels.forEach((model) => {
-        const option = document.createElement("option");
-        option.value = model.model_id;
-        option.textContent = `${model.name}:${model.version} (${model.stage || "stage?"})`;
-        tsPromoteModelSelect.appendChild(option);
-      });
-    }
     if (tsTrainModelSelect) {
       tsTrainModelSelect.innerHTML = "";
       topicStudioModels.forEach((model) => {
@@ -3526,8 +3479,6 @@ loadDismissedIds();
     if (tsDatasetTimeColumn) tsDatasetTimeColumn.value = dataset.time_column || "";
     if (tsDatasetTextColumns) setSelectedValues(tsDatasetTextColumns, dataset.text_columns || []);
     if (tsDatasetBoundaryColumn) tsDatasetBoundaryColumn.value = dataset.boundary_column || "";
-    if (tsDatasetWhereSql) tsDatasetWhereSql.value = dataset.where_sql || "";
-    if (tsDatasetTimezone) tsDatasetTimezone.value = dataset.timezone || "UTC";
     setDatasetSaveStatus("--");
   }
 
@@ -3542,7 +3493,6 @@ loadDismissedIds();
     if (tsPreviewError) tsPreviewError.textContent = "--";
     setWarning(tsPreviewWarning, null);
     topicStudioLastPreview = null;
-    if (tsUsePreviewSpec) tsUsePreviewSpec.disabled = true;
   }
 
   function renderPreviewSamples(samples) {
@@ -3572,9 +3522,7 @@ loadDismissedIds();
       body: JSON.stringify(payload),
     });
     topicStudioLastPreview = payload;
-    if (tsUsePreviewSpec) {
-      tsUsePreviewSpec.disabled = false;
-    }
+    
     if (tsPreviewDocs) tsPreviewDocs.textContent = result.docs_generated ?? "--";
     if (tsPreviewSegments) tsPreviewSegments.textContent = result.segments_generated ?? "--";
     if (tsPreviewAvgChars) tsPreviewAvgChars.textContent = result.avg_chars ?? "--";
@@ -4599,195 +4547,6 @@ loadDismissedIds();
     if (bioStabilityTrend) bioStabilityTrend.textContent = trendArrow(stabilityTrend);
   }
 
-  function setTopicRailStatus(text, isError = false) {
-    if (!topicRailStatus) return;
-    topicRailStatus.textContent = text;
-    if (isError) {
-      topicRailStatus.classList.add("text-red-300");
-    } else {
-      topicRailStatus.classList.remove("text-red-300");
-    }
-  }
-
-  function clearTopicRailTables() {
-    if (topicSummaryBody) topicSummaryBody.innerHTML = "";
-    if (topicDriftBody) topicDriftBody.innerHTML = "";
-  }
-
-  function parseKeywords(value) {
-    if (!value) return [];
-    if (Array.isArray(value)) return value;
-    if (typeof value === "string") {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [value];
-      } catch (err) {
-        return [value];
-      }
-    }
-    return [];
-  }
-
-  function renderTopicSummary(topics) {
-    if (!topicSummaryBody) return;
-    topicSummaryBody.innerHTML = "";
-    if (!topics || topics.length === 0) {
-      const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="5" class="py-3 text-center text-gray-500">No topics found.</td>`;
-      topicSummaryBody.appendChild(row);
-      return;
-    }
-
-    topics.forEach((topic) => {
-      const row = document.createElement("tr");
-      const keywords = parseKeywords(topic.topic_keywords);
-      const outlierPct = topic.outlier_pct;
-      const outlierCount = topic.outlier_count;
-      const outlierValue =
-        outlierPct !== null && outlierPct !== undefined
-          ? formatPercent(outlierPct, 1)
-          : outlierCount !== null && outlierCount !== undefined
-            ? `${outlierCount}`
-            : "--";
-
-      const label = topic.topic_label || "Untitled";
-      const topicId = topic.topic_id !== null && topic.topic_id !== undefined ? String(topic.topic_id) : "--";
-      const keywordChips = keywords.length
-        ? keywords
-            .slice(0, 5)
-            .map(
-              (word) =>
-                `<span class="inline-flex items-center rounded-full bg-gray-700/70 px-2 py-0.5 text-[10px] text-gray-200">${word}</span>`,
-            )
-            .join(" ")
-        : `<span class="text-gray-500">--</span>`;
-
-      row.innerHTML = `
-        <td class="py-2 pr-3 align-top">
-          <div class="text-sm text-gray-100">${label}</div>
-          <div class="text-[10px] text-gray-500">#${topicId}</div>
-        </td>
-        <td class="py-2 pr-3 align-top">${keywordChips}</td>
-        <td class="py-2 pr-3 align-top">${topic.doc_count ?? "--"}</td>
-        <td class="py-2 pr-3 align-top">${formatPercent(topic.pct_of_window, 1)}</td>
-        <td class="py-2 pr-3 align-top">${outlierValue}</td>
-      `;
-      topicSummaryBody.appendChild(row);
-    });
-  }
-
-  function renderTopicDrift(sessions, topicLabelMap) {
-    if (!topicDriftBody) return;
-    topicDriftBody.innerHTML = "";
-    if (!sessions || sessions.length === 0) {
-      const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="6" class="py-3 text-center text-gray-500">No drifting sessions found.</td>`;
-      topicDriftBody.appendChild(row);
-      return;
-    }
-
-    sessions.forEach((session) => {
-      const row = document.createElement("tr");
-      const sessionId = session.session_id || "--";
-      const shortId = sessionId.length > 10 ? `${sessionId.slice(0, 10)}…` : sessionId;
-      const switchRate = Number(session.switch_rate);
-      const entropy = Number(session.entropy);
-      const switchClass = switchRate >= 0.35 ? "text-yellow-300 font-semibold" : "";
-      const entropyClass = entropy >= 1.5 ? "text-red-300 font-semibold" : "";
-      const dominantId = session.dominant_topic_id;
-      const dominantLabel = dominantId !== null && dominantId !== undefined ? topicLabelMap.get(dominantId) : null;
-      const dominantDisplay = dominantLabel ? `${dominantLabel} (#${dominantId})` : dominantId ?? "--";
-
-      row.innerHTML = `
-        <td class="py-2 pr-3 align-top" title="${sessionId}">${shortId}</td>
-        <td class="py-2 pr-3 align-top">${session.turns ?? "--"}</td>
-        <td class="py-2 pr-3 align-top">${session.unique_topics ?? "--"}</td>
-        <td class="py-2 pr-3 align-top ${entropyClass}">${formatNumber(entropy)}</td>
-        <td class="py-2 pr-3 align-top ${switchClass}">${formatPercent(switchRate, 1)}</td>
-        <td class="py-2 pr-3 align-top">
-          <div>${dominantDisplay ?? "--"}</div>
-          <div class="text-[10px] text-gray-500">${formatPercent(session.dominant_pct, 1)}</div>
-        </td>
-      `;
-      topicDriftBody.appendChild(row);
-    });
-  }
-
-  async function fetchTopicRailData() {
-    if (!topicWindowSelect || !topicMaxSelect || !topicMinTurnsSelect) return;
-    setTopicRailStatus("Loading...");
-    if (topicRailRetry) topicRailRetry.classList.add("hidden");
-
-    const windowMinutes = topicWindowSelect.value;
-    const maxTopics = topicMaxSelect.value;
-    const minTurns = topicMinTurnsSelect.value;
-    const modelVersion = topicModelVersion?.value?.trim();
-
-    const summaryParams = new URLSearchParams({
-      window_minutes: windowMinutes,
-      max_topics: maxTopics,
-    });
-    if (modelVersion) summaryParams.set("model_version", modelVersion);
-
-    const driftParams = new URLSearchParams({
-      window_minutes: windowMinutes,
-      min_turns: minTurns,
-    });
-    if (modelVersion) driftParams.set("model_version", modelVersion);
-
-    try {
-      const [summaryResp, driftResp] = await Promise.all([
-        hubFetch(apiUrl(`/api/topics/summary?${summaryParams.toString()}`)),
-        hubFetch(apiUrl(`/api/topics/drift?${driftParams.toString()}`)),
-      ]);
-
-      if (!summaryResp.ok || !driftResp.ok) {
-        throw new Error("Topic Rail request failed.");
-      }
-
-      const summaryPayload = await summaryResp.json();
-      const driftPayload = await driftResp.json();
-
-      const topics = summaryPayload.topics || [];
-      const sessions = driftPayload.sessions || [];
-      const summaryModel = summaryPayload.model_version || "latest";
-      const driftModel = driftPayload.model_version || "latest";
-      if (topicSummaryMeta) {
-        topicSummaryMeta.textContent = `model: ${summaryModel}`;
-      }
-      if (topicDriftMeta) {
-        topicDriftMeta.textContent = `model: ${driftModel}`;
-      }
-
-      const topicLabelMap = new Map();
-      topics.forEach((topic) => {
-        if (topic.topic_id !== null && topic.topic_id !== undefined) {
-          topicLabelMap.set(topic.topic_id, topic.topic_label || `Topic ${topic.topic_id}`);
-        }
-      });
-
-      renderTopicSummary(topics);
-      renderTopicDrift(sessions, topicLabelMap);
-      setTopicRailStatus(`Updated ${new Date().toLocaleTimeString()}.`);
-    } catch (err) {
-      console.error("[TopicRail]", err);
-      clearTopicRailTables();
-      setTopicRailStatus("Failed to load Topic Rail data.", true);
-      if (topicRailRetry) topicRailRetry.classList.remove("hidden");
-      showToast("Topic Rail failed to load. Check Landing Pad connectivity.");
-    }
-  }
-
-  function startTopicAutoRefresh() {
-    if (topicAutoRefreshTimer) {
-      clearInterval(topicAutoRefreshTimer);
-      topicAutoRefreshTimer = null;
-    }
-    if (topicAutoRefresh?.checked) {
-      topicAutoRefreshTimer = setInterval(fetchTopicRailData, 60000);
-    }
-  }
-
   // --- 3. Event Listeners ---
 
   if (recordButton) {
@@ -5500,52 +5259,6 @@ loadDismissedIds();
       updateVisionUi();
   })();
 
-  if (topicRefreshButton) {
-    topicRefreshButton.addEventListener("click", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicRailRetry) {
-    topicRailRetry.addEventListener("click", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicAutoRefresh) {
-    topicAutoRefresh.addEventListener("change", () => {
-      startTopicAutoRefresh();
-    });
-  }
-  if (topicWindowSelect) {
-    topicWindowSelect.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicMaxSelect) {
-    topicMaxSelect.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicMinTurnsSelect) {
-    topicMinTurnsSelect.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicModelVersion) {
-    topicModelVersion.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-    topicModelVersion.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        fetchTopicRailData();
-      }
-    });
-  }
-
-  if (topicWindowSelect && topicMaxSelect && topicMinTurnsSelect) {
-    fetchTopicRailData();
-    startTopicAutoRefresh();
-  }
-
   async function refreshTopicStudioStatus() {
     if (!tsStatusBadge) return;
     try {
@@ -5656,6 +5369,13 @@ loadDismissedIds();
       topicStudioCapabilities = result;
       const modes = result?.segmentation_modes_supported ?? [];
       const metrics = result.supported_metrics || [];
+      const tm = result?.capabilities?.topic_modeling || {};
+      if (tsCapClassBased) tsCapClassBased.textContent = tm.class_based ? "enabled" : "disabled";
+      if (tsCapLongDocument) tsCapLongDocument.textContent = tm.long_document ? "enabled" : "disabled";
+      if (tsCapHierarchical) tsCapHierarchical.textContent = tm.hierarchical ? "enabled" : "disabled";
+      if (tsCapDynamic) tsCapDynamic.textContent = tm.dynamic ? "enabled" : "disabled";
+      if (tsCapGuided) tsCapGuided.textContent = tm.guided ? "enabled" : "disabled";
+      if (tsCapZeroshot) tsCapZeroshot.textContent = tm.zeroshot ? "enabled" : "disabled";
       renderSegmentationModes(modes, Boolean(result.llm_enabled));
       renderMetricOptions(metrics, result.default_metric);
       const embeddingDefault = result?.defaults?.embedding_source_url || result?.default_embedding_url || "";
@@ -5801,9 +5521,7 @@ loadDismissedIds();
   if (HUB_DEBUG && tsDebugDrawer) {
     tsDebugDrawer.classList.remove("hidden");
   }
-  if (tsUsePreviewSpec) {
-    tsUsePreviewSpec.disabled = true;
-  }
+  
   setTopicStudioSubview(resolveTopicStudioSubview());
   if (tsSkeletonRetry) {
     tsSkeletonRetry.addEventListener("click", () => {
@@ -5850,13 +5568,6 @@ loadDismissedIds();
     });
   }
 
-  if (tsRunPreset) {
-    tsRunPreset.addEventListener("change", () => {
-      applyRunPreset(tsRunPreset.value);
-      updateBoundaryRequirement();
-    });
-  }
-
   if (tsDatasetSchema) {
     tsDatasetSchema.addEventListener("change", async () => {
       await loadDatasetTables(tsDatasetSchema.value);
@@ -5875,10 +5586,6 @@ loadDismissedIds();
       }
       saveTopicStudioState();
     });
-  }
-
-  if (tsGroupByColumn) {
-    tsGroupByColumn.addEventListener("change", saveTopicStudioState);
   }
 
   if (tsDatasetBoundaryColumn) {
@@ -6241,6 +5948,28 @@ loadDismissedIds();
     });
   }
 
+
+  function parseLines(value) {
+    return String(value || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  }
+
+  function parseGuidedSeeds(value) {
+    return parseLines(value).map((line) => line.split(",").map((item) => item.trim()).filter(Boolean)).filter((items) => items.length > 0);
+  }
+
+  function buildTopicModeParams() {
+    const mode = tsTopicMode?.value || "standard";
+    if (mode === "guided") return { seed_topic_list: parseGuidedSeeds(tsModeGuidedSeeds?.value) };
+    if (mode === "zeroshot") return { zeroshot_topic_list: parseLines(tsModeZeroshotTopics?.value) };
+    if (mode === "dynamic") return { nr_bins: Number(tsModeDynamicBins?.value || 20) };
+    if (mode === "long_document") return { chunk_size: Number(tsModeChunkSize?.value || 600), overlap: Number(tsModeChunkOverlap?.value || 60) };
+    if (mode === "class_based") {
+      const labels = parseLines(tsModeClassLabels?.value);
+      return { classes: labels, class_column: tsModeClassColumn?.value?.trim() || null };
+    }
+    return {};
+  }
+
   if (tsCreateModel) {
     tsCreateModel.addEventListener("click", async () => {
       if (!tsDatasetSelect?.value) {
@@ -6273,6 +6002,25 @@ loadDismissedIds();
             min_cluster_size: Number(tsModelMinCluster?.value || 15),
             metric: tsModelMetric?.value?.trim() || "cosine",
             params: parseJsonInput(tsModelParams?.value || "", {}),
+            model_meta: {
+              engine: tsModelEngine?.value || "bertopic",
+              embedding_backend: tsModelEmbeddingBackend?.value || "vector_host",
+              embedding_model: tsModelEmbeddingModel?.value?.trim() || null,
+              reducer: tsModelReducer?.value || "umap",
+              reducer_config: {
+                n_neighbors: Number(tsModelUmapNeighbors?.value || 30),
+                n_components: Number(tsModelUmapComponents?.value || 10),
+                min_dist: 0.0,
+              },
+              clusterer: tsModelClusterer?.value || "hdbscan",
+              clusterer_config: {
+                min_cluster_size: Number(tsModelHdbscanMinClusterSize?.value || 15),
+                min_samples: Number(tsModelHdbscanMinSamples?.value || 5),
+              },
+              representation: tsModelRepresentation?.value || "ctfidf",
+              topic_mode: tsTopicMode?.value || "standard",
+              topic_mode_params: buildTopicModeParams(),
+            },
           },
           windowing_spec: buildWindowingSpec(),
           metadata: {},
@@ -6285,9 +6033,6 @@ loadDismissedIds();
         console.log("[TopicStudio] create model response", response);
         showToast("Model created.");
         await refreshTopicStudio();
-        if (response?.model_id && tsPromoteModelSelect) {
-          tsPromoteModelSelect.value = response.model_id;
-        }
         if (response?.model_id && tsTrainModelSelect) {
           tsTrainModelSelect.value = response.model_id;
         }
@@ -6303,76 +6048,9 @@ loadDismissedIds();
     reportTopicStudioWiringError("tsCreateModel");
   }
 
-  if (tsUsePreviewSpec) {
-    tsUsePreviewSpec.addEventListener("click", async () => {
-      if (!topicStudioLastPreview) {
-        showToast("Run a preview before using the preview spec.");
-        return;
-      }
-      if (!tsModelName?.value?.trim() || !tsModelVersion?.value?.trim()) {
-        showToast("Enter a model name and version before creating a model.");
-        return;
-      }
-      try {
-        const datasetResponse = await topicFoundryFetch("/datasets", {
-          method: "POST",
-          body: JSON.stringify(topicStudioLastPreview.dataset),
-        });
-        const datasetId = datasetResponse?.dataset_id;
-        if (!datasetId) {
-          showToast("Dataset creation failed.");
-          return;
-        }
-        const modelPayload = {
-          name: tsModelName?.value?.trim() || "",
-          version: tsModelVersion?.value?.trim() || "",
-          stage: tsModelStage?.value || "candidate",
-          dataset_id: datasetId,
-          model_spec: {
-            algorithm: "hdbscan",
-            embedding_source_url: tsModelEmbeddingUrl?.value?.trim() || "",
-            min_cluster_size: Number(tsModelMinCluster?.value || 15),
-            metric: tsModelMetric?.value?.trim() || "cosine",
-            params: parseJsonInput(tsModelParams?.value || "", {}),
-          },
-          windowing_spec: topicStudioLastPreview.windowing,
-          metadata: {},
-        };
-        await topicFoundryFetch("/models", {
-          method: "POST",
-          body: JSON.stringify(modelPayload),
-        });
-        showToast("Preview spec applied. Dataset + model created.");
-        await refreshTopicStudio();
-        if (tsDatasetSelect) tsDatasetSelect.value = datasetId;
-      } catch (err) {
-        renderError(tsPreviewError, err, "Failed to apply preview spec.");
-        showToast("Failed to use preview spec.");
-      }
-    });
-  }
+  
 
-  if (tsPromoteModel) {
-    tsPromoteModel.addEventListener("click", async () => {
-      if (!tsPromoteModelSelect?.value) {
-        showToast("Select a model to promote.");
-        return;
-      }
-      try {
-        await topicFoundryFetch(`/models/${tsPromoteModelSelect.value}/promote`, {
-          method: "POST",
-          body: JSON.stringify({
-            stage: tsPromoteStage?.value || "candidate",
-            reason: tsPromoteReason?.value?.trim() || null,
-          }),
-        });
-        showToast("Model stage updated.");
-        await refreshTopicStudio();
-      } catch (err) {
-        showToast("Failed to promote model.");
-      }
-    });
-  }
+  
 
   if (tsTrainRun) {
     tsTrainRun.addEventListener("click", async () => {
@@ -6394,6 +6072,8 @@ loadDismissedIds();
           start_at: parseDateInput(tsStartAt?.value),
           end_at: parseDateInput(tsEndAt?.value),
           windowing_spec: buildWindowingSpec(),
+          topic_mode: tsTopicMode?.value || "standard",
+          topic_mode_params: buildTopicModeParams(),
         };
         recordTopicStudioDebug("train", { request: "/runs/train", payload: requestPayload });
         const result = await topicFoundryFetch("/runs/train", {

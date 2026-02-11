@@ -23,6 +23,64 @@ class Settings(BaseSettings):
         "http://orion-vector-host:8320/embedding",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_URL"),
     )
+    topic_foundry_topic_engine: str = Field("bertopic", validation_alias=AliasChoices("TOPIC_FOUNDRY_TOPIC_ENGINE"))
+    topic_foundry_embedding_backend: str = Field(
+        "vector_host", validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_BACKEND")
+    )
+    topic_foundry_embedding_model: str = Field(
+        "BAAI/bge-small-en-v1.5", validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_MODEL")
+    )
+    topic_foundry_vector_host_url: str = Field(
+        "http://orion-vector-host:8320/embedding",
+        validation_alias=AliasChoices("TOPIC_FOUNDRY_VECTOR_HOST_URL"),
+    )
+    topic_foundry_embedding_batch_size: int = Field(
+        64, validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_BATCH_SIZE")
+    )
+    topic_foundry_embedding_max_retries: int = Field(
+        3, validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_MAX_RETRIES")
+    )
+    topic_foundry_embedding_retry_delay_secs: float = Field(
+        0.5, validation_alias=AliasChoices("TOPIC_FOUNDRY_EMBEDDING_RETRY_DELAY_SECS")
+    )
+    topic_foundry_reducer: str = Field("umap", validation_alias=AliasChoices("TOPIC_FOUNDRY_REDUCER"))
+    topic_foundry_clusterer: str = Field("hdbscan", validation_alias=AliasChoices("TOPIC_FOUNDRY_CLUSTERER"))
+    topic_foundry_representation: str = Field(
+        "ctfidf", validation_alias=AliasChoices("TOPIC_FOUNDRY_REPRESENTATION")
+    )
+    topic_foundry_random_state: int = Field(42, validation_alias=AliasChoices("TOPIC_FOUNDRY_RANDOM_STATE"))
+    topic_foundry_umap_n_neighbors: int = Field(30, validation_alias=AliasChoices("TOPIC_FOUNDRY_UMAP_N_NEIGHBORS"))
+    topic_foundry_umap_n_components: int = Field(10, validation_alias=AliasChoices("TOPIC_FOUNDRY_UMAP_N_COMPONENTS"))
+    topic_foundry_umap_min_dist: float = Field(0.0, validation_alias=AliasChoices("TOPIC_FOUNDRY_UMAP_MIN_DIST"))
+    topic_foundry_umap_metric: str = Field("cosine", validation_alias=AliasChoices("TOPIC_FOUNDRY_UMAP_METRIC"))
+    topic_foundry_hdbscan_min_cluster_size: int = Field(
+        15, validation_alias=AliasChoices("TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE")
+    )
+    topic_foundry_hdbscan_min_samples: int = Field(5, validation_alias=AliasChoices("TOPIC_FOUNDRY_HDBSCAN_MIN_SAMPLES"))
+    topic_foundry_hdbscan_metric: str = Field("euclidean", validation_alias=AliasChoices("TOPIC_FOUNDRY_HDBSCAN_METRIC"))
+    topic_foundry_hdbscan_cluster_selection_method: str = Field(
+        "eom", validation_alias=AliasChoices("TOPIC_FOUNDRY_HDBSCAN_CLUSTER_SELECTION_METHOD")
+    )
+    topic_foundry_vectorizer_ngram_min: int = Field(1, validation_alias=AliasChoices("TOPIC_FOUNDRY_VECTORIZER_NGRAM_MIN"))
+    topic_foundry_vectorizer_ngram_max: int = Field(2, validation_alias=AliasChoices("TOPIC_FOUNDRY_VECTORIZER_NGRAM_MAX"))
+    topic_foundry_vectorizer_min_df: int = Field(2, validation_alias=AliasChoices("TOPIC_FOUNDRY_VECTORIZER_MIN_DF"))
+    topic_foundry_vectorizer_max_df: float = Field(0.95, validation_alias=AliasChoices("TOPIC_FOUNDRY_VECTORIZER_MAX_DF"))
+    topic_foundry_vectorizer_max_features: int = Field(
+        50_000, validation_alias=AliasChoices("TOPIC_FOUNDRY_VECTORIZER_MAX_FEATURES")
+    )
+    topic_foundry_top_n_words: int = Field(12, validation_alias=AliasChoices("TOPIC_FOUNDRY_TOP_N_WORDS"))
+    topic_foundry_enable_class_based: bool = Field(
+        True, validation_alias=AliasChoices("TOPIC_FOUNDRY_ENABLE_CLASS_BASED")
+    )
+    topic_foundry_enable_long_document: bool = Field(
+        True, validation_alias=AliasChoices("TOPIC_FOUNDRY_ENABLE_LONG_DOCUMENT")
+    )
+    topic_foundry_enable_hierarchical: bool = Field(
+        True, validation_alias=AliasChoices("TOPIC_FOUNDRY_ENABLE_HIERARCHICAL")
+    )
+    topic_foundry_enable_dynamic: bool = Field(True, validation_alias=AliasChoices("TOPIC_FOUNDRY_ENABLE_DYNAMIC"))
+    topic_foundry_enable_guided: bool = Field(True, validation_alias=AliasChoices("TOPIC_FOUNDRY_ENABLE_GUIDED"))
+    topic_foundry_enable_zeroshot: bool = Field(True, validation_alias=AliasChoices("TOPIC_FOUNDRY_ENABLE_ZEROSHOT"))
     topic_foundry_cosine_impl: str = Field(
         "normalize_euclidean",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_COSINE_IMPL"),
@@ -69,18 +127,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ORION_BUS_URL"),
     )
 
-    topic_foundry_drift_daemon: bool = Field(
-        False,
-        validation_alias=AliasChoices("TOPIC_FOUNDRY_DRIFT_DAEMON"),
-    )
-    topic_foundry_drift_poll_seconds: int = Field(
-        900,
-        validation_alias=AliasChoices("TOPIC_FOUNDRY_DRIFT_POLL_SECONDS"),
-    )
-    topic_foundry_drift_window_hours: int = Field(
-        24,
-        validation_alias=AliasChoices("TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS"),
-    )
     topic_foundry_introspect_schemas: str = Field(
         "public",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_INTROSPECT_SCHEMAS"),

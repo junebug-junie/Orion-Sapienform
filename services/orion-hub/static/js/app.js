@@ -163,6 +163,7 @@ const CHAT_MESSAGE_EVENT_KIND = "orion.chat.message";
 const RECIPIENT_GROUP = "juniper_primary";
 
 document.addEventListener("DOMContentLoaded", () => {
+  console.log("app init start");
   console.log("[Main] DOM Content Loaded - Initializing UI...");
 
 // --- 0. Local persistence for message dismissals ---
@@ -281,13 +282,19 @@ loadDismissedIds();
 
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
-  const topicsTabButton = document.getElementById("topicsTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const appPanels = document.getElementById("appPanels");
   const hubPanel = document.getElementById("hub");
   const topicStudioPanel = document.getElementById("topic-studio");
   const topicStudioRoot = document.getElementById("topicStudioRoot");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
+
+  console.log("[HubTabs] element presence", {
+    hubTab: !!hubTabButton,
+    studioTab: !!topicStudioTabButton,
+    hubPanel: !!hubPanel,
+    studioPanel: !!topicStudioPanel,
+  });
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
   const tsDatasetSchema = document.getElementById("tsDatasetSchema");
@@ -5501,31 +5508,14 @@ loadDismissedIds();
     }
   }
 
-  applyTopicStudioState();
-  bindTopicStudioPersistence();
-  if (HUB_DEBUG && tsDebugDrawer) {
-    tsDebugDrawer.classList.remove("hidden");
-  }
-  if (tsUsePreviewSpec) {
-    tsUsePreviewSpec.disabled = true;
-  }
-  setTopicStudioSubview(resolveTopicStudioSubview());
-  if (tsSkeletonRetry) {
-    tsSkeletonRetry.addEventListener("click", () => {
-      setSkeletonStatus("Retrying...");
-      refreshTopicStudio().catch((err) => {
-        console.warn("[TopicStudio] Retry failed", err);
-      });
-    });
-  } else {
-    reportTopicStudioWiringError("tsSkeletonRetry");
-  }
-
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-hash-target]") : null;
     if (!target) return;
     const hash = target.getAttribute("data-hash-target");
     if (!hash) return;
+    if (hash === "#topic-studio") {
+      console.log("topic studio tab click");
+    }
     event.preventDefault();
     navigateToHash(hash);
   });
@@ -5534,6 +5524,30 @@ loadDismissedIds();
     window.location.hash = "#hub";
   } else {
     routeFromHash();
+  }
+
+  try {
+    applyTopicStudioState();
+    bindTopicStudioPersistence();
+    if (HUB_DEBUG && tsDebugDrawer) {
+      tsDebugDrawer.classList.remove("hidden");
+    }
+    if (tsUsePreviewSpec) {
+      tsUsePreviewSpec.disabled = true;
+    }
+    setTopicStudioSubview(resolveTopicStudioSubview());
+    if (tsSkeletonRetry) {
+      tsSkeletonRetry.addEventListener("click", () => {
+        setSkeletonStatus("Retrying...");
+        refreshTopicStudio().catch((err) => {
+          console.warn("[TopicStudio] Retry failed", err);
+        });
+      });
+    } else {
+      reportTopicStudioWiringError("tsSkeletonRetry");
+    }
+  } catch (err) {
+    console.error("[TopicStudio] initialization error", err);
   }
 
   if (tsDatasetSelect) {
@@ -5608,46 +5622,6 @@ loadDismissedIds();
     });
   }
 
-  if (tsSubviewConversationsBtn) {
-    tsSubviewConversationsBtn.addEventListener("click", () => {
-      setTopicStudioSubview("conversations");
-      loadConversations();
-    });
-  }
-
-  if (tsSubviewTopicsBtn) {
-    tsSubviewTopicsBtn.addEventListener("click", () => {
-      setTopicStudioSubview("topics");
-    });
-  }
-
-  if (tsSubviewCompareBtn) {
-    tsSubviewCompareBtn.addEventListener("click", () => {
-      setTopicStudioSubview("compare");
-    });
-  }
-
-  if (tsSubviewDriftBtn) {
-    tsSubviewDriftBtn.addEventListener("click", () => {
-      setTopicStudioSubview("drift");
-      loadDriftRecords();
-    });
-  }
-
-  if (tsSubviewEventsBtn) {
-    tsSubviewEventsBtn.addEventListener("click", () => {
-      setTopicStudioSubview("events");
-      loadEvents();
-    });
-  }
-
-  if (tsSubviewKgBtn) {
-    tsSubviewKgBtn.addEventListener("click", () => {
-      setTopicStudioSubview("kg");
-      loadKgEdges();
-    });
-  }
-
   if (tsConvoDatasetSelect) {
     tsConvoDatasetSelect.addEventListener("change", () => {
       saveTopicStudioState();
@@ -5694,3 +5668,5 @@ loadDismissedIds();
     });
   }
 
+
+});

@@ -260,3 +260,46 @@ Reply correlation:
   - `curl "$HUB_BASE/api/topic-foundry/ready"`
   - `curl "$HUB_BASE/api/topic-foundry/capabilities"`
 
+
+## BERTopic Engine + BYO Backends
+
+Topic Foundry now uses the real `bertopic` library as the topic engine (`TOPIC_FOUNDRY_TOPIC_ENGINE=bertopic`).
+
+### Backends
+- Embeddings: `vector_host` or `st` (SentenceTransformers)
+- Reducer: `umap`
+- Clusterer: `hdbscan`
+- Representation: `ctfidf`, `keybert`, `mmr`, `pos`, `llm`
+
+### Modes
+- `class_based`
+- `long_document`
+- `hierarchical`
+- `dynamic`
+- `guided`
+- `zeroshot`
+
+### Example train payload (guided)
+```json
+{
+  "model_id": "...",
+  "dataset_id": "...",
+  "topic_mode": "guided",
+  "topic_mode_params": {
+    "seed_topic_list": [["gpu", "cuda", "v100"], ["yard", "xeriscape", "pergola"]]
+  }
+}
+```
+
+### Example train payload (zeroshot)
+```json
+{
+  "model_id": "...",
+  "dataset_id": "...",
+  "topic_mode": "zeroshot",
+  "topic_mode_params": {
+    "zeroshot_topic_list": ["Orion architecture", "home lab hardware", "family logistics"],
+    "zeroshot_min_similarity": 0.2
+  }
+}
+```

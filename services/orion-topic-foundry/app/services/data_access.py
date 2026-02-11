@@ -165,11 +165,6 @@ def fetch_dataset_rows(
     if end_at is not None:
         where_clauses.append(sql.SQL("{col} <= %(end_at)s").format(col=sql.Identifier(dataset.time_column)))
         params["end_at"] = end_at
-    if dataset.where_sql:
-        where_clauses.append(sql.SQL(dataset.where_sql))
-        if dataset.where_params:
-            params.update(dataset.where_params)
-
     if where_clauses:
         query = query + sql.SQL(" WHERE ") + sql.SQL(" AND ").join(where_clauses)
 

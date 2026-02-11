@@ -9,13 +9,10 @@ from psycopg2 import errors as pg_errors
 from app.models import (
     EnrichmentSpec,
     ModelSpec,
-    RunEnrichRequest,
-    RunEnrichResponse,
     RunListPage,
     RunListResponse,
     RunRecord,
     RunListItem,
-    RunCompareResponse,
     RunSummary,
     RunTrainRequest,
     RunTrainResponse,
@@ -23,7 +20,6 @@ from app.models import (
     WindowingSpec,
 )
 from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
-from app.services.enrichment import enqueue_enrichment
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
 from app.settings import settings
@@ -35,7 +31,6 @@ from app.storage.repository import (
     fetch_run_by_spec_hash,
     list_runs,
     list_runs_paginated,
-    list_aspect_counts,
     utc_now,
 )
 
@@ -54,6 +49,18 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
     windowing_spec = payload.windowing_spec or WindowingSpec(**model_row["windowing_spec"])
+    topic_mode = payload.topic_mode or "standard"
+    mode_capability = {
+        "guided": settings.topic_foundry_enable_guided,
+        "zeroshot": settings.topic_foundry_enable_zeroshot,
+        "class_based": settings.topic_foundry_enable_class_based,
+        "long_document": settings.topic_foundry_enable_long_document,
+        "hierarchical": settings.topic_foundry_enable_hierarchical,
+        "dynamic": settings.topic_foundry_enable_dynamic,
+        "standard": True,
+    }
+    if not mode_capability.get(topic_mode, False):
+        raise HTTPException(status_code=422, detail=f"topic_mode={topic_mode} is disabled by server config")
     effective_boundary = windowing_spec.boundary_column or dataset.boundary_column
     dataset_for_validation = dataset
     if effective_boundary and dataset.boundary_column != effective_boundary:
@@ -94,8 +101,8 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         run_scope=payload.run_scope,
     )
     if specs.run_scope is None:
-        specs.run_scope = "micro" if specs.windowing.windowing_mode.startswith("conversation") else "macro"
-    if specs.windowing.windowing_mode.startswith("conversation") and not effective_boundary:
+        specs.run_scope = "micro" if specs.windowing.windowing_mode == "conversation_bound" else "macro"
+    if specs.windowing.windowing_mode == "conversation_bound" and not effective_boundary:
         detail = {
             "ok": False,
             "error": "invalid_windowing",
@@ -138,6 +145,19 @@ def get_run_endpoint(run_id: UUID):
     row = fetch_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
+    stats = row.get("stats") or {}
+    model_meta = ((row.get("specs") or {}).get("model") or {}).get("model_meta") or {}
+    row["doc_count"] = stats.get("doc_count")
+    row["segment_count"] = stats.get("segment_count")
+    row["cluster_count"] = stats.get("cluster_count")
+    row["outlier_count"] = stats.get("outlier_count")
+    row["outlier_rate"] = stats.get("outlier_rate", stats.get("outlier_pct"))
+    row["topic_mode"] = stats.get("topic_mode", "standard")
+    row["embedding_backend"] = stats.get("embedding_backend", model_meta.get("embedding_backend"))
+    row["representation"] = stats.get("representation", model_meta.get("representation"))
+    row["reducer"] = stats.get("reducer", model_meta.get("reducer"))
+    row["clusterer"] = stats.get("clusterer", model_meta.get("clusterer"))
+    row["artifacts"] = row.get("artifact_paths") or {}
     return row
 
 
@@ -163,6 +183,10 @@ def list_runs_endpoint(
                 created_at=row["created_at"],
                 started_at=row.get("started_at"),
                 completed_at=row.get("completed_at"),
+                doc_count=(row.get("stats") or {}).get("doc_count"),
+                segment_count=(row.get("stats") or {}).get("segment_count"),
+                cluster_count=(row.get("stats") or {}).get("cluster_count"),
+                outlier_rate=(row.get("stats") or {}).get("outlier_rate", (row.get("stats") or {}).get("outlier_pct")),
             )
             for row in rows
         ]
@@ -207,79 +231,11 @@ def list_runs_endpoint(
                     "segments_generated": stats.get("segments_generated"),
                     "cluster_count": stats.get("cluster_count"),
                     "outlier_pct": stats.get("outlier_pct"),
+                    "outlier_rate": stats.get("outlier_rate", stats.get("outlier_pct")),
+                    "doc_count": stats.get("doc_count"),
+                    "segment_count": stats.get("segment_count"),
                     "segments_enriched": stats.get("segments_enriched"),
                 },
             )
         )
     return RunListPage(items=items, limit=limit, offset=offset, total=total)
-
-
-@router.post("/runs/{run_id}/enrich", response_model=RunEnrichResponse)
-def enrich_run_endpoint(run_id: UUID, payload: RunEnrichRequest, background_tasks: BackgroundTasks) -> RunEnrichResponse:
-    row = fetch_run(run_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Run not found")
-    if payload.enricher == "llm" and not settings.topic_foundry_llm_enable:
-        raise HTTPException(
-            status_code=409,
-            detail="LLM enrichment is disabled. Enable TOPIC_FOUNDRY_LLM_ENABLE to use llm enricher.",
-        )
-    enqueue_enrichment(
-        background_tasks,
-        run_id,
-        force=payload.force,
-        enricher=payload.enricher,
-        limit=payload.limit,
-        target=payload.target,
-        fields=payload.fields,
-        llm_backend=payload.llm_backend,
-        prompt_template=payload.prompt_template,
-    )
-    stats = row.get("stats") or {}
-    return RunEnrichResponse(
-        run_id=run_id,
-        status=row.get("status", "running"),
-        enriched_count=stats.get("segments_enriched", 0),
-        failed_count=stats.get("enrichment_failed", 0),
-    )
-
-
-@router.get("/runs/compare", response_model=RunCompareResponse)
-def compare_runs(left_run_id: UUID, right_run_id: UUID):
-    left = fetch_run(left_run_id)
-    right = fetch_run(right_run_id)
-    if not left or not right:
-        raise HTTPException(status_code=404, detail="Run not found")
-    left_stats = left.get("stats") or {}
-    right_stats = right.get("stats") or {}
-    diffs = {
-        "docs_generated": (left_stats.get("docs_generated", 0) or 0) - (right_stats.get("docs_generated", 0) or 0),
-        "segments_generated": (left_stats.get("segments_generated", 0) or 0) - (right_stats.get("segments_generated", 0) or 0),
-        "cluster_count": (left_stats.get("cluster_count", 0) or 0) - (right_stats.get("cluster_count", 0) or 0),
-        "outlier_pct": (left_stats.get("outlier_pct", 0.0) or 0.0) - (right_stats.get("outlier_pct", 0.0) or 0.0),
-        "segments_enriched": (left_stats.get("segments_enriched", 0) or 0) - (right_stats.get("segments_enriched", 0) or 0),
-    }
-    left_aspects = {row["key"]: row["count"] for row in list_aspect_counts(left_run_id)}
-    right_aspects = {row["key"]: row["count"] for row in list_aspect_counts(right_run_id)}
-    aspect_keys = set(left_aspects) | set(right_aspects)
-    aspect_diffs = []
-    for key in aspect_keys:
-        left_count = left_aspects.get(key, 0)
-        right_count = right_aspects.get(key, 0)
-        aspect_diffs.append(
-            {
-                "aspect": key,
-                "left_count": left_count,
-                "right_count": right_count,
-                "delta": left_count - right_count,
-            }
-        )
-    aspect_diffs.sort(key=lambda row: abs(row["delta"]), reverse=True)
-    return RunCompareResponse(
-        left_run_id=left_run_id,
-        right_run_id=right_run_id,
-        left_stats=left_stats,
-        right_stats=right_stats,
-        diffs=diffs,
-        aspect_diffs=aspect_diffs[:20],
-    )

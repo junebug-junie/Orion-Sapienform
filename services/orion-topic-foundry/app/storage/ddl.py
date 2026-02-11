@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS topic_foundry_models (
     stage          VARCHAR,
     dataset_id     UUID NOT NULL,
     model_spec     JSONB NOT NULL,
+    model_meta     JSONB NOT NULL,
     windowing_spec JSONB NOT NULL,
     enrichment_spec JSONB,
     metadata       JSONB NOT NULL,

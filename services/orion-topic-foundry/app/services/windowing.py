@@ -1,29 +1,35 @@
 from __future__ import annotations
 
-import logging
-import math
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
-from uuid import uuid4, UUID
-
-import numpy as np
+from uuid import UUID, uuid4
 
 from app.models import WindowingSpec
-from app.services.boundary_judge import judge_boundaries
-from app.services.llm_client import get_llm_client
-from app.settings import settings
-from app.storage.repository import insert_window_filters
+from app.services.types import BoundaryContext, RowBlock
+
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.services.conversation_overrides import Conversation
-from app.services.embedding_client import VectorHostEmbeddingProvider
-from app.services.semantic_segmentation import SemanticConfig, split_blocks
-from app.services.types import BoundaryContext, RowBlock
 
 
-logger = logging.getLogger("topic-foundry.windowing")
+def _row_text(row: Dict[str, Any], text_columns: Sequence[str]) -> str:
+    parts: List[str] = []
+    for col in text_columns:
+        value = row.get(col)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip()
 
 
 def build_blocks_for_conversation(
@@ -34,24 +40,16 @@ def build_blocks_for_conversation(
     time_column: str,
     id_column: str,
 ) -> List[RowBlock]:
-    blocks: List[RowBlock] = []
     mode = spec.windowing_mode
-    if mode == "turn_pairs" and spec.block_mode != "turn_pairs":
-        if spec.block_mode == "rows":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 1
-        elif spec.block_mode == "triads":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 3
-        elif spec.block_mode == "group_by_column":
-            mode = "conversation_bound_then_time_gap"
-    if mode == "fixed_k_rows":
-        step = spec.fixed_k_rows_step or spec.fixed_k_rows
-        for idx in range(0, len(convo_rows), step):
-            chunk = convo_rows[idx : idx + spec.fixed_k_rows]
+    max_chars = int(spec.max_chars)
+    blocks: List[RowBlock] = []
+
+    if mode == "document":
+        for idx in range(0, len(convo_rows), 2):
+            chunk = convo_rows[idx : idx + 2]
             if not chunk:
                 continue
-            text = _make_block_text(chunk, text_columns, spec)
+            text = _truncate("\n".join(_row_text(row, text_columns) for row in chunk).strip(), max_chars)
             if not text:
                 continue
             blocks.append(
@@ -65,259 +63,51 @@ def build_blocks_for_conversation(
                     text=text,
                 )
             )
-    elif mode == "time_gap" or mode == "conversation_bound_then_time_gap":
-        row_ids: List[str] = []
-        timestamps: List[str] = []
-        text_parts: List[str] = []
-        last_ts: Optional[datetime] = None
-        for row in convo_rows:
-            text = _row_text(row, text_columns)
-            if not text:
-                continue
-            ts = row[time_column]
-            if isinstance(ts, str):
-                ts = datetime.fromisoformat(ts)
-            if last_ts is not None and (ts - last_ts).total_seconds() > spec.time_gap_seconds and text_parts:
-                blocks.append(
-                    RowBlock(
-                        row_ids=row_ids,
-                        timestamps=timestamps,
-                        doc_id=str(uuid4()),
-                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                    )
-                )
-                row_ids = []
-                timestamps = []
-                text_parts = []
-            candidate_text = "\n".join([*text_parts, text]).strip()
-            if text_parts and len(candidate_text) > spec.max_chars:
-                blocks.append(
-                    RowBlock(
-                        row_ids=row_ids,
-                        timestamps=timestamps,
-                        doc_id=str(uuid4()),
-                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                    )
-                )
-                row_ids = []
-                timestamps = []
-                text_parts = []
-            row_ids.append(str(row[id_column]))
-            timestamps.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
-            text_parts.append(text)
-            last_ts = ts
-        if text_parts:
-            blocks.append(
-                RowBlock(
-                    row_ids=row_ids,
-                    timestamps=timestamps,
-                    doc_id=str(uuid4()),
-                    text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                )
-            )
-    elif mode == "turn_pairs":
-        idx = 0
-        while idx < len(convo_rows) - 1:
-            first = convo_rows[idx]
-            second = convo_rows[idx + 1]
-            role_first = _role_of(first)
-            role_second = _role_of(second)
-            if spec.include_roles and role_first and role_second:
-                if role_first not in spec.include_roles or role_second not in spec.include_roles:
-                    idx += 1
-                    continue
-            text = _make_block_text([first, second], text_columns, spec)
-            if text:
-                blocks.append(
-                    RowBlock(
-                        row_ids=[str(first[id_column]), str(second[id_column])],
-                        timestamps=[
-                            first[time_column].isoformat() if hasattr(first[time_column], "isoformat") else str(first[time_column]),
-                            second[time_column].isoformat() if hasattr(second[time_column], "isoformat") else str(second[time_column]),
-                        ],
-                        doc_id=str(uuid4()),
-                        text=text,
-                    )
-                )
-            idx += 2
-    elif mode == "conversation_bound":
-        if convo_rows:
-            text = _make_block_text(convo_rows, text_columns, spec)
-            if text:
-                blocks.append(
-                    RowBlock(
-                        row_ids=[str(row[id_column]) for row in convo_rows],
-                        timestamps=[
-                            row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
-                            for row in convo_rows
-                        ],
-                        doc_id=str(uuid4()),
-                        text=text,
-                    )
-                )
-    elif spec.block_mode == "rows":
-        for row in convo_rows:
-            text = _row_text(row, text_columns)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column])],
-                    timestamps=[row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])],
-                    doc_id=str(uuid4()),
-                    text=_truncate(text, spec.max_chars),
-                )
-            )
-    elif spec.block_mode == "triads":
-        for idx in range(0, len(convo_rows), 3):
-            chunk = convo_rows[idx : idx + 3]
-            if len(chunk) < 3:
-                break
-            text = _make_block_text(chunk, text_columns, spec)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column]) for row in chunk],
-                    timestamps=[
-                        row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
-                        for row in chunk
-                    ],
-                    doc_id=str(uuid4()),
-                    text=text,
-                )
-            )
-    elif spec.block_mode == "group_by_column":
-        row_ids: List[str] = []
-        timestamps: List[str] = []
-        text_parts: List[str] = []
-        last_ts: Optional[datetime] = None
-        for row in convo_rows:
-            text = _row_text(row, text_columns)
-            if not text:
-                continue
-            ts = row[time_column]
-            if isinstance(ts, str):
-                ts = datetime.fromisoformat(ts)
-            if last_ts is not None and (ts - last_ts).total_seconds() > spec.time_gap_seconds and text_parts:
-                blocks.append(
-                    RowBlock(
-                        row_ids=row_ids,
-                        timestamps=timestamps,
-                        doc_id=str(uuid4()),
-                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                    )
-                )
-                row_ids = []
-                timestamps = []
-                text_parts = []
-            candidate_text = "\n".join([*text_parts, text]).strip()
-            if text_parts and len(candidate_text) > spec.max_chars:
-                blocks.append(
-                    RowBlock(
-                        row_ids=row_ids,
-                        timestamps=timestamps,
-                        doc_id=str(uuid4()),
-                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                    )
-                )
-                row_ids = []
-                timestamps = []
-                text_parts = []
-            row_ids.append(str(row[id_column]))
-            timestamps.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
-            text_parts.append(text)
-            last_ts = ts
-        if text_parts:
-            blocks.append(
-                RowBlock(
-                    row_ids=row_ids,
-                    timestamps=timestamps,
-                    doc_id=str(uuid4()),
-                    text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                )
-            )
-    else:
-        for row in convo_rows:
-            text = _row_text(row, text_columns)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column])],
-                    timestamps=[row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])],
-                    doc_id=str(uuid4()),
-                    text=_truncate(text, spec.max_chars),
-                )
-            )
-    return blocks
-
-
-def _row_text(row: Dict[str, Any], text_columns: Sequence[str]) -> str:
-    parts: List[str] = []
-    for col in text_columns:
-        val = row.get(col)
-        if val is None:
-            continue
-        val_str = str(val).strip()
-        if val_str:
-            parts.append(val_str)
-    return "\n".join(parts).strip()
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars].rstrip()
-
-
-def _role_of(row: Dict[str, Any]) -> Optional[str]:
-    role = row.get("role") or row.get("speaker")
-    if role is None:
-        return None
-    return str(role).lower().strip()
-
-
-def _make_block_text(rows: Sequence[Dict[str, Any]], text_columns: Sequence[str], spec: WindowingSpec) -> str:
-    if spec.block_mode == "turn_pairs":
-        if len(rows) == 2:
-            user_row, assistant_row = rows
-            user_text = _row_text(user_row, text_columns)
-            assistant_text = _row_text(assistant_row, text_columns)
-            text = f"User: {user_text}\nAssistant: {assistant_text}".strip()
-        else:
-            text = "\n".join(_row_text(row, text_columns) for row in rows).strip()
-    else:
-        text = "\n".join(_row_text(row, text_columns) for row in rows).strip()
-    return _truncate(text, spec.max_chars)
-
-
-def _chunk_blocks(blocks: List[RowBlock], spec: WindowingSpec) -> List[RowBlock]:
-    if spec.min_blocks_per_segment <= 1:
         return blocks
-    segments: List[RowBlock] = []
-    for idx in range(0, len(blocks), spec.min_blocks_per_segment):
-        chunk = blocks[idx : idx + spec.min_blocks_per_segment]
-        if len(chunk) < spec.min_blocks_per_segment:
-            break
-        row_ids: List[str] = []
-        timestamps: List[str] = []
-        text_parts: List[str] = []
-        for block in chunk:
-            row_ids.extend(block.row_ids)
-            timestamps.extend(block.timestamps)
-            text_parts.append(block.text)
-        segments.append(
-            RowBlock(
-                row_ids=row_ids,
-                timestamps=timestamps,
-                doc_id=str(uuid4()),
-                text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                conversation_id=blocks[0].conversation_id if blocks else None,
-                block_index=blocks[0].block_index if blocks else None,
+
+    if mode == "conversation_bound":
+        text = _truncate("\n".join(_row_text(row, text_columns) for row in convo_rows).strip(), max_chars)
+        if text:
+            blocks.append(
+                RowBlock(
+                    row_ids=[str(row[id_column]) for row in convo_rows],
+                    timestamps=[
+                        row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
+                        for row in convo_rows
+                    ],
+                    doc_id=str(uuid4()),
+                    text=text,
+                )
             )
-        )
-    return segments
+        return blocks
+
+    # time_gap
+    row_ids: List[str] = []
+    timestamps: List[str] = []
+    text_parts: List[str] = []
+    last_ts: Optional[datetime] = None
+    gap_seconds = int(spec.time_gap_minutes) * 60
+    for row in convo_rows:
+        text = _row_text(row, text_columns)
+        if not text:
+            continue
+        ts = row[time_column]
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts)
+        if last_ts is not None and (ts - last_ts).total_seconds() > gap_seconds and text_parts:
+            blocks.append(RowBlock(row_ids=row_ids, timestamps=timestamps, doc_id=str(uuid4()), text=_truncate("\n".join(text_parts).strip(), max_chars)))
+            row_ids, timestamps, text_parts = [], [], []
+        candidate = "\n".join([*text_parts, text]).strip()
+        if text_parts and len(candidate) > max_chars:
+            blocks.append(RowBlock(row_ids=row_ids, timestamps=timestamps, doc_id=str(uuid4()), text=_truncate("\n".join(text_parts).strip(), max_chars)))
+            row_ids, timestamps, text_parts = [], [], []
+        row_ids.append(str(row[id_column]))
+        timestamps.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+        text_parts.append(text)
+        last_ts = ts
+    if text_parts:
+        blocks.append(RowBlock(row_ids=row_ids, timestamps=timestamps, doc_id=str(uuid4()), text=_truncate("\n".join(text_parts).strip(), max_chars)))
+    return blocks
 
 
 def _build_segments_internal(
@@ -333,37 +123,7 @@ def _build_segments_internal(
     for convo in conversations:
         blocks = convo.blocks
         blocks_generated += len(blocks)
-        if spec.segmentation_mode == "time_gap":
-            segments.extend(_chunk_blocks(blocks, spec))
-            continue
-
-        embeddings = None
-        if embedding_url and spec.segmentation_mode in {"semantic", "hybrid", "llm_judge", "hybrid_llm"}:
-            embedder = VectorHostEmbeddingProvider(embedding_url)
-            embeddings = np.array(embedder.embed_texts([block.text for block in blocks]), dtype=np.float32)
-
-        if spec.segmentation_mode in {"semantic", "hybrid"} and embeddings is not None:
-            cfg = SemanticConfig(
-                threshold=spec.semantic_split_threshold,
-                confirm_edges_k=spec.confirm_edges_k,
-                smoothing_window=max(1, spec.smoothing_window),
-                min_blocks_per_segment=spec.min_blocks_per_segment,
-                max_window_seconds=spec.max_window_seconds,
-                max_chars=spec.max_chars,
-            )
-            segments.extend(split_blocks(blocks, embeddings, cfg))
-            continue
-
-        if spec.segmentation_mode in {"llm_judge", "hybrid_llm"} and boundary_context is not None:
-            splits = _llm_segmentation(blocks, embeddings, spec, boundary_context)
-            segments.extend(_segments_from_splits(blocks, splits, spec))
-            continue
-
-        segments.extend(_chunk_blocks(blocks, spec))
-    if spec.llm_filter_enabled:
-        segments, filters = _apply_llm_filter(segments, spec)
-        if run_id and filters:
-            insert_window_filters(run_id, filters)
+        segments.extend(blocks)
     return segments, blocks_generated
 
 
@@ -375,13 +135,7 @@ def build_segments_from_conversations(
     boundary_context: Optional[BoundaryContext] = None,
     run_id: Optional[UUID] = None,
 ) -> tuple[List[RowBlock], int]:
-    return _build_segments_internal(
-        conversations,
-        spec=spec,
-        embedding_url=embedding_url,
-        boundary_context=boundary_context,
-        run_id=run_id,
-    )
+    return _build_segments_internal(conversations, spec=spec, embedding_url=embedding_url, boundary_context=boundary_context, run_id=run_id)
 
 
 def build_segments_with_stats(
@@ -392,177 +146,4 @@ def build_segments_with_stats(
     boundary_context: Optional[BoundaryContext] = None,
     run_id: Optional[UUID] = None,
 ) -> tuple[List[RowBlock], int]:
-    return _build_segments_internal(
-        conversations,
-        spec=spec,
-        embedding_url=embedding_url,
-        boundary_context=boundary_context,
-        run_id=run_id,
-    )
-
-
-def _apply_llm_filter(
-    segments: List[RowBlock],
-    spec: WindowingSpec,
-) -> tuple[List[RowBlock], List[Dict[str, Any]]]:
-    kept: List[RowBlock] = []
-    decisions: List[Dict[str, Any]] = []
-    max_windows = max(0, int(spec.llm_filter_max_windows))
-    use_llm = settings.topic_foundry_llm_enable
-    client = get_llm_client() if use_llm else None
-    for idx, segment in enumerate(segments):
-        heuristic_score = _heuristic_gate_score(segment.text or "")
-        heuristic_keep = heuristic_score >= float(spec.llm_filter_min_score or 0.0)
-        decision = {
-            "heuristic_score": heuristic_score,
-            "heuristic_keep": heuristic_keep,
-        }
-        keep = heuristic_keep
-        if max_windows and idx >= max_windows:
-            decision["skipped"] = True
-            decisions.append(
-                {
-                    "segment_id": segment.doc_id,
-                    "policy": spec.llm_filter_policy,
-                    "decision": decision,
-                }
-            )
-            kept.append(segment)
-            continue
-        if use_llm:
-            prompt = spec.llm_filter_prompt_template.format(window_text=segment.text[:2000])
-            response = client.request_json(system_prompt="You are a filtering assistant.", user_prompt=prompt, temperature=0.0)
-            llm_decision = response or {}
-            decision["llm_decision"] = llm_decision
-            keep = bool(llm_decision.get("keep", True))
-            if spec.llm_filter_policy == "reject":
-                keep = not keep
-            if spec.llm_filter_policy == "score":
-                keep = float(llm_decision.get("score") or 0) >= 0.5
-            keep = keep and heuristic_keep
-        decisions.append(
-            {
-                "segment_id": segment.doc_id,
-                "policy": spec.llm_filter_policy,
-                "decision": decision,
-            }
-        )
-        if keep:
-            kept.append(segment)
-    return kept, decisions
-
-
-def _heuristic_gate_score(text: str) -> float:
-    if not text:
-        return 0.0
-    clean_text = text.strip()
-    length_score = min(len(clean_text) / 800.0, 1.0)
-    tokens = re.findall(r"\w+", clean_text.lower())
-    if tokens:
-        novelty = len(set(tokens)) / max(len(tokens), 1)
-    else:
-        novelty = 0.0
-    char_counts: Dict[str, int] = {}
-    for ch in clean_text:
-        char_counts[ch] = char_counts.get(ch, 0) + 1
-    total = len(clean_text)
-    entropy = 0.0
-    if total > 0 and len(char_counts) > 1:
-        for count in char_counts.values():
-            prob = count / total
-            entropy -= prob * math.log(prob, 2)
-        entropy /= math.log(len(char_counts), 2)
-    return max(0.0, min(1.0, (0.4 * length_score) + (0.3 * novelty) + (0.3 * entropy)))
-
-
-def _llm_segmentation(
-    blocks: List[RowBlock],
-    embeddings: Optional[np.ndarray],
-    spec: WindowingSpec,
-    boundary_context: BoundaryContext,
-) -> List[int]:
-    candidates = list(range(len(blocks) - 1))
-    if spec.llm_candidate_strategy == "semantic_low_sim" and embeddings is not None:
-        sims = _similarities(embeddings)
-        threshold = spec.llm_candidate_threshold or spec.semantic_split_threshold
-        candidates = [idx for idx, sim in enumerate(sims) if sim < threshold]
-        if spec.llm_candidate_top_k:
-            candidates = candidates[: spec.llm_candidate_top_k]
-    elif spec.llm_candidate_strategy == "all_edges":
-        if spec.llm_candidate_top_k:
-            candidates = candidates[: spec.llm_candidate_top_k]
-
-    decisions = judge_boundaries(blocks=blocks, candidate_indices=candidates, spec=spec, context=boundary_context)
-    split_indices: List[int] = []
-    sims = _similarities(embeddings) if embeddings is not None else []
-    for idx in candidates:
-        decision = decisions.get(idx)
-        if decision is None:
-            if spec.segmentation_mode == "hybrid_llm" and embeddings is not None:
-                threshold = spec.llm_candidate_threshold or spec.semantic_split_threshold
-                if idx < len(sims) and sims[idx] < threshold:
-                    split_indices.append(idx)
-            continue
-        if decision.get("split") is True:
-            split_indices.append(idx)
-    return split_indices
-
-
-def _segments_from_splits(blocks: List[RowBlock], split_indices: List[int], spec: WindowingSpec) -> List[RowBlock]:
-    split_set = set(split_indices)
-    segments: List[List[RowBlock]] = []
-    current: List[RowBlock] = []
-    for idx, block in enumerate(blocks):
-        current.append(block)
-        if idx in split_set:
-            segments.append(current)
-            current = []
-    if current:
-        segments.append(current)
-
-    merged: List[RowBlock] = []
-    buffer: List[RowBlock] = []
-    for segment in segments:
-        buffer.extend(segment)
-        if len(buffer) >= spec.min_blocks_per_segment:
-            merged.append(_merge_blocks(buffer, spec.max_chars))
-            buffer = []
-    if buffer:
-        if merged:
-            merged[-1] = _merge_blocks([merged[-1], *buffer], spec.max_chars)
-        else:
-            merged.append(_merge_blocks(buffer, spec.max_chars))
-    return merged
-
-
-def _merge_blocks(blocks: List[RowBlock], max_chars: int) -> RowBlock:
-    row_ids: List[str] = []
-    timestamps: List[str] = []
-    text_parts: List[str] = []
-    for block in blocks:
-        row_ids.extend(block.row_ids)
-        timestamps.extend(block.timestamps)
-        text_parts.append(block.text)
-    text = "\n".join(text_parts).strip()
-    if len(text) > max_chars:
-        text = text[:max_chars].rstrip()
-    return RowBlock(
-        row_ids=row_ids,
-        timestamps=timestamps,
-        doc_id=str(uuid4()),
-        text=text,
-        conversation_id=blocks[0].conversation_id if blocks else None,
-        block_index=blocks[0].block_index if blocks else None,
-    )
-
-
-def _similarities(embeddings: Optional[np.ndarray]) -> List[float]:
-    if embeddings is None or len(embeddings) < 2:
-        return []
-    sims: List[float] = []
-    for idx in range(len(embeddings) - 1):
-        a = embeddings[idx]
-        b = embeddings[idx + 1]
-        denom = (np.linalg.norm(a) * np.linalg.norm(b))
-        sims.append(float(np.dot(a, b) / denom) if denom else 0.0)
-    return sims
+    return _build_segments_internal(conversations, spec=spec, embedding_url=embedding_url, boundary_context=boundary_context, run_id=run_id)

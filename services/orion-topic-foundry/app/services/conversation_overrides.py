@@ -42,76 +42,31 @@ def build_conversations(
     sorted_rows = sorted(rows, key=lambda r: r[time_column])
     conversations: List[List[Dict[str, Any]]] = []
     mode = spec.windowing_mode
-    if mode == "turn_pairs" and spec.block_mode != "turn_pairs":
-        if spec.block_mode == "rows":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 1
-        elif spec.block_mode == "triads":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 3
-        elif spec.block_mode == "group_by_column":
-            mode = "conversation_bound_then_time_gap"
-    effective_boundary = boundary_column or spec.boundary_column or spec.group_by
-    if mode in {"conversation_bound", "conversation_bound_then_time_gap"}:
+    gap_seconds = int(spec.time_gap_minutes) * 60
+
+    if mode == "conversation_bound":
+        effective_boundary = boundary_column or spec.boundary_column
         if not effective_boundary:
             raise ValueError(f"boundary_column is required for {mode} dataset_id={dataset_id}")
-        current: List[Dict[str, Any]] = []
-        current_key: Optional[str] = None
-        last_ts: Optional[datetime] = None
-        conv_start: Optional[datetime] = None
+        groups: Dict[str, List[Dict[str, Any]]] = {}
         for row in sorted_rows:
-            ts = row[time_column]
-            if isinstance(ts, str):
-                ts = datetime.fromisoformat(ts)
             key_val = row.get(effective_boundary)
             key = str(key_val) if key_val is not None else "__none__"
-            if current_key is None:
-                current_key = key
-                current.append(row)
-                last_ts = ts
-                conv_start = ts
-                continue
-            gap_ok = True
-            span_ok = True
-            if mode == "conversation_bound_then_time_gap":
-                gap_ok = (ts - last_ts).total_seconds() <= spec.time_gap_seconds if last_ts is not None else True
-                if conv_start is not None:
-                    span_ok = (ts - conv_start).total_seconds() <= spec.max_window_seconds
-            if key == current_key and gap_ok and span_ok:
-                current.append(row)
-            else:
-                if current:
-                    conversations.append(current)
-                current = [row]
-                current_key = key
-                conv_start = ts
-            last_ts = ts
-        if current:
-            conversations.append(current)
+            groups.setdefault(key, []).append(row)
+        conversations = list(groups.values())
     elif mode == "time_gap":
-        current = []
-        last_ts = None
-        conv_start: Optional[datetime] = None
+        current: List[Dict[str, Any]] = []
+        last_ts: Optional[datetime] = None
         for row in sorted_rows:
             ts = row[time_column]
             if isinstance(ts, str):
                 ts = datetime.fromisoformat(ts)
-            if last_ts is None:
-                current.append(row)
-                last_ts = ts
-                conv_start = ts
-                continue
-            gap_ok = (ts - last_ts).total_seconds() <= spec.time_gap_seconds
-            span_ok = True
-            if conv_start is not None:
-                span_ok = (ts - conv_start).total_seconds() <= spec.max_window_seconds
-            if gap_ok and span_ok:
+            if last_ts is None or (ts - last_ts).total_seconds() <= gap_seconds:
                 current.append(row)
             else:
                 if current:
                     conversations.append(current)
                 current = [row]
-                conv_start = ts
             last_ts = ts
         if current:
             conversations.append(current)

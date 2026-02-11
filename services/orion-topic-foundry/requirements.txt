@@ -12,3 +12,6 @@ joblib==1.4.2
 loguru>=0.7
 redis>=5.0.4
 PyYAML==6.0.3
+bertopic==0.16.3
+umap-learn==0.5.6
+sentence-transformers==3.0.1

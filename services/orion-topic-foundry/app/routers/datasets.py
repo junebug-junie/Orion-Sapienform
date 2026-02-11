@@ -40,9 +40,6 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
         text_columns=payload.text_columns,
         boundary_column=payload.boundary_column,
         boundary_strategy=payload.boundary_strategy,
-        where_sql=payload.where_sql,
-        where_params=payload.where_params,
-        timezone=payload.timezone,
         created_at=created_at,
     )
     try:
@@ -106,7 +103,7 @@ def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewRe
     try:
         validate_dataset_source_table(dataset_for_preview)
         validate_dataset_columns(dataset_for_preview)
-        if windowing_spec.windowing_mode.startswith("conversation") and not effective_boundary:
+        if windowing_spec.windowing_mode == "conversation_bound" and not effective_boundary:
             detail = {
                 "ok": False,
                 "error": "invalid_windowing",

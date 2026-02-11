@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from psycopg2 import errors as pg_errors
 
 from app.models import (

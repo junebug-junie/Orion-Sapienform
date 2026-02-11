@@ -141,7 +141,7 @@ class TopicFoundryLLMClient:
                         LLMMessage(role="system", content=system_prompt),
                         LLMMessage(role="user", content=user_prompt),
                     ],
-                    route=settings.topic_foundry_llm_bus_route or None,
+                    route=settings.topic_foundry_llm_route or None,
                     options=options,
                 )
                 env = BaseEnvelope(

@@ -14,19 +14,18 @@ class DatasetSpec(BaseModel):
     id_column: str
     time_column: str
     text_columns: List[str]
+    timezone: str = "UTC"
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
     created_at: datetime
 
 
 class WindowingSpec(BaseModel):
-    block_mode: Literal["turn_pairs", "rows"] = "turn_pairs"
-    windowing_mode: Literal["turn_pairs", "time_gap", "conversation_bound"] = "turn_pairs"
-    boundary_column: Optional[str] = None
-    include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
+    windowing_mode: Literal["document", "time_gap", "conversation_bound"] = "document"
     time_gap_minutes: int = 15
-    time_gap_seconds: int = 900
     max_chars: int = 6000
+    conversation_bound: Optional[str] = None
+    boundary_column: Optional[str] = None
 
 
 class ModelSpec(BaseModel):
@@ -99,6 +98,7 @@ class DatasetCreateRequest(BaseModel):
     id_column: str
     time_column: str
     text_columns: List[str]
+    timezone: Optional[str] = None
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
 
@@ -109,6 +109,7 @@ class DatasetUpdateRequest(BaseModel):
     id_column: Optional[str] = None
     time_column: Optional[str] = None
     text_columns: Optional[List[str]] = None
+    timezone: Optional[str] = None
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
 
@@ -324,7 +325,7 @@ class CapabilitiesResponse(BaseModel):
     llm_bus_route: Optional[str] = None
     llm_intake_channel: Optional[str] = None
     llm_reply_prefix: Optional[str] = None
-    segmentation_modes_supported: List[str]
+    windowing_modes_supported: List[str]
     enricher_modes_supported: List[str]
     supported_metrics: Optional[List[str]] = None
     default_metric: Optional[str] = None

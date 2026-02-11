@@ -51,7 +51,7 @@ class Settings(BaseSettings):
         "orion:llm:reply",
         validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_REPLY_PREFIX"),
     )
-    topic_foundry_llm_bus_route: Optional[str] = Field(
+    topic_foundry_llm_route: Optional[str] = Field(
         None,
         validation_alias=AliasChoices("TOPIC_FOUNDRY_LLM_BUS_ROUTE"),
     )

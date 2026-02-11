@@ -161,7 +161,6 @@ let notificationToastSeconds = 8;
 const ATTENTION_EVENT_KIND = "orion.chat.attention";
 const CHAT_MESSAGE_EVENT_KIND = "orion.chat.message";
 const RECIPIENT_GROUP = "juniper_primary";
-let topicAutoRefreshTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
@@ -277,20 +276,8 @@ loadDismissedIds();
   const bioStabilityValue = document.getElementById("bioStabilityValue");
   const bioStabilityTrend = document.getElementById("bioStabilityTrend");
 
-  // Topic Rail
-  const topicWindowSelect = document.getElementById("topicWindowSelect");
-  const topicMaxSelect = document.getElementById("topicMaxSelect");
-  const topicMinTurnsSelect = document.getElementById("topicMinTurnsSelect");
-  const topicModelVersion = document.getElementById("topicModelVersion");
-  const topicRefreshButton = document.getElementById("topicRefreshButton");
-  const topicAutoRefresh = document.getElementById("topicAutoRefresh");
-  const topicRailStatus = document.getElementById("topicRailStatus");
-  const topicRailRetry = document.getElementById("topicRailRetry");
-  const topicSummaryBody = document.getElementById("topicSummaryBody");
-  const topicDriftBody = document.getElementById("topicDriftBody");
-  const topicSummaryMeta = document.getElementById("topicSummaryMeta");
-  const topicDriftMeta = document.getElementById("topicDriftMeta");
   const toastMessage = document.getElementById("toastMessage");
+
 
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
@@ -750,8 +737,10 @@ loadDismissedIds();
       teardownTopicStudioUI();
     } else {
       initTopicStudioUI().catch((err) => {
+        console.error("[TopicStudio] Failed to initialize panel", err);
         renderPanelError("topic-studio", err, "Retry", () => showPanel("topic-studio"));
-        window.location.hash = "#hub";
+        if (topicStudioPanel) topicStudioPanel.classList.remove("hidden");
+        setActiveNav("topic-studio");
       });
     }
   }
@@ -4599,195 +4588,6 @@ loadDismissedIds();
     if (bioStabilityTrend) bioStabilityTrend.textContent = trendArrow(stabilityTrend);
   }
 
-  function setTopicRailStatus(text, isError = false) {
-    if (!topicRailStatus) return;
-    topicRailStatus.textContent = text;
-    if (isError) {
-      topicRailStatus.classList.add("text-red-300");
-    } else {
-      topicRailStatus.classList.remove("text-red-300");
-    }
-  }
-
-  function clearTopicRailTables() {
-    if (topicSummaryBody) topicSummaryBody.innerHTML = "";
-    if (topicDriftBody) topicDriftBody.innerHTML = "";
-  }
-
-  function parseKeywords(value) {
-    if (!value) return [];
-    if (Array.isArray(value)) return value;
-    if (typeof value === "string") {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [value];
-      } catch (err) {
-        return [value];
-      }
-    }
-    return [];
-  }
-
-  function renderTopicSummary(topics) {
-    if (!topicSummaryBody) return;
-    topicSummaryBody.innerHTML = "";
-    if (!topics || topics.length === 0) {
-      const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="5" class="py-3 text-center text-gray-500">No topics found.</td>`;
-      topicSummaryBody.appendChild(row);
-      return;
-    }
-
-    topics.forEach((topic) => {
-      const row = document.createElement("tr");
-      const keywords = parseKeywords(topic.topic_keywords);
-      const outlierPct = topic.outlier_pct;
-      const outlierCount = topic.outlier_count;
-      const outlierValue =
-        outlierPct !== null && outlierPct !== undefined
-          ? formatPercent(outlierPct, 1)
-          : outlierCount !== null && outlierCount !== undefined
-            ? `${outlierCount}`
-            : "--";
-
-      const label = topic.topic_label || "Untitled";
-      const topicId = topic.topic_id !== null && topic.topic_id !== undefined ? String(topic.topic_id) : "--";
-      const keywordChips = keywords.length
-        ? keywords
-            .slice(0, 5)
-            .map(
-              (word) =>
-                `<span class="inline-flex items-center rounded-full bg-gray-700/70 px-2 py-0.5 text-[10px] text-gray-200">${word}</span>`,
-            )
-            .join(" ")
-        : `<span class="text-gray-500">--</span>`;
-
-      row.innerHTML = `
-        <td class="py-2 pr-3 align-top">
-          <div class="text-sm text-gray-100">${label}</div>
-          <div class="text-[10px] text-gray-500">#${topicId}</div>
-        </td>
-        <td class="py-2 pr-3 align-top">${keywordChips}</td>
-        <td class="py-2 pr-3 align-top">${topic.doc_count ?? "--"}</td>
-        <td class="py-2 pr-3 align-top">${formatPercent(topic.pct_of_window, 1)}</td>
-        <td class="py-2 pr-3 align-top">${outlierValue}</td>
-      `;
-      topicSummaryBody.appendChild(row);
-    });
-  }
-
-  function renderTopicDrift(sessions, topicLabelMap) {
-    if (!topicDriftBody) return;
-    topicDriftBody.innerHTML = "";
-    if (!sessions || sessions.length === 0) {
-      const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="6" class="py-3 text-center text-gray-500">No drifting sessions found.</td>`;
-      topicDriftBody.appendChild(row);
-      return;
-    }
-
-    sessions.forEach((session) => {
-      const row = document.createElement("tr");
-      const sessionId = session.session_id || "--";
-      const shortId = sessionId.length > 10 ? `${sessionId.slice(0, 10)}…` : sessionId;
-      const switchRate = Number(session.switch_rate);
-      const entropy = Number(session.entropy);
-      const switchClass = switchRate >= 0.35 ? "text-yellow-300 font-semibold" : "";
-      const entropyClass = entropy >= 1.5 ? "text-red-300 font-semibold" : "";
-      const dominantId = session.dominant_topic_id;
-      const dominantLabel = dominantId !== null && dominantId !== undefined ? topicLabelMap.get(dominantId) : null;
-      const dominantDisplay = dominantLabel ? `${dominantLabel} (#${dominantId})` : dominantId ?? "--";
-
-      row.innerHTML = `
-        <td class="py-2 pr-3 align-top" title="${sessionId}">${shortId}</td>
-        <td class="py-2 pr-3 align-top">${session.turns ?? "--"}</td>
-        <td class="py-2 pr-3 align-top">${session.unique_topics ?? "--"}</td>
-        <td class="py-2 pr-3 align-top ${entropyClass}">${formatNumber(entropy)}</td>
-        <td class="py-2 pr-3 align-top ${switchClass}">${formatPercent(switchRate, 1)}</td>
-        <td class="py-2 pr-3 align-top">
-          <div>${dominantDisplay ?? "--"}</div>
-          <div class="text-[10px] text-gray-500">${formatPercent(session.dominant_pct, 1)}</div>
-        </td>
-      `;
-      topicDriftBody.appendChild(row);
-    });
-  }
-
-  async function fetchTopicRailData() {
-    if (!topicWindowSelect || !topicMaxSelect || !topicMinTurnsSelect) return;
-    setTopicRailStatus("Loading...");
-    if (topicRailRetry) topicRailRetry.classList.add("hidden");
-
-    const windowMinutes = topicWindowSelect.value;
-    const maxTopics = topicMaxSelect.value;
-    const minTurns = topicMinTurnsSelect.value;
-    const modelVersion = topicModelVersion?.value?.trim();
-
-    const summaryParams = new URLSearchParams({
-      window_minutes: windowMinutes,
-      max_topics: maxTopics,
-    });
-    if (modelVersion) summaryParams.set("model_version", modelVersion);
-
-    const driftParams = new URLSearchParams({
-      window_minutes: windowMinutes,
-      min_turns: minTurns,
-    });
-    if (modelVersion) driftParams.set("model_version", modelVersion);
-
-    try {
-      const [summaryResp, driftResp] = await Promise.all([
-        hubFetch(apiUrl(`/api/topics/summary?${summaryParams.toString()}`)),
-        hubFetch(apiUrl(`/api/topics/drift?${driftParams.toString()}`)),
-      ]);
-
-      if (!summaryResp.ok || !driftResp.ok) {
-        throw new Error("Topic Rail request failed.");
-      }
-
-      const summaryPayload = await summaryResp.json();
-      const driftPayload = await driftResp.json();
-
-      const topics = summaryPayload.topics || [];
-      const sessions = driftPayload.sessions || [];
-      const summaryModel = summaryPayload.model_version || "latest";
-      const driftModel = driftPayload.model_version || "latest";
-      if (topicSummaryMeta) {
-        topicSummaryMeta.textContent = `model: ${summaryModel}`;
-      }
-      if (topicDriftMeta) {
-        topicDriftMeta.textContent = `model: ${driftModel}`;
-      }
-
-      const topicLabelMap = new Map();
-      topics.forEach((topic) => {
-        if (topic.topic_id !== null && topic.topic_id !== undefined) {
-          topicLabelMap.set(topic.topic_id, topic.topic_label || `Topic ${topic.topic_id}`);
-        }
-      });
-
-      renderTopicSummary(topics);
-      renderTopicDrift(sessions, topicLabelMap);
-      setTopicRailStatus(`Updated ${new Date().toLocaleTimeString()}.`);
-    } catch (err) {
-      console.error("[TopicRail]", err);
-      clearTopicRailTables();
-      setTopicRailStatus("Failed to load Topic Rail data.", true);
-      if (topicRailRetry) topicRailRetry.classList.remove("hidden");
-      showToast("Topic Rail failed to load. Check Landing Pad connectivity.");
-    }
-  }
-
-  function startTopicAutoRefresh() {
-    if (topicAutoRefreshTimer) {
-      clearInterval(topicAutoRefreshTimer);
-      topicAutoRefreshTimer = null;
-    }
-    if (topicAutoRefresh?.checked) {
-      topicAutoRefreshTimer = setInterval(fetchTopicRailData, 60000);
-    }
-  }
-
   // --- 3. Event Listeners ---
 
   if (recordButton) {
@@ -5500,51 +5300,6 @@ loadDismissedIds();
       updateVisionUi();
   })();
 
-  if (topicRefreshButton) {
-    topicRefreshButton.addEventListener("click", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicRailRetry) {
-    topicRailRetry.addEventListener("click", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicAutoRefresh) {
-    topicAutoRefresh.addEventListener("change", () => {
-      startTopicAutoRefresh();
-    });
-  }
-  if (topicWindowSelect) {
-    topicWindowSelect.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicMaxSelect) {
-    topicMaxSelect.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicMinTurnsSelect) {
-    topicMinTurnsSelect.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-  }
-  if (topicModelVersion) {
-    topicModelVersion.addEventListener("change", () => {
-      fetchTopicRailData();
-    });
-    topicModelVersion.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        fetchTopicRailData();
-      }
-    });
-  }
-
-  if (topicWindowSelect && topicMaxSelect && topicMinTurnsSelect) {
-    fetchTopicRailData();
-    startTopicAutoRefresh();
-  }
 
   async function refreshTopicStudioStatus() {
     if (!tsStatusBadge) return;

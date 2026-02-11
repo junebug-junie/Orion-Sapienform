@@ -39,13 +39,6 @@ class Settings(BaseSettings):
         alias="ORION_BUS_URL",
     )
 
-    # --- Landing Pad Integration (Topic Rail) ---
-    LANDING_PAD_URL: str = Field(
-        default="http://orion-landing-pad:8370",
-        alias="LANDING_PAD_URL",
-    )
-    LANDING_PAD_TIMEOUT_SEC: float = Field(default=5.0, alias="LANDING_PAD_TIMEOUT_SEC")
-
     # --- Topic Foundry Integration ---
     TOPIC_FOUNDRY_BASE_URL: str = Field(
         default="http://orion-topic-foundry:8615",

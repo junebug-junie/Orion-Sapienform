@@ -36,36 +36,9 @@ def build_blocks_for_conversation(
 ) -> List[RowBlock]:
     blocks: List[RowBlock] = []
     mode = spec.windowing_mode
-    if mode == "turn_pairs" and spec.block_mode != "turn_pairs":
-        if spec.block_mode == "rows":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 1
-        elif spec.block_mode == "triads":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 3
-        elif spec.block_mode == "group_by_column":
-            mode = "conversation_bound_then_time_gap"
-    if mode == "fixed_k_rows":
-        step = spec.fixed_k_rows_step or spec.fixed_k_rows
-        for idx in range(0, len(convo_rows), step):
-            chunk = convo_rows[idx : idx + spec.fixed_k_rows]
-            if not chunk:
-                continue
-            text = _make_block_text(chunk, text_columns, spec)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column]) for row in chunk],
-                    timestamps=[
-                        row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
-                        for row in chunk
-                    ],
-                    doc_id=str(uuid4()),
-                    text=text,
-                )
-            )
-    elif mode == "time_gap" or mode == "conversation_bound_then_time_gap":
+    if mode not in {"turn_pairs", "time_gap", "conversation_bound"}:
+        mode = "time_gap"
+    if mode == "time_gap":
         row_ids: List[str] = []
         timestamps: List[str] = []
         text_parts: List[str] = []
@@ -168,75 +141,6 @@ def build_blocks_for_conversation(
                     text=_truncate(text, spec.max_chars),
                 )
             )
-    elif spec.block_mode == "triads":
-        for idx in range(0, len(convo_rows), 3):
-            chunk = convo_rows[idx : idx + 3]
-            if len(chunk) < 3:
-                break
-            text = _make_block_text(chunk, text_columns, spec)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column]) for row in chunk],
-                    timestamps=[
-                        row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
-                        for row in chunk
-                    ],
-                    doc_id=str(uuid4()),
-                    text=text,
-                )
-            )
-    elif spec.block_mode == "group_by_column":
-        row_ids: List[str] = []
-        timestamps: List[str] = []
-        text_parts: List[str] = []
-        last_ts: Optional[datetime] = None
-        for row in convo_rows:
-            text = _row_text(row, text_columns)
-            if not text:
-                continue
-            ts = row[time_column]
-            if isinstance(ts, str):
-                ts = datetime.fromisoformat(ts)
-            if last_ts is not None and (ts - last_ts).total_seconds() > spec.time_gap_seconds and text_parts:
-                blocks.append(
-                    RowBlock(
-                        row_ids=row_ids,
-                        timestamps=timestamps,
-                        doc_id=str(uuid4()),
-                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                    )
-                )
-                row_ids = []
-                timestamps = []
-                text_parts = []
-            candidate_text = "\n".join([*text_parts, text]).strip()
-            if text_parts and len(candidate_text) > spec.max_chars:
-                blocks.append(
-                    RowBlock(
-                        row_ids=row_ids,
-                        timestamps=timestamps,
-                        doc_id=str(uuid4()),
-                        text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                    )
-                )
-                row_ids = []
-                timestamps = []
-                text_parts = []
-            row_ids.append(str(row[id_column]))
-            timestamps.append(ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
-            text_parts.append(text)
-            last_ts = ts
-        if text_parts:
-            blocks.append(
-                RowBlock(
-                    row_ids=row_ids,
-                    timestamps=timestamps,
-                    doc_id=str(uuid4()),
-                    text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
-                )
-            )
     else:
         for row in convo_rows:
             text = _row_text(row, text_columns)
@@ -333,38 +237,9 @@ def _build_segments_internal(
     for convo in conversations:
         blocks = convo.blocks
         blocks_generated += len(blocks)
-        if spec.segmentation_mode == "time_gap":
-            segments.extend(_chunk_blocks(blocks, spec))
-            continue
-
-        embeddings = None
-        if embedding_url and spec.segmentation_mode in {"semantic", "hybrid", "llm_judge", "hybrid_llm"}:
-            embedder = VectorHostEmbeddingProvider(embedding_url)
-            embeddings = np.array(embedder.embed_texts([block.text for block in blocks]), dtype=np.float32)
-
-        if spec.segmentation_mode in {"semantic", "hybrid"} and embeddings is not None:
-            cfg = SemanticConfig(
-                threshold=spec.semantic_split_threshold,
-                confirm_edges_k=spec.confirm_edges_k,
-                smoothing_window=max(1, spec.smoothing_window),
-                min_blocks_per_segment=spec.min_blocks_per_segment,
-                max_window_seconds=spec.max_window_seconds,
-                max_chars=spec.max_chars,
-            )
-            segments.extend(split_blocks(blocks, embeddings, cfg))
-            continue
-
-        if spec.segmentation_mode in {"llm_judge", "hybrid_llm"} and boundary_context is not None:
-            splits = _llm_segmentation(blocks, embeddings, spec, boundary_context)
-            segments.extend(_segments_from_splits(blocks, splits, spec))
-            continue
-
         segments.extend(_chunk_blocks(blocks, spec))
-    if spec.llm_filter_enabled:
-        segments, filters = _apply_llm_filter(segments, spec)
-        if run_id and filters:
-            insert_window_filters(run_id, filters)
     return segments, blocks_generated
+
 
 
 def build_segments_from_conversations(

@@ -312,7 +312,6 @@ loadDismissedIds();
   const tsEndAt = document.getElementById("tsEndAt");
   const tsWindowingMode = document.getElementById("tsWindowingMode");
   const tsGroupByColumn = document.getElementById("tsGroupByColumn");
-  const tsSegmentationMode = document.getElementById("tsSegmentationMode");
   const tsGroupByRow = document.getElementById("tsGroupByRow");
   const tsTimeGap = document.getElementById("tsTimeGap");
   const tsMaxWindow = document.getElementById("tsMaxWindow");
@@ -1143,7 +1142,6 @@ loadDismissedIds();
       if (state.windowing) {
         if (tsWindowingMode && state.windowing.windowing_mode) tsWindowingMode.value = state.windowing.windowing_mode;
         if (tsGroupByColumn && state.windowing.group_by) tsGroupByColumn.value = state.windowing.group_by;
-        if (tsSegmentationMode && state.windowing.segmentation_mode) tsSegmentationMode.value = state.windowing.segmentation_mode;
         if (tsTimeGap && (state.windowing.time_gap_minutes || state.windowing.time_gap_seconds)) tsTimeGap.value = state.windowing.time_gap_minutes || state.windowing.time_gap_seconds;
         if (tsMaxWindow && state.windowing.max_window_seconds) tsMaxWindow.value = state.windowing.max_window_seconds;
         if (tsFixedKRows && state.windowing.fixed_k_rows) tsFixedKRows.value = state.windowing.fixed_k_rows;
@@ -1235,7 +1233,6 @@ loadDismissedIds();
       tsEndAt,
       tsWindowingMode,
       tsGroupByColumn,
-      tsSegmentationMode,
       tsTimeGap,
       tsMaxWindow,
       tsFixedKRows,
@@ -1305,21 +1302,19 @@ loadDismissedIds();
   }
 
   function buildWindowingSpec() {
-    const windowingMode = tsWindowingMode?.value || "turn_pairs";
-    const blockMode = windowingMode === "conversation_bound" ? "rows" : "turn_pairs";
+    const windowingMode = tsWindowingMode?.value || "document";
     const timeGapMinutes = Number(tsTimeGap?.value || 15);
     return {
-      block_mode: blockMode,
       windowing_mode: windowingMode,
-      include_roles: ["user", "assistant"],
       time_gap_minutes: timeGapMinutes,
-      time_gap_seconds: timeGapMinutes * 60,
       max_chars: Number(tsMaxChars?.value || 6000),
+      conversation_bound: tsDatasetBoundaryColumn?.value || "",
+      boundary_column: tsDatasetBoundaryColumn?.value || "",
     };
   }
 
   function boundaryColumnRequired() {
-    const mode = tsWindowingMode?.value || "turn_pairs";
+    const mode = tsWindowingMode?.value || "document";
     return mode.startsWith("conversation");
   }
 
@@ -1343,7 +1338,7 @@ loadDismissedIds();
 
   function updateGroupByVisibility() {
     if (!tsGroupByRow || !tsGroupByColumn) return;
-    const isGroupBy = tsWindowingMode?.value === "group_by_column";
+    const isGroupBy = false;
     tsGroupByColumn.disabled = !isGroupBy;
     tsGroupByColumn.classList.toggle("opacity-50", !isGroupBy);
   }
@@ -1670,19 +1665,14 @@ loadDismissedIds();
   function applyRunPreset(value) {
     if (!value) return;
     if (value === "conversation_view") {
-      if (tsWindowingMode) tsWindowingMode.value = "conversation_bound_then_time_gap";
-      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsWindowingMode) tsWindowingMode.value = "conversation_bound";
       if (tsMaxChars) tsMaxChars.value = "6000";
-      if (tsTimeGap) tsTimeGap.value = "900";
-      if (tsMinBlocks) tsMinBlocks.value = "1";
-      if (tsFixedKRows) tsFixedKRows.value = "2";
+      if (tsTimeGap) tsTimeGap.value = "15";
     }
     if (value === "global_themes") {
-      if (tsWindowingMode) tsWindowingMode.value = "turn_pairs";
-      if (tsSegmentationMode) tsSegmentationMode.value = "time_gap";
+      if (tsWindowingMode) tsWindowingMode.value = "document";
       if (tsMaxChars) tsMaxChars.value = "12000";
-      if (tsTimeGap) tsTimeGap.value = "900";
-      if (tsMinBlocks) tsMinBlocks.value = "1";
+      if (tsTimeGap) tsTimeGap.value = "15";
     }
     updateGroupByVisibility();
     saveTopicStudioState();
@@ -5292,30 +5282,21 @@ loadDismissedIds();
     }
   }
 
-  function renderSegmentationModes(modes = [], llmEnabled = true) {
-    if (!tsSegmentationMode) return;
-    tsSegmentationMode.innerHTML = "";
-    modes.forEach((mode) => {
+  function renderWindowingModes(modes = []) {
+    if (!tsWindowingMode) return;
+    const allowed = ["document", "time_gap", "conversation_bound"];
+    const normalized = modes.filter((mode) => allowed.includes(mode));
+    const finalModes = normalized.length ? normalized : allowed;
+    const current = tsWindowingMode.value;
+    tsWindowingMode.innerHTML = "";
+    finalModes.forEach((mode) => {
       const option = document.createElement("option");
       option.value = mode;
       option.textContent = mode;
-      if (!llmEnabled && (mode.includes("llm"))) {
-        option.disabled = true;
-      }
-      tsSegmentationMode.appendChild(option);
+      tsWindowingMode.appendChild(option);
     });
-    if (!llmEnabled) {
-      if (tsLlmNote) tsLlmNote.classList.remove("hidden");
-    } else if (tsLlmNote) {
-      tsLlmNote.classList.add("hidden");
-    }
-    const current = tsSegmentationMode.value;
-    const selectedOption = tsSegmentationMode.querySelector(`option[value="${current}"]`);
-    if (selectedOption && selectedOption.disabled) {
-      const firstEnabled = Array.from(tsSegmentationMode.options).find((opt) => !opt.disabled);
-      if (firstEnabled) {
-        tsSegmentationMode.value = firstEnabled.value;
-      }
+    if (current && finalModes.includes(current)) {
+      tsWindowingMode.value = current;
     }
   }
 
@@ -5366,9 +5347,9 @@ loadDismissedIds();
       setTopicStudioRenderStep("fetching /capabilities");
       const result = await topicFoundryFetch("/capabilities");
       topicStudioCapabilities = result;
-      const modes = result?.segmentation_modes_supported ?? [];
+      const modes = result?.windowing_modes_supported ?? result?.segmentation_modes_supported ?? [];
       const metrics = result.supported_metrics || [];
-      renderSegmentationModes(modes, Boolean(result.llm_enabled));
+      renderWindowingModes(modes);
       renderMetricOptions(metrics, result.default_metric);
       const embeddingDefault = result?.defaults?.embedding_source_url || result?.default_embedding_url || "";
       applyCapabilityDefaults(result.defaults || {}, embeddingDefault);
@@ -5382,9 +5363,9 @@ loadDismissedIds();
       setTopicStudioRenderStep("fetched /capabilities");
       setLoading(tsStatusLoading, false);
     } catch (err) {
-      const fallbackModes = ["time_gap", "semantic", "hybrid"];
+      const fallbackModes = ["document", "time_gap", "conversation_bound"];
       const fallbackMetrics = ["euclidean", "cosine"];
-      renderSegmentationModes(fallbackModes, false);
+      renderWindowingModes(fallbackModes);
       renderMetricOptions(fallbackMetrics, "cosine");
       renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
       recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);

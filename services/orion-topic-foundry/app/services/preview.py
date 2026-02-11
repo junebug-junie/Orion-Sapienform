@@ -57,8 +57,10 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
     if not segments:
         return DatasetPreviewResponse(
             rows_scanned=len(rows),
+            row_count=len(rows),
             blocks_generated=blocks_generated,
             segments_generated=0,
+            segment_count=0,
             docs_generated=0,
             doc_count=0,
             avg_chars=0.0,
@@ -85,8 +87,10 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
     ]
     return DatasetPreviewResponse(
         rows_scanned=len(rows),
+        row_count=len(rows),
         blocks_generated=blocks_generated,
         segments_generated=len(segments),
+        segment_count=len(segments),
         docs_generated=len(segments),
         doc_count=len(segments),
         avg_chars=float(mean(lengths)),

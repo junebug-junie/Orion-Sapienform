@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS topic_foundry_datasets (
     id_column     VARCHAR NOT NULL,
     time_column   VARCHAR NOT NULL,
     text_columns  JSONB NOT NULL,
+    timezone      VARCHAR NOT NULL DEFAULT 'UTC',
     boundary_column VARCHAR,
     boundary_strategy VARCHAR,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()

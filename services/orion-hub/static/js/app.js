@@ -363,7 +363,6 @@ loadDismissedIds();
   const tsSegmentsRunId = document.getElementById("tsSegmentsRunId");
   const tsSegmentsEnrichment = document.getElementById("tsSegmentsEnrichment");
   const tsSegmentsAspect = document.getElementById("tsSegmentsAspect");
-  const tsLoadSegments = document.getElementById("tsLoadSegments");
   const tsSegmentsError = document.getElementById("tsSegmentsError");
   const tsSegmentsTableBody = document.getElementById("tsSegmentsTableBody");
   const tsSegmentDetailsPanel = document.getElementById("tsSegmentDetailsPanel");
@@ -666,6 +665,7 @@ loadDismissedIds();
   }
 
   async function initTopicStudioUI() {
+    console.log("[TopicStudio] init start");
     if (!topicStudioRoot) {
       throw new Error("Topic Studio root not found.");
     }
@@ -707,7 +707,6 @@ loadDismissedIds();
     const required = [
       ["tsCreateModel", tsCreateModel],
       ["tsSkeletonRetry", tsSkeletonRetry],
-      ["tsLoadSegments", tsLoadSegments],
     ];
     required.forEach(([id, el]) => {
       if (!el) reportTopicStudioWiringError(id);
@@ -873,27 +872,6 @@ loadDismissedIds();
           </div>
         </div>
 
-        <div style="margin-top:16px; display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:12px;">
-          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111;">
-            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-              <div style="font-weight:600;">Segments</div>
-              <div style="display:flex; gap:8px; align-items:center;">
-                <select id="ts-mvp-segments-run" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;"></select>
-                <select id="ts-mvp-segments-enriched" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
-                  <option value="">all</option>
-                  <option value="true">has_enrichment=true</option>
-                  <option value="false">has_enrichment=false</option>
-                </select>
-                <button id="ts-mvp-load-segments" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Load</button>
-              </div>
-            </div>
-            <div id="ts-mvp-segments-table" style="margin-top:8px; font-size:12px; color:#aaa;">--</div>
-          </div>
-          <div style="border:1px solid #333; border-radius:10px; padding:12px; background:#111; display:flex; flex-direction:column; gap:8px; min-height:0;">
-            <div style="font-weight:600;">Segment Details</div>
-            <div id="ts-mvp-segment-detail" style="font-size:12px; color:#bbb;">Select a segment to view details.</div>
-          </div>
-        </div>
         <div style="margin-top:8px; font-size:11px; color:#666;">lastStep: <span id="ts-mvp-step">${window.__HUB_LAST_STEP}</span></div>
       </div>
     `;
@@ -2393,12 +2371,6 @@ loadDismissedIds();
         enrichRun().catch((err) => setMvpError(err?.message || "Failed to enrich run"));
       });
     }
-    const loadSegmentsBtn = document.getElementById("ts-mvp-load-segments");
-    if (loadSegmentsBtn) {
-      loadSegmentsBtn.addEventListener("click", () => {
-        loadSegmentsMvp().catch((err) => setMvpError(err?.message || "Failed to load segments"));
-      });
-    }
   }
 
   async function refreshTopicStudioMvp() {
@@ -2770,104 +2742,6 @@ loadDismissedIds();
         topicStudioMvpState.runPoller = null;
       }
     }, 2000);
-  }
-
-  async function loadSegmentsMvp() {
-    const runId = document.getElementById("ts-mvp-segments-run")?.value;
-    if (!runId) {
-      setMvpError("Select a run to load segments.");
-      return;
-    }
-    const enriched = document.getElementById("ts-mvp-segments-enriched")?.value;
-    const params = new URLSearchParams({
-      run_id: runId,
-      include_snippet: "true",
-      include_bounds: "true",
-    });
-    if (enriched) params.set("has_enrichment", enriched);
-    let result = null;
-    try {
-      result = await tfFetchJson(`/segments?${params.toString()}`);
-    } catch (err) {
-      table.textContent = "--";
-      setMvpError(formatHttpError("segments", err));
-      return;
-    }
-    const table = document.getElementById("ts-mvp-segments-table");
-    if (!table) return;
-    const items = asItems(result);
-    if (!items.length) {
-      table.textContent = "(none)";
-      return;
-    }
-    table.innerHTML = `
-      <table style="width:100%; border-collapse:collapse;">
-        <thead><tr style="text-align:left; color:#888;">
-          <th style="padding:4px;">segment_id</th>
-          <th style="padding:4px;">rows</th>
-          <th style="padding:4px;">label</th>
-          <th style="padding:4px;">bounds</th>
-          <th style="padding:4px;">snippet</th>
-        </tr></thead>
-        <tbody>
-          ${items
-            .map(
-              (segment) => `
-                <tr data-segment-id="${segment.segment_id}" style="cursor:pointer; border-top:1px solid #222;">
-                  <td style="padding:4px; color:#7fd;">${segment.segment_id || "--"}</td>
-                  <td style="padding:4px;">${segment.row_ids_count ?? segment.size ?? "--"}</td>
-                  <td style="padding:4px;">${segment.label || "--"}</td>
-                  <td style="padding:4px;">${segment.bounds || segment.bounds_text || "--"}</td>
-                  <td style="padding:4px;">${segment.snippet || "--"}</td>
-                </tr>
-              `
-            )
-            .join("")}
-        </tbody>
-      </table>
-    `;
-    table.querySelectorAll("[data-segment-id]").forEach((row) => {
-      row.addEventListener("click", () => {
-        const id = row.getAttribute("data-segment-id");
-        if (id) loadSegmentDetail(id);
-      });
-    });
-  }
-
-  async function loadSegmentDetail(segmentId) {
-    const detailEl = document.getElementById("ts-mvp-segment-detail");
-    if (!detailEl) return;
-    let seg = null;
-    try {
-      seg = await tfFetchJson(`/segments/${segmentId}?include_full_text=true`);
-    } catch (err) {
-      detailEl.textContent = "Failed to load segment detail.";
-      setMvpError(formatHttpError("segment detail", err));
-      return;
-    }
-    const hasFullText = Object.prototype.hasOwnProperty.call(seg, "full_text");
-    const provenance = seg.provenance ? JSON.stringify(seg.provenance, null, 2) : "--";
-    const meaningPayload = {
-      title: seg.title || seg.label || null,
-      aspects: seg.aspects || null,
-      meaning: seg.meaning || null,
-      enrichment: seg.enrichment || null,
-      sentiment: seg.sentiment || null,
-      topic_id: seg.topic_id ?? null,
-      is_outlier: seg.is_outlier ?? null,
-    };
-    const fullTextLabel = hasFullText ? "Full text" : "Full text (error)";
-    const fullTextValue = hasFullText ? seg.full_text || "--" : "backend missing include_full_text support";
-    detailEl.innerHTML = `
-      <div><strong>${seg.segment_id || ""}</strong></div>
-      <div style="margin-top:4px;">${seg.text || seg.snippet || "--"}</div>
-      <div style="margin-top:6px; color:#777;">Provenance</div>
-      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${provenance}</pre>
-      <div style="margin-top:6px; color:#777;">Meaning & enrichment</div>
-      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${JSON.stringify(meaningPayload, null, 2)}</pre>
-      <div style="margin-top:6px; color:#777;">${fullTextLabel}</div>
-      <pre style="margin-top:4px; background:#0b0b0b; border:1px solid #333; padding:6px; border-radius:6px; white-space:pre-wrap;">${fullTextValue}</pre>
-    `;
   }
 
   function renderError(target, error, fallback = "Request failed.") {
@@ -3312,8 +3186,7 @@ loadDismissedIds();
           if (tsSegmentsAspect) tsSegmentsAspect.value = value;
           topicStudioSegmentsFacetFilter = null;
           resetSegmentsPaging();
-          loadSegments().catch((err) => console.warn("[TopicStudio] segments preload failed", err));
-          refreshSegmentFacets();
+            refreshSegmentFacets();
           return;
         }
         topicStudioSegmentsFacetFilter = { type, value };
@@ -3330,8 +3203,6 @@ loadDismissedIds();
     clearButton.addEventListener("click", () => {
       topicStudioSegmentsFacetFilter = null;
       if (tsSegmentsAspect) tsSegmentsAspect.value = "";
-      resetSegmentsPaging();
-      loadSegments().catch((err) => console.warn("[TopicStudio] segments load failed", err));
       refreshSegmentFacets();
     });
     tsSegmentsFacets.appendChild(clearButton);
@@ -3552,7 +3423,11 @@ loadDismissedIds();
       body: JSON.stringify(payload),
     });
     console.log("[TopicStudio] create dataset request sent", payload.source_table);
-    await refreshTopicStudio();
+    try {
+      await refreshTopicStudio();
+    } catch (err) {
+      console.warn("[TopicStudio] refresh failed after create", err);
+    }
     if (result?.dataset_id && tsDatasetSelect) {
       tsDatasetSelect.value = result.dataset_id;
     }
@@ -3572,7 +3447,11 @@ loadDismissedIds();
       body: JSON.stringify(payload),
     });
     console.log("[TopicStudio] save dataset request sent", tsDatasetSelect.value);
-    await refreshTopicStudio();
+    try {
+      await refreshTopicStudio();
+    } catch (err) {
+      console.warn("[TopicStudio] refresh failed after save", err);
+    }
     setDatasetSaveStatus("Saved");
   }
 
@@ -3592,103 +3471,6 @@ loadDismissedIds();
     };
     await executePreview(payload);
     console.log("[TopicStudio] preview request sent");
-  }
-
-  function renderSegmentsTable(segments) {
-    if (!tsSegmentsTableBody) return;
-    tsSegmentsTableBody.innerHTML = "";
-    const rows = Array.isArray(segments) ? segments : [];
-    if (!rows.length) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = '<td class="px-3 py-2 text-gray-500" colspan="7">No segments.</td>';
-      tsSegmentsTableBody.appendChild(tr);
-      return;
-    }
-    rows.forEach((segment) => {
-      const tr = document.createElement("tr");
-      tr.className = "hover:bg-gray-900/60 cursor-pointer";
-      tr.innerHTML = `
-        <td class="px-3 py-2">${segment.segment_id || "--"}</td>
-        <td class="px-3 py-2">${segment.title || segment.label || "--"}</td>
-        <td class="px-3 py-2">${segment.row_ids_count ?? segment.size ?? "--"}</td>
-        <td class="px-3 py-2">${segment.start_at || "--"}</td>
-        <td class="px-3 py-2">${segment.end_at || "--"}</td>
-        <td class="px-3 py-2">${segment.topic_id ?? "--"}</td>
-        <td class="px-3 py-2">${segment.snippet || "--"}</td>
-      `;
-      tr.addEventListener("click", () => renderSegmentDetailPanel(segment));
-      tsSegmentsTableBody.appendChild(tr);
-    });
-  }
-
-  async function refreshSegmentFacets() {
-    if (!tsSegmentsRunId?.value) {
-      topicStudioSegmentsLastFacets = null;
-      renderSegmentsFacets(null);
-      return;
-    }
-    const params = new URLSearchParams({ run_id: tsSegmentsRunId.value });
-    const aspect = tsSegmentsAspect?.value?.trim();
-    if (aspect) params.set("aspect", aspect);
-    try {
-      const result = await topicFoundryFetch(`/segments/facets?${params.toString()}`);
-      topicStudioSegmentsLastFacets = result;
-      renderSegmentsFacets(result);
-    } catch (err) {
-      console.warn("[TopicStudio] facets unavailable", err);
-      topicStudioSegmentsLastFacets = null;
-      renderSegmentsFacets(null);
-    }
-  }
-
-  async function loadSegments() {
-    const runId = tsSegmentsRunId?.value || tsRunsSelect?.value || tsRunId?.value;
-    if (!runId) {
-      topicStudioSegmentsPage = [];
-      topicStudioSegmentsDisplayed = [];
-      topicStudioSegmentsTotal = null;
-      renderSegmentsTable([]);
-      updateSegmentsRange();
-      return;
-    }
-    setLoading(tsSegmentsLoading, true);
-    if (tsSegmentsError) tsSegmentsError.textContent = "--";
-    try {
-      topicStudioSegmentsLimit = Number(tsSegmentsPageSize?.value || 50);
-      const params = new URLSearchParams({
-        run_id: runId,
-        limit: String(topicStudioSegmentsLimit),
-        offset: String(topicStudioSegmentsOffset),
-      });
-      const search = tsSegmentsSearch?.value?.trim();
-      const sort = tsSegmentsSort?.value;
-      const enrichment = tsSegmentsEnrichment?.value;
-      const aspect = tsSegmentsAspect?.value?.trim();
-      if (search) params.set("search", search);
-      if (sort) params.set("sort", sort);
-      if (enrichment) params.set("has_enrichment", enrichment);
-      if (aspect) params.set("aspect", aspect);
-      const response = await topicFoundryFetch(`/segments?${params.toString()}`);
-      const items = Array.isArray(response?.items) ? response.items : Array.isArray(response?.segments) ? response.segments : [];
-      topicStudioSegmentsPage = items;
-      topicStudioSegmentsDisplayed = applySegmentsClientFilters(items);
-      topicStudioSegmentsTotal = Number.isFinite(Number(response?.total)) ? Number(response.total) : null;
-      topicStudioSegmentsQueryKey = params.toString();
-      renderSegmentsTable(topicStudioSegmentsDisplayed);
-      updateSegmentsRange();
-      await refreshSegmentFacets();
-      recordTopicStudioDebug("segments", { query: topicStudioSegmentsQueryKey, total: topicStudioSegmentsTotal, count: items.length });
-    } catch (err) {
-      console.warn("[TopicStudio] loadSegments failed", err);
-      renderError(tsSegmentsError, err, "Failed to load segments.");
-      topicStudioSegmentsPage = [];
-      topicStudioSegmentsDisplayed = [];
-      topicStudioSegmentsTotal = null;
-      renderSegmentsTable([]);
-      updateSegmentsRange();
-    } finally {
-      setLoading(tsSegmentsLoading, false);
-    }
   }
 
   function bindTopicStudioActions() {
@@ -3720,17 +3502,7 @@ loadDismissedIds();
         });
       });
     }
-    if (tsSegmentsRefresh) tsSegmentsRefresh.addEventListener("click", () => loadSegments().catch((err) => console.warn(err)));
-    if (tsSegmentsPageSize) tsSegmentsPageSize.addEventListener("change", () => { resetSegmentsPaging(); loadSegments().catch((err) => console.warn(err)); });
-    if (tsSegmentsPrev) tsSegmentsPrev.addEventListener("click", () => {
-      topicStudioSegmentsOffset = Math.max(0, topicStudioSegmentsOffset - topicStudioSegmentsLimit);
-      loadSegments().catch((err) => console.warn(err));
-    });
-    if (tsSegmentsNext) tsSegmentsNext.addEventListener("click", () => {
-      topicStudioSegmentsOffset += topicStudioSegmentsLimit;
-      loadSegments().catch((err) => console.warn(err));
-    });
-    if (tsSegmentsExport) tsSegmentsExport.addEventListener("click", exportSegmentsCsv);
+    console.log("[TopicStudio] bindings done (datasets + preview)");
   }
 
   function formatRunStats(run) {
@@ -5664,7 +5436,6 @@ loadDismissedIds();
       renderCompareRunOptions();
       if (tsRunsSelect?.value) {
         setSelectedRun(tsRunsSelect.value);
-        loadSegments().catch((err) => console.warn("[TopicStudio] segments preload failed", err));
       }
       if (tsKgRunId && !tsKgRunId.value && tsRunsSelect?.value) {
         tsKgRunId.value = tsRunsSelect.value;
@@ -5711,9 +5482,6 @@ loadDismissedIds();
     bindTopicStudioPersistence();
     if (HUB_DEBUG && tsDebugDrawer) {
       tsDebugDrawer.classList.remove("hidden");
-    }
-    if (tsUsePreviewSpec) {
-      tsUsePreviewSpec.disabled = true;
     }
     setTopicStudioSubview(resolveTopicStudioSubview());
     if (tsSkeletonRetry) {
@@ -5791,8 +5559,6 @@ loadDismissedIds();
     tsRunsSelect.addEventListener("change", () => {
       if (!tsRunsSelect.value) return;
       setSelectedRun(tsRunsSelect.value);
-      resetSegmentsPaging();
-      loadSegments().catch((err) => console.warn("[TopicStudio] segments load failed", err));
     });
   }
 

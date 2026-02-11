@@ -28,7 +28,25 @@ def build_blocks_for_conversation(
     if mode not in {"document", "time_gap", "conversation_bound"}:
         mode = "document"
 
-    if mode == "time_gap":
+    if mode == "document":
+        for row in convo_rows:
+            text = _row_text(row, text_columns)
+            if not text:
+                continue
+            ts = row[time_column]
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            row_id = row.get(id_column)
+            doc_id = str(row_id) if row_id is not None else str(uuid4())
+            blocks.append(
+                RowBlock(
+                    row_ids=[str(row_id)] if row_id is not None else [],
+                    timestamps=[ts.isoformat() if hasattr(ts, "isoformat") else str(ts)],
+                    doc_id=doc_id,
+                    text=_truncate(text, spec.max_chars),
+                )
+            )
+    elif mode == "time_gap":
         gap_seconds = max(int(spec.time_gap_minutes), 1) * 60
         row_ids: List[str] = []
         timestamps: List[str] = []
@@ -89,7 +107,7 @@ def build_blocks_for_conversation(
                         row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
                         for row in convo_rows
                     ],
-                    doc_id=str(uuid4()),
+                    doc_id=str(convo_rows[0].get(id_column)) if convo_rows and convo_rows[0].get(id_column) is not None else str(uuid4()),
                     text=text,
                 )
             )

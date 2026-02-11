@@ -3393,8 +3393,12 @@ loadDismissedIds();
       tsPreviewObserved.textContent = `${start} → ${end}`;
     }
     renderPreviewSamples(result.samples || []);
-    const docsGenerated = Number(result.docs_generated);
-    if (!Number.isNaN(docsGenerated) && docsGenerated < MIN_PREVIEW_DOCS) {
+    const mode = payload?.windowing?.windowing_mode || payload?.windowing_spec?.windowing_mode || "document";
+    const rowCount = Number(result.row_count ?? result.rows_scanned ?? 0);
+    const docCount = Number(result.doc_count ?? result.docs_generated ?? 0);
+    if (mode === "document" && Number.isFinite(rowCount) && rowCount >= MIN_PREVIEW_DOCS && docCount === 1) {
+      setWarning(tsPreviewWarning, "Document mode currently aggregating into one doc (bug); use time_gap/conversation_bound.");
+    } else if (!Number.isNaN(docCount) && docCount < MIN_PREVIEW_DOCS) {
       setWarning(tsPreviewWarning, "Low document count. Widen the date range or adjust windowing for more docs.");
     } else {
       setWarning(tsPreviewWarning, null);

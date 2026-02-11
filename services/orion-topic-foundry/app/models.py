@@ -139,8 +139,10 @@ class DatasetPreviewDoc(BaseModel):
 
 class DatasetPreviewResponse(BaseModel):
     rows_scanned: int
+    row_count: int
     blocks_generated: int
     segments_generated: int
+    segment_count: int
     docs_generated: int
     doc_count: int
     avg_chars: float

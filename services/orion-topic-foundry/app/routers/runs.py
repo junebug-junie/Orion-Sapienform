@@ -3,19 +3,15 @@ from __future__ import annotations
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from psycopg2 import errors as pg_errors
 
 from app.models import (
     EnrichmentSpec,
     ModelSpec,
-    RunEnrichRequest,
-    RunEnrichResponse,
     RunListPage,
     RunListResponse,
     RunRecord,
     RunListItem,
-    RunCompareResponse,
     RunSummary,
     RunTrainRequest,
     RunTrainResponse,
@@ -23,10 +19,8 @@ from app.models import (
     WindowingSpec,
 )
 from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
-from app.services.enrichment import enqueue_enrichment
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
-from app.settings import settings
 from app.storage.repository import (
     create_run,
     fetch_dataset,
@@ -214,72 +208,3 @@ def list_runs_endpoint(
     return RunListPage(items=items, limit=limit, offset=offset, total=total)
 
 
-@router.post("/runs/{run_id}/enrich", response_model=RunEnrichResponse)
-def enrich_run_endpoint(run_id: UUID, payload: RunEnrichRequest, background_tasks: BackgroundTasks) -> RunEnrichResponse:
-    row = fetch_run(run_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Run not found")
-    if payload.enricher == "llm" and not settings.topic_foundry_llm_enable:
-        raise HTTPException(
-            status_code=409,
-            detail="LLM enrichment is disabled. Enable TOPIC_FOUNDRY_LLM_ENABLE to use llm enricher.",
-        )
-    enqueue_enrichment(
-        background_tasks,
-        run_id,
-        force=payload.force,
-        enricher=payload.enricher,
-        limit=payload.limit,
-        target=payload.target,
-        fields=payload.fields,
-        llm_backend=payload.llm_backend,
-        prompt_template=payload.prompt_template,
-    )
-    stats = row.get("stats") or {}
-    return RunEnrichResponse(
-        run_id=run_id,
-        status=row.get("status", "running"),
-        enriched_count=stats.get("segments_enriched", 0),
-        failed_count=stats.get("enrichment_failed", 0),
-    )
-
-
-@router.get("/runs/compare", response_model=RunCompareResponse)
-def compare_runs(left_run_id: UUID, right_run_id: UUID):
-    left = fetch_run(left_run_id)
-    right = fetch_run(right_run_id)
-    if not left or not right:
-        raise HTTPException(status_code=404, detail="Run not found")
-    left_stats = left.get("stats") or {}
-    right_stats = right.get("stats") or {}
-    diffs = {
-        "docs_generated": (left_stats.get("docs_generated", 0) or 0) - (right_stats.get("docs_generated", 0) or 0),
-        "segments_generated": (left_stats.get("segments_generated", 0) or 0) - (right_stats.get("segments_generated", 0) or 0),
-        "cluster_count": (left_stats.get("cluster_count", 0) or 0) - (right_stats.get("cluster_count", 0) or 0),
-        "outlier_pct": (left_stats.get("outlier_pct", 0.0) or 0.0) - (right_stats.get("outlier_pct", 0.0) or 0.0),
-        "segments_enriched": (left_stats.get("segments_enriched", 0) or 0) - (right_stats.get("segments_enriched", 0) or 0),
-    }
-    left_aspects = {row["key"]: row["count"] for row in list_aspect_counts(left_run_id)}
-    right_aspects = {row["key"]: row["count"] for row in list_aspect_counts(right_run_id)}
-    aspect_keys = set(left_aspects) | set(right_aspects)
-    aspect_diffs = []
-    for key in aspect_keys:
-        left_count = left_aspects.get(key, 0)
-        right_count = right_aspects.get(key, 0)
-        aspect_diffs.append(
-            {
-                "aspect": key,
-                "left_count": left_count,
-                "right_count": right_count,
-                "delta": left_count - right_count,
-            }
-        )
-    aspect_diffs.sort(key=lambda row: abs(row["delta"]), reverse=True)
-    return RunCompareResponse(
-        left_run_id=left_run_id,
-        right_run_id=right_run_id,
-        left_stats=left_stats,
-        right_stats=right_stats,
-        diffs=diffs,
-        aspect_diffs=aspect_diffs[:20],
-    )

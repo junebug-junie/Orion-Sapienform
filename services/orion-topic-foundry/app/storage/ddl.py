@@ -8,9 +8,6 @@ CREATE TABLE IF NOT EXISTS topic_foundry_datasets (
     text_columns  JSONB NOT NULL,
     boundary_column VARCHAR,
     boundary_strategy VARCHAR,
-    where_sql     TEXT,
-    where_params  JSONB,
-    timezone      VARCHAR NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

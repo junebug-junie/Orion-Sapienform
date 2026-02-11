@@ -9,8 +9,6 @@ from app.models import (
     ModelCreateRequest,
     ModelCreateResponse,
     ModelListResponse,
-    ModelPromoteRequest,
-    ModelPromoteResponse,
     ModelSummary,
     ModelVersionEntry,
     ModelVersionsResponse,
@@ -21,10 +19,8 @@ from app.storage.repository import (
     create_model,
     fetch_active_model_by_name,
     fetch_dataset,
-    fetch_model,
     fetch_model_versions,
     list_models,
-    promote_model_stage,
     utc_now,
 )
 
@@ -101,20 +97,3 @@ def get_active_model(name: str) -> ModelSummary:
     )
 
 
-@router.post("/models/{model_id}/promote", response_model=ModelPromoteResponse)
-def promote_model(model_id: UUID, payload: ModelPromoteRequest) -> ModelPromoteResponse:
-    model = fetch_model(model_id)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found")
-    updated = promote_model_stage(model_id=model_id, to_stage=payload.stage, reason=payload.reason)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Model not found")
-    summary = ModelSummary(
-        model_id=UUID(updated["model_id"]),
-        name=updated["name"],
-        version=updated["version"],
-        stage=updated.get("stage"),
-        dataset_id=UUID(updated["dataset_id"]),
-        created_at=updated["created_at"],
-    )
-    return ModelPromoteResponse(model=summary)

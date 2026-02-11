@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import get_args
+
 from fastapi import APIRouter
 
 from app.models import CapabilitiesResponse, ModelSpec

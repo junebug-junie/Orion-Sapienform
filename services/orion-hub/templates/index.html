@@ -171,7 +171,7 @@
             <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
             <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
               <option value="auto" selected>Auto</option>
-              <option value="hybrid">Hybrid</option>
+              <option value="blend">Blend</option>
               <option value="deep">Deep</option>
               <option value="graph">Graph</option>
             </select>
@@ -558,12 +558,9 @@
             </div>
             <div class="grid grid-cols-2 gap-2">
               <select id="tsWindowingMode" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="turn_pairs">document</option>
-                <option value="group_by_column">group_by_column</option>
-                <option value="fixed_k_rows">fixed_k_rows</option>
+                <option value="document">document</option>
                 <option value="time_gap">time_gap</option>
                 <option value="conversation_bound">conversation_bound</option>
-                <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
               </select>
               
             </div>
@@ -769,102 +766,6 @@
             <div id="tsRunsWarning" class="text-[11px] text-amber-300 hidden"></div>
           </div>
 
-          <div class="space-y-2 pt-2 border-t border-gray-700">
-            <div class="flex items-center justify-between">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">Browse segments</div>
-              <button id="tsSegmentsRefresh" class="text-[10px] text-gray-300 hover:text-white">Refresh</button>
-            </div>
-            <input id="tsSegmentsRunId" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
-            <div class="grid grid-cols-2 gap-2">
-              <input id="tsSegmentsSearch" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="search segments" />
-              <select id="tsSegmentsSort" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="time_desc">time desc</option>
-                <option value="friction_desc">friction desc</option>
-                <option value="size_desc">size desc</option>
-              </select>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <select id="tsSegmentsEnrichment" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="">all</option>
-                <option value="true">has enrichment</option>
-                <option value="false">no enrichment</option>
-              </select>
-              <input id="tsSegmentsAspect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="aspect filter" />
-            </div>
-            <div id="tsSegmentsFacets" class="flex flex-wrap gap-2 text-[10px] text-gray-400"></div>
-            <div class="flex items-center gap-2">
-              <button id="tsLoadSegments" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Segments</button>
-              <span id="tsSegmentsLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
-            </div>
-            <div class="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-400">
-              <div class="flex items-center gap-2">
-                <label class="uppercase tracking-wide text-gray-500">Page size</label>
-                <select id="tsSegmentsPageSize" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                  <option value="200">200</option>
-                </select>
-                <button id="tsSegmentsPrev" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Prev</button>
-                <button id="tsSegmentsNext" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Next</button>
-              </div>
-              <div id="tsSegmentsRange" class="text-[10px] text-gray-500">Offset --</div>
-              <button id="tsSegmentsExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 text-xs">Export CSV</button>
-            </div>
-            <div id="tsSegmentsError" class="text-[11px] text-red-300">--</div>
-            <div id="tsSegmentsDebug" class="text-[10px] text-gray-500 hidden"></div>
-            <div class="text-[10px] text-gray-400">size = number of dataset rows included in the window.</div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-xs text-left text-gray-300">
-                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
-                  <tr>
-                    <th class="py-2 pr-3">Segment</th>
-                    <th class="py-2 pr-3">Size</th>
-                    <th class="py-2 pr-3">Row IDs</th>
-                    <th class="py-2 pr-3">Chars</th>
-                    <th class="py-2 pr-3">Title</th>
-                    <th class="py-2 pr-3">Aspects</th>
-                    <th class="py-2 pr-3">Start</th>
-                    <th class="py-2 pr-3">End</th>
-                    <th class="py-2 pr-3">Snippet</th>
-                    <th class="py-2 pr-3">Topic</th>
-                    <th class="py-2 pr-3">Topic prob</th>
-                    <th class="py-2 pr-3">Outlier</th>
-                    <th class="py-2 pr-3">Friction</th>
-                  </tr>
-                </thead>
-                <tbody id="tsSegmentsTableBody" class="divide-y divide-gray-800"></tbody>
-              </table>
-            </div>
-          </div>
-          </div>
-
-        <div id="tsSegmentDetailsPanel" class="flex flex-col gap-3 min-h-0">
-            <div class="flex items-center justify-between">
-              <div class="text-xs uppercase tracking-wide text-gray-500">Segment Details</div>
-              <button id="tsCopySegmentId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy segment id</button>
-            </div>
-            <div id="tsSegmentDetailHeader" class="text-sm font-semibold text-gray-200">Select a segment</div>
-            <div id="tsSegmentDetailMeta" class="text-[11px] text-gray-400">--</div>
-            <div class="space-y-2 pt-2 border-t border-gray-700">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">Snippet</div>
-              <pre id="tsSegmentDetailSnippet" class="text-[11px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
-            </div>
-            <div class="space-y-2 pt-2 border-t border-gray-700 flex-1 min-h-0">
-              <div class="flex items-center justify-between">
-                <div class="text-[10px] uppercase tracking-wide text-gray-500">Full text</div>
-                <div class="flex items-center gap-2 text-[10px] text-gray-400">
-                  <button id="tsSegmentFullTextLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Reload</button>
-                  <button id="tsSegmentFullTextExpand" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Expand</button>
-                  <button id="tsSegmentFullTextCopy" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy</button>
-                </div>
-              </div>
-              <div id="tsSegmentFullTextStatus" class="text-[10px] text-gray-500">--</div>
-              <pre id="tsSegmentFullText" class="text-[11px] text-gray-200 bg-gray-950/60 border border-gray-700 rounded p-2 whitespace-pre-wrap overflow-y-auto flex-1 min-h-0">--</pre>
-            </div>
-            <div class="space-y-2 pt-2 border-t border-gray-700">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">Meaning & enrichment</div>
-              <pre id="tsSegmentDetailMeaning" class="text-[11px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
-            </div>
           </div>
         </div>
       </div>
@@ -971,6 +872,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.61" defer></script>
+  <script src="/static/js/app.js?v=1.0.69" defer></script>
 </body>
 </html>

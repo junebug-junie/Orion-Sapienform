@@ -14,6 +14,7 @@ class DatasetSpec(BaseModel):
     id_column: str
     time_column: str
     text_columns: List[str]
+    timezone: str = "UTC"
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
     created_at: datetime
@@ -97,6 +98,7 @@ class DatasetCreateRequest(BaseModel):
     id_column: str
     time_column: str
     text_columns: List[str]
+    timezone: Optional[str] = None
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
 
@@ -107,6 +109,7 @@ class DatasetUpdateRequest(BaseModel):
     id_column: Optional[str] = None
     time_column: Optional[str] = None
     text_columns: Optional[List[str]] = None
+    timezone: Optional[str] = None
     boundary_column: Optional[str] = None
     boundary_strategy: Optional[Literal["column"]] = None
 

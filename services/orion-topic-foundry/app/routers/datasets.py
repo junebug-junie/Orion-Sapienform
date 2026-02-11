@@ -46,6 +46,7 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
         id_column=payload.id_column,
         time_column=payload.time_column,
         text_columns=payload.text_columns,
+        timezone=(payload.timezone or "UTC"),
         boundary_column=payload.boundary_column,
         boundary_strategy=payload.boundary_strategy,
         created_at=created_at,

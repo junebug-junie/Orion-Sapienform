@@ -28,4 +28,22 @@ if [[ -z "$dataset_id" ]]; then
   exit 1
 fi
 
-echo "[PASS] created dataset_id=$dataset_id"
+list_resp="$(curl -sS "$BASE_URL/datasets")"
+timezone="$(python - <<'PY' "$list_resp" "$dataset_id"
+import json,sys
+items=json.loads(sys.argv[1]).get("datasets", [])
+want=sys.argv[2]
+for item in items:
+    if item.get("dataset_id") == want:
+        print(item.get("timezone", ""))
+        break
+PY
+)"
+
+if [[ "$timezone" != "UTC" ]]; then
+  echo "[FAIL] expected timezone UTC for dataset_id=$dataset_id, got '$timezone'"
+  echo "$list_resp"
+  exit 1
+fi
+
+echo "[PASS] created dataset_id=$dataset_id timezone=$timezone"

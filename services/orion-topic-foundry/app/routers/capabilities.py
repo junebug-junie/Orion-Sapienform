@@ -4,7 +4,7 @@ from typing import get_args
 
 from fastapi import APIRouter
 
-from app.models import CapabilitiesResponse, ModelSpec, WindowingSpec
+from app.models import CapabilitiesResponse, ModelSpec
 from app.services.metrics import SUPPORTED_METRICS
 from app.settings import settings
 
@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
 def capabilities() -> CapabilitiesResponse:
-    windowing_modes = [str(mode) for mode in get_args(WindowingSpec.model_fields["windowing_mode"].annotation)]
+    windowing_modes = ["document", "time_gap", "conversation_bound"]
     enricher_modes = ["heuristic", "llm"]
     llm_transport = "bus" if settings.topic_foundry_llm_use_bus and settings.orion_bus_enabled else "http"
     schemas = [s.strip() for s in settings.topic_foundry_introspect_schemas.split(",") if s.strip()]

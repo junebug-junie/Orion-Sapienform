@@ -815,7 +815,6 @@ loadDismissedIds();
                 <input id="ts-mvp-dataset-text" placeholder="text_columns (comma)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               </div>
               <input id="ts-mvp-dataset-where" placeholder="where_sql (optional)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
-              <input id="ts-mvp-dataset-tz" value="UTC" placeholder="timezone" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <button id="ts-mvp-create-dataset" style="background:#222; color:#ddd; border:1px solid #444; padding:6px 12px; border-radius:8px; cursor:pointer;">Create dataset</button>
             </div>
             <div style="margin-top:12px; font-weight:600;">Preview</div>
@@ -825,12 +824,9 @@ loadDismissedIds();
               <input id="ts-mvp-preview-end" placeholder="end_at (ISO)" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-preview-limit" value="200" placeholder="limit" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <select id="ts-mvp-preview-block" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;">
-                <option value="turn_pairs">turn_pairs</option>
-                <option value="fixed_k_rows">fixed_k_rows</option>
+                <option value="document">document</option>
                 <option value="time_gap">time_gap</option>
                 <option value="conversation_bound">conversation_bound</option>
-                <option value="conversation_bound_then_time_gap">conversation_bound_then_time_gap</option>
-                <option value="group_by_column">group_by_column</option>
               </select>
               <input id="ts-mvp-preview-gap" value="900" placeholder="time_gap_seconds" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
               <input id="ts-mvp-preview-maxchars" value="6000" placeholder="max_chars" style="background:#0b0b0b; color:#ddd; border:1px solid #333; padding:6px; border-radius:6px;" />
@@ -2529,7 +2525,6 @@ loadDismissedIds();
       time_column: timeColumn,
       text_columns: textColumns,
       where_sql: document.getElementById("ts-mvp-dataset-where")?.value?.trim() || "",
-      timezone: document.getElementById("ts-mvp-dataset-tz")?.value?.trim() || "UTC",
     };
     let result = null;
     try {
@@ -2560,8 +2555,8 @@ loadDismissedIds();
       setMvpError("Select a saved dataset first.");
       return;
     }
-    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
-    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "document";
+    const blockMode = "rows";
     const windowing = {
       block_mode: blockMode,
       windowing_mode: windowingMode,
@@ -2629,8 +2624,8 @@ loadDismissedIds();
       setMvpError("Model params must be valid JSON.");
       return;
     }
-    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "turn_pairs";
-    const blockMode = windowingMode === "turn_pairs" ? "turn_pairs" : windowingMode === "group_by_column" ? "group_by_column" : "rows";
+    const windowingMode = document.getElementById("ts-mvp-preview-block")?.value || "document";
+    const blockMode = "rows";
     const payload = {
       name,
       version,

@@ -3434,18 +3434,19 @@ loadDismissedIds();
   }
 
   async function handleSaveDatasetClick() {
-    console.log("[TopicStudio] save dataset click");
-    if (!tsDatasetSelect?.value) {
+    const datasetId = tsDatasetSelect?.value || "";
+    console.log("[TopicStudio] save dataset click", datasetId);
+    if (!datasetId) {
       setDatasetSaveStatus("Select a dataset to save.", true);
       return;
     }
     const payload = buildDatasetSpec();
     setDatasetSaveStatus("Saving dataset...");
-    await topicFoundryFetch(`/datasets/${tsDatasetSelect.value}`, {
-      method: "PUT",
+    await topicFoundryFetch(`/datasets/${datasetId}`, {
+      method: "PATCH",
       body: JSON.stringify(payload),
     });
-    console.log("[TopicStudio] save dataset request sent", tsDatasetSelect.value);
+    console.log("[TopicStudio] save dataset request sent", datasetId);
     try {
       await refreshTopicStudio();
     } catch (err) {
@@ -3470,6 +3471,79 @@ loadDismissedIds();
     };
     await executePreview(payload);
     console.log("[TopicStudio] preview request sent");
+  }
+
+  async function handleCreateModelClick() {
+    console.log("[TopicStudio] create model click");
+    const datasetId = tsDatasetSelect?.value || "";
+    if (!datasetId) {
+      showToast("Select a dataset before creating a model.");
+      return;
+    }
+    const payload = {
+      name: tsModelName?.value?.trim() || "",
+      version: tsModelVersion?.value?.trim() || "",
+      stage: tsModelStage?.value?.trim() || "development",
+      dataset_id: datasetId,
+      model_spec: {
+        algorithm: "hdbscan",
+        embedding_source_url: tsModelEmbeddingUrl?.value?.trim() || null,
+        min_cluster_size: Number(tsModelMinCluster?.value || 15),
+        metric: tsModelMetric?.value || "cosine",
+        params: parseJson(tsModelParams?.value, {}),
+      },
+      windowing_spec: buildWindowingSpec(),
+      metadata: {},
+    };
+    const result = await topicFoundryFetch("/models", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    showToast(`Created model ${result?.model_id || ""}`.trim());
+    try {
+      await refreshTopicStudio();
+    } catch (err) {
+      console.warn("[TopicStudio] refresh failed after create model", err);
+    }
+  }
+
+  async function handleTrainRunClick() {
+    console.log("[TopicStudio] train click");
+    const modelId = tsTrainModelSelect?.value || "";
+    const datasetId = tsDatasetSelect?.value || "";
+    if (!modelId || !datasetId) {
+      renderError(tsRunError, { message: "Select model and dataset before training." }, "Failed to train.");
+      return;
+    }
+    const payload = {
+      model_id: modelId,
+      dataset_id: datasetId,
+      start_at: parseDateInput(tsStartAt?.value),
+      end_at: parseDateInput(tsEndAt?.value),
+      windowing_spec: buildWindowingSpec(),
+    };
+    const result = await topicFoundryFetch("/runs/train", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const runId = result?.run_id || "";
+    if (runId) setSelectedRun(runId);
+    showToast(`Train started ${runId || ""}`.trim());
+    if (runId) startRunPolling(runId);
+  }
+
+  async function handlePollRunClick() {
+    console.log("[TopicStudio] poll click");
+    const runId = tsRunId?.value || tsRunsSelect?.value || "";
+    if (!runId) {
+      renderError(tsRunError, { message: "Enter or select a run id to poll." }, "Failed to poll run.");
+      return;
+    }
+    const run = await topicFoundryFetch(`/runs/${runId}`);
+    renderRunStatus(run);
+    if (run?.run_id) {
+      setSelectedRun(run.run_id);
+    }
   }
 
   function bindTopicStudioActions() {
@@ -3501,7 +3575,35 @@ loadDismissedIds();
         });
       });
     }
-    console.log("[TopicStudio] bindings done (datasets + preview)");
+    console.log("[TopicStudio] binding model/run actions");
+    if (tsCreateModel) {
+      tsCreateModel.addEventListener("click", () => {
+        handleCreateModelClick().catch((err) => {
+          console.warn("[TopicStudio] create model failed", err);
+          renderError(tsRunError, err, "Failed to create model.");
+          showToast(err?.message || "Failed to create model.");
+        });
+      });
+    }
+    if (tsTrainRun) {
+      tsTrainRun.addEventListener("click", () => {
+        handleTrainRunClick().catch((err) => {
+          console.warn("[TopicStudio] train failed", err);
+          renderError(tsRunError, err, "Failed to train run.");
+          showToast(err?.message || "Failed to train run.");
+        });
+      });
+    }
+    if (tsPollRun) {
+      tsPollRun.addEventListener("click", () => {
+        handlePollRunClick().catch((err) => {
+          console.warn("[TopicStudio] poll failed", err);
+          renderError(tsRunError, err, "Failed to poll run.");
+          showToast(err?.message || "Failed to poll run.");
+        });
+      });
+    }
+    console.log("[TopicStudio] bindings done (datasets + preview + model/run)");
   }
 
   function formatRunStats(run) {

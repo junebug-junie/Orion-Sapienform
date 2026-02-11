@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 from uuid import UUID, uuid4
 
@@ -802,7 +802,7 @@ def segment_facets(
         where_clauses.append("(s.title ILIKE %s OR s.aspects::text ILIKE %s OR s.snippet ILIKE %s)")
         like = f"%{q}%"
         params.extend([like, like, like])
-    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    where_clause_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -813,7 +813,7 @@ def segment_facets(
                 LEFT JOIN LATERAL (
                     SELECT jsonb_array_elements_text(COALESCE(s.aspects, '[]'::jsonb)) AS aspect
                 ) AS a ON TRUE
-                {where_sql}
+                {where_clause_sql}
                 GROUP BY key
                 ORDER BY count DESC
                 """,
@@ -825,7 +825,7 @@ def segment_facets(
                 f"""
                 SELECT (s.meaning->>'intent') AS key, COUNT(*) AS count
                 {base_query}
-                {where_sql} AND s.meaning ? 'intent'
+                {where_clause_sql} AND s.meaning ? 'intent'
                 GROUP BY key
                 ORDER BY count DESC
                 """,
@@ -843,7 +843,7 @@ def segment_facets(
                     END AS key,
                     COUNT(*) AS count
                 {base_query}
-                {where_sql}
+                {where_clause_sql}
                 GROUP BY key
                 ORDER BY key
                 """,
@@ -852,7 +852,7 @@ def segment_facets(
             friction = [dict(row) for row in cur.fetchall() or []]
 
             cur.execute(
-                f"SELECT COUNT(*) AS total, COUNT(enriched_at) AS enriched {base_query} {where_sql}",
+                f"SELECT COUNT(*) AS total, COUNT(enriched_at) AS enriched {base_query} {where_clause_sql}",
                 params,
             )
             totals_row = cur.fetchone() or {}
@@ -1361,5 +1361,8 @@ def list_conversation_overrides(dataset_id: UUID) -> List[Dict[str, Any]]:
             return cur.fetchall() or []
 
 
+UTC_TZINFO = datetime.fromisoformat("1970-01-01T00:00:00+00:00").tzinfo
+
+
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.utcnow().replace(tzinfo=UTC_TZINFO)

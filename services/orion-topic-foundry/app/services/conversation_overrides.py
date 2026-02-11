@@ -42,17 +42,8 @@ def build_conversations(
     sorted_rows = sorted(rows, key=lambda r: r[time_column])
     conversations: List[List[Dict[str, Any]]] = []
     mode = spec.windowing_mode
-    if mode == "turn_pairs" and spec.block_mode != "turn_pairs":
-        if spec.block_mode == "rows":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 1
-        elif spec.block_mode == "triads":
-            mode = "fixed_k_rows"
-            spec.fixed_k_rows = 3
-        elif spec.block_mode == "group_by_column":
-            mode = "conversation_bound_then_time_gap"
-    effective_boundary = boundary_column or spec.boundary_column or spec.group_by
-    if mode in {"conversation_bound", "conversation_bound_then_time_gap"}:
+    effective_boundary = boundary_column or spec.conversation_bound or spec.boundary_column
+    if mode == "conversation_bound":
         if not effective_boundary:
             raise ValueError(f"boundary_column is required for {mode} dataset_id={dataset_id}")
         current: List[Dict[str, Any]] = []
@@ -71,13 +62,7 @@ def build_conversations(
                 last_ts = ts
                 conv_start = ts
                 continue
-            gap_ok = True
-            span_ok = True
-            if mode == "conversation_bound_then_time_gap":
-                gap_ok = (ts - last_ts).total_seconds() <= spec.time_gap_seconds if last_ts is not None else True
-                if conv_start is not None:
-                    span_ok = (ts - conv_start).total_seconds() <= spec.max_window_seconds
-            if key == current_key and gap_ok and span_ok:
+            if key == current_key:
                 current.append(row)
             else:
                 if current:
@@ -101,11 +86,8 @@ def build_conversations(
                 last_ts = ts
                 conv_start = ts
                 continue
-            gap_ok = (ts - last_ts).total_seconds() <= spec.time_gap_seconds
-            span_ok = True
-            if conv_start is not None:
-                span_ok = (ts - conv_start).total_seconds() <= spec.max_window_seconds
-            if gap_ok and span_ok:
+            gap_ok = (ts - last_ts).total_seconds() <= max(int(spec.time_gap_minutes), 1) * 60
+            if gap_ok:
                 current.append(row)
             else:
                 if current:

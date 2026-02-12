@@ -25,6 +25,17 @@ function ensureHubPanelHost() {
   return host;
 }
 
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function truncateCrashText(value, maxLength = 4000) {
   if (!value) return "";
   const text = String(value);
@@ -329,6 +340,12 @@ loadDismissedIds();
   const tsPreviewMaxChars = document.getElementById("tsPreviewMaxChars");
   const tsPreviewObserved = document.getElementById("tsPreviewObserved");
   const tsPreviewSamples = document.getElementById("tsPreviewSamples");
+  const tsPreviewInspector = document.getElementById("tsPreviewInspector");
+  const tsPreviewDetailModal = document.getElementById("tsPreviewDetailModal");
+  const tsPreviewDetailTitle = document.getElementById("tsPreviewDetailTitle");
+  const tsPreviewDetailMeta = document.getElementById("tsPreviewDetailMeta");
+  const tsPreviewDetailText = document.getElementById("tsPreviewDetailText");
+  const tsPreviewDetailClose = document.getElementById("tsPreviewDetailClose");
   const tsPreviewError = document.getElementById("tsPreviewError");
   const tsModelName = document.getElementById("tsModelName");
   const tsModelVersion = document.getElementById("tsModelVersion");
@@ -337,6 +354,26 @@ loadDismissedIds();
   const tsModelMinCluster = document.getElementById("tsModelMinCluster");
   const tsModelMetric = document.getElementById("tsModelMetric");
   const tsModelParams = document.getElementById("tsModelParams");
+  const tsTopicModelCapabilities = document.getElementById("tsTopicModelCapabilities");
+  const tsCapClassBased = document.getElementById("tsCapClassBased");
+  const tsCapLongDocument = document.getElementById("tsCapLongDocument");
+  const tsCapHierarchical = document.getElementById("tsCapHierarchical");
+  const tsCapDynamic = document.getElementById("tsCapDynamic");
+  const tsCapGuided = document.getElementById("tsCapGuided");
+  const tsCapZeroshot = document.getElementById("tsCapZeroshot");
+  const tsModelEngine = document.getElementById("tsModelEngine");
+  const tsModelEmbeddingBackend = document.getElementById("tsModelEmbeddingBackend");
+  const tsModelEmbeddingModel = document.getElementById("tsModelEmbeddingModel");
+  const tsModelReducer = document.getElementById("tsModelReducer");
+  const tsModelClusterer = document.getElementById("tsModelClusterer");
+  const tsModelUmapNeighbors = document.getElementById("tsModelUmapNeighbors");
+  const tsModelUmapComponents = document.getElementById("tsModelUmapComponents");
+  const tsModelHdbscanMinClusterSize = document.getElementById("tsModelHdbscanMinClusterSize");
+  const tsModelHdbscanMinSamples = document.getElementById("tsModelHdbscanMinSamples");
+  const tsModelRepresentation = document.getElementById("tsModelRepresentation");
+  const tsTopicMode = document.getElementById("tsTopicMode");
+  const tsModeGuidedSeeds = document.getElementById("tsModeGuidedSeeds");
+  const tsModeZeroshotTopics = document.getElementById("tsModeZeroshotTopics");
   const tsCreateModel = document.getElementById("tsCreateModel");
   const tsPromoteModelSelect = document.getElementById("tsPromoteModelSelect");
   const tsPromoteStage = document.getElementById("tsPromoteStage");
@@ -360,6 +397,22 @@ loadDismissedIds();
   const tsRunError = document.getElementById("tsRunError");
   const tsRunsSelect = document.getElementById("tsRunsSelect");
   const tsRunsWarning = document.getElementById("tsRunsWarning");
+  const tsRunResultsStatus = document.getElementById("tsRunResultsStatus");
+  const tsRunSummaryRunId = document.getElementById("tsRunSummaryRunId");
+  const tsRunSummaryStatus = document.getElementById("tsRunSummaryStatus");
+  const tsRunSummaryDocs = document.getElementById("tsRunSummaryDocs");
+  const tsRunSummarySegments = document.getElementById("tsRunSummarySegments");
+  const tsRunSummaryClusters = document.getElementById("tsRunSummaryClusters");
+  const tsRunSummaryOutlierRate = document.getElementById("tsRunSummaryOutlierRate");
+  const tsRunSummaryRepresentation = document.getElementById("tsRunSummaryRepresentation");
+  const tsRunSummaryBackends = document.getElementById("tsRunSummaryBackends");
+  const tsRunSummaryArtifacts = document.getElementById("tsRunSummaryArtifacts");
+  const tsRunResultsTable = document.getElementById("tsRunResultsTable");
+  const tsRunResultsModal = document.getElementById("tsRunResultsModal");
+  const tsRunResultsModalTitle = document.getElementById("tsRunResultsModalTitle");
+  const tsRunResultsModalMeta = document.getElementById("tsRunResultsModalMeta");
+  const tsRunResultsModalText = document.getElementById("tsRunResultsModalText");
+  const tsRunResultsModalClose = document.getElementById("tsRunResultsModalClose");
   const tsSegmentsRunId = document.getElementById("tsSegmentsRunId");
   const tsSegmentsEnrichment = document.getElementById("tsSegmentsEnrichment");
   const tsSegmentsAspect = document.getElementById("tsSegmentsAspect");
@@ -1841,6 +1894,8 @@ loadDismissedIds();
   let topicStudioSegmentsDisplayed = [];
   let topicStudioSegmentsQueryKey = null;
   let topicStudioLastPreview = null;
+  let topicStudioLastPreviewResult = null;
+  let topicStudioRunResultsPage = [];
   let topicStudioLastSubview = "runs";
   let topicStudioSelectedSegmentId = null;
   let topicStudioSegmentsFacetFilter = null;
@@ -3084,6 +3139,9 @@ loadDismissedIds();
     localStorage.setItem(TOPIC_STUDIO_RUN_ID_KEY, runId);
     topicStudioLastSubview = "runs";
     saveTopicStudioState();
+    loadRunResultsSegments(runId).catch((err) => {
+      console.warn("[RunInspector] setSelectedRun load failed", err);
+    });
   }
 
   function resetSegmentsPaging() {
@@ -3369,6 +3427,11 @@ loadDismissedIds();
     if (tsPreviewMaxChars) tsPreviewMaxChars.textContent = "--";
     if (tsPreviewObserved) tsPreviewObserved.textContent = "--";
     if (tsPreviewSamples) tsPreviewSamples.textContent = "--";
+    if (tsPreviewInspector) {
+      console.log(`[Preview] rendering into ${tsPreviewInspector.id}`);
+      tsPreviewInspector.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="3">Run preview to populate inspector rows.</td></tr>';
+    }
+    topicStudioLastPreviewResult = null;
     if (tsPreviewError) tsPreviewError.textContent = "--";
     setWarning(tsPreviewWarning, null);
     topicStudioLastPreview = null;
@@ -3395,12 +3458,92 @@ loadDismissedIds();
     });
   }
 
+  function closePreviewDetailModal() {
+    if (!tsPreviewDetailModal) return;
+    tsPreviewDetailModal.classList.add("hidden");
+  }
+
+  function openPreviewDetailModal(detail) {
+    if (!tsPreviewDetailModal) return;
+    if (tsPreviewDetailTitle) tsPreviewDetailTitle.textContent = detail?.doc_id || "--";
+    const range = detail?.observed_range || {};
+    if (tsPreviewDetailMeta) {
+      tsPreviewDetailMeta.textContent = `char_count=${detail?.char_count ?? "--"} · observed=${range.start_at || "--"} → ${range.end_at || "--"} · truncated=${Boolean(detail?.is_truncated)}`;
+    }
+    if (tsPreviewDetailText) tsPreviewDetailText.textContent = detail?.full_text || "";
+    tsPreviewDetailModal.classList.remove("hidden");
+  }
+
+  async function fetchPreviewDocDetail(docId) {
+    const datasetId = tsDatasetSelect?.value || "";
+    if (!datasetId) {
+      showToast("Select a dataset before opening inspector detail.");
+      return;
+    }
+    if (!docId) {
+      showToast("Preview item is missing doc_id.");
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        windowing_mode: tsWindowingMode?.value || "document",
+        time_gap_minutes: String(Number(tsTimeGap?.value || 15)),
+        max_chars: String(Number(tsMaxChars?.value || 6000)),
+        limit: "200",
+      });
+      const startAt = parseDateInput(tsStartAt?.value);
+      const endAt = parseDateInput(tsEndAt?.value);
+      if (startAt) qs.set("start_at", startAt);
+      if (endAt) qs.set("end_at", endAt);
+      if (tsDatasetBoundaryColumn?.value) qs.set("boundary_column", tsDatasetBoundaryColumn.value);
+      const detail = await topicFoundryFetch(`/datasets/${datasetId}/preview/docs/${encodeURIComponent(docId)}?${qs.toString()}`);
+      openPreviewDetailModal(detail);
+    } catch (err) {
+      console.warn("[TopicStudio] preview detail fetch failed", err);
+      showToast(err?.message || "Failed to load preview detail.");
+      renderError(tsPreviewError, err, "Failed to load preview detail.");
+    }
+  }
+
+  function renderPreviewInspector(samples) {
+    try {
+      if (!tsPreviewInspector) return;
+      console.log(`[Preview] rendering into ${tsPreviewInspector.id}`);
+      tsPreviewInspector.innerHTML = "";
+      if (!samples?.length) {
+        tsPreviewInspector.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="3">No preview rows available.</td></tr>';
+        return;
+      }
+      samples.forEach((sample) => {
+        // Detail fetch must only happen on click; never during render.
+        const row = document.createElement("tr");
+        row.className = "border-b border-gray-800 hover:bg-gray-800/70 cursor-pointer";
+        const shortId = String(sample.doc_id || sample.segment_id || "--").slice(0, 12);
+        const chars = Number(sample.chars ?? sample.char_count ?? (sample.snippet || "").length);
+        const snippet = String(sample.snippet || "").slice(0, 200);
+        row.innerHTML = `<td class="px-2 py-1 font-mono text-[10px] text-gray-300">${escapeHtml(shortId)}</td><td class="px-2 py-1 text-[10px] text-gray-400">${escapeHtml(String(chars))}</td><td class="px-2 py-1 text-[11px] text-gray-200">${escapeHtml(snippet)}</td>`;
+        row.addEventListener("click", () => {
+          fetchPreviewDocDetail(sample?.doc_id || sample?.segment_id).catch((err) => {
+            console.warn("[TopicStudio] preview inspector click failed", err);
+            showToast(err?.message || "Failed to load preview detail.");
+          });
+        });
+        tsPreviewInspector.appendChild(row);
+      });
+    } catch (err) {
+      console.error("[TopicStudio] renderPreviewInspector failed", err);
+      showToast(err?.message || "Failed to render inspector.");
+      if (tsPreviewError) renderError(tsPreviewError, err, "Failed to render inspector.");
+    }
+  }
+
   async function executePreview(payload) {
     const result = await topicFoundryFetch("/datasets/preview", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     topicStudioLastPreview = payload;
+    topicStudioLastPreviewResult = result;
     if (tsPreviewDocs) tsPreviewDocs.textContent = result.docs_generated ?? "--";
     if (tsPreviewSegments) tsPreviewSegments.textContent = result.segments_generated ?? "--";
     if (tsPreviewAvgChars) tsPreviewAvgChars.textContent = result.avg_chars ?? "--";
@@ -3412,6 +3555,12 @@ loadDismissedIds();
       tsPreviewObserved.textContent = `${start} → ${end}`;
     }
     renderPreviewSamples(result.samples || []);
+    try {
+      renderPreviewInspector(result.samples || []);
+    } catch (err) {
+      console.error("[TopicStudio] preview inspector render threw", err);
+      showToast(err?.message || "Failed to render inspector.");
+    }
     const mode = payload?.windowing?.windowing_mode || payload?.windowing_spec?.windowing_mode || "document";
     const rowCount = Number(result.row_count ?? result.rows_scanned ?? 0);
     const docCount = Number(result.doc_count ?? result.docs_generated ?? 0);
@@ -3511,6 +3660,18 @@ loadDismissedIds();
           metric: tsModelMetric?.value || "cosine",
           params: modelParams,
         },
+        model_meta: {
+          topic_engine: tsModelEngine?.value || "bertopic",
+          embedding_backend: tsModelEmbeddingBackend?.value || "vector_host",
+          embedding_model: tsModelEmbeddingModel?.value || "sentence-transformers/all-MiniLM-L6-v2",
+          reducer: tsModelReducer?.value || "umap",
+          clusterer: tsModelClusterer?.value || "hdbscan",
+          umap_n_neighbors: Number(tsModelUmapNeighbors?.value || 15),
+          umap_n_components: Number(tsModelUmapComponents?.value || 5),
+          hdbscan_min_cluster_size: Number(tsModelHdbscanMinClusterSize?.value || 15),
+          hdbscan_min_samples: Number(tsModelHdbscanMinSamples?.value || 5),
+          representation: tsModelRepresentation?.value || "ctfidf",
+        },
         windowing_spec: buildWindowingSpec(),
         metadata: {},
       };
@@ -3532,28 +3693,44 @@ loadDismissedIds();
   }
 
   async function handleTrainRunClick() {
-    console.log("[TopicStudio] train click");
+    console.log("[TopicStudio][Train] click fired");
     const modelId = tsTrainModelSelect?.value || "";
     const datasetId = tsDatasetSelect?.value || "";
     if (!modelId || !datasetId) {
       renderError(tsRunError, { message: "Select model and dataset before training." }, "Failed to train.");
       return;
     }
+    const mode = tsTopicMode?.value || "standard";
+    const modeParams = {};
+    if (mode === "guided" && tsModeGuidedSeeds?.value) modeParams.seed_topic_list = tsModeGuidedSeeds.value.split(",").map((x) => x.trim()).filter(Boolean);
+    if (mode === "zeroshot" && tsModeZeroshotTopics?.value) modeParams.zeroshot_topic_list = tsModeZeroshotTopics.value.split(",").map((x) => x.trim()).filter(Boolean);
     const payload = {
       model_id: modelId,
       dataset_id: datasetId,
       start_at: parseDateInput(tsStartAt?.value),
       end_at: parseDateInput(tsEndAt?.value),
       windowing_spec: buildWindowingSpec(),
+      topic_mode: mode,
+      topic_mode_params: modeParams,
     };
-    const result = await topicFoundryFetch("/runs/train", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    const runId = result?.run_id || "";
-    if (runId) setSelectedRun(runId);
-    showToast(`Train started ${runId || ""}`.trim());
-    if (runId) startRunPolling(runId);
+    const url = `/runs/train`;
+    console.log("[TopicStudio][Train] request", { method: "POST", url, payload });
+    try {
+      const result = await topicFoundryFetch(url, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      console.log("[TopicStudio][Train] response", { status: "ok", keys: Object.keys(result || {}) });
+      const runId = result?.run_id || "";
+      if (runId) setSelectedRun(runId);
+      showToast(`Training started (run_id=${runId || "unknown"})`);
+      if (runId) startRunPolling(runId);
+    } catch (err) {
+      console.error("[TopicStudio][Train] catch", err);
+      const bodyText = err?.body ? `: ${err.body}` : "";
+      showToast(`Failed to train run${bodyText}`);
+      throw err;
+    }
   }
 
   async function handlePollRunClick() {
@@ -3567,6 +3744,92 @@ loadDismissedIds();
     renderRunStatus(run);
     if (run?.run_id) {
       setSelectedRun(run.run_id);
+    }
+  }
+
+  function closeRunResultsModal() {
+    if (!tsRunResultsModal) return;
+    tsRunResultsModal.classList.add("hidden");
+  }
+
+  function openRunResultsModal(detail) {
+    if (!tsRunResultsModal) return;
+    if (tsRunResultsModalTitle) tsRunResultsModalTitle.textContent = detail?.segment_id || "--";
+    if (tsRunResultsModalMeta) {
+      tsRunResultsModalMeta.textContent = `topic=${detail?.topic_id ?? "--"} (${detail?.topic_label || "--"}) · prob=${detail?.prob ?? "--"} · chars=${detail?.chars ?? "--"}`;
+    }
+    if (tsRunResultsModalText) tsRunResultsModalText.textContent = detail?.full_text || "";
+    tsRunResultsModal.classList.remove("hidden");
+  }
+
+  function renderTrainingRunSummary(run) {
+    const stats = run?.stats || {};
+    const modelMetaUsed = stats.model_meta_used || {};
+    if (tsRunSummaryRunId) tsRunSummaryRunId.textContent = String(run?.run_id || "--").slice(0, 12);
+    if (tsRunSummaryStatus) tsRunSummaryStatus.textContent = run?.status || "--";
+    if (tsRunSummaryDocs) tsRunSummaryDocs.textContent = stats.docs_generated ?? run?.doc_count ?? "--";
+    if (tsRunSummarySegments) tsRunSummarySegments.textContent = stats.segments_generated ?? run?.segment_count ?? "--";
+    if (tsRunSummaryClusters) tsRunSummaryClusters.textContent = stats.cluster_count ?? run?.cluster_count ?? "--";
+    if (tsRunSummaryOutlierRate) tsRunSummaryOutlierRate.textContent = stats.outlier_rate ?? stats.outlier_pct ?? run?.outlier_rate ?? "--";
+    if (tsRunSummaryRepresentation) tsRunSummaryRepresentation.textContent = modelMetaUsed.representation || run?.representation || "--";
+    if (tsRunSummaryBackends) {
+      const emb = modelMetaUsed.embedding_backend || run?.embedding_backend || "--";
+      const red = modelMetaUsed.reducer || run?.reducer || "--";
+      const clu = modelMetaUsed.clusterer || run?.clusterer || "--";
+      tsRunSummaryBackends.textContent = `${emb}/${red}/${clu}`;
+    }
+    if (tsRunSummaryArtifacts) tsRunSummaryArtifacts.textContent = JSON.stringify(run?.artifact_paths || {}, null, 2);
+  }
+
+  async function loadRunResultsSegments(runId) {
+    if (!tsRunResultsTable) return;
+    if (!runId) {
+      console.log(`[RunResults] rendering into ${tsRunResultsTable.id}`);
+      tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-gray-500">No run selected.</div>';
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Select a run to load training results.";
+      return;
+    }
+    if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loading training results for ${runId}...`;
+    console.log("[TopicStudio][RunResults] request", { method: "GET", url: `/runs/${runId}/results?limit=100` });
+    try {
+      const run = await topicFoundryFetch(`/runs/${runId}`);
+      console.log("[TopicStudio][RunSummary] response", { status: "ok", keys: Object.keys(run || {}) });
+      renderTrainingRunSummary(run);
+      const resp = await topicFoundryFetch(`/runs/${runId}/results?limit=100`);
+      console.log("[TopicStudio][RunResults] response", { status: "ok", keys: Object.keys(resp || {}) });
+      const items = resp?.items || [];
+      topicStudioRunResultsPage = items;
+      console.log(`[RunResults] rendering into ${tsRunResultsTable.id}`);
+      tsRunResultsTable.innerHTML = "";
+      if (!items.length) {
+        tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-gray-500">No run results for this run.</div>';
+        if (tsRunResultsStatus) tsRunResultsStatus.textContent = `No run results found for run_id=${runId}`;
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = "px-2 py-1 border-b border-gray-800 hover:bg-gray-800/70 cursor-pointer";
+        const sid = String(item.segment_id || "--");
+        row.innerHTML = `<div class="grid grid-cols-6 gap-2 text-[10px] text-gray-400"><span>${escapeHtml(String(item.topic_id ?? "--"))}</span><span class="col-span-2">${escapeHtml(item.topic_label || "--")}</span><span>${escapeHtml(String(item.prob ?? "--"))}</span><span>${escapeHtml(String(item.chars ?? "--"))}</span><span class="font-mono">${escapeHtml(sid.slice(0, 12))}</span></div><div class="text-[11px] text-gray-200">${escapeHtml(item.text_preview || "")}</div>`;
+        row.addEventListener("dblclick", async () => {
+          console.log("[TopicStudio][RunResultsDetail] request", { method: "GET", url: `/runs/${runId}/results/${encodeURIComponent(sid)}` });
+          try {
+            const detail = await topicFoundryFetch(`/runs/${runId}/results/${encodeURIComponent(sid)}`);
+            console.log("[TopicStudio][RunResultsDetail] response", { status: "ok", keys: Object.keys(detail || {}) });
+            openRunResultsModal(detail);
+          } catch (err) {
+            console.warn("[TopicStudio][RunResultsDetail] catch", err);
+            showToast(err?.message || "Failed to load run result detail.");
+          }
+        });
+        tsRunResultsTable.appendChild(row);
+      }
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loaded ${items.length} training results for run_id=${runId}`;
+    } catch (err) {
+      console.warn("[TopicStudio][RunResults] catch", err);
+      tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-red-300">Failed to load training results.</div>';
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Failed to load training results.";
+      showToast(err?.message || "Failed to load training results.");
     }
   }
 
@@ -3626,6 +3889,23 @@ loadDismissedIds();
       });
       console.log("[TopicStudio] bound tsPollRun");
     }
+    if (tsPreviewDetailClose) {
+      tsPreviewDetailClose.addEventListener("click", closePreviewDetailModal);
+    }
+    if (tsPreviewDetailModal) {
+      tsPreviewDetailModal.addEventListener("click", (event) => {
+        if (event.target === tsPreviewDetailModal) closePreviewDetailModal();
+      });
+    }
+    if (tsRunResultsModalClose) {
+      tsRunResultsModalClose.addEventListener("click", closeRunResultsModal);
+    }
+    if (tsRunResultsModal) {
+      tsRunResultsModal.addEventListener("click", (event) => {
+        if (event.target === tsRunResultsModal) closeRunResultsModal();
+      });
+    }
+
     console.log("[TopicStudio] bindings done (datasets + preview + model/run)");
   }
 
@@ -3678,12 +3958,22 @@ loadDismissedIds();
     setLoading(tsRunLoading, true);
     topicStudioRunPoller = setInterval(async () => {
       try {
+        console.log("[TopicStudio][Poll] request", { method: "GET", url: `/runs/${runId}` });
         const run = await topicFoundryFetch(`/runs/${runId}`);
+        console.log("[TopicStudio][Poll] response", { status: "ok", run_status: run?.status, run_id: run?.run_id });
         renderRunStatus(run);
-        if (run.status === "complete" || run.status === "failed") {
+        renderTrainingRunSummary(run);
+        if (run.status === "complete" || run.status === "trained") {
           stopRunPolling();
           setLoading(tsRunLoading, false);
-          await refreshTopicStudio();
+          showToast(`Training completed (run_id=${runId})`);
+          await loadRunResultsSegments(runId);
+        }
+        if (run.status === "failed") {
+          stopRunPolling();
+          setLoading(tsRunLoading, false);
+          showToast(`Training failed (run_id=${runId})`);
+          await loadRunResultsSegments(runId);
         }
       } catch (err) {
         stopRunPolling();
@@ -5455,6 +5745,14 @@ loadDismissedIds();
       }
       renderEndpointWarning(tsCapabilitiesWarning, null, null);
       recordTopicStudioFetchStatus("capabilities", 200, true);
+      const tm = result?.capabilities?.topic_modeling || {};
+      if (tsTopicModelCapabilities) tsTopicModelCapabilities.textContent = JSON.stringify(result || {}, null, 2);
+      if (tsCapClassBased) tsCapClassBased.textContent = `class_based: ${!!tm.class_based}`;
+      if (tsCapLongDocument) tsCapLongDocument.textContent = `long_document: ${!!tm.long_document}`;
+      if (tsCapHierarchical) tsCapHierarchical.textContent = `hierarchical: ${!!tm.hierarchical}`;
+      if (tsCapDynamic) tsCapDynamic.textContent = `dynamic: ${!!tm.dynamic}`;
+      if (tsCapGuided) tsCapGuided.textContent = `guided: ${!!tm.guided}`;
+      if (tsCapZeroshot) tsCapZeroshot.textContent = `zeroshot: ${!!tm.zeroshot}`;
       setTopicStudioRenderStep("fetched /capabilities");
       setLoading(tsStatusLoading, false);
     } catch (err) {
@@ -5739,4 +6037,14 @@ loadDismissedIds();
   }
 
 
+});
+
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && tsPreviewDetailModal && !tsPreviewDetailModal.classList.contains("hidden")) {
+    closePreviewDetailModal();
+  }
+  if (event.key === "Escape" && tsRunResultsModal && !tsRunResultsModal.classList.contains("hidden")) {
+    closeRunResultsModal();
+  }
 });

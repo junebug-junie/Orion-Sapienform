@@ -397,6 +397,13 @@ loadDismissedIds();
   const tsRunError = document.getElementById("tsRunError");
   const tsRunsSelect = document.getElementById("tsRunsSelect");
   const tsRunsWarning = document.getElementById("tsRunsWarning");
+  const tsRunResultsStatus = document.getElementById("tsRunResultsStatus");
+  const tsRunResultsList = document.getElementById("tsRunResultsList");
+  const tsRunResultsModal = document.getElementById("tsRunResultsModal");
+  const tsRunResultsModalTitle = document.getElementById("tsRunResultsModalTitle");
+  const tsRunResultsModalMeta = document.getElementById("tsRunResultsModalMeta");
+  const tsRunResultsModalText = document.getElementById("tsRunResultsModalText");
+  const tsRunResultsModalClose = document.getElementById("tsRunResultsModalClose");
   const tsSegmentsRunId = document.getElementById("tsSegmentsRunId");
   const tsSegmentsEnrichment = document.getElementById("tsSegmentsEnrichment");
   const tsSegmentsAspect = document.getElementById("tsSegmentsAspect");
@@ -1879,6 +1886,7 @@ loadDismissedIds();
   let topicStudioSegmentsQueryKey = null;
   let topicStudioLastPreview = null;
   let topicStudioLastPreviewResult = null;
+  let topicStudioRunResultsPage = [];
   let topicStudioLastSubview = "runs";
   let topicStudioSelectedSegmentId = null;
   let topicStudioSegmentsFacetFilter = null;
@@ -3122,6 +3130,9 @@ loadDismissedIds();
     localStorage.setItem(TOPIC_STUDIO_RUN_ID_KEY, runId);
     topicStudioLastSubview = "runs";
     saveTopicStudioState();
+    loadRunResultsSegments(runId).catch((err) => {
+      console.warn("[RunInspector] setSelectedRun load failed", err);
+    });
   }
 
   function resetSegmentsPaging() {
@@ -3714,6 +3725,72 @@ loadDismissedIds();
     }
   }
 
+  function closeRunResultsModal() {
+    if (!tsRunResultsModal) return;
+    tsRunResultsModal.classList.add("hidden");
+  }
+
+  function openRunResultsModal(detail) {
+    if (!tsRunResultsModal) return;
+    if (tsRunResultsModalTitle) tsRunResultsModalTitle.textContent = detail?.segment_id || "--";
+    if (tsRunResultsModalMeta) {
+      tsRunResultsModalMeta.textContent = `topic=${detail?.topic_id ?? "--"} (${detail?.topic_label || "--"}) · prob=${detail?.prob ?? "--"} · chars=${detail?.chars ?? "--"}`;
+    }
+    if (tsRunResultsModalText) tsRunResultsModalText.textContent = detail?.full_text || "";
+    tsRunResultsModal.classList.remove("hidden");
+  }
+
+  async function loadRunResultsSegments(runId) {
+    if (!tsRunResultsList) return;
+    if (!runId) {
+      tsRunResultsList.innerHTML = '<div class="px-2 py-1 text-gray-500">No run selected.</div>';
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Select a run to load segments.";
+      return;
+    }
+    console.log(`[RunInspector] load segments for run_id=${runId}`);
+    if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loading segments for ${runId}...`;
+    try {
+      const resp = await topicFoundryFetch(`/runs/${runId}/segments?limit=50`);
+      const items = resp?.items || [];
+      topicStudioRunResultsPage = items;
+      tsRunResultsList.innerHTML = "";
+      if (!items.length) {
+        tsRunResultsList.innerHTML = '<div class="px-2 py-1 text-gray-500">No segments for this run.</div>';
+        if (tsRunResultsStatus) tsRunResultsStatus.textContent = `No segments found for run_id=${runId}`;
+        return;
+      }
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = "px-2 py-1 border-b border-gray-800 hover:bg-gray-800/70 cursor-pointer";
+        const sid = String(item.segment_id || "--");
+        const topicText = `${item.topic_id ?? "--"}${item.topic_label ? ` (${item.topic_label})` : ""}`;
+        row.innerHTML = `<div class="flex items-center justify-between gap-2"><span class="font-mono text-[10px] text-gray-300">${escapeHtml(sid.slice(0, 12))}</span><span class="text-[10px] text-gray-500">topic ${escapeHtml(topicText)} · ${item.chars ?? "--"} chars</span></div><div class="text-[11px] text-gray-200">${escapeHtml(item.text_preview || "")}</div>`;
+        row.addEventListener("click", () => {
+          for (const child of tsRunResultsList.children) child.classList.remove("bg-gray-800/70");
+          row.classList.add("bg-gray-800/70");
+        });
+        row.addEventListener("dblclick", async () => {
+          console.log(`[RunInspector] dblclick segment_id=${sid}`);
+          try {
+            const detail = await topicFoundryFetch(`/runs/${runId}/segments/${encodeURIComponent(sid)}`);
+            console.log(`[RunInspector] detail loaded chars=${detail?.chars ?? 0}`);
+            openRunResultsModal(detail);
+          } catch (err) {
+            console.warn("[RunInspector] detail failed", err);
+            showToast(err?.message || "Failed to load run segment detail.");
+          }
+        });
+        tsRunResultsList.appendChild(row);
+      }
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loaded ${items.length} segments for run_id=${runId}`;
+    } catch (err) {
+      console.warn("[RunInspector] load failed", err);
+      tsRunResultsList.innerHTML = '<div class="px-2 py-1 text-red-300">Failed to load run results.</div>';
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Failed to load run results.";
+      showToast(err?.message || "Failed to load run results.");
+    }
+  }
+
   function bindTopicStudioActions() {
     if (window.__topicStudioActionsBound) return;
     window.__topicStudioActionsBound = true;
@@ -3776,6 +3853,14 @@ loadDismissedIds();
     if (tsPreviewDetailModal) {
       tsPreviewDetailModal.addEventListener("click", (event) => {
         if (event.target === tsPreviewDetailModal) closePreviewDetailModal();
+      });
+    }
+    if (tsRunResultsModalClose) {
+      tsRunResultsModalClose.addEventListener("click", closeRunResultsModal);
+    }
+    if (tsRunResultsModal) {
+      tsRunResultsModal.addEventListener("click", (event) => {
+        if (event.target === tsRunResultsModal) closeRunResultsModal();
       });
     }
 
@@ -5906,5 +5991,8 @@ loadDismissedIds();
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && tsPreviewDetailModal && !tsPreviewDetailModal.classList.contains("hidden")) {
     closePreviewDetailModal();
+  }
+  if (event.key === "Escape" && tsRunResultsModal && !tsRunResultsModal.classList.contains("hidden")) {
+    closeRunResultsModal();
   }
 });

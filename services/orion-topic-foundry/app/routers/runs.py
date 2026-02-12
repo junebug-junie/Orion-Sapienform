@@ -17,9 +17,18 @@ from app.models import (
     RunTrainRequest,
     RunTrainResponse,
     RunSpecSnapshot,
+    RunSegmentDetailResponse,
+    RunSegmentInspectorItem,
+    RunSegmentInspectorPage,
     WindowingSpec,
 )
-from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
+from app.services.data_access import (
+    InvalidSourceTableError,
+    build_full_text,
+    fetch_dataset_rows_by_ids,
+    validate_dataset_columns,
+    validate_dataset_source_table,
+)
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
 from app.settings import settings
@@ -29,6 +38,10 @@ from app.storage.repository import (
     fetch_model,
     fetch_run,
     fetch_run_by_spec_hash,
+    fetch_segment,
+    fetch_segments,
+    fetch_topics,
+    count_segments,
     list_runs,
     list_runs_paginated,
     utc_now,
@@ -221,3 +234,75 @@ def list_runs_endpoint(
             )
         )
     return RunListPage(items=items, limit=limit, offset=offset, total=total)
+
+
+@router.get("/runs/{run_id}/segments", response_model=RunSegmentInspectorPage)
+def list_run_segments_endpoint(
+    run_id: UUID,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    topic_id: int | None = Query(default=None),
+    sort: str = Query(default="created_at:desc"),
+) -> RunSegmentInspectorPage:
+    run = fetch_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    sort_by, sort_dir = "created_at", "desc"
+    if ":" in sort:
+        left, right = sort.split(":", 1)
+        sort_by = (left or "created_at").strip()
+        sort_dir = (right or "desc").strip()
+    rows = fetch_segments(run_id, sort_by=sort_by, sort_dir=sort_dir, limit=limit, offset=offset)
+    if topic_id is not None:
+        rows = [row for row in rows if row.get("topic_id") == topic_id]
+    topics = fetch_topics(run_id)
+    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None}
+    items = [
+        RunSegmentInspectorItem(
+            segment_id=UUID(row["segment_id"]),
+            run_id=UUID(row["run_id"]),
+            topic_id=row.get("topic_id"),
+            topic_label=topic_labels.get(int(row["topic_id"])) if row.get("topic_id") is not None else None,
+            prob=row.get("topic_prob"),
+            chars=row.get("chars"),
+            text_preview=row.get("snippet"),
+            observed_start=row.get("start_at"),
+            observed_end=row.get("end_at"),
+        )
+        for row in rows
+    ]
+    total = count_segments(run_id)
+    return RunSegmentInspectorPage(run_id=run_id, items=items, limit=limit, offset=offset, total=total)
+
+
+@router.get("/runs/{run_id}/segments/{segment_id}", response_model=RunSegmentDetailResponse)
+def get_run_segment_detail_endpoint(run_id: UUID, segment_id: UUID) -> RunSegmentDetailResponse:
+    run = fetch_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    row = fetch_segment(segment_id)
+    if not row or str(row.get("run_id")) != str(run_id):
+        raise HTTPException(status_code=404, detail="Segment not found")
+    dataset = fetch_dataset(UUID(run["dataset_id"]))
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    provenance = row.get("provenance") or {}
+    row_ids = provenance.get("row_ids") or []
+    if isinstance(row_ids, str):
+        row_ids = [row_ids]
+    source_rows = fetch_dataset_rows_by_ids(dataset=dataset, row_ids=row_ids)
+    full_text = build_full_text(source_rows, dataset.text_columns) if source_rows else (row.get("snippet") or "")
+    topics = fetch_topics(run_id)
+    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None}
+    tid = row.get("topic_id")
+    return RunSegmentDetailResponse(
+        segment_id=segment_id,
+        run_id=run_id,
+        full_text=full_text,
+        topic_id=tid,
+        topic_label=topic_labels.get(int(tid)) if tid is not None else None,
+        prob=row.get("topic_prob"),
+        chars=len(full_text),
+        observed_start=row.get("start_at"),
+        observed_end=row.get("end_at"),
+    )

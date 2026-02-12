@@ -377,6 +377,38 @@ class RunListPage(BaseModel):
     total: Optional[int] = None
 
 
+class RunSegmentInspectorItem(BaseModel):
+    segment_id: UUID
+    run_id: UUID
+    topic_id: Optional[int] = None
+    topic_label: Optional[str] = None
+    prob: Optional[float] = None
+    chars: Optional[int] = None
+    text_preview: Optional[str] = None
+    observed_start: Optional[datetime] = None
+    observed_end: Optional[datetime] = None
+
+
+class RunSegmentInspectorPage(BaseModel):
+    run_id: UUID
+    items: List[RunSegmentInspectorItem]
+    limit: int
+    offset: int
+    total: Optional[int] = None
+
+
+class RunSegmentDetailResponse(BaseModel):
+    segment_id: UUID
+    run_id: UUID
+    full_text: str
+    topic_id: Optional[int] = None
+    topic_label: Optional[str] = None
+    prob: Optional[float] = None
+    chars: int
+    observed_start: Optional[datetime] = None
+    observed_end: Optional[datetime] = None
+
+
 class DriftRecord(BaseModel):
     drift_id: UUID
     model_id: UUID

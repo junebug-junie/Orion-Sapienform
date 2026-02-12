@@ -154,6 +154,15 @@ class DatasetPreviewResponse(BaseModel):
     samples: List[DatasetPreviewDoc]
 
 
+class DatasetPreviewDetailResponse(BaseModel):
+    dataset_id: UUID
+    doc_id: str
+    full_text: str
+    char_count: int
+    observed_range: Dict[str, Optional[str]] = Field(default_factory=dict)
+    is_truncated: bool = False
+
+
 class ModelCreateRequest(BaseModel):
     name: str
     version: str

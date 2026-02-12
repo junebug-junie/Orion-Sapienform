@@ -3451,13 +3451,12 @@ loadDismissedIds();
     tsPreviewDetailModal.classList.remove("hidden");
   }
 
-  async function fetchPreviewDocDetail(sample) {
+  async function fetchPreviewDocDetail(docId) {
     const datasetId = tsDatasetSelect?.value || "";
     if (!datasetId) {
       showToast("Select a dataset before opening inspector detail.");
       return;
     }
-    const docId = sample?.doc_id || sample?.segment_id;
     if (!docId) {
       showToast("Preview item is missing doc_id.");
       return;
@@ -3492,6 +3491,7 @@ loadDismissedIds();
         return;
       }
       samples.forEach((sample) => {
+        // Detail fetch must only happen on click; never during render.
         const row = document.createElement("button");
         row.type = "button";
         row.className = "w-full text-left px-2 py-1 border-b border-gray-800 hover:bg-gray-800/70";
@@ -3500,7 +3500,7 @@ loadDismissedIds();
         const snippet = String(sample.snippet || "").slice(0, 200);
         row.innerHTML = `<div class="flex items-center justify-between gap-2"><span class="font-mono text-[10px] text-gray-300">${shortId}</span><span class="text-[10px] text-gray-500">${chars} chars</span></div><div class="text-[11px] text-gray-200">${escapeHtml(snippet)}</div>`;
         row.addEventListener("click", () => {
-          fetchPreviewDocDetail(sample).catch((err) => {
+          fetchPreviewDocDetail(sample?.doc_id || sample?.segment_id).catch((err) => {
             console.warn("[TopicStudio] preview inspector click failed", err);
             showToast(err?.message || "Failed to load preview detail.");
           });

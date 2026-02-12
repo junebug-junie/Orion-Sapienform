@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from psycopg2 import OperationalError
 from psycopg2 import errors as pg_errors
@@ -55,6 +56,10 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
     try:
         validate_dataset_source_table(dataset)
         validate_dataset_columns(dataset)
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
         logger.warning("Create dataset failed due to invalid source_table", exc_info=True)
@@ -94,6 +99,10 @@ def update_dataset_endpoint(dataset_id: UUID, payload: DatasetUpdateRequest) -> 
     try:
         validate_dataset_source_table(updated)
         validate_dataset_columns(updated)
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
         logger.warning("Update dataset failed due to invalid source_table", exc_info=True)
@@ -144,6 +153,10 @@ def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewRe
             raise HTTPException(status_code=400, detail=detail)
         result = preview_dataset(resolved)
         return result
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {
             "ok": False,
@@ -177,6 +190,18 @@ def preview_doc_detail_endpoint(
     boundary_column: str | None = None,
     limit: int = 200,
 ) -> DatasetPreviewDetailResponse:
+    logger.info(
+        "Preview detail request",
+        extra={
+            "dataset_id": str(dataset_id),
+            "doc_id": doc_id,
+            "windowing_mode": windowing_mode,
+            "time_gap_minutes": time_gap_minutes,
+            "max_chars": max_chars,
+        },
+    )
+    if not doc_id or not str(doc_id).strip():
+        raise HTTPException(status_code=404, detail="Preview doc not found")
     dataset_spec = fetch_dataset(dataset_id)
     if dataset_spec is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -211,10 +236,14 @@ def preview_doc_detail_endpoint(
             raise HTTPException(status_code=400, detail=detail)
         detail = preview_doc_detail(resolved, doc_id)
         if detail is None:
-            raise HTTPException(status_code=404, detail="Preview doc not found")
+            raise HTTPException(status_code=404, detail="doc not found for current preview spec")
         return detail
     except HTTPException:
         raise
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {"ok": False, "error": "invalid_request", "detail": str(exc) or "Invalid request"}
         logger.warning("Preview detail failed due to invalid request", exc_info=True)

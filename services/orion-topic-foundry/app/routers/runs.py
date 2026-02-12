@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -53,9 +55,48 @@ logger = logging.getLogger("topic-foundry.runs")
 router = APIRouter()
 
 
+
+
+def _load_run_artifact_maps(run: dict) -> tuple[dict[int, str], dict[int, list[str]], str | None]:
+    artifact_paths = run.get("artifact_paths") or {}
+    topic_labels: dict[int, str] = {}
+    topic_terms: dict[int, list[str]] = {}
+    representation_backend: str | None = None
+    try:
+        top_words_path = artifact_paths.get("top_words_json")
+        if top_words_path:
+            payload = json.loads(Path(top_words_path).read_text())
+            for key, vals in (payload or {}).items():
+                tid = int(key)
+                if isinstance(vals, list):
+                    topic_terms[tid] = [str(v) for v in vals if str(v).strip()]
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed reading top_words_json run_id=%s", run.get("run_id"), exc_info=True)
+    try:
+        topic_info_path = artifact_paths.get("topic_info_json")
+        if topic_info_path:
+            rows = json.loads(Path(topic_info_path).read_text())
+            for row in rows or []:
+                tid = row.get("Topic")
+                if tid is None:
+                    continue
+                topic_labels[int(tid)] = str(row.get("Name") or "").strip() or topic_labels.get(int(tid), "")
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed reading topic_info_json run_id=%s", run.get("run_id"), exc_info=True)
+    try:
+        run_meta_path = artifact_paths.get("run_metadata_json")
+        if run_meta_path:
+            meta = json.loads(Path(run_meta_path).read_text())
+            model_meta_used = ((meta or {}).get("stats") or {}).get("model_meta_used") or (meta or {}).get("model_meta_used") or {}
+            representation_backend = str(model_meta_used.get("representation") or "").strip() or None
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed reading run_metadata_json run_id=%s", run.get("run_id"), exc_info=True)
+    return topic_labels, topic_terms, representation_backend
+
 def _run_summary_payload(row: dict) -> dict:
     stats = row.get("stats") or {}
     model_meta_used = stats.get("model_meta_used") or {}
+    logger.info("run_summary run_id=%s outlier_rate=%r type=%s", row.get("run_id"), stats.get("outlier_rate", stats.get("outlier_pct")), type(stats.get("outlier_rate", stats.get("outlier_pct"))).__name__)
     return {
         "doc_count": stats.get("docs_generated"),
         "segment_count": stats.get("segments_generated"),
@@ -287,21 +328,37 @@ def list_run_segments_endpoint(
     if topic_id is not None:
         rows = [row for row in rows if row.get("topic_id") == topic_id]
     topics = fetch_topics(run_id)
-    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None}
-    items = [
-        RunSegmentInspectorItem(
-            segment_id=UUID(row["segment_id"]),
-            run_id=UUID(row["run_id"]),
-            topic_id=row.get("topic_id"),
-            topic_label=topic_labels.get(int(row["topic_id"])) if row.get("topic_id") is not None else None,
-            prob=row.get("topic_prob"),
-            chars=row.get("chars"),
-            text_preview=row.get("snippet"),
-            observed_start=row.get("start_at"),
-            observed_end=row.get("end_at"),
+    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None and t.get("label")}
+    art_labels, art_terms, representation_backend = _load_run_artifact_maps(run)
+    topic_labels = {**art_labels, **topic_labels}
+    items = []
+    for row in rows:
+        tid = row.get("topic_id")
+        resolved_label = None
+        if tid is not None:
+            tid_i = int(tid)
+            resolved_label = topic_labels.get(tid_i)
+            if tid_i == -1:
+                resolved_label = "OUTLIER"
+            if not resolved_label:
+                terms = art_terms.get(tid_i) or []
+                resolved_label = ", ".join(terms[:5]) if terms else None
+        items.append(
+            RunSegmentInspectorItem(
+                segment_id=UUID(row["segment_id"]),
+                run_id=UUID(row["run_id"]),
+                topic_id=tid,
+                topic_label=resolved_label,
+                prob=row.get("topic_prob"),
+                topic_prob=row.get("topic_prob"),
+                chars=row.get("chars"),
+                text_preview=row.get("snippet"),
+                representation_backend=representation_backend,
+                topic_repr_terms=art_terms.get(int(tid)) if tid is not None else [],
+                observed_start=row.get("start_at"),
+                observed_end=row.get("end_at"),
+            )
         )
-        for row in rows
-    ]
     total = count_segments(run_id)
     return RunSegmentInspectorPage(run_id=run_id, items=items, limit=limit, offset=offset, total=total)
 
@@ -329,15 +386,29 @@ def get_run_segment_detail_endpoint(run_id: UUID, segment_id: UUID) -> RunSegmen
     source_rows = fetch_dataset_rows_by_ids(dataset=dataset, row_ids=row_ids)
     full_text = build_full_text(source_rows, dataset.text_columns) if source_rows else (row.get("snippet") or "")
     topics = fetch_topics(run_id)
-    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None}
+    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None and t.get("label")}
+    art_labels, art_terms, representation_backend = _load_run_artifact_maps(run)
+    topic_labels = {**art_labels, **topic_labels}
     tid = row.get("topic_id")
+    resolved_label = None
+    if tid is not None:
+        tid_i = int(tid)
+        resolved_label = topic_labels.get(tid_i)
+        if tid_i == -1:
+            resolved_label = "OUTLIER"
+        if not resolved_label:
+            terms = art_terms.get(tid_i) or []
+            resolved_label = ", ".join(terms[:5]) if terms else None
     return RunSegmentDetailResponse(
         segment_id=segment_id,
         run_id=run_id,
         full_text=full_text,
         topic_id=tid,
-        topic_label=topic_labels.get(int(tid)) if tid is not None else None,
+        topic_label=resolved_label,
         prob=row.get("topic_prob"),
+        topic_prob=row.get("topic_prob"),
+        representation_backend=representation_backend,
+        topic_repr_terms=art_terms.get(int(tid)) if tid is not None else [],
         chars=len(full_text),
         observed_start=row.get("start_at"),
         observed_end=row.get("end_at"),

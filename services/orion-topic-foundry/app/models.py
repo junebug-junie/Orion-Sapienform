@@ -393,8 +393,11 @@ class RunSegmentInspectorItem(BaseModel):
     topic_id: Optional[int] = None
     topic_label: Optional[str] = None
     prob: Optional[float] = None
+    topic_prob: Optional[float] = None
     chars: Optional[int] = None
     text_preview: Optional[str] = None
+    representation_backend: Optional[str] = None
+    topic_repr_terms: List[str] = Field(default_factory=list)
     observed_start: Optional[datetime] = None
     observed_end: Optional[datetime] = None
 
@@ -414,6 +417,9 @@ class RunSegmentDetailResponse(BaseModel):
     topic_id: Optional[int] = None
     topic_label: Optional[str] = None
     prob: Optional[float] = None
+    topic_prob: Optional[float] = None
+    representation_backend: Optional[str] = None
+    topic_repr_terms: List[str] = Field(default_factory=list)
     chars: int
     observed_start: Optional[datetime] = None
     observed_end: Optional[datetime] = None

@@ -46,10 +46,27 @@ if [[ "$status" != "complete" && "$status" != "trained" ]]; then
   exit 1
 fi
 
+run_summary="$(curl -fsS "$BASE_URL/runs/$run_id")"
+outlier_rate="$(echo "$run_summary" | jq -r '.outlier_rate')"
+if [[ "$outlier_rate" == "null" ]]; then
+  echo "[FAIL] outlier_rate missing on run summary"
+  echo "$run_summary"
+  exit 1
+fi
+python - <<PY2
+v = float("$outlier_rate")
+assert 0.0 <= v <= 1.0, f"outlier_rate out of range: {v}"
+PY2
 list_resp="$(curl -fsS "$BASE_URL/runs/$run_id/results?limit=5")"
 count="$(echo "$list_resp" | jq -r '.items | length')"
 if [[ "$count" -lt 1 ]]; then
   echo "[FAIL] expected >=1 run result"
+  echo "$list_resp"
+  exit 1
+fi
+missing_keys="$(echo "$list_resp" | jq -r '.items[0] | [has("topic_id"), has("topic_label"), (has("topic_prob") or has("prob")), has("representation_backend"), has("topic_repr_terms")] | all')"
+if [[ "$missing_keys" != "true" ]]; then
+  echo "[FAIL] missing expected run result keys"
   echo "$list_resp"
   exit 1
 fi

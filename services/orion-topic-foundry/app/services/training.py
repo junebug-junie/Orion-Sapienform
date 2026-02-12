@@ -109,6 +109,7 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
         cluster_count = len([v for v in sorted(set(labels_np.tolist())) if v >= 0])
         outlier_count = int(np.sum(labels_np < 0))
         outlier_rate = float(outlier_count / doc_count) if doc_count else 0.0
+        logger.info("training stats run_id=%s doc_count=%s outlier_count=%s outlier_rate=%r type=%s", run_id, doc_count, outlier_count, outlier_rate, type(outlier_rate).__name__)
 
         stats = {
             "doc_count": doc_count,
@@ -139,9 +140,15 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
             start_at, end_at = _timestamp_bounds(seg.timestamps)
             label = int(labels[idx])
             prob = None
-            if isinstance(probs, list) and idx < len(probs):
+            if probs is not None:
                 try:
-                    prob = float(np.max(np.asarray(probs[idx])))
+                    if isinstance(probs, np.ndarray):
+                        if probs.ndim == 1 and idx < len(probs):
+                            prob = float(probs[idx])
+                        elif probs.ndim > 1 and idx < probs.shape[0]:
+                            prob = float(np.max(np.asarray(probs[idx], dtype=float)))
+                    elif isinstance(probs, list) and idx < len(probs):
+                        prob = float(np.max(np.asarray(probs[idx], dtype=float)))
                 except Exception:
                     prob = None
             seg_records.append(SegmentRecord(
@@ -222,12 +229,31 @@ def _prepare_segments(run: RunRecord, payload: RunTrainRequest) -> tuple[List[Ro
 
 def _build_topic_payloads(labels: np.ndarray, topic_model: BERTopic, *, scope: str) -> List[Dict[str, Any]]:
     payloads=[]
-    for topic_id in sorted(set(int(v) for v in labels.tolist())):
-        topic_docs = [idx for idx, val in enumerate(labels.tolist()) if int(val) == topic_id]
+    labels_list = [int(v) for v in labels.tolist()]
+    topic_info_map: Dict[int, Dict[str, Any]] = {}
+    try:
+        for row in topic_model.get_topic_info().to_dict(orient="records"):
+            tid = row.get("Topic")
+            if tid is None:
+                continue
+            topic_info_map[int(tid)] = row
+    except Exception:  # noqa: BLE001
+        topic_info_map = {}
+    for topic_id in sorted(set(labels_list)):
+        topic_docs = [idx for idx, val in enumerate(labels_list) if int(val) == topic_id]
         if not topic_docs:
             continue
         centroid = topic_model.topic_embeddings_[topic_id] if hasattr(topic_model, "topic_embeddings_") and topic_id >= 0 else None
-        payloads.append({"topic_id": topic_id, "scope": scope, "parent_topic_id": None, "centroid": centroid.tolist() if centroid is not None else None, "count": len(topic_docs), "label": None})
+        label = None
+        if topic_id == -1:
+            label = "OUTLIER"
+        else:
+            info_row = topic_info_map.get(topic_id) or {}
+            label = str(info_row.get("Name") or "").strip() or None
+            if not label:
+                words = topic_model.get_topic(topic_id) or []
+                label = ", ".join([w for w, _ in words[:5]]) if words else None
+        payloads.append({"topic_id": topic_id, "scope": scope, "parent_topic_id": None, "centroid": centroid.tolist() if centroid is not None else None, "count": len(topic_docs), "label": label})
     return payloads
 
 

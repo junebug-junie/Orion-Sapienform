@@ -3786,7 +3786,7 @@ loadDismissedIds();
     if (!tsRunResultsTable || !tsRunResultsBody) return;
     if (!runId) {
       console.log(`[RunResults] rendering into ${tsRunResultsBody.id}`);
-      tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="6">No run selected.</td></tr>';
+      tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="7">No run selected.</td></tr>';
       if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Select a run to load training results.";
       return;
     }
@@ -3803,7 +3803,7 @@ loadDismissedIds();
       console.log(`[RunResults] rendering into ${tsRunResultsBody.id}`);
       tsRunResultsBody.innerHTML = "";
       if (!items.length) {
-        tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="6">No run results for this run.</td></tr>';
+        tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="7">No run results for this run.</td></tr>';
         if (tsRunResultsStatus) tsRunResultsStatus.textContent = `No run results found for run_id=${runId}`;
         return;
       }
@@ -3811,7 +3811,9 @@ loadDismissedIds();
         const row = document.createElement("tr");
         row.className = "border-b border-gray-800 hover:bg-gray-800/70 cursor-pointer";
         const sid = String(item.segment_id || "--");
-        row.innerHTML = `<td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(String(item.topic_id ?? "--"))}</td><td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(item.topic_label || "--")}</td><td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(String(item.prob ?? "--"))}</td><td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(String(item.chars ?? "--"))}</td><td class="px-2 py-1 font-mono text-[10px] text-gray-300">${escapeHtml(sid.slice(0, 12))}</td><td class="px-2 py-1 text-[11px] text-gray-200">${escapeHtml(item.text_preview || "")}</td>`;
+        const topicProb = item.topic_prob ?? item.prob;
+        const repr = [item.representation_backend || "--", Array.isArray(item.topic_repr_terms) ? item.topic_repr_terms.slice(0, 5).join(", ") : ""].filter(Boolean).join(": ");
+        row.innerHTML = `<td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(String(item.topic_id ?? "--"))}</td><td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(item.topic_label || "--")}</td><td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(String(topicProb ?? "--"))}</td><td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(String(item.chars ?? "--"))}</td><td class="px-2 py-1 font-mono text-[10px] text-gray-300">${escapeHtml(sid.slice(0, 12))}</td><td class="px-2 py-1 text-[11px] text-gray-200">${escapeHtml(item.text_preview || "")}</td><td class="px-2 py-1 text-[10px] text-gray-300">${escapeHtml(repr || "--")}</td>`;
         row.addEventListener("dblclick", async () => {
           console.log("[TopicStudio][RunResultsDetail] request", { method: "GET", url: `/runs/${runId}/results/${encodeURIComponent(sid)}` });
           try {
@@ -3828,7 +3830,7 @@ loadDismissedIds();
       if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loaded ${items.length} training results for run_id=${runId}`;
     } catch (err) {
       console.warn("[TopicStudio][RunResults] catch", err);
-      tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-red-300" colspan="6">Failed to load training results.</td></tr>';
+      tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-red-300" colspan="7">Failed to load training results.</td></tr>';
       if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Failed to load training results.";
       showToast(err?.message || "Failed to load training results.");
     }

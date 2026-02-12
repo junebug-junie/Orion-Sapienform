@@ -59,6 +59,7 @@ def list_models_endpoint() -> ModelListResponse:
             version=row["version"],
             stage=row.get("stage"),
             dataset_id=UUID(row["dataset_id"]),
+            model_meta=row.get("model_meta") or {},
             created_at=row["created_at"],
         )
         for row in rows
@@ -93,6 +94,7 @@ def get_active_model(name: str) -> ModelSummary:
         version=row["version"],
         stage=row.get("stage"),
         dataset_id=UUID(row["dataset_id"]),
+        model_meta=row.get("model_meta") or {},
         created_at=row["created_at"],
     )
 

@@ -276,6 +276,40 @@ def _map_micro_to_macro(micro_topics: List[Dict[str, Any]], macro_topics: List[D
         topic["parent_topic_id"] = int(macro_ids[int(np.argmax(scores))])
 
 
+
+
+def _find_type_like_values(value: Any, *, path: str = "") -> List[tuple[str, Any]]:
+    findings: List[tuple[str, Any]] = []
+    if isinstance(value, type):
+        findings.append((path or "$", value))
+        return findings
+    if isinstance(value, np.dtype):
+        findings.append((path or "$", value))
+        return findings
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            findings.extend(_find_type_like_values(nested, path=child_path))
+        return findings
+    if isinstance(value, (list, tuple)):
+        for idx, nested in enumerate(value):
+            child_path = f"{path}[{idx}]" if path else f"[{idx}]"
+            findings.extend(_find_type_like_values(nested, path=child_path))
+        return findings
+    return findings
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, type):
+        return value.__name__
+    if isinstance(value, np.dtype):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
 def _write_artifacts(run: RunRecord, topic_model: BERTopic, topic_info: List[Dict[str, Any]], docs: List[str], labels: List[int], probs: Any, stats: Dict[str, Any], topic_mode: str, topic_mode_params: Dict[str, Any], model_meta: Dict[str, Any]) -> Dict[str, Any]:
     base_dir = Path(settings.topic_foundry_model_dir)
     run_dir = base_dir / "runs" / str(run.run_id)
@@ -299,6 +333,7 @@ def _write_artifacts(run: RunRecord, topic_model: BERTopic, topic_info: List[Dic
         top_words[str(tid)] = [w for w, _ in words]
     top_words_json.write_text(json.dumps(top_words, indent=2))
 
+    vectorizer_params_raw = topic_model.vectorizer_model.get_params() if getattr(topic_model, "vectorizer_model", None) else None
     run_meta = {
         "run_id": str(run.run_id),
         "model_id": str(run.model_id),
@@ -307,10 +342,13 @@ def _write_artifacts(run: RunRecord, topic_model: BERTopic, topic_info: List[Dic
         "topic_mode_params": topic_mode_params,
         "model_meta_used": model_meta,
         "stats": stats,
-        "vectorizer_params": topic_model.vectorizer_model.get_params() if getattr(topic_model, "vectorizer_model", None) else None,
+        "vectorizer_params": vectorizer_params_raw,
         "ctfidf_reduce_frequent_words": bool(getattr(getattr(topic_model, "ctfidf_model", None), "reduce_frequent_words", False)),
     }
-    run_meta_json.write_text(json.dumps(run_meta, indent=2))
+    findings = _find_type_like_values(run_meta)
+    for key_path, bad_value in findings:
+        logger.error("run_meta non-JSON value path=%s type=%s repr=%r", key_path, type(bad_value).__name__, bad_value)
+    run_meta_json.write_text(json.dumps(_json_safe(run_meta), indent=2))
 
     return {
         "run_dir": str(run_dir),

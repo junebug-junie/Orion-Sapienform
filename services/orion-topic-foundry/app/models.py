@@ -352,6 +352,7 @@ class SegmentFullTextResponse(BaseModel):
 class CapabilitiesResponse(BaseModel):
     capabilities: Dict[str, Any]
     backends: Dict[str, List[str]]
+    defaults: Optional[Dict[str, Any]] = None
 
 
 class DriftRunRequest(BaseModel):

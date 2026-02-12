@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -17,17 +19,31 @@ from app.models import (
     RunTrainRequest,
     RunTrainResponse,
     RunSpecSnapshot,
+    RunSegmentDetailResponse,
+    RunSegmentInspectorItem,
+    RunSegmentInspectorPage,
     WindowingSpec,
 )
-from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
+from app.services.data_access import (
+    InvalidSourceTableError,
+    build_full_text,
+    fetch_dataset_rows_by_ids,
+    validate_dataset_columns,
+    validate_dataset_source_table,
+)
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
+from app.settings import settings
 from app.storage.repository import (
     create_run,
     fetch_dataset,
     fetch_model,
     fetch_run,
     fetch_run_by_spec_hash,
+    fetch_segment,
+    fetch_segments,
+    fetch_topics,
+    count_segments,
     list_runs,
     list_runs_paginated,
     utc_now,
@@ -39,6 +55,62 @@ logger = logging.getLogger("topic-foundry.runs")
 router = APIRouter()
 
 
+
+
+def _load_run_artifact_maps(run: dict) -> tuple[dict[int, str], dict[int, list[str]], str | None]:
+    artifact_paths = run.get("artifact_paths") or {}
+    topic_labels: dict[int, str] = {}
+    topic_terms: dict[int, list[str]] = {}
+    representation_backend: str | None = None
+    try:
+        top_words_path = artifact_paths.get("top_words_json")
+        if top_words_path:
+            payload = json.loads(Path(top_words_path).read_text())
+            for key, vals in (payload or {}).items():
+                tid = int(key)
+                if isinstance(vals, list):
+                    topic_terms[tid] = [str(v) for v in vals if str(v).strip()]
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed reading top_words_json run_id=%s", run.get("run_id"), exc_info=True)
+    try:
+        topic_info_path = artifact_paths.get("topic_info_json")
+        if topic_info_path:
+            rows = json.loads(Path(topic_info_path).read_text())
+            for row in rows or []:
+                tid = row.get("Topic")
+                if tid is None:
+                    continue
+                topic_labels[int(tid)] = str(row.get("Name") or "").strip() or topic_labels.get(int(tid), "")
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed reading topic_info_json run_id=%s", run.get("run_id"), exc_info=True)
+    try:
+        run_meta_path = artifact_paths.get("run_metadata_json")
+        if run_meta_path:
+            meta = json.loads(Path(run_meta_path).read_text())
+            model_meta_used = ((meta or {}).get("stats") or {}).get("model_meta_used") or (meta or {}).get("model_meta_used") or {}
+            representation_backend = str(model_meta_used.get("representation") or "").strip() or None
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed reading run_metadata_json run_id=%s", run.get("run_id"), exc_info=True)
+    return topic_labels, topic_terms, representation_backend
+
+def _run_summary_payload(row: dict) -> dict:
+    stats = row.get("stats") or {}
+    model_meta_used = stats.get("model_meta_used") or {}
+    logger.info("run_summary run_id=%s outlier_rate=%r type=%s", row.get("run_id"), stats.get("outlier_rate", stats.get("outlier_pct")), type(stats.get("outlier_rate", stats.get("outlier_pct"))).__name__)
+    return {
+        "doc_count": stats.get("docs_generated"),
+        "segment_count": stats.get("segments_generated"),
+        "cluster_count": stats.get("cluster_count"),
+        "outlier_rate": stats.get("outlier_rate", stats.get("outlier_pct")),
+        "topic_mode": stats.get("topic_mode"),
+        "representation": model_meta_used.get("representation") or stats.get("representation"),
+        "embedding_backend": model_meta_used.get("embedding_backend") or stats.get("embedding_backend"),
+        "reducer": model_meta_used.get("reducer") or stats.get("reducer"),
+        "clusterer": model_meta_used.get("clusterer") or stats.get("clusterer"),
+        "artifact_paths": row.get("artifact_paths") or {},
+    }
+
+
 @router.post("/runs/train", response_model=RunTrainResponse)
 def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTasks) -> RunTrainResponse:
     model_row = fetch_model(payload.model_id)
@@ -47,6 +119,18 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    model_meta = model_row.get("model_meta") or {}
+    model_spec_meta = (model_row.get("model_spec") or {}).get("model_meta") or {}
+    requested_representation = str(model_spec_meta.get("representation") or model_meta.get("representation") or "").strip().lower()
+    if requested_representation == "llm" and not settings.topic_foundry_llm_enable:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "error": "invalid_representation",
+                "detail": "representation=llm is not configured; enable TOPIC_FOUNDRY_LLM_ENABLE or select another representation",
+            },
+        )
     windowing_spec = payload.windowing_spec or WindowingSpec(**model_row["windowing_spec"])
     effective_boundary = windowing_spec.boundary_column or dataset.boundary_column
     dataset_for_validation = dataset
@@ -105,10 +189,12 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         model_spec=specs.model,
         enrichment_spec=specs.enrichment,
         run_scope=specs.run_scope,
+        topic_mode=payload.topic_mode,
+        topic_mode_params=payload.topic_mode_params,
     )
     existing = fetch_run_by_spec_hash(spec_hash)
     if existing:
-        return RunTrainResponse(run_id=UUID(existing["run_id"]), status=existing["status"])
+        return RunTrainResponse(run_id=UUID(existing["run_id"]), status=existing["status"], topic_mode=payload.topic_mode, topic_mode_params=payload.topic_mode_params)
     run = RunRecord(
         run_id=run_id,
         model_id=payload.model_id,
@@ -124,7 +210,7 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     )
     create_run(run)
     enqueue_training(background_tasks, run_id, payload, model_row, dataset, spec_hash)
-    return RunTrainResponse(run_id=run_id, status=run.status)
+    return RunTrainResponse(run_id=run_id, status=run.status, topic_mode=payload.topic_mode, topic_mode_params=payload.topic_mode_params, model_meta_used=(model_row.get("model_meta") or {}))
 
 
 @router.get("/runs/{run_id}")
@@ -132,7 +218,9 @@ def get_run_endpoint(run_id: UUID):
     row = fetch_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
-    return row
+    payload = dict(row)
+    payload.update(_run_summary_payload(row))
+    return payload
 
 
 @router.get("/runs")
@@ -157,6 +245,7 @@ def list_runs_endpoint(
                 created_at=row["created_at"],
                 started_at=row.get("started_at"),
                 completed_at=row.get("completed_at"),
+                **_run_summary_payload(row),
             )
             for row in rows
         ]
@@ -206,3 +295,121 @@ def list_runs_endpoint(
             )
         )
     return RunListPage(items=items, limit=limit, offset=offset, total=total)
+
+
+@router.get("/runs/{run_id}/results", response_model=RunSegmentInspectorPage)
+def list_run_results_endpoint(
+    run_id: UUID,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    topic_id: int | None = Query(default=None),
+    sort: str = Query(default="created_at:desc"),
+) -> RunSegmentInspectorPage:
+    return list_run_segments_endpoint(run_id=run_id, limit=limit, offset=offset, topic_id=topic_id, sort=sort)
+
+
+@router.get("/runs/{run_id}/segments", response_model=RunSegmentInspectorPage)
+def list_run_segments_endpoint(
+    run_id: UUID,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    topic_id: int | None = Query(default=None),
+    sort: str = Query(default="created_at:desc"),
+) -> RunSegmentInspectorPage:
+    run = fetch_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    sort_by, sort_dir = "created_at", "desc"
+    if ":" in sort:
+        left, right = sort.split(":", 1)
+        sort_by = (left or "created_at").strip()
+        sort_dir = (right or "desc").strip()
+    rows = fetch_segments(run_id, sort_by=sort_by, sort_dir=sort_dir, limit=limit, offset=offset)
+    if topic_id is not None:
+        rows = [row for row in rows if row.get("topic_id") == topic_id]
+    topics = fetch_topics(run_id)
+    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None and t.get("label")}
+    art_labels, art_terms, representation_backend = _load_run_artifact_maps(run)
+    topic_labels = {**art_labels, **topic_labels}
+    items = []
+    for row in rows:
+        tid = row.get("topic_id")
+        resolved_label = None
+        if tid is not None:
+            tid_i = int(tid)
+            resolved_label = topic_labels.get(tid_i)
+            if tid_i == -1:
+                resolved_label = "OUTLIER"
+            if not resolved_label:
+                terms = art_terms.get(tid_i) or []
+                resolved_label = ", ".join(terms[:5]) if terms else None
+        items.append(
+            RunSegmentInspectorItem(
+                segment_id=UUID(row["segment_id"]),
+                run_id=UUID(row["run_id"]),
+                topic_id=tid,
+                topic_label=resolved_label,
+                prob=row.get("topic_prob"),
+                topic_prob=row.get("topic_prob"),
+                chars=row.get("chars"),
+                text_preview=row.get("snippet"),
+                representation_backend=representation_backend,
+                topic_repr_terms=art_terms.get(int(tid)) if tid is not None else [],
+                observed_start=row.get("start_at"),
+                observed_end=row.get("end_at"),
+            )
+        )
+    total = count_segments(run_id)
+    return RunSegmentInspectorPage(run_id=run_id, items=items, limit=limit, offset=offset, total=total)
+
+
+@router.get("/runs/{run_id}/results/{segment_id}", response_model=RunSegmentDetailResponse)
+def get_run_result_detail_endpoint(run_id: UUID, segment_id: UUID) -> RunSegmentDetailResponse:
+    return get_run_segment_detail_endpoint(run_id=run_id, segment_id=segment_id)
+
+
+@router.get("/runs/{run_id}/segments/{segment_id}", response_model=RunSegmentDetailResponse)
+def get_run_segment_detail_endpoint(run_id: UUID, segment_id: UUID) -> RunSegmentDetailResponse:
+    run = fetch_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    row = fetch_segment(segment_id)
+    if not row or str(row.get("run_id")) != str(run_id):
+        raise HTTPException(status_code=404, detail="Segment not found")
+    dataset = fetch_dataset(UUID(run["dataset_id"]))
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    provenance = row.get("provenance") or {}
+    row_ids = provenance.get("row_ids") or []
+    if isinstance(row_ids, str):
+        row_ids = [row_ids]
+    source_rows = fetch_dataset_rows_by_ids(dataset=dataset, row_ids=row_ids)
+    full_text = build_full_text(source_rows, dataset.text_columns) if source_rows else (row.get("snippet") or "")
+    topics = fetch_topics(run_id)
+    topic_labels = {int(t["topic_id"]): t.get("label") for t in topics if t.get("topic_id") is not None and t.get("label")}
+    art_labels, art_terms, representation_backend = _load_run_artifact_maps(run)
+    topic_labels = {**art_labels, **topic_labels}
+    tid = row.get("topic_id")
+    resolved_label = None
+    if tid is not None:
+        tid_i = int(tid)
+        resolved_label = topic_labels.get(tid_i)
+        if tid_i == -1:
+            resolved_label = "OUTLIER"
+        if not resolved_label:
+            terms = art_terms.get(tid_i) or []
+            resolved_label = ", ".join(terms[:5]) if terms else None
+    return RunSegmentDetailResponse(
+        segment_id=segment_id,
+        run_id=run_id,
+        full_text=full_text,
+        topic_id=tid,
+        topic_label=resolved_label,
+        prob=row.get("topic_prob"),
+        topic_prob=row.get("topic_prob"),
+        representation_backend=representation_backend,
+        topic_repr_terms=art_terms.get(int(tid)) if tid is not None else [],
+        chars=len(full_text),
+        observed_start=row.get("start_at"),
+        observed_end=row.get("end_at"),
+    )

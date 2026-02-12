@@ -53,6 +53,23 @@ logger = logging.getLogger("topic-foundry.runs")
 router = APIRouter()
 
 
+def _run_summary_payload(row: dict) -> dict:
+    stats = row.get("stats") or {}
+    model_meta_used = stats.get("model_meta_used") or {}
+    return {
+        "doc_count": stats.get("docs_generated"),
+        "segment_count": stats.get("segments_generated"),
+        "cluster_count": stats.get("cluster_count"),
+        "outlier_rate": stats.get("outlier_rate", stats.get("outlier_pct")),
+        "topic_mode": stats.get("topic_mode"),
+        "representation": model_meta_used.get("representation") or stats.get("representation"),
+        "embedding_backend": model_meta_used.get("embedding_backend") or stats.get("embedding_backend"),
+        "reducer": model_meta_used.get("reducer") or stats.get("reducer"),
+        "clusterer": model_meta_used.get("clusterer") or stats.get("clusterer"),
+        "artifact_paths": row.get("artifact_paths") or {},
+    }
+
+
 @router.post("/runs/train", response_model=RunTrainResponse)
 def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTasks) -> RunTrainResponse:
     model_row = fetch_model(payload.model_id)
@@ -160,7 +177,9 @@ def get_run_endpoint(run_id: UUID):
     row = fetch_run(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
-    return row
+    payload = dict(row)
+    payload.update(_run_summary_payload(row))
+    return payload
 
 
 @router.get("/runs")
@@ -185,6 +204,7 @@ def list_runs_endpoint(
                 created_at=row["created_at"],
                 started_at=row.get("started_at"),
                 completed_at=row.get("completed_at"),
+                **_run_summary_payload(row),
             )
             for row in rows
         ]
@@ -236,6 +256,17 @@ def list_runs_endpoint(
     return RunListPage(items=items, limit=limit, offset=offset, total=total)
 
 
+@router.get("/runs/{run_id}/results", response_model=RunSegmentInspectorPage)
+def list_run_results_endpoint(
+    run_id: UUID,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    topic_id: int | None = Query(default=None),
+    sort: str = Query(default="created_at:desc"),
+) -> RunSegmentInspectorPage:
+    return list_run_segments_endpoint(run_id=run_id, limit=limit, offset=offset, topic_id=topic_id, sort=sort)
+
+
 @router.get("/runs/{run_id}/segments", response_model=RunSegmentInspectorPage)
 def list_run_segments_endpoint(
     run_id: UUID,
@@ -273,6 +304,11 @@ def list_run_segments_endpoint(
     ]
     total = count_segments(run_id)
     return RunSegmentInspectorPage(run_id=run_id, items=items, limit=limit, offset=offset, total=total)
+
+
+@router.get("/runs/{run_id}/results/{segment_id}", response_model=RunSegmentDetailResponse)
+def get_run_result_detail_endpoint(run_id: UUID, segment_id: UUID) -> RunSegmentDetailResponse:
+    return get_run_segment_detail_endpoint(run_id=run_id, segment_id=segment_id)
 
 
 @router.get("/runs/{run_id}/segments/{segment_id}", response_model=RunSegmentDetailResponse)

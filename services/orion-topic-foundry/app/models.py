@@ -220,6 +220,16 @@ class RunSummary(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    doc_count: Optional[int] = None
+    segment_count: Optional[int] = None
+    cluster_count: Optional[int] = None
+    outlier_rate: Optional[float] = None
+    topic_mode: Optional[str] = None
+    representation: Optional[str] = None
+    embedding_backend: Optional[str] = None
+    reducer: Optional[str] = None
+    clusterer: Optional[str] = None
+    artifact_paths: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RunListResponse(BaseModel):

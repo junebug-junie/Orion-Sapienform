@@ -806,28 +806,25 @@
 
 
           <div class="space-y-2 pt-2 border-t border-gray-700">
-            <div class="text-[10px] uppercase tracking-wide text-gray-500">Run Results</div>
-            <div id="tsRunResultsStatus" class="text-[11px] text-gray-400">Select a run to load segments.</div>
-            <div id="tsRunResultsList" class="max-h-56 overflow-y-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Training Results</div>
+            <div id="tsRunResultsStatus" class="text-[11px] text-gray-400">Select a run to load training results.</div>
+            <div id="tsRunSummary" class="grid grid-cols-2 gap-2 text-[11px] text-gray-300">
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Run ID</span><span id="tsRunSummaryRunId" class="font-mono text-[10px]">--</span></div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Status</span><span id="tsRunSummaryStatus" class="font-semibold">--</span></div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Docs</span><span id="tsRunSummaryDocs" class="font-semibold">--</span></div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Segments</span><span id="tsRunSummarySegments" class="font-semibold">--</span></div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Clusters</span><span id="tsRunSummaryClusters" class="font-semibold">--</span></div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Outlier Rate</span><span id="tsRunSummaryOutlierRate" class="font-semibold">--</span></div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Representation</span><span id="tsRunSummaryRepresentation" class="font-semibold">--</span></div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Backends</span><span id="tsRunSummaryBackends" class="font-semibold">--</span></div>
+            </div>
+            <pre id="tsRunSummaryArtifacts" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
+            <div id="tsRunResultsTable" class="max-h-56 overflow-y-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
               <div class="px-2 py-1 text-gray-500">No run selected.</div>
             </div>
           </div>
 
           </div>
-        </div>
-      </div>
-
-      <div class="w-full space-y-2 border-t border-gray-700 pt-3">
-        <div class="text-xs uppercase tracking-wide text-gray-500">Inspector</div>
-        <div id="tsPreviewInspector" class="max-h-52 overflow-y-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
-          <div class="px-2 py-1 text-gray-500">Run preview to populate inspector rows.</div>
-        </div>
-      </div>
-
-      <div class="w-full space-y-2 border-t border-gray-700 pt-3">
-        <div class="text-xs uppercase tracking-wide text-gray-500">Inspector</div>
-        <div id="tsPreviewInspector" class="max-h-52 overflow-y-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
-          <div class="px-2 py-1 text-gray-500">Run preview to populate inspector rows.</div>
         </div>
       </div>
         </div>
@@ -963,6 +960,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.75" defer></script>
+  <script src="/static/js/app.js?v=20260212.0.75" defer></script>
 </body>
 </html>

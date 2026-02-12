@@ -124,6 +124,11 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
             "training_secs": time.monotonic() - start,
             "topic_info_count": len(info),
             **engine.backend_names,
+            "model_meta_used": {
+                **model_meta,
+                **engine.backend_names,
+                "topic_mode": payload.topic_mode,
+            },
         }
 
         artifacts = _write_artifacts(run, topic_model, info, docs, labels, probs, stats, payload.topic_mode, mode_params, model_meta)

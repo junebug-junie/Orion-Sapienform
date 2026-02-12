@@ -398,7 +398,16 @@ loadDismissedIds();
   const tsRunsSelect = document.getElementById("tsRunsSelect");
   const tsRunsWarning = document.getElementById("tsRunsWarning");
   const tsRunResultsStatus = document.getElementById("tsRunResultsStatus");
-  const tsRunResultsList = document.getElementById("tsRunResultsList");
+  const tsRunSummaryRunId = document.getElementById("tsRunSummaryRunId");
+  const tsRunSummaryStatus = document.getElementById("tsRunSummaryStatus");
+  const tsRunSummaryDocs = document.getElementById("tsRunSummaryDocs");
+  const tsRunSummarySegments = document.getElementById("tsRunSummarySegments");
+  const tsRunSummaryClusters = document.getElementById("tsRunSummaryClusters");
+  const tsRunSummaryOutlierRate = document.getElementById("tsRunSummaryOutlierRate");
+  const tsRunSummaryRepresentation = document.getElementById("tsRunSummaryRepresentation");
+  const tsRunSummaryBackends = document.getElementById("tsRunSummaryBackends");
+  const tsRunSummaryArtifacts = document.getElementById("tsRunSummaryArtifacts");
+  const tsRunResultsTable = document.getElementById("tsRunResultsTable");
   const tsRunResultsModal = document.getElementById("tsRunResultsModal");
   const tsRunResultsModalTitle = document.getElementById("tsRunResultsModalTitle");
   const tsRunResultsModalMeta = document.getElementById("tsRunResultsModalMeta");
@@ -3681,7 +3690,7 @@ loadDismissedIds();
   }
 
   async function handleTrainRunClick() {
-    console.log("[TopicStudio] train click");
+    console.log("[TopicStudio][Train] click fired");
     const modelId = tsTrainModelSelect?.value || "";
     const datasetId = tsDatasetSelect?.value || "";
     if (!modelId || !datasetId) {
@@ -3701,14 +3710,24 @@ loadDismissedIds();
       topic_mode: mode,
       topic_mode_params: modeParams,
     };
-    const result = await topicFoundryFetch("/runs/train", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    const runId = result?.run_id || "";
-    if (runId) setSelectedRun(runId);
-    showToast(`Train started ${runId || ""}`.trim());
-    if (runId) startRunPolling(runId);
+    const url = `/runs/train`;
+    console.log("[TopicStudio][Train] request", { method: "POST", url, payload });
+    try {
+      const result = await topicFoundryFetch(url, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      console.log("[TopicStudio][Train] response", { status: "ok", keys: Object.keys(result || {}) });
+      const runId = result?.run_id || "";
+      if (runId) setSelectedRun(runId);
+      showToast(`Training started (run_id=${runId || "unknown"})`);
+      if (runId) startRunPolling(runId);
+    } catch (err) {
+      console.error("[TopicStudio][Train] catch", err);
+      const bodyText = err?.body ? `: ${err.body}` : "";
+      showToast(`Failed to train run${bodyText}`);
+      throw err;
+    }
   }
 
   async function handlePollRunClick() {
@@ -3740,54 +3759,72 @@ loadDismissedIds();
     tsRunResultsModal.classList.remove("hidden");
   }
 
+  function renderTrainingRunSummary(run) {
+    const stats = run?.stats || {};
+    const modelMetaUsed = stats.model_meta_used || {};
+    if (tsRunSummaryRunId) tsRunSummaryRunId.textContent = String(run?.run_id || "--").slice(0, 12);
+    if (tsRunSummaryStatus) tsRunSummaryStatus.textContent = run?.status || "--";
+    if (tsRunSummaryDocs) tsRunSummaryDocs.textContent = stats.docs_generated ?? run?.doc_count ?? "--";
+    if (tsRunSummarySegments) tsRunSummarySegments.textContent = stats.segments_generated ?? run?.segment_count ?? "--";
+    if (tsRunSummaryClusters) tsRunSummaryClusters.textContent = stats.cluster_count ?? run?.cluster_count ?? "--";
+    if (tsRunSummaryOutlierRate) tsRunSummaryOutlierRate.textContent = stats.outlier_rate ?? stats.outlier_pct ?? run?.outlier_rate ?? "--";
+    if (tsRunSummaryRepresentation) tsRunSummaryRepresentation.textContent = modelMetaUsed.representation || run?.representation || "--";
+    if (tsRunSummaryBackends) {
+      const emb = modelMetaUsed.embedding_backend || run?.embedding_backend || "--";
+      const red = modelMetaUsed.reducer || run?.reducer || "--";
+      const clu = modelMetaUsed.clusterer || run?.clusterer || "--";
+      tsRunSummaryBackends.textContent = `${emb}/${red}/${clu}`;
+    }
+    if (tsRunSummaryArtifacts) tsRunSummaryArtifacts.textContent = JSON.stringify(run?.artifact_paths || {}, null, 2);
+  }
+
   async function loadRunResultsSegments(runId) {
-    if (!tsRunResultsList) return;
+    if (!tsRunResultsTable) return;
     if (!runId) {
-      tsRunResultsList.innerHTML = '<div class="px-2 py-1 text-gray-500">No run selected.</div>';
-      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Select a run to load segments.";
+      tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-gray-500">No run selected.</div>';
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Select a run to load training results.";
       return;
     }
-    console.log(`[RunInspector] load segments for run_id=${runId}`);
-    if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loading segments for ${runId}...`;
+    if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loading training results for ${runId}...`;
+    console.log("[TopicStudio][RunResults] request", { method: "GET", url: `/runs/${runId}/results?limit=100` });
     try {
-      const resp = await topicFoundryFetch(`/runs/${runId}/segments?limit=50`);
+      const run = await topicFoundryFetch(`/runs/${runId}`);
+      console.log("[TopicStudio][RunSummary] response", { status: "ok", keys: Object.keys(run || {}) });
+      renderTrainingRunSummary(run);
+      const resp = await topicFoundryFetch(`/runs/${runId}/results?limit=100`);
+      console.log("[TopicStudio][RunResults] response", { status: "ok", keys: Object.keys(resp || {}) });
       const items = resp?.items || [];
       topicStudioRunResultsPage = items;
-      tsRunResultsList.innerHTML = "";
+      tsRunResultsTable.innerHTML = "";
       if (!items.length) {
-        tsRunResultsList.innerHTML = '<div class="px-2 py-1 text-gray-500">No segments for this run.</div>';
-        if (tsRunResultsStatus) tsRunResultsStatus.textContent = `No segments found for run_id=${runId}`;
+        tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-gray-500">No run results for this run.</div>';
+        if (tsRunResultsStatus) tsRunResultsStatus.textContent = `No run results found for run_id=${runId}`;
         return;
       }
       for (const item of items) {
         const row = document.createElement("div");
         row.className = "px-2 py-1 border-b border-gray-800 hover:bg-gray-800/70 cursor-pointer";
         const sid = String(item.segment_id || "--");
-        const topicText = `${item.topic_id ?? "--"}${item.topic_label ? ` (${item.topic_label})` : ""}`;
-        row.innerHTML = `<div class="flex items-center justify-between gap-2"><span class="font-mono text-[10px] text-gray-300">${escapeHtml(sid.slice(0, 12))}</span><span class="text-[10px] text-gray-500">topic ${escapeHtml(topicText)} · ${item.chars ?? "--"} chars</span></div><div class="text-[11px] text-gray-200">${escapeHtml(item.text_preview || "")}</div>`;
-        row.addEventListener("click", () => {
-          for (const child of tsRunResultsList.children) child.classList.remove("bg-gray-800/70");
-          row.classList.add("bg-gray-800/70");
-        });
+        row.innerHTML = `<div class="grid grid-cols-6 gap-2 text-[10px] text-gray-400"><span>${escapeHtml(String(item.topic_id ?? "--"))}</span><span class="col-span-2">${escapeHtml(item.topic_label || "--")}</span><span>${escapeHtml(String(item.prob ?? "--"))}</span><span>${escapeHtml(String(item.chars ?? "--"))}</span><span class="font-mono">${escapeHtml(sid.slice(0, 12))}</span></div><div class="text-[11px] text-gray-200">${escapeHtml(item.text_preview || "")}</div>`;
         row.addEventListener("dblclick", async () => {
-          console.log(`[RunInspector] dblclick segment_id=${sid}`);
+          console.log("[TopicStudio][RunResultsDetail] request", { method: "GET", url: `/runs/${runId}/results/${encodeURIComponent(sid)}` });
           try {
-            const detail = await topicFoundryFetch(`/runs/${runId}/segments/${encodeURIComponent(sid)}`);
-            console.log(`[RunInspector] detail loaded chars=${detail?.chars ?? 0}`);
+            const detail = await topicFoundryFetch(`/runs/${runId}/results/${encodeURIComponent(sid)}`);
+            console.log("[TopicStudio][RunResultsDetail] response", { status: "ok", keys: Object.keys(detail || {}) });
             openRunResultsModal(detail);
           } catch (err) {
-            console.warn("[RunInspector] detail failed", err);
-            showToast(err?.message || "Failed to load run segment detail.");
+            console.warn("[TopicStudio][RunResultsDetail] catch", err);
+            showToast(err?.message || "Failed to load run result detail.");
           }
         });
-        tsRunResultsList.appendChild(row);
+        tsRunResultsTable.appendChild(row);
       }
-      if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loaded ${items.length} segments for run_id=${runId}`;
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loaded ${items.length} training results for run_id=${runId}`;
     } catch (err) {
-      console.warn("[RunInspector] load failed", err);
-      tsRunResultsList.innerHTML = '<div class="px-2 py-1 text-red-300">Failed to load run results.</div>';
-      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Failed to load run results.";
-      showToast(err?.message || "Failed to load run results.");
+      console.warn("[TopicStudio][RunResults] catch", err);
+      tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-red-300">Failed to load training results.</div>';
+      if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Failed to load training results.";
+      showToast(err?.message || "Failed to load training results.");
     }
   }
 
@@ -3916,12 +3953,22 @@ loadDismissedIds();
     setLoading(tsRunLoading, true);
     topicStudioRunPoller = setInterval(async () => {
       try {
+        console.log("[TopicStudio][Poll] request", { method: "GET", url: `/runs/${runId}` });
         const run = await topicFoundryFetch(`/runs/${runId}`);
+        console.log("[TopicStudio][Poll] response", { status: "ok", run_status: run?.status, run_id: run?.run_id });
         renderRunStatus(run);
-        if (run.status === "complete" || run.status === "failed") {
+        renderTrainingRunSummary(run);
+        if (run.status === "complete" || run.status === "trained") {
           stopRunPolling();
           setLoading(tsRunLoading, false);
-          await refreshTopicStudio();
+          showToast(`Training completed (run_id=${runId})`);
+          await loadRunResultsSegments(runId);
+        }
+        if (run.status === "failed") {
+          stopRunPolling();
+          setLoading(tsRunLoading, false);
+          showToast(`Training failed (run_id=${runId})`);
+          await loadRunResultsSegments(runId);
         }
       } catch (err) {
         stopRunPolling();

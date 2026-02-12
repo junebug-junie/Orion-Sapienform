@@ -3484,28 +3484,34 @@ loadDismissedIds();
   }
 
   function renderPreviewInspector(samples) {
-    if (!tsPreviewInspector) return;
-    tsPreviewInspector.innerHTML = "";
-    if (!samples?.length) {
-      tsPreviewInspector.innerHTML = '<div class="px-2 py-1 text-gray-500">No preview rows available.</div>';
-      return;
-    }
-    samples.forEach((sample) => {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "w-full text-left px-2 py-1 border-b border-gray-800 hover:bg-gray-800/70";
-      const shortId = String(sample.doc_id || sample.segment_id || "--").slice(0, 12);
-      const chars = Number(sample.chars ?? sample.char_count ?? (sample.snippet || "").length);
-      const snippet = String(sample.snippet || "").slice(0, 200);
-      row.innerHTML = `<div class="flex items-center justify-between gap-2"><span class="font-mono text-[10px] text-gray-300">${shortId}</span><span class="text-[10px] text-gray-500">${chars} chars</span></div><div class="text-[11px] text-gray-200">${escapeHtml(snippet)}</div>`;
-      row.addEventListener("click", () => {
-        fetchPreviewDocDetail(sample).catch((err) => {
-          console.warn("[TopicStudio] preview inspector click failed", err);
-          showToast(err?.message || "Failed to load preview detail.");
+    try {
+      if (!tsPreviewInspector) return;
+      tsPreviewInspector.innerHTML = "";
+      if (!samples?.length) {
+        tsPreviewInspector.innerHTML = '<div class="px-2 py-1 text-gray-500">No preview rows available.</div>';
+        return;
+      }
+      samples.forEach((sample) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "w-full text-left px-2 py-1 border-b border-gray-800 hover:bg-gray-800/70";
+        const shortId = String(sample.doc_id || sample.segment_id || "--").slice(0, 12);
+        const chars = Number(sample.chars ?? sample.char_count ?? (sample.snippet || "").length);
+        const snippet = String(sample.snippet || "").slice(0, 200);
+        row.innerHTML = `<div class="flex items-center justify-between gap-2"><span class="font-mono text-[10px] text-gray-300">${shortId}</span><span class="text-[10px] text-gray-500">${chars} chars</span></div><div class="text-[11px] text-gray-200">${escapeHtml(snippet)}</div>`;
+        row.addEventListener("click", () => {
+          fetchPreviewDocDetail(sample).catch((err) => {
+            console.warn("[TopicStudio] preview inspector click failed", err);
+            showToast(err?.message || "Failed to load preview detail.");
+          });
         });
+        tsPreviewInspector.appendChild(row);
       });
-      tsPreviewInspector.appendChild(row);
-    });
+    } catch (err) {
+      console.error("[TopicStudio] renderPreviewInspector failed", err);
+      showToast(err?.message || "Failed to render inspector.");
+      if (tsPreviewError) renderError(tsPreviewError, err, "Failed to render inspector.");
+    }
   }
 
   async function executePreview(payload) {
@@ -3526,7 +3532,12 @@ loadDismissedIds();
       tsPreviewObserved.textContent = `${start} → ${end}`;
     }
     renderPreviewSamples(result.samples || []);
-    renderPreviewInspector(result.samples || []);
+    try {
+      renderPreviewInspector(result.samples || []);
+    } catch (err) {
+      console.error("[TopicStudio] preview inspector render threw", err);
+      showToast(err?.message || "Failed to render inspector.");
+    }
     const mode = payload?.windowing?.windowing_mode || payload?.windowing_spec?.windowing_mode || "document";
     const rowCount = Number(result.row_count ?? result.rows_scanned ?? 0);
     const docCount = Number(result.doc_count ?? result.docs_generated ?? 0);

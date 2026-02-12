@@ -22,6 +22,7 @@ from app.models import (
 from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
+from app.settings import settings
 from app.storage.repository import (
     create_run,
     fetch_dataset,
@@ -47,6 +48,18 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    model_meta = model_row.get("model_meta") or {}
+    model_spec_meta = (model_row.get("model_spec") or {}).get("model_meta") or {}
+    requested_representation = str(model_spec_meta.get("representation") or model_meta.get("representation") or "").strip().lower()
+    if requested_representation == "llm" and not settings.topic_foundry_llm_enable:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "error": "invalid_representation",
+                "detail": "representation=llm is not configured; enable TOPIC_FOUNDRY_LLM_ENABLE or select another representation",
+            },
+        )
     windowing_spec = payload.windowing_spec or WindowingSpec(**model_row["windowing_spec"])
     effective_boundary = windowing_spec.boundary_column or dataset.boundary_column
     dataset_for_validation = dataset
@@ -105,10 +118,12 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         model_spec=specs.model,
         enrichment_spec=specs.enrichment,
         run_scope=specs.run_scope,
+        topic_mode=payload.topic_mode,
+        topic_mode_params=payload.topic_mode_params,
     )
     existing = fetch_run_by_spec_hash(spec_hash)
     if existing:
-        return RunTrainResponse(run_id=UUID(existing["run_id"]), status=existing["status"])
+        return RunTrainResponse(run_id=UUID(existing["run_id"]), status=existing["status"], topic_mode=payload.topic_mode, topic_mode_params=payload.topic_mode_params)
     run = RunRecord(
         run_id=run_id,
         model_id=payload.model_id,
@@ -124,7 +139,7 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     )
     create_run(run)
     enqueue_training(background_tasks, run_id, payload, model_row, dataset, spec_hash)
-    return RunTrainResponse(run_id=run_id, status=run.status)
+    return RunTrainResponse(run_id=run_id, status=run.status, topic_mode=payload.topic_mode, topic_mode_params=payload.topic_mode_params, model_meta_used=(model_row.get("model_meta") or {}))
 
 
 @router.get("/runs/{run_id}")

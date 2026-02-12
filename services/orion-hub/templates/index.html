@@ -626,6 +626,41 @@
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Params (JSON)</label>
             <textarea id="tsModelParams" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" rows="2" placeholder='{"min_samples":5}'></textarea>
           </div>
+          
+          <div class="space-y-2 border border-gray-700 rounded p-2">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Topic Modeling</div>
+            <div id="tsTopicModelCapabilities" class="text-[10px] text-gray-400">--</div>
+            <div class="grid grid-cols-2 gap-2 text-[10px] text-gray-300">
+              <div id="tsCapClassBased">class_based: --</div>
+              <div id="tsCapLongDocument">long_document: --</div>
+              <div id="tsCapHierarchical">hierarchical: --</div>
+              <div id="tsCapDynamic">dynamic: --</div>
+              <div id="tsCapGuided">guided: --</div>
+              <div id="tsCapZeroshot">zeroshot: --</div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsModelEngine" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="bertopic" />
+              <select id="tsModelEmbeddingBackend" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="vector_host">vector_host</option><option value="st">st</option></select>
+            </div>
+            <input id="tsModelEmbeddingModel" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="embedding model" />
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsModelReducer" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="umap" />
+              <input id="tsModelClusterer" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="hdbscan" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsModelUmapNeighbors" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="umap neighbors" value="15" />
+              <input id="tsModelUmapComponents" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="umap components" value="5" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsModelHdbscanMinClusterSize" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="hdbscan min cluster" value="15" />
+              <input id="tsModelHdbscanMinSamples" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="hdbscan min samples" value="5" />
+            </div>
+            <select id="tsModelRepresentation" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="ctfidf">ctfidf</option><option value="keybert">keybert</option><option value="mmr">mmr</option><option value="pos">pos</option><option value="llm">llm</option></select>
+            <select id="tsTopicMode" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="standard">standard</option><option value="guided">guided</option><option value="zeroshot">zeroshot</option><option value="dynamic">dynamic</option><option value="class_based">class_based</option><option value="long_document">long_document</option><option value="hierarchical">hierarchical</option></select>
+            <input id="tsModeGuidedSeeds" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="guided seeds, comma-separated" />
+            <input id="tsModeZeroshotTopics" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="zeroshot topics, comma-separated" />
+          </div>
+
           <button id="tsCreateModel" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Create Model</button>
           <div class="flex items-center gap-2 text-[10px] text-gray-400">
             <button id="tsCopyModelId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy model id</button>
@@ -704,6 +739,7 @@
             <div class="text-[10px] uppercase tracking-wide text-gray-500">Sample snippets</div>
             <div id="tsPreviewSamples" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-40 overflow-y-auto space-y-2">--</div>
           </div>
+
           <div id="tsPreviewError" class="text-[11px] text-red-300">--</div>
 
           <div class="text-xs uppercase tracking-wide text-gray-500 pt-2 border-t border-gray-700">Runs + Segments</div>
@@ -769,9 +805,31 @@
           </div>
         </div>
       </div>
+
+      <div class="w-full space-y-2 border-t border-gray-700 pt-3">
+        <div class="text-xs uppercase tracking-wide text-gray-500">Inspector</div>
+        <div id="tsPreviewInspector" class="max-h-52 overflow-y-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
+          <div class="px-2 py-1 text-gray-500">Run preview to populate inspector rows.</div>
+        </div>
+      </div>
         </div>
       </section>
     </div>
+
+
+  <div id="tsPreviewDetailModal" class="hidden fixed inset-0 z-40 bg-black/70 p-4">
+    <div class="max-w-5xl mx-auto bg-gray-900 border border-gray-700 rounded-xl h-[85vh] flex flex-col">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+        <div>
+          <div class="text-xs uppercase tracking-wide text-gray-500">Preview Inspector</div>
+          <div id="tsPreviewDetailTitle" class="text-sm text-gray-100 font-semibold">--</div>
+        </div>
+        <button id="tsPreviewDetailClose" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Close</button>
+      </div>
+      <div class="px-4 py-2 text-[11px] text-gray-400" id="tsPreviewDetailMeta">--</div>
+      <pre id="tsPreviewDetailText" class="flex-1 overflow-auto m-4 mt-0 p-3 rounded border border-gray-700 bg-gray-950/80 text-[12px] text-gray-100 whitespace-pre-wrap">--</pre>
+    </div>
+  </div>
 
   <div id="toastContainer" class="fixed bottom-6 right-6 z-50 hidden">
     <div class="bg-red-700/90 text-white text-xs px-4 py-2 rounded-lg shadow-lg border border-red-500">
@@ -872,6 +930,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=1.0.69" defer></script>
+  <script src="/static/js/app.js?v=1.0.73" defer></script>
 </body>
 </html>

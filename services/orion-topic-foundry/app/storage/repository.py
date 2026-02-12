@@ -489,6 +489,7 @@ def insert_segments(segments: Iterable[SegmentRecord]) -> None:
                     sentiment, meaning, enrichment, enriched_at, enrichment_version, snippet, chars, row_ids_count,
                     start_at, end_at, created_at
                 ) VALUES %s
+                ON CONFLICT (segment_id) DO NOTHING
                 """,
                 rows,
             )

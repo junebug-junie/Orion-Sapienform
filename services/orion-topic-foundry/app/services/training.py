@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import numpy as np
 from bertopic import BERTopic
@@ -140,7 +140,7 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
                 except Exception:
                     prob = None
             seg_records.append(SegmentRecord(
-                segment_id=UUID(seg.doc_id), run_id=run.run_id, size=len(seg.row_ids),
+                segment_id=uuid5(run.run_id, str(seg.doc_id)), run_id=run.run_id, size=len(seg.row_ids),
                 provenance={"row_ids": seg.row_ids, "timestamps": seg.timestamps, "doc_ids": [seg.doc_id], "conversation_id": str(seg.conversation_id) if seg.conversation_id else None},
                 topic_id=label, topic_prob=prob, is_outlier=label==-1, snippet=_snippet(seg.text or "") or None,
                 chars=len(seg.text or ""), row_ids_count=len(seg.row_ids), start_at=start_at, end_at=end_at, created_at=utc_now()

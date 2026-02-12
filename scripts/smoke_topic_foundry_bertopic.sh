@@ -39,7 +39,8 @@ run_train () {
   echo "[smoke] mode=$mode assertions passed run_id=$run_id"
 }
 
-run_train standard '{}'
+run_train standard '{"nonce":"first"}'
+run_train standard '{"nonce":"second"}'
 run_train guided '{"seed_topic_list":["support","billing"]}'
 run_train zeroshot '{"zeroshot_topic_list":["support","billing"]}'
 

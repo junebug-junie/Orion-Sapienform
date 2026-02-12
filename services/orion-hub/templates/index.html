@@ -803,43 +803,27 @@
         </div>
         <pre id="tsRunSummaryArtifacts" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
         <div id="tsRunResultsTable" class="max-h-56 overflow-y-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
-          <div class="px-2 py-1 text-gray-500">No run selected.</div>
+          <table class="w-full text-[11px] text-gray-200">
+            <thead>
+              <tr class="text-left text-[10px] uppercase tracking-wide text-gray-400 border-b border-gray-700 bg-gray-900">
+                <th class="px-2 py-1">Topic</th>
+                <th class="px-2 py-1">Label</th>
+                <th class="px-2 py-1">Prob</th>
+                <th class="px-2 py-1">Chars</th>
+                <th class="px-2 py-1">Segment</th>
+                <th class="px-2 py-1">Snippet</th>
+              </tr>
+            </thead>
+            <tbody id="tsRunResultsBody">
+              <tr><td class="px-2 py-1 text-gray-500" colspan="6">No run selected.</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
   </section>
 
     </div>
-
-
-
-  <div id="tsRunResultsModal" class="hidden fixed inset-0 z-40 bg-black/70 p-4">
-    <div class="max-w-5xl mx-auto bg-gray-900 border border-gray-700 rounded-xl h-[85vh] flex flex-col">
-      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-        <div>
-          <div class="text-xs uppercase tracking-wide text-gray-500">Run Results</div>
-          <div id="tsRunResultsModalTitle" class="text-sm text-gray-100 font-semibold">--</div>
-        </div>
-        <button id="tsRunResultsModalClose" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Close</button>
-      </div>
-      <div id="tsRunResultsModalMeta" class="px-4 py-2 text-[11px] text-gray-400">--</div>
-      <pre id="tsRunResultsModalText" class="flex-1 overflow-auto m-4 mt-0 p-3 rounded border border-gray-700 bg-gray-950/80 text-[12px] text-gray-100 whitespace-pre-wrap">--</pre>
-    </div>
-  </div>
-
-  <div id="tsPreviewDetailModal" class="hidden fixed inset-0 z-40 bg-black/70 p-4">
-    <div class="max-w-5xl mx-auto bg-gray-900 border border-gray-700 rounded-xl h-[85vh] flex flex-col">
-      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-        <div>
-          <div class="text-xs uppercase tracking-wide text-gray-500">Preview Inspector</div>
-          <div id="tsPreviewDetailTitle" class="text-sm text-gray-100 font-semibold">--</div>
-        </div>
-        <button id="tsPreviewDetailClose" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Close</button>
-      </div>
-      <div class="px-4 py-2 text-[11px] text-gray-400" id="tsPreviewDetailMeta">--</div>
-      <pre id="tsPreviewDetailText" class="flex-1 overflow-auto m-4 mt-0 p-3 rounded border border-gray-700 bg-gray-950/80 text-[12px] text-gray-100 whitespace-pre-wrap">--</pre>
-    </div>
-  </div>
 
 
 
@@ -970,6 +954,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=20260212b.0.75" defer></script>
+  <script src="/static/js/app.js?v=20260212c.1" defer></script>
 </body>
 </html>

@@ -5,12 +5,17 @@ from typing import Any, Dict, List, Optional
 
 from bertopic.representation import KeyBERTInspired, MaximalMarginalRelevance, PartOfSpeech
 from bertopic.vectorizers import ClassTfidfTransformer
+from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
 from sentence_transformers import SentenceTransformer
 from umap import UMAP
 from hdbscan import HDBSCAN
 
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.settings import settings
+import logging
+
+
+logger = logging.getLogger("topic-foundry.topic_engine")
 
 
 class VectorHostEmbeddingModel:
@@ -33,6 +38,7 @@ class TopicEngineParts:
     clusterer: HDBSCAN
     representation_model: Any
     ctfidf_model: Any
+    vectorizer_model: Any
     bertopic_kwargs: Dict[str, Any]
     backend_names: Dict[str, str]
 
@@ -69,6 +75,45 @@ def _parse_zeroshot_list(value: Any) -> Optional[List[str]]:
         return [chunk.strip() for chunk in value.split(",") if chunk.strip()]
     return None
 
+
+
+
+def _build_vectorizer(meta: Dict[str, Any]) -> CountVectorizer:
+    stop_words_raw = str(meta.get("vectorizer_stop_words", settings.topic_foundry_vectorizer_stop_words)).strip().lower()
+    if stop_words_raw in {"", "none", "null", "off", "false", "0"}:
+        stop_words = None
+        stop_words_label = "none"
+    elif stop_words_raw == "english":
+        extras_raw = str(meta.get("stop_words_extra", settings.topic_foundry_stop_words_extra) or "")
+        extras = {x.strip().lower() for x in extras_raw.split(",") if x.strip()}
+        stop_words = sorted(set(ENGLISH_STOP_WORDS).union(extras))
+        stop_words_label = f"english+extra({len(extras)})"
+    else:
+        custom = [x.strip().lower() for x in stop_words_raw.split(",") if x.strip()]
+        stop_words = custom or None
+        stop_words_label = "custom" if custom else "none"
+
+    ngram_min = int(meta.get("vectorizer_ngram_min", settings.topic_foundry_vectorizer_ngram_min))
+    ngram_max = int(meta.get("vectorizer_ngram_max", settings.topic_foundry_vectorizer_ngram_max))
+    if ngram_min < 1:
+        ngram_min = 1
+    if ngram_max < ngram_min:
+        ngram_max = ngram_min
+
+    vectorizer = CountVectorizer(
+        stop_words=stop_words,
+        max_df=float(meta.get("vectorizer_max_df", settings.topic_foundry_vectorizer_max_df)),
+        min_df=int(meta.get("vectorizer_min_df", settings.topic_foundry_vectorizer_min_df)),
+        ngram_range=(ngram_min, ngram_max),
+        max_features=int(meta.get("vectorizer_max_features", settings.topic_foundry_vectorizer_max_features)),
+        token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b",
+    )
+    logger.info(
+        "ctfidf vectorizer params=%s stop_words_mode=%s",
+        vectorizer.get_params(),
+        stop_words_label,
+    )
+    return vectorizer
 
 def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngineParts:
     meta = model_meta or {}
@@ -116,6 +161,7 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
         clusterer_name = "hdbscan"
 
     ctfidf_model = None
+    vectorizer_model = None
     if representation == "keybert":
         representation_model = KeyBERTInspired()
     elif representation == "mmr":
@@ -126,7 +172,9 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
         representation_model = None
     else:
         representation_model = None
-        ctfidf_model = ClassTfidfTransformer()
+        vectorizer_model = _build_vectorizer(meta)
+        ctfidf_model = ClassTfidfTransformer(reduce_frequent_words=True)
+        logger.info("ctfidf_model reduce_frequent_words=%s", True)
         representation = "ctfidf"
 
     bertopic_kwargs: Dict[str, Any] = {
@@ -146,6 +194,7 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
         clusterer=clusterer,
         representation_model=representation_model,
         ctfidf_model=ctfidf_model,
+        vectorizer_model=vectorizer_model,
         bertopic_kwargs=bertopic_kwargs,
         backend_names={
             "embedding_backend": embedding_backend,

@@ -96,6 +96,7 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
             embedding_model=engine.embedding_model,
             umap_model=engine.reducer,
             hdbscan_model=engine.clusterer,
+            vectorizer_model=engine.vectorizer_model,
             representation_model=engine.representation_model,
             ctfidf_model=engine.ctfidf_model,
             **engine.bertopic_kwargs,
@@ -306,6 +307,8 @@ def _write_artifacts(run: RunRecord, topic_model: BERTopic, topic_info: List[Dic
         "topic_mode_params": topic_mode_params,
         "model_meta_used": model_meta,
         "stats": stats,
+        "vectorizer_params": topic_model.vectorizer_model.get_params() if getattr(topic_model, "vectorizer_model", None) else None,
+        "ctfidf_reduce_frequent_words": bool(getattr(getattr(topic_model, "ctfidf_model", None), "reduce_frequent_words", False)),
     }
     run_meta_json.write_text(json.dumps(run_meta, indent=2))
 

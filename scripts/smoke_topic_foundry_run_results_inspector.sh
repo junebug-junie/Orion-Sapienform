@@ -54,9 +54,53 @@ if [[ "$outlier_rate" == "null" ]]; then
   exit 1
 fi
 python - <<PY2
+meta_path="$(echo "$run_summary" | jq -r '.artifact_paths.run_metadata_json // empty')"
+words_path="$(echo "$run_summary" | jq -r '.artifact_paths.top_words_json // empty')"
+if [[ -z "$meta_path" || -z "$words_path" || ! -f "$meta_path" || ! -f "$words_path" ]]; then
+  echo "[FAIL] missing run artifact files (run_metadata_json/top_words_json)"
+  echo "$run_summary"
+  exit 1
+fi
+ngram_range="$(jq -r '.vectorizer_params.ngram_range // empty | @json' "$meta_path")"
+echo "[INFO] effective ngram_range=$ngram_range"
+python - <<PY3
+import json
+from pathlib import Path
+stop = {"the","and","to","you","of","in","it","is","that","for"}
+words = json.loads(Path("$words_path").read_text())
+keys = sorted(words.keys(), key=lambda x: int(x))
+for k in keys[:3]:
+    top = [str(w).lower() for w in (words.get(k) or [])[:10]]
+    bad = sorted(stop.intersection(top))
+    if bad:
+        raise SystemExit(f"[FAIL] stopwords dominated topic {k}: {bad} in {top}")
+print("[PASS] top_words stopword guard")
+PY3
 v = float("$outlier_rate")
 assert 0.0 <= v <= 1.0, f"outlier_rate out of range: {v}"
 PY2
+meta_path="$(echo "$run_summary" | jq -r '.artifact_paths.run_metadata_json // empty')"
+words_path="$(echo "$run_summary" | jq -r '.artifact_paths.top_words_json // empty')"
+if [[ -z "$meta_path" || -z "$words_path" || ! -f "$meta_path" || ! -f "$words_path" ]]; then
+  echo "[FAIL] missing run artifact files (run_metadata_json/top_words_json)"
+  echo "$run_summary"
+  exit 1
+fi
+ngram_range="$(jq -r '.vectorizer_params.ngram_range // empty | @json' "$meta_path")"
+echo "[INFO] effective ngram_range=$ngram_range"
+python - <<PY3
+import json
+from pathlib import Path
+stop = {"the","and","to","you","of","in","it","is","that","for"}
+words = json.loads(Path("$words_path").read_text())
+keys = sorted(words.keys(), key=lambda x: int(x))
+for k in keys[:3]:
+    top = [str(w).lower() for w in (words.get(k) or [])[:10]]
+    bad = sorted(stop.intersection(top))
+    if bad:
+        raise SystemExit(f"[FAIL] stopwords dominated topic {k}: {bad} in {top}")
+print("[PASS] top_words stopword guard")
+PY3
 list_resp="$(curl -fsS "$BASE_URL/runs/$run_id/results?limit=5")"
 count="$(echo "$list_resp" | jq -r '.items | length')"
 if [[ "$count" -lt 1 ]]; then

@@ -97,6 +97,7 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
             umap_model=engine.reducer,
             hdbscan_model=engine.clusterer,
             representation_model=engine.representation_model,
+            ctfidf_model=engine.ctfidf_model,
             **engine.bertopic_kwargs,
         )
 

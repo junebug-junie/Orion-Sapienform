@@ -35,7 +35,7 @@ run_train () {
     [[ "$status" == "complete" || "$status" == "failed" ]] && break
     sleep 2
   done
-  echo "$final" | jq -e '.stats.doc_count > 0 and .stats.cluster_count >= 0 and .stats.outlier_rate >= 0 and .stats.outlier_rate <= 1 and .stats.topic_mode != null and (.artifact_paths|type=="object")' >/dev/null
+  echo "$final" | jq -e '.status == "complete" and .stats.doc_count > 0 and .stats.cluster_count >= 0 and .stats.outlier_rate >= 0 and .stats.outlier_rate <= 1 and .stats.topic_mode != null and (.artifact_paths|type=="object")' >/dev/null
   echo "[smoke] mode=$mode assertions passed run_id=$run_id"
 }
 

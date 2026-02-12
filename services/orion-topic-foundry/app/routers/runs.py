@@ -22,6 +22,7 @@ from app.models import (
 from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
 from app.services.spec_hash import compute_spec_hash
 from app.services.training import enqueue_training
+from app.settings import settings
 from app.storage.repository import (
     create_run,
     fetch_dataset,
@@ -47,6 +48,18 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     dataset = fetch_dataset(payload.dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    model_meta = model_row.get("model_meta") or {}
+    model_spec_meta = (model_row.get("model_spec") or {}).get("model_meta") or {}
+    requested_representation = str(model_spec_meta.get("representation") or model_meta.get("representation") or "").strip().lower()
+    if requested_representation == "llm" and not settings.topic_foundry_llm_enable:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "error": "invalid_representation",
+                "detail": "representation=llm is not configured; enable TOPIC_FOUNDRY_LLM_ENABLE or select another representation",
+            },
+        )
     windowing_spec = payload.windowing_spec or WindowingSpec(**model_row["windowing_spec"])
     effective_boundary = windowing_spec.boundary_column or dataset.boundary_column
     dataset_for_validation = dataset

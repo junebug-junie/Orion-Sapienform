@@ -32,6 +32,7 @@ class TopicEngineParts:
     reducer: UMAP
     clusterer: HDBSCAN
     representation_model: Any
+    ctfidf_model: Any
     bertopic_kwargs: Dict[str, Any]
     backend_names: Dict[str, str]
 
@@ -114,6 +115,7 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
     if clusterer_name != "hdbscan":
         clusterer_name = "hdbscan"
 
+    ctfidf_model = None
     if representation == "keybert":
         representation_model = KeyBERTInspired()
     elif representation == "mmr":
@@ -121,9 +123,10 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
     elif representation == "pos":
         representation_model = PartOfSpeech("en_core_web_sm")
     elif representation == "llm":
-        representation_model = ClassTfidfTransformer()
+        representation_model = None
     else:
-        representation_model = ClassTfidfTransformer()
+        representation_model = None
+        ctfidf_model = ClassTfidfTransformer()
         representation = "ctfidf"
 
     bertopic_kwargs: Dict[str, Any] = {
@@ -142,6 +145,7 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
         reducer=reducer,
         clusterer=clusterer,
         representation_model=representation_model,
+        ctfidf_model=ctfidf_model,
         bertopic_kwargs=bertopic_kwargs,
         backend_names={
             "embedding_backend": embedding_backend,

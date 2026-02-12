@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS topic_foundry_models (
     model_spec     JSONB NOT NULL,
     windowing_spec JSONB NOT NULL,
     enrichment_spec JSONB,
+    model_meta     JSONB,
     metadata       JSONB NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (name, version)

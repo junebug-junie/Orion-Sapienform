@@ -3427,7 +3427,10 @@ loadDismissedIds();
     if (tsPreviewMaxChars) tsPreviewMaxChars.textContent = "--";
     if (tsPreviewObserved) tsPreviewObserved.textContent = "--";
     if (tsPreviewSamples) tsPreviewSamples.textContent = "--";
-    if (tsPreviewInspector) tsPreviewInspector.innerHTML = '<div class="px-2 py-1 text-gray-500">Run preview to populate inspector rows.</div>';
+    if (tsPreviewInspector) {
+      console.log(`[Preview] rendering into ${tsPreviewInspector.id}`);
+      tsPreviewInspector.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="3">Run preview to populate inspector rows.</td></tr>';
+    }
     topicStudioLastPreviewResult = null;
     if (tsPreviewError) tsPreviewError.textContent = "--";
     setWarning(tsPreviewWarning, null);
@@ -3505,20 +3508,20 @@ loadDismissedIds();
   function renderPreviewInspector(samples) {
     try {
       if (!tsPreviewInspector) return;
+      console.log(`[Preview] rendering into ${tsPreviewInspector.id}`);
       tsPreviewInspector.innerHTML = "";
       if (!samples?.length) {
-        tsPreviewInspector.innerHTML = '<div class="px-2 py-1 text-gray-500">No preview rows available.</div>';
+        tsPreviewInspector.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="3">No preview rows available.</td></tr>';
         return;
       }
       samples.forEach((sample) => {
         // Detail fetch must only happen on click; never during render.
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "w-full text-left px-2 py-1 border-b border-gray-800 hover:bg-gray-800/70";
+        const row = document.createElement("tr");
+        row.className = "border-b border-gray-800 hover:bg-gray-800/70 cursor-pointer";
         const shortId = String(sample.doc_id || sample.segment_id || "--").slice(0, 12);
         const chars = Number(sample.chars ?? sample.char_count ?? (sample.snippet || "").length);
         const snippet = String(sample.snippet || "").slice(0, 200);
-        row.innerHTML = `<div class="flex items-center justify-between gap-2"><span class="font-mono text-[10px] text-gray-300">${shortId}</span><span class="text-[10px] text-gray-500">${chars} chars</span></div><div class="text-[11px] text-gray-200">${escapeHtml(snippet)}</div>`;
+        row.innerHTML = `<td class="px-2 py-1 font-mono text-[10px] text-gray-300">${escapeHtml(shortId)}</td><td class="px-2 py-1 text-[10px] text-gray-400">${escapeHtml(String(chars))}</td><td class="px-2 py-1 text-[11px] text-gray-200">${escapeHtml(snippet)}</td>`;
         row.addEventListener("click", () => {
           fetchPreviewDocDetail(sample?.doc_id || sample?.segment_id).catch((err) => {
             console.warn("[TopicStudio] preview inspector click failed", err);
@@ -3781,6 +3784,7 @@ loadDismissedIds();
   async function loadRunResultsSegments(runId) {
     if (!tsRunResultsTable) return;
     if (!runId) {
+      console.log(`[RunResults] rendering into ${tsRunResultsTable.id}`);
       tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-gray-500">No run selected.</div>';
       if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Select a run to load training results.";
       return;
@@ -3795,6 +3799,7 @@ loadDismissedIds();
       console.log("[TopicStudio][RunResults] response", { status: "ok", keys: Object.keys(resp || {}) });
       const items = resp?.items || [];
       topicStudioRunResultsPage = items;
+      console.log(`[RunResults] rendering into ${tsRunResultsTable.id}`);
       tsRunResultsTable.innerHTML = "";
       if (!items.length) {
         tsRunResultsTable.innerHTML = '<div class="px-2 py-1 text-gray-500">No run results for this run.</div>';

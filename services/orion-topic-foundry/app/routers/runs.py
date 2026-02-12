@@ -105,10 +105,12 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         model_spec=specs.model,
         enrichment_spec=specs.enrichment,
         run_scope=specs.run_scope,
+        topic_mode=payload.topic_mode,
+        topic_mode_params=payload.topic_mode_params,
     )
     existing = fetch_run_by_spec_hash(spec_hash)
     if existing:
-        return RunTrainResponse(run_id=UUID(existing["run_id"]), status=existing["status"])
+        return RunTrainResponse(run_id=UUID(existing["run_id"]), status=existing["status"], topic_mode=payload.topic_mode, topic_mode_params=payload.topic_mode_params)
     run = RunRecord(
         run_id=run_id,
         model_id=payload.model_id,
@@ -124,7 +126,7 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
     )
     create_run(run)
     enqueue_training(background_tasks, run_id, payload, model_row, dataset, spec_hash)
-    return RunTrainResponse(run_id=run_id, status=run.status)
+    return RunTrainResponse(run_id=run_id, status=run.status, topic_mode=payload.topic_mode, topic_mode_params=payload.topic_mode_params, model_meta_used=(model_row.get("model_meta") or {}))
 
 
 @router.get("/runs/{run_id}")

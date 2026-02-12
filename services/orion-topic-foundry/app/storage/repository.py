@@ -76,6 +76,7 @@ def ensure_tables() -> None:
                 "ON topic_foundry_segments (run_id, created_at)"
             )
             cur.execute("ALTER TABLE topic_foundry_models ADD COLUMN IF NOT EXISTS enrichment_spec JSONB")
+            cur.execute("ALTER TABLE topic_foundry_models ADD COLUMN IF NOT EXISTS model_meta JSONB")
             cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS boundary_column VARCHAR")
             cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS boundary_strategy VARCHAR")
             cur.execute("ALTER TABLE topic_foundry_datasets ADD COLUMN IF NOT EXISTS timezone VARCHAR")
@@ -202,8 +203,8 @@ def create_model(model_id: UUID, request: ModelCreateRequest, created_at: dateti
             cur.execute(
                 """
                 INSERT INTO topic_foundry_models (
-                    model_id, name, version, stage, dataset_id, model_spec, windowing_spec, enrichment_spec, metadata, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    model_id, name, version, stage, dataset_id, model_spec, windowing_spec, enrichment_spec, model_meta, metadata, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(model_id),
@@ -214,6 +215,7 @@ def create_model(model_id: UUID, request: ModelCreateRequest, created_at: dateti
                     Json(request.model_spec.model_dump(mode="json")),
                     Json(request.windowing_spec.model_dump(mode="json")),
                     Json(enrichment_spec) if enrichment_spec is not None else None,
+                    Json(request.model_meta) if request.model_meta is not None else None,
                     Json(request.metadata),
                     created_at,
                 ),

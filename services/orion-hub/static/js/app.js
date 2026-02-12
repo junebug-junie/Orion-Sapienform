@@ -337,6 +337,26 @@ loadDismissedIds();
   const tsModelMinCluster = document.getElementById("tsModelMinCluster");
   const tsModelMetric = document.getElementById("tsModelMetric");
   const tsModelParams = document.getElementById("tsModelParams");
+  const tsTopicModelCapabilities = document.getElementById("tsTopicModelCapabilities");
+  const tsCapClassBased = document.getElementById("tsCapClassBased");
+  const tsCapLongDocument = document.getElementById("tsCapLongDocument");
+  const tsCapHierarchical = document.getElementById("tsCapHierarchical");
+  const tsCapDynamic = document.getElementById("tsCapDynamic");
+  const tsCapGuided = document.getElementById("tsCapGuided");
+  const tsCapZeroshot = document.getElementById("tsCapZeroshot");
+  const tsModelEngine = document.getElementById("tsModelEngine");
+  const tsModelEmbeddingBackend = document.getElementById("tsModelEmbeddingBackend");
+  const tsModelEmbeddingModel = document.getElementById("tsModelEmbeddingModel");
+  const tsModelReducer = document.getElementById("tsModelReducer");
+  const tsModelClusterer = document.getElementById("tsModelClusterer");
+  const tsModelUmapNeighbors = document.getElementById("tsModelUmapNeighbors");
+  const tsModelUmapComponents = document.getElementById("tsModelUmapComponents");
+  const tsModelHdbscanMinClusterSize = document.getElementById("tsModelHdbscanMinClusterSize");
+  const tsModelHdbscanMinSamples = document.getElementById("tsModelHdbscanMinSamples");
+  const tsModelRepresentation = document.getElementById("tsModelRepresentation");
+  const tsTopicMode = document.getElementById("tsTopicMode");
+  const tsModeGuidedSeeds = document.getElementById("tsModeGuidedSeeds");
+  const tsModeZeroshotTopics = document.getElementById("tsModeZeroshotTopics");
   const tsCreateModel = document.getElementById("tsCreateModel");
   const tsPromoteModelSelect = document.getElementById("tsPromoteModelSelect");
   const tsPromoteStage = document.getElementById("tsPromoteStage");
@@ -3511,6 +3531,18 @@ loadDismissedIds();
           metric: tsModelMetric?.value || "cosine",
           params: modelParams,
         },
+        model_meta: {
+          topic_engine: tsModelEngine?.value || "bertopic",
+          embedding_backend: tsModelEmbeddingBackend?.value || "vector_host",
+          embedding_model: tsModelEmbeddingModel?.value || "sentence-transformers/all-MiniLM-L6-v2",
+          reducer: tsModelReducer?.value || "umap",
+          clusterer: tsModelClusterer?.value || "hdbscan",
+          umap_n_neighbors: Number(tsModelUmapNeighbors?.value || 15),
+          umap_n_components: Number(tsModelUmapComponents?.value || 5),
+          hdbscan_min_cluster_size: Number(tsModelHdbscanMinClusterSize?.value || 15),
+          hdbscan_min_samples: Number(tsModelHdbscanMinSamples?.value || 5),
+          representation: tsModelRepresentation?.value || "ctfidf",
+        },
         windowing_spec: buildWindowingSpec(),
         metadata: {},
       };
@@ -3539,12 +3571,18 @@ loadDismissedIds();
       renderError(tsRunError, { message: "Select model and dataset before training." }, "Failed to train.");
       return;
     }
+    const mode = tsTopicMode?.value || "standard";
+    const modeParams = {};
+    if (mode === "guided" && tsModeGuidedSeeds?.value) modeParams.seed_topic_list = tsModeGuidedSeeds.value.split(",").map((x) => x.trim()).filter(Boolean);
+    if (mode === "zeroshot" && tsModeZeroshotTopics?.value) modeParams.zeroshot_topic_list = tsModeZeroshotTopics.value.split(",").map((x) => x.trim()).filter(Boolean);
     const payload = {
       model_id: modelId,
       dataset_id: datasetId,
       start_at: parseDateInput(tsStartAt?.value),
       end_at: parseDateInput(tsEndAt?.value),
       windowing_spec: buildWindowingSpec(),
+      topic_mode: mode,
+      topic_mode_params: modeParams,
     };
     const result = await topicFoundryFetch("/runs/train", {
       method: "POST",
@@ -5455,6 +5493,14 @@ loadDismissedIds();
       }
       renderEndpointWarning(tsCapabilitiesWarning, null, null);
       recordTopicStudioFetchStatus("capabilities", 200, true);
+      const tm = result?.capabilities?.topic_modeling || {};
+      if (tsTopicModelCapabilities) tsTopicModelCapabilities.textContent = JSON.stringify(result || {}, null, 2);
+      if (tsCapClassBased) tsCapClassBased.textContent = `class_based: ${!!tm.class_based}`;
+      if (tsCapLongDocument) tsCapLongDocument.textContent = `long_document: ${!!tm.long_document}`;
+      if (tsCapHierarchical) tsCapHierarchical.textContent = `hierarchical: ${!!tm.hierarchical}`;
+      if (tsCapDynamic) tsCapDynamic.textContent = `dynamic: ${!!tm.dynamic}`;
+      if (tsCapGuided) tsCapGuided.textContent = `guided: ${!!tm.guided}`;
+      if (tsCapZeroshot) tsCapZeroshot.textContent = `zeroshot: ${!!tm.zeroshot}`;
       setTopicStudioRenderStep("fetched /capabilities");
       setLoading(tsStatusLoading, false);
     } catch (err) {

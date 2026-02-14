@@ -24,3 +24,6 @@ def test_capabilities_backward_compatible_with_defaults_block():
     vec = payload["defaults"]["vectorizer"]
     assert isinstance(vec["ngram_range"], list) and len(vec["ngram_range"]) == 2
     assert isinstance(payload["defaults"]["ctfidf"]["reduce_frequent_words"], bool)
+    assert "supported_metrics" in payload
+    assert "cosine" in payload["supported_metrics"]
+    assert payload.get("default_metric")

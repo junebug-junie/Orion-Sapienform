@@ -108,6 +108,9 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
             run_model_params=run.specs.model.params or {},
             mode_params=mode_params,
         )
+        model_metric = str(run.specs.model.metric or "").strip().lower()
+        if model_metric:
+            model_meta["hdbscan_metric"] = model_metric
 
         engine = build_topic_engine(model_meta)
         topic_model = BERTopic(

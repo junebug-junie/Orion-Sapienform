@@ -351,7 +351,6 @@ loadDismissedIds();
   const tsModelVersion = document.getElementById("tsModelVersion");
   const tsModelStage = document.getElementById("tsModelStage");
   const tsModelEmbeddingUrl = document.getElementById("tsModelEmbeddingUrl");
-  const tsModelMinCluster = document.getElementById("tsModelMinCluster");
   const tsModelMetric = document.getElementById("tsModelMetric");
   const tsModelParams = document.getElementById("tsModelParams");
   const tsTopicModelCapabilities = document.getElementById("tsTopicModelCapabilities");
@@ -379,10 +378,6 @@ loadDismissedIds();
   const tsPromoteStage = document.getElementById("tsPromoteStage");
   const tsPromoteReason = document.getElementById("tsPromoteReason");
   const tsPromoteModel = document.getElementById("tsPromoteModel");
-  const tsEnrichEnricher = document.getElementById("tsEnrichEnricher");
-  const tsEnrichForce = document.getElementById("tsEnrichForce");
-  const tsEnrichRun = document.getElementById("tsEnrichRun");
-  const tsEnrichStatus = document.getElementById("tsEnrichStatus");
   const tsTrainModelSelect = document.getElementById("tsTrainModelSelect");
   const tsTrainRun = document.getElementById("tsTrainRun");
   const tsRunId = document.getElementById("tsRunId");
@@ -528,10 +523,8 @@ loadDismissedIds();
   const tsLlmNote = document.getElementById("tsLlmNote");
   const tsPreviewLoading = document.getElementById("tsPreviewLoading");
   const tsRunLoading = document.getElementById("tsRunLoading");
-  const tsEnrichLoading = document.getElementById("tsEnrichLoading");
   const tsPreviewWarning = document.getElementById("tsPreviewWarning");
   const tsRunWarning = document.getElementById("tsRunWarning");
-  const tsEnrichWarning = document.getElementById("tsEnrichWarning");
   const tsCopyRunId = document.getElementById("tsCopyRunId");
   const tsCopyRunUrl = document.getElementById("tsCopyRunUrl");
   const tsCopyArtifacts = document.getElementById("tsCopyArtifacts");
@@ -1093,7 +1086,6 @@ loadDismissedIds();
         version: tsModelVersion?.value || "",
         stage: tsModelStage?.value || "",
         embedding_source_url: tsModelEmbeddingUrl?.value || "",
-        min_cluster_size: tsModelMinCluster?.value || "",
         metric: tsModelMetric?.value || "",
         params: tsModelParams?.value || "",
       },
@@ -1189,7 +1181,6 @@ loadDismissedIds();
         if (tsModelVersion && state.model.version) tsModelVersion.value = state.model.version;
         if (tsModelStage && state.model.stage) tsModelStage.value = state.model.stage;
         if (tsModelEmbeddingUrl && state.model.embedding_source_url) tsModelEmbeddingUrl.value = state.model.embedding_source_url;
-        if (tsModelMinCluster && state.model.min_cluster_size) tsModelMinCluster.value = state.model.min_cluster_size;
         if (tsModelMetric && state.model.metric) tsModelMetric.value = state.model.metric;
         if (tsModelParams && state.model.params) tsModelParams.value = state.model.params;
       }
@@ -1278,7 +1269,6 @@ loadDismissedIds();
       tsModelVersion,
       tsModelStage,
       tsModelEmbeddingUrl,
-      tsModelMinCluster,
       tsModelMetric,
       tsModelParams,
       tsRunId,
@@ -1888,7 +1878,6 @@ loadDismissedIds();
   let topicStudioRunPoller = null;
   let topicStudioCapabilities = null;
   let topicStudioSegmentsPolling = false;
-  let topicStudioEnrichPolling = false;
   let topicStudioSegmentsOffset = 0;
   let topicStudioSegmentsLimit = 50;
   let topicStudioSegmentsTotal = null;
@@ -3658,7 +3647,7 @@ loadDismissedIds();
         model_spec: {
           algorithm: "hdbscan",
           embedding_source_url: tsModelEmbeddingUrl?.value?.trim() || null,
-          min_cluster_size: Number(tsModelMinCluster?.value || 15),
+          min_cluster_size: Number(tsModelHdbscanMinClusterSize?.value || 15),
           metric: tsModelMetric?.value || "cosine",
           params: modelParams,
         },
@@ -3995,10 +3984,6 @@ loadDismissedIds();
     if (topicStudioRunPoller) {
       clearInterval(topicStudioRunPoller);
       topicStudioRunPoller = null;
-    }
-    if (topicStudioEnrichPolling) {
-      topicStudioEnrichPolling = false;
-      setLoading(tsEnrichLoading, false);
     }
   }
 
@@ -5767,9 +5752,6 @@ loadDismissedIds();
     if (tsModelMetric && !tsModelMetric.value) {
       tsModelMetric.value = defaults.metric || "";
     }
-    if (tsModelMinCluster && !tsModelMinCluster.value && defaults.min_cluster_size) {
-      tsModelMinCluster.value = defaults.min_cluster_size;
-    }
   }
 
   async function refreshTopicStudioCapabilities() {
@@ -5788,11 +5770,6 @@ loadDismissedIds();
       renderMetricOptions(metrics, result.default_metric);
       const embeddingDefault = result?.defaults?.embedding_source_url || result?.default_embedding_url || "";
       applyCapabilityDefaults(result.defaults || {}, embeddingDefault);
-      if (tsEnrichRun) {
-        const llmEnabled = Boolean(result.llm_enabled);
-        tsEnrichRun.disabled = !llmEnabled;
-        tsEnrichRun.title = llmEnabled ? "" : "LLM disabled";
-      }
       renderEndpointWarning(tsCapabilitiesWarning, null, null);
       recordTopicStudioFetchStatus("capabilities", 200, true);
       const tm = result?.capabilities?.topic_modeling || {};
@@ -5807,16 +5784,12 @@ loadDismissedIds();
       setLoading(tsStatusLoading, false);
     } catch (err) {
       const fallbackModes = ["document", "time_gap", "conversation_bound"];
-      const fallbackMetrics = ["euclidean", "cosine"];
+      const fallbackMetrics = ["euclidean", "manhattan", "cosine", "l1", "l2"];
       renderWindowingModes(fallbackModes);
       renderMetricOptions(fallbackMetrics, "cosine");
       renderEndpointWarning(tsCapabilitiesWarning, "/capabilities", err);
       recordTopicStudioFetchStatus("capabilities", err.status ?? "error", false, err.body || err.message);
       setTopicStudioRenderStep("failed /capabilities");
-      if (tsEnrichRun) {
-        tsEnrichRun.disabled = true;
-        tsEnrichRun.title = "LLM disabled";
-      }
       setLoading(tsStatusLoading, false);
     }
   }

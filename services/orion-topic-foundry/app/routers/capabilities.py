@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from hdbscan import dist_metrics
 
 from app.models import CapabilitiesResponse
 from app.settings import settings
@@ -15,6 +16,7 @@ def capabilities() -> CapabilitiesResponse:
     vectorizer_params = vectorizer.get_params()
     stop_words_mode = str(settings.topic_foundry_vectorizer_stop_words).strip().lower()
     stop_words_extra = [x.strip().lower() for x in str(settings.topic_foundry_stop_words_extra or "").split(",") if x.strip()]
+    supported_metrics = sorted(str(metric) for metric in dist_metrics.METRIC_MAPPING.keys())
     return CapabilitiesResponse(
         capabilities={
             "topic_modeling": {
@@ -32,6 +34,8 @@ def capabilities() -> CapabilitiesResponse:
             "clusterers": ["hdbscan"],
             "representations": ["ctfidf", "keybert", "mmr", "pos", "llm"],
         },
+        supported_metrics=supported_metrics,
+        default_metric=str(settings.topic_foundry_hdbscan_metric),
         defaults={
             "vectorizer": {
                 "stop_words": stop_words_mode or "none",

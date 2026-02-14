@@ -353,6 +353,8 @@ class CapabilitiesResponse(BaseModel):
     capabilities: Dict[str, Any]
     backends: Dict[str, List[str]]
     defaults: Optional[Dict[str, Any]] = None
+    supported_metrics: List[str] = Field(default_factory=list)
+    default_metric: Optional[str] = None
 
 
 class DriftRunRequest(BaseModel):

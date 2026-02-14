@@ -616,21 +616,15 @@
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Embedding source URL</label>
             <input id="tsModelEmbeddingUrl" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="http://orion-vector-host:8030/embed" />
           </div>
-          <div class="grid grid-cols-2 gap-2">
-            <div class="space-y-1">
-              <label class="block text-[10px] uppercase tracking-wide text-gray-500">min_cluster_size</label>
-              <input id="tsModelMinCluster" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_cluster_size" />
-            </div>
-            <div class="space-y-1">
-              <label class="block text-[10px] uppercase tracking-wide text-gray-500">metric</label>
-              <select id="tsModelMetric" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="">Select metric</option>
-              </select>
-            </div>
-          </div>
           <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Params (JSON)</label>
             <textarea id="tsModelParams" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" rows="2" placeholder='{"min_samples":5}'></textarea>
+          </div>
+          <div class="space-y-1">
+            <label class="block text-[10px] uppercase tracking-wide text-gray-500">metric</label>
+            <select id="tsModelMetric" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="">Select metric</option>
+            </select>
           </div>
           
           <div class="space-y-2 border border-gray-700 rounded p-2">
@@ -713,25 +707,6 @@
             <button id="tsCopyDatasetId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy dataset id</button>
           </div>
 
-          <div class="pt-3 border-t border-gray-700 space-y-2">
-            <div class="text-[10px] uppercase tracking-wide text-gray-500">Enrichment</div>
-            <div class="grid grid-cols-2 gap-2">
-              <select id="tsEnrichEnricher" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-                <option value="heuristic">heuristic</option>
-                <option value="llm">llm</option>
-              </select>
-              <label class="flex items-center gap-2 text-[10px] text-gray-400">
-                <input id="tsEnrichForce" type="checkbox" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
-                force
-              </label>
-            </div>
-            <div class="flex items-center gap-2">
-              <button id="tsEnrichRun" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Enrich Run</button>
-              <span id="tsEnrichLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
-            </div>
-            <div id="tsEnrichStatus" class="text-[11px] text-gray-400">--</div>
-            <div id="tsEnrichWarning" class="text-[11px] text-amber-300 hidden"></div>
-          </div>
         </div>
 
         <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4">
@@ -1006,6 +981,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=20260214.1" defer></script>
+  <script src="/static/js/app.js?v=20260214.2" defer></script>
 </body>
 </html>

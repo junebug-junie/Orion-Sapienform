@@ -361,16 +361,16 @@ loadDismissedIds();
   const tsCapDynamic = document.getElementById("tsCapDynamic");
   const tsCapGuided = document.getElementById("tsCapGuided");
   const tsCapZeroshot = document.getElementById("tsCapZeroshot");
-  const tsModelEngine = document.getElementById("tsModelEngine");
-  const tsModelEmbeddingBackend = document.getElementById("tsModelEmbeddingBackend");
   const tsModelEmbeddingModel = document.getElementById("tsModelEmbeddingModel");
-  const tsModelReducer = document.getElementById("tsModelReducer");
   const tsModelClusterer = document.getElementById("tsModelClusterer");
   const tsModelUmapNeighbors = document.getElementById("tsModelUmapNeighbors");
   const tsModelUmapComponents = document.getElementById("tsModelUmapComponents");
   const tsModelHdbscanMinClusterSize = document.getElementById("tsModelHdbscanMinClusterSize");
   const tsModelHdbscanMinSamples = document.getElementById("tsModelHdbscanMinSamples");
   const tsModelRepresentation = document.getElementById("tsModelRepresentation");
+  const tsModelVectorizerNgramMin = document.getElementById("tsModelVectorizerNgramMin");
+  const tsModelVectorizerNgramMax = document.getElementById("tsModelVectorizerNgramMax");
+  const tsModelStopWordsExtra = document.getElementById("tsModelStopWordsExtra");
   const tsTopicMode = document.getElementById("tsTopicMode");
   const tsModeGuidedSeeds = document.getElementById("tsModeGuidedSeeds");
   const tsModeZeroshotTopics = document.getElementById("tsModeZeroshotTopics");
@@ -398,6 +398,7 @@ loadDismissedIds();
   const tsRunsSelect = document.getElementById("tsRunsSelect");
   const tsRunsWarning = document.getElementById("tsRunsWarning");
   const tsRunResultsStatus = document.getElementById("tsRunResultsStatus");
+  const tsRunResultsTopicChart = document.getElementById("tsRunResultsTopicChart");
   const tsRunSummaryRunId = document.getElementById("tsRunSummaryRunId");
   const tsRunSummaryStatus = document.getElementById("tsRunSummaryStatus");
   const tsRunSummaryDocs = document.getElementById("tsRunSummaryDocs");
@@ -3662,16 +3663,24 @@ loadDismissedIds();
           params: modelParams,
         },
         model_meta: {
-          topic_engine: tsModelEngine?.value || "bertopic",
-          embedding_backend: tsModelEmbeddingBackend?.value || "vector_host",
+          topic_engine: "bertopic",
+          embedding_backend: "vector_host",
           embedding_model: tsModelEmbeddingModel?.value || "sentence-transformers/all-MiniLM-L6-v2",
-          reducer: tsModelReducer?.value || "umap",
+          reducer: "umap",
           clusterer: tsModelClusterer?.value || "hdbscan",
           umap_n_neighbors: Number(tsModelUmapNeighbors?.value || 15),
           umap_n_components: Number(tsModelUmapComponents?.value || 5),
           hdbscan_min_cluster_size: Number(tsModelHdbscanMinClusterSize?.value || 15),
           hdbscan_min_samples: Number(tsModelHdbscanMinSamples?.value || 5),
           representation: tsModelRepresentation?.value || "ctfidf",
+          top_n_words: 12,
+          vectorizer_ngram_min: Number(tsModelVectorizerNgramMin?.value || 1),
+          vectorizer_ngram_max: Number(tsModelVectorizerNgramMax?.value || 1),
+          vectorizer_min_df: 1,
+          vectorizer_max_df: 0.95,
+          vectorizer_max_features: 5000,
+          vectorizer_stop_words: "english",
+          stop_words_extra: tsModelStopWordsExtra?.value?.trim() || "",
         },
         windowing_spec: buildWindowingSpec(),
         metadata: {},
@@ -3782,24 +3791,61 @@ loadDismissedIds();
     if (tsRunSummaryArtifacts) tsRunSummaryArtifacts.textContent = JSON.stringify(run?.artifact_paths || {}, null, 2);
   }
 
+  function renderRunResultsTopicChart(items) {
+    if (!tsRunResultsTopicChart) return;
+    if (!Array.isArray(items) || !items.length) {
+      tsRunResultsTopicChart.innerHTML = '<div class="text-[10px] uppercase tracking-wide text-gray-500">Topic distribution</div><div class="text-gray-500">No topic rows to chart.</div>';
+      return;
+    }
+    const counts = new Map();
+    for (const item of items) {
+      const topicId = item?.topic_id ?? "--";
+      const label = (item?.topic_label || "--").toString().trim() || "--";
+      const key = `${topicId} | ${label}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const total = items.length || 1;
+    const rows = Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count, pct: (count / total) * 100 }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+    const bars = rows.map((row) => {
+      const pctLabel = `${row.pct.toFixed(1)}%`;
+      return `<div class="space-y-1"><div class="flex items-center justify-between gap-2"><div class="truncate text-gray-300" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</div><div class="text-gray-400">${escapeHtml(pctLabel)}</div></div><div class="w-full h-2 rounded bg-gray-800 overflow-hidden"><div class="h-full bg-indigo-500" style="width:${Math.max(1, row.pct).toFixed(2)}%"></div></div></div>`;
+    }).join('');
+    tsRunResultsTopicChart.innerHTML = `<div class="text-[10px] uppercase tracking-wide text-gray-500">Topic distribution</div><div class="space-y-2">${bars}</div>`;
+  }
+
   async function loadRunResultsSegments(runId) {
     if (!tsRunResultsTable || !tsRunResultsBody) return;
     if (!runId) {
       console.log(`[RunResults] rendering into ${tsRunResultsBody.id}`);
       tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-gray-500" colspan="7">No run selected.</td></tr>';
+      renderRunResultsTopicChart([]);
       if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Select a run to load training results.";
       return;
     }
     if (tsRunResultsStatus) tsRunResultsStatus.textContent = `Loading training results for ${runId}...`;
-    console.log("[TopicStudio][RunResults] request", { method: "GET", url: `/runs/${runId}/results?limit=100` });
+    console.log("[TopicStudio][RunResults] request", { method: "GET", url: `/runs/${runId}/results?limit=500` });
     try {
       const run = await topicFoundryFetch(`/runs/${runId}`);
       console.log("[TopicStudio][RunSummary] response", { status: "ok", keys: Object.keys(run || {}) });
       renderTrainingRunSummary(run);
-      const resp = await topicFoundryFetch(`/runs/${runId}/results?limit=100`);
-      console.log("[TopicStudio][RunResults] response", { status: "ok", keys: Object.keys(resp || {}) });
-      const items = resp?.items || [];
+      const pageSize = 500;
+      const firstPage = await topicFoundryFetch(`/runs/${runId}/results?limit=${pageSize}&offset=0`);
+      console.log("[TopicStudio][RunResults] response", { status: "ok", keys: Object.keys(firstPage || {}) });
+      const items = Array.isArray(firstPage?.items) ? [...firstPage.items] : [];
+      const total = Number(firstPage?.total || items.length);
+      for (let offset = items.length; offset < total; offset += pageSize) {
+        const page = await topicFoundryFetch(`/runs/${runId}/results?limit=${pageSize}&offset=${offset}`);
+        if (Array.isArray(page?.items) && page.items.length) {
+          items.push(...page.items);
+        } else {
+          break;
+        }
+      }
       topicStudioRunResultsPage = items;
+      renderRunResultsTopicChart(items);
       console.log(`[RunResults] rendering into ${tsRunResultsBody.id}`);
       tsRunResultsBody.innerHTML = "";
       if (!items.length) {
@@ -3831,6 +3877,7 @@ loadDismissedIds();
     } catch (err) {
       console.warn("[TopicStudio][RunResults] catch", err);
       tsRunResultsBody.innerHTML = '<tr><td class="px-2 py-1 text-red-300" colspan="7">Failed to load training results.</td></tr>';
+      renderRunResultsTopicChart([]);
       if (tsRunResultsStatus) tsRunResultsStatus.textContent = "Failed to load training results.";
       showToast(err?.message || "Failed to load training results.");
     }

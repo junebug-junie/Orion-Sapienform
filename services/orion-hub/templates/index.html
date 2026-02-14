@@ -644,28 +644,18 @@
               <div id="tsCapGuided">guided: --</div>
               <div id="tsCapZeroshot">zeroshot: --</div>
             </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">topic_engine</label>
-                <input id="tsModelEngine" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="bertopic" />
-              </div>
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">embedding_backend</label>
-                <select id="tsModelEmbeddingBackend" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="vector_host">vector_host</option><option value="st">st</option></select>
-              </div>
-            </div>
             <div class="space-y-1">
               <label class="block text-[10px] uppercase tracking-wide text-gray-500">embedding_model</label>
               <input id="tsModelEmbeddingModel" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="embedding_model" />
             </div>
             <div class="grid grid-cols-2 gap-2">
               <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">reducer</label>
-                <input id="tsModelReducer" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="umap" />
-              </div>
-              <div class="space-y-1">
                 <label class="block text-[10px] uppercase tracking-wide text-gray-500">clusterer</label>
                 <input id="tsModelClusterer" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="hdbscan" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">representation</label>
+                <select id="tsModelRepresentation" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="ctfidf">ctfidf</option><option value="keybert">keybert</option><option value="mmr">mmr</option><option value="pos">pos</option><option value="llm">llm</option></select>
               </div>
             </div>
             <div class="grid grid-cols-2 gap-2">
@@ -688,16 +678,7 @@
                 <input id="tsModelHdbscanMinSamples" type="number" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="hdbscan_min_samples" value="5" />
               </div>
             </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">representation</label>
-                <select id="tsModelRepresentation" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="ctfidf">ctfidf</option><option value="keybert">keybert</option><option value="mmr">mmr</option><option value="pos">pos</option><option value="llm">llm</option></select>
-              </div>
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">top_n_words</label>
-                <input id="tsModelTopNWords" type="number" min="3" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="top_n_words" value="12" />
-              </div>
-            </div>
+            <div class="text-[10px] text-gray-500">Set advanced BERTopic kwargs in <span class="font-mono">Params (JSON)</span>: topic_engine, embedding_backend, reducer, top_n_words, vectorizer_min_df, vectorizer_max_df, vectorizer_max_features, vectorizer_stop_words.</div>
             <div class="grid grid-cols-2 gap-2">
               <div class="space-y-1">
                 <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_ngram_min</label>
@@ -706,26 +687,6 @@
               <div class="space-y-1">
                 <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_ngram_max</label>
                 <input id="tsModelVectorizerNgramMax" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="1" />
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_min_df</label>
-                <input id="tsModelVectorizerMinDf" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="1" />
-              </div>
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_max_df</label>
-                <input id="tsModelVectorizerMaxDf" type="number" min="0" max="1" step="0.01" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0.95" />
-              </div>
-            </div>
-            <div class="grid grid-cols-2 gap-2">
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_max_features</label>
-                <input id="tsModelVectorizerMaxFeatures" type="number" min="100" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="5000" />
-              </div>
-              <div class="space-y-1">
-                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_stop_words</label>
-                <input id="tsModelVectorizerStopWords" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="english" placeholder="english|none|custom,list" />
               </div>
             </div>
             <div class="space-y-1">
@@ -877,6 +838,10 @@
       <div id="tsTrainingRow" class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-2">
         <div class="text-[10px] uppercase tracking-wide text-gray-500">Training Results</div>
         <div id="tsRunResultsStatus" class="text-[11px] text-gray-400">Select a run to load training results.</div>
+        <div id="tsRunResultsTopicChart" class="border border-gray-700 rounded bg-gray-900/60 p-3 space-y-2 text-[11px] text-gray-300">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Topic distribution</div>
+          <div class="text-gray-500">Load a run to render topic percentages.</div>
+        </div>
         <div id="tsRunSummary" class="grid grid-cols-2 gap-2 text-[11px] text-gray-300">
           <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Run ID</span><span id="tsRunSummaryRunId" class="font-mono text-[10px]">--</span></div>
           <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Status</span><span id="tsRunSummaryStatus" class="font-semibold">--</span></div>
@@ -888,7 +853,7 @@
           <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1"><span>Backends</span><span id="tsRunSummaryBackends" class="font-semibold">--</span></div>
         </div>
         <pre id="tsRunSummaryArtifacts" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</pre>
-        <div id="tsRunResultsTable" class="max-h-56 overflow-y-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
+        <div id="tsRunResultsTable" class="overflow-auto border border-gray-700 rounded bg-gray-900/60 text-[11px] text-gray-200">
           <table class="w-full text-[11px] text-gray-200">
             <thead>
               <tr class="text-left text-[10px] uppercase tracking-wide text-gray-400 border-b border-gray-700 bg-gray-900">
@@ -1041,6 +1006,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=20260213.1" defer></script>
+  <script src="/static/js/app.js?v=20260214.1" defer></script>
 </body>
 </html>

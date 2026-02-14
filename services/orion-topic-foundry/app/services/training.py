@@ -64,6 +64,21 @@ def _snippet(text: str, max_chars: int = 400) -> str:
     return text if len(text) <= max_chars else text[:max_chars].rstrip()
 
 
+def _compose_model_meta(
+    model_row: Dict[str, Any],
+    run_model_meta: Dict[str, Any],
+    run_model_params: Dict[str, Any],
+    mode_params: Dict[str, Any],
+) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    merged.update(dict(model_row.get("model_meta") or {}))
+    merged.update(dict(run_model_meta or {}))
+    merged.update(dict((model_row.get("model_spec") or {}).get("params") or {}))
+    merged.update(dict(run_model_params or {}))
+    merged.update(dict(mode_params or {}))
+    return merged
+
+
 def enqueue_training(background_tasks, run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, Any], dataset: DatasetSpec, spec_hash: str) -> None:
     background_tasks.add_task(_run_training, run_id, payload, model_row, dataset, spec_hash)
 
@@ -87,9 +102,12 @@ def _run_training(run_id: UUID, payload: RunTrainRequest, model_row: Dict[str, A
         if payload.topic_mode == "zeroshot":
             mode_params.setdefault("zeroshot_topic_list", mode_params.get("zeroshot_topic_list") or mode_params.get("topics"))
 
-        model_meta = dict(model_row.get("model_meta") or {})
-        model_meta.update(run.specs.model.model_meta or {})
-        model_meta.update(mode_params)
+        model_meta = _compose_model_meta(
+            model_row=model_row,
+            run_model_meta=run.specs.model.model_meta or {},
+            run_model_params=run.specs.model.params or {},
+            mode_params=mode_params,
+        )
 
         engine = build_topic_engine(model_meta)
         topic_model = BERTopic(

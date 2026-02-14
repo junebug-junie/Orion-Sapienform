@@ -617,10 +617,16 @@
             <input id="tsModelEmbeddingUrl" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="http://orion-vector-host:8030/embed" />
           </div>
           <div class="grid grid-cols-2 gap-2">
-            <input id="tsModelMinCluster" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_cluster_size" />
-              <select id="tsModelMetric" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+            <div class="space-y-1">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">min_cluster_size</label>
+              <input id="tsModelMinCluster" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="min_cluster_size" />
+            </div>
+            <div class="space-y-1">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">metric</label>
+              <select id="tsModelMetric" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
                 <option value="">Select metric</option>
               </select>
+            </div>
           </div>
           <div class="space-y-2">
             <label class="block text-[10px] uppercase tracking-wide text-gray-500">Params (JSON)</label>
@@ -639,26 +645,105 @@
               <div id="tsCapZeroshot">zeroshot: --</div>
             </div>
             <div class="grid grid-cols-2 gap-2">
-              <input id="tsModelEngine" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="bertopic" />
-              <select id="tsModelEmbeddingBackend" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="vector_host">vector_host</option><option value="st">st</option></select>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">topic_engine</label>
+                <input id="tsModelEngine" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="bertopic" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">embedding_backend</label>
+                <select id="tsModelEmbeddingBackend" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="vector_host">vector_host</option><option value="st">st</option></select>
+              </div>
             </div>
-            <input id="tsModelEmbeddingModel" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="embedding model" />
+            <div class="space-y-1">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">embedding_model</label>
+              <input id="tsModelEmbeddingModel" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="embedding_model" />
+            </div>
             <div class="grid grid-cols-2 gap-2">
-              <input id="tsModelReducer" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="umap" />
-              <input id="tsModelClusterer" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="hdbscan" />
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">reducer</label>
+                <input id="tsModelReducer" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="umap" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">clusterer</label>
+                <input id="tsModelClusterer" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="hdbscan" />
+              </div>
             </div>
             <div class="grid grid-cols-2 gap-2">
-              <input id="tsModelUmapNeighbors" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="umap neighbors" value="15" />
-              <input id="tsModelUmapComponents" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="umap components" value="5" />
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">umap_n_neighbors</label>
+                <input id="tsModelUmapNeighbors" type="number" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="umap_n_neighbors" value="15" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">umap_n_components</label>
+                <input id="tsModelUmapComponents" type="number" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="umap_n_components" value="5" />
+              </div>
             </div>
             <div class="grid grid-cols-2 gap-2">
-              <input id="tsModelHdbscanMinClusterSize" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="hdbscan min cluster" value="15" />
-              <input id="tsModelHdbscanMinSamples" type="number" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="hdbscan min samples" value="5" />
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">hdbscan_min_cluster_size</label>
+                <input id="tsModelHdbscanMinClusterSize" type="number" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="hdbscan_min_cluster_size" value="15" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">hdbscan_min_samples</label>
+                <input id="tsModelHdbscanMinSamples" type="number" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="hdbscan_min_samples" value="5" />
+              </div>
             </div>
-            <select id="tsModelRepresentation" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="ctfidf">ctfidf</option><option value="keybert">keybert</option><option value="mmr">mmr</option><option value="pos">pos</option><option value="llm">llm</option></select>
-            <select id="tsTopicMode" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="standard">standard</option><option value="guided">guided</option><option value="zeroshot">zeroshot</option><option value="dynamic">dynamic</option><option value="class_based">class_based</option><option value="long_document">long_document</option><option value="hierarchical">hierarchical</option></select>
-            <input id="tsModeGuidedSeeds" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="guided seeds, comma-separated" />
-            <input id="tsModeZeroshotTopics" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="zeroshot topics, comma-separated" />
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">representation</label>
+                <select id="tsModelRepresentation" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="ctfidf">ctfidf</option><option value="keybert">keybert</option><option value="mmr">mmr</option><option value="pos">pos</option><option value="llm">llm</option></select>
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">top_n_words</label>
+                <input id="tsModelTopNWords" type="number" min="3" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="top_n_words" value="12" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_ngram_min</label>
+                <input id="tsModelVectorizerNgramMin" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="1" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_ngram_max</label>
+                <input id="tsModelVectorizerNgramMax" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="1" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_min_df</label>
+                <input id="tsModelVectorizerMinDf" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="1" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_max_df</label>
+                <input id="tsModelVectorizerMaxDf" type="number" min="0" max="1" step="0.01" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0.95" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_max_features</label>
+                <input id="tsModelVectorizerMaxFeatures" type="number" min="100" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="5000" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">vectorizer_stop_words</label>
+                <input id="tsModelVectorizerStopWords" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="english" placeholder="english|none|custom,list" />
+              </div>
+            </div>
+            <div class="space-y-1">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">stop_words_extra</label>
+              <input id="tsModelStopWordsExtra" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="juniper,orion,yeah,okay,sure,thanks" />
+            </div>
+            <div class="space-y-1">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">topic_mode</label>
+              <select id="tsTopicMode" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"><option value="standard">standard</option><option value="guided">guided</option><option value="zeroshot">zeroshot</option><option value="dynamic">dynamic</option><option value="class_based">class_based</option><option value="long_document">long_document</option><option value="hierarchical">hierarchical</option></select>
+            </div>
+            <div class="space-y-1">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">seed_topic_list (guided)</label>
+              <input id="tsModeGuidedSeeds" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="guided seeds, comma-separated" />
+            </div>
+            <div class="space-y-1">
+              <label class="block text-[10px] uppercase tracking-wide text-gray-500">zeroshot_topic_list</label>
+              <input id="tsModeZeroshotTopics" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="zeroshot topics, comma-separated" />
+            </div>
           </div>
 
           <button id="tsCreateModel" class="w-full bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Create Model</button>
@@ -956,6 +1041,6 @@
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
-  <script src="/static/js/app.js?v=20260212c.1" defer></script>
+  <script src="/static/js/app.js?v=20260213.1" defer></script>
 </body>
 </html>

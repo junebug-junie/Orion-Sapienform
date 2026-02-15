@@ -17,6 +17,7 @@ from .recall_utils import (
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
 from .supervisor import Supervisor
 from .settings import settings
+from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion.cortex.router")
 
@@ -117,6 +118,21 @@ class PlanRunner:
             ctx["diagnostic"] = True
 
         ctx["verb"] = plan.verb_name
+        if mode == "brain" and plan.verb_name and not is_active(plan.verb_name, node_name=settings.node_name):
+            logger.warning("Inactive verb blocked in router corr_id=%s verb=%s", correlation_id, plan.verb_name)
+            return PlanExecutionResult(
+                verb_name=plan.verb_name,
+                request_id=req.args.request_id,
+                status="fail",
+                blocked=False,
+                blocked_reason=None,
+                steps=step_results,
+                mode=mode,
+                final_text=f"Verb '{plan.verb_name}' is inactive on node {settings.node_name}.",
+                memory_used=memory_used,
+                recall_debug=recall_debug,
+                error=f"inactive_verb:{plan.verb_name}",
+            )
         # Supervised path: delegate to Supervisor for agentic / council flows
         if mode in {"agent", "council"} or extra.get("supervised"):
             supervisor = Supervisor(bus)
@@ -210,6 +226,23 @@ class PlanRunner:
                 )
 
         for step in sorted(plan.steps, key=lambda s: s.order):
+            if step.verb_name and not is_active(step.verb_name, node_name=settings.node_name):
+                logger.warning("Inactive step verb blocked corr_id=%s verb=%s", correlation_id, step.verb_name)
+                step_results.append(
+                    StepExecutionResult(
+                        status="fail",
+                        verb_name=step.verb_name,
+                        step_name=step.step_name,
+                        order=step.order,
+                        result={"error": "inactive_verb", "verb": step.verb_name, "node": settings.node_name},
+                        latency_ms=0,
+                        node=settings.node_name,
+                        logs=[f"reject <- inactive verb {step.verb_name}"],
+                        error=f"inactive_verb:{step.verb_name}",
+                    )
+                )
+                overall_status = "fail"
+                break
             ctx["prior_step_results"] = [res.model_dump(mode="json") for res in step_results]
             step_res = await call_step_services(
                 bus,

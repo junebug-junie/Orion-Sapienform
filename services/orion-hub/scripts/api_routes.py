@@ -14,6 +14,7 @@ from .settings import settings
 from .session import ensure_session
 from .chat_history import build_chat_history_envelope, publish_chat_history
 from .library import scan_cognition_library
+from orion.cognition.verb_activation import build_verb_list, is_active
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.notify import (
@@ -402,6 +403,12 @@ def get_cognition_library():
     return scan_cognition_library()
 
 
+
+@router.get("/api/verbs")
+def api_verbs(include_inactive: int = Query(default=0, ge=0, le=1)):
+    include = bool(include_inactive)
+    return {"verbs": build_verb_list(node_name=settings.NODE_NAME, include_inactive=include)}
+
 # ======================================================================
 # 💬 SHARED CHAT CORE (HTTP + WS)
 # ======================================================================
@@ -439,7 +446,14 @@ async def handle_chat_request(
     if isinstance(ui_verbs, list) and len(ui_verbs) > 0:
         if len(ui_verbs) == 1:
              # Single verb -> override entry point
-             verb_override = ui_verbs[0]
+             verb_override = str(ui_verbs[0]).strip()
+             if verb_override and not is_active(verb_override, node_name=settings.NODE_NAME):
+                 return {
+                     "error": f"inactive_verb:{verb_override}",
+                     "message": f"Verb '{verb_override}' is inactive on node {settings.NODE_NAME}.",
+                     "verb": verb_override,
+                     "node": settings.NODE_NAME,
+                 }
         else:
              # Multiple verbs -> pass as allowed tools/verbs in options
              options["allowed_verbs"] = ui_verbs

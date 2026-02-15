@@ -24,6 +24,7 @@ from orion.schemas.agents.schemas import (
     AgentChainRequest,
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionResult, StepExecutionResult
+from orion.cognition.verb_activation import is_active
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
@@ -107,6 +108,8 @@ class Supervisor:
 
         tools: List[ToolDef] = []
         for v in verbs:
+            if not is_active(v.name, node_name=settings.node_name):
+                continue
             tools.append(
                 ToolDef(
                     tool_id=v.name,
@@ -192,6 +195,20 @@ class Supervisor:
     ) -> StepExecutionResult:
         tool_id = action.get("tool_id")
         tool_input = action.get("input") or {}
+        if not tool_id or not is_active(str(tool_id), node_name=settings.node_name):
+            logger.warning("Inactive verb selected by supervisor corr_id=%s verb=%s", correlation_id, tool_id)
+            return StepExecutionResult(
+                status="fail",
+                verb_name=str(tool_id or "unknown"),
+                step_name="inactive_verb_guard",
+                order=0,
+                result={"error": "inactive_verb", "verb": tool_id, "node": settings.node_name},
+                latency_ms=0,
+                node=settings.node_name,
+                logs=[f"reject <- inactive verb {tool_id}"],
+                error=f"inactive_verb:{tool_id}",
+            )
+
         verb_cfg = self.registry.get(tool_id)
         step = _verb_to_step(verb_cfg)
 
@@ -370,6 +387,20 @@ class Supervisor:
 
         if not self._should_use_react(mode, tools):
             logger.info("Supervisor: using direct LLM path")
+            if not is_active(req.verb_name, node_name=settings.node_name):
+                return PlanExecutionResult(
+                    verb_name=req.verb_name,
+                    request_id=correlation_id,
+                    status="fail",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=mode,
+                    final_text=f"Verb '{req.verb_name}' is inactive on node {settings.node_name}.",
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    error=f"inactive_verb:{req.verb_name}",
+                )
             direct_cfg = self.registry.get(req.verb_name)
             step = _verb_to_step(direct_cfg)
             direct_step = await call_step_services(
@@ -437,6 +468,20 @@ class Supervisor:
                 correlation_id=correlation_id,
             )
             step_results.append(action_step)
+            if action_step.status != "success" and str(action_step.error or "").startswith("inactive_verb:"):
+                return PlanExecutionResult(
+                    verb_name=req.verb_name,
+                    request_id=correlation_id,
+                    status="fail",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=mode,
+                    final_text=f"Verb '{action.get('tool_id')}' is inactive on node {settings.node_name}.",
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    error=action_step.error,
+                )
             obs = _extract_observation(action_step)
             trace.append(
                 TraceStep(

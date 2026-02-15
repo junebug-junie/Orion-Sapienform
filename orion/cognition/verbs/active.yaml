@@ -1,0 +1,12 @@
+default:
+  allow: []
+  deny:
+    - dream_preprocess
+    - dream_simple
+nodes:
+  athena:
+    allow: []
+    deny: []
+  atlas:
+    allow: []
+    deny: []

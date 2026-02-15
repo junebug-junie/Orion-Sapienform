@@ -20,6 +20,7 @@ from scripts.chat_history import (
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
+from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion-hub.ws")
 
@@ -426,8 +427,22 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Handle Verbs selection
             if data.get("verbs"):
-                if not chat_req.options: chat_req.options = {}
-                chat_req.options["allowed_verbs"] = data.get("verbs")
+                selected_verbs = [str(v).strip() for v in (data.get("verbs") or []) if str(v).strip()]
+                if len(selected_verbs) == 1:
+                    override_verb = selected_verbs[0]
+                    if not is_active(override_verb, node_name=settings.NODE_NAME):
+                        await websocket.send_json(
+                            await _with_biometrics(
+                                {"error": f"Verb '{override_verb}' is inactive on node {settings.NODE_NAME}."},
+                                cache=biometrics_cache,
+                            )
+                        )
+                        continue
+                    chat_req.verb = override_verb
+                elif selected_verbs:
+                    if not chat_req.options:
+                        chat_req.options = {}
+                    chat_req.options["allowed_verbs"] = selected_verbs
 
             # Publish the inbound user message into chat history
             if bus and not no_write:

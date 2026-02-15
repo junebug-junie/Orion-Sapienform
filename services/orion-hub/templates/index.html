@@ -242,9 +242,15 @@
             </button>
 
             <div id="verbDropdown" class="hidden absolute mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-20">
-              <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+              <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800 gap-2">
                 <div class="text-[10px] uppercase tracking-wide text-gray-500">Available Verbs</div>
-                <button id="clearVerbs" class="text-[10px] text-gray-400 hover:text-white">Clear</button>
+                <div class="flex items-center gap-2">
+                  <label class="text-[10px] text-gray-400 flex items-center gap-1">
+                    <input id="verbActiveOnlyToggle" type="checkbox" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" checked />
+                    Active only
+                  </label>
+                  <button id="clearVerbs" class="text-[10px] text-gray-400 hover:text-white">Clear</button>
+                </div>
               </div>
               <div id="verbList" class="max-h-56 overflow-y-auto p-2 space-y-1"></div>
             </div>

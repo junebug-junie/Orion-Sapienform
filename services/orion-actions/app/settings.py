@@ -20,9 +20,14 @@ class Settings(BaseSettings):
 
     # Channels
     actions_subscribe_channel: str = Field("orion:collapse:triage", alias="ACTIONS_SUBSCRIBE_CHANNEL")
+    actions_subscribe_channels: str = Field(
+        "orion:collapse:triage,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1",
+        alias="ACTIONS_SUBSCRIBE_CHANNELS",
+    )
     recall_rpc_channel: str = Field("orion:exec:request:RecallService", alias="RECALL_RPC_CHANNEL")
     llm_rpc_channel: str = Field("orion:exec:request:LLMGatewayService", alias="LLM_RPC_CHANNEL")
     actions_audit_channel: str = Field("orion:actions:audit", alias="ACTIONS_AUDIT_CHANNEL")
+    cortex_exec_request_channel: str = Field("orion:cortex:exec:request", alias="CORTEX_EXEC_REQUEST_CHANNEL")
 
     # Notify
     notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
@@ -43,6 +48,20 @@ class Settings(BaseSettings):
     actions_llm_route: str | None = Field("chat", alias="ACTIONS_LLM_ROUTE")
     actions_llm_timeout_seconds: float = Field(200.0, alias="ACTIONS_LLM_TIMEOUT_SECONDS")
 
+    # Daily execution via cortex-exec
+    actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
+    actions_daily_timezone: str = Field("America/Denver", alias="ACTIONS_DAILY_TIMEZONE")
+    actions_daily_run_on_startup: bool = Field(False, alias="ACTIONS_DAILY_RUN_ON_STARTUP")
+    actions_daily_run_once_date: str | None = Field(None, alias="ACTIONS_DAILY_RUN_ONCE_DATE")
+
+    actions_daily_pulse_enabled: bool = Field(True, alias="ACTIONS_DAILY_PULSE_ENABLED")
+    actions_daily_pulse_hour_local: int = Field(8, alias="ACTIONS_DAILY_PULSE_HOUR_LOCAL")
+    actions_daily_pulse_minute_local: int = Field(30, alias="ACTIONS_DAILY_PULSE_MINUTE_LOCAL")
+
+    actions_daily_metacog_enabled: bool = Field(True, alias="ACTIONS_DAILY_METACOG_ENABLED")
+    actions_daily_metacog_hour_local: int = Field(20, alias="ACTIONS_DAILY_METACOG_HOUR_LOCAL")
+    actions_daily_metacog_minute_local: int = Field(15, alias="ACTIONS_DAILY_METACOG_MINUTE_LOCAL")
+
     # HTTP
     port: int = Field(7160, alias="ACTIONS_PORT")
 
@@ -50,6 +69,13 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"
         populate_by_name = True
+
+    def subscribe_patterns(self) -> list[str]:
+        raw = self.actions_subscribe_channels or self.actions_subscribe_channel
+        values = [v.strip() for v in str(raw).split(",") if v.strip()]
+        if self.actions_subscribe_channel and self.actions_subscribe_channel not in values:
+            values.append(self.actions_subscribe_channel)
+        return values
 
 
 @lru_cache(maxsize=1)

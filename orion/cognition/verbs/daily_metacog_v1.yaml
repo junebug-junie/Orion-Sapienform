@@ -1,0 +1,31 @@
+name: daily_metacog_v1
+label: Daily Metacog v1
+description: Generate Orion's daily self-reflection on its thinking.
+category: actions
+priority: normal
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: true
+recall_profile: reflect.v1
+timeout_ms: 180000
+max_recursion_depth: 0
+steps:
+  - name: recall_context
+    description: Gather context from the last day.
+    order: -1
+    services:
+      - RecallService
+    requires_gpu: false
+    requires_memory: true
+    timeout_ms: 60000
+    recall_profile: reflect.v1
+  - name: draft_daily_metacog
+    description: Produce strict JSON metacognition summary.
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: daily_metacog_prompt.j2
+    requires_gpu: false
+    requires_memory: true
+    timeout_ms: 120000

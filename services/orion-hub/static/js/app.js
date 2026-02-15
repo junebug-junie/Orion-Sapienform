@@ -159,6 +159,7 @@ let selectedPacks = [];
 let selectedVerbs = [];
 let orionSessionId = localStorage.getItem('orion_sid') || null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
+let verbManifest = [];
 let selectedBiometricsNode = "cluster";
 let lastBiometricsPayload = null;
 let notifications = [];
@@ -551,6 +552,7 @@ loadDismissedIds();
   const verbDropdown = document.getElementById('verbDropdown');
   const verbList = document.getElementById('verbList');
   const clearVerbsBtn = document.getElementById('clearVerbs');
+  const verbActiveOnlyToggle = document.getElementById('verbActiveOnlyToggle');
 
   // --- 2. Helpers ---
 
@@ -5033,13 +5035,19 @@ loadDismissedIds();
 
   async function loadCognitionLibrary() {
       try {
-          const res = await hubFetch(apiUrl("/api/cognition/library"));
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          cognitionLibrary = await res.json();
+          const [libraryRes, verbsRes] = await Promise.all([
+            hubFetch(apiUrl("/api/cognition/library")),
+            hubFetch(apiUrl("/api/verbs?include_inactive=1")),
+          ]);
+          if (!libraryRes.ok) throw new Error(`HTTP ${libraryRes.status}`);
+          if (!verbsRes.ok) throw new Error(`HTTP ${verbsRes.status}`);
+          cognitionLibrary = await libraryRes.json();
+          const verbPayload = await verbsRes.json();
+          verbManifest = Array.isArray(verbPayload?.verbs) ? verbPayload.verbs : [];
           renderPackButtons();
           renderVerbList();
       } catch (e) {
-          console.error("Failed to load packs:", e);
+          console.error("Failed to load cognition library:", e);
           if (packContainer) packContainer.innerHTML = '<span class="text-red-400 text-xs">Error loading packs</span>';
       }
   }
@@ -5097,32 +5105,41 @@ loadDismissedIds();
   function renderVerbList() {
       if (!verbList) return;
       verbList.innerHTML = '';
-      let availableVerbs = [];
+      const activeOnly = verbActiveOnlyToggle ? verbActiveOnlyToggle.checked : true;
 
+      let availableVerbs = [];
       if (selectedPacks.length === 0) {
-          availableVerbs = cognitionLibrary.verbs || [];
+          availableVerbs = verbManifest.slice();
       } else {
           const verbSet = new Set();
           selectedPacks.forEach(p => {
               const pVerbs = cognitionLibrary.map[p] || [];
               pVerbs.forEach(v => verbSet.add(v));
           });
-          availableVerbs = Array.from(verbSet).sort();
+          availableVerbs = verbManifest.filter((v) => verbSet.has(v.name));
       }
+
+      availableVerbs = availableVerbs
+        .filter((v) => !activeOnly || !!v.active)
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
 
       if (availableVerbs.length === 0) {
           verbList.innerHTML = '<span class="text-gray-500 text-xs p-2">No verbs found.</span>';
           return;
       }
 
-      availableVerbs.forEach(verb => {
+      const selectable = new Set(availableVerbs.map((v) => v.name));
+      selectedVerbs = selectedVerbs.filter((v) => selectable.has(v));
+
+      availableVerbs.forEach((verbMeta) => {
+          const verb = verbMeta.name;
           const div = document.createElement('div');
           div.className = "flex items-center gap-2 p-1 hover:bg-gray-700 rounded cursor-pointer";
           const cb = document.createElement('input');
           cb.type = "checkbox";
           cb.className = "form-checkbox h-3 w-3 text-red-600 bg-gray-600 border-gray-500 rounded focus:ring-red-500";
           cb.checked = selectedVerbs.includes(verb);
-          
+
           const toggle = () => {
               const idx = selectedVerbs.indexOf(verb);
               if (idx >= 0) selectedVerbs.splice(idx, 1);
@@ -5135,9 +5152,10 @@ loadDismissedIds();
           div.addEventListener('click', (e) => { if(e.target !== cb) toggle(); });
 
           const span = document.createElement('span');
-          span.textContent = verb;
-          span.className = "text-xs text-gray-300";
-          
+          const activeBadge = verbMeta.active ? '' : ' (inactive)';
+          span.textContent = `${verb}${activeBadge}`;
+          span.className = verbMeta.active ? "text-xs text-gray-300" : "text-xs text-amber-300";
+
           div.appendChild(cb);
           div.appendChild(span);
           verbList.appendChild(div);
@@ -5148,7 +5166,7 @@ loadDismissedIds();
   function updateVerbLabel() {
       if (!verbSelectLabel) return;
       if (selectedVerbs.length === 0) {
-          verbSelectLabel.textContent = "All verbs available";
+          verbSelectLabel.textContent = "No explicit override (auto route)";
           verbSelectLabel.className = "text-gray-400 italic";
       } else {
           verbSelectLabel.textContent = `${selectedVerbs.length} verbs selected`;
@@ -5171,6 +5189,20 @@ loadDismissedIds();
       });
   }
 
+
+  if (clearVerbsBtn) {
+      clearVerbsBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          selectedVerbs = [];
+          renderVerbList();
+      });
+  }
+
+  if (verbActiveOnlyToggle) {
+      verbActiveOnlyToggle.addEventListener('change', () => {
+          renderVerbList();
+      });
+  }
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }

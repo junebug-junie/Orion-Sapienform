@@ -44,7 +44,7 @@ class CortexClientRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     mode: Literal["brain", "agent", "council"] = "brain"
-    verb: str = Field(..., alias="verb_name")
+    verb: Optional[str] = Field(default=None, alias="verb_name")
     packs: List[str] = Field(default_factory=list)
     options: Dict[str, Any] = Field(default_factory=dict)
     recall: RecallDirective = Field(default_factory=RecallDirective)

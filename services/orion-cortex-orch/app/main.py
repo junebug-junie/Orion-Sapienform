@@ -16,6 +16,7 @@ from .orchestrator import call_verb_runtime, dispatch_metacog_trigger
 from .settings import get_settings
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
+from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -39,6 +40,26 @@ def _is_diagnostic(raw_payload: dict | None) -> bool:
     opts = (raw_payload or {}).get("options") if isinstance(raw_payload, dict) else {}
     return bool(isinstance(opts, dict) and (opts.get("diagnostic") or opts.get("diagnostic_mode")))
 
+
+
+
+def _normalize_and_validate_verb(req: CortexClientRequest) -> tuple[bool, str | None]:
+    mode = (req.mode or "brain").lower()
+    verb = (req.verb or "").strip()
+
+    if not verb:
+        if mode == "brain":
+            req.verb = "chat_general"
+            verb = req.verb
+        else:
+            req.verb = None
+            return True, None
+
+    if not is_active(verb, node_name=get_settings().node_name):
+        return False, verb
+
+    req.verb = verb
+    return True, None
 
 def _cfg() -> ChassisConfig:
     s = get_settings()
@@ -104,6 +125,27 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
         if diagnostic:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
+
+        ok, bad_verb = _normalize_and_validate_verb(req)
+        if not ok:
+            failure = CortexClientResult(
+                ok=False,
+                mode=req.mode,
+                verb=bad_verb or "unknown",
+                status="fail",
+                memory_used=False,
+                recall_debug={},
+                steps=[],
+                error={"message": f"inactive_verb:{bad_verb}", "verb": bad_verb, "node": get_settings().node_name},
+                correlation_id=str(env.correlation_id),
+                final_text=f"Verb '{bad_verb}' is inactive on node {get_settings().node_name}.",
+            )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=failure.model_dump(mode="json"),
+            )
 
     except ValidationError as ve:
         trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
@@ -173,7 +215,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
-            verb=req.verb,
+            verb=req.verb or "unknown",
             status=result_payload.get("status") or "fail",
             final_text=result_payload.get("final_text"),
             memory_used=bool(result_payload.get("memory_used")),

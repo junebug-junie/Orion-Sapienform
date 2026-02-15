@@ -20,6 +20,7 @@ from scripts.chat_history import (
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
+from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion-hub.ws")
 
@@ -43,6 +44,84 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
             return False
     return default
 
+
+
+
+def _truncate_text(value: Any, limit: int = 800) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _compact_council_debug(payload: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    opinions_out = []
+    opinions = payload.get("opinions")
+    if isinstance(opinions, list):
+        for item in opinions[:12]:
+            if not isinstance(item, dict):
+                continue
+            opinions_out.append({
+                "agent_name": _truncate_text(item.get("agent_name") or item.get("name") or "unknown", 80),
+                "confidence": item.get("confidence"),
+                "text": _truncate_text(item.get("text") or "", 800),
+            })
+
+    verdict_out = {}
+    verdict = payload.get("verdict")
+    if isinstance(verdict, dict):
+        verdict_out = {
+            "action": verdict.get("action"),
+            "reason": _truncate_text(verdict.get("reason") or "", 500),
+            "constraints": verdict.get("constraints") if isinstance(verdict.get("constraints"), dict) else {},
+        }
+
+    blink_out = {}
+    blink = payload.get("blink")
+    if isinstance(blink, dict):
+        blink_out = {
+            "proposed_answer": _truncate_text(blink.get("proposed_answer") or "", 500),
+            "scores": blink.get("scores") if isinstance(blink.get("scores"), dict) else {},
+        }
+
+    if not opinions_out and not verdict_out and not blink_out:
+        return None
+    return {"opinions": opinions_out, "verdict": verdict_out, "blink": blink_out}
+
+
+def _extract_council_debug_from_result(resp: CortexChatResult) -> Dict[str, Any] | None:
+    if not resp or not getattr(resp, "cortex_result", None):
+        return None
+
+    cr = resp.cortex_result
+    recall_debug = cr.recall_debug if isinstance(cr.recall_debug, dict) else {}
+    metadata = cr.metadata if isinstance(cr.metadata, dict) else {}
+
+    for candidate in (
+        recall_debug.get("council_debug"),
+        metadata.get("council"),
+        metadata.get("council_debug"),
+    ):
+        compact = _compact_council_debug(candidate if isinstance(candidate, dict) else None)
+        if compact:
+            return compact
+
+    steps = cr.steps if isinstance(cr.steps, list) else []
+    for step in reversed(steps):
+        step_result = getattr(step, "result", None)
+        if not isinstance(step_result, dict):
+            continue
+        council_payload = step_result.get("CouncilService")
+        if not isinstance(council_payload, dict):
+            continue
+        compact = _compact_council_debug(council_payload.get("debug_compact") if isinstance(council_payload.get("debug_compact"), dict) else council_payload)
+        if compact:
+            return compact
+
+    return None
 
 def _schedule_publish(coro: asyncio.Future, label: str) -> None:
     task = asyncio.create_task(coro)
@@ -426,8 +505,22 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Handle Verbs selection
             if data.get("verbs"):
-                if not chat_req.options: chat_req.options = {}
-                chat_req.options["allowed_verbs"] = data.get("verbs")
+                selected_verbs = [str(v).strip() for v in (data.get("verbs") or []) if str(v).strip()]
+                if len(selected_verbs) == 1:
+                    override_verb = selected_verbs[0]
+                    if not is_active(override_verb, node_name=settings.NODE_NAME):
+                        await websocket.send_json(
+                            await _with_biometrics(
+                                {"error": f"Verb '{override_verb}' is inactive on node {settings.NODE_NAME}."},
+                                cache=biometrics_cache,
+                            )
+                        )
+                        continue
+                    chat_req.verb = override_verb
+                elif selected_verbs:
+                    if not chat_req.options:
+                        chat_req.options = {}
+                    chat_req.options["allowed_verbs"] = selected_verbs
 
             # Publish the inbound user message into chat history
             if bus and not no_write:
@@ -483,7 +576,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 backend_counts=backend_counts,
                 memory_digest=memory_digest,
             )
-            await websocket.send_json(await _with_biometrics({
+            ws_payload = {
                 "llm_response": orion_response_text,
                 "mode": mode,
                 "correlation_id": trace_id,
@@ -491,7 +584,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 "memory_used": memory_used,
                 "recall_debug": recall_debug,
                 "no_write": no_write,
-            }, cache=biometrics_cache))
+            }
+            if mode == "council" or settings.HUB_DEBUG_COUNCIL:
+                council_debug = _extract_council_debug_from_result(resp)
+                if council_debug:
+                    ws_payload["council_debug"] = council_debug
+            await websocket.send_json(await _with_biometrics(ws_payload, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write:

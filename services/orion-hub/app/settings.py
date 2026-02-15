@@ -155,6 +155,7 @@ class Settings(BaseSettings):
 
     # --- Recall Debugging ---
     HUB_DEBUG_RECALL: bool = Field(default=False, alias="HUB_DEBUG_RECALL")
+    HUB_DEBUG_COUNCIL: bool = Field(default=False, alias="HUB_DEBUG_COUNCIL")
 
     # --- No-Write Debug Mode (skip publishing chat history) ---
     HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")

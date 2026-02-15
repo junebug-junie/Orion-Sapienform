@@ -28,11 +28,12 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 logger = logging.getLogger("orion.cortex.orch")
 
-def build_agent_plan(verb_name: str) -> ExecutionPlan:
+def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
     """Two-step agent plan: planner-react followed by agent chain."""
+    resolved_verb = verb_name or "agent_runtime"
     return ExecutionPlan(
-        verb_name=verb_name,
-        label=f"{verb_name}-agent",
+        verb_name=resolved_verb,
+        label=f"{resolved_verb}-agent",
         description="Agent chain execution via planner-react",
         category="agentic",
         priority="normal",
@@ -42,7 +43,7 @@ def build_agent_plan(verb_name: str) -> ExecutionPlan:
         max_recursion_depth=1,
         steps=[
             ExecutionStep(
-                verb_name=verb_name,
+                verb_name=resolved_verb,
                 step_name="planner_react",
                 description="Delegate planning to PlannerReactService",
                 order=-1,
@@ -53,7 +54,7 @@ def build_agent_plan(verb_name: str) -> ExecutionPlan:
                 timeout_ms=120000,
             ),
             ExecutionStep(
-                verb_name=verb_name,
+                verb_name=resolved_verb,
                 step_name="agent_chain",
                 description="Delegate to AgentChainService (ReAct)",
                 order=0,
@@ -68,11 +69,12 @@ def build_agent_plan(verb_name: str) -> ExecutionPlan:
     )
 
 
-def build_council_plan(verb_name: str) -> ExecutionPlan:
+def build_council_plan(verb_name: str | None) -> ExecutionPlan:
     """Stub council plan; routed to CouncilService."""
+    resolved_verb = verb_name or "council_runtime"
     return ExecutionPlan(
-        verb_name=verb_name,
-        label=f"{verb_name}-council",
+        verb_name=resolved_verb,
+        label=f"{resolved_verb}-council",
         description="Council supervisor stub",
         category="council",
         priority="normal",
@@ -82,7 +84,7 @@ def build_council_plan(verb_name: str) -> ExecutionPlan:
         max_recursion_depth=1,
         steps=[
             ExecutionStep(
-                verb_name=verb_name,
+                verb_name=resolved_verb,
                 step_name="council_supervisor",
                 description="Council supervisor placeholder",
                 order=0,

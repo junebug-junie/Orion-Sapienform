@@ -141,7 +141,10 @@ class BusClient:
             req = CortexChatRequest.model_validate(env.payload)
 
             # Logic similar to HTTP endpoint
-            verb = req.verb if req.verb else "chat_general"
+            if req.mode in {"agent", "council"}:
+                verb = req.verb
+            else:
+                verb = req.verb or "chat_general"
             packs = req.packs if req.packs is not None else ["executive_pack"]
             messages = [LLMMessage(role="user", content=req.prompt)]
 

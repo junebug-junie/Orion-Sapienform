@@ -20,6 +20,7 @@ from app.models import (
     BiometricsSummarySQL,
     BiometricsInductionSQL,
     ChatHistoryLogSQL,
+    ChatGptLogSQL,
     ChatMessageSQL,
     CollapseEnrichment,
     CollapseMirror,
@@ -77,6 +78,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
     "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
+    "ChatGptLogSQL": (ChatGptLogSQL, None),
     "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),
     "Dream": (Dream, DreamRequest),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
@@ -374,7 +376,7 @@ def _write_row(sql_model_cls, data: dict) -> None:
             mid = data.get("message_id") or data.get("id")
             filtered_data["id"] = str(mid) if mid else str(uuid.uuid4())
 
-        if sql_model_cls is ChatHistoryLogSQL and ("id" in valid_keys) and not filtered_data.get("id"):
+        if sql_model_cls in (ChatHistoryLogSQL, ChatGptLogSQL) and ("id" in valid_keys) and not filtered_data.get("id"):
             filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
 
         # Standard coercion

@@ -11,7 +11,9 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | :--- | :--- | :--- |
 | `orion:tags:enriched` | `tags.enriched`, `collapse.enrichment` | `CollapseEnrichment` |
 | `orion:collapse:sql-write` | `collapse.mirror` | `CollapseMirror` |
-| `orion:chat:history:log` | `chat.history`, `chat.log` | `ChatHistoryLogSQL` |
+| `orion:chat:history:log` | `chat.history.message.v1` | `ChatMessageSQL` |
+| `orion:chat:history:turn` | `chat.history`, `chat.log` | `ChatHistoryLogSQL` |
+| `orion:chat:gpt:log` | `chat.gpt.log.v1` | `ChatGptLogSQL` |
 | `orion:dream:log` | `dream.log` | `Dream` |
 | `orion:telemetry:biometrics` | `biometrics.telemetry` | `BiometricsTelemetry` |
 | `orion:biometrics:summary` | `biometrics.summary.v1` | `BiometricsSummarySQL` |

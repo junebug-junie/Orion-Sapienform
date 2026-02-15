@@ -36,10 +36,8 @@ PASS triage=ok sql-write=ok
   → sql-writer writes `chat_message`
   → vector-host embeds and publishes `vector.upsert.v1`
   → vector-writer upserts into Chroma
-- Publishes chat history TURN events (chat.history) to `orion:chat:history:turn`
-  → sql-writer writes `chat_history_log`
-  → meta-tags emits chat tagging to `orion:tags:chat:enriched`
-  → rdf-writer writes chat turn RDF (message RDF is skipped by default)
+- Publishes ChatGPT TURN events (chat.gpt.log.v1) to `orion:chat:gpt:log`
+  → sql-writer writes `chat_gpt_log`
 
 ### Preconditions (for full fanout)
 These services must be running and connected to the same ORION_BUS_URL:
@@ -58,6 +56,8 @@ Downstream writers upsert by primary key/doc_id:
 - Chroma upserts by doc_id, so vectors overwrite, not duplicate.
 - RDF stores triples as a set; re-inserting is safe.
 Even if you run the same export twice, you will not “double” the stored history.
+
+Default turn channel: `--channel-turn orion:chat:gpt:log` (override supported).
 
 ### Usage (dry run)
 Example:

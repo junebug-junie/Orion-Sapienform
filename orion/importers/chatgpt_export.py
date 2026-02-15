@@ -14,7 +14,8 @@ from uuid import UUID, uuid5
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.chat_history import CHAT_HISTORY_MESSAGE_KIND, CHAT_HISTORY_TURN_KIND
+from orion.schemas.chat_history import CHAT_HISTORY_MESSAGE_KIND
+from orion.schemas.chat_gpt_log import CHAT_GPT_LOG_TURN_KIND
 
 CHATGPT_IMPORTER_VERSION = "0.1.0"
 CHATGPT_IMPORTER_NAME = "chatgpt-import"
@@ -279,7 +280,7 @@ def build_envelopes_for_turn(
     turn_env = BaseEnvelope(
         id=correlation_uuid,
         correlation_id=correlation_uuid,
-        kind=CHAT_HISTORY_TURN_KIND,
+        kind=CHAT_GPT_LOG_TURN_KIND,
         source=source,
         payload=turn_payload,
     )

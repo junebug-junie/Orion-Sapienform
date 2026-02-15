@@ -24,6 +24,7 @@ from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResult
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
+from orion.schemas.chat_gpt_log import ChatGptLogTurnV1
 from orion.schemas.vector.schemas import (
     EmbeddingGenerateV1,
     EmbeddingResultV1,
@@ -159,6 +160,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallDirective": RecallDirective,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields
     "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
+    "ChatGptLogTurnV1": ChatGptLogTurnV1,
     "VectorWriteRequest": VectorWriteRequest,
     "VectorDocumentUpsertV1": VectorDocumentUpsertV1,
     "VectorUpsertV1": VectorUpsertV1,

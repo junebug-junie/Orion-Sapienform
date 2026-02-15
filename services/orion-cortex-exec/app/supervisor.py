@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -78,6 +79,115 @@ def _extract_observation(step_res: StepExecutionResult) -> Dict[str, Any]:
         if payload.get("text"):
             return {"llm_output": payload.get("text"), "raw": payload}
     return {"raw": step_res.result}
+
+
+def _truncate_text(value: Any, limit: int = 240) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _compact_json(value: Any, limit: int = 220) -> str:
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        rendered = str(value)
+    return _truncate_text(rendered, limit=limit)
+
+
+def _build_council_prompt(
+    *,
+    goal: str,
+    mode: str,
+    node_name: str,
+    correlation_id: str,
+    verb_name: str | None,
+    allowed_verbs: List[str],
+    toolset: List[ToolDef],
+    trace: List[TraceStep],
+    final_text: str | None,
+) -> str:
+    lines: List[str] = []
+    lines.append("Council Supervision Context")
+    lines.append(f"- goal: {_truncate_text(goal, 2000)}")
+    lines.append(f"- mode: {mode}")
+    lines.append(f"- node: {node_name}")
+    lines.append(f"- correlation_id: {correlation_id}")
+    if verb_name:
+        lines.append(f"- entry_verb: {verb_name}")
+    if allowed_verbs:
+        lines.append(f"- allowed_verbs: {', '.join(allowed_verbs[:50])}")
+
+    lines.append("\nToolset summary:")
+    if not toolset:
+        lines.append("- (none)")
+    else:
+        for tool in toolset[:25]:
+            lines.append(f"- {tool.tool_id}: {_truncate_text(tool.description or '', 120)}")
+        if len(toolset) > 25:
+            lines.append(f"- ... ({len(toolset) - 25} more tools omitted)")
+
+    lines.append("\nRecent trace:")
+    if not trace:
+        lines.append("- (no trace yet)")
+    else:
+        for step in trace[-8:]:
+            action = step.action if isinstance(step.action, dict) else {}
+            tool_id = action.get("tool_id") or "none"
+            args = _compact_json(action.get("input") or {}, 220)
+            obs = step.observation if isinstance(step.observation, dict) else {"raw": step.observation}
+            obs_text = obs.get("llm_output") or obs.get("text") or obs.get("content") or obs.get("error") or _compact_json(obs, 280)
+            lines.append(
+                f"- step {step.step_index}: tool={tool_id} args={args} obs={_truncate_text(obs_text, 280)}"
+            )
+
+    if final_text:
+        lines.append("\nProvisional final_text:")
+        lines.append(_truncate_text(final_text, 1500))
+
+    lines.append("\nReturn your normal council output contract.")
+    return "\n".join(lines)
+
+
+def _extract_council_debug(result_payload: Dict[str, Any]) -> Dict[str, Any]:
+    opinions_raw = result_payload.get("opinions") if isinstance(result_payload, dict) else []
+    opinions: List[Dict[str, Any]] = []
+    if isinstance(opinions_raw, list):
+        for item in opinions_raw[:12]:
+            if not isinstance(item, dict):
+                continue
+            opinions.append(
+                {
+                    "agent_name": _truncate_text(item.get("agent_name") or item.get("name") or "unknown", 80),
+                    "confidence": item.get("confidence"),
+                    "text": _truncate_text(item.get("text") or "", 800),
+                }
+            )
+
+    verdict_raw = result_payload.get("verdict") if isinstance(result_payload, dict) else {}
+    verdict = {}
+    if isinstance(verdict_raw, dict):
+        verdict = {
+            "action": verdict_raw.get("action"),
+            "reason": _truncate_text(verdict_raw.get("reason") or "", 500),
+            "constraints": verdict_raw.get("constraints") if isinstance(verdict_raw.get("constraints"), dict) else {},
+        }
+
+    blink_raw = result_payload.get("blink") if isinstance(result_payload, dict) else {}
+    blink: Dict[str, Any] = {}
+    if isinstance(blink_raw, dict):
+        scores = blink_raw.get("scores") if isinstance(blink_raw.get("scores"), dict) else {}
+        blink = {
+            "proposed_answer": _truncate_text(blink_raw.get("proposed_answer") or "", 500),
+            "scores": scores,
+        }
+
+    return {
+        "opinions": opinions,
+        "verdict": verdict,
+        "blink": blink,
+    }
 
 
 class Supervisor:
@@ -230,9 +340,27 @@ class Supervisor:
         *,
         source: ServiceRef,
         correlation_id: str,
-        prompt: str,
         history: List[Dict[str, Any]],
+        goal_text: str,
+        mode: str,
+        verb_name: str | None,
+        allowed_verbs: List[str],
+        toolset: List[ToolDef],
+        trace: List[TraceStep],
+        final_text: str | None,
+        node_name: str,
     ) -> StepExecutionResult:
+        prompt = _build_council_prompt(
+            goal=goal_text,
+            mode=mode,
+            node_name=node_name,
+            correlation_id=correlation_id,
+            verb_name=verb_name,
+            allowed_verbs=allowed_verbs,
+            toolset=toolset,
+            trace=trace,
+            final_text=final_text,
+        )
         deliberation = DeliberationRequest(
             prompt=prompt,
             history=history,
@@ -253,6 +381,7 @@ class Supervisor:
             logs.append("ok <- CouncilService")
             status = "success"
             result_payload = council_res.model_dump(mode="json")
+            result_payload["debug_compact"] = _extract_council_debug(result_payload)
             error_msg = None
         except Exception as exc:
             logs.append(f"timeout/exception <- CouncilService: {exc}")
@@ -320,6 +449,7 @@ class Supervisor:
         step_results: List[StepExecutionResult] = []
         memory_used = False
         recall_debug: Dict[str, Any] = {}
+        ctx.setdefault("debug", {})
 
         verb_recall_profile = None
         if isinstance(req.metadata, dict):
@@ -384,6 +514,8 @@ class Supervisor:
         tags = ctx.get("verb_tags") or []
         tools = self._toolset(packs=packs, tags=tags)
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
+        options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+        allowed_verbs = [str(v).strip() for v in (options.get("allowed_verbs") or []) if str(v).strip()]
 
         if not self._should_use_react(mode, tools):
             logger.info("Supervisor: using direct LLM path")
@@ -499,24 +631,28 @@ class Supervisor:
 
         require_council = bool(ctx.get("require_council")) or (ctx.get("mode") == "council")
         if require_council:
-            prompt_lines = [f"Goal: { _last_user_message(ctx)}", "Trace:"]
-            if trace:
-                for step in trace:
-                    prompt_lines.append(f"- action: {step.action} obs: {step.observation}")
-            elif planner_thought:
-                prompt_lines.append(f"- planner_thought: {planner_thought}")
-            council_prompt = "\n".join(prompt_lines)
             council_step = await self._council_checkpoint(
                 source=source,
                 correlation_id=correlation_id,
-                prompt=council_prompt,
                 history=ctx.get("messages") or [],
+                goal_text=_last_user_message(ctx),
+                mode=mode,
+                verb_name=req.verb_name,
+                allowed_verbs=allowed_verbs,
+                toolset=tools,
+                trace=trace,
+                final_text=final_text,
+                node_name=settings.node_name,
             )
             step_results.append(council_step)
             try:
                 council_payload = council_step.result.get("CouncilService", {})
                 if isinstance(council_payload, dict):
                     final_text = council_payload.get("final_text") or final_text
+                    compact_debug = council_payload.get("debug_compact")
+                    if isinstance(compact_debug, dict):
+                        ctx.setdefault("debug", {})["council"] = compact_debug
+                        recall_debug["council_debug"] = compact_debug
             except Exception:
                 pass
 

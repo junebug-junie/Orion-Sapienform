@@ -4649,7 +4649,7 @@ loadDismissedIds();
     }
   }
 
-  function appendMessage(sender, text, colorClass = 'text-white') {
+  function appendMessage(sender, text, colorClass = 'text-white', extras = null) {
     if (!conversationDiv) return;
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
@@ -4662,6 +4662,35 @@ loadDismissedIds();
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
     div.appendChild(header);
     div.appendChild(body);
+
+    const councilDebug = extras && extras.council_debug ? extras.council_debug : null;
+    if (sender === 'Orion' && councilDebug) {
+      const details = document.createElement('details');
+      details.className = "mt-2 bg-gray-900/50 border border-gray-700 rounded p-2";
+      const summary = document.createElement('summary');
+      summary.className = "cursor-pointer text-xs text-indigo-300";
+      summary.textContent = "Council details";
+      details.appendChild(summary);
+
+      const verdict = councilDebug.verdict || {};
+      const verdictDiv = document.createElement('div');
+      verdictDiv.className = "mt-2 text-xs text-gray-200 whitespace-pre-wrap";
+      verdictDiv.textContent = `Verdict: ${verdict.action || '--'}\nReason: ${verdict.reason || '--'}`;
+      details.appendChild(verdictDiv);
+
+      const opinions = Array.isArray(councilDebug.opinions) ? councilDebug.opinions : [];
+      opinions.forEach((op) => {
+        const row = document.createElement('div');
+        row.className = "mt-2 text-xs text-gray-300 border-t border-gray-800 pt-2 whitespace-pre-wrap";
+        const name = op.agent_name || op.name || 'unknown';
+        const conf = op.confidence == null ? '--' : op.confidence;
+        row.textContent = `${name} (confidence: ${conf})\n${op.text || ''}`;
+        details.appendChild(row);
+      });
+
+      div.appendChild(details);
+    }
+
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
   }
@@ -5222,7 +5251,7 @@ loadDismissedIds();
       try {
           const d = JSON.parse(e.data);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-          if (d.llm_response) appendMessage('Orion', d.llm_response);
+          if (d.llm_response) appendMessage('Orion', d.llm_response, 'text-white', { council_debug: d.council_debug });
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');

@@ -52,7 +52,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--export", required=True, help="Path to chatgpt export (zip, dir, conversations.json)")
     parser.add_argument("--bus-url", default=os.getenv("ORION_BUS_URL", "redis://localhost:6379/0"))
     parser.add_argument("--channel-log", default="orion:chat:history:log")
-    parser.add_argument("--channel-turn", default="orion:chat:history:turn")
+    parser.add_argument("--channel-turn", default="orion:chat:gpt:log")
     parser.add_argument("--user-id", default="Juniper")
     parser.add_argument("--user-speaker", default="~Juniper")
     parser.add_argument("--assistant-speaker", default="ChatGPT")

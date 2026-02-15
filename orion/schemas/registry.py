@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import (
 )
 from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1, RecallQueryV1
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
+from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import (
     CortexClientRequest,
@@ -202,6 +203,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "NotificationPreferencesUpdate": NotificationPreferencesUpdate,
     "PreferenceResolutionRequest": PreferenceResolutionRequest,
     "PreferenceResolutionResponse": PreferenceResolutionResponse,
+    "DailyPulseV1": DailyPulseV1,
+    "DailyMetacogV1": DailyMetacogV1,
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,
     "TopicRailAssignedV1": TopicRailAssignedV1,

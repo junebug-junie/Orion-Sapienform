@@ -29,7 +29,7 @@ services:
 
       # LLM Gateway routing
       - LLM_GATEWAY_SERVICE_NAME=${LLM_GATEWAY_SERVICE_NAME:-LLMGatewayService}
-      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE:-orion-exec:request:LLMGatewayService}
+      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE:-orion:exec:request:LLMGatewayService}
       - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX:-orion:llm:reply}
 
       # LLM defaults

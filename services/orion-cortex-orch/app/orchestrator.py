@@ -3,18 +3,16 @@ from __future__ import annotations
 
 import logging
 import asyncio
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-import orion
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs import VerbRequestV1, VerbResultV1
+from orion.cognition.plan_loader import build_plan_for_verb
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.schemas import (
     ExecutionPlan,
@@ -29,111 +27,6 @@ from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 logger = logging.getLogger("orion.cortex.orch")
-
-# Locate cognition directories
-ORION_PKG_DIR = Path(orion.__file__).resolve().parent
-VERBS_DIR = ORION_PKG_DIR / "cognition" / "verbs"
-PROMPTS_DIR = ORION_PKG_DIR / "cognition" / "prompts"
-
-
-def _load_verb_yaml(verb_name: str) -> dict:
-    path = VERBS_DIR / f"{verb_name}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"No verb YAML found for '{verb_name}' at {path}")
-    with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-def _load_prompt_content(template_ref: Optional[str]) -> Optional[str]:
-    """
-    If template_ref looks like a file (ends in .j2), load its content.
-    Otherwise return it as-is (assuming it's a raw string or None).
-    """
-    if not template_ref:
-        return None
-
-    if template_ref.strip().endswith(".j2"):
-        prompt_path = PROMPTS_DIR / template_ref.strip()
-        if prompt_path.exists():
-            return prompt_path.read_text(encoding="utf-8")
-        else:
-            logger.warning(f"Prompt template file not found: {prompt_path}")
-            # Fallback: return the filename so at least something happens
-            return template_ref
-
-    return template_ref
-
-
-def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan:
-    data = _load_verb_yaml(verb_name)
-
-    # Defaults
-    timeout_ms = int(data.get("timeout_ms", 120000) or 120000)
-    default_services = list(data.get("services") or [])
-    verb_recall_profile = data.get("recall_profile")
-
-    # Load the raw content if it's a file reference
-    raw_template_ref = str(data.get("prompt_template") or "")
-    default_prompt = _load_prompt_content(raw_template_ref)
-
-    steps: List[ExecutionStep] = []
-    raw_steps = data.get("steps") or data.get("plan")  # handle 'plan' alias in yaml
-
-    if isinstance(raw_steps, list) and raw_steps:
-        for i, s in enumerate(raw_steps):
-            # Resolve step-level prompt if provided, else use default
-            step_template_ref = str(s.get("prompt_template") or "")
-            step_prompt = _load_prompt_content(step_template_ref) if step_template_ref else default_prompt
-
-            steps.append(
-                    ExecutionStep(
-                        verb_name=verb_name,
-                        step_name=str(s.get("name") or f"step_{i}"),
-                        description=str(s.get("description") or ""),
-                        order=int(s.get("order", i)),
-                        services=list(s.get("services") or default_services),
-                        prompt_template=step_prompt,
-                        requires_gpu=bool(s.get("requires_gpu", False)),
-                        requires_memory=bool(s.get("requires_memory", False)),
-                        timeout_ms=int(s.get("timeout_ms", timeout_ms) or timeout_ms),
-                        recall_profile=s.get("recall_profile"),
-                    )
-                )
-    else:
-        # Single-step inference
-        steps.append(
-            ExecutionStep(
-                verb_name=verb_name,
-                step_name=verb_name,
-                description=str(data.get("description") or ""),
-                order=0,
-                services=default_services,
-                prompt_template=default_prompt,
-                requires_gpu=bool(data.get("requires_gpu", False)),
-                requires_memory=bool(data.get("requires_memory", False)),
-                timeout_ms=timeout_ms,
-                recall_profile=data.get("recall_profile"),
-            )
-        )
-
-    return ExecutionPlan(
-        verb_name=verb_name,
-        label=str(data.get("label") or verb_name),
-        description=str(data.get("description") or ""),
-        category=str(data.get("category") or "general"),
-        priority=str(data.get("priority") or "normal"),
-        interruptible=bool(data.get("interruptible", True)),
-        can_interrupt_others=bool(data.get("can_interrupt_others", False)),
-        timeout_ms=timeout_ms,
-        max_recursion_depth=int(data.get("max_recursion_depth", 2) or 2),
-        steps=steps,
-        metadata={
-            "verb_yaml": f"{verb_name}.yaml",
-            "mode": mode,
-            "recall_profile": str(verb_recall_profile) if verb_recall_profile else "",
-        },
-    )
-
 
 def build_agent_plan(verb_name: str) -> ExecutionPlan:
     """Two-step agent plan: planner-react followed by agent chain."""

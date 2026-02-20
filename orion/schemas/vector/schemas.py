@@ -56,7 +56,12 @@ class EmbeddingGenerateV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     doc_id: str
-    text: str
+    text: str = Field(
+        ...,
+        validation_alias=AliasChoices("text", "document", "content"),
+        description="Source text to embed and persist as the vector document.",
+    )
+    collection: Optional[str] = None
     embedding_profile: str = "default"
     include_latent: bool = False
 

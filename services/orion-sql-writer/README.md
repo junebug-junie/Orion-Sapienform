@@ -13,7 +13,9 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:collapse:sql-write` | `collapse.mirror` | `CollapseMirror` |
 | `orion:chat:history:log` | `chat.history.message.v1` | `ChatMessageSQL` |
 | `orion:chat:history:turn` | `chat.history`, `chat.log` | `ChatHistoryLogSQL` |
-| `orion:chat:gpt:log` | `chat.gpt.log.v1` | `ChatGptLogSQL` |
+| `orion:chat:gpt:log` | `chat.gpt.message.v1` | `ChatGptMessageSQL` |
+| `orion:chat:gpt:turn` | `chat.gpt.log.v1`, `chat.gpt.turn.v1` | `ChatGptLogSQL` |
+| `orion:chat:gpt:message:log` | `chat.gpt.message.v1` | `ChatGptMessageSQL` |
 | `orion:dream:log` | `dream.log` | `Dream` |
 | `orion:telemetry:biometrics` | `biometrics.telemetry` | `BiometricsTelemetry` |
 | `orion:biometrics:summary` | `biometrics.summary.v1` | `BiometricsSummarySQL` |
@@ -56,10 +58,11 @@ docker-compose up -d orion-sql-writer
 ```
 
 ### Smoke Test
-Publish a known kind to a subscribed channel.
+Validate GPT turn ingest end-to-end (bus -> sql-writer -> Postgres):
 
 ```bash
-# Using the bus harness to simulate a biometrics payload
-python scripts/bus_harness.py tap &
-# (Manually publish a message using a helper script or via another service)
+python services/orion-sql-writer/scripts/smoke_chatgpt_turn_sql.py
 ```
+
+Expected output includes `found_in_chat_gpt_log: True`; sql-writer logs should include:
+`Written ChatGptLogTurnV1 -> chat_gpt_log`.

@@ -32,17 +32,18 @@ PASS triage=ok sql-write=ok
 ## ChatGPT Export Import (Bus Fanout)
 
 ### What this does
-- Publishes chat history MESSAGE events (chat.history.message.v1) to `orion:chat:history:log`
-  → sql-writer writes `chat_message`
+- Publishes ChatGPT MESSAGE events (`chat.gpt.message.v1`) to `orion:chat:gpt:message:log`
+  → sql-writer writes `chat_gpt_message` (isolated from `chat_message`)
   → vector-host embeds and publishes `vector.upsert.v1`
   → vector-writer upserts into Chroma
-- Publishes ChatGPT TURN events (chat.gpt.log.v1) to `orion:chat:gpt:log`
+- Publishes ChatGPT TURN events (`chat.gpt.log.v1`) to `orion:chat:gpt:log`
   → sql-writer writes `chat_gpt_log`
+  → vector-host embeds turn text (`Prompt/Response`) into `orion_chat_gpt_turns`
 
 ### Preconditions (for full fanout)
 These services must be running and connected to the same ORION_BUS_URL:
 - orion-sql-writer
-- orion-vector-host (otherwise no embeddings will be produced)
+- orion-vector-host (must be running or no embeddings will be produced)
 - orion-vector-writer
 - orion-meta-tags
 - orion-rdf-writer
@@ -57,7 +58,11 @@ Downstream writers upsert by primary key/doc_id:
 - RDF stores triples as a set; re-inserting is safe.
 Even if you run the same export twice, you will not “double” the stored history.
 
-Default turn channel: `--channel-turn orion:chat:gpt:log` (override supported).
+Defaults:
+- `--channel-log orion:chat:gpt:message:log`
+- `--channel-turn orion:chat:gpt:log`
+
+Isolation note: ChatGPT imports no longer write into `chat_message`; they write to `chat_gpt_message` + `chat_gpt_log`.
 
 ### Usage (dry run)
 Example:
@@ -100,3 +105,18 @@ By default, `--include-branches` publishes MESSAGE events only (to avoid cross-b
 - Do not add new dependencies.
 - Do not modify sql-writer/vector-host/vector-writer/rdf-writer/meta-tags.
 - Keep changes limited to the importer module + CLI + scripts/README.md.
+
+
+### Quick verify (Chroma collections + counts)
+```bash
+python - <<'PY'
+import chromadb
+client = chromadb.HttpClient(host="localhost", port=8000)  # adjust if needed
+for name in ["orion_chat_gpt_turns", "orion_chat_turns", "orion_chat"]:
+    try:
+        coll = client.get_collection(name)
+        print(name, coll.count())
+    except Exception:
+        print(name, "missing")
+PY
+```

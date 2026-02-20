@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from datetime import datetime
+
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -51,7 +52,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Import ChatGPT export via Orion bus fanout.")
     parser.add_argument("--export", required=True, help="Path to chatgpt export (zip, dir, conversations.json)")
     parser.add_argument("--bus-url", default=os.getenv("ORION_BUS_URL", "redis://localhost:6379/0"))
-    parser.add_argument("--channel-log", default="orion:chat:history:log")
+    parser.add_argument("--channel-log", default="orion:chat:gpt:message:log")
     parser.add_argument("--channel-turn", default="orion:chat:gpt:log")
     parser.add_argument("--user-id", default="Juniper")
     parser.add_argument("--user-speaker", default="~Juniper")
@@ -67,6 +68,35 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--force-full", action="store_true")
     return parser.parse_args(argv)
 
+
+
+
+def _validate_channel_schemas(channel_log: str, channel_turn: str) -> None:
+    channels_file = ROOT / "orion" / "bus" / "channels.yaml"
+    if not channels_file.exists():
+        raise ValueError(f"Missing channels catalog: {channels_file}")
+
+    schema_by_name: Dict[str, str] = {}
+    current_name: str | None = None
+    for raw_line in channels_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line.startswith('- name:') or line.startswith('name:'):
+            current_name = line.split(':', 1)[1].strip().strip('"')
+            continue
+        if current_name and line.startswith('schema_id:'):
+            schema_by_name[current_name] = line.split(':', 1)[1].strip().strip('"')
+            current_name = None
+
+    expected = {
+        channel_log: "ChatGptMessageV1",
+        channel_turn: "ChatGptLogTurnV1",
+    }
+    for channel, expected_schema in expected.items():
+        actual = schema_by_name.get(channel)
+        if actual != expected_schema:
+            raise ValueError(
+                f"Channel schema mismatch for {channel}: expected {expected_schema}, found {actual or 'missing'}."
+            )
 
 def _load_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -223,6 +253,7 @@ def _build_publish_envelopes(
 async def _run(args: argparse.Namespace) -> int:
     if args.only_messages and args.only_turns:
         raise ValueError("Choose only one of --only-messages or --only-turns.")
+    _validate_channel_schemas(args.channel_log, args.channel_turn)
     if args.include_branches and args.only_turns:
         raise ValueError("--only-turns is not supported with --include-branches.")
     publish_messages = not args.only_turns

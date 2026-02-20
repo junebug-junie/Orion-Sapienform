@@ -21,6 +21,7 @@ from app.models import (
     BiometricsInductionSQL,
     ChatHistoryLogSQL,
     ChatGptLogSQL,
+    ChatGptMessageSQL,
     ChatMessageSQL,
     CollapseEnrichment,
     CollapseMirror,
@@ -45,6 +46,7 @@ from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSumm
 from orion.schemas.telemetry.dream import DreamRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
+from orion.schemas.chat_gpt_log import ChatGptMessageV1
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
@@ -79,6 +81,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
     "ChatGptLogSQL": (ChatGptLogSQL, None),
+    "ChatGptMessageSQL": (ChatGptMessageSQL, ChatGptMessageV1),
     "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),
     "Dream": (Dream, DreamRequest),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
@@ -372,7 +375,7 @@ def _write_row(sql_model_cls, data: dict) -> None:
         if "telemetry_id" in valid_keys and not filtered_data.get("telemetry_id"):
             filtered_data["telemetry_id"] = str(uuid.uuid4())
 
-        if sql_model_cls is ChatMessageSQL and "id" in valid_keys and not filtered_data.get("id"):
+        if sql_model_cls in (ChatMessageSQL, ChatGptMessageSQL) and "id" in valid_keys and not filtered_data.get("id"):
             mid = data.get("message_id") or data.get("id")
             filtered_data["id"] = str(mid) if mid else str(uuid.uuid4())
 

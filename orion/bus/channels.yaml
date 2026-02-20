@@ -683,7 +683,16 @@ channels:
     kind: "event"
     schema_id: "ChatGptLogTurnV1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-sql-writer", "orion-vector-host"]
+    stability: "experimental"
+    since: "2026-01-10"
+
+  - name: "orion:chat:gpt:message:log"
+    kind: "event"
+    schema_id: "ChatGptMessageV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-vector-host"]
+    description: "ChatGPT imported chat messages for vectorization + isolated SQL storage"
     stability: "experimental"
     since: "2026-01-10"
 

@@ -219,6 +219,7 @@ async def _fetch_anchor_embedding(bus: OrionBusAsync, text: str, doc_id: str) ->
         payload=EmbeddingGenerateV1(
             doc_id=doc_id,
             text=text,
+            collection=settings.spark_vector_collection,
             embedding_profile="default",
             include_latent=False,
         ).model_dump(mode="json"),

@@ -337,8 +337,10 @@ def _extract_embedding_text(payload_obj: Dict[str, Any]) -> Optional[str]:
         return text
     raw_input = payload_obj.get("input")
     if isinstance(raw_input, list) and raw_input:
-        return str(raw_input[0])
-    if isinstance(raw_input, str):
+        candidate = str(raw_input[0])
+        if candidate.strip():
+            return candidate
+    if isinstance(raw_input, str) and raw_input.strip():
         return raw_input
     return None
 
@@ -361,7 +363,15 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         logger.error("Embedding request include_latent=true is not supported; forcing false.")
         request = request.model_copy(update={"include_latent": False})
 
-    text = _extract_embedding_text(payload_obj)
+    target_collection = (
+        request.collection
+        if request and request.collection
+        else settings.VECTOR_HOST_SEMANTIC_COLLECTION
+    )
+
+    request_text = request.text if request else None
+    extracted_text = _extract_embedding_text(payload_obj)
+    doc_text = request_text if isinstance(request_text, str) and request_text.strip() else extracted_text
     doc_id = (
         (request.doc_id if request else None)
         or payload_obj.get("doc_id")
@@ -373,9 +383,9 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         "embedding.generate received doc_id=%s reply_to=%s text_len=%s",
         doc_id,
         "present" if reply_channel else "absent",
-        len(text) if text else 0,
+        len(doc_text) if doc_text else 0,
     )
-    if not text:
+    if not doc_text or not doc_text.strip():
         if reply_channel:
             error_payload = EmbeddingResultV1(
                 doc_id=doc_id,
@@ -397,7 +407,7 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         return
 
     try:
-        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+        embedding, embedding_model, embedding_dim = await embedder.embed(doc_text)
     except Exception as exc:
         logger.warning("Embedding request failed doc_id=%s error=%s", doc_id, exc)
         if reply_channel:
@@ -450,11 +460,12 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         {
             "request_doc_id": doc_id,
             "requester_service": env.source.name,
+            "text_preview": doc_text[:240],
         }
     )
     await _publish_semantic_upsert(
         env=env,
-        text=text,
+        text=doc_text,
         doc_id=doc_id,
         role="embedding_request",
         meta=meta,
@@ -462,7 +473,7 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
         original_channel=settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
-        collection_name=settings.VECTOR_HOST_SEMANTIC_COLLECTION,
+        collection_name=target_collection,
     )
 
 

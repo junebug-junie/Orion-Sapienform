@@ -46,7 +46,7 @@ from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSumm
 from orion.schemas.telemetry.dream import DreamRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
-from orion.schemas.chat_gpt_log import ChatGptMessageV1
+from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
@@ -80,7 +80,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
     "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
-    "ChatGptLogSQL": (ChatGptLogSQL, None),
+    "ChatGptLogSQL": (ChatGptLogSQL, ChatGptLogTurnV1),
     "ChatGptMessageSQL": (ChatGptMessageSQL, ChatGptMessageV1),
     "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),
     "Dream": (Dream, DreamRequest),
@@ -699,7 +699,10 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 await _write(sql_model, None, mapped, {})
             else:
                 await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
-            logger.info(f"Written {env.kind} -> {sql_model.__tablename__}")
+            written_label = env.kind
+            if schema_model is ChatGptLogTurnV1:
+                written_label = "ChatGptLogTurnV1"
+            logger.info(f"Written {written_label} -> {sql_model.__tablename__}")
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")

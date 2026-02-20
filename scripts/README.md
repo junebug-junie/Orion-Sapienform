@@ -61,6 +61,10 @@ Even if you run the same export twice, you will not “double” the stored hist
 Defaults:
 - `--channel-log orion:chat:gpt:message:log`
 - `--channel-turn orion:chat:gpt:log`
+- `--emit-embeddings` disabled by default
+- `--embedding-channel orion:embedding:generate`
+- `--message-collection orion_chat_gpt`
+- `--turn-collection orion_chat_gpt_turns`
 
 Isolation note: ChatGPT imports no longer write into `chat_message`; they write to `chat_gpt_message` + `chat_gpt_log`.
 
@@ -77,8 +81,13 @@ python scripts/import_chatgpt_export.py \
 python scripts/import_chatgpt_export.py \
   --export ~/Downloads/chatgpt-export.zip \
   --bus-url redis://100.x.y.z:6379/0 \
+  --channel-log orion:chat:gpt:log \
+  --channel-turn orion:chat:gpt:turn \
+  --emit-embeddings \
   --rate-limit 25
 ```
+
+When `--emit-embeddings` is set, importer also publishes `embedding.generate.v1` requests per message/turn with deterministic `doc_id` values so reruns upsert instead of duplicating vectors.
 
 ### Usage (periodic runs with checkpointing)
 This avoids reprocessing old conversations (per-conversation update_time/message_time checkpoints):

@@ -17,6 +17,7 @@ from orion.schemas.chat_history import (
     CHAT_HISTORY_TURN_KIND,
 )
 from orion.schemas.chat_gpt_log import CHAT_GPT_LOG_TURN_KIND, CHAT_GPT_MESSAGE_KIND, ChatGptLogTurnV1
+from orion.schemas.chat_gpt_log import ChatGptMessageV1
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
 from .embedder import Embedder
@@ -163,14 +164,9 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
     doc_id = message.message_id or str(env.correlation_id)
     timestamp = message.timestamp or env.created_at.isoformat()
 
-    source_channel = (
-        settings.VECTOR_HOST_CHAT_GPT_MESSAGE_CHANNEL
-        if env.kind == CHAT_GPT_MESSAGE_KIND
-        else settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL
-    )
     meta = _base_meta(
         env,
-        original_channel=source_channel,
+        original_channel=settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
         role=role,
         timestamp=timestamp,
     )
@@ -203,8 +199,67 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
         embedding=embedding,
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
-        original_channel=source_channel,
+        original_channel=settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
         collection_name=settings.VECTOR_HOST_CHAT_MESSAGE_COLLECTION,
+    )
+
+
+async def _handle_chat_gpt_message(env: BaseEnvelope) -> None:
+    if embedder is None:
+        logger.warning("Embedding skipped: embedder unavailable.")
+        return
+
+    payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+    if not isinstance(payload_obj, dict):
+        return
+
+    try:
+        message = ChatGptMessageV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.warning("ChatGPT message payload invalid: %s", exc)
+        return
+
+    text = (message.content or "").strip()
+    if not text:
+        logger.info("Skipping ChatGPT message with blank content message_id=%s", message.message_id)
+        return
+
+    doc_id = str(message.message_id)
+    timestamp = message.timestamp or (env.created_at.isoformat() if env.created_at else "")
+    meta = _base_meta(
+        env,
+        original_channel=settings.VECTOR_HOST_GPT_MESSAGE_CHANNEL,
+        role=message.role,
+        timestamp=timestamp,
+    )
+    meta.update(
+        {
+            "message_id": message.message_id,
+            "session_id": message.session_id,
+            "speaker": message.speaker,
+            "tags": message.tags,
+            "provider": message.provider,
+            "model": message.model,
+        }
+    )
+
+    try:
+        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+    except Exception as exc:
+        logger.warning("Embedding failed doc_id=%s error=%s", doc_id, exc)
+        return
+
+    await _publish_semantic_upsert(
+        env=env,
+        text=text,
+        doc_id=doc_id,
+        role=message.role,
+        meta=meta,
+        embedding=embedding,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        original_channel=settings.VECTOR_HOST_GPT_MESSAGE_CHANNEL,
+        collection_name=settings.VECTOR_HOST_GPT_MESSAGE_COLLECTION,
     )
 
 async def _handle_chat_turn(env: BaseEnvelope) -> None:
@@ -289,8 +344,11 @@ async def _handle_chat_gpt_turn(env: BaseEnvelope) -> None:
     if not (turn.prompt or turn.response):
         return
 
-    text = f"Prompt:\n{turn.prompt or ''}\n\nResponse:\n{turn.response or ''}"
-    doc_id = str(turn.id or env.correlation_id)
+    text = f"{turn.prompt or ''}\n\n{turn.response or ''}".strip()
+    if not text:
+        logger.info("Skipping ChatGPT turn with blank prompt/response id=%s", turn.id)
+        return
+    doc_id = str(turn.correlation_id or turn.id or env.correlation_id)
     corr = str(turn.correlation_id or env.correlation_id)
 
     spark_meta = turn.spark_meta if isinstance(turn.spark_meta, dict) else {}
@@ -303,7 +361,7 @@ async def _handle_chat_gpt_turn(env: BaseEnvelope) -> None:
     timestamp = env.created_at.isoformat() if env.created_at else ""
     meta = _base_meta(
         env,
-        original_channel="orion:chat:gpt:log",
+        original_channel=settings.VECTOR_HOST_GPT_TURN_CHANNEL,
         role="turn",
         timestamp=timestamp,
     )
@@ -313,7 +371,7 @@ async def _handle_chat_gpt_turn(env: BaseEnvelope) -> None:
             "session_id": turn.session_id,
             "source_service": env.source.name,
             "source_node": env.source.node,
-            "original_channel": "orion:chat:gpt:log",
+            "original_channel": settings.VECTOR_HOST_GPT_TURN_CHANNEL,
             "role": "turn",
             "tags": tags,
             "kind": CHAT_GPT_LOG_TURN_KIND,
@@ -338,8 +396,8 @@ async def _handle_chat_gpt_turn(env: BaseEnvelope) -> None:
         embedding=embedding,
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
-        original_channel="orion:chat:gpt:log",
-        collection_name=settings.VECTOR_HOST_CHAT_GPT_TURN_COLLECTION,
+        original_channel=settings.VECTOR_HOST_GPT_TURN_CHANNEL,
+        collection_name=settings.VECTOR_HOST_GPT_TURN_COLLECTION,
     )
 
 
@@ -493,10 +551,13 @@ async def handle_envelope(env: BaseEnvelope) -> None:
     if env.kind == CHAT_HISTORY_TURN_KIND:
         await _handle_chat_turn(env)
         return
+    if env.kind == CHAT_GPT_MESSAGE_KIND:
+        await _handle_chat_gpt_message(env)
+        return
     if env.kind == CHAT_GPT_LOG_TURN_KIND:
         await _handle_chat_gpt_turn(env)
         return
-    if env.kind in (CHAT_HISTORY_MESSAGE_KIND, CHAT_GPT_MESSAGE_KIND):
+    if env.kind == CHAT_HISTORY_MESSAGE_KIND:
         await _handle_chat_history(env)
         return
     if env.kind == "embedding.generate.v1":
@@ -510,25 +571,26 @@ async def lifespan(app: FastAPI):
     global hunter, embedder
     embedder = Embedder(settings)
     cfg = _cfg()
+    patterns = [
+        settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
+        settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
+        settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
+    ]
+    if settings.VECTOR_HOST_GPT_ENABLED:
+        patterns.extend([
+            settings.VECTOR_HOST_GPT_MESSAGE_CHANNEL,
+            settings.VECTOR_HOST_GPT_TURN_CHANNEL,
+        ])
+
     hunter = Hunter(
         cfg,
-        patterns=[
-            settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
-            settings.VECTOR_HOST_CHAT_GPT_MESSAGE_CHANNEL,
-            settings.VECTOR_HOST_CHAT_GPT_TURN_CHANNEL,
-            settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
-            settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
-        ],
+        patterns=patterns,
         handler=handle_envelope,
     )
     await hunter.start_background()
     logger.info(
-        "Vector host listening channels=%s,%s,%s,%s,%s",
-        settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
-        settings.VECTOR_HOST_CHAT_GPT_MESSAGE_CHANNEL,
-        settings.VECTOR_HOST_CHAT_GPT_TURN_CHANNEL,
-        settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
-        settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
+        "Vector host listening channels=%s",
+        ",".join(patterns),
     )
     yield
     if hunter:

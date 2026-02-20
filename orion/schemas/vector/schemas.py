@@ -92,5 +92,6 @@ class VectorUpsertV1(BaseModel):
     embedding_kind: Literal["semantic", "latent"]
     embedding_model: Optional[str] = None
     embedding_dim: Optional[int] = None
+    documents: Optional[List[str]] = None
     text: Optional[str] = None
     meta: Dict[str, Any] = Field(default_factory=dict)

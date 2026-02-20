@@ -92,16 +92,28 @@ async def _publish_semantic_upsert(
         logger.warning("Vector upsert skipped: bus unavailable.")
         return
 
-    payload = VectorUpsertV1(
-        doc_id=doc_id,
-        collection=collection_name,
-        embedding=embedding,
-        embedding_kind="semantic",
-        embedding_model=embedding_model,
-        embedding_dim=embedding_dim,
-        text=text,
-        meta={k: v for k, v in meta.items() if v is not None},
-    )
+    payload_obj = {
+        "doc_id": doc_id,
+        "collection": collection_name,
+        "embedding": embedding,
+        "embedding_kind": "semantic",
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "documents": [text],
+        "meta": {k: v for k, v in meta.items() if v is not None},
+    }
+    try:
+        payload = VectorUpsertV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.error(
+            "VectorUpsertV1 validation failed keys=%s requester_service=%s request_doc_id=%s collection=%s error=%s",
+            sorted(payload_obj.keys()),
+            meta.get("requester_service") if isinstance(meta, dict) else None,
+            meta.get("request_doc_id") if isinstance(meta, dict) else doc_id,
+            collection_name,
+            exc,
+        )
+        return
     envelope = BaseEnvelope(
         kind="vector.upsert.v1",
         source=_source(),

@@ -110,6 +110,11 @@ By default, `--include-branches` publishes MESSAGE events only (to avoid cross-b
 - `--only-messages`: publish message events only
 - `--only-turns`: publish turn events only (not supported with `--include-branches`)
 
+### Inital with force;; drop the force after inital run
+- python scripts/import_chatgpt_export.py   --export scripts/tmp/conversations.json   --bus-url redis://100.92.216.81:6379/0   --state-file scripts/.state/chatgpt_import_gpt.json   --channel-log orion:chat:gpt:log   --channel-turn orion:chat:gpt:turn   --emit-embeddings   --force-full   --rate-limit 25
+
+
+
 ### Implementation notes
 - Do not add new dependencies.
 - Do not modify sql-writer/vector-host/vector-writer/rdf-writer/meta-tags.

@@ -89,3 +89,71 @@ def test_mode_auto_backward_compat_allowlisted_only(monkeypatch: pytest.MonkeyPa
     asyncio.run(orch_main.handle(_env(source_name="cortex-gateway", mode="auto", verb=None, route_intent="none")))
     asyncio.run(orch_main.handle(_env(source_name="spark-introspector", mode="auto", verb=None, route_intent="none")))
     assert calls["router"] == 1
+
+
+def test_auto_depth2_agent_runtime_not_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"executed": 0, "verb": None, "mode": None}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        calls["executed"] += 1
+        calls["verb"] = req.verb
+        calls["mode"] = req.mode
+        return VerbResultV1(
+            verb=req.verb or "unknown",
+            ok=True,
+            output={"result": {"status": "success", "steps": [], "final_text": "ok", "metadata": {}}},
+            request_id="r-depth2",
+        )
+
+    class _Depth2Router:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def route(self, req, **_kwargs):
+            rewritten = req.model_copy(deep=True)
+            rewritten.mode = "agent"
+            rewritten.verb = "agent_runtime"
+            rewritten.options["execution_depth"] = 2
+            decision = {
+                "execution_depth": 2,
+                "primary_verb": "agent_runtime",
+                "confidence": 0.91,
+                "reason": "deep_task",
+                "source": "heuristic",
+            }
+            return SimpleNamespace(
+                request=rewritten,
+                decision=SimpleNamespace(
+                    model_dump=lambda mode="json": decision,
+                    execution_depth=2,
+                    primary_verb="agent_runtime",
+                    source="heuristic",
+                    confidence=0.91,
+                ),
+            )
+
+    monkeypatch.setattr(orch_main, "DecisionRouter", _Depth2Router)
+    monkeypatch.setattr(orch_main, "call_verb_runtime", _fake_call_verb_runtime)
+    monkeypatch.setattr(orch_main, "svc", SimpleNamespace(bus=object()))
+    # Simulate restrictive activation list: runtime verb must still pass in agent mode
+    monkeypatch.setattr(orch_main, "is_active", lambda *_args, **_kwargs: False)
+
+    res = asyncio.run(orch_main.handle(_env(source_name="cortex-gateway", mode="auto", verb=None, route_intent="auto", text="build this feature")))
+    assert res.payload.ok is True
+    assert calls["executed"] == 1
+    assert calls["mode"] == "agent"
+    assert calls["verb"] == "agent_runtime"
+
+
+def test_brain_yaml_verb_still_gated_when_inactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        raise AssertionError("call_verb_runtime should not be reached for inactive brain verb")
+
+    monkeypatch.setattr(orch_main, "call_verb_runtime", _fake_call_verb_runtime)
+    monkeypatch.setattr(orch_main, "svc", SimpleNamespace(bus=object()))
+    monkeypatch.setattr(orch_main, "is_active", lambda *_args, **_kwargs: False)
+
+    res = asyncio.run(orch_main.handle(_env(source_name="spark-introspector", mode="brain", verb="chat_general", route_intent="none", text="hello")))
+    assert res.payload.ok is False
+    assert res.payload.error and res.payload.error.get("message") == "inactive_verb:chat_general"

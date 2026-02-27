@@ -17,7 +17,7 @@ from .settings import get_settings
 from .decision_router import DecisionRouter
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
-from orion.cognition.verb_activation import is_active
+from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -59,6 +59,10 @@ def _normalize_and_validate_verb(req: CortexClientRequest) -> tuple[bool, str | 
         else:
             req.verb = None
             return True, None
+
+    if mode in {"agent", "council"} and is_runtime_entry_verb(verb):
+        req.verb = verb
+        return True, None
 
     if not is_active(verb, node_name=get_settings().node_name):
         return False, verb

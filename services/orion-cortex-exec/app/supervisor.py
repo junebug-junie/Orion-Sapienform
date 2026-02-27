@@ -228,30 +228,6 @@ def _normalize_planner_decision(
 
 
 
-class DecisionRouter:
-    def route(self, *, mode: str, goal_text: str, llm_enabled: bool = False) -> Tuple[str, List[str]]:
-        if mode != "auto":
-            return mode, ["mode_explicit"]
-
-        text = (goal_text or "").strip()
-        lowered = text.lower()
-        reasons: List[str] = ["mode_auto"]
-        if llm_enabled:
-            reasons.append("llm_classifier_disabled_fallback_to_heuristics")
-
-        if "```" in text or any(k in lowered for k in ("refactor", "build", "deploy", "migration", "multi-step", "pipeline")):
-            reasons.append("complex_code_or_build_keywords")
-            return "agent", reasons
-        if any(k in lowered for k in ("debate", "council", "tradeoff", "pros and cons", "deliberate")):
-            reasons.append("deep_deliberation_keywords")
-            return "council", reasons
-        if len(text) < 120 and not any(k in lowered for k in ("analyze", "plan", "tool", "execute")):
-            reasons.append("short_simple_prompt")
-            return "direct_chat", reasons
-        reasons.append("default_planner_path")
-        return "agent", reasons
-
-
 class Supervisor:
     """
     Hierarchical controller that can pick reasoning paths, run ReAct with verbs, checkpoint with Council,
@@ -266,7 +242,6 @@ class Supervisor:
         self.planner_client = PlannerReactClient(bus)
         self.agent_client = AgentChainClient(bus)
         self.council_client = CouncilClient(bus)
-        self.decision_router = DecisionRouter()
 
     def _toolset(self, packs: List[str] | None = None, tags: List[str] | None = None) -> List[ToolDef]:
         try:
@@ -590,17 +565,11 @@ class Supervisor:
         tags = ctx.get("verb_tags") or []
         tools = self._toolset(packs=packs, tags=tags)
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
-        routed_mode, route_reasons = self.decision_router.route(mode=mode, goal_text=_last_user_message(ctx), llm_enabled=settings.auto_router_llm_enabled)
         if mode == "auto":
-            logger.info(
-                "decision_router corr_id=%s route=%s reasons=%s llm_enabled=%s",
+            logger.warning(
+                "Supervisor received unexpected mode=auto corr_id=%s; preserving deterministic execution path",
                 correlation_id,
-                routed_mode,
-                route_reasons,
-                settings.auto_router_llm_enabled,
             )
-            mode = routed_mode
-            ctx["mode"] = routed_mode
         options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
         allowed_verbs = [str(v).strip() for v in (options.get("allowed_verbs") or []) if str(v).strip()]
 

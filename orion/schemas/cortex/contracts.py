@@ -43,7 +43,7 @@ class CortexClientRequest(BaseModel):
     """Public request contract for Cortex-Orch."""
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    mode: Literal["brain", "agent", "council"] = "brain"
+    mode: Literal["brain", "agent", "council", "auto"] = "brain"
     verb: Optional[str] = Field(default=None, alias="verb_name")
     packs: List[str] = Field(default_factory=list)
     options: Dict[str, Any] = Field(default_factory=dict)
@@ -72,7 +72,7 @@ class CortexClientResult(BaseModel):
 class CortexChatRequest(BaseModel):
     """Simple chat request for Cortex Gateway."""
     prompt: str = Field(..., description="The user's prompt text")
-    mode: Literal["brain", "agent", "council"] = Field(default="brain", description="Execution mode: brain, agent, council")
+    mode: Literal["brain", "agent", "council", "auto"] = Field(default="brain", description="Execution mode: brain, agent, council, auto")
 
     # Optional overrides
     verb: Optional[str] = Field(default=None, description="Cognition verb override")
@@ -91,3 +91,23 @@ class CortexChatResult(BaseModel):
     """Simple chat result from Cortex Gateway."""
     cortex_result: CortexClientResult = Field(..., description="The raw result from Cortex Orchestrator")
     final_text: Optional[str] = Field(default=None, description="Convenience field for the final text response")
+
+
+class AutoRouteRecallDecisionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    required: bool = False
+    profile: Optional[str] = None
+
+
+class AutoRouteDecisionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    route_mode: Literal["chat", "agent", "council"]
+    verb: Literal["chat_general", "agent_runtime", "council_runtime"]
+    packs: List[str] = Field(default_factory=list)
+    recall: AutoRouteRecallDecisionV1 = Field(default_factory=AutoRouteRecallDecisionV1)
+    confidence: float = 0.0
+    reason: str = ""
+    source: Literal["heuristic", "llm", "fallback"] = "heuristic"

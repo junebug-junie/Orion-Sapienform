@@ -237,7 +237,12 @@ async def _maybe_fetch_state(bus: OrionBusAsync, *, source: ServiceRef, correlat
         return None
 
 
-def build_plan_request(client_request: CortexClientRequest, correlation_id: str) -> PlanExecutionRequest:
+def build_plan_request(
+    client_request: CortexClientRequest,
+    correlation_id: str,
+    *,
+    router_metadata: dict[str, Any] | None = None,
+) -> PlanExecutionRequest:
     plan = _build_plan_for_mode(client_request)
     context = _build_context(client_request)
 
@@ -245,6 +250,9 @@ def build_plan_request(client_request: CortexClientRequest, correlation_id: str)
     context.setdefault("metadata", {})["orion_state_pending"] = True
 
     args = _plan_args(client_request, correlation_id)
+    if router_metadata:
+        context.setdefault("metadata", {})["auto_route"] = router_metadata
+        plan.metadata["auto_route"] = router_metadata
     return PlanExecutionRequest(plan=plan, args=args, context=context)
 
 
@@ -345,8 +353,9 @@ async def call_verb_runtime(
     causality_chain: list | None = None,
     trace: dict | None = None,
     timeout_sec: float = 900.0,
+    router_metadata: dict[str, Any] | None = None,
 ) -> VerbResultV1:
-    plan_request = build_plan_request(client_request, correlation_id)
+    plan_request = build_plan_request(client_request, correlation_id, router_metadata=router_metadata)
     state_reply = await _maybe_fetch_state(bus, source=source, correlation_id=correlation_id)
     if state_reply is not None:
         plan_request.context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")

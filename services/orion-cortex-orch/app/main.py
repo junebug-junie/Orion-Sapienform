@@ -14,6 +14,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 # REMOVED: dispatch_metacognition_tick
 from .orchestrator import call_verb_runtime, dispatch_metacog_trigger
 from .settings import get_settings
+from .decision_router import DecisionRouter
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.cognition.verb_activation import is_active
@@ -46,6 +47,10 @@ def _is_diagnostic(raw_payload: dict | None) -> bool:
 def _normalize_and_validate_verb(req: CortexClientRequest) -> tuple[bool, str | None]:
     mode = (req.mode or "brain").lower()
     verb = (req.verb or "").strip()
+
+    if mode == "auto":
+        req.verb = None
+        return True, None
 
     if not verb:
         if mode == "brain":
@@ -102,6 +107,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
 
     # 1. Ingress Validation
+    route_meta: dict | None = None
     try:
         raw_payload = env.payload if isinstance(env.payload, dict) else {}
         diagnostic = _is_diagnostic(raw_payload)
@@ -125,6 +131,20 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
         if diagnostic:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
+
+        router = DecisionRouter(svc.bus)
+        routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
+        req = routed.request
+        route_meta = routed.decision.model_dump(mode="json")
+        logger.info(
+            "auto_route decision corr_id=%s source=%s route_mode=%s verb=%s confidence=%.2f reason=%s",
+            str(env.correlation_id),
+            routed.decision.source,
+            routed.decision.route_mode,
+            routed.decision.verb,
+            routed.decision.confidence,
+            routed.decision.reason,
+        )
 
         ok, bad_verb = _normalize_and_validate_verb(req)
         if not ok:
@@ -179,6 +199,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             causality_chain=env.causality_chain,
             trace=env.trace,
             timeout_sec=float(req.options.get("timeout_sec", 900.0)),
+            router_metadata=route_meta,
         )
 
         result_payload = verb_result.output if isinstance(verb_result.output, dict) else {}
@@ -211,6 +232,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if isinstance(final_meta, dict):
             final_meta["trace_verb"] = primary_verb
             final_meta["executed_verbs"] = executed_verbs
+            if route_meta:
+                final_meta["auto_route"] = route_meta
 
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),

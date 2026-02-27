@@ -31,7 +31,8 @@ class _FakeBus:
     async def close(self):
         return None
 
-    def fork(self):
+    async def fork(self, *, start_rpc_worker: bool = False):
+        assert start_rpc_worker is True
         if self.forked is None:
             self.forked = _FakePlannerBus()
         return self.forked

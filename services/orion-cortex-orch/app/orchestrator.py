@@ -250,9 +250,17 @@ def build_plan_request(
     context.setdefault("metadata", {})["orion_state_pending"] = True
 
     args = _plan_args(client_request, correlation_id)
+    execution_depth = None
+    if isinstance(client_request.options, dict):
+        execution_depth = client_request.options.get("execution_depth")
+    if execution_depth is not None:
+        plan.metadata["execution_depth"] = int(execution_depth)
+        context.setdefault("metadata", {})["execution_depth"] = int(execution_depth)
     if router_metadata:
         context.setdefault("metadata", {})["auto_route"] = router_metadata
         plan.metadata["auto_route"] = router_metadata
+        if isinstance(router_metadata, dict) and router_metadata.get("execution_depth") is not None:
+            plan.metadata["execution_depth"] = int(router_metadata.get("execution_depth"))
     return PlanExecutionRequest(plan=plan, args=args, context=context)
 
 

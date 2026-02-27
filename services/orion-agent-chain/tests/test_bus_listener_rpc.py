@@ -23,6 +23,18 @@ class _FakeBus:
     def __init__(self, envelope: BaseEnvelope):
         self.codec = _FakeCodec(envelope)
         self.published: list[tuple[str, BaseEnvelope]] = []
+        self.forked: _FakePlannerBus | None = None
+
+    async def connect(self):
+        return None
+
+    async def close(self):
+        return None
+
+    def fork(self):
+        if self.forked is None:
+            self.forked = _FakePlannerBus()
+        return self.forked
 
     async def publish(self, channel, envelope):
         self.published.append((channel, envelope))
@@ -84,8 +96,9 @@ def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
     env = _request_env(corr=corr, reply_to=reply_to)
     bus = _FakeBus(env)
 
-    async def _fake_execute(req, *, correlation_id=None):
+    async def _fake_execute(req, *, correlation_id=None, rpc_bus=None):
         assert correlation_id == corr
+        assert rpc_bus is bus.forked
         return AgentChainResult(mode=req.mode, text="ok", structured={}, planner_raw={})
 
     monkeypatch.setattr(bus_listener, "execute_agent_chain", _fake_execute)
@@ -106,7 +119,8 @@ def test_exec_style_rpc_consumer_would_receive_matching_result(monkeypatch):
     env = _request_env(corr=corr, reply_to=reply_to)
     bus = _FakeBus(env)
 
-    async def _fake_execute(req, *, correlation_id=None):
+    async def _fake_execute(req, *, correlation_id=None, rpc_bus=None):
+        assert rpc_bus is bus.forked
         return AgentChainResult(mode=req.mode, text="agent done", structured={}, planner_raw={})
 
     monkeypatch.setattr(bus_listener, "execute_agent_chain", _fake_execute)
@@ -126,14 +140,13 @@ def test_nested_planner_child_corr_still_replies_to_exec_parent(monkeypatch):
     reply_to = f"orion:exec:result:AgentChainService:{parent_corr}"
     env = _request_env(corr=parent_corr, reply_to=reply_to)
     bus = _FakeBus(env)
-    fake_planner_bus = _FakePlannerBus()
-
-    monkeypatch.setattr(planner_rpc, "OrionBusAsync", lambda *args, **kwargs: fake_planner_bus)
     monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body: [])
     monkeypatch.setattr(bus_listener, "execute_agent_chain", agent_api.execute_agent_chain)
 
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
 
+    fake_planner_bus = bus.forked
+    assert fake_planner_bus is not None
     assert fake_planner_bus.captured is not None
     child_corr = str(fake_planner_bus.captured["envelope"].correlation_id)
     assert child_corr and child_corr != parent_corr

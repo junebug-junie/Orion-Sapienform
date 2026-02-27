@@ -14,7 +14,12 @@ from .settings import settings
 
 logger = logging.getLogger("agent-chain.rpc")
 
-async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: str | None = None) -> Dict[str, Any]:
+async def call_planner_react(
+    payload: Dict[str, Any],
+    *,
+    parent_correlation_id: str | None = None,
+    rpc_bus: OrionBusAsync | None = None,
+) -> Dict[str, Any]:
     """
     Async Bus RPC to the planner-react service.
     Sends a strictly typed BaseEnvelope.
@@ -25,9 +30,10 @@ async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: 
             detail="Bus disabled; agent-chain cannot reach planner-react."
         )
 
-    # Ephemeral connection (safe for both HTTP and Bus contexts)
+    owns_bus = rpc_bus is None
     child_corr_id = str(uuid4())
-    bus = OrionBusAsync(url=settings.orion_bus_url)
+    bus = rpc_bus or OrionBusAsync(url=settings.orion_bus_url)
+    bus_label = "rpc-fork" if rpc_bus is not None else "ephemeral"
     await bus.connect()
 
     try:
@@ -54,7 +60,8 @@ async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: 
         )
 
         logger.info(
-            "[agent-chain] planner emit parent=%s child=%s reply_to=%s",
+            "[agent-chain] planner emit bus=%s parent=%s child=%s reply_to=%s",
+            bus_label,
             parent_correlation_id,
             child_corr_id,
             reply_channel,
@@ -92,7 +99,12 @@ async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: 
                 response_corr,
             )
         response = response_envelope.payload
-        logger.info("[agent-chain] planner ok parent=%s child=%s", parent_correlation_id, child_corr_id)
+        logger.info(
+            "[agent-chain] planner ok bus=%s parent=%s child=%s",
+            bus_label,
+            parent_correlation_id,
+            child_corr_id,
+        )
         if not isinstance(response, dict):
              # Fallback for safety
              return {
@@ -117,4 +129,5 @@ async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: 
             "request_id": child_corr_id
         }
     finally:
-        await bus.close()
+        if owns_bus:
+            await bus.close()

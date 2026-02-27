@@ -37,7 +37,22 @@ class OrionBusAsync:
         self._redis: Optional[aioredis.Redis] = None
         if enforce_catalog is None:
             enforce_catalog = os.getenv("ORION_BUS_ENFORCE_CATALOG", "false").lower() == "true"
+        self.enforce_catalog = bool(enforce_catalog)
         enforcer.enforce = enforce_catalog
+
+    def fork(self) -> "OrionBusAsync":
+        """
+        Create an independent bus client sharing config/codec with a fresh Redis connection.
+
+        Useful for nested RPC in services that already maintain a long-lived subscriber on
+        another bus instance.
+        """
+        return OrionBusAsync(
+            url=self.url,
+            enabled=self.enabled,
+            codec=self.codec,
+            enforce_catalog=self.enforce_catalog,
+        )
 
     async def connect(self) -> None:
         if not self.enabled:

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
+from orion.core.bus.async_service import OrionBusAsync
+
 from .settings import settings
 from .planner_rpc import call_planner_react
 from .tool_registry import ToolRegistry
@@ -27,7 +29,12 @@ def _resolve_tools(body: AgentChainRequest) -> List[ToolDef]:
     # Map local dicts to shared ToolDef
     return [ToolDef(**(t.dict() if hasattr(t, 'dict') else t)) for t in local_tools]
 
-async def execute_agent_chain(body: AgentChainRequest, *, correlation_id: str | None = None) -> AgentChainResult:
+async def execute_agent_chain(
+    body: AgentChainRequest,
+    *,
+    correlation_id: str | None = None,
+    rpc_bus: OrionBusAsync | None = None,
+) -> AgentChainResult:
     parent_corr_id = str(correlation_id or uuid.uuid4())
 
     # Map shared AgentChainRequest -> shared PlannerRequest (dict)
@@ -57,7 +64,11 @@ async def execute_agent_chain(body: AgentChainRequest, *, correlation_id: str | 
     }
 
     logger.info("[agent-chain] Calling Planner parent_corr=%s", parent_corr_id)
-    raw_resp = await call_planner_react(planner_payload, parent_correlation_id=parent_corr_id)
+    raw_resp = await call_planner_react(
+        planner_payload,
+        parent_correlation_id=parent_corr_id,
+        rpc_bus=rpc_bus,
+    )
 
     if not isinstance(raw_resp, dict):
         raise RuntimeError(f"Invalid Planner Response: {raw_resp}")

@@ -74,9 +74,10 @@ def test_planner_rpc_uses_child_corr_and_parent_metadata(monkeypatch):
 def test_execute_agent_chain_replies_to_exec_parent_corr_flow(monkeypatch):
     captured = {}
 
-    async def _fake_call_planner_react(payload, *, parent_correlation_id=None):
+    async def _fake_call_planner_react(payload, *, parent_correlation_id=None, rpc_bus=None):
         captured["payload"] = payload
         captured["parent"] = parent_correlation_id
+        captured["rpc_bus"] = rpc_bus
         return {"status": "ok", "final_answer": {"content": "ok", "structured": {}}}
 
     monkeypatch.setattr(agent_api, "call_planner_react", _fake_call_planner_react)
@@ -88,3 +89,4 @@ def test_execute_agent_chain_replies_to_exec_parent_corr_flow(monkeypatch):
     assert result.text == "ok"
     assert captured["parent"] == "parent-corr-xyz"
     assert captured["payload"].get("parent_correlation_id") == "parent-corr-xyz"
+    assert captured["rpc_bus"] is None

@@ -36,6 +36,17 @@ def _extract_final_text(steps: List[StepExecutionResult]) -> str:
     return ""
 
 
+
+
+def _normalize_execution_depth(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class PlanRunner:
     async def run_plan(
         self,
@@ -49,7 +60,7 @@ class PlanRunner:
         plan: ExecutionPlan = req.plan
         depth = None
         if isinstance(plan.metadata, dict):
-            depth = plan.metadata.get("execution_depth")
+            depth = _normalize_execution_depth(plan.metadata.get("execution_depth"))
         start_mode = (req.args.extra or {}).get("mode") or ctx.get("mode") or "brain"
         logger.info(
             "plan_start corr_id=%s depth=%s mode=%s verb=%s steps=%s",
@@ -139,7 +150,7 @@ class PlanRunner:
                 error=f"inactive_verb:{plan.verb_name}",
             )
         # Supervised path only for depth=2 agent runtime flows
-        if int(depth or -1) == 2 or (mode == "agent" and plan.verb_name == "agent_runtime") or extra.get("supervised"):
+        if (depth == 2) or (mode == "agent" and plan.verb_name == "agent_runtime") or extra.get("supervised"):
             supervisor = Supervisor(bus)
             return await supervisor.execute(
                 source=source,
@@ -271,7 +282,7 @@ class PlanRunner:
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
 
-        if int(depth or -1) == 1:
+        if depth == 1:
             logger.info("depth1_complete corr_id=%s verb=%s elapsed=%s", correlation_id, plan.verb_name, sum([s.latency_ms for s in step_results]))
 
         return PlanExecutionResult(

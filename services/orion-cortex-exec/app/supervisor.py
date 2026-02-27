@@ -190,6 +190,68 @@ def _extract_council_debug(result_payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_planner_decision(
+    *,
+    planner_step: StepExecutionResult,
+    planner_final: FinalAnswer | None,
+    action: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    payload = planner_step.result.get("PlannerReactService", {}) if isinstance(planner_step.result, dict) else {}
+    raw_stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
+    continue_reason = payload.get("continue_reason") if isinstance(payload, dict) else None
+
+    if raw_stop_reason in {"final_answer", "delegate", "continue", "error"}:
+        stop_reason = raw_stop_reason
+    elif planner_step.status != "success":
+        stop_reason = "error"
+    elif action:
+        stop_reason = "delegate"
+    elif planner_final and planner_final.content:
+        stop_reason = "final_answer"
+    else:
+        stop_reason = "continue"
+
+    if not continue_reason and action:
+        continue_reason = "action_present"
+
+    final_present = bool(planner_final and planner_final.content)
+    action_present = bool(action)
+    will_continue = planner_step.status == "success" and action_present
+
+    return {
+        "stop_reason": stop_reason,
+        "continue_reason": continue_reason,
+        "final_present": final_present,
+        "action_present": action_present,
+        "will_continue": will_continue,
+    }
+
+
+
+class DecisionRouter:
+    def route(self, *, mode: str, goal_text: str, llm_enabled: bool = False) -> Tuple[str, List[str]]:
+        if mode != "auto":
+            return mode, ["mode_explicit"]
+
+        text = (goal_text or "").strip()
+        lowered = text.lower()
+        reasons: List[str] = ["mode_auto"]
+        if llm_enabled:
+            reasons.append("llm_classifier_disabled_fallback_to_heuristics")
+
+        if "```" in text or any(k in lowered for k in ("refactor", "build", "deploy", "migration", "multi-step", "pipeline")):
+            reasons.append("complex_code_or_build_keywords")
+            return "agent", reasons
+        if any(k in lowered for k in ("debate", "council", "tradeoff", "pros and cons", "deliberate")):
+            reasons.append("deep_deliberation_keywords")
+            return "council", reasons
+        if len(text) < 120 and not any(k in lowered for k in ("analyze", "plan", "tool", "execute")):
+            reasons.append("short_simple_prompt")
+            return "direct_chat", reasons
+        reasons.append("default_planner_path")
+        return "agent", reasons
+
+
 class Supervisor:
     """
     Hierarchical controller that can pick reasoning paths, run ReAct with verbs, checkpoint with Council,
@@ -204,6 +266,7 @@ class Supervisor:
         self.planner_client = PlannerReactClient(bus)
         self.agent_client = AgentChainClient(bus)
         self.council_client = CouncilClient(bus)
+        self.decision_router = DecisionRouter()
 
     def _toolset(self, packs: List[str] | None = None, tags: List[str] | None = None) -> List[ToolDef]:
         try:
@@ -231,8 +294,10 @@ class Supervisor:
         return tools
 
     def _should_use_react(self, mode: str, tools: List[ToolDef]) -> bool:
-        if mode == "agent":
+        if mode in {"agent", "council"}:
             return True
+        if mode == "direct_chat":
+            return False
         return bool(tools)
 
     async def _planner_step(
@@ -302,9 +367,20 @@ class Supervisor:
         action: Dict[str, Any],
         ctx: Dict[str, Any],
         correlation_id: str,
+        mode: str,
+        packs: List[str],
     ) -> StepExecutionResult:
         tool_id = action.get("tool_id")
         tool_input = action.get("input") or {}
+        if str(tool_id) == "agent_chain":
+            logger.info("dispatch_action corr_id=%s mode=%s step=agent_chain route=AgentChainService", correlation_id, mode)
+            chain_ctx = {**ctx, **tool_input}
+            return await self._agent_chain_escalation(
+                source=source,
+                correlation_id=correlation_id,
+                ctx=chain_ctx,
+                packs=packs,
+            )
         if not tool_id or not is_active(str(tool_id), node_name=settings.node_name):
             logger.warning("Inactive verb selected by supervisor corr_id=%s verb=%s", correlation_id, tool_id)
             return StepExecutionResult(
@@ -514,6 +590,17 @@ class Supervisor:
         tags = ctx.get("verb_tags") or []
         tools = self._toolset(packs=packs, tags=tags)
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
+        routed_mode, route_reasons = self.decision_router.route(mode=mode, goal_text=_last_user_message(ctx), llm_enabled=settings.auto_router_llm_enabled)
+        if mode == "auto":
+            logger.info(
+                "decision_router corr_id=%s route=%s reasons=%s llm_enabled=%s",
+                correlation_id,
+                routed_mode,
+                route_reasons,
+                settings.auto_router_llm_enabled,
+            )
+            mode = routed_mode
+            ctx["mode"] = routed_mode
         options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
         allowed_verbs = [str(v).strip() for v in (options.get("allowed_verbs") or []) if str(v).strip()]
 
@@ -563,8 +650,9 @@ class Supervisor:
         max_steps = int(ctx.get("max_steps") or 3)
         final_text: Optional[str] = None
         planner_thought: Optional[str] = None
+        executed_steps: List[str] = [s.step_name for s in step_results]
 
-        for _ in range(max_steps):
+        for loop_index in range(max_steps):
             goal_text = _last_user_message(ctx)
             planner_req, planner_step, planner_final, action = await self._planner_step(
                 source=source,
@@ -575,11 +663,33 @@ class Supervisor:
                 correlation_id=correlation_id,
             )
             step_results.append(planner_step)
+            executed_steps.append(planner_step.step_name)
 
             planner_thought = planner_step.result.get("PlannerReactService", {}).get("trace", [{}])[-1].get("thought") if isinstance(planner_step.result, dict) else None
+            decision = _normalize_planner_decision(
+                planner_step=planner_step,
+                planner_final=planner_final,
+                action=action,
+            )
 
             if planner_final and planner_final.content:
                 final_text = planner_final.content
+
+            logger.info(
+                "planner_decision corr_id=%s mode=%s verb=%s step=%s stop_reason=%s continue_reason=%s action_present=%s final_present=%s will_continue=%s remaining_steps=%s",
+                correlation_id,
+                mode,
+                req.verb_name,
+                planner_step.step_name,
+                decision["stop_reason"],
+                decision["continue_reason"],
+                decision["action_present"],
+                decision["final_present"],
+                decision["will_continue"],
+                max(0, max_steps - (loop_index + 1)),
+            )
+
+            if decision["stop_reason"] == "final_answer" and not decision["action_present"]:
                 if not trace:
                     trace.append(
                         TraceStep(
@@ -589,8 +699,44 @@ class Supervisor:
                             observation={"llm_output": final_text},
                         )
                     )
+                logger.info(
+                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+                    correlation_id,
+                    mode,
+                    req.verb_name,
+                    decision["stop_reason"],
+                    len(final_text or ""),
+                    decision["action_present"],
+                    executed_steps,
+                    ["agent_chain"],
+                )
                 break
-            if planner_step.status != "success" or not action:
+
+            if planner_step.status != "success":
+                logger.info(
+                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=planner_step_%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+                    correlation_id,
+                    mode,
+                    req.verb_name,
+                    planner_step.status,
+                    len(final_text or ""),
+                    decision["action_present"],
+                    executed_steps,
+                    ["agent_chain"],
+                )
+                break
+
+            if not action:
+                logger.info(
+                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=no_action final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+                    correlation_id,
+                    mode,
+                    req.verb_name,
+                    len(final_text or ""),
+                    decision["action_present"],
+                    executed_steps,
+                    ["agent_chain"],
+                )
                 break
 
             action_step = await self._execute_action(
@@ -598,8 +744,11 @@ class Supervisor:
                 action=action,
                 ctx=ctx,
                 correlation_id=correlation_id,
+                mode=mode,
+                packs=packs or [],
             )
             step_results.append(action_step)
+            executed_steps.append(action_step.step_name)
             if action_step.status != "success" and str(action_step.error or "").startswith("inactive_verb:"):
                 return PlanExecutionResult(
                     verb_name=req.verb_name,
@@ -657,10 +806,22 @@ class Supervisor:
                 pass
 
         if ctx.get("force_agent_chain"):
+            logger.info(
+                "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=force_agent_chain",
+                correlation_id,
+                mode,
+                req.verb_name,
+            )
             final_text = None
 
         # Escalate to agent chain if still no final text
         if not final_text:
+            logger.info(
+                "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=needs_chain step=agent_chain",
+                correlation_id,
+                mode,
+                req.verb_name,
+            )
             agent_step = await self._agent_chain_escalation(
                 source=source,
                 correlation_id=correlation_id,
@@ -674,6 +835,17 @@ class Supervisor:
                     final_text = agent_payload.get("text") or final_text
             except Exception:
                 pass
+
+        logger.info(
+            "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=loop_complete final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+            correlation_id,
+            mode,
+            req.verb_name,
+            len(final_text or ""),
+            False,
+            [s.step_name for s in step_results],
+            [],
+        )
 
         overall_status = "success" if step_results and all(s.status == "success" for s in step_results if s) else "partial"
         return PlanExecutionResult(

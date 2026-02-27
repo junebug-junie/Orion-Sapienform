@@ -125,6 +125,8 @@ class PlannerResponse(BaseModel):
     request_id: Optional[str] = None
     status: Literal["ok", "error", "timeout"] = "ok"
     error: Optional[Dict[str, Any]] = None
+    stop_reason: Optional[Literal["final_answer", "delegate", "continue", "error"]] = None
+    continue_reason: Optional[str] = None
     final_answer: Optional[FinalAnswer] = None
     trace: List[TraceStep] = Field(default_factory=list)
     usage: Optional[Usage] = None

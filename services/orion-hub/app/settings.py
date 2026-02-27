@@ -159,6 +159,7 @@ class Settings(BaseSettings):
 
     # --- No-Write Debug Mode (skip publishing chat history) ---
     HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")
+    HUB_AUTO_DEFAULT_ENABLED: bool = Field(default=False, alias="HUB_AUTO_DEFAULT_ENABLED")
 
 
 

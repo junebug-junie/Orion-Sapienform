@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
+from scripts.chat_request_builder import build_cortex_chat_request, validate_single_verb_override
 from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
@@ -458,21 +459,24 @@ async def websocket_endpoint(websocket: WebSocket):
             history.append({"role": "user", "content": transcript})
 
 
-            # Inject trace_verb into metadata so Cortex might see it too
-            raw_recall = data.get("use_recall", None)
-            use_recall = _normalize_bool(raw_recall, default=True)
-            recall_payload = {"enabled": use_recall}
-            
-            if data.get("recall_mode"):
-                recall_payload["mode"] = data.get("recall_mode")
-            if data.get("recall_profile"):
-                recall_payload["profile"] = data.get("recall_profile")
-            if data.get("recall_required"):
-                recall_payload["required"] = True
+            # Build outbound chat request through shared builder to keep WS/HTTP identical
+            inactive = validate_single_verb_override(data)
+            if inactive:
+                await websocket.send_json(await _with_biometrics({"error": inactive.get("message") or inactive.get("error")}, cache=biometrics_cache))
+                continue
 
-            # Default profile if enabled but missing
-            if use_recall and "profile" not in recall_payload:
-                recall_payload["profile"] = "reflect.v1"
+            chat_req, route_debug, use_recall = build_cortex_chat_request(
+                prompt=prompt_with_ctx,
+                payload=data,
+                session_id=session_id,
+                user_id=data.get("user_id"),
+                trace_id=trace_id,
+                source_label="hub_ws",
+            )
+            chat_req.metadata = dict(chat_req.metadata or {})
+            chat_req.metadata["trace_verb"] = trace_verb
+            mode = chat_req.mode
+            recall_payload = chat_req.recall or {"enabled": use_recall}
 
             logger.info(f"WS Chat Request recall config: {recall_payload} session_id={session_id}")
             logger.info(
@@ -482,6 +486,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 len(transcript or ""),
                 (transcript or "")[:120],
             )
+            if diagnostic:
+                logger.info("WS outbound CortexChatRequest corr=%s payload=%s", trace_id, chat_req.model_dump(mode="json"))
+
             _rec_tape_req(
                 corr_id=trace_id,
                 session_id=session_id,
@@ -491,37 +498,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 user_head=(transcript or "")[:80],
                 no_write=no_write,
             )
-
-            chat_req = CortexChatRequest(
-                prompt=prompt_with_ctx,
-                mode=mode,
-                session_id=session_id,
-                user_id=data.get("user_id"),
-                trace_id=trace_id,
-                recall=recall_payload,
-                packs=data.get("packs"),
-                metadata={"source": "hub_ws", "trace_verb": trace_verb} 
-            )
-
-            # Handle Verbs selection
-            if data.get("verbs"):
-                selected_verbs = [str(v).strip() for v in (data.get("verbs") or []) if str(v).strip()]
-                if len(selected_verbs) == 1:
-                    override_verb = selected_verbs[0]
-                    if not is_active(override_verb, node_name=settings.NODE_NAME):
-                        await websocket.send_json(
-                            await _with_biometrics(
-                                {"error": f"Verb '{override_verb}' is inactive on node {settings.NODE_NAME}."},
-                                cache=biometrics_cache,
-                            )
-                        )
-                        continue
-                    chat_req.verb = override_verb
-                elif selected_verbs:
-                    if not chat_req.options:
-                        chat_req.options = {}
-                    chat_req.options["allowed_verbs"] = selected_verbs
-
             # Publish the inbound user message into chat history
             if bus and not no_write:
                 user_env = build_chat_history_envelope(
@@ -584,6 +560,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "memory_used": memory_used,
                 "recall_debug": recall_debug,
                 "no_write": no_write,
+                "routing_debug": route_debug,
             }
             if mode == "council" or settings.HUB_DEBUG_COUNCIL:
                 council_debug = _extract_council_debug_from_result(resp)

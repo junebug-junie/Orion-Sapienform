@@ -4,28 +4,44 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import uuid4
+
+from jinja2 import Template
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ServiceRef
-from orion.schemas.cortex.contracts import AutoRouteDecisionV1, CortexClientRequest
+from orion.cognition.verb_catalog import (
+    VerbInfo,
+    filter_allowed,
+    load_verb_catalog,
+    rank_verbs_for_query,
+    serialize_shortlist,
+)
+from orion.schemas.cortex.contracts import AutoDepthDecisionV1, CortexClientRequest
 
 from .settings import get_settings
 
 logger = logging.getLogger("orion.cortex.orch.router")
 
-_ALLOWED_PACKS = {"executive_pack"}
-_ALLOWED_VERBS = {
-    "chat_general": ("chat", "brain"),
-    "agent_runtime": ("agent", "agent"),
-    "council_runtime": ("council", "council"),
+ORCH_INTERNAL_DENY = {
+    "introspect_spark",
+    "log_orion_metacognition",
+    "log_collapse_mirror",
+    "auto_route",
+    "auto_depth_select",
 }
+ENGINEERING_TERMS = {
+    "fix", "debug", "refactor", "stack trace", "traceback", "docker", "compose", "error", "logs", "exception", "pytest",
+}
+ANALYSIS_TERMS = {"analyze", "analysis", "summarize", "summary", "extract", "classify", "intent"}
+COUNCIL_TERMS = {"argue both sides", "deliberate", "debate", "multi-perspective", "deep deliberation", "council"}
 
 
 @dataclass(frozen=True)
 class RoutedRequest:
     request: CortexClientRequest
-    decision: AutoRouteDecisionV1
+    decision: AutoDepthDecisionV1
 
 
 class DecisionRouter:
@@ -33,134 +49,96 @@ class DecisionRouter:
         self.bus = bus
         self.settings = get_settings()
 
-    def heuristic_router(self, req: CortexClientRequest) -> AutoRouteDecisionV1:
-        text = " ".join(
+    def _user_text(self, req: CortexClientRequest) -> str:
+        return " ".join(
             part for part in [req.context.raw_user_text or "", req.context.user_message or ""] if part
-        ).strip().lower()
-        msg_len = len(text)
+        ).strip()
 
-        agent_terms = (
-            "implement", "build", "fix", "refactor", "patch", "run", "test", "debug", "deploy", "code"
-        )
-        council_terms = (
-            "debate", "tradeoff", "compare approaches", "pros and cons", "multi-perspective", "council"
-        )
-        depth_terms = ("step by step", "deep", "thorough", "reason carefully")
+    def build_shortlist(self, req: CortexClientRequest, *, k: int = 10) -> list[VerbInfo]:
+        catalog = load_verb_catalog()
+        catalog = filter_allowed(catalog, allow_categories={"cognition"}, denylist_names=ORCH_INTERNAL_DENY)
+        shortlist = rank_verbs_for_query(catalog, self._user_text(req), k=k)
+        return shortlist
 
-        agent_score = sum(1 for t in agent_terms if t in text)
-        council_score = sum(1 for t in council_terms if t in text)
-        if msg_len > 900:
-            agent_score += 1
-        if any(t in text for t in depth_terms):
-            council_score += 1
+    def heuristic_router(self, req: CortexClientRequest, *, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:
+        text = self._user_text(req).lower()
+        if any(term in text for term in COUNCIL_TERMS):
+            return AutoDepthDecisionV1(execution_depth=3, primary_verb=None, confidence=0.82, reason="heuristic:council", source="heuristic")
+        if "```" in text or any(term in text for term in ENGINEERING_TERMS):
+            return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.85, reason="heuristic:engineering", source="heuristic")
+        if any(term in text for term in ANALYSIS_TERMS):
+            primary = shortlist[0].name if shortlist else "analyze_text"
+            return AutoDepthDecisionV1(execution_depth=1, primary_verb=primary, confidence=0.79, reason="heuristic:single_verb", source="heuristic")
+        if len(text) <= 80 and "?" in text:
+            return AutoDepthDecisionV1(execution_depth=0, primary_verb=None, confidence=0.75, reason="heuristic:simple_question", source="heuristic")
+        return AutoDepthDecisionV1(execution_depth=0, primary_verb=None, confidence=0.61, reason="heuristic:default", source="heuristic")
 
-        if council_score >= 2:
-            return AutoRouteDecisionV1(
-                route_mode="council",
-                verb="council_runtime",
-                packs=["executive_pack"],
-                confidence=0.72,
-                reason="heuristic:council_terms",
-                source="heuristic",
-            )
-
-        if agent_score >= 1:
-            return AutoRouteDecisionV1(
-                route_mode="agent",
-                verb="agent_runtime",
-                packs=["executive_pack"],
-                confidence=0.78,
-                reason="heuristic:execution_intent",
-                source="heuristic",
-            )
-
-        return AutoRouteDecisionV1(
-            route_mode="chat",
-            verb="chat_general",
-            packs=["executive_pack"],
-            confidence=0.66,
-            reason="heuristic:default_chat",
-            source="heuristic",
-        )
-
-    async def llm_router(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef) -> AutoRouteDecisionV1:
-        prompt = self._build_prompt(req)
+    async def llm_router(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:
+        prompt = self._build_prompt(req, shortlist=shortlist)
         payload = ChatRequestPayload(
             route="chat",
-            messages=[
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "user", "content": prompt}],
             raw_user_text=req.context.raw_user_text or req.context.user_message,
             options={
                 "temperature": 0.0,
-                "max_tokens": 200,
+                "max_tokens": 220,
                 "stream": False,
                 "response_format": {"type": "json_object"},
             },
             user_id=req.context.user_id,
             session_id=req.context.session_id,
         )
-
-        last_error: Exception | None = None
-        for attempt in range(2):
-            try:
-                return await asyncio.wait_for(
-                    self._rpc_llm(payload=payload, correlation_id=correlation_id, source=source),
-                    timeout=5.0,
-                )
-            except Exception as exc:
-                last_error = exc
-                logger.warning("auto_route llm attempt=%s failed corr=%s err=%s", attempt + 1, correlation_id, exc)
-
-        raise RuntimeError(f"llm_router_failed:{last_error}")
+        return await asyncio.wait_for(
+            self._rpc_llm(payload=payload, correlation_id=correlation_id, source=source),
+            timeout=5.0,
+        )
 
     async def route(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef) -> RoutedRequest:
+        shortlist = self.build_shortlist(req)
         if self.settings.auto_router_llm_enabled:
             try:
-                decision = await self.llm_router(req, correlation_id=correlation_id, source=source)
-            except Exception:
-                fallback = self.heuristic_router(req)
+                decision = await self.llm_router(req, correlation_id=correlation_id, source=source, shortlist=shortlist)
+            except Exception as exc:
+                logger.warning("auto_depth llm failed corr=%s err=%s", correlation_id, exc)
+                fallback = self.heuristic_router(req, shortlist=shortlist)
                 decision = fallback.model_copy(update={"source": "fallback", "reason": "fallback:llm_failure"})
         else:
-            decision = self.heuristic_router(req)
+            decision = self.heuristic_router(req, shortlist=shortlist)
 
-        clamped = self._clamp_decision(req, decision)
+        clamped = self._clamp_decision(decision, shortlist=shortlist)
         rewritten = req.model_copy(deep=True)
-        rewritten.mode = "brain" if clamped.route_mode == "chat" else clamped.route_mode
-        rewritten.verb = clamped.verb
-        rewritten.packs = list(clamped.packs)
-        rewritten.recall.enabled = bool(clamped.recall.enabled)
-        rewritten.recall.required = bool(clamped.recall.required)
-        rewritten.recall.profile = clamped.recall.profile
-
+        rewritten.options["execution_depth"] = clamped.execution_depth
+        if clamped.execution_depth == 1:
+            rewritten.mode = "brain"
+            rewritten.verb = clamped.primary_verb or "analyze_text"
+        elif clamped.execution_depth == 2:
+            rewritten.mode = "agent"
+            rewritten.verb = "agent_runtime"
+        elif clamped.execution_depth == 3:
+            rewritten.mode = "council"
+            rewritten.verb = "council_runtime"
+        else:
+            rewritten.mode = "brain"
+            rewritten.verb = "chat_general"
         return RoutedRequest(request=rewritten, decision=clamped)
 
-    def _clamp_decision(self, req: CortexClientRequest, decision: AutoRouteDecisionV1) -> AutoRouteDecisionV1:
-        verb = decision.verb if decision.verb in _ALLOWED_VERBS else "chat_general"
-        route_mode, rewritten_mode = _ALLOWED_VERBS[verb]
-        safe_packs = [p for p in decision.packs if p in _ALLOWED_PACKS]
-        if not safe_packs:
-            safe_packs = ["executive_pack"]
-
-        recall_enabled = bool(decision.recall.enabled)
-        recall_required = bool(decision.recall.required and recall_enabled)
-        profile = decision.recall.profile if recall_enabled else None
-
-        return AutoRouteDecisionV1(
-            route_mode=route_mode,
-            verb=verb,
-            packs=safe_packs,
-            recall={
-                "enabled": recall_enabled,
-                "required": recall_required,
-                "profile": profile,
-            },
+    def _clamp_decision(self, decision: AutoDepthDecisionV1, *, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:
+        depth = max(0, min(3, int(decision.execution_depth)))
+        allowed = {v.name for v in shortlist}
+        primary_verb = decision.primary_verb if depth == 1 and decision.primary_verb in allowed else None
+        if depth == 1 and not primary_verb:
+            primary_verb = shortlist[0].name if shortlist else "analyze_text"
+        if depth != 1:
+            primary_verb = None
+        return AutoDepthDecisionV1(
+            execution_depth=depth,
+            primary_verb=primary_verb,
             confidence=max(0.0, min(1.0, float(decision.confidence))),
-            reason=decision.reason or f"clamped_for_{rewritten_mode}",
+            reason=decision.reason or "clamped",
             source=decision.source,
         )
 
-    async def _rpc_llm(self, *, payload: ChatRequestPayload, correlation_id: str, source: ServiceRef) -> AutoRouteDecisionV1:
+    async def _rpc_llm(self, *, payload: ChatRequestPayload, correlation_id: str, source: ServiceRef) -> AutoDepthDecisionV1:
         reply_channel = f"{self.settings.auto_router_llm_reply_prefix}:{uuid4()}"
         env = BaseEnvelope(
             kind="llm.chat.request",
@@ -184,23 +162,12 @@ class DecisionRouter:
             raw = response_payload.get("raw") or {}
             text = str(raw.get("content") or raw.get("text") or "").strip()
         data = json.loads(text)
-        return AutoRouteDecisionV1.model_validate(data)
+        return AutoDepthDecisionV1.model_validate(data)
 
-    def _build_prompt(self, req: CortexClientRequest) -> str:
-        try:
-            user_text = req.context.raw_user_text or req.context.user_message or ""
-            history = req.context.messages[-6:]
-            history_lines = [f"- {m.role}: {m.content}" for m in history]
-        except Exception:
-            user_text = req.context.raw_user_text or req.context.user_message or ""
-            history_lines = []
-
-        return (
-            "Use schema AutoRouteDecisionV1 and return strict JSON only.\\n"
-            "Allowed route_mode: chat|agent|council.\\n"
-            "Allowed verb: chat_general|agent_runtime|council_runtime.\\n"
-            "Allowed packs: executive_pack.\\n"
-            "Prefer agent for execution/build/refactor intents, chat for conversational Q&A, council for multi-perspective deliberation.\\n"
-            f"User message: {user_text}\\n"
-            f"Recent history:\\n{chr(10).join(history_lines)}"
+    def _build_prompt(self, req: CortexClientRequest, *, shortlist: list[VerbInfo]) -> str:
+        prompt_path = Path(__file__).resolve().parents[3] / "orion" / "cognition" / "prompts" / "auto_depth_select_prompt.j2"
+        template = Template(prompt_path.read_text(encoding="utf-8"))
+        return template.render(
+            verb_shortlist=serialize_shortlist(shortlist, max_chars=1800),
+            user_text=self._user_text(req),
         )

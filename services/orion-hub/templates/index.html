@@ -140,7 +140,8 @@
           <div class="flex items-center gap-2">
             <span class="uppercase text-gray-500 font-bold text-[10px]">Mode</span>
             <div class="flex gap-1">
-              <button class="mode-btn px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 transition-colors" data-mode="brain">Brain</button>
+              <button class="mode-btn px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 transition-colors" data-mode="auto">Auto</button>
+              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="brain">Brain</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="agent">Agent</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
             </div>
@@ -216,6 +217,10 @@
             <div>
               <div class="text-gray-500 mb-1">Memory digest</div>
               <pre id="memoryDigestPre" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Outbound routing debug</div>
+              <div id="outboundRoutingDebug" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</div>
             </div>
           </div>
         </div>

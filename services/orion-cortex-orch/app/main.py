@@ -81,10 +81,11 @@ def _cfg() -> ChassisConfig:
 
 
 def _should_auto_route(req: CortexClientRequest, env: BaseEnvelope) -> tuple[bool, str]:
-    route_intent = (req.route_intent or "none").lower()
+    options = req.options if isinstance(req.options, dict) else {}
+    route_intent = str(options.get("route_intent") or req.route_intent or "none").lower()
     requested = route_intent == "auto" or str(req.mode).lower() == "auto"
     source_name = ((env.source.name if env.source else "") or "").strip().lower()
-    allowlisted = source_name in {"cortex-gateway", "orion-hub"}
+    allowlisted = source_name in {"cortex-gateway"}
 
     if not requested:
         return False, "intent_none"
@@ -147,13 +148,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
         should_route, route_reason = _should_auto_route(req, env)
         logger.info(
-            "auto_route_gate corr_id=%s should_route=%s reason=%s source=%s mode=%s route_intent=%s",
+            "auto_depth_gate corr_id=%s should_auto=%s reason=%s source=%s mode=%s route_intent=%s",
             str(env.correlation_id),
             should_route,
             route_reason,
             ((env.source.name if env.source else "") or "unknown"),
             req.mode,
-            req.route_intent,
+            (req.options.get("route_intent") if isinstance(req.options, dict) else None) or req.route_intent,
         )
 
         if should_route:
@@ -162,12 +163,11 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             req = routed.request
             route_meta = routed.decision.model_dump(mode="json")
             logger.info(
-                "auto_route_result corr_id=%s source=%s resolved_mode=%s resolved_verb=%s packs=%s confidence=%.2f",
+                "auto_depth_result corr_id=%s depth=%s primary_verb=%s router_source=%s confidence=%.2f",
                 str(env.correlation_id),
+                routed.decision.execution_depth,
+                routed.decision.primary_verb,
                 routed.decision.source,
-                req.mode,
-                req.verb,
-                req.packs,
                 routed.decision.confidence,
             )
         elif str(req.mode).lower() == "auto":

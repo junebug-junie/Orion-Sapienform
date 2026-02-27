@@ -1,0 +1,30 @@
+name: auto_route
+label: Auto Route
+description: >
+  Cognitive runtime routing primitive used by Cortex-Orch when incoming mode is auto.
+  Returns an AutoRouteDecisionV1 JSON payload.
+
+category: ExecutiveControl
+priority: high
+interruptible: true
+can_interrupt_others: false
+requires_gpu: true
+requires_memory: false
+recall_profile: ""
+timeout_ms: 5000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: auto_route_prompt.j2
+
+plan:
+  - name: llm_auto_route
+    description: Produce strict JSON AutoRouteDecisionV1 route classification.
+    order: 0
+    prompt_template: auto_route_prompt.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: false

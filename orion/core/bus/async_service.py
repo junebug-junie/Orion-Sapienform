@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator, Dict, Optional
 
 from pydantic import BaseModel, ValidationError
@@ -35,9 +35,94 @@ class OrionBusAsync:
         self.enabled = enabled
         self.codec = codec or OrionCodec()
         self._redis: Optional[aioredis.Redis] = None
+        self._rpc_pubsub: Optional[aioredis.client.PubSub] = None
+        self._rpc_worker_task: Optional[asyncio.Task] = None
+        self._rpc_worker_running = False
+        self._rpc_lock = asyncio.Lock()
+        self._rpc_subscribed: set[str] = set()
+        self._pending_rpc: dict[tuple[str, str], asyncio.Future] = {}
         if enforce_catalog is None:
             enforce_catalog = os.getenv("ORION_BUS_ENFORCE_CATALOG", "false").lower() == "true"
+        self.enforce_catalog = bool(enforce_catalog)
         enforcer.enforce = enforce_catalog
+
+    async def fork(self, *, start_rpc_worker: bool = False) -> "OrionBusAsync":
+        """
+        Create an independent bus client sharing config/codec with a fresh Redis connection.
+
+        Useful for nested RPC in services that already maintain a long-lived subscriber on
+        another bus instance.
+        """
+        child = OrionBusAsync(
+            url=self.url,
+            enabled=self.enabled,
+            codec=self.codec,
+            enforce_catalog=self.enforce_catalog,
+        )
+        if start_rpc_worker:
+            await child.connect()
+            child.start_rpc_worker()
+        return child
+
+    def start_rpc_worker(self) -> None:
+        if not self.enabled:
+            return
+        if self._rpc_worker_task and not self._rpc_worker_task.done():
+            return
+        self._rpc_worker_running = True
+        self._rpc_worker_task = asyncio.create_task(self._run_rpc_only())
+        logger.info("[rpc-fork] worker started")
+
+    async def _run_rpc_only(self) -> None:
+        if not self.enabled:
+            return
+        await self.connect()
+        self._rpc_pubsub = self.redis.pubsub()
+        try:
+            while self._rpc_worker_running:
+                msg = await self._rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not msg or msg.get("type") not in ("message", "pmessage"):
+                    continue
+                await self._handle_rpc_result(msg)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._rpc_pubsub is not None:
+                with suppress(Exception):
+                    if self._rpc_subscribed:
+                        await self._rpc_pubsub.unsubscribe(*sorted(self._rpc_subscribed))
+                with suppress(Exception):
+                    await self._rpc_pubsub.close()
+                self._rpc_pubsub = None
+            self._rpc_worker_running = False
+
+    async def _handle_rpc_result(self, msg: dict) -> None:
+        channel_raw = msg.get("channel")
+        channel = channel_raw.decode("utf-8", "ignore") if isinstance(channel_raw, (bytes, bytearray)) else str(channel_raw)
+        decoded = self.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            return
+        corr = str(getattr(decoded.envelope, "correlation_id", "") or "")
+        logger.info("[rpc-fork] reply received corr_id=%s", corr)
+        key = (channel, corr)
+        fut = self._pending_rpc.pop(key, None)
+        if fut is not None and not fut.done():
+            fut.set_result(msg)
+            logger.info("[rpc-fork] future resolved corr_id=%s", corr)
+
+    async def _rpc_subscribe(self, reply_channel: str) -> None:
+        await self.connect()
+        if self._rpc_pubsub is None and self._rpc_worker_running:
+            for _ in range(50):
+                if self._rpc_pubsub is not None:
+                    break
+                await asyncio.sleep(0.01)
+        if self._rpc_pubsub is None:
+            raise RuntimeError("RPC worker pubsub is not initialized")
+        if reply_channel in self._rpc_subscribed:
+            return
+        await self._rpc_pubsub.subscribe(reply_channel)
+        self._rpc_subscribed.add(reply_channel)
 
     async def connect(self) -> None:
         if not self.enabled:
@@ -47,6 +132,16 @@ class OrionBusAsync:
             await self._redis.ping()
 
     async def close(self) -> None:
+        self._rpc_worker_running = False
+        if self._rpc_worker_task is not None:
+            self._rpc_worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._rpc_worker_task
+            self._rpc_worker_task = None
+        for fut in self._pending_rpc.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending_rpc.clear()
         if self._redis is not None:
             await self._redis.close()
             self._redis = None
@@ -138,8 +233,21 @@ class OrionBusAsync:
         Publish `envelope` to request_channel and await first message on reply_channel.
         """
         async with self.subscribe(reply_channel) as pubsub:
-            await self.publish(request_channel, envelope)
             try:
+                if self._rpc_worker_task and not self._rpc_worker_task.done():
+                    corr = str(envelope.correlation_id)
+                    key = (reply_channel, corr)
+                    fut = asyncio.get_running_loop().create_future()
+                    self._pending_rpc[key] = fut
+                    async with self._rpc_lock:
+                        await self._rpc_subscribe(reply_channel)
+                    await self.publish(request_channel, envelope)
+                    try:
+                        return await asyncio.wait_for(fut, timeout=timeout_sec)
+                    finally:
+                        self._pending_rpc.pop(key, None)
+
+                await self.publish(request_channel, envelope)
                 async def _wait_one():
                     async for msg in self.iter_messages(pubsub):
                         return msg

@@ -113,3 +113,13 @@ class AutoRouteDecisionV1(BaseModel):
     confidence: float = 0.0
     reason: str = ""
     source: Literal["heuristic", "llm", "fallback"] = "heuristic"
+
+
+class AutoDepthDecisionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_depth: Literal[0, 1, 2, 3]
+    primary_verb: Optional[str] = None
+    confidence: float = 0.0
+    reason: str = ""
+    source: Literal["heuristic", "llm", "fallback"] = "heuristic"

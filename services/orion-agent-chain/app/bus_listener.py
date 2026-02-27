@@ -101,7 +101,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         logger.warning(f"[agent-chain] Unsupported kind={env.kind}")
         return
 
-    trace_id = env.correlation_id or payload.get("request_id")
+    incoming_corr = str(env.correlation_id) if getattr(env, "correlation_id", None) else str(payload.get("request_id") or uuid4())
 
     if not reply_channel:
         logger.debug("[agent-chain] No reply channel, ignoring message.")
@@ -111,23 +111,25 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         # Strict Shared Schema
         req = AgentChainRequest(**payload)
 
-        result = await execute_agent_chain(req)
+        result = await execute_agent_chain(req, correlation_id=incoming_corr)
         resp = BaseEnvelope(
             kind="agent.chain.result",
             source=_source(),
-            correlation_id=trace_id,
+            correlation_id=incoming_corr,
             causality_chain=env.causality_chain,
             payload=result.model_dump(mode="json"),
         )
         await bus.publish(reply_channel, resp)
+        logger.info("[agent-chain] RPC reply -> %s corr=%s kind=%s", reply_channel, incoming_corr, resp.kind)
 
     except Exception as e:
         logger.error("[agent-chain] Execution Error: %s", e)
         error_env = BaseEnvelope(
             kind="agent.chain.result",
             source=_source(),
-            correlation_id=trace_id,
+            correlation_id=incoming_corr,
             causality_chain=env.causality_chain,
             payload={"error": str(e)},
         )
         await bus.publish(reply_channel, error_env)
+        logger.info("[agent-chain] RPC error reply -> %s corr=%s kind=%s", reply_channel, incoming_corr, error_env.kind)

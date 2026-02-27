@@ -658,6 +658,9 @@ class Supervisor:
                 max(0, max_steps - (loop_index + 1)),
             )
 
+            tool_id = (action or {}).get("tool_id") if isinstance(action, dict) else None
+            logger.info("planner_action corr_id=%s tool_id=%s lane=%s", correlation_id, tool_id, "depth2")
+
             if decision["stop_reason"] == "final_answer" and not decision["action_present"]:
                 if not trace:
                     trace.append(
@@ -696,17 +699,8 @@ class Supervisor:
                 break
 
             if not action:
-                logger.info(
-                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=no_action final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
-                    correlation_id,
-                    mode,
-                    req.verb_name,
-                    len(final_text or ""),
-                    decision["action_present"],
-                    executed_steps,
-                    ["agent_chain"],
-                )
-                break
+                logger.info("planner_action_ambiguous corr_id=%s default=agent_chain", correlation_id)
+                action = {"tool_id": "agent_chain", "input": {}}
 
             action_step = await self._execute_action(
                 source=source,
@@ -743,6 +737,11 @@ class Supervisor:
             )
             if obs.get("llm_output"):
                 final_text = obs.get("llm_output")
+
+            selected_tool = str((action or {}).get("tool_id") or "")
+            if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
+                logger.info("agent_runtime_stop corr_id=%s mode=%s verb=%s reason=single_verb_once tool_id=%s", correlation_id, mode, req.verb_name, selected_tool)
+                break
 
         # Council checkpoint (opt-in unless explicit mode=council)
         council_step: Optional[StepExecutionResult] = None

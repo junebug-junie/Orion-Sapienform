@@ -14,7 +14,7 @@ from .settings import settings
 from .session import ensure_session
 from .chat_history import build_chat_history_envelope, publish_chat_history
 from .library import scan_cognition_library
-from .chat_request_builder import build_cortex_chat_request, validate_single_verb_override
+from .cortex_request_builder import build_cortex_chat_request, validate_single_verb_override
 from orion.cognition.verb_activation import build_verb_list
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatResult
@@ -443,18 +443,20 @@ async def handle_chat_request(
         (user_prompt or "")[:120],
     )
 
-    inactive = validate_single_verb_override(payload)
+    inactive = validate_single_verb_override(payload, node_name=settings.NODE_NAME)
     if inactive:
         return inactive
 
     corr_id = str(uuid4())
     req, route_debug, _ = build_cortex_chat_request(
-        prompt=user_prompt,
         payload=payload,
         session_id=session_id,
         user_id=payload.get("user_id"),
         trace_id=None,
+        default_mode="brain",
+        auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
         source_label="hub_http",
+        prompt=user_prompt,
     )
 
     recall_payload = req.recall or {"enabled": use_recall}
@@ -465,6 +467,16 @@ async def handle_chat_request(
     diagnostic = bool(payload.get("diagnostic") or (isinstance(payload.get("options"), dict) and payload.get("options", {}).get("diagnostic")))
     if diagnostic:
         logger.info("HTTP outbound CortexChatRequest corr=%s payload=%s", corr_id, req.model_dump(mode="json"))
+    logger.info(
+        "hub_egress corr=%s sid=%s mode=%s verb=%s route_intent=%s allowed_verbs=%s packs=%s",
+        corr_id,
+        session_id,
+        req.mode,
+        req.verb,
+        (req.options or {}).get("route_intent") or "none",
+        len(((req.options or {}).get("allowed_verbs") or [])),
+        req.packs or [],
+    )
 
     _rec_tape_req(
         corr_id=corr_id,

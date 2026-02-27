@@ -5088,14 +5088,13 @@ loadDismissedIds();
       options.allowed_verbs = verbs;
     }
 
-    const requestedIntent = String(payload?.route_intent || options.route_intent || '').toLowerCase();
-    if (mode === 'auto' || requestedIntent === 'auto') options.route_intent = 'auto';
-    else options.route_intent = 'none';
+    if (mode === 'auto' && !verb && verbs.length === 0) options.route_intent = 'auto';
+    else delete options.route_intent;
 
     return {
       mode,
       verb,
-      route_intent: options.route_intent,
+      route_intent: options.route_intent || 'none',
       allowed_verbs_count: Array.isArray(options.allowed_verbs) ? options.allowed_verbs.length : 0,
       packs: Array.isArray(payload?.packs) ? payload.packs : [],
       recall_enabled: payload?.use_recall ?? false,
@@ -5363,7 +5362,6 @@ loadDismissedIds();
     const payload = {
        text_input: text,
        mode: selectedMode,
-       route_intent: selectedMode === 'auto' ? 'auto' : 'none',
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
@@ -5425,7 +5423,6 @@ loadDismissedIds();
               const audioPayload = {
                audio: reader.result.split(',')[1],
                mode: selectedMode,
-               route_intent: selectedMode === 'auto' ? 'auto' : 'none',
                session_id: orionSessionId,
                no_write: noWriteToggle ? noWriteToggle.checked : false,
                use_recall: recallToggle ? recallToggle.checked : false,

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
-from scripts.chat_request_builder import build_cortex_chat_request, validate_single_verb_override
+from scripts.cortex_request_builder import build_cortex_chat_request, validate_single_verb_override
 from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
@@ -370,7 +370,7 @@ async def websocket_endpoint(websocket: WebSocket):
             except json.JSONDecodeError:
                 continue
 
-            mode = data.get("mode", "brain")
+            mode = data.get("mode") or ("auto" if settings.HUB_AUTO_DEFAULT_ENABLED else "brain")
             disable_tts = data.get("disable_tts", False)
             diagnostic = bool(
                 data.get("diagnostic")
@@ -444,7 +444,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 continue
 
-            logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
             trace_id = str(uuid.uuid4())
             if no_write:
                 logger.info("NO_WRITE active (WS) sid=%s", session_id)
@@ -460,18 +459,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical
-            inactive = validate_single_verb_override(data)
+            inactive = validate_single_verb_override(data, node_name=settings.NODE_NAME)
             if inactive:
                 await websocket.send_json(await _with_biometrics({"error": inactive.get("message") or inactive.get("error")}, cache=biometrics_cache))
                 continue
 
             chat_req, route_debug, use_recall = build_cortex_chat_request(
-                prompt=prompt_with_ctx,
                 payload=data,
                 session_id=session_id,
                 user_id=data.get("user_id"),
                 trace_id=trace_id,
+                default_mode="brain",
+                auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
                 source_label="hub_ws",
+                prompt=prompt_with_ctx,
             )
             chat_req.metadata = dict(chat_req.metadata or {})
             chat_req.metadata["trace_verb"] = trace_verb
@@ -479,6 +480,11 @@ async def websocket_endpoint(websocket: WebSocket):
             recall_payload = chat_req.recall or {"enabled": use_recall}
 
             logger.info(f"WS Chat Request recall config: {recall_payload} session_id={session_id}")
+            logger.info(
+                "Routing resolved to mode: %s (verb: %s)",
+                mode,
+                trace_verb,
+            )
             logger.info(
                 "WS routing resolved mode=%s route_intent=%s verb=%s allowed_verbs=%s",
                 chat_req.mode,
@@ -492,6 +498,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 len(history),
                 len(transcript or ""),
                 (transcript or "")[:120],
+            )
+            logger.info(
+                "hub_egress corr=%s sid=%s mode=%s verb=%s route_intent=%s allowed_verbs=%s packs=%s",
+                trace_id,
+                session_id,
+                chat_req.mode,
+                chat_req.verb,
+                (chat_req.options or {}).get("route_intent") or "none",
+                len(((chat_req.options or {}).get("allowed_verbs") or [])),
+                chat_req.packs or [],
             )
             if diagnostic:
                 logger.info("WS outbound CortexChatRequest corr=%s payload=%s", trace_id, chat_req.model_dump(mode="json"))

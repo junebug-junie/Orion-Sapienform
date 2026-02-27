@@ -5047,6 +5047,11 @@ loadDismissedIds();
     });
   }
 
+  function getSelectedMode(modeButtons) {
+    const active = Array.from(modeButtons || []).find((b) => b.classList.contains('bg-indigo-600'));
+    return (active && active.dataset && active.dataset.mode) ? active.dataset.mode : currentMode;
+  }
+
   function setModeButtonStyles(modeButtons, selectedMode) {
     modeButtons.forEach((b) => {
       b.classList.remove('bg-indigo-600', 'text-white');
@@ -5353,10 +5358,12 @@ loadDismissedIds();
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
+    const selectedMode = getSelectedMode(modeButtons);
+    currentMode = selectedMode;
     const payload = {
        text_input: text,
-       mode: currentMode,
-       route_intent: currentMode === 'auto' ? 'auto' : 'none',
+       mode: selectedMode,
+       route_intent: selectedMode === 'auto' ? 'auto' : 'none',
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
@@ -5368,7 +5375,7 @@ loadDismissedIds();
        verbs: selectedVerbs,
        options: {},
     };
-    const routeDebugPreview = computeRoutingFromUi(payload, currentMode);
+    const routeDebugPreview = computeRoutingFromUi(payload, selectedMode);
     renderOutboundRoutingDebug(routeDebugPreview);
 
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -5413,10 +5420,12 @@ loadDismissedIds();
         reader.readAsDataURL(blob);
         reader.onloadend = () => {
            if(socket && socket.readyState === WebSocket.OPEN) {
+              const selectedMode = getSelectedMode(modeButtons);
+              currentMode = selectedMode;
               const audioPayload = {
                audio: reader.result.split(',')[1],
-               mode: currentMode,
-               route_intent: currentMode === 'auto' ? 'auto' : 'none',
+               mode: selectedMode,
+               route_intent: selectedMode === 'auto' ? 'auto' : 'none',
                session_id: orionSessionId,
                no_write: noWriteToggle ? noWriteToggle.checked : false,
                use_recall: recallToggle ? recallToggle.checked : false,
@@ -5427,7 +5436,7 @@ loadDismissedIds();
                packs: selectedPacks,
                verbs: selectedVerbs,
              };
-             renderOutboundRoutingDebug(computeRoutingFromUi(audioPayload, currentMode));
+             renderOutboundRoutingDebug(computeRoutingFromUi(audioPayload, selectedMode));
              socket.send(JSON.stringify(audioPayload));
              updateStatus('Audio sent.');
            } else {

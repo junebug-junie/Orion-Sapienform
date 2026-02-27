@@ -480,6 +480,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
             logger.info(f"WS Chat Request recall config: {recall_payload} session_id={session_id}")
             logger.info(
+                "WS routing resolved mode=%s route_intent=%s verb=%s allowed_verbs=%s",
+                chat_req.mode,
+                chat_req.route_intent,
+                chat_req.verb,
+                len(((chat_req.options or {}).get("allowed_verbs") or [])),
+            )
+            logger.info(
                 "WS Chat Request payload session_id=%s history_len=%s last_user_len=%s last_user_head=%r",
                 session_id,
                 len(history),

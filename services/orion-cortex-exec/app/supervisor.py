@@ -228,6 +228,22 @@ def _normalize_planner_decision(
 
 
 
+def _ensure_agent_chain_tool(toolset: List[ToolDef]) -> List[ToolDef]:
+    if any((t.tool_id or "") == "agent_chain" for t in toolset):
+        return toolset
+    return [
+        *toolset,
+        ToolDef(
+            tool_id="agent_chain",
+            description="Escalate to AgentChainService for multi-step runtime execution.",
+            input_schema={},
+            output_schema={},
+        ),
+    ]
+
+
+
+
 class Supervisor:
     """
     Hierarchical controller that can pick reasoning paths, run ReAct with verbs, checkpoint with Council,
@@ -274,6 +290,8 @@ class Supervisor:
         if mode == "direct_chat":
             return False
         return bool(tools)
+
+
 
     async def _planner_step(
         self,
@@ -565,6 +583,8 @@ class Supervisor:
         tags = ctx.get("verb_tags") or []
         tools = self._toolset(packs=packs, tags=tags)
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
+        if mode in {"agent", "council"}:
+            tools = _ensure_agent_chain_tool(tools)
         if mode == "auto":
             logger.warning(
                 "Supervisor received unexpected mode=auto corr_id=%s; preserving deterministic execution path",
@@ -740,7 +760,14 @@ class Supervisor:
 
             selected_tool = str((action or {}).get("tool_id") or "")
             if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
-                logger.info("agent_runtime_stop corr_id=%s mode=%s verb=%s reason=single_verb_once tool_id=%s", correlation_id, mode, req.verb_name, selected_tool)
+                logger.info(
+                    "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=delegate_then_agent_chain tool_id=%s",
+                    correlation_id,
+                    mode,
+                    req.verb_name,
+                    selected_tool,
+                )
+                final_text = None
                 break
 
         # Council checkpoint (opt-in unless explicit mode=council)

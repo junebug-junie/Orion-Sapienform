@@ -44,6 +44,7 @@ class CortexClientRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     mode: Literal["brain", "agent", "council", "auto"] = "brain"
+    route_intent: Literal["none", "auto"] = "none"
     verb: Optional[str] = Field(default=None, alias="verb_name")
     packs: List[str] = Field(default_factory=list)
     options: Dict[str, Any] = Field(default_factory=dict)
@@ -73,6 +74,7 @@ class CortexChatRequest(BaseModel):
     """Simple chat request for Cortex Gateway."""
     prompt: str = Field(..., description="The user's prompt text")
     mode: Literal["brain", "agent", "council", "auto"] = Field(default="brain", description="Execution mode: brain, agent, council, auto")
+    route_intent: Literal["none", "auto"] = Field(default="none", description="Explicit routing intent. Use 'auto' to enable Orch auto-routing.")
 
     # Optional overrides
     verb: Optional[str] = Field(default=None, description="Cognition verb override")
@@ -105,7 +107,7 @@ class AutoRouteDecisionV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route_mode: Literal["chat", "agent", "council"]
-    verb: Literal["chat_general", "agent_runtime", "council_runtime"]
+    verb: str
     packs: List[str] = Field(default_factory=list)
     recall: AutoRouteRecallDecisionV1 = Field(default_factory=AutoRouteRecallDecisionV1)
     confidence: float = 0.0

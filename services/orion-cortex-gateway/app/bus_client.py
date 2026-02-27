@@ -166,8 +166,11 @@ class BusClient:
             else:
                 recall = RecallDirective() # defaults: enabled=True, etc.
 
+            route_intent = "auto" if req.mode == "auto" else req.route_intent
+
             client_req = CortexClientRequest(
                 mode=req.mode,
+                route_intent=route_intent,
                 verb=verb,
                 packs=packs,
                 options=req.options or {},

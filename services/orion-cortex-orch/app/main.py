@@ -78,6 +78,19 @@ def _cfg() -> ChassisConfig:
     )
 
 
+
+
+def _should_auto_route(req: CortexClientRequest, env: BaseEnvelope) -> tuple[bool, str]:
+    route_intent = (req.route_intent or "none").lower()
+    requested = route_intent == "auto" or str(req.mode).lower() == "auto"
+    source_name = ((env.source.name if env.source else "") or "").strip().lower()
+    allowlisted = source_name in {"cortex-gateway", "orion-hub"}
+
+    if not requested:
+        return False, "intent_none"
+    if not allowlisted:
+        return False, f"source_not_allowlisted:{source_name or 'unknown'}"
+    return True, "intent_auto_allowlisted"
 def _source() -> ServiceRef:
     s = get_settings()
     return ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
@@ -132,19 +145,34 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if diagnostic:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
 
-        router = DecisionRouter(svc.bus)
-        routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
-        req = routed.request
-        route_meta = routed.decision.model_dump(mode="json")
+        should_route, route_reason = _should_auto_route(req, env)
         logger.info(
-            "auto_route decision corr_id=%s source=%s route_mode=%s verb=%s confidence=%.2f reason=%s",
+            "auto_route_gate corr_id=%s should_route=%s reason=%s source=%s mode=%s route_intent=%s",
             str(env.correlation_id),
-            routed.decision.source,
-            routed.decision.route_mode,
-            routed.decision.verb,
-            routed.decision.confidence,
-            routed.decision.reason,
+            should_route,
+            route_reason,
+            ((env.source.name if env.source else "") or "unknown"),
+            req.mode,
+            req.route_intent,
         )
+
+        if should_route:
+            router = DecisionRouter(svc.bus)
+            routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
+            req = routed.request
+            route_meta = routed.decision.model_dump(mode="json")
+            logger.info(
+                "auto_route_result corr_id=%s source=%s resolved_mode=%s resolved_verb=%s packs=%s confidence=%.2f",
+                str(env.correlation_id),
+                routed.decision.source,
+                req.mode,
+                req.verb,
+                req.packs,
+                routed.decision.confidence,
+            )
+        elif str(req.mode).lower() == "auto":
+            logger.info("auto_route_gate corr_id=%s fallback_mode=brain reason=%s", str(env.correlation_id), route_reason)
+            req.mode = "brain"
 
         ok, bad_verb = _normalize_and_validate_verb(req)
         if not ok:

@@ -1,10 +1,11 @@
 import asyncio
-import json
 from types import SimpleNamespace
 
 from app.decision_router import DecisionRouter
 from app.orchestrator import build_plan_request
+from app import main as orch_main
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.verbs.models import VerbResultV1
 from orion.schemas.cortex.contracts import CortexClientRequest
 
 
@@ -12,8 +13,9 @@ def _req(mode: str = "auto", text: str = "please refactor this module") -> Corte
     return CortexClientRequest.model_validate(
         {
             "mode": mode,
+            "route_intent": "auto",
             "packs": [],
-            "options": {},
+            "options": {"route_intent": "auto"},
             "recall": {"enabled": True, "required": False, "mode": "hybrid", "profile": None},
             "context": {
                 "messages": [{"role": "user", "content": text}],
@@ -25,65 +27,65 @@ def _req(mode: str = "auto", text: str = "please refactor this module") -> Corte
     )
 
 
-class _FakeCodec:
-    def decode(self, data):
-        return SimpleNamespace(ok=True, envelope=BaseEnvelope.model_validate(data))
-
-
 class _FakeBus:
-    def __init__(self, response_text: str):
-        self.response_text = response_text
-        self.codec = _FakeCodec()
-
-    async def rpc_request(self, channel, env, reply_channel, timeout_sec):
-        return {
-            "data": {
-                "kind": "llm.chat.result",
-                "source": ServiceRef(name="llm", version="0", node="n").model_dump(mode="json"),
-                "correlation_id": env.correlation_id,
-                "payload": {"content": self.response_text},
-            }
-        }
+    codec = None
 
 
-def test_auto_mode_rewritten_by_heuristic():
-    bus = _FakeBus("{}")
-    router = DecisionRouter(bus)
-    req = _req(text="please implement and run tests")
+def test_hub_auto_depth0_simple_question_heuristic():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="what time is it?")
     routed = asyncio.run(router.route(req, correlation_id="c1", source=ServiceRef(name="orch", version="0", node="n")))
-    assert routed.request.mode == "agent"
-    assert routed.request.verb == "agent_runtime"
-    assert routed.decision.source in {"heuristic", "fallback"}
-
-
-def test_llm_router_output_is_clamped():
-    bad_decision = json.dumps(
-        {
-            "route_mode": "chat",
-            "verb": "chat_general",
-            "packs": ["unknown_pack"],
-            "recall": {"enabled": True, "required": True, "profile": "x"},
-            "confidence": 1.7,
-            "reason": "bad",
-            "source": "llm",
-        }
-    )
-    bus = _FakeBus(bad_decision)
-    router = DecisionRouter(bus)
-    router.settings.auto_router_llm_enabled = True
-    req = _req(text="hello there")
-    routed = asyncio.run(router.route(req, correlation_id="11111111-1111-1111-1111-111111111111", source=ServiceRef(name="orch", version="0", node="n")))
-    assert routed.request.mode == "brain"
+    assert routed.decision.execution_depth == 0
     assert routed.request.verb == "chat_general"
-    assert routed.request.packs == ["executive_pack"]
-    assert routed.decision.confidence == 1.0
-    assert routed.decision.source == "llm"
 
 
-def test_build_plan_request_carries_router_metadata():
-    req = _req(mode="agent", text="run build")
-    req.verb = "agent_runtime"
-    meta = {"route_mode": "chat", "source": "heuristic"}
-    plan_req = build_plan_request(req, "corr-1", router_metadata=meta)
-    assert plan_req.context["metadata"]["auto_route"] == meta
-    assert plan_req.plan.metadata["auto_route"] == meta
+def test_hub_auto_depth1_analysis_heuristic():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="analyze this text and extract intent")
+    routed = asyncio.run(router.route(req, correlation_id="c2", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 1
+    assert routed.request.verb == "analyze_text"
+
+
+def test_hub_auto_depth2_engineering_heuristic_and_plan_shape():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="debug this docker compose stack trace and fix it")
+    routed = asyncio.run(router.route(req, correlation_id="c3", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 2
+    assert routed.request.verb == "agent_runtime"
+    plan_req = build_plan_request(routed.request, "corr")
+    assert [s.step_name for s in plan_req.plan.steps] == ["planner_react", "agent_chain"]
+
+
+def test_non_auto_introspect_spark_never_touches_router(monkeypatch):
+    called = {"router": 0}
+
+    class _NeverRouter:
+        def __init__(self, *_a, **_k):
+            called["router"] += 1
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        return VerbResultV1(verb=req.verb or "unknown", ok=True, output={"result": {"status": "success", "steps": []}}, request_id="r")
+
+    monkeypatch.setattr(orch_main, "DecisionRouter", _NeverRouter)
+    monkeypatch.setattr(orch_main, "call_verb_runtime", _fake_call_verb_runtime)
+    monkeypatch.setattr(orch_main, "svc", SimpleNamespace(bus=object()))
+    monkeypatch.setattr(orch_main, "is_active", lambda *_args, **_kwargs: True)
+
+    env = BaseEnvelope(
+        kind="cortex.orch.request",
+        source=ServiceRef(name="spark-introspector", version="0", node="n"),
+        correlation_id="11111111-1111-1111-1111-111111111111",
+        payload={
+            "mode": "brain",
+            "verb": "introspect_spark",
+            "route_intent": "none",
+            "packs": [],
+            "options": {},
+            "recall": {"enabled": False, "required": False, "mode": "hybrid", "profile": None},
+            "context": {"messages": [{"role": "user", "content": "x"}], "raw_user_text": "x", "user_message": "x", "metadata": {}},
+        },
+    )
+    asyncio.run(orch_main.handle(env))
+    assert called["router"] == 0

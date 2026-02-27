@@ -8,6 +8,11 @@ import yaml
 
 VERBS_DIR = Path(__file__).resolve().parent / "verbs"
 ACTIVE_MANIFEST_PATH = VERBS_DIR / "active.yaml"
+RUNTIME_ENTRY_VERBS = {"agent_runtime", "council_runtime"}
+
+
+def is_runtime_entry_verb(verb_name: str | None) -> bool:
+    return str(verb_name or "").strip() in RUNTIME_ENTRY_VERBS
 
 
 @lru_cache(maxsize=1)
@@ -86,6 +91,8 @@ def list_all_verbs() -> List[str]:
 def is_active(verb_name: str, node_name: str | None = None) -> bool:
     if not verb_name:
         return False
+    if is_runtime_entry_verb(verb_name):
+        return True
 
     manifest = _load_manifest()
     default_rule = manifest.get("default") or {}

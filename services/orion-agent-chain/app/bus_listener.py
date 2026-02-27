@@ -1,78 +1,19 @@
-# services/orion-agent-chain/app/bus_listener.py
 from __future__ import annotations
+
 import asyncio
 import logging
+from contextlib import suppress
 from typing import Any, Dict
-
-from datetime import datetime, timezone
 from uuid import uuid4
+
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.telemetry.system_health import SystemHealthV1
-from .settings import settings
-from .api import execute_agent_chain
 from orion.schemas.agents.schemas import AgentChainRequest
 
+from .api import execute_agent_chain
+from .settings import settings
+
 logger = logging.getLogger("agent-chain.bus")
-
-def start_agent_chain_bus_listener() -> None:
-    if not settings.orion_bus_enabled:
-        return
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-
-    loop.create_task(_async_bus_worker())
-
-async def _heartbeat_loop(bus: OrionBusAsync) -> None:
-    boot_id = str(uuid4())
-    instance_id = str(uuid4())
-    logger.info(f"Starting heartbeat loop (boot_id={boot_id})")
-
-    while True:
-        try:
-            now = datetime.now(timezone.utc)
-            health = SystemHealthV1(
-                service=settings.service_name,
-                node=getattr(settings, "node_name", "unknown"),
-                version=settings.service_version,
-                instance=instance_id,
-                boot_id=boot_id,
-                status="ok",
-                last_seen_ts=now,
-                heartbeat_interval_sec=10.0,
-                details={}
-            )
-            env = BaseEnvelope(
-                kind="system.health.v1",
-                source=_source(),
-                payload=health.model_dump(mode="json"),
-            )
-            # Default health channel if not in settings, but it usually is orion:system:health
-            channel = getattr(settings, "orion_health_channel", "orion:system:health")
-            await bus.publish(channel, env)
-        except Exception as e:
-            logger.warning(f"Heartbeat failed: {e}")
-
-        await asyncio.sleep(10.0)
-
-async def _async_bus_worker() -> None:
-    bus = OrionBusAsync(url=settings.orion_bus_url)
-    request_channel = settings.agent_chain_request_channel
-
-    logger.info("[agent-chain] Connecting Async Bus on %s", request_channel)
-    await bus.connect()
-
-    # Start Heartbeat
-    asyncio.create_task(_heartbeat_loop(bus))
-
-    # Use Context Manager correctly
-    async with bus.subscribe(request_channel) as pubsub:
-        # Iterate using the helper
-        async for msg in bus.iter_messages(pubsub):
-            asyncio.create_task(_handle_request(bus, msg))
 
 
 def _source() -> ServiceRef:
@@ -82,52 +23,100 @@ def _source() -> ServiceRef:
         version=settings.service_version,
     )
 
+
+async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
+    """Long-running bus consumer for AgentChainService RPC requests."""
+    if not settings.orion_bus_enabled:
+        logger.info("[agent-chain] Bus disabled; worker not started")
+        return
+
+    bus = OrionBusAsync(url=settings.orion_bus_url)
+    request_channel = settings.agent_chain_request_channel
+    accepted_kinds = ("agent.chain.request", "legacy.message")
+
+    logger.info("[agent-chain] bus connected url=%s", settings.orion_bus_url)
+    await bus.connect()
+    logger.info(
+        "[agent-chain] subscribed channel=%s kinds=%s",
+        request_channel,
+        accepted_kinds,
+    )
+
+    try:
+        async with bus.subscribe(request_channel) as pubsub:
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    logger.info("[agent-chain] stop event set; exiting bus worker")
+                    break
+                try:
+                    msg = await asyncio.wait_for(pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0), timeout=1.2)
+                except asyncio.TimeoutError:
+                    continue
+                if not msg or msg.get("type") not in ("message", "pmessage"):
+                    continue
+                await _handle_request(bus, msg)
+    except asyncio.CancelledError:
+        logger.info("[agent-chain] bus worker cancellation requested")
+        raise
+    finally:
+        with suppress(Exception):
+            await bus.close()
+        logger.info("[agent-chain] bus worker stopped")
+
+
 async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
-    # Decode raw bytes
     decoded = bus.codec.decode(raw_msg.get("data"))
     if not decoded.ok:
-        logger.warning(f"[agent-chain] Decode failed: {decoded.error}")
+        logger.warning("[agent-chain] Decode failed: %s", decoded.error)
         return
 
     env = decoded.envelope
     reply_channel = env.reply_to
-
-    # Handle legacy payloads where reply_channel might be inside the dict
     payload = env.payload or {}
     if not reply_channel:
         reply_channel = payload.get("reply_channel")
 
     if env.kind and env.kind not in ("agent.chain.request", "legacy.message"):
-        logger.warning(f"[agent-chain] Unsupported kind={env.kind}")
+        logger.warning("[agent-chain] Unsupported kind=%s", env.kind)
         return
 
-    trace_id = env.correlation_id or payload.get("request_id")
+    incoming_corr = str(env.correlation_id) if getattr(env, "correlation_id", None) else str(payload.get("request_id") or uuid4())
+    logger.info("[agent-chain] intake parent=%s reply_to=%s", incoming_corr, reply_channel)
+    logger.info("[agent-chain] received kind=%s corr_id=%s", env.kind, incoming_corr)
 
     if not reply_channel:
         logger.debug("[agent-chain] No reply channel, ignoring message.")
         return
 
     try:
-        # Strict Shared Schema
         req = AgentChainRequest(**payload)
-
-        result = await execute_agent_chain(req)
+        rpc_bus = bus.fork()
+        await rpc_bus.connect()
+        logger.info("[agent-chain] planner rpc bus=fork parent=%s", incoming_corr)
+        result = await execute_agent_chain(req, correlation_id=incoming_corr, rpc_bus=rpc_bus)
         resp = BaseEnvelope(
             kind="agent.chain.result",
             source=_source(),
-            correlation_id=trace_id,
+            correlation_id=incoming_corr,
             causality_chain=env.causality_chain,
             payload=result.model_dump(mode="json"),
         )
+        logger.info("[agent-chain] replying to exec parent=%s reply_to=%s", incoming_corr, reply_channel)
         await bus.publish(reply_channel, resp)
-
+        logger.info("[agent-chain] replied reply_to=%s corr_id=%s kind=%s", reply_channel, incoming_corr, resp.kind)
     except Exception as e:
         logger.error("[agent-chain] Execution Error: %s", e)
         error_env = BaseEnvelope(
             kind="agent.chain.result",
             source=_source(),
-            correlation_id=trace_id,
+            correlation_id=incoming_corr,
             causality_chain=env.causality_chain,
             payload={"error": str(e)},
         )
+        logger.info("[agent-chain] replying to exec parent=%s reply_to=%s", incoming_corr, reply_channel)
         await bus.publish(reply_channel, error_env)
+        logger.info("[agent-chain] replied reply_to=%s corr_id=%s kind=%s", reply_channel, incoming_corr, error_env.kind)
+    finally:
+        if 'rpc_bus' in locals():
+            with suppress(Exception):
+                await rpc_bus.close()

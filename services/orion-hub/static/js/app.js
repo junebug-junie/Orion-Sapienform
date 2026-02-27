@@ -5083,7 +5083,8 @@ loadDismissedIds();
       options.allowed_verbs = verbs;
     }
 
-    if (mode === 'auto') options.route_intent = 'auto';
+    const requestedIntent = String(payload?.route_intent || options.route_intent || '').toLowerCase();
+    if (mode === 'auto' || requestedIntent === 'auto') options.route_intent = 'auto';
     else options.route_intent = 'none';
 
     return {
@@ -5355,6 +5356,7 @@ loadDismissedIds();
     const payload = {
        text_input: text,
        mode: currentMode,
+       route_intent: currentMode === 'auto' ? 'auto' : 'none',
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
@@ -5414,6 +5416,7 @@ loadDismissedIds();
               const audioPayload = {
                audio: reader.result.split(',')[1],
                mode: currentMode,
+               route_intent: currentMode === 'auto' ? 'auto' : 'none',
                session_id: orionSessionId,
                no_write: noWriteToggle ? noWriteToggle.checked : false,
                use_recall: recallToggle ? recallToggle.checked : false,

@@ -69,10 +69,12 @@ def build_cortex_chat_request(
     elif len(selected_verbs) > 1:
         options["allowed_verbs"] = selected_verbs
 
-    if mode == "auto":
-        options["route_intent"] = "auto"
-    else:
-        options["route_intent"] = "none"
+    requested_intent = str(payload.get("route_intent") or options.get("route_intent") or "").strip().lower()
+    route_intent = "auto" if (mode == "auto" or requested_intent == "auto") else "none"
+    if mode != "auto" and verb_override:
+        route_intent = "none"
+
+    options["route_intent"] = route_intent
 
     req = CortexChatRequest(
         prompt=prompt,
@@ -81,6 +83,7 @@ def build_cortex_chat_request(
         user_id=user_id,
         trace_id=trace_id,
         packs=payload.get("packs"),
+        route_intent=route_intent,
         verb=verb_override,
         options=options,
         recall=recall_payload,
@@ -90,7 +93,7 @@ def build_cortex_chat_request(
     debug = {
         "mode": req.mode,
         "verb": req.verb,
-        "route_intent": (req.options or {}).get("route_intent"),
+        "route_intent": req.route_intent,
         "allowed_verbs_count": len(((req.options or {}).get("allowed_verbs") or [])),
         "packs": req.packs or [],
         "recall_enabled": bool((req.recall or {}).get("enabled", True)),

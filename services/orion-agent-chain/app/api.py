@@ -27,8 +27,8 @@ def _resolve_tools(body: AgentChainRequest) -> List[ToolDef]:
     # Map local dicts to shared ToolDef
     return [ToolDef(**(t.dict() if hasattr(t, 'dict') else t)) for t in local_tools]
 
-async def execute_agent_chain(body: AgentChainRequest) -> AgentChainResult:
-    request_id = str(uuid.uuid4())
+async def execute_agent_chain(body: AgentChainRequest, *, correlation_id: str | None = None) -> AgentChainResult:
+    parent_corr_id = str(correlation_id or uuid.uuid4())
 
     # Map shared AgentChainRequest -> shared PlannerRequest (dict)
     tools = _resolve_tools(body)
@@ -36,7 +36,8 @@ async def execute_agent_chain(body: AgentChainRequest) -> AgentChainResult:
     # Construct Planner Payload manually to match schema expectations
     # (Planner expects dict input over the wire)
     planner_payload = {
-        "request_id": request_id,
+        "request_id": str(uuid.uuid4()),
+        "parent_correlation_id": parent_corr_id,
         "caller": "agent-chain",
         "goal": {
             "type": "chat", 
@@ -55,8 +56,8 @@ async def execute_agent_chain(body: AgentChainRequest) -> AgentChainResult:
         "preferences": {"style": "neutral"}
     }
 
-    logger.info("[agent-chain] Calling Planner %s", request_id)
-    raw_resp = await call_planner_react(planner_payload)
+    logger.info("[agent-chain] Calling Planner parent_corr=%s", parent_corr_id)
+    raw_resp = await call_planner_react(planner_payload, parent_correlation_id=parent_corr_id)
 
     if not isinstance(raw_resp, dict):
         raise RuntimeError(f"Invalid Planner Response: {raw_resp}")

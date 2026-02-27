@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -250,9 +251,20 @@ def build_plan_request(
     context.setdefault("metadata", {})["orion_state_pending"] = True
 
     args = _plan_args(client_request, correlation_id)
+    execution_depth = None
+    if isinstance(client_request.options, dict):
+        execution_depth = client_request.options.get("execution_depth")
+    if execution_depth is not None:
+        normalized_depth = str(int(execution_depth))
+        plan.metadata["execution_depth"] = normalized_depth
+        context.setdefault("metadata", {})["execution_depth"] = int(execution_depth)
     if router_metadata:
         context.setdefault("metadata", {})["auto_route"] = router_metadata
-        plan.metadata["auto_route"] = router_metadata
+        plan.metadata["auto_route"] = json.dumps(router_metadata, default=str)
+        if isinstance(router_metadata, dict) and router_metadata.get("execution_depth") is not None:
+            normalized_depth = str(int(router_metadata.get("execution_depth")))
+            plan.metadata["execution_depth"] = normalized_depth
+            context.setdefault("metadata", {})["execution_depth"] = int(router_metadata.get("execution_depth"))
     return PlanExecutionRequest(plan=plan, args=args, context=context)
 
 

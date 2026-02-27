@@ -115,22 +115,6 @@ class DecisionRouter:
         raise RuntimeError(f"llm_router_failed:{last_error}")
 
     async def route(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef) -> RoutedRequest:
-        if req.mode != "auto":
-            passthrough = AutoRouteDecisionV1(
-                route_mode="chat" if req.mode == "brain" else req.mode,
-                verb=req.verb or "chat_general",
-                packs=req.packs,
-                recall={
-                    "enabled": req.recall.enabled,
-                    "required": req.recall.required,
-                    "profile": req.recall.profile,
-                },
-                confidence=1.0,
-                reason="non_auto_passthrough",
-                source="heuristic",
-            )
-            return RoutedRequest(request=req, decision=self._clamp_decision(req, passthrough))
-
         if self.settings.auto_router_llm_enabled:
             try:
                 decision = await self.llm_router(req, correlation_id=correlation_id, source=source)

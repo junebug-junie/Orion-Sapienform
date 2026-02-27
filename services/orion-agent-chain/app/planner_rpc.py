@@ -53,7 +53,12 @@ async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: 
             payload=planner_payload,
         )
 
-        logger.info("[RPC] -> %s child_corr=%s parent_corr=%s reply_to=%s", request_channel, child_corr_id, parent_correlation_id, reply_channel)
+        logger.info(
+            "[agent-chain] planner emit parent=%s child=%s reply_to=%s",
+            parent_correlation_id,
+            child_corr_id,
+            reply_channel,
+        )
 
         # 2. Determine Timeout
         limits = payload.get("limits", {})
@@ -64,7 +69,7 @@ async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: 
             request_channel,
             env,
             reply_channel=reply_channel,
-            timeout_sec=timeout
+            timeout_sec=timeout,
         )
 
         # 4. Decode & Validate
@@ -77,8 +82,17 @@ async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: 
             }
 
         # The Planner now returns a PlannerResponse (as a dict) in the payload
-        response = decoded.envelope.payload
-        logger.info("Planner RPC ok child_corr=%s status=%s", child_corr_id, response.get("status") if isinstance(response, dict) else None)
+        response_envelope = decoded.envelope
+        response_corr = str(getattr(response_envelope, "correlation_id", "") or "")
+        if response_corr and response_corr != child_corr_id:
+            logger.warning(
+                "[agent-chain] planner corr mismatch parent=%s child=%s got=%s",
+                parent_correlation_id,
+                child_corr_id,
+                response_corr,
+            )
+        response = response_envelope.payload
+        logger.info("[agent-chain] planner ok parent=%s child=%s", parent_correlation_id, child_corr_id)
         if not isinstance(response, dict):
              # Fallback for safety
              return {

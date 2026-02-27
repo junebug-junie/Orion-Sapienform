@@ -81,6 +81,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         return
 
     incoming_corr = str(env.correlation_id) if getattr(env, "correlation_id", None) else str(payload.get("request_id") or uuid4())
+    logger.info("[agent-chain] intake parent=%s reply_to=%s", incoming_corr, reply_channel)
     logger.info("[agent-chain] received kind=%s corr_id=%s", env.kind, incoming_corr)
 
     if not reply_channel:
@@ -97,6 +98,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
             causality_chain=env.causality_chain,
             payload=result.model_dump(mode="json"),
         )
+        logger.info("[agent-chain] replying to exec parent=%s reply_to=%s", incoming_corr, reply_channel)
         await bus.publish(reply_channel, resp)
         logger.info("[agent-chain] replied reply_to=%s corr_id=%s kind=%s", reply_channel, incoming_corr, resp.kind)
     except Exception as e:
@@ -108,5 +110,6 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
             causality_chain=env.causality_chain,
             payload={"error": str(e)},
         )
+        logger.info("[agent-chain] replying to exec parent=%s reply_to=%s", incoming_corr, reply_channel)
         await bus.publish(reply_channel, error_env)
         logger.info("[agent-chain] replied reply_to=%s corr_id=%s kind=%s", reply_channel, incoming_corr, error_env.kind)

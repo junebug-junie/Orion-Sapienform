@@ -73,6 +73,12 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         return
 
     try:
+        logger.info(
+            "[planner-react] intake corr_id=%s reply_to=%s kind=%s",
+            trace_id,
+            reply_channel,
+            env.kind,
+        )
         # STRICT VALIDATION
         planner_req = PlannerRequest(**payload)
 
@@ -95,6 +101,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         )
 
         await bus.publish(reply_channel, out_env)
+        logger.info("[planner-react] replied corr_id=%s reply_to=%s", trace_id, reply_channel)
 
         logger.info(
             f"[planner-react] Finished trace={trace_id} status={resp.status} "
@@ -120,3 +127,4 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
             payload=error_resp.model_dump(mode="json"),
         )
         await bus.publish(reply_channel, err_env)
+        logger.info("[planner-react] replied corr_id=%s reply_to=%s", trace_id, reply_channel)

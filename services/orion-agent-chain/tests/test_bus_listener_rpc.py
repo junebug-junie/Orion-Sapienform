@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
+from app import api as agent_api
+from app import planner_rpc
 from app import bus_listener
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.agents.schemas import AgentChainResult
@@ -24,6 +26,41 @@ class _FakeBus:
 
     async def publish(self, channel, envelope):
         self.published.append((channel, envelope))
+
+
+class _FakePlannerCodec:
+    def decode(self, _data):
+        return SimpleNamespace(
+            ok=True,
+            envelope=BaseEnvelope(
+                kind="agent.planner.result",
+                source=ServiceRef(name="planner-react", version="1.0", node="athena"),
+                correlation_id=str(uuid4()),
+                payload={"status": "ok", "final_answer": {"content": "planner done", "structured": {}}},
+            ),
+            error=None,
+        )
+
+
+class _FakePlannerBus:
+    def __init__(self, *_, **__):
+        self.codec = _FakePlannerCodec()
+        self.captured = None
+
+    async def connect(self):
+        return None
+
+    async def close(self):
+        return None
+
+    async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):
+        self.captured = {
+            "request_channel": request_channel,
+            "envelope": envelope,
+            "reply_channel": reply_channel,
+            "timeout_sec": timeout_sec,
+        }
+        return {"data": b"ok"}
 
 
 def _request_env(*, corr: str, reply_to: str) -> BaseEnvelope:
@@ -82,3 +119,29 @@ def test_exec_style_rpc_consumer_would_receive_matching_result(monkeypatch):
     assert channel == reply_to
     assert str(result_env.correlation_id) == corr
     assert result_env.payload.get("text") == "agent done"
+
+
+def test_nested_planner_child_corr_still_replies_to_exec_parent(monkeypatch):
+    parent_corr = str(uuid4())
+    reply_to = f"orion:exec:result:AgentChainService:{parent_corr}"
+    env = _request_env(corr=parent_corr, reply_to=reply_to)
+    bus = _FakeBus(env)
+    fake_planner_bus = _FakePlannerBus()
+
+    monkeypatch.setattr(planner_rpc, "OrionBusAsync", lambda *args, **kwargs: fake_planner_bus)
+    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body: [])
+    monkeypatch.setattr(bus_listener, "execute_agent_chain", agent_api.execute_agent_chain)
+
+    asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
+
+    assert fake_planner_bus.captured is not None
+    child_corr = str(fake_planner_bus.captured["envelope"].correlation_id)
+    assert child_corr and child_corr != parent_corr
+    assert fake_planner_bus.captured["reply_channel"].endswith(child_corr)
+    assert fake_planner_bus.captured["envelope"].payload.get("parent_correlation_id") == parent_corr
+
+    assert len(bus.published) == 1
+    out_channel, out_env = bus.published[0]
+    assert out_channel == reply_to
+    assert str(out_env.correlation_id) == parent_corr
+    assert out_env.payload.get("text") == "planner done"

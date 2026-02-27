@@ -27,8 +27,8 @@ def _resolve_tools(body: AgentChainRequest) -> List[ToolDef]:
     # Map local dicts to shared ToolDef
     return [ToolDef(**(t.dict() if hasattr(t, 'dict') else t)) for t in local_tools]
 
-async def execute_agent_chain(body: AgentChainRequest) -> AgentChainResult:
-    request_id = str(uuid.uuid4())
+async def execute_agent_chain(body: AgentChainRequest, *, correlation_id: str | None = None) -> AgentChainResult:
+    request_id = str(correlation_id or uuid.uuid4())
 
     # Map shared AgentChainRequest -> shared PlannerRequest (dict)
     tools = _resolve_tools(body)

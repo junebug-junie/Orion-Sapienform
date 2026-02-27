@@ -14,7 +14,7 @@ from .settings import settings
 from .session import ensure_session
 from .chat_history import build_chat_history_envelope, publish_chat_history
 from .library import scan_cognition_library
-from .cortex_request_builder import build_cortex_chat_request, validate_single_verb_override
+from .cortex_request_builder import build_chat_request, validate_single_verb_override
 from orion.cognition.verb_activation import build_verb_list
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatResult
@@ -448,7 +448,7 @@ async def handle_chat_request(
         return inactive
 
     corr_id = str(uuid4())
-    req, route_debug, _ = build_cortex_chat_request(
+    req, route_debug, _ = build_chat_request(
         payload=payload,
         session_id=session_id,
         user_id=payload.get("user_id"),

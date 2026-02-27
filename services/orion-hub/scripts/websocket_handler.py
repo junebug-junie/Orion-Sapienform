@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
-from scripts.cortex_request_builder import build_cortex_chat_request, validate_single_verb_override
+from scripts.cortex_request_builder import build_chat_request, validate_single_verb_override
 from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
@@ -464,7 +464,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json(await _with_biometrics({"error": inactive.get("message") or inactive.get("error")}, cache=biometrics_cache))
                 continue
 
-            chat_req, route_debug, use_recall = build_cortex_chat_request(
+            chat_req, route_debug, use_recall = build_chat_request(
                 payload=data,
                 session_id=session_id,
                 user_id=data.get("user_id"),

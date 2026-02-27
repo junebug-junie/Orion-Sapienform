@@ -110,3 +110,27 @@ def validate_single_verb_override(payload: Dict[str, Any], *, node_name: str) ->
         "verb": verb,
         "node": node_name,
     }
+
+
+def build_chat_request(
+    *,
+    payload: Dict[str, Any],
+    session_id: str | None,
+    user_id: str | None,
+    trace_id: str | None,
+    default_mode: str,
+    auto_default_enabled: bool,
+    source_label: str,
+    prompt: str,
+) -> Tuple[CortexChatRequest, Dict[str, Any], bool]:
+    """Compatibility wrapper: canonical Hub chat request builder for HTTP + WS."""
+    return build_cortex_chat_request(
+        payload=payload,
+        session_id=session_id,
+        user_id=user_id,
+        trace_id=trace_id,
+        default_mode=default_mode,
+        auto_default_enabled=auto_default_enabled,
+        source_label=source_label,
+        prompt=prompt,
+    )

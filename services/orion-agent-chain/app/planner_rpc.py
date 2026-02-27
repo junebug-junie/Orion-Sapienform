@@ -14,7 +14,7 @@ from .settings import settings
 
 logger = logging.getLogger("agent-chain.rpc")
 
-async def call_planner_react(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def call_planner_react(payload: Dict[str, Any], *, parent_correlation_id: str | None = None) -> Dict[str, Any]:
     """
     Async Bus RPC to the planner-react service.
     Sends a strictly typed BaseEnvelope.
@@ -26,13 +26,18 @@ async def call_planner_react(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     # Ephemeral connection (safe for both HTTP and Bus contexts)
+    child_corr_id = str(uuid4())
     bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
 
     try:
-        trace_id = payload.get("request_id") or str(uuid4())
         request_channel = settings.planner_request_channel
-        reply_channel = f"{settings.planner_result_prefix}:{trace_id}"
+        reply_channel = f"{settings.planner_result_prefix}:{child_corr_id}"
+
+        planner_payload = dict(payload)
+        planner_payload["request_id"] = child_corr_id
+        if parent_correlation_id:
+            planner_payload["parent_correlation_id"] = str(parent_correlation_id)
 
         # 1. Construct Envelope
         # This removes the "wrapper" dict problem. We send the payload directly.
@@ -43,12 +48,17 @@ async def call_planner_react(payload: Dict[str, Any]) -> Dict[str, Any]:
                 version="0.2.0",
                 node=getattr(settings, "node_name", "unknown")
             ),
-            correlation_id=trace_id,
+            correlation_id=child_corr_id,
             reply_to=reply_channel,
-            payload=payload,
+            payload=planner_payload,
         )
 
-        logger.info(f"[RPC] -> {request_channel} (trace={trace_id})")
+        logger.info(
+            "[agent-chain] planner emit parent=%s child=%s reply_to=%s",
+            parent_correlation_id,
+            child_corr_id,
+            reply_channel,
+        )
 
         # 2. Determine Timeout
         limits = payload.get("limits", {})
@@ -59,7 +69,7 @@ async def call_planner_react(payload: Dict[str, Any]) -> Dict[str, Any]:
             request_channel,
             env,
             reply_channel=reply_channel,
-            timeout_sec=timeout
+            timeout_sec=timeout,
         )
 
         # 4. Decode & Validate
@@ -72,7 +82,17 @@ async def call_planner_react(payload: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         # The Planner now returns a PlannerResponse (as a dict) in the payload
-        response = decoded.envelope.payload
+        response_envelope = decoded.envelope
+        response_corr = str(getattr(response_envelope, "correlation_id", "") or "")
+        if response_corr and response_corr != child_corr_id:
+            logger.warning(
+                "[agent-chain] planner corr mismatch parent=%s child=%s got=%s",
+                parent_correlation_id,
+                child_corr_id,
+                response_corr,
+            )
+        response = response_envelope.payload
+        logger.info("[agent-chain] planner ok parent=%s child=%s", parent_correlation_id, child_corr_id)
         if not isinstance(response, dict):
              # Fallback for safety
              return {
@@ -83,18 +103,18 @@ async def call_planner_react(payload: Dict[str, Any]) -> Dict[str, Any]:
         return response
 
     except asyncio.TimeoutError:
-        logger.warning(f"Planner timeout (trace={trace_id})")
+        logger.warning("Planner timeout child_corr=%s parent_corr=%s", child_corr_id, parent_correlation_id)
         return {
             "status": "timeout",
             "error": {"message": "planner-react timed out"},
-            "request_id": trace_id
+            "request_id": child_corr_id
         }
     except Exception as e:
         logger.exception(f"RPC Unexpected Error: {e}")
         return {
             "status": "error",
             "error": {"message": str(e)},
-            "request_id": trace_id
+            "request_id": child_corr_id
         }
     finally:
         await bus.close()

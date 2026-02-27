@@ -36,6 +36,17 @@ def _extract_final_text(steps: List[StepExecutionResult]) -> str:
     return ""
 
 
+
+
+def _normalize_execution_depth(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class PlanRunner:
     async def run_plan(
         self,
@@ -47,12 +58,17 @@ class PlanRunner:
         ctx: Dict[str, Any],
     ) -> PlanExecutionResult:
         plan: ExecutionPlan = req.plan
+        depth = None
+        if isinstance(plan.metadata, dict):
+            depth = _normalize_execution_depth(plan.metadata.get("execution_depth"))
+        start_mode = (req.args.extra or {}).get("mode") or ctx.get("mode") or "brain"
         logger.info(
-            "Running plan verb=%s mode=%s steps=%d correlation_id=%s",
-            plan.verb_name,
-            (req.args.extra or {}).get("mode") or ctx.get("mode") or "brain",
-            len(plan.steps),
+            "plan_start corr_id=%s depth=%s mode=%s verb=%s steps=%s",
             correlation_id,
+            depth,
+            start_mode,
+            plan.verb_name,
+            [s.step_name for s in plan.steps],
         )
         step_results: List[StepExecutionResult] = []
         overall_status = "success"
@@ -133,8 +149,8 @@ class PlanRunner:
                 recall_debug=recall_debug,
                 error=f"inactive_verb:{plan.verb_name}",
             )
-        # Supervised path: delegate to Supervisor for agentic / council flows
-        if mode in {"agent", "council", "auto"} or extra.get("supervised"):
+        # Supervised path only for depth=2 agent runtime flows
+        if (depth == 2) or (mode == "agent" and plan.verb_name == "agent_runtime") or extra.get("supervised"):
             supervisor = Supervisor(bus)
             return await supervisor.execute(
                 source=source,
@@ -265,6 +281,9 @@ class PlanRunner:
         final_text = _extract_final_text(step_results)
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
+
+        if depth == 1:
+            logger.info("depth1_complete corr_id=%s verb=%s elapsed=%s", correlation_id, plan.verb_name, sum([s.latency_ms for s in step_results]))
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,

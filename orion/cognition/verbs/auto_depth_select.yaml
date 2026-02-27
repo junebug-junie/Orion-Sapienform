@@ -1,0 +1,15 @@
+name: auto_depth_select
+label: Auto Depth Select
+description: >
+  Selects execution_depth (0-3) and optional primary_verb for Auto mode routing.
+category: ExecutiveControl
+version: "1.0"
+timeout_ms: 5000
+services:
+  - LLMGatewayService
+steps:
+  - name: depth_select
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: auto_depth_select_prompt.j2

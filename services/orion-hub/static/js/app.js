@@ -126,6 +126,7 @@ function normalizeWsBaseOverride(value) {
 
 const HUB_API_BASE_OVERRIDE = normalizeApiBaseOverride(HUB_CFG.apiBaseOverride);
 const HUB_WS_BASE_OVERRIDE = normalizeWsBaseOverride(HUB_CFG.wsBaseOverride);
+const HUB_AUTO_DEFAULT_ENABLED = Boolean(HUB_CFG.autoDefaultEnabled);
 const DEV_HOSTS = new Set(["localhost", "127.0.0.1"]);
 const IS_DEV = DEV_HOSTS.has(window.location.hostname);
 
@@ -154,7 +155,7 @@ let isPlayingAudio = false;
 let orionState = 'idle';
 let particles = [];
 let visionIsFloating = false;
-let currentMode = "brain";
+let currentMode = "auto";
 let selectedPacks = [];
 let selectedVerbs = [];
 let orionSessionId = localStorage.getItem('orion_sid') || null;
@@ -229,6 +230,7 @@ loadDismissedIds();
   const recallCountValue = document.getElementById('recallCountValue');
   const backendCountsValue = document.getElementById('backendCountsValue');
   const memoryDigestPre = document.getElementById('memoryDigestPre');
+  const outboundRoutingDebug = document.getElementById('outboundRoutingDebug');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
@@ -5045,20 +5047,69 @@ loadDismissedIds();
     });
   }
 
+  function setModeButtonStyles(modeButtons, selectedMode) {
+    modeButtons.forEach((b) => {
+      b.classList.remove('bg-indigo-600', 'text-white');
+      b.classList.add('bg-gray-700', 'text-gray-200');
+      if ((b.dataset.mode || '') === selectedMode) {
+        b.classList.add('bg-indigo-600', 'text-white');
+        b.classList.remove('bg-gray-700', 'text-gray-200');
+      }
+    });
+  }
+
+  function renderOutboundRoutingDebug(route) {
+    if (!outboundRoutingDebug || !memoryPanelBody || memoryPanelBody.classList.contains('hidden')) return;
+    const safe = route || {};
+    const packs = Array.isArray(safe.packs) ? safe.packs : [];
+    outboundRoutingDebug.textContent = `mode=${safe.mode ?? '--'} · verb=${safe.verb ?? 'null'} · options.route_intent=${safe.route_intent ?? '--'} · options.allowed_verbs=${safe.allowed_verbs_count ?? 0} · packs=${packs.length ? packs.join(',') : '(none)'} · recall.enabled=${safe.recall_enabled ?? '--'} required=${safe.recall_required ?? '--'} profile=${safe.recall_profile ?? 'null'}`;
+  }
+
+  function computeRoutingFromUi(payload, selectedMode) {
+    const options = (payload && typeof payload.options === 'object' && payload.options !== null) ? {...payload.options} : {};
+    const verbs = Array.isArray(payload?.verbs) ? payload.verbs.filter(Boolean) : [];
+    let mode = selectedMode || (HUB_AUTO_DEFAULT_ENABLED ? 'auto' : 'brain');
+    let verb = null;
+
+    if (verbs.length === 1) {
+      verb = String(verbs[0]).trim();
+      if (mode === 'auto') {
+        if (verb === 'agent_runtime') mode = 'agent';
+        else if (verb === 'council_runtime') mode = 'council';
+        else mode = 'brain';
+      }
+      delete options.allowed_verbs;
+    } else if (verbs.length > 1) {
+      options.allowed_verbs = verbs;
+    }
+
+    if (mode === 'auto') options.route_intent = 'auto';
+    else options.route_intent = 'none';
+
+    return {
+      mode,
+      verb,
+      route_intent: options.route_intent,
+      allowed_verbs_count: Array.isArray(options.allowed_verbs) ? options.allowed_verbs.length : 0,
+      packs: Array.isArray(payload?.packs) ? payload.packs : [],
+      recall_enabled: payload?.use_recall ?? false,
+      recall_required: payload?.recall_required ?? false,
+      recall_profile: payload?.recall_profile ?? null,
+    };
+  }
+
   // Mode Switching
   const modeButtons = document.querySelectorAll('.mode-btn');
   modeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
-      currentMode = btn.dataset.mode || 'brain';
-      modeButtons.forEach(b => {
-        b.classList.remove('bg-indigo-600', 'text-white');
-        b.classList.add('bg-gray-700', 'text-gray-200');
-      });
-      btn.classList.add('bg-indigo-600', 'text-white');
-      btn.classList.remove('bg-gray-700', 'text-gray-200');
+      currentMode = btn.dataset.mode || (HUB_AUTO_DEFAULT_ENABLED ? 'auto' : 'brain');
+      setModeButtonStyles(modeButtons, currentMode);
       updateStatus(`Switched to ${currentMode} mode.`);
     });
   });
+
+  currentMode = HUB_AUTO_DEFAULT_ENABLED ? 'auto' : 'brain';
+  setModeButtonStyles(modeButtons, currentMode);
 
   // --- 4. Logic Functions ---
 
@@ -5195,7 +5246,7 @@ loadDismissedIds();
   function updateVerbLabel() {
       if (!verbSelectLabel) return;
       if (selectedVerbs.length === 0) {
-          verbSelectLabel.textContent = "No explicit override (auto route)";
+          verbSelectLabel.textContent = "No explicit verb override";
           verbSelectLabel.className = "text-gray-400 italic";
       } else {
           verbSelectLabel.textContent = `${selectedVerbs.length} verbs selected`;
@@ -5233,7 +5284,18 @@ loadDismissedIds();
       });
   }
   if (memoryPanelToggle) {
-    memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
+    memoryPanelToggle.addEventListener('click', () => {
+      toggleMemoryPanel();
+      renderOutboundRoutingDebug(computeRoutingFromUi({
+        mode: currentMode,
+        use_recall: recallToggle ? recallToggle.checked : false,
+        recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
+        recall_profile: recallProfileSelect && recallProfileSelect.value !== 'auto' ? recallProfileSelect.value : null,
+        packs: selectedPacks,
+        verbs: selectedVerbs,
+        options: {},
+      }, currentMode));
+    });
   }
 
   // --- WebSocket ---
@@ -5261,6 +5323,9 @@ loadDismissedIds();
           }
           if (d.memory_digest || d.recall_debug || typeof d.memory_used === 'boolean') {
             updateMemoryPanelFromResponse(d);
+          }
+          if (d.routing_debug) {
+            renderOutboundRoutingDebug(d.routing_debug);
           }
       } catch (err) {
           console.error("WS Parse Error", err);
@@ -5299,7 +5364,10 @@ loadDismissedIds();
        recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
        packs: selectedPacks,
        verbs: selectedVerbs,
+       options: {},
     };
+    const routeDebugPreview = computeRoutingFromUi(payload, currentMode);
+    renderOutboundRoutingDebug(routeDebugPreview);
 
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(payload));
@@ -5343,7 +5411,7 @@ loadDismissedIds();
         reader.readAsDataURL(blob);
         reader.onloadend = () => {
            if(socket && socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify({
+              const audioPayload = {
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
@@ -5351,8 +5419,13 @@ loadDismissedIds();
                use_recall: recallToggle ? recallToggle.checked : false,
                recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
                recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,
-               recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false
-             }));
+               recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
+               options: {},
+               packs: selectedPacks,
+               verbs: selectedVerbs,
+             };
+             renderOutboundRoutingDebug(computeRoutingFromUi(audioPayload, currentMode));
+             socket.send(JSON.stringify(audioPayload));
              updateStatus('Audio sent.');
            } else {
                updateStatus('Offline. Cannot send audio.');

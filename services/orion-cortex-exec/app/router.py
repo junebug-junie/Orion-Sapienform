@@ -50,11 +50,12 @@ class PlanRunner:
         depth = None
         if isinstance(plan.metadata, dict):
             depth = plan.metadata.get("execution_depth")
+        start_mode = (req.args.extra or {}).get("mode") or ctx.get("mode") or "brain"
         logger.info(
             "plan_start corr_id=%s depth=%s mode=%s verb=%s steps=%s",
             correlation_id,
             depth,
-            (req.args.extra or {}).get("mode") or ctx.get("mode") or "brain",
+            start_mode,
             plan.verb_name,
             [s.step_name for s in plan.steps],
         )

@@ -1,0 +1,14 @@
+Return strict JSON only matching schema AutoDepthDecisionV1:
+{"execution_depth":0|1|2|3,"primary_verb":string|null,"confidence":0..1,"reason":string,"source":"llm"}
+
+Rules:
+- depth=0 for simple direct questions.
+- depth=1 for one-shot cognition verb requests (analyze/summarize/extract/classify).
+- depth=2 for engineering/debug/refactor/log/stacktrace/docker/code tasks.
+- depth=3 only for explicit deliberate/debate/both-sides/deep council requests.
+- If depth != 1 set primary_verb=null.
+- If depth == 1 primary_verb MUST be one of this shortlist exactly:
+{{ verb_shortlist }}
+
+User text:
+{{ user_text }}

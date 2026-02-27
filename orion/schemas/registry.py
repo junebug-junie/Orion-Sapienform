@@ -21,6 +21,7 @@ from orion.schemas.cortex.contracts import (
     CortexChatResult,
     RecallDirective,
     AutoRouteDecisionV1,
+    AutoDepthDecisionV1,
 )
 from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
@@ -161,6 +162,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CortexChatResult": CortexChatResult,
     "RecallDirective": RecallDirective,
     "AutoRouteDecisionV1": AutoRouteDecisionV1,
+    "AutoDepthDecisionV1": AutoDepthDecisionV1,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields
     "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
     "ChatGptLogTurnV1": ChatGptLogTurnV1,

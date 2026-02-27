@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")
     diagnostic_agent_timeout_sec: float = Field(15.0, alias="DIAGNOSTIC_AGENT_TIMEOUT_SEC")
     orion_verb_backdoor_enabled: bool = Field(False, alias="ORION_VERB_BACKDOOR_ENABLED")
+    auto_router_llm_enabled: bool = Field(False, alias="AUTO_ROUTER_LLM_ENABLED")
 
     class Config:
         env_file = ".env"

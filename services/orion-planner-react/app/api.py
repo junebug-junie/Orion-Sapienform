@@ -460,13 +460,27 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
 
     except Exception as e:
         logger.exception("ReAct Loop Failed")
-        return PlannerResponse(status="error", error={"message": str(e)}, request_id=payload.request_id)
+        return PlannerResponse(status="error", stop_reason="error", error={"message": str(e)}, request_id=payload.request_id)
     finally:
         await bus.close()
+
+    stop_reason = "continue"
+    continue_reason = None
+    if final_answer and final_answer.content:
+        stop_reason = "final_answer"
+    if trace:
+        last_action = trace[-1].action if isinstance(trace[-1].action, dict) else None
+        if isinstance(last_action, dict):
+            stop_reason = "delegate"
+            continue_reason = "action_present"
+    if final_answer is None and not trace:
+        stop_reason = "continue"
 
     return PlannerResponse(
         request_id=payload.request_id,
         status="ok",
+        stop_reason=stop_reason,
+        continue_reason=continue_reason,
         final_answer=final_answer,
         trace=trace,
         usage=Usage(

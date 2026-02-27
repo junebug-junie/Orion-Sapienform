@@ -134,7 +134,7 @@ class PlanRunner:
                 error=f"inactive_verb:{plan.verb_name}",
             )
         # Supervised path: delegate to Supervisor for agentic / council flows
-        if mode in {"agent", "council"} or extra.get("supervised"):
+        if mode in {"agent", "council", "auto"} or extra.get("supervised"):
             supervisor = Supervisor(bus)
             return await supervisor.execute(
                 source=source,

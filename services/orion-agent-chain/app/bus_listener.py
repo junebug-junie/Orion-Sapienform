@@ -54,7 +54,10 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                     continue
                 if not msg or msg.get("type") not in ("message", "pmessage"):
                     continue
-                await _handle_request(bus, msg)
+                try:
+                    await _handle_request(bus, msg)
+                except Exception:
+                    logger.exception("[agent-chain] unhandled worker error while processing message")
     except asyncio.CancelledError:
         logger.info("[agent-chain] bus worker cancellation requested")
         raise
@@ -105,16 +108,25 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
         logger.info("[agent-chain] replied reply_to=%s corr_id=%s kind=%s", reply_channel, incoming_corr, resp.kind)
     except Exception as e:
         logger.error("[agent-chain] Execution Error: %s", e)
+        error_payload = {
+            "mode": payload.get("mode") or "agent",
+            "text": f"Agent-chain error: {e}",
+            "structured": {},
+            "planner_raw": {"status": "error", "error": str(e)},
+        }
         error_env = BaseEnvelope(
             kind="agent.chain.result",
             source=_source(),
             correlation_id=incoming_corr,
             causality_chain=env.causality_chain,
-            payload={"error": str(e)},
+            payload=error_payload,
         )
         logger.info("[agent-chain] replying to exec parent=%s reply_to=%s", incoming_corr, reply_channel)
-        await bus.publish(reply_channel, error_env)
-        logger.info("[agent-chain] replied reply_to=%s corr_id=%s kind=%s", reply_channel, incoming_corr, error_env.kind)
+        try:
+            await bus.publish(reply_channel, error_env)
+            logger.info("[agent-chain] replied reply_to=%s corr_id=%s kind=%s", reply_channel, incoming_corr, error_env.kind)
+        except Exception:
+            logger.exception("[agent-chain] failed to publish error response parent=%s reply_to=%s", incoming_corr, reply_channel)
     finally:
         if 'rpc_bus' in locals():
             with suppress(Exception):

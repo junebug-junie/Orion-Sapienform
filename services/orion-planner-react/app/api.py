@@ -250,6 +250,15 @@ NEXT STEP (JSON ONLY):
         raise RuntimeError(f"Planner LLM returned non-JSON: {repair_json(text)!r}") from e
 
 
+def _planner_error_step(message: str) -> Dict[str, Any]:
+    return {
+        "thought": message,
+        "finish": False,
+        "action": None,
+        "final_answer": None,
+    }
+
+
 def _fallback_tool_id(step_index: int, toolset: List[ToolDef]) -> Optional[str]:
     tool_ids = {t.tool_id for t in toolset}
     if step_index == 0 and "triage" in tool_ids:
@@ -285,16 +294,19 @@ async def _repair_or_fallback_step(
         "You violated planner contract. Output JSON ONLY with either "
         "(finish=true and final_answer) OR (finish=false and action object)."
     )
-    repaired = await _call_planner_llm(
-        bus=bus,
-        goal=goal,
-        toolset=toolset,
-        context=context,
-        prior_trace=prior_trace,
-        limits=limits,
-        system_override=repair_system,
-        options_override={"temperature": 0, "max_tokens": 128, "return_json": True},
-    )
+    try:
+        repaired = await _call_planner_llm(
+            bus=bus,
+            goal=goal,
+            toolset=toolset,
+            context=context,
+            prior_trace=prior_trace,
+            limits=limits,
+            system_override=repair_system,
+            options_override={"temperature": 0, "max_tokens": 128, "return_json": True},
+        )
+    except Exception as e:
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
 
     repaired_finish = repaired.get("finish", False)
     repaired_action = repaired.get("action")
@@ -454,15 +466,35 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
         for step_index in range(payload.limits.max_steps):
             steps_used = step_index + 1
 
-            planner_step = await _call_planner_llm(
+            try:
+                planner_step = await _call_planner_llm(
+                    bus=bus,
+                    goal=payload.goal,
+                    toolset=payload.toolset,
+                    context=payload.context,
+                    prior_trace=trace,
+                    limits=payload.limits,
+                )
+            except Exception as e:
+                logger.warning("Step %s: planner LLM call failed: %s", step_index, e)
+                planner_step = _planner_error_step(f"Planner call failed: {e}")
+
+            thought = planner_step.get("thought", "")
+            finish = planner_step.get("finish", False)
+            action = planner_step.get("action")
+            final = planner_step.get("final_answer")
+
+            planner_step = await _repair_or_fallback_step(
                 bus=bus,
+                step_index=step_index,
+                planner_step=planner_step,
                 goal=payload.goal,
                 toolset=payload.toolset,
                 context=payload.context,
                 prior_trace=trace,
                 limits=payload.limits,
+                delegate_only=delegate_only,
             )
-
             thought = planner_step.get("thought", "")
             finish = planner_step.get("finish", False)
             action = planner_step.get("action")

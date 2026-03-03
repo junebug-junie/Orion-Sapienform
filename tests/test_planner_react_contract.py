@@ -75,3 +75,36 @@ def test_delegate_mode_repairs_missing_action_with_fallback(monkeypatch: pytest.
     assert res.trace
     assert res.trace[-1].action is not None
     assert res.trace[-1].action["tool_id"] in {"triage", "plan_action", "analyze_text"}
+
+
+def test_delegate_mode_falls_back_when_planner_call_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_call_planner_llm(**_: object) -> dict:
+        raise RuntimeError("Planner LLM returned non-JSON: '{\"thought\":\"x\"'")
+
+    async def fake_connect(self) -> None:  # noqa: ANN001
+        return None
+
+    async def fake_close(self) -> None:  # noqa: ANN001
+        return None
+
+    async def fake_rpc(self, *args, **kwargs):  # noqa: ANN001
+        return {"data": b""}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    monkeypatch.setattr(api.OrionBusAsync, "connect", fake_connect)
+    monkeypatch.setattr(api.OrionBusAsync, "close", fake_close)
+    monkeypatch.setattr(api.OrionBusAsync, "rpc_request", fake_rpc)
+
+    req = PlannerRequest(
+        goal=Goal(description="Triage this"),
+        context=ContextBlock(conversation_history=[LLMMessage(role="user", content="Need triage")]),
+        toolset=[ToolDef(tool_id="triage", description="triage", input_schema={})],
+        preferences={"delegate_tool_execution": True},
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert res.status == "ok"
+    assert res.stop_reason == "delegate"
+    assert res.trace[-1].action is not None
+    assert res.trace[-1].action["tool_id"] == "triage"

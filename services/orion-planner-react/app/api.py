@@ -162,8 +162,8 @@ CORE INSTRUCTIONS:
 8. **NO DOUBLE ENCODING:** Output must be a JSON OBJECT, not a JSON string.
    - Do not wrap output in single or double quotes.
    - Do not escape quotes with backslashes.
-   - WRONG: "{\"thought\": \"...\"}"
-   - RIGHT: {"thought": "..."}
+   - WRONG: "{{\"thought\": \"...\"}}"
+   - RIGHT: {{"thought": "..."}}
 
 JSON FORMAT:
 {{

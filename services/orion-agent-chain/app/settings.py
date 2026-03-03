@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("orion-agent-chain.settings")
 
@@ -46,19 +46,34 @@ class AgentChainSettings(BaseSettings):
         alias="PLANNER_RESULT_PREFIX",
     )
 
+    llm_request_channel: str = Field(
+        "orion:exec:request:LLMGatewayService",
+        alias="LLM_REQUEST_CHANNEL",
+    )
+    llm_reply_prefix: str = Field(
+        "orion:llm:reply",
+        alias="LLM_REPLY_PREFIX",
+    )
+    cognition_base_dir: str = Field(
+        "/app/orion/cognition",
+        alias="COGNITION_BASE_DIR",
+    )
+
     # ─────────────────────────────────────────────────────────────
     # UPSTREAM CHANNELS (From UI/Client)
     # ─────────────────────────────────────────────────────────────
     # The UI will publish here, and we will listen (once we add the listener)
     agent_chain_request_channel: str = Field(
         "orion:exec:request:AgentChainService",
-        alias="AGENT_CHAIN_REQUEST_CHANNEL"
+        validation_alias=AliasChoices("AGENT_CHAIN_REQUEST_CHANNEL", "CHANNEL_AGENT_CHAIN_INTAKE"),
+        alias="AGENT_CHAIN_REQUEST_CHANNEL",
     )
 
     # We will publish the final answer here
     agent_chain_result_prefix: str = Field(
         "orion:exec:result:AgentChainService",
-        alias="AGENT_CHAIN_RESULT_PREFIX"
+        validation_alias=AliasChoices("AGENT_CHAIN_RESULT_PREFIX", "CHANNEL_AGENT_CHAIN_REPLY_PREFIX"),
+        alias="AGENT_CHAIN_RESULT_PREFIX",
     )
 
     # Defaults for the PlannerRequest

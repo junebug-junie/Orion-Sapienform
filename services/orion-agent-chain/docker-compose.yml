@@ -18,14 +18,19 @@ services:
 
       - PLANNER_REQUEST_CHANNEL=${PLANNER_REQUEST_CHANNEL}
       - PLANNER_RESULT_PREFIX=${PLANNER_RESULT_PREFIX}
+      - LLM_REQUEST_CHANNEL=${LLM_REQUEST_CHANNEL:-orion:exec:request:LLMGatewayService}
+      - LLM_REPLY_PREFIX=${LLM_REPLY_PREFIX:-orion:llm:reply}
+      - COGNITION_BASE_DIR=${COGNITION_BASE_DIR:-/app/orion/cognition}
 
       # ─────────────────────────────────────────────────────────────
       # UPSTREAM CHANNELS (From UI/Client)
       # ─────────────────────────────────────────────────────────────
       # The UI will publish here, and we will listen 
-      - AGENT_CHAIN_REQUEST_CHANNEL=${AGENT_CHAIN_REQUEST_CHANNEL}
+      - AGENT_CHAIN_REQUEST_CHANNEL=${AGENT_CHAIN_REQUEST_CHANNEL:-${CHANNEL_AGENT_CHAIN_INTAKE:-orion:exec:request:AgentChainService}}
+      - CHANNEL_AGENT_CHAIN_INTAKE=${CHANNEL_AGENT_CHAIN_INTAKE:-${AGENT_CHAIN_REQUEST_CHANNEL:-orion:exec:request:AgentChainService}}
       # We will publish the final answer here
-      - AGENT_CHAIN_RESULT_PREFIX=${AGENT_CHAIN_RESULT_PREFIX}
+      - AGENT_CHAIN_RESULT_PREFIX=${AGENT_CHAIN_RESULT_PREFIX:-${CHANNEL_AGENT_CHAIN_REPLY_PREFIX:-orion:exec:result:AgentChainService}}
+      - CHANNEL_AGENT_CHAIN_REPLY_PREFIX=${CHANNEL_AGENT_CHAIN_REPLY_PREFIX:-${AGENT_CHAIN_RESULT_PREFIX:-orion:exec:result:AgentChainService}}
 
       - AGENT_CHAIN_MAX_STEPS=${AGENT_CHAIN_MAX_STEPS}
       - AGENT_CHAIN_TIMEOUT_SECONDS=${AGENT_CHAIN_TIMEOUT_SECONDS}

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
 import time
 import uuid
@@ -11,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from orion.core.llm_json import parse_json_object, repair_json
 from .settings import settings
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage
@@ -76,24 +76,6 @@ def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
             return t.tool_id
 
     return requested
-
-
-def _repair_json(text: str) -> str:
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        text = text[start : end + 1]
-
-    text = text.replace(" None", " null").replace(":None", ":null")
-    text = text.replace(" True", " true").replace(":True", ":true")
-    text = text.replace(" False", " false").replace(":False", ":false")
-    text = re.sub(r",\s*([}\]])", r"\1", text)
-    return text
 
 
 def _format_schema(schema: Dict[str, Any]) -> str:
@@ -177,6 +159,11 @@ CORE INSTRUCTIONS:
 7. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
    - CORRECT: "action": {{ "tool_id": "assess_risk", "input": {{...}} }}
    - WRONG: "action": "assess_risk"
+8. **NO DOUBLE ENCODING:** Output must be a JSON OBJECT, not a JSON string.
+   - Do not wrap output in single or double quotes.
+   - Do not escape quotes with backslashes.
+   - WRONG: "{\"thought\": \"...\"}"
+   - RIGHT: {"thought": "..."}
 
 JSON FORMAT:
 {{
@@ -244,13 +231,10 @@ NEXT STEP (JSON ONLY):
     if "<think>" in text:
         text = text.split("</think>")[-1].strip()
 
-    text = _repair_json(text)
-    text = text.replace(r"\'", "'")
-
     try:
-        return json.loads(text)
+        return parse_json_object(text)
     except Exception as e:
-        raise RuntimeError(f"Planner LLM returned non-JSON: {text!r}") from e
+        raise RuntimeError(f"Planner LLM returned non-JSON: {repair_json(text)!r}") from e
 
 
 async def _call_cortex_verb(

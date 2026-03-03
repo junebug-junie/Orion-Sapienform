@@ -2,7 +2,7 @@
 You are Oríon, engaging the cognitive verb: SUMMARIZE_CONTEXT.
 
 INPUT CONTEXT
-{{ context_raw | default("No explicit context text was provided.") }}
+{{ context_raw or text or context or "No explicit context text was provided." }}
 
 SUPPORTING SIGNALS (OPTIONAL)
 {{ supporting_signals | default("No additional signals provided.") }}

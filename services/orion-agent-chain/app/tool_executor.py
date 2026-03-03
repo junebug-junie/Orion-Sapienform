@@ -55,10 +55,37 @@ class ToolExecutor:
                     return item["prompt_template"]
         return None
 
-    def _render_prompt(self, template_name: str | None, tool_input: Dict[str, Any]) -> str:
+
+    def _normalize_inputs(self, tool_id: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
         ctx = dict(tool_input or {})
-        if "text" not in ctx:
-            ctx["text"] = json.dumps(tool_input or {}, ensure_ascii=False)
+
+        raw_text = ctx.get("text")
+        if isinstance(raw_text, str):
+            text_value = raw_text
+        elif raw_text is None:
+            text_value = json.dumps(ctx, ensure_ascii=False) if ctx else ""
+        else:
+            text_value = str(raw_text)
+        ctx["text"] = text_value
+
+        fallback_map = {
+            "triage": "request",
+            "plan_action": "goal",
+            "goal_formulate": "intention",
+            "summarize_context": "context_raw",
+            "tag_enrich": "fragment",
+            "pattern_detect": "fragments",
+            "evaluate": "output",
+            "assess_risk": "scenario",
+        }
+        target_field = fallback_map.get(tool_id)
+        if target_field and target_field not in ctx:
+            ctx[target_field] = text_value
+
+        return ctx
+
+    def _render_prompt(self, template_name: str | None, tool_input: Dict[str, Any]) -> str:
+        ctx = self._normalize_inputs("", tool_input)
         if not template_name:
             return ctx["text"]
         try:
@@ -73,8 +100,9 @@ class ToolExecutor:
         if isinstance(services, list) and services and "LLMGatewayService" not in services:
             raise RuntimeError(f"Tool {tool_id} is not LLM-only and cannot be executed in agent-chain delegate mode")
 
+        normalized_input = self._normalize_inputs(tool_id, tool_input)
         template_name = self._resolve_prompt_template(verb_cfg)
-        prompt = self._render_prompt(template_name, tool_input)
+        prompt = self._render_prompt(template_name, normalized_input)
 
         corr = str(uuid4())
         reply_channel = f"{settings.llm_reply_prefix}:{corr}"
@@ -85,7 +113,7 @@ class ToolExecutor:
             reply_to=reply_channel,
             payload={
                 "messages": [{"role": "user", "content": prompt}],
-                "raw_user_text": str((tool_input or {}).get("text") or ""),
+                "raw_user_text": normalized_input.get("text") or "",
                 "options": {"temperature": 0.2},
             },
         )

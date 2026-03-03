@@ -37,6 +37,7 @@ async def execute_agent_chain(
 ) -> AgentChainResult:
     parent_corr_id = str(correlation_id or uuid.uuid4())
     tools = _resolve_tools(body)
+    logger.info("[agent-chain] resolved_tools count=%s tool_ids=%s", len(tools), [t.tool_id for t in tools])
 
     planner_payload: dict[str, Any] = {
         "request_id": str(uuid.uuid4()),
@@ -101,6 +102,7 @@ async def execute_agent_chain(
             action = last.get("action") or {}
             tool_id = action.get("tool_id")
             tool_input = action.get("input") or {}
+            logger.info("[agent-chain] planner_action tool_id=%s input_keys=%s", tool_id, sorted(tool_input.keys()) if isinstance(tool_input, dict) else [])
             if not tool_id:
                 stop_reason = str(raw_resp.get("stop_reason") or "")
                 continue_reason = str(raw_resp.get("continue_reason") or "")

@@ -122,6 +122,43 @@ class BusClient:
                 logger.error(f"Gateway consumer failed: {e}", exc_info=True)
                 await asyncio.sleep(5.0)
 
+
+    async def _publish_gateway_reply(
+        self,
+        *,
+        reply_to: str | None,
+        correlation_id: Any,
+        causality_chain: list[Any] | None,
+        payload: CortexChatResult,
+    ) -> None:
+        if not reply_to:
+            logger.warning(f"No reply_to in gateway request correlation_id={correlation_id}")
+            return
+
+        reply_env = BaseEnvelope(
+            kind="cortex.gateway.chat.result",
+            source=self._service_ref(),
+            correlation_id=correlation_id,
+            causality_chain=causality_chain or [],
+            payload=payload.model_dump(mode="json"),
+        )
+        await self.bus.publish(reply_to, reply_env)
+        logger.info(f"Sent reply to {reply_to}")
+
+    def _build_error_chat_result(self, *, correlation_id: Any, message: str) -> CortexChatResult:
+        cortex_result = CortexClientResult(
+            ok=False,
+            mode="gateway",
+            verb="gateway",
+            status="error",
+            final_text=None,
+            memory_used=False,
+            error={"message": message},
+            correlation_id=str(correlation_id) if correlation_id is not None else None,
+            metadata={"source": self.settings.service_name},
+        )
+        return CortexChatResult(cortex_result=cortex_result, final_text=None)
+
     async def handle_gateway_request(self, message: Dict[str, Any]):
         # decode
         decoded = self.bus.codec.decode(message.get("data"))
@@ -223,20 +260,25 @@ class BusClient:
                 spark_introspection_triggered,
             )
 
-            # Reply
-            if env.reply_to:
-                reply_env = BaseEnvelope(
-                    kind="cortex.gateway.chat.result",
-                    source=self._service_ref(),
-                    correlation_id=env.correlation_id,
-                    causality_chain=chain,
-                    payload=res_payload.model_dump(mode="json")
-                )
-                await self.bus.publish(env.reply_to, reply_env)
-                logger.info(f"Sent reply to {env.reply_to}")
-            else:
-                logger.warning(f"No reply_to in gateway request correlation_id={env.correlation_id}")
+            await self._publish_gateway_reply(
+                reply_to=env.reply_to,
+                correlation_id=env.correlation_id,
+                causality_chain=chain,
+                payload=res_payload,
+            )
 
         except Exception as e:
             logger.error(f"Error handling gateway request: {e}", exc_info=True)
-            # We could send an error reply here if we wanted
+            error_payload = self._build_error_chat_result(
+                correlation_id=getattr(env, "correlation_id", None),
+                message=str(e),
+            )
+            try:
+                await self._publish_gateway_reply(
+                    reply_to=getattr(env, "reply_to", None),
+                    correlation_id=getattr(env, "correlation_id", None),
+                    causality_chain=getattr(env, "causality_chain", None),
+                    payload=error_payload,
+                )
+            except Exception:
+                logger.exception("Failed to publish gateway error reply corr=%s", getattr(env, "correlation_id", None))

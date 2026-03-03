@@ -1,12 +1,35 @@
-# services/orion-agent-chain/app/tool_registry.py
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 from orion.cognition.packs_loader import PackManager
 from orion.cognition.planner.loader import VerbRegistry
+
 from .models import ToolDef
+
+_RICH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "request": {"type": "string"},
+        "goal": {"type": "string"},
+        "intention": {"type": "string"},
+        "scenario": {"type": "string"},
+        "output": {"type": "string"},
+        "context_raw": {"type": "string"},
+        "fragment": {"type": "string"},
+        "fragments": {"type": ["string", "array"]},
+        "context": {"type": ["string", "object"]},
+        "criteria": {"type": ["string", "array", "object"]},
+        "supporting_signals": {"type": ["string", "array", "object"]},
+        "themes": {"type": ["string", "array"]},
+        "system_state": {"type": ["string", "object"]},
+        "facts": {"type": ["string", "array", "object"]},
+        "content": {"type": "string"},
+    },
+    "required": ["text"],
+}
 
 
 class ToolRegistry:
@@ -41,7 +64,6 @@ class ToolRegistry:
         for pack_name in pack_names:
             pack = self._pack_manager.get_pack(pack_name)
             if not pack:
-                # avoid NoneType.attr explosions if someone passes a bad pack name
                 continue
 
             for verb_name in pack.verbs:
@@ -50,15 +72,11 @@ class ToolRegistry:
                 seen.add(verb_name)
 
                 verb_cfg = self._verb_registry.get(verb_name)
+                services = verb_cfg.services or []
+                if services != ["LLMGatewayService"]:
+                    continue
 
-                input_schema = verb_cfg.input_schema or {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                        "context": {"type": "object"},
-                    },
-                    "required": ["text"],
-                }
+                input_schema = verb_cfg.input_schema or _RICH_INPUT_SCHEMA
                 output_schema = verb_cfg.output_schema or {
                     "type": "object",
                     "properties": {

@@ -163,7 +163,18 @@ CORE INSTRUCTIONS:
 1. **ANSWER THE USER'S INTENT EFFICIENTLY.** 2. **DEFINITION OF DONE:** As soon as you have the information to answer the user, STOP. Set "finish": true.
 3. **DO NOT EXECUTE SUGGESTIONS:** If a tool result says "Mitigation: Consult a doctor", do NOT call a tool to do that. REPORT the mitigation to the user.
 4. **FORMAT:** Output strict JSON. 
-5. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
+5. **FIRST ACTION BIAS:** If TRACE is empty and the toolset includes "triage", choose "triage" as the first action.
+6. **INPUT FIELD MAPPING:** Populate tool-specific intent fields when calling tools:
+   - triage.request
+   - plan_action.goal
+   - goal_formulate.intention
+   - summarize_context.context_raw
+   - tag_enrich.fragment
+   - pattern_detect.fragments
+   - evaluate.output
+   - assess_risk.scenario
+   Also include "text" with the raw user request whenever possible.
+7. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
    - CORRECT: "action": {{ "tool_id": "assess_risk", "input": {{...}} }}
    - WRONG: "action": "assess_risk"
 

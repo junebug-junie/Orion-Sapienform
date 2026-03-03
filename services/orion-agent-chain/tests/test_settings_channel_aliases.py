@@ -33,3 +33,16 @@ def test_agent_chain_settings_prefers_canonical_env_over_legacy(monkeypatch):
     cfg = AgentChainSettings()
     assert cfg.agent_chain_request_channel == "orion:exec:request:AgentChainService:canonical"
     assert cfg.agent_chain_result_prefix == "orion:exec:result:AgentChainService:canonical"
+
+
+def test_agent_chain_settings_llm_and_cognition_defaults(monkeypatch):
+    monkeypatch.delenv("LLM_REQUEST_CHANNEL", raising=False)
+    monkeypatch.delenv("LLM_REPLY_PREFIX", raising=False)
+    monkeypatch.delenv("COGNITION_BASE_DIR", raising=False)
+
+    from app.settings import AgentChainSettings
+
+    cfg = AgentChainSettings()
+    assert cfg.llm_request_channel == "orion:exec:request:LLMGatewayService"
+    assert cfg.llm_reply_prefix == "orion:llm:reply"
+    assert cfg.cognition_base_dir == "/app/orion/cognition"

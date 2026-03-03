@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("orion-agent-chain.settings")
 
@@ -44,6 +44,19 @@ class AgentChainSettings(BaseSettings):
     planner_result_prefix: str = Field(
         "orion:exec:result:PlannerReactService",
         alias="PLANNER_RESULT_PREFIX",
+    )
+
+    llm_request_channel: str = Field(
+        "orion:exec:request:LLMGatewayService",
+        alias="LLM_REQUEST_CHANNEL",
+    )
+    llm_reply_prefix: str = Field(
+        "orion:llm:reply",
+        alias="LLM_REPLY_PREFIX",
+    )
+    cognition_base_dir: str = Field(
+        "/app/orion/cognition",
+        alias="COGNITION_BASE_DIR",
     )
 
     # ─────────────────────────────────────────────────────────────

@@ -18,6 +18,9 @@ services:
 
       - PLANNER_REQUEST_CHANNEL=${PLANNER_REQUEST_CHANNEL}
       - PLANNER_RESULT_PREFIX=${PLANNER_RESULT_PREFIX}
+      - LLM_REQUEST_CHANNEL=${LLM_REQUEST_CHANNEL:-orion:exec:request:LLMGatewayService}
+      - LLM_REPLY_PREFIX=${LLM_REPLY_PREFIX:-orion:llm:reply}
+      - COGNITION_BASE_DIR=${COGNITION_BASE_DIR:-/app/orion/cognition}
 
       # ─────────────────────────────────────────────────────────────
       # UPSTREAM CHANNELS (From UI/Client)

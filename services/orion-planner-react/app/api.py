@@ -351,6 +351,101 @@ async def _repair_or_fallback_step(
     }
 
 
+def _planner_error_step(message: str) -> Dict[str, Any]:
+    return {
+        "thought": message,
+        "finish": False,
+        "action": None,
+        "final_answer": None,
+    }
+
+
+def _fallback_tool_id(step_index: int, toolset: List[ToolDef]) -> Optional[str]:
+    tool_ids = {t.tool_id for t in toolset}
+    if step_index == 0 and "triage" in tool_ids:
+        return "triage"
+    if "plan_action" in tool_ids:
+        return "plan_action"
+    if "analyze_text" in tool_ids:
+        return "analyze_text"
+    if toolset:
+        return toolset[0].tool_id
+    return None
+
+
+async def _repair_or_fallback_step(
+    *,
+    bus: OrionBusAsync,
+    step_index: int,
+    planner_step: Dict[str, Any],
+    goal: Goal,
+    toolset: List[ToolDef],
+    context: ContextBlock,
+    prior_trace: List[TraceStep],
+    limits: Limits,
+    delegate_only: bool,
+) -> Dict[str, Any]:
+    finish = planner_step.get("finish", False)
+    action = planner_step.get("action")
+    final = planner_step.get("final_answer")
+    if finish or action is not None or final is not None:
+        return planner_step
+
+    repair_system = (
+        "You violated planner contract. Output JSON ONLY with either "
+        "(finish=true and final_answer) OR (finish=false and action object)."
+    )
+    try:
+        repaired = await _call_planner_llm(
+            bus=bus,
+            goal=goal,
+            toolset=toolset,
+            context=context,
+            prior_trace=prior_trace,
+            limits=limits,
+            system_override=repair_system,
+            options_override={"temperature": 0, "max_tokens": 128, "return_json": True},
+        )
+    except Exception as e:
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
+
+    repaired_finish = repaired.get("finish", False)
+    repaired_action = repaired.get("action")
+    repaired_final = repaired.get("final_answer")
+    if repaired_finish or repaired_action is not None or repaired_final is not None:
+        return repaired
+
+    if delegate_only:
+        tool_id = _fallback_tool_id(step_index, toolset)
+        if not tool_id:
+            return {
+                "thought": f"{planner_step.get('thought', '')} Planner contract failed and no tool is available.",
+                "finish": True,
+                "action": None,
+                "final_answer": {"content": "Planner failed: no available delegate tool."},
+            }
+
+        last_user = ""
+        if context.conversation_history:
+            last_msg = context.conversation_history[-1]
+            last_user = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content", "")
+        text_value = last_user or goal.description
+
+        return {
+            "thought": f"{planner_step.get('thought', '')} [Fallback action injected after contract violation.]".strip(),
+            "finish": False,
+            "action": {"tool_id": tool_id, "input": {"text": text_value, "request": goal.description}},
+            "final_answer": None,
+        }
+
+    return {
+        "thought": planner_step.get("thought", ""),
+        "finish": True,
+        "action": None,
+        "final_answer": {"content": "Planner failed contract: finish=false with no action after repair attempt."},
+    }
+
+
 async def _call_cortex_verb(
     bus: OrionBusAsync,
     verb_name: str,

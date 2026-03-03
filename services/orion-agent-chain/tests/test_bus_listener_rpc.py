@@ -159,3 +159,25 @@ def test_nested_planner_child_corr_still_replies_to_exec_parent(monkeypatch):
     assert out_channel == reply_to
     assert str(out_env.correlation_id) == parent_corr
     assert out_env.payload.get("text") == "planner done"
+
+
+
+def test_bus_listener_error_reply_uses_agent_chain_result_shape(monkeypatch):
+    corr = str(uuid4())
+    reply_to = f"orion:exec:result:AgentChainService:{corr}"
+    env = _request_env(corr=corr, reply_to=reply_to)
+    bus = _FakeBus(env)
+
+    async def _boom(_req, *, correlation_id=None, rpc_bus=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bus_listener, "execute_agent_chain", _boom)
+
+    asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
+
+    assert len(bus.published) == 1
+    channel, result_env = bus.published[0]
+    assert channel == reply_to
+    assert result_env.payload.get("mode") == "agent"
+    assert "Agent-chain error:" in (result_env.payload.get("text") or "")
+    assert isinstance(result_env.payload.get("planner_raw"), dict)

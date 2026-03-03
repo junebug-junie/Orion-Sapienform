@@ -58,3 +58,28 @@ def test_agent_chain_delegate_loop_executes_action_and_returns_final(monkeypatch
     assert calls["planner"] == 2
     assert len(fake_exec.calls) == 1
     assert fake_exec.calls[0][0] == "analyze_text"
+
+
+
+def test_agent_chain_delegate_loop_allows_planner_no_action_terminal(monkeypatch):
+    async def _fake_planner(payload, *, parent_correlation_id=None, rpc_bus=None):
+        return {
+            "status": "ok",
+            "stop_reason": "continue",
+            "continue_reason": "none",
+            "trace": [
+                {
+                    "step_index": 0,
+                    "thought": "Here is the final summary.",
+                    "action": None,
+                    "observation": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body: [])
+
+    req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
+    out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
+    assert out.text == "Here is the final summary."

@@ -102,6 +102,23 @@ async def execute_agent_chain(
             tool_id = action.get("tool_id")
             tool_input = action.get("input") or {}
             if not tool_id:
+                stop_reason = str(raw_resp.get("stop_reason") or "")
+                continue_reason = str(raw_resp.get("continue_reason") or "")
+                # Planner may conclude without emitting a delegate action in this step.
+                if stop_reason in {"final_answer", "continue"} or continue_reason != "action_present":
+                    fallback = ""
+                    if isinstance(last.get("thought"), str):
+                        fallback = last.get("thought") or ""
+                    if not fallback and isinstance(last.get("observation"), dict):
+                        fallback = str(last.get("observation", {}).get("llm_output") or "")
+                    if not fallback:
+                        fallback = "Planner completed without explicit action; no final answer content provided."
+                    return AgentChainResult(
+                        mode=body.mode,
+                        text=fallback,
+                        structured={},
+                        planner_raw=raw_resp,
+                    )
                 raise RuntimeError("Planner delegate response missing action.tool_id")
 
             observation = await tool_executor.execute_llm_verb(

@@ -29,6 +29,25 @@ def _resolve_tools(body: AgentChainRequest) -> List[ToolDef]:
     return [ToolDef(**(t.dict() if hasattr(t, "dict") else t)) for t in local_tools]
 
 
+def _select_non_triage_tool(tools: List[ToolDef], preferred_order: List[str] | None = None) -> str | None:
+    preferred = preferred_order or ["plan_action", "analyze_text"]
+    tool_ids = [t.tool_id for t in tools if t.tool_id != "triage"]
+    for candidate in preferred:
+        if candidate in tool_ids:
+            return candidate
+    return tool_ids[0] if tool_ids else None
+
+
+def _best_effort_text(*, last_thought: str, last_observation: Any, reason: str) -> str:
+    if isinstance(last_observation, dict):
+        obs = last_observation.get("llm_output") or last_observation.get("text") or last_observation.get("content")
+        if isinstance(obs, str) and obs.strip():
+            return obs
+    if isinstance(last_thought, str) and last_thought.strip():
+        return last_thought
+    return reason
+
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -71,6 +90,10 @@ async def execute_agent_chain(
     if owns_bus:
         await working_bus.connect()
     tool_executor = ToolExecutor(working_bus)
+    triage_used = False
+    tool_repeat_count: dict[str, int] = {}
+    last_thought = ""
+    last_observation: Any = None
 
     try:
         for step_idx in range(settings.default_max_steps):
@@ -102,6 +125,7 @@ async def execute_agent_chain(
             action = last.get("action") or {}
             tool_id = action.get("tool_id")
             tool_input = action.get("input") or {}
+            last_thought = str(last.get("thought") or "")
             logger.info("[agent-chain] planner_action tool_id=%s input_keys=%s", tool_id, sorted(tool_input.keys()) if isinstance(tool_input, dict) else [])
             if not tool_id:
                 stop_reason = str(raw_resp.get("stop_reason") or "")
@@ -123,16 +147,49 @@ async def execute_agent_chain(
                     )
                 raise RuntimeError("Planner delegate response missing action.tool_id")
 
+            if tool_id == "triage" and triage_used:
+                replacement = _select_non_triage_tool(tools)
+                if replacement:
+                    logger.warning("[agent-chain] overriding repeated triage -> %s", replacement)
+                    tool_id = replacement
+                else:
+                    best_effort = _best_effort_text(
+                        last_thought=last_thought,
+                        last_observation=last_observation,
+                        reason="Triage already executed and no non-triage tool available.",
+                    )
+                    return AgentChainResult(mode=body.mode, text=best_effort, structured={}, planner_raw=raw_resp)
+
+            tool_repeat_count[tool_id] = tool_repeat_count.get(tool_id, 0) + 1
+            if tool_repeat_count[tool_id] > 2:
+                best_effort = _best_effort_text(
+                    last_thought=last_thought,
+                    last_observation=last_observation,
+                    reason=f"Stopping repeated planner delegation for tool '{tool_id}'.",
+                )
+                return AgentChainResult(mode=body.mode, text=best_effort, structured={}, planner_raw=raw_resp)
+
             observation = await tool_executor.execute_llm_verb(
                 tool_id,
                 tool_input if isinstance(tool_input, dict) else {},
                 parent_correlation_id=parent_corr_id,
             )
+            if tool_id == "triage":
+                triage_used = True
+                planner_payload["toolset"] = [
+                    t for t in planner_payload.get("toolset", []) if t.get("tool_id") != "triage"
+                ]
             last["observation"] = observation
+            last_observation = observation
             trace[-1] = last
             planner_payload["trace"] = trace
 
-        raise RuntimeError("Agent-chain reached max delegated steps without final_answer")
+        best_effort = _best_effort_text(
+            last_thought=last_thought,
+            last_observation=last_observation,
+            reason="Agent-chain reached max delegated steps; returning best-effort summary.",
+        )
+        return AgentChainResult(mode=body.mode, text=best_effort, structured={}, planner_raw={"trace": planner_payload.get("trace", [])})
     finally:
         if owns_bus:
             await working_bus.close()

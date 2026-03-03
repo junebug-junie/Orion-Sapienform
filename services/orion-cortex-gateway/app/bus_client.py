@@ -145,19 +145,28 @@ class BusClient:
         await self.bus.publish(reply_to, reply_env)
         logger.info(f"Sent reply to {reply_to}")
 
-    def _build_error_chat_result(self, *, correlation_id: Any, message: str) -> CortexChatResult:
+    def _build_error_chat_result(
+        self,
+        *,
+        correlation_id: Any,
+        message: str,
+        mode: str = "unknown",
+        verb: str = "unknown",
+        error_type: str = "gateway_error",
+    ) -> CortexChatResult:
         cortex_result = CortexClientResult(
             ok=False,
-            mode="gateway",
-            verb="gateway",
-            status="error",
-            final_text=None,
+            mode=mode or "unknown",
+            verb=verb or "unknown",
+            status="fail",
+            final_text=f"Request failed: {message}",
             memory_used=False,
-            error={"message": message},
+            steps=[],
+            error={"message": message, "type": error_type},
             correlation_id=str(correlation_id) if correlation_id is not None else None,
             metadata={"source": self.settings.service_name},
         )
-        return CortexChatResult(cortex_result=cortex_result, final_text=None)
+        return CortexChatResult(cortex_result=cortex_result, final_text=cortex_result.final_text)
 
     async def handle_gateway_request(self, message: Dict[str, Any]):
         # decode
@@ -235,7 +244,30 @@ class BusClient:
             )
 
             # Wrap result
-            cortex_res_obj = CortexClientResult.model_validate(orch_result_dict)
+            try:
+                cortex_res_obj = CortexClientResult.model_validate(orch_result_dict)
+            except Exception as parse_error:
+                logger.error(
+                    "CortexClientResult validation failed corr=%s; sending failure payload",
+                    env.correlation_id,
+                    exc_info=True,
+                )
+                failed_payload = self._build_error_chat_result(
+                    correlation_id=env.correlation_id,
+                    message=f"Invalid Cortex result payload: {parse_error}",
+                    mode=req.mode,
+                    verb=(req.verb or "chat_general"),
+                    error_type="invalid_cortex_result",
+                )
+                await self._publish_gateway_reply(
+                    reply_to=env.reply_to,
+                    correlation_id=env.correlation_id,
+                    causality_chain=chain,
+                    payload=failed_payload,
+                )
+                logger.info("Sent gateway error reply corr=%s reason=invalid_cortex_result", env.correlation_id)
+                return
+
             executed_verbs: list[str] = []
             if isinstance(cortex_res_obj.metadata, dict):
                 raw_executed = cortex_res_obj.metadata.get("executed_verbs") or []
@@ -272,6 +304,9 @@ class BusClient:
             error_payload = self._build_error_chat_result(
                 correlation_id=getattr(env, "correlation_id", None),
                 message=str(e),
+                mode=getattr(locals().get("req", None), "mode", "unknown"),
+                verb=getattr(locals().get("req", None), "verb", "unknown"),
+                error_type=type(e).__name__,
             )
             try:
                 await self._publish_gateway_reply(
@@ -280,5 +315,6 @@ class BusClient:
                     causality_chain=getattr(env, "causality_chain", None),
                     payload=error_payload,
                 )
+                logger.info("Sent gateway error reply corr=%s", getattr(env, "correlation_id", None))
             except Exception:
                 logger.exception("Failed to publish gateway error reply corr=%s", getattr(env, "correlation_id", None))

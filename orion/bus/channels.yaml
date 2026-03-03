@@ -132,6 +132,14 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:exec:result:LLMGatewayService:*"
+    kind: "result"
+    schema_id: "ChatResultPayload"
+    producer_services: ["orion-llm-gateway"]
+    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-planner-react"]
+    stability: "experimental"
+    since: "2026-01-08"
+
   - name: "orion:exec:result:*"
     kind: "result"
     schema_id: "CortexExecResultPayload"
@@ -165,6 +173,14 @@ channels:
     since: "2026-01-08"
 
   - name: "orion:exec:result:PlannerReactService"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-planner-react"]
+    consumer_services: ["orion-agent-chain", "orion-cortex-exec", "orion-hub"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:PlannerReactService:*"
     kind: "result"
     schema_id: "GenericPayloadV1"
     producer_services: ["orion-planner-react"]
@@ -237,6 +253,14 @@ channels:
     since: "2026-01-08"
 
   - name: "orion:exec:result:AgentChainService"
+    kind: "result"
+    schema_id: "GenericPayloadV1"
+    producer_services: ["orion-agent-chain"]
+    consumer_services: ["orion-hub", "orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-01-08"
+
+  - name: "orion:exec:result:AgentChainService:*"
     kind: "result"
     schema_id: "GenericPayloadV1"
     producer_services: ["orion-agent-chain"]

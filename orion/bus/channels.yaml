@@ -175,7 +175,7 @@ channels:
   - name: "orion:exec:request:AgentChainService"
     kind: "request"
     schema_id: "GenericPayloadV1"
-    producer_services: ["orion-hub"]
+    producer_services: ["orion-hub", "orion-cortex-exec"]
     consumer_services: ["orion-agent-chain"]
     stability: "experimental"
     since: "2026-01-08"
@@ -240,7 +240,7 @@ channels:
     kind: "result"
     schema_id: "GenericPayloadV1"
     producer_services: ["orion-agent-chain"]
-    consumer_services: ["orion-hub"]
+    consumer_services: ["orion-hub", "orion-cortex-exec"]
     stability: "experimental"
     since: "2026-01-08"
 

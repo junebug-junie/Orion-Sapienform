@@ -500,6 +500,22 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
             action = planner_step.get("action")
             final = planner_step.get("final_answer")
 
+            planner_step = await _repair_or_fallback_step(
+                bus=bus,
+                step_index=step_index,
+                planner_step=planner_step,
+                goal=payload.goal,
+                toolset=payload.toolset,
+                context=payload.context,
+                prior_trace=trace,
+                limits=payload.limits,
+                delegate_only=delegate_only,
+            )
+            thought = planner_step.get("thought", "")
+            finish = planner_step.get("finish", False)
+            action = planner_step.get("action")
+            final = planner_step.get("final_answer")
+
             if finish or (final and not action):
                 raw_content = final.get("content") if final else thought
                 if isinstance(raw_content, (dict, list)):

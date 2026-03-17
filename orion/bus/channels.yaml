@@ -140,6 +140,22 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:exec:result:PadRpc:*"
+    kind: "result"
+    schema_id: "PadRpcResponseV1"
+    producer_services: ["orion-landing-pad"]
+    consumer_services: ["orion-cortex-exec", "*"]
+    stability: "experimental"
+    since: "2026-03-17"
+
+  - name: "orion:exec:result:StateService:*"
+    kind: "result"
+    schema_id: "StateLatestReply"
+    producer_services: ["orion-state-service"]
+    consumer_services: ["orion-cortex-exec", "*"]
+    stability: "experimental"
+    since: "2026-03-17"
+
   - name: "orion:exec:result:*"
     kind: "result"
     schema_id: "CortexExecResultPayload"

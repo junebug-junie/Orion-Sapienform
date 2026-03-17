@@ -1384,7 +1384,7 @@ async def call_step_services(
                 turn_effect = None
 
                 # Landing Pad
-                pad_reply_channel = f"orion:exec:result:PadRpc:{uuid4()}"
+                pad_reply_channel = f"{settings.channel_pad_rpc_reply_prefix}:{uuid4()}"
                 pad_req = PadRpcRequestV1(
                     request_id=correlation_id,
                     reply_channel=pad_reply_channel,
@@ -1414,7 +1414,7 @@ async def call_step_services(
                     pad_summary = f"error: {e}"
 
                 # Spark (State Service)
-                state_reply_channel = f"orion:exec:result:StateService:{uuid4()}"
+                state_reply_channel = f"{settings.channel_state_reply_prefix}:{uuid4()}"
                 state_req = StateGetLatestRequest(scope="global")
                 state_env = BaseEnvelope(
                     kind="state.get_latest.v1",

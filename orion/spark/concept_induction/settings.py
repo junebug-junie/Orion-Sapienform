@@ -25,8 +25,10 @@ class ConceptSettings(BaseSettings):
     intake_channels: List[str] = Field(
         default_factory=lambda: [
             "orion:chat:history:log",
-            "orion:collapse:mirror",
-            "orion:memory:episode",
+            "orion:collapse:sql-write",
+            "orion:spark:telemetry",
+            "orion:metacognition:tick",
+            "orion:cognition:trace",
         ],
         validation_alias=AliasChoices("BUS_INTAKE_CHANNELS", "CONCEPT_INTAKE_CHANNELS"),
     )
@@ -49,6 +51,14 @@ class ConceptSettings(BaseSettings):
     forward_sql_channel: str = Field(
         "orion:collapse:sql-write",
         alias="BUS_SQL_OUT",
+    )
+    drive_state_channel: str = Field(
+        "orion:memory:drives:state",
+        alias="BUS_DRIVE_STATE_OUT",
+    )
+    tension_event_channel: str = Field(
+        "orion:memory:tension:event",
+        alias="BUS_TENSION_EVENT_OUT",
     )
 
     # Windowing
@@ -83,6 +93,10 @@ class ConceptSettings(BaseSettings):
     store_path: str = Field(
         "/tmp/concept-induction-state.json", alias="CONCEPT_STORE_PATH"
     )
+    drive_decay_tau_sec: float = Field(1800.0, alias="DRIVE_DECAY_TAU_SEC")
+    drive_saturation_gain: float = Field(1.8, alias="DRIVE_SATURATION_GAIN")
+    drive_activation_on: float = Field(0.62, alias="DRIVE_ACTIVATION_ON")
+    drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
 
     # Heartbeat
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")

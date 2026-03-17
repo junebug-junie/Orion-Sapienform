@@ -9,11 +9,14 @@ from unittest.mock import patch
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.spark.concept_induction.clusterer import ConceptClusterer
+from orion.spark.concept_induction.drives import DriveEngine
 from orion.spark.concept_induction.embedder import EmbeddingClient
 from orion.spark.concept_induction.extractor import SpacyConceptExtractor
 from orion.spark.concept_induction.inducer import ConceptInducer, WindowEvent
 from orion.spark.concept_induction.settings import ConceptSettings
 from orion.spark.concept_induction.store import LocalProfileStore
+from orion.spark.concept_induction.tensions import extract_tensions
+from orion.spark.concept_induction.bus_worker import ConceptWorker
 
 
 def _env_with_text(text: str) -> BaseEnvelope:
@@ -60,8 +63,8 @@ class ConceptInductionTests(unittest.TestCase):
         inducer = ConceptInducer(settings)
         now = datetime.now(timezone.utc)
         window = [
-            WindowEvent(text="Orion reflected with Juniper about the lake.", timestamp=now, envelope=_env_with_text("x")),
-            WindowEvent(text="Juniper shared new plans for Orion", timestamp=now + timedelta(seconds=1), envelope=_env_with_text("y")),
+            WindowEvent(text="Orion reflected with Juniper about the lake.", timestamp=now, envelope=_env_with_text("x"), intake_channel="orion:chat:history:log"),
+            WindowEvent(text="Juniper shared new plans for Orion", timestamp=now + timedelta(seconds=1), envelope=_env_with_text("y"), intake_channel="orion:chat:history:log"),
         ]
         result = asyncio.run(inducer.run(subject="relationship", window=window))
         self.assertTrue(result.profile.concepts)
@@ -76,7 +79,7 @@ class ConceptInductionTests(unittest.TestCase):
             inducer = ConceptInducer(settings, store_loader=store.load, store_saver=store.save)
             now = datetime.now(timezone.utc)
             window = [
-                WindowEvent(text="Orion reflected with Juniper about the lake.", timestamp=now, envelope=_env_with_text("x")),
+                WindowEvent(text="Orion reflected with Juniper about the lake.", timestamp=now, envelope=_env_with_text("x"), intake_channel="orion:chat:history:log"),
             ]
             result = asyncio.run(inducer.run(subject="orion", window=window))
             self.assertTrue(result.profile.concepts)
@@ -86,6 +89,116 @@ class ConceptInductionTests(unittest.TestCase):
             self.assertEqual(reloaded.subject, "orion")
             # hash is stored separately
             self.assertEqual(store.load_hash("orion"), store.load_hash("orion"))
+
+    def test_provenance_channel_preserved_in_evidence(self):
+        settings = ConceptSettings()
+        inducer = ConceptInducer(settings)
+        env = BaseEnvelope(
+            kind="chat.message",
+            source=ServiceRef(name="test", version="0.0.0"),
+            payload={"content": "Orion reflected."},
+            trace={"trace_id": "trace-123"},
+        )
+        now = datetime.now(timezone.utc)
+        result = asyncio.run(
+            inducer.run(
+                subject="orion",
+                window=[WindowEvent(text="Orion reflected.", timestamp=now, envelope=env, intake_channel="orion:collapse:sql-write")],
+            )
+        )
+        ev = result.profile.concepts[0].evidence[0]
+        self.assertEqual(ev.channel, "orion:collapse:sql-write")
+        self.assertEqual(ev.trace_id, "trace-123")
+
+    def test_turn_effect_tension_mapping(self):
+        env = BaseEnvelope(
+            kind="spark.telemetry",
+            source=ServiceRef(name="test", version="0.0.0"),
+            payload={
+                "spark_meta": {
+                    "turn_effect": {
+                        "turn": {
+                            "coherence": -0.4,
+                            "valence": -0.2,
+                            "novelty": 0.7,
+                            "energy": -0.6,
+                        }
+                    }
+                }
+            },
+        )
+        events = extract_tensions(
+            envelope=env,
+            intake_channel="orion:spark:telemetry",
+            subject="orion",
+            model_layer="self-model",
+            entity_id="self-model:orion",
+        )
+        kinds = {e.kind for e in events}
+        self.assertEqual(kinds, {
+            "tension.contradiction.v1",
+            "tension.distress.v1",
+            "tension.identity_drift.v1",
+            "tension.cognitive_load.v1",
+        })
+
+    def test_drive_update_is_deterministic_and_decays(self):
+        engine = DriveEngine()
+        tension_env = BaseEnvelope(
+            kind="spark.telemetry",
+            source=ServiceRef(name="test", version="0.0.0"),
+            payload={"turn_effect": {"turn": {"coherence": -0.5}}},
+        )
+        tensions = extract_tensions(
+            envelope=tension_env,
+            intake_channel="orion:spark:telemetry",
+            subject="orion",
+            model_layer="self-model",
+            entity_id="self-model:orion",
+        )
+        now = datetime.now(timezone.utc)
+        p1, a1 = engine.update(previous_pressures={}, previous_activations={}, tensions=tensions, now=now, previous_ts=None)
+        p2, a2 = engine.update(previous_pressures={}, previous_activations={}, tensions=tensions, now=now, previous_ts=None)
+        self.assertEqual(p1, p2)
+        self.assertEqual(a1, a2)
+        p3, _ = engine.update(previous_pressures=p1, previous_activations=a1, tensions=[], now=now + timedelta(hours=2), previous_ts=now)
+        self.assertLess(p3["coherence"], p1["coherence"])
+
+    def test_restart_persistence_for_drive_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = LocalProfileStore(str(Path(td) / "store.json"))
+            now = datetime.now(timezone.utc)
+            store.save_drive_state("orion", pressures={"coherence": 0.8}, activations={"coherence": True}, updated_at=now)
+            reloaded = LocalProfileStore(str(Path(td) / "store.json")).load_drive_state("orion")
+            self.assertEqual(reloaded.get("pressures", {}).get("coherence"), 0.8)
+
+    def test_juniper_identity_typing(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env = BaseEnvelope(
+            kind="chat.message",
+            source=ServiceRef(name="test", version="0.0.0"),
+            payload={"user": "Juniper"},
+        )
+        self.assertEqual(worker._detect_subject(env), "juniper")
+        self.assertEqual(worker._model_layer("juniper", "orion:spark:telemetry"), "user-model")
+
+    def test_memory_drives_state_publication(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, use_cortex_orch=False))
+
+        published = []
+
+        class FakeBus:
+            async def publish(self, channel, env):
+                published.append((channel, env.kind))
+
+        worker.bus = FakeBus()
+        env = BaseEnvelope(
+            kind="metacognition.tick.v1",
+            source=ServiceRef(name="test", version="0.0.0"),
+            payload={"subject": "orion", "turn_effect": {"turn": {"coherence": -0.3}}},
+        )
+        asyncio.run(worker.handle_envelope(env, "orion:metacognition:tick"))
+        self.assertTrue(any(kind == "memory.drives.state.v1" for _, kind in published))
 
 
 if __name__ == "__main__":

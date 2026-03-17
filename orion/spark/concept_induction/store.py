@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 from orion.core.schemas.concept_induction import ConceptProfile
 
@@ -54,3 +55,28 @@ class LocalProfileStore:
         if subject in data:
             return data[subject].get("_hash")
         return None
+
+    def load_drive_state(self, subject: str) -> Dict[str, Any]:
+        data = self._load_raw()
+        states = data.get("drive_states", {})
+        if not isinstance(states, dict):
+            return {}
+        state = states.get(subject)
+        return state if isinstance(state, dict) else {}
+
+    def save_drive_state(
+        self,
+        subject: str,
+        *,
+        pressures: Dict[str, float],
+        activations: Dict[str, bool],
+        updated_at: datetime,
+    ) -> None:
+        data = self._load_raw()
+        data.setdefault("drive_states", {})
+        data["drive_states"][subject] = {
+            "pressures": pressures,
+            "activations": activations,
+            "updated_at": updated_at.isoformat(),
+        }
+        self._save_raw(data)

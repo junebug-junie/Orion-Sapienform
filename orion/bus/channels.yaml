@@ -969,3 +969,21 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-02-05"
+
+  - name: "orion:memory:drives:state"
+    kind: "event"
+    schema_id: "DriveStateV1"
+    message_kind: "memory.drives.state.v1"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-14"
+
+  - name: "orion:memory:tension:event"
+    kind: "event"
+    schema_id: "TensionEventV1"
+    message_kind: "memory.tension.event.v1"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-14"

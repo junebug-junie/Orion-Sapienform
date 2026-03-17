@@ -20,3 +20,5 @@ def test_exec_result_channels_have_specific_wildcards() -> None:
     assert "orion:exec:result:LLMGatewayService:*" in names
     assert "orion:exec:result:PlannerReactService:*" in names
     assert "orion:exec:result:AgentChainService:*" in names
+    assert "orion:exec:result:PadRpc:*" in names
+    assert "orion:exec:result:StateService:*" in names

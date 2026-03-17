@@ -9,6 +9,7 @@ from .concept_induction import (
     ConceptProfileDelta,
     make_concept_id,
 )
+from .drives import ArtifactProvenance, DriveStateV1, TensionEventV1, TurnDossierV1
 
 __all__ = [
     "ConceptEvidenceRef",
@@ -18,4 +19,8 @@ __all__ = [
     "ConceptProfile",
     "ConceptProfileDelta",
     "make_concept_id",
+    "ArtifactProvenance",
+    "DriveStateV1",
+    "TensionEventV1",
+    "TurnDossierV1",
 ]

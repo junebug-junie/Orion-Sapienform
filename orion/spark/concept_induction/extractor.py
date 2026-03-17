@@ -39,8 +39,11 @@ class SpacyConceptExtractor:
         for ent in getattr(doc, "ents", []):
             if ent.label_:
                 labels.append(ent.text)
-        if getattr(doc, "noun_chunks", None):
+        try:
             labels.extend(chunk.text for chunk in doc.noun_chunks)
+        except Exception:
+            # Blank models or parser-less pipelines cannot provide noun chunks.
+            pass
         return labels
 
     def _regex_candidates(self, text: str) -> List[str]:

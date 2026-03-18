@@ -73,7 +73,7 @@ class ConceptSettings(BaseSettings):
     spacy_model: str = Field("en_core_web_sm", alias="SPACY_MODEL")
     max_candidates: int = Field(50, alias="CONCEPT_MAX_CANDIDATES")
     embedding_base_url: str = Field(
-        "http://orion-embeddings-host:8000", alias="EMBEDDINGS_BASE_URL"
+        "http://orion-athena-vector-host:8320", alias="EMBEDDINGS_BASE_URL"
     )
     embedding_timeout_sec: float = Field(5.0, alias="EMBEDDINGS_TIMEOUT_SEC")
     cluster_cosine_threshold: float = Field(0.8, alias="CONCEPT_CLUSTER_THRESHOLD")

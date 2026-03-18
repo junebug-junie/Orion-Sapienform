@@ -34,16 +34,16 @@ class ConceptInductionTests(unittest.TestCase):
         self.assertTrue(any("orion" in c for c in res.candidates))
 
     def test_embedding_client_mock(self):
-        calls = {}
+        calls = []
 
         def _fake_post(url, json, timeout):
-            calls["payload"] = json
+            calls.append({"url": url, "payload": json, "timeout": timeout})
 
             class Resp:
                 def raise_for_status(self): ...
 
                 def json(self):
-                    return {"embeddings": {item: [1.0, 0.0] for item in json["items"]}}
+                    return {"embedding": [1.0, 0.0], "embedding_model": "test", "embedding_dim": 2}
 
             return Resp()
 
@@ -51,7 +51,12 @@ class ConceptInductionTests(unittest.TestCase):
             client = EmbeddingClient("http://fake")
             resp = client.embed(["alpha", "beta"])
             self.assertEqual(resp.embeddings["alpha"], [1.0, 0.0])
-            self.assertIn("payload", calls)
+            self.assertEqual(resp.embeddings["beta"], [1.0, 0.0])
+            self.assertEqual(calls[0]["url"], "http://fake/embedding")
+            self.assertEqual(calls[0]["payload"]["text"], "alpha")
+            self.assertTrue(calls[0]["payload"]["doc_id"].startswith("concept-"))
+            self.assertEqual(calls[0]["payload"]["embedding_profile"], "default")
+            self.assertFalse(calls[0]["payload"]["include_latent"])
 
     def test_clusterer_deterministic(self):
         clusterer = ConceptClusterer(threshold=0.5)

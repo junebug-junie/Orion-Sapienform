@@ -49,7 +49,7 @@ flowchart LR
 | `BUS_PROFILE_OUT` | `orion:spark:concepts:profile` | Profile channel |
 | `BUS_DELTA_OUT` | `orion:spark:concepts:delta` | Delta channel |
 | `SPACY_MODEL` | `en_core_web_sm` | spaCy model |
-| `EMBEDDINGS_BASE_URL` | `http://orion-embeddings-host:8000` | POST /embed |
+| `EMBEDDINGS_BASE_URL` | `http://orion-athena-vector-host:8320` | Base URL; concept induction calls `POST /embedding` using the vector-host `EmbeddingGenerateV1` contract. |
 | `USE_CORTEX_ORCH` | `false` | LLM refinement via `concept_induction` verb |
 | `CONCEPT_WINDOW_MAX_EVENTS` | `200` | Rolling window size |
 | `CONCEPT_WINDOW_MAX_MINUTES` | `360` | Rolling window age |

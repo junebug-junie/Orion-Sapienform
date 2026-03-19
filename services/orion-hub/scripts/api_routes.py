@@ -62,6 +62,18 @@ async def _proxy_request(request: Request, base_url: str, path: str) -> Response
             payload = await response.read()
             content_type = response.headers.get("content-type", "application/json")
             return Response(content=payload, status_code=response.status, media_type=content_type)
+
+
+async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = settings.LANDING_PAD_URL.rstrip("/")
+    url = f"{base_url}{path}"
+    timeout = aiohttp.ClientTimeout(total=settings.LANDING_PAD_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+
+
 def _normalize_bool(value: Any, default: bool = True) -> bool:
     if value is None:
         return default

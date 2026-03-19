@@ -14,27 +14,36 @@ class DatasetSpec(BaseModel):
     id_column: str
     time_column: str
     text_columns: List[str]
+    where_sql: Optional[str] = None
+    where_params: Optional[Dict[str, Any]] = None
     timezone: str = "UTC"
-    boundary_column: Optional[str] = None
-    boundary_strategy: Optional[Literal["column"]] = None
     created_at: datetime
 
 
 class WindowingSpec(BaseModel):
-    windowing_mode: Literal["document", "time_gap", "conversation_bound"] = "document"
-    time_gap_minutes: int = 15
+    block_mode: Literal["turn_pairs", "triads", "rows"] = "turn_pairs"
+    include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
+    segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"
+    semantic_split_threshold: float = 0.75
+    confirm_edges_k: int = 2
+    smoothing_window: int = 3
+    llm_boundary_context_blocks: int = 3
+    llm_boundary_max_chars: int = 4000
+    llm_candidate_top_k: int = 200
+    llm_candidate_strategy: Literal["semantic_low_sim", "all_edges"] = "semantic_low_sim"
+    llm_candidate_threshold: Optional[float] = None
+    time_gap_seconds: int = 900
+    max_window_seconds: int = 7200
+    min_blocks_per_segment: int = 1
     max_chars: int = 6000
-    conversation_bound: Optional[str] = None
-    boundary_column: Optional[str] = None
 
 
 class ModelSpec(BaseModel):
     algorithm: Literal["hdbscan"] = "hdbscan"
-    embedding_source_url: Optional[str] = None
+    embedding_source_url: str
     min_cluster_size: int = 15
     metric: str = "cosine"
     params: Dict[str, Any] = Field(default_factory=dict)
-    model_meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class EnrichmentSpec(BaseModel):
@@ -48,7 +57,6 @@ class RunSpecSnapshot(BaseModel):
     windowing: WindowingSpec
     model: ModelSpec
     enrichment: EnrichmentSpec = Field(default_factory=EnrichmentSpec)
-    run_scope: Optional[Literal["micro", "macro"]] = None
 
 
 class RunRecord(BaseModel):
@@ -59,7 +67,6 @@ class RunRecord(BaseModel):
     spec_hash: Optional[str] = None
     status: Literal["queued", "running", "complete", "failed"]
     stage: Optional[str] = None
-    run_scope: Optional[Literal["micro", "macro"]] = None
     stats: Dict[str, Any] = Field(default_factory=dict)
     artifact_paths: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -90,7 +97,6 @@ class SegmentRecord(BaseModel):
     row_ids_count: Optional[int] = None
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
-    full_text: Optional[str] = None
 
 
 class DatasetCreateRequest(BaseModel):
@@ -99,20 +105,9 @@ class DatasetCreateRequest(BaseModel):
     id_column: str
     time_column: str
     text_columns: List[str]
-    timezone: Optional[str] = None
-    boundary_column: Optional[str] = None
-    boundary_strategy: Optional[Literal["column"]] = None
-
-
-class DatasetUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    source_table: Optional[str] = None
-    id_column: Optional[str] = None
-    time_column: Optional[str] = None
-    text_columns: Optional[List[str]] = None
-    timezone: Optional[str] = None
-    boundary_column: Optional[str] = None
-    boundary_strategy: Optional[Literal["column"]] = None
+    where_sql: Optional[str] = None
+    where_params: Optional[Dict[str, Any]] = None
+    timezone: str = "UTC"
 
 
 class DatasetCreateResponse(BaseModel):
@@ -121,10 +116,8 @@ class DatasetCreateResponse(BaseModel):
 
 
 class DatasetPreviewRequest(BaseModel):
-    dataset_id: Optional[UUID] = None
-    dataset: Optional[DatasetSpec] = None
-    windowing: Optional[WindowingSpec] = None
-    windowing_spec: Optional[WindowingSpec] = None
+    dataset: DatasetCreateRequest
+    windowing: WindowingSpec
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
     limit: int = 200
@@ -140,10 +133,8 @@ class DatasetPreviewDoc(BaseModel):
 
 class DatasetPreviewResponse(BaseModel):
     rows_scanned: int
-    row_count: int
     blocks_generated: int
     segments_generated: int
-    segment_count: int
     docs_generated: int
     doc_count: int
     avg_chars: float
@@ -152,15 +143,6 @@ class DatasetPreviewResponse(BaseModel):
     observed_start_at: Optional[datetime] = None
     observed_end_at: Optional[datetime] = None
     samples: List[DatasetPreviewDoc]
-
-
-class DatasetPreviewDetailResponse(BaseModel):
-    dataset_id: UUID
-    doc_id: str
-    full_text: str
-    char_count: int
-    observed_range: Dict[str, Optional[str]] = Field(default_factory=dict)
-    is_truncated: bool = False
 
 
 class ModelCreateRequest(BaseModel):
@@ -172,12 +154,16 @@ class ModelCreateRequest(BaseModel):
     windowing_spec: WindowingSpec
     enrichment_spec: Optional[EnrichmentSpec] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    model_meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelCreateResponse(BaseModel):
     model_id: UUID
     created_at: datetime
+
+
+class ModelPromoteRequest(BaseModel):
+    stage: Literal["candidate", "active", "archived"]
+    reason: Optional[str] = None
 
 
 class ModelSummary(BaseModel):
@@ -186,12 +172,15 @@ class ModelSummary(BaseModel):
     version: str
     stage: Optional[str]
     dataset_id: UUID
-    model_meta: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
 
 class ModelListResponse(BaseModel):
     models: List[ModelSummary]
+
+
+class ModelPromoteResponse(BaseModel):
+    model: ModelSummary
 
 
 class ModelVersionEntry(BaseModel):
@@ -220,16 +209,6 @@ class RunSummary(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    doc_count: Optional[int] = None
-    segment_count: Optional[int] = None
-    cluster_count: Optional[int] = None
-    outlier_rate: Optional[float] = None
-    topic_mode: Optional[str] = None
-    representation: Optional[str] = None
-    embedding_backend: Optional[str] = None
-    reducer: Optional[str] = None
-    clusterer: Optional[str] = None
-    artifact_paths: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RunListResponse(BaseModel):
@@ -241,20 +220,12 @@ class RunTrainRequest(BaseModel):
     dataset_id: UUID
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
-    run_scope: Optional[Literal["micro", "macro"]] = None
-    windowing_spec: Optional[WindowingSpec] = None
-    topic_mode: Literal["standard", "guided", "zeroshot", "dynamic", "class_based", "long_document", "hierarchical"] = "standard"
-    topic_mode_params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RunEnrichRequest(BaseModel):
     limit: Optional[int] = None
     force: bool = False
     enricher: Optional[Literal["llm", "heuristic"]] = None
-    target: Literal["segments", "topics", "both"] = "segments"
-    fields: List[Literal["title", "aspects", "meaning", "sentiment"]] = Field(default_factory=list)
-    llm_backend: Optional[str] = None
-    prompt_template: Optional[str] = None
 
 
 class RunEnrichResponse(BaseModel):
@@ -267,13 +238,6 @@ class RunEnrichResponse(BaseModel):
 class RunTrainResponse(BaseModel):
     run_id: UUID
     status: Literal["queued", "running", "complete", "failed"]
-    doc_count: Optional[int] = None
-    cluster_count: Optional[int] = None
-    outlier_rate: Optional[float] = None
-    artifacts: Dict[str, Any] = Field(default_factory=dict)
-    model_meta_used: Dict[str, Any] = Field(default_factory=dict)
-    topic_mode: Optional[str] = None
-    topic_mode_params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SegmentListResponse(BaseModel):
@@ -311,8 +275,6 @@ class TopicSummaryItem(BaseModel):
     count: int
     outlier_pct: Optional[float] = None
     label: Optional[str] = None
-    scope: Optional[Literal["micro", "macro"]] = None
-    parent_topic_id: Optional[int] = None
 
 
 class TopicSummaryPage(BaseModel):
@@ -341,20 +303,18 @@ class SegmentRawResponse(BaseModel):
     provenance: Dict[str, Any]
 
 
-class SegmentFullTextResponse(BaseModel):
-    segment_id: UUID
-    run_id: UUID
-    full_text: str
-    chars: int
-    row_ids_count: int
-
-
 class CapabilitiesResponse(BaseModel):
-    capabilities: Dict[str, Any]
-    backends: Dict[str, List[str]]
-    defaults: Optional[Dict[str, Any]] = None
-    supported_metrics: List[str] = Field(default_factory=list)
-    default_metric: Optional[str] = None
+    service: str
+    version: str
+    node: str
+    llm_enabled: bool
+    llm_transport: str
+    llm_bus_route: Optional[str] = None
+    llm_intake_channel: Optional[str] = None
+    llm_reply_prefix: Optional[str] = None
+    segmentation_modes_supported: List[str]
+    enricher_modes_supported: List[str]
+    defaults: Dict[str, Any]
 
 
 class DriftRunRequest(BaseModel):
@@ -388,44 +348,6 @@ class RunListPage(BaseModel):
     limit: int
     offset: int
     total: Optional[int] = None
-
-
-class RunSegmentInspectorItem(BaseModel):
-    segment_id: UUID
-    run_id: UUID
-    topic_id: Optional[int] = None
-    topic_label: Optional[str] = None
-    prob: Optional[float] = None
-    topic_prob: Optional[float] = None
-    chars: Optional[int] = None
-    text_preview: Optional[str] = None
-    representation_backend: Optional[str] = None
-    topic_repr_terms: List[str] = Field(default_factory=list)
-    observed_start: Optional[datetime] = None
-    observed_end: Optional[datetime] = None
-
-
-class RunSegmentInspectorPage(BaseModel):
-    run_id: UUID
-    items: List[RunSegmentInspectorItem]
-    limit: int
-    offset: int
-    total: Optional[int] = None
-
-
-class RunSegmentDetailResponse(BaseModel):
-    segment_id: UUID
-    run_id: UUID
-    full_text: str
-    topic_id: Optional[int] = None
-    topic_label: Optional[str] = None
-    prob: Optional[float] = None
-    topic_prob: Optional[float] = None
-    representation_backend: Optional[str] = None
-    topic_repr_terms: List[str] = Field(default_factory=list)
-    chars: int
-    observed_start: Optional[datetime] = None
-    observed_end: Optional[datetime] = None
 
 
 class DriftRecord(BaseModel):

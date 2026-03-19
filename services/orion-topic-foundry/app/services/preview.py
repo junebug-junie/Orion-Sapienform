@@ -5,10 +5,9 @@ from statistics import mean
 from typing import List, Optional
 from uuid import UUID
 
-from app.models import DatasetPreviewDetailResponse, DatasetPreviewDoc, DatasetPreviewRequest, DatasetPreviewResponse
+from app.models import DatasetPreviewDoc, DatasetPreviewRequest, DatasetPreviewResponse
 from app.services.conversation_overrides import OverrideRecord, apply_overrides, build_conversations
-from app.services.data_access import build_full_text, fetch_dataset_rows, fetch_dataset_rows_by_ids
-from app.services.types import RowBlock
+from app.services.data_access import fetch_dataset_rows
 from app.services.windowing import build_segments_with_stats
 from app.settings import settings
 from app.storage.repository import list_conversation_overrides
@@ -17,7 +16,7 @@ from app.storage.repository import list_conversation_overrides
 logger = logging.getLogger("topic-foundry.preview")
 
 
-def _build_preview_segments(payload: DatasetPreviewRequest) -> tuple[list[dict], list[RowBlock], int]:
+def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
     rows = fetch_dataset_rows(
         dataset=payload.dataset,
         start_at=payload.start_at,
@@ -31,7 +30,6 @@ def _build_preview_segments(payload: DatasetPreviewRequest) -> tuple[list[dict],
         text_columns=payload.dataset.text_columns,
         time_column=payload.dataset.time_column,
         id_column=payload.dataset.id_column,
-        boundary_column=payload.dataset.boundary_column,
     )
     overrides = [
         OverrideRecord(
@@ -48,13 +46,7 @@ def _build_preview_segments(payload: DatasetPreviewRequest) -> tuple[list[dict],
         conversations,
         spec=payload.windowing,
         embedding_url=settings.topic_foundry_embedding_url,
-        run_id=None,
     )
-    return rows, segments, blocks_generated
-
-
-def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
-    rows, segments, blocks_generated = _build_preview_segments(payload)
     observed_start_at: Optional[str] = None
     observed_end_at: Optional[str] = None
     if rows:
@@ -63,10 +55,8 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
     if not segments:
         return DatasetPreviewResponse(
             rows_scanned=len(rows),
-            row_count=len(rows),
             blocks_generated=blocks_generated,
             segments_generated=0,
-            segment_count=0,
             docs_generated=0,
             doc_count=0,
             avg_chars=0.0,
@@ -89,14 +79,12 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
             chars=len(seg.text),
             snippet=seg.text[:200],
         )
-        for seg in segments[: min(200, len(segments))]
+        for seg in segments[:5]
     ]
     return DatasetPreviewResponse(
         rows_scanned=len(rows),
-        row_count=len(rows),
         blocks_generated=blocks_generated,
         segments_generated=len(segments),
-        segment_count=len(segments),
         docs_generated=len(segments),
         doc_count=len(segments),
         avg_chars=float(mean(lengths)),
@@ -105,27 +93,4 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
         observed_start_at=observed_start_at,
         observed_end_at=observed_end_at,
         samples=samples,
-    )
-
-
-def preview_doc_detail(payload: DatasetPreviewRequest, doc_id: str, *, max_full_chars: int = 100_000) -> Optional[DatasetPreviewDetailResponse]:
-    _rows, segments, _blocks_generated = _build_preview_segments(payload)
-    target = next((seg for seg in segments if seg.doc_id == doc_id), None)
-    if target is None:
-        return None
-    source_rows = fetch_dataset_rows_by_ids(dataset=payload.dataset, row_ids=target.row_ids)
-    full_text = build_full_text(source_rows, payload.dataset.text_columns)
-    if not full_text:
-        full_text = target.text
-    is_truncated = len(full_text) > max_full_chars
-    safe_text = full_text[:max_full_chars] if is_truncated else full_text
-    observed_start = target.timestamps[0] if target.timestamps else None
-    observed_end = target.timestamps[-1] if target.timestamps else None
-    return DatasetPreviewDetailResponse(
-        dataset_id=payload.dataset.dataset_id,
-        doc_id=target.doc_id,
-        full_text=safe_text,
-        char_count=len(full_text),
-        observed_range={"start_at": observed_start, "end_at": observed_end},
-        is_truncated=is_truncated,
     )

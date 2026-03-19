@@ -1,0 +1,17 @@
+name: skills.docker.ps_status.v1
+label: Skills — Docker PS Status
+description: Return a read-only Docker container status snapshot via engine API or safe docker ps fallback.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 20000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.docker.ps_status.v1
+    description: Execute the direct Cortex-side Docker status skill.
+    order: 0
+    services: []

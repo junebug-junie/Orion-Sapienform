@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.schemas.drives import ArtifactProvenance, TensionEventV1
+
+from .dossier import build_evidence_items, build_source_event_ref, extract_trace_id, extract_turn_id
 
 
 def clamp01(value: float) -> float:
@@ -47,6 +50,11 @@ def _extract_turn_effect(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _artifact_id(envelope: BaseEnvelope, entity_id: str, kind: str) -> str:
+    material = f"{envelope.id}|{entity_id}|{kind}"
+    return f"tension-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:16]}"
+
+
 def extract_tensions(
     *,
     envelope: BaseEnvelope,
@@ -59,20 +67,25 @@ def extract_tensions(
     turn_effect = _extract_turn_effect(payload)
 
     ts = envelope.created_at if envelope.created_at.tzinfo else envelope.created_at.replace(tzinfo=timezone.utc)
-    trace_id = None
-    if isinstance(envelope.trace, dict):
-        trace_id = envelope.trace.get("trace_id") or envelope.trace.get("trace")
+    trace_id = extract_trace_id(envelope)
+    turn_id = extract_turn_id(envelope)
 
     spark_meta = payload.get("spark_meta") if isinstance(payload.get("spark_meta"), dict) else {}
     introspection_text = payload.get("final_text") if isinstance(payload.get("final_text"), str) else None
     if not introspection_text and isinstance(spark_meta, dict):
         introspection_text = spark_meta.get("introspect_spark") or spark_meta.get("introspection")
 
+    source_event_ref = build_source_event_ref(envelope, intake_channel)
+    evidence_items = build_evidence_items(envelope, intake_channel, introspection_text)
     prov = ArtifactProvenance(
         intake_channel=intake_channel,
         correlation_id=str(envelope.correlation_id),
         trace_id=str(trace_id) if trace_id else None,
+        turn_id=turn_id,
         evidence_text=introspection_text,
+        evidence_summary=evidence_items[0].summary if evidence_items else None,
+        source_event_refs=[source_event_ref],
+        evidence_items=evidence_items,
     )
 
     events: List[TensionEventV1] = []
@@ -81,14 +94,18 @@ def extract_tensions(
     if coherence_delta is not None and coherence_delta < 0:
         events.append(
             TensionEventV1(
+                artifact_id=_artifact_id(envelope, entity_id, "tension.contradiction.v1"),
                 subject=subject,
                 model_layer=model_layer,
                 entity_id=entity_id,
                 kind="tension.contradiction.v1",
                 ts=ts,
                 confidence=0.8,
+                correlation_id=str(envelope.correlation_id),
+                trace_id=str(trace_id) if trace_id else None,
+                turn_id=turn_id,
                 provenance=prov,
-                related_nodes=["signal:turn_effect", "drive:coherence", "drive:predictive"],
+                related_nodes=["signal:turn_effect", "drive:coherence", "drive:predictive", "tension.contradiction.v1"],
                 magnitude=clamp01(abs(coherence_delta)),
                 drive_impacts={"coherence": 1.0, "predictive": 0.65},
             )
@@ -98,14 +115,18 @@ def extract_tensions(
     if valence_delta is not None and valence_delta < 0:
         events.append(
             TensionEventV1(
+                artifact_id=_artifact_id(envelope, entity_id, "tension.distress.v1"),
                 subject=subject,
                 model_layer=model_layer,
                 entity_id=entity_id,
                 kind="tension.distress.v1",
                 ts=ts,
                 confidence=0.75,
+                correlation_id=str(envelope.correlation_id),
+                trace_id=str(trace_id) if trace_id else None,
+                turn_id=turn_id,
                 provenance=prov,
-                related_nodes=["signal:turn_effect", "drive:relational", "drive:continuity"],
+                related_nodes=["signal:turn_effect", "drive:relational", "drive:continuity", "tension.distress.v1"],
                 magnitude=clamp01(abs(valence_delta)),
                 drive_impacts={"relational": 0.95, "continuity": 0.55},
             )
@@ -115,14 +136,18 @@ def extract_tensions(
     if novelty_delta is not None and novelty_delta > 0:
         events.append(
             TensionEventV1(
+                artifact_id=_artifact_id(envelope, entity_id, "tension.identity_drift.v1"),
                 subject=subject,
                 model_layer=model_layer,
                 entity_id=entity_id,
                 kind="tension.identity_drift.v1",
                 ts=ts,
                 confidence=0.7,
+                correlation_id=str(envelope.correlation_id),
+                trace_id=str(trace_id) if trace_id else None,
+                turn_id=turn_id,
                 provenance=prov,
-                related_nodes=["signal:turn_effect", "drive:continuity", "drive:autonomy"],
+                related_nodes=["signal:turn_effect", "drive:continuity", "drive:autonomy", "tension.identity_drift.v1"],
                 magnitude=clamp01(novelty_delta),
                 drive_impacts={"continuity": 0.8, "autonomy": 0.6, "predictive": 0.4},
             )
@@ -132,17 +157,23 @@ def extract_tensions(
     if energy_delta is not None and energy_delta < 0:
         events.append(
             TensionEventV1(
+                artifact_id=_artifact_id(envelope, entity_id, "tension.cognitive_load.v1"),
                 subject=subject,
                 model_layer=model_layer,
                 entity_id=entity_id,
                 kind="tension.cognitive_load.v1",
                 ts=ts,
                 confidence=0.74,
+                correlation_id=str(envelope.correlation_id),
+                trace_id=str(trace_id) if trace_id else None,
+                turn_id=turn_id,
                 provenance=prov,
-                related_nodes=["signal:turn_effect", "drive:capability", "drive:coherence"],
+                related_nodes=["signal:turn_effect", "drive:capability", "drive:coherence", "tension.cognitive_load.v1"],
                 magnitude=clamp01(abs(energy_delta)),
                 drive_impacts={"capability": 0.9, "coherence": 0.4},
             )
         )
 
+    for event in events:
+        event.provenance.tension_refs = [event.artifact_id]
     return events

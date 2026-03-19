@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from uuid import uuid4
 from unittest.mock import patch
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -25,6 +26,14 @@ def _env_with_text(text: str) -> BaseEnvelope:
         source=ServiceRef(name="test", version="0.0.0"),
         payload={"content": text},
     )
+
+
+class FakeBus:
+    def __init__(self):
+        self.published = []
+
+    async def publish(self, channel, env):
+        self.published.append((channel, env))
 
 
 class ConceptInductionTests(unittest.TestCase):
@@ -88,11 +97,9 @@ class ConceptInductionTests(unittest.TestCase):
             ]
             result = asyncio.run(inducer.run(subject="orion", window=window))
             self.assertTrue(result.profile.concepts)
-            # ensure we saved and can reload without extra fields breaking validation
             reloaded = store.load("orion")
             self.assertIsNotNone(reloaded)
             self.assertEqual(reloaded.subject, "orion")
-            # hash is stored separately
             self.assertEqual(store.load_hash("orion"), store.load_hash("orion"))
 
     def test_provenance_channel_preserved_in_evidence(self):
@@ -137,7 +144,7 @@ class ConceptInductionTests(unittest.TestCase):
             intake_channel="orion:spark:telemetry",
             subject="orion",
             model_layer="self-model",
-            entity_id="self-model:orion",
+            entity_id="self:orion",
         )
         kinds = {e.kind for e in events}
         self.assertEqual(kinds, {
@@ -146,6 +153,8 @@ class ConceptInductionTests(unittest.TestCase):
             "tension.identity_drift.v1",
             "tension.cognitive_load.v1",
         })
+        self.assertTrue(all(event.provenance.source_event_refs for event in events))
+        self.assertTrue(all(event.correlation_id for event in events))
 
     def test_drive_update_is_deterministic_and_decays(self):
         engine = DriveEngine()
@@ -159,7 +168,7 @@ class ConceptInductionTests(unittest.TestCase):
             intake_channel="orion:spark:telemetry",
             subject="orion",
             model_layer="self-model",
-            entity_id="self-model:orion",
+            entity_id="self:orion",
         )
         now = datetime.now(timezone.utc)
         p1, a1 = engine.update(previous_pressures={}, previous_activations={}, tensions=tensions, now=now, previous_ts=None)
@@ -177,7 +186,22 @@ class ConceptInductionTests(unittest.TestCase):
             reloaded = LocalProfileStore(str(Path(td) / "store.json")).load_drive_state("orion")
             self.assertEqual(reloaded.get("pressures", {}).get("coherence"), 0.8)
 
-    def test_juniper_identity_typing(self):
+    def test_world_identity_hardening_avoids_generic_world_anchor(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env = BaseEnvelope(
+            kind="system.health",
+            source=ServiceRef(name="telemetry-hub", version="0.0.0"),
+            payload={"subject": "world", "service": "Auth API"},
+        )
+        subject = worker._detect_subject(env, "orion:system:health")
+        model_layer = worker._model_layer(subject, "orion:system:health")
+        entity_id = worker._entity_id(subject, model_layer)
+        self.assertEqual(subject, "service:auth-api")
+        self.assertEqual(model_layer, "world-model")
+        self.assertEqual(entity_id, "world:service:auth-api")
+        self.assertNotEqual(subject, "world")
+
+    def test_juniper_identity_typing_and_world_layer_no_collapse(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
         env = BaseEnvelope(
             kind="chat.message",
@@ -186,24 +210,98 @@ class ConceptInductionTests(unittest.TestCase):
         )
         self.assertEqual(worker._detect_subject(env), "juniper")
         self.assertEqual(worker._model_layer("juniper", "orion:spark:telemetry"), "user-model")
+        self.assertEqual(worker._model_layer("service:vector-host", "orion:system:health"), "world-model")
 
-    def test_memory_drives_state_publication(self):
-        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, use_cortex_orch=False))
+    def test_memory_drives_state_publication_and_join_ref_hardening(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    use_cortex_orch=False,
+                    store_path=str(Path(td) / "state.json"),
+                    goal_proposal_cooldown_minutes=180,
+                )
+            )
+            fake_bus = FakeBus()
+            worker.bus = fake_bus
+            corr_id = uuid4()
+            env = BaseEnvelope(
+                kind="metacognition.tick.v1",
+                source=ServiceRef(name="test", version="0.0.0"),
+                correlation_id=corr_id,
+                trace={"trace_id": "trace-xyz"},
+                payload={
+                    "id": "turn-123",
+                    "subject": "orion",
+                    "turn_effect": {"turn": {"coherence": -0.3, "novelty": 0.5}},
+                    "summary": "Detected instability in recent turn.",
+                },
+            )
+            asyncio.run(worker.handle_envelope(env, "orion:metacognition:tick"))
 
-        published = []
+            by_kind = {published_env.kind: published_env.payload for _, published_env in fake_bus.published}
+            self.assertIn("memory.drives.state.v1", by_kind)
+            self.assertIn("memory.drives.audit.v1", by_kind)
+            self.assertIn("memory.identity.snapshot.v1", by_kind)
+            self.assertIn("memory.goals.proposed.v1", by_kind)
+            self.assertIn("debug.turn.dossier.v1", by_kind)
 
-        class FakeBus:
-            async def publish(self, channel, env):
-                published.append((channel, env.kind))
+            drive_audit = by_kind["memory.drives.audit.v1"]
+            self.assertEqual(drive_audit["correlation_id"], str(corr_id))
+            self.assertEqual(drive_audit["trace_id"], "trace-xyz")
+            self.assertEqual(drive_audit["turn_id"], "turn-123")
+            self.assertTrue(drive_audit["provenance"]["source_event_refs"])
+            self.assertTrue(drive_audit["provenance"]["tension_refs"])
+            self.assertTrue(drive_audit["evidence_items"])
 
-        worker.bus = FakeBus()
-        env = BaseEnvelope(
-            kind="metacognition.tick.v1",
-            source=ServiceRef(name="test", version="0.0.0"),
-            payload={"subject": "orion", "turn_effect": {"turn": {"coherence": -0.3}}},
-        )
-        asyncio.run(worker.handle_envelope(env, "orion:metacognition:tick"))
-        self.assertTrue(any(kind == "memory.drives.state.v1" for _, kind in published))
+            identity_snapshot = by_kind["memory.identity.snapshot.v1"]
+            self.assertTrue(identity_snapshot["anchor_strategy"])
+            self.assertTrue(identity_snapshot["provenance"]["source_event_refs"])
+            self.assertTrue(identity_snapshot["provenance"]["tension_refs"])
+
+            goal = by_kind["memory.goals.proposed.v1"]
+            self.assertEqual(goal["correlation_id"], str(corr_id))
+            self.assertTrue(goal["proposal_signature"])
+            self.assertTrue(goal["provenance"]["tension_refs"])
+            self.assertTrue(goal["source_event_refs"])
+
+            dossier = by_kind["debug.turn.dossier.v1"]
+            self.assertEqual(dossier["trace_id"], "trace-xyz")
+            self.assertEqual(dossier["turn_id"], "turn-123")
+            self.assertTrue(dossier["drive_audit_ref"])
+            self.assertTrue(dossier["identity_snapshot_ref"])
+
+            self.assertFalse(any("exec" in published_env.kind for _, published_env in fake_bus.published))
+
+    def test_goal_proposal_dedupe_cooldown_suppresses_repeats(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    use_cortex_orch=False,
+                    store_path=str(Path(td) / "state.json"),
+                    goal_proposal_cooldown_minutes=180,
+                )
+            )
+            fake_bus = FakeBus()
+            worker.bus = fake_bus
+            payload = {
+                "subject": "orion",
+                "turn_effect": {"turn": {"coherence": -0.45}},
+                "summary": "Repeated coherence drop.",
+            }
+            env1 = BaseEnvelope(kind="metacognition.tick.v1", source=ServiceRef(name="test", version="0.0.0"), correlation_id=uuid4(), payload=payload)
+            env2 = BaseEnvelope(kind="metacognition.tick.v1", source=ServiceRef(name="test", version="0.0.0"), correlation_id=uuid4(), payload=payload)
+            asyncio.run(worker.handle_envelope(env1, "orion:metacognition:tick"))
+            first_goal_count = sum(1 for _, published_env in fake_bus.published if published_env.kind == "memory.goals.proposed.v1")
+            asyncio.run(worker.handle_envelope(env2, "orion:metacognition:tick"))
+            second_goal_count = sum(1 for _, published_env in fake_bus.published if published_env.kind == "memory.goals.proposed.v1")
+            dossier_payloads = [published_env.payload for _, published_env in fake_bus.published if published_env.kind == "debug.turn.dossier.v1"]
+            self.assertEqual(first_goal_count, 1)
+            self.assertEqual(second_goal_count, 1)
+            self.assertTrue(dossier_payloads[-1]["suppressed_goal_signatures"])
+            cooldowns = worker.store.load_goal_cooldown(dossier_payloads[-1]["suppressed_goal_signatures"][0])
+            self.assertGreaterEqual(cooldowns.get("suppressed_count", 0), 1)
 
 
 if __name__ == "__main__":

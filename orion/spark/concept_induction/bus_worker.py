@@ -9,10 +9,19 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
-from orion.core.schemas.drives import ArtifactProvenance, TensionEventV1
+from orion.core.schemas.drives import ArtifactProvenance, GraphReadyArtifact, TurnDossierV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
+from .audit import build_drive_audit
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
+from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
+from .goals import GoalProposalEngine
+from .identity import (
+    build_identity_snapshot,
+    entity_id_for_subject,
+    model_layer_for_subject,
+    resolve_subject_identity,
+)
 from .inducer import ConceptInducer, WindowEvent
 from .settings import ConceptSettings
 from .store import LocalProfileStore
@@ -35,7 +44,6 @@ class ConceptWorker:
 
     def __init__(self, cfg: ConceptSettings) -> None:
         self.cfg = cfg
-        # Respect per-service enforcement config (do not rely solely on global env var).
         self.bus = OrionBusAsync(
             cfg.orion_bus_url,
             enabled=cfg.orion_bus_enabled,
@@ -50,6 +58,7 @@ class ConceptWorker:
                 deactivate_threshold=cfg.drive_activation_off,
             )
         )
+        self.goal_engine = GoalProposalEngine(cfg.goal_proposal_cooldown_minutes)
         self.last_run: Dict[str, datetime] = {}
         service_ref = _service_ref(cfg)
         self.summarizer = Summarizer(
@@ -77,31 +86,15 @@ class ConceptWorker:
             w for w in window if w.timestamp >= cutoff
         ][-self.cfg.window_max_events :]
 
-    def _detect_subject(self, env: BaseEnvelope) -> str:
-        payload = env.payload if isinstance(env.payload, dict) else {}
-        explicit = payload.get("subject") or payload.get("entity_id")
-        if isinstance(explicit, str):
-            norm = explicit.strip().lower()
-            if norm in {"orion", "juniper", "relationship"}:
-                return norm
-        user = payload.get("user") or payload.get("speaker")
-        role = payload.get("role")
-        if isinstance(user, str) and user.lower().startswith("juniper"):
-            return "juniper"
-        if role == "assistant" or (env.source and "orion" in (env.source.name or "")):
-            return "orion"
-        return "relationship"
+    def _detect_subject(self, env: BaseEnvelope, intake_channel: str = "") -> str:
+        return resolve_subject_identity(env, intake_channel)
 
     def _model_layer(self, subject: str, intake_channel: str) -> str:
-        if subject == "orion":
-            return "self-model"
-        if subject == "juniper":
-            return "user-model"
-        if subject == "relationship":
-            return "relationship-model"
-        if "hardware" in intake_channel or "system" in intake_channel:
-            return "world-model"
-        return "relationship-model"
+        del intake_channel
+        return model_layer_for_subject(subject)
+
+    def _entity_id(self, subject: str, model_layer: str) -> str:
+        return entity_id_for_subject(subject, model_layer)
 
     def _extract_text(self, env: BaseEnvelope) -> Optional[str]:
         payload = env.payload
@@ -164,7 +157,7 @@ class ConceptWorker:
         )
         await self.bus.publish(self.cfg.drive_state_channel, env)
 
-    async def _publish_tension_event(self, event: TensionEventV1, corr_id) -> None:
+    async def _publish_tension_event(self, event, corr_id) -> None:
         env = BaseEnvelope(
             kind="memory.tension.event.v1",
             source=_service_ref(self.cfg),
@@ -173,20 +166,41 @@ class ConceptWorker:
         )
         await self.bus.publish(self.cfg.tension_event_channel, env)
 
+    async def _publish_artifact(self, artifact: GraphReadyArtifact, channel: str, corr_id) -> None:
+        env = BaseEnvelope(
+            kind=artifact.kind,
+            source=_service_ref(self.cfg),
+            correlation_id=corr_id,
+            payload=artifact.model_dump(mode="json"),
+        )
+        await self.bus.publish(channel, env)
+
+    async def _publish_dossier(self, dossier: TurnDossierV1, corr_id) -> None:
+        env = BaseEnvelope(
+            kind=dossier.kind,
+            source=_service_ref(self.cfg),
+            correlation_id=corr_id,
+            payload=dossier.model_dump(mode="json"),
+        )
+        await self.bus.publish(self.cfg.turn_dossier_channel, env)
+
     async def handle_envelope(self, env: BaseEnvelope, intake_channel: str) -> None:
         text = self._extract_text(env)
-        subject = self._detect_subject(env)
+        subject = self._detect_subject(env, intake_channel)
         model_layer = self._model_layer(subject, intake_channel)
+        entity_id = self._entity_id(subject, model_layer)
 
         tensions = extract_tensions(
             envelope=env,
             intake_channel=intake_channel,
             subject=subject,
             model_layer=model_layer,
-            entity_id=f"{model_layer}:{subject}",
+            entity_id=entity_id,
         )
+        published_artifacts: List[GraphReadyArtifact] = []
         for tension in tensions:
             await self._publish_tension_event(tension, env.correlation_id)
+            published_artifacts.append(tension)
 
         prior_drive_state = self.store.load_drive_state(subject)
         previous_ts = None
@@ -204,25 +218,74 @@ class ConceptWorker:
             previous_ts=previous_ts,
         )
         self.store.save_drive_state(subject, pressures=pressures, activations=activations, updated_at=now)
-        trace_id = None
-        if isinstance(env.trace, dict):
-            trace_id = env.trace.get("trace_id") or env.trace.get("trace")
+
+        trace_id = extract_trace_id(env)
+        turn_id = extract_turn_id(env)
+        source_event_ref = build_source_event_ref(env, intake_channel)
+        evidence_items = build_evidence_items(env, intake_channel, tensions[0].provenance.evidence_text if tensions else None)
         drive_state = drive_state_from_values(
             subject=subject,
             model_layer=model_layer,
-            entity_id=f"{model_layer}:{subject}",
+            entity_id=entity_id,
             ts=now,
             pressures=pressures,
             activations=activations,
             confidence=0.72,
+            correlation_id=str(env.correlation_id),
+            trace_id=trace_id,
+            turn_id=turn_id,
             provenance=ArtifactProvenance(
                 intake_channel=intake_channel,
                 correlation_id=str(env.correlation_id),
-                trace_id=str(trace_id) if trace_id else None,
+                trace_id=trace_id,
+                turn_id=turn_id,
+                evidence_text=(tensions[0].provenance.evidence_text if tensions else None),
+                evidence_summary=(evidence_items[0].summary if evidence_items else None),
+                source_event_refs=[source_event_ref],
+                evidence_items=evidence_items,
+                tension_refs=[tension.artifact_id for tension in tensions],
             ),
-            related_nodes=[f"subject:{subject}"] + [t.kind for t in tensions],
+            related_nodes=[f"subject:{subject}"] + [tension.artifact_id for tension in tensions],
         )
         await self._publish_drive_state(drive_state, env.correlation_id)
+
+        drive_audit = build_drive_audit(env=env, intake_channel=intake_channel, drive_state=drive_state, tensions=tensions)
+        await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
+        published_artifacts.append(drive_audit)
+
+        identity_snapshot = build_identity_snapshot(
+            drive_state=drive_state,
+            source_event_ref=source_event_ref,
+            evidence_items=evidence_items,
+            tensions=tensions,
+        )
+        await self._publish_artifact(identity_snapshot, self.cfg.identity_snapshot_channel, env.correlation_id)
+        published_artifacts.append(identity_snapshot)
+
+        goal_decision = self.goal_engine.propose(
+            env=env,
+            intake_channel=intake_channel,
+            drive_state=drive_state,
+            tensions=tensions,
+            store=self.store,
+        )
+        suppressed_signatures: List[str] = []
+        if goal_decision.proposal is not None:
+            await self._publish_artifact(goal_decision.proposal, self.cfg.goal_proposal_channel, env.correlation_id)
+            published_artifacts.append(goal_decision.proposal)
+        elif goal_decision.suppressed_signature:
+            suppressed_signatures.append(goal_decision.suppressed_signature)
+
+        dossier = build_turn_dossier(
+            env=env,
+            intake_channel=intake_channel,
+            subject=subject,
+            model_layer=model_layer,
+            entity_id=entity_id,
+            published=published_artifacts,
+            suppressed_goal_signatures=suppressed_signatures,
+        )
+        await self._publish_dossier(dossier, env.correlation_id)
 
         if text:
             event = WindowEvent(text=text, timestamp=env.created_at, envelope=env, intake_channel=intake_channel)

@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
     CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
 
+    # Autonomy artifact ingestion
+    CHANNEL_MEMORY_IDENTITY_SNAPSHOT: str = Field(default="orion:memory:identity:snapshot", env="CHANNEL_MEMORY_IDENTITY_SNAPSHOT")
+    CHANNEL_MEMORY_DRIVES_AUDIT: str = Field(default="orion:memory:drives:audit", env="CHANNEL_MEMORY_DRIVES_AUDIT")
+    CHANNEL_MEMORY_GOALS_PROPOSED: str = Field(default="orion:memory:goals:proposed", env="CHANNEL_MEMORY_GOALS_PROPOSED")
+
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
     CHANNEL_RDF_ERROR: str = Field(default="orion:rdf:error", env="CHANNEL_RDF_ERROR")
@@ -68,6 +73,9 @@ class Settings(BaseSettings):
             self.CHANNEL_COGNITION_TRACE_PUB,
             self.CHANNEL_CHAT_HISTORY_TURN,
             self.CHANNEL_CHAT_HISTORY_LOG,
+            self.CHANNEL_MEMORY_IDENTITY_SNAPSHOT,
+            self.CHANNEL_MEMORY_DRIVES_AUDIT,
+            self.CHANNEL_MEMORY_GOALS_PROPOSED,
         ]
         seen = set()
         ordered: List[str] = []

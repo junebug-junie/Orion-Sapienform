@@ -1003,3 +1003,39 @@ channels:
     consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-03-14"
+
+  - name: "orion:memory:drives:audit"
+    kind: "event"
+    schema_id: "DriveAuditV1"
+    message_kind: "memory.drives.audit.v1"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-19"
+
+  - name: "orion:memory:identity:snapshot"
+    kind: "event"
+    schema_id: "IdentitySnapshotV1"
+    message_kind: "memory.identity.snapshot.v1"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-19"
+
+  - name: "orion:memory:goals:proposed"
+    kind: "event"
+    schema_id: "GoalProposalV1"
+    message_kind: "memory.goals.proposed.v1"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-19"
+
+  - name: "orion:debug:turn:dossier"
+    kind: "event"
+    schema_id: "TurnDossierV1"
+    message_kind: "debug.turn.dossier.v1"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: ["orion-rdf-writer", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-19"

@@ -80,3 +80,32 @@ class LocalProfileStore:
             "updated_at": updated_at.isoformat(),
         }
         self._save_raw(data)
+
+    def load_goal_cooldown(self, signature: str) -> Dict[str, Any]:
+        data = self._load_raw()
+        cooldowns = data.get("goal_cooldowns", {})
+        if not isinstance(cooldowns, dict):
+            return {}
+        record = cooldowns.get(signature)
+        return record if isinstance(record, dict) else {}
+
+    def save_goal_cooldown(self, signature: str, cooldown_until: datetime) -> None:
+        data = self._load_raw()
+        data.setdefault("goal_cooldowns", {})
+        data["goal_cooldowns"][signature] = {
+            "cooldown_until": cooldown_until.isoformat(),
+            "suppressed_count": int(self.load_goal_cooldown(signature).get("suppressed_count", 0)),
+        }
+        self._save_raw(data)
+
+    def record_goal_suppression(self, signature: str, ts: datetime) -> None:
+        data = self._load_raw()
+        data.setdefault("goal_cooldowns", {})
+        record = data["goal_cooldowns"].get(signature, {})
+        suppressed_count = int(record.get("suppressed_count", 0)) + 1
+        if not record.get("cooldown_until"):
+            record["cooldown_until"] = ts.isoformat()
+        record["suppressed_count"] = suppressed_count
+        record["last_suppressed_at"] = ts.isoformat()
+        data["goal_cooldowns"][signature] = record
+        self._save_raw(data)

@@ -36,7 +36,14 @@ from orion.schemas.vector.schemas import (
     VectorWriteRequest,
 )
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
-from orion.core.schemas.drives import DriveStateV1, TensionEventV1, TurnDossierV1
+from orion.core.schemas.drives import (
+    DriveAuditV1,
+    DriveStateV1,
+    GoalProposalV1,
+    IdentitySnapshotV1,
+    TensionEventV1,
+    TurnDossierV1,
+)
 from orion.schemas.telemetry.biometrics import (
     BiometricsPayload,
     BiometricsSampleV1,
@@ -176,6 +183,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ConceptProfile": ConceptProfile,
     "ConceptProfileDelta": ConceptProfileDelta,
     "DriveStateV1": DriveStateV1,
+    "DriveAuditV1": DriveAuditV1,
+    "IdentitySnapshotV1": IdentitySnapshotV1,
+    "GoalProposalV1": GoalProposalV1,
     "TensionEventV1": TensionEventV1,
     "TurnDossierV1": TurnDossierV1,
     "BiometricsPayload": BiometricsPayload,

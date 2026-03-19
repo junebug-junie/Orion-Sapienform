@@ -60,6 +60,22 @@ class ConceptSettings(BaseSettings):
         "orion:memory:tension:event",
         alias="BUS_TENSION_EVENT_OUT",
     )
+    drive_audit_channel: str = Field(
+        "orion:memory:drives:audit",
+        alias="BUS_DRIVE_AUDIT_OUT",
+    )
+    identity_snapshot_channel: str = Field(
+        "orion:memory:identity:snapshot",
+        alias="BUS_IDENTITY_SNAPSHOT_OUT",
+    )
+    goal_proposal_channel: str = Field(
+        "orion:memory:goals:proposed",
+        alias="BUS_GOAL_PROPOSAL_OUT",
+    )
+    turn_dossier_channel: str = Field(
+        "orion:debug:turn:dossier",
+        alias="BUS_TURN_DOSSIER_OUT",
+    )
 
     # Windowing
     window_max_events: int = Field(200, alias="CONCEPT_WINDOW_MAX_EVENTS")
@@ -97,6 +113,7 @@ class ConceptSettings(BaseSettings):
     drive_saturation_gain: float = Field(1.8, alias="DRIVE_SATURATION_GAIN")
     drive_activation_on: float = Field(0.62, alias="DRIVE_ACTIVATION_ON")
     drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
+    goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
 
     # Heartbeat
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")

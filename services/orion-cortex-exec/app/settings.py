@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")
     diagnostic_agent_timeout_sec: float = Field(15.0, alias="DIAGNOSTIC_AGENT_TIMEOUT_SEC")
     orion_verb_backdoor_enabled: bool = Field(False, alias="ORION_VERB_BACKDOOR_ENABLED")
+    notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+    orion_tz: str = Field("America/Denver", alias="ORION_TZ")
+    skills_command_timeout_sec: float = Field(8.0, alias="SKILLS_COMMAND_TIMEOUT_SEC")
+    docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
+    biometrics_service_url: str = Field("http://orion-biometrics:8058", alias="BIOMETRICS_SERVICE_URL")
+    biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
 
     class Config:
         env_file = ".env"

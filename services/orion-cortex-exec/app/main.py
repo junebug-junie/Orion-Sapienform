@@ -25,7 +25,7 @@ from .router import PlanRouter
 from .settings import settings
 from .core_event_cache import get_core_event_cache
 from .trace_cache import get_trace_cache
-from .verb_adapters import LegacyPlanVerb  # noqa: F401 - register verb adapter
+from .verb_adapters import LegacyPlanVerb, RespondToJuniperCollapseMirrorVerb  # noqa: F401 - register verb adapter
 from .collapse_verbs import (  # noqa: F401 - register collapse verbs
     LogCollapseMirrorVerb,
     EnrichCollapseMirrorVerb,

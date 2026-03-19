@@ -8,7 +8,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Dict
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -18,7 +18,6 @@ from fastapi import FastAPI
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
-from orion.notify.client import NotifyClient
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
@@ -26,13 +25,14 @@ from orion.schemas.notify import NotificationRequest
 
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
+    SKILL_BIOMETRICS_SNAPSHOT_V1,
+    SKILL_GPU_NVIDIA_SMI_SNAPSHOT_V1,
+    SKILL_NOTIFY_CHAT_MESSAGE_V1,
     ActionDedupe,
     build_audit_envelope,
-    build_llm_envelope,
-    build_notify_request,
-    build_recall_envelope,
-    decode_llm_result,
-    decode_recall_reply,
+    build_cortex_orch_envelope,
+    build_skill_cortex_orch_envelope,
+    dispatch_cortex_request,
     dedupe_key_for,
     extract_message_sections,
     new_reply_channel,
@@ -178,13 +178,72 @@ def _daily_notify_request(*, event_kind: str, title: str, dedupe_key: str, corre
     )
 
 
+def should_run_interval(*, now_monotonic: float, last_run_monotonic: float | None, interval_seconds: int, run_on_startup: bool) -> bool:
+    if last_run_monotonic is None:
+        return bool(run_on_startup)
+    return (now_monotonic - last_run_monotonic) >= max(1, int(interval_seconds))
+
+
+def _extract_skill_result_from_orch(payload: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+    if isinstance(metadata, dict) and isinstance(metadata.get("skill_result"), dict):
+        return metadata.get("skill_result") or {}
+    final_text = payload.get("final_text") if isinstance(payload, dict) else None
+    if isinstance(final_text, str) and final_text.strip():
+        try:
+            parsed = json.loads(final_text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _scheduler_threshold_findings(*, biometrics_snapshot: Dict[str, Any] | None, gpu_snapshot: Dict[str, Any] | None) -> list[str]:
+    findings: list[str] = []
+    if isinstance(biometrics_snapshot, dict):
+        cluster = biometrics_snapshot.get("cluster") if isinstance(biometrics_snapshot.get("cluster"), dict) else {}
+        composite = cluster.get("composite") if isinstance(cluster.get("composite"), dict) else {}
+        stability = composite.get("stability")
+        try:
+            if stability is not None and float(stability) < float(settings.actions_skills_biometrics_stability_threshold):
+                findings.append(f"stability_below:{float(stability):.3f}")
+        except Exception:
+            pass
+    if isinstance(gpu_snapshot, dict):
+        gpus = gpu_snapshot.get("gpus") if isinstance(gpu_snapshot.get("gpus"), list) else []
+        for gpu in gpus:
+            try:
+                ratio = float(gpu.get("memory_used_ratio") or 0.0)
+            except Exception:
+                ratio = 0.0
+            if ratio > float(settings.actions_skills_gpu_mem_threshold):
+                findings.append(f"gpu_mem_above:{gpu.get('name') or gpu.get('index')}:{ratio:.3f}")
+    return findings
+
+
+def _threshold_notify_skill_args(*, findings: list[str], correlation_id: str) -> dict[str, Any]:
+    body_text = "Threshold findings: " + "; ".join(findings)
+    return {
+        "title": "Orion Skills Threshold Alert",
+        "body_text": body_text,
+        "body_md": body_text,
+        "recipient_group": settings.actions_recipient_group,
+        "session_id": settings.actions_session_id,
+        "dedupe_key": f"actions:skills:threshold:{correlation_id}",
+        "dedupe_window_seconds": int(settings.actions_notify_dedupe_window_seconds),
+        "tags": ["actions", "skills", "threshold"],
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     deduper = ActionDedupe(ttl_seconds=settings.actions_dedupe_ttl_seconds)
     sem = asyncio.Semaphore(max(1, int(settings.actions_max_concurrency)))
+    from orion.notify.client import NotifyClient
     notify = NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10)
     src = _source_ref()
     last_daily_run: dict[str, str] = {}
+    last_skill_run_monotonic: float | None = None
 
     async def _audit(
         parent: BaseEnvelope,
@@ -336,78 +395,42 @@ async def lifespan(app: FastAPI):
         try:
             await sem.acquire()
             acquired = True
-            await _audit(env, status="started", event_id=event_id, action_name=ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1)
-
-            recall_reply = new_reply_channel("orion:exec:result:RecallService")
-            recall_env = build_recall_envelope(
+            req_env = build_cortex_orch_envelope(
                 env,
                 source=src,
                 entry=entry,
-                reply_to=recall_reply,
-                profile=settings.actions_recall_profile,
                 session_id=settings.actions_session_id,
-                node_id=settings.node_name,
-            )
-            recall_msg = await hunter.bus.rpc_request(
-                settings.recall_rpc_channel,
-                recall_env,
-                reply_channel=recall_reply,
-                timeout_sec=float(settings.actions_recall_timeout_seconds),
-            )
-            recall_decoded = hunter.bus.codec.decode(recall_msg.get("data"))
-            if not recall_decoded.ok or recall_decoded.envelope is None:
-                raise RuntimeError(f"recall_decode_failed:{recall_decoded.error}")
-            recall_payload = recall_decoded.envelope.payload if isinstance(recall_decoded.envelope.payload, dict) else {}
-            memory_rendered = decode_recall_reply(recall_payload)
-
-            llm_reply = new_reply_channel("orion:exec:result:LLMGatewayService")
-            llm_env = build_llm_envelope(
-                env,
-                source=src,
-                entry=entry,
-                memory_rendered=memory_rendered,
-                reply_to=llm_reply,
-                route=settings.actions_llm_route,
-            )
-            llm_msg = await hunter.bus.rpc_request(
-                settings.llm_rpc_channel,
-                llm_env,
-                reply_channel=llm_reply,
-                timeout_sec=float(settings.actions_llm_timeout_seconds),
-            )
-            llm_decoded = hunter.bus.codec.decode(llm_msg.get("data"))
-            if not llm_decoded.ok or llm_decoded.envelope is None:
-                raise RuntimeError(f"llm_decode_failed:{llm_decoded.error}")
-            llm_payload = llm_decoded.envelope.payload if isinstance(llm_decoded.envelope.payload, dict) else {}
-            llm_text = decode_llm_result(llm_payload)
-            introspect_text, message_text = extract_message_sections(llm_text)
-
-            notify_req = build_notify_request(
-                source_service=settings.service_name,
                 recipient_group=settings.actions_recipient_group,
-                session_id=settings.actions_session_id,
-                correlation_id=str(env.correlation_id),
                 dedupe_key=event_id,
                 dedupe_window_seconds=settings.actions_notify_dedupe_window_seconds,
-                entry=entry,
-                action_name=ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
-                introspect_text=introspect_text,
-                message_text=message_text,
+                recall_profile=settings.actions_recall_profile,
+                verb=settings.actions_verb,
             )
-            accepted = await asyncio.to_thread(notify.send, notify_req)
+            await dispatch_cortex_request(
+                bus=hunter.bus,
+                channel=settings.cortex_request_channel,
+                envelope=req_env,
+            )
 
             dt_ms = int((time.monotonic() - t0) * 1000)
-            extra = {
-                "duration_ms": dt_ms,
-                "notify_ok": accepted.ok,
-                "notify_status": accepted.status,
-                "notification_id": str(accepted.notification_id) if accepted.notification_id else None,
-            }
-            if accepted.ok:
-                deduper.mark_done(event_id)
-                await _audit(env, status="completed", event_id=event_id, action_name=ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1, extra=extra)
-            else:
-                await _audit(env, status="failed", event_id=event_id, action_name=ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1, reason=accepted.detail, extra=extra)
+            deduper.mark_done(event_id)
+            await _audit(
+                env,
+                status="dispatched",
+                event_id=event_id,
+                action_name=ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
+                extra={
+                    "duration_ms": dt_ms,
+                    "verb": settings.actions_verb,
+                    "channel": settings.cortex_request_channel,
+                },
+            )
+            logger.info(
+                "dispatched cortex.orch.request verb=%s event_id=%s corr=%s",
+                settings.actions_verb,
+                event_id,
+                env.correlation_id,
+            )
 
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
@@ -444,11 +467,65 @@ async def lifespan(app: FastAPI):
         # fallback by payload shape/channel drift: collapse flow stays default
         await _handle_collapse(env)
 
+    async def _dispatch_scheduled_skill(parent: BaseEnvelope, *, verb_name: str, wait_for_result: bool, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        env = build_skill_cortex_orch_envelope(
+            parent,
+            source=src,
+            verb=verb_name,
+            session_id=settings.actions_session_id,
+            user_id=settings.actions_recipient_group,
+            metadata=metadata or {},
+            options={"timeout_sec": float(settings.actions_exec_timeout_seconds)},
+            recall_enabled=False,
+        )
+        await _audit(parent, status="dispatched", event_id=str(parent.correlation_id), action_name=verb_name, extra={"channel": settings.cortex_request_channel})
+        if not wait_for_result:
+            await dispatch_cortex_request(bus=hunter.bus, channel=settings.cortex_request_channel, envelope=env)
+            return {}
+        reply_channel = new_reply_channel("orion:cortex:result")
+        rpc_env = env.model_copy(update={"reply_to": reply_channel})
+        msg = await hunter.bus.rpc_request(
+            settings.cortex_request_channel,
+            rpc_env,
+            reply_channel=reply_channel,
+            timeout_sec=float(settings.actions_exec_timeout_seconds),
+        )
+        decoded = hunter.bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
+        orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        return _extract_skill_result_from_orch(orch_payload)
+
     async def _scheduler_loop() -> None:
+        nonlocal last_skill_run_monotonic
         while True:
             try:
                 now_utc = datetime.now(timezone.utc)
                 forced_date = settings.actions_daily_run_once_date
+                now_monotonic = time.monotonic()
+                if settings.actions_skills_scheduler_enabled and should_run_interval(
+                    now_monotonic=now_monotonic,
+                    last_run_monotonic=last_skill_run_monotonic,
+                    interval_seconds=settings.actions_skills_interval_seconds,
+                    run_on_startup=settings.actions_skills_run_on_startup,
+                ):
+                    skill_parent = BaseEnvelope(kind="orion.actions.trigger.skills.v1", source=src, payload={"scheduled": True})
+                    wait_for_result = bool(settings.actions_skills_notify_enabled)
+                    biometrics_result = await _dispatch_scheduled_skill(skill_parent, verb_name=SKILL_BIOMETRICS_SNAPSHOT_V1, wait_for_result=wait_for_result, metadata={"schedule": "periodic_skills"})
+                    gpu_result = await _dispatch_scheduled_skill(skill_parent, verb_name=SKILL_GPU_NVIDIA_SMI_SNAPSHOT_V1, wait_for_result=wait_for_result, metadata={"schedule": "periodic_skills"})
+                    if wait_for_result:
+                        findings = _scheduler_threshold_findings(biometrics_snapshot=biometrics_result, gpu_snapshot=gpu_result)
+                        if findings:
+                            await _audit(skill_parent, status="threshold_detected", event_id=str(skill_parent.correlation_id), action_name="skills.periodic.thresholds", extra={"findings": findings})
+                            notify_parent = BaseEnvelope(kind="orion.actions.trigger.skills.notify.v1", source=src, payload={"findings": findings})
+                            await _dispatch_scheduled_skill(
+                                notify_parent,
+                                verb_name=SKILL_NOTIFY_CHAT_MESSAGE_V1,
+                                wait_for_result=False,
+                                metadata={"skill_args": _threshold_notify_skill_args(findings=findings, correlation_id=str(notify_parent.correlation_id))},
+                            )
+                    last_skill_run_monotonic = now_monotonic
+
                 pulse_should_run, local_date = should_run_daily(
                     now_utc=now_utc,
                     tz_name=settings.actions_daily_timezone,
@@ -486,10 +563,10 @@ async def lifespan(app: FastAPI):
     hunter = Hunter(_cfg(), patterns=settings.subscribe_patterns(), handler=handle_envelope)
 
     logger.info(
-        "Starting orion-actions Hunter channels=%s bus=%s notify=%s",
+        "Starting orion-actions Hunter channels=%s bus=%s cortex_request=%s",
         settings.subscribe_patterns(),
         settings.orion_bus_url,
-        settings.notify_url,
+        settings.cortex_request_channel,
     )
 
     hunter_task = asyncio.create_task(hunter.start(), name="orion-actions-hunter")

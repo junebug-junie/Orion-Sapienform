@@ -4,7 +4,7 @@ import asyncio
 from uuid import uuid4
 
 from app import api as agent_api
-from orion.schemas.agents.schemas import AgentChainRequest
+from orion.schemas.agents.schemas import AgentChainRequest, ToolDef
 
 
 class _FakeToolExecutor:
@@ -45,7 +45,12 @@ def test_agent_chain_delegate_loop_executes_action_and_returns_final(monkeypatch
 
     monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
     monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
-    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body: [])
+    ad = ToolDef(tool_id="analyze_text", description="a", input_schema={}, output_schema={})
+    monkeypatch.setattr(
+        agent_api,
+        "_resolve_tools",
+        lambda body, output_mode=None: ([ad], ["executive_pack", "memory_pack"]),
+    )
 
     req = AgentChainRequest(
         text="hello",
@@ -78,7 +83,12 @@ def test_agent_chain_delegate_loop_allows_planner_no_action_terminal(monkeypatch
         }
 
     monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
-    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body: [])
+    ad = ToolDef(tool_id="noop", description="n", input_schema={}, output_schema={})
+    monkeypatch.setattr(
+        agent_api,
+        "_resolve_tools",
+        lambda body, output_mode=None: ([ad], ["executive_pack"]),
+    )
 
     req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
     out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))

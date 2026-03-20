@@ -5,7 +5,6 @@ import logging
 import json
 import asyncio
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -28,7 +27,7 @@ from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestRepl
 from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
-from .output_mode_classifier import classify_output_mode
+from orion.cognition.output_mode_classifier import classify_output_mode
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -280,20 +279,21 @@ def build_plan_request(
     if isinstance(output_mode_decision, dict):
         context.setdefault("metadata", {})["output_mode_decision"] = output_mode_decision
 
-    # Add delivery_pack when output mode is delivery-oriented (if pack exists)
-    delivery_modes = {"implementation_guide", "tutorial", "code_delivery", "debug_diagnosis"}
-    if output_mode in delivery_modes and "delivery_pack" not in (context.get("packs") or []):
-        try:
-            from orion.cognition.packs_loader import PackManager
-            import orion
-            pm = PackManager(Path(orion.__file__).resolve().parent / "cognition")
-            pm.load_packs()
-            if "delivery_pack" in pm.list_packs():
-                packs = list(context.get("packs") or [])
-                packs.append("delivery_pack")
-                context["packs"] = packs
-        except Exception:
-            pass
+    # Ensure delivery_pack for all delivery-oriented modes (shared merge logic)
+    from orion.cognition.runtime_pack_merge import ensure_delivery_pack_in_packs
+
+    context["packs"] = ensure_delivery_pack_in_packs(
+        context.get("packs"),
+        output_mode=output_mode,
+        user_text=_user_text_for_classifier(client_request),
+    )
+    logger.info(
+        "orch_plan_wiring corr=%s output_mode=%s profile=%s packs=%s",
+        correlation_id,
+        output_mode,
+        response_profile,
+        context.get("packs"),
+    )
 
     # Attach latest Orion state (Spark) as a read-model artifact
     context.setdefault("metadata", {})["orion_state_pending"] = True

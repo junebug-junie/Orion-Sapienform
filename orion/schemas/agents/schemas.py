@@ -48,6 +48,10 @@ class AgentChainResult(BaseModel):
     text: str
     structured: Dict[str, Any] = Field(default_factory=dict)
     planner_raw: Dict[str, Any] = Field(default_factory=dict)
+    runtime_debug: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Compact QA wiring flags (output_mode, tools, overrides, etc.)",
+    )
 
 
 # ─────────────────────────────────────────────

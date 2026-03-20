@@ -6,7 +6,7 @@ import asyncio
 from uuid import uuid4
 
 from app import api as agent_api
-from orion.schemas.agents.schemas import AgentChainRequest
+from orion.schemas.agents.schemas import AgentChainRequest, ToolDef
 
 
 class _FakeToolExecutor:
@@ -34,7 +34,12 @@ def test_step_cap_yields_best_effort(monkeypatch):
     fake_exec = _FakeToolExecutor()
     monkeypatch.setattr(agent_api, "call_planner_react", fake_planner)
     monkeypatch.setattr(agent_api, "ToolExecutor", lambda *a, **k: fake_exec)
-    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _: [])
+    tdef = ToolDef(tool_id="plan_action", description="p", input_schema={}, output_schema={})
+    monkeypatch.setattr(
+        agent_api,
+        "_resolve_tools",
+        lambda body, output_mode=None: ([tdef], ["executive_pack", "delivery_pack"]),
+    )
 
     req = AgentChainRequest(text="complex request", mode="agent", messages=[{"role": "user", "content": "x"}])
     out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
@@ -42,3 +47,7 @@ def test_step_cap_yields_best_effort(monkeypatch):
     assert out.text
     assert "Best-effort" in out.text or "synthesis" in out.text.lower()
     assert "finalize_response" in [c[0] for c in fake_exec.calls]
+    assert fake_exec.calls[-1][0] == "finalize_response"
+    fin_input = fake_exec.calls[-1][1]
+    assert "trace" in fin_input and "output_mode" in fin_input
+    assert out.runtime_debug.get("finalize_response_invoked") is True

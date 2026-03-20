@@ -133,10 +133,22 @@ async def _call_planner_llm(
         raw_user = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content", "")
         last_user = raw_user[:14000] + "..." if len(raw_user) > 14000 else raw_user
 
-    ext_text = (context.external_facts.get("text") or "")[:10000]
+    ext_facts = context.external_facts if isinstance(context.external_facts, dict) else {}
+    ext_text = (ext_facts.get("text") or "")[:10000]
+    om = ext_facts.get("output_mode") or ""
+    rp = ext_facts.get("response_profile") or ""
 
     system_msg = f"""
 You are Orion's internal ReAct planner.
+
+RUNTIME ROUTING (must respect):
+- output_mode: {om or "(not set)"}
+- response_profile: {rp or "(not set)"}
+When output_mode is implementation_guide, tutorial, code_delivery, or direct_answer for instructional asks:
+  Prefer delivery tools (write_guide, write_tutorial, answer_direct, finalize_response) over plan_action.
+When output_mode is code_delivery: prefer generate_code_scaffold.
+When output_mode is comparative_analysis: prefer compare_options.
+When output_mode is decision_support: prefer write_recommendation.
 
 AVAILABLE TOOLS:
 {tools_description}
@@ -378,15 +390,18 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
             final = planner_step.get("final_answer")
 
             if finish or (final and not action):
-                raw_content = final.get("content") if final else thought
+                if isinstance(final, dict):
+                    raw_content = final.get("content") or thought
+                    structured = final.get("structured", {})
+                else:
+                    raw_content = final if isinstance(final, str) else thought
+                    structured = {}
                 if isinstance(raw_content, (dict, list)):
                     content = json.dumps(raw_content, ensure_ascii=False)
                 elif raw_content is None:
                     content = ""
                 else:
                     content = str(raw_content)
-
-                structured = final.get("structured", {}) if final else {}
                 final_answer = FinalAnswer(content=content, structured=structured)
                 trace.append(TraceStep(step_index=step_index, thought=thought))
                 break

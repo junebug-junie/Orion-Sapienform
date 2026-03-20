@@ -1,0 +1,90 @@
+{
+  "scenario": "supervisor_meta_plan_live",
+  "timestamp": "2026-03-20T04:54:16.548216+00:00",
+  "correlation_id": "7bdae3f5-3d91-49b1-8cb0-9801c5843c78",
+  "request_channel": "orion:cortex:request",
+  "entrypoint": "orch",
+  "reply_channel": "orion:cortex:result:7bdae3f5-3d91-49b1-8cb0-9801c5843c78",
+  "result_kind": null,
+  "error": "RPC timeout waiting on orion:cortex:result:7bdae3f5-3d91-49b1-8cb0-9801c5843c78",
+  "request_text": null,
+  "output_mode": null,
+  "response_profile": null,
+  "packs": null,
+  "resolved_tool_ids": null,
+  "tool_sequence": null,
+  "triage_blocked_post_step0": null,
+  "repeated_plan_action_escalation": null,
+  "finalize_response_invoked": null,
+  "quality_evaluator_rewrite": null,
+  "answer_excerpt": "",
+  "quality_checks": {
+    "positive_checks": {
+      "discord": false,
+      "(developer portal|application|app setup|bot setup|create .*bot)": false,
+      "(token|env var|environment variable|DISCORD_BOT_TOKEN)": false,
+      "(intent|permission|oauth|invite)": false,
+      "(deploy|hosting|host|process|systemd|docker)": false,
+      "(test|troubleshoot|debug|verify)": false
+    },
+    "negative_checks": {
+      "gather requirements": false,
+      "create a guide": false,
+      "review and refine": false,
+      "test deployment, then refine": false,
+      "purely managerial": false
+    },
+    "positive_pass": false,
+    "negative_pass": true,
+    "overall_pass": false
+  },
+  "pass_checks": {
+    "real_orch_path_observed": false,
+    "plannerreact_bus_observed": false,
+    "llm_bus_observed": false,
+    "output_mode_expected": null,
+    "response_profile_expected": null,
+    "delivery_pack_active": null,
+    "delivery_verbs_visible": null,
+    "triage_not_after_step0": null,
+    "repeated_plan_action_not_shallow": null,
+    "finalization_when_needed": null,
+    "quality_evaluator_rewrite": null,
+    "answer_quality_concrete": false
+  },
+  "overall_pass": false,
+  "path_observed": {
+    "gateway_request_kind": false,
+    "orch_request_kind": true,
+    "exec_request_kind": false,
+    "verb_request_kind": false,
+    "planner_request_kind": false,
+    "agent_chain_request_kind": false,
+    "llm_request_kind": false
+  },
+  "probe_events_excerpt": [
+    {
+      "ts": "2026-03-20T04:50:15.929137+00:00",
+      "channel": "orion:cortex:request",
+      "kind": "cortex.orch.request",
+      "correlation_id": "7bdae3f5-3d91-49b1-8cb0-9801c5843c78",
+      "reply_to": "orion:cortex:result:7bdae3f5-3d91-49b1-8cb0-9801c5843c78",
+      "payload_keys": [
+        "context",
+        "mode",
+        "options",
+        "packs",
+        "recall",
+        "route_intent",
+        "verb"
+      ]
+    }
+  ],
+  "unavailable_fields": {
+    "runtime_debug": "metadata.answer_depth and AgentChain runtime_debug not present.",
+    "tool_sequence": "No step_name sequence available from cortex_result.steps.",
+    "gateway_path": "Gateway path timed out in this run; evidence captured via real Orch path fallback."
+  },
+  "raw_response_payload": null,
+  "gateway_error": "RPC timeout waiting on orion:cortex:gateway:result:665a65a7-ccc4-4838-a6c8-94229cc43a32"
+}

@@ -20,6 +20,8 @@ META_PLAN_PHRASES = [
     r"define\s+the\s+approach",
     r"analyze\s+the\s+requirements",
     r"develop\s+a\s+plan",
+    r"clarified\s+goal",  # plan_action scaffold
+    r"^\s*steps:\s*$",
 ]
 
 META_PLAN_PATTERN = re.compile(
@@ -45,7 +47,17 @@ def should_rewrite_for_instructional(
     """
     if not text:
         return False, ""
-    instructional_modes = {"implementation_guide", "tutorial", "code_delivery", "direct_answer"}
+    instructional_modes = {
+        "implementation_guide",
+        "tutorial",
+        "code_delivery",
+        "direct_answer",
+        "comparative_analysis",
+        "decision_support",
+        "reflective_depth",
+        "debug_diagnosis",
+        "project_planning",
+    }
     if output_mode not in instructional_modes:
         return False, ""
     if looks_like_meta_plan(text):

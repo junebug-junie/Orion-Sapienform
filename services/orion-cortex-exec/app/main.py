@@ -131,6 +131,14 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
 
+    if req_env.payload.plan.metadata and isinstance(req_env.payload.plan.metadata, dict):
+        auto_route_meta = req_env.payload.plan.metadata.get("auto_route")
+        if isinstance(auto_route_meta, dict):
+            logger.info("Exec received auto_route metadata corr=%s mode=%s verb=%s source=%s", corr_id, auto_route_meta.get("route_mode"), auto_route_meta.get("verb"), auto_route_meta.get("source"))
+
+    if str(ctx.get("mode") or "").lower() == "auto":
+        logger.warning("Exec received unexpected auto mode corr=%s; executing plan deterministically as provided", corr_id)
+
     assert svc is not None, "Rabbit service not initialized"
 
     diagnostic = _diagnostic_enabled(req_env.payload)

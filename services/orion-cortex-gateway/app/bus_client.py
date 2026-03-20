@@ -141,7 +141,10 @@ class BusClient:
             req = CortexChatRequest.model_validate(env.payload)
 
             # Logic similar to HTTP endpoint
-            verb = req.verb if req.verb else "chat_general"
+            if req.mode in {"agent", "council"}:
+                verb = req.verb
+            else:
+                verb = req.verb or "chat_general"
             packs = req.packs if req.packs is not None else ["executive_pack"]
             messages = [LLMMessage(role="user", content=req.prompt)]
 
@@ -163,11 +166,17 @@ class BusClient:
             else:
                 recall = RecallDirective() # defaults: enabled=True, etc.
 
+            route_intent = "auto" if req.mode == "auto" else req.route_intent
+            options = dict(req.options or {})
+            if route_intent == "auto":
+                options["route_intent"] = "auto"
+
             client_req = CortexClientRequest(
                 mode=req.mode,
+                route_intent=route_intent,
                 verb=verb,
                 packs=packs,
-                options=req.options or {},
+                options=options,
                 recall=recall,
                 context=context
             )

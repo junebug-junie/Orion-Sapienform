@@ -6,7 +6,7 @@ services:
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - CHANNEL_COUNCIL_INTAKE=orion:vision:windows
       - CHANNEL_COUNCIL_PUB=orion:vision:events
-      - CHANNEL_COUNCIL_REQUEST=orion-exec:request:VisionCouncilService
+      - CHANNEL_COUNCIL_REQUEST=orion:exec:request:VisionCouncilService
     volumes:
       - ./app:/app/app
       - ../../orion:/app/orion

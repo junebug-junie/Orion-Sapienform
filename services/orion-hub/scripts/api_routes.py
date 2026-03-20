@@ -14,8 +14,10 @@ from .settings import settings
 from .session import ensure_session
 from .chat_history import build_chat_history_envelope, publish_chat_history
 from .library import scan_cognition_library
+from .cortex_request_builder import build_chat_request, validate_single_verb_override
+from orion.cognition.verb_activation import build_verb_list
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
-from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
+from orion.schemas.cortex.contracts import CortexChatResult
 from orion.schemas.notify import (
     ChatAttentionAck,
     ChatMessageReceipt,
@@ -60,6 +62,8 @@ async def _proxy_request(request: Request, base_url: str, path: str) -> Response
             payload = await response.read()
             content_type = response.headers.get("content-type", "application/json")
             return Response(content=payload, status_code=response.status, media_type=content_type)
+
+
 async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     base_url = settings.LANDING_PAD_URL.rstrip("/")
     url = f"{base_url}{path}"
@@ -68,6 +72,7 @@ async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any
         async with session.get(url, params=params) as response:
             response.raise_for_status()
             return await response.json()
+
 
 def _normalize_bool(value: Any, default: bool = True) -> bool:
     if value is None:
@@ -384,43 +389,6 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
         logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
 # ======================================================================
-# 🧭 TOPIC RAIL (Landing Pad proxy)
-# ======================================================================
-@router.get("/api/topics/summary")
-async def api_topics_summary(
-    window_minutes: int = Query(1440),
-    model_version: Optional[str] = Query(None),
-    max_topics: int = Query(20),
-):
-    params: Dict[str, Any] = {
-        "window_minutes": window_minutes,
-        "max_topics": max_topics,
-    }
-    if model_version:
-        params["model_version"] = model_version
-    payload = await _fetch_landing_pad("/api/topics/summary", params)
-    return JSONResponse(content=payload)
-
-
-@router.get("/api/topics/drift")
-async def api_topics_drift(
-    window_minutes: int = Query(1440),
-    model_version: Optional[str] = Query(None),
-    min_turns: int = Query(10),
-    max_sessions: int = Query(50),
-):
-    params: Dict[str, Any] = {
-        "window_minutes": window_minutes,
-        "min_turns": min_turns,
-        "max_sessions": max_sessions,
-    }
-    if model_version:
-        params["model_version"] = model_version
-    payload = await _fetch_landing_pad("/api/topics/drift", params)
-    return JSONResponse(content=payload)
-
-
-# ======================================================================
 # 🧠 SESSION MANAGEMENT
 # ======================================================================
 @router.get("/api/session")
@@ -448,6 +416,12 @@ def get_cognition_library():
     return scan_cognition_library()
 
 
+
+@router.get("/api/verbs")
+def api_verbs(include_inactive: int = Query(default=0, ge=0, le=1)):
+    include = bool(include_inactive)
+    return {"verbs": build_verb_list(node_name=settings.NODE_NAME, include_inactive=include)}
+
 # ======================================================================
 # 💬 SHARED CHAT CORE (HTTP + WS)
 # ======================================================================
@@ -463,51 +437,16 @@ async def handle_chat_request(
     Delegate strict typed requests to orion-cortex-gateway via Bus.
     """
     user_messages = payload.get("messages", [])
-    mode = payload.get("mode", "brain")
 
     # Respect client toggle; default to True if missing
     raw_recall = payload.get("use_recall", None)
     use_recall = _normalize_bool(raw_recall, default=True)
-    
-    recall_mode = payload.get("recall_mode")
-    recall_profile = payload.get("recall_profile")
-    recall_required = bool(payload.get("recall_required", False))
-
-    packs = payload.get("packs")
-    user_id = payload.get("user_id")
-
-    # Handle Verbs override (multi-select from UI)
-    ui_verbs = payload.get("verbs")
-
-    verb_override = None
-    options = payload.get("options") or {}
-
-    if isinstance(ui_verbs, list) and len(ui_verbs) > 0:
-        if len(ui_verbs) == 1:
-             # Single verb -> override entry point
-             verb_override = ui_verbs[0]
-        else:
-             # Multiple verbs -> pass as allowed tools/verbs in options
-             options["allowed_verbs"] = ui_verbs
 
     if not isinstance(user_messages, list) or len(user_messages) == 0:
         return {"error": "Invalid payload: missing messages[]"}
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
-    recall_payload = {"enabled": use_recall}
-    if recall_mode:
-        recall_payload["mode"] = recall_mode
-    if recall_profile:
-        recall_payload["profile"] = recall_profile
-    if recall_required:
-        recall_payload["required"] = True
-    
-    # Default profile if enabled but missing
-    if use_recall and "profile" not in recall_payload:
-        recall_payload["profile"] = "reflect.v1"
-        
-    logger.info(f"Chat Request recall config: {recall_payload} session_id={session_id}")
     logger.info(
         "HTTP Chat Request payload session_id=%s messages_len=%s last_user_len=%s last_user_head=%r",
         session_id,
@@ -516,7 +455,41 @@ async def handle_chat_request(
         (user_prompt or "")[:120],
     )
 
+    inactive = validate_single_verb_override(payload, node_name=settings.NODE_NAME)
+    if inactive:
+        return inactive
+
     corr_id = str(uuid4())
+    req, route_debug, _ = build_chat_request(
+        payload=payload,
+        session_id=session_id,
+        user_id=payload.get("user_id"),
+        trace_id=None,
+        default_mode="brain",
+        auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+        source_label="hub_http",
+        prompt=user_prompt,
+    )
+
+    recall_payload = req.recall or {"enabled": use_recall}
+    mode = req.mode
+
+    logger.info(f"Chat Request recall config: {recall_payload} session_id={session_id}")
+
+    diagnostic = bool(payload.get("diagnostic") or (isinstance(payload.get("options"), dict) and payload.get("options", {}).get("diagnostic")))
+    if diagnostic:
+        logger.info("HTTP outbound CortexChatRequest corr=%s payload=%s", corr_id, req.model_dump(mode="json"))
+    logger.info(
+        "hub_egress corr=%s sid=%s mode=%s verb=%s route_intent=%s allowed_verbs=%s packs=%s",
+        corr_id,
+        session_id,
+        req.mode,
+        req.verb,
+        (req.options or {}).get("route_intent") or "none",
+        len(((req.options or {}).get("allowed_verbs") or [])),
+        req.packs or [],
+    )
+
     _rec_tape_req(
         corr_id=corr_id,
         session_id=session_id,
@@ -526,20 +499,6 @@ async def handle_chat_request(
         user_head=(user_prompt or "")[:80],
         no_write=no_write,
     )
-
-    # Build the Request
-    req = CortexChatRequest(
-        prompt=user_prompt,
-        mode=mode,
-        session_id=session_id,
-        user_id=user_id,
-        packs=packs,
-        verb=verb_override,
-        options=options if options else None,
-        recall=recall_payload,
-        metadata={"source": "hub_http"},
-    )
-
     try:
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
         resp: CortexChatResult = await cortex_client.chat(req, correlation_id=corr_id)
@@ -592,6 +551,7 @@ async def handle_chat_request(
             "no_write": no_write,
             "spark_meta": None,
             "correlation_id": correlation_id,
+            "routing_debug": route_debug,
         }
 
     except Exception as e:

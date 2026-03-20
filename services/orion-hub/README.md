@@ -144,7 +144,10 @@ LANDING_PAD_TIMEOUT_SEC=5
 TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
 ```
 
-Topic Rail endpoints are proxied through Landing Pad. Ensure `POSTGRES_URI` is set on the Landing Pad service so it can read the `chat_topic_summary` and `chat_topic_session_drift` tables.
+### Manual UI checklist
+- Navigate between **Hub** and **Topic Studio** tabs; ensure no overlays block pointer events on Hub.
+- In Topic Studio, run **Preview** with `turn_pairs`, then switch to `conversation_bound` after setting a `boundary_column`.
+- Train a run, poll for completion, then load segments and click a segment to confirm full text renders in the detail pane.
 
 Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
 
@@ -183,13 +186,30 @@ Expected lines include:
 {"channel":"orion:chat:history:turn","kind":"chat.history", ...}
 ```
 
-### 5. Topic Rail Summary + Drift
+
+### 6. Topic Foundry smokes (via Hub proxy)
+Hub proxies Topic Foundry under `/api/topic-foundry`, so smoke scripts can target the Hub host.
+
+**Via Hub proxy (recommended):**
 ```bash
-curl "http://localhost:8080/api/topics/summary?window_minutes=1440&max_topics=20"
-curl "http://localhost:8080/api/topics/drift?window_minutes=1440&min_turns=10&max_sessions=50"
+scripts/smoke_topic_foundry_all.sh http://localhost:8080/api/topic-foundry
+```
+or:
+```bash
+HUB_BASE_URL=https://tailscale-host.example.com scripts/smoke_topic_foundry_introspect.sh
 ```
 
-### 5. No-Write Debug Mode (skip memory publishing)
+**Direct service port (optional):**
+```bash
+TOPIC_FOUNDRY_BASE_URL=http://127.0.0.1:8615 scripts/smoke_topic_foundry_preview.sh
+```
+
+**Inside Docker network (optional):**
+```bash
+TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615 scripts/smoke_topic_foundry_facets.sh
+```
+
+### 7. No-Write Debug Mode (skip memory publishing)
 Use the header + JSON flag to avoid publishing `orion:chat:history:*` events while still running recall/LLM:
 
 ```bash
@@ -214,4 +234,44 @@ Hub is intentionally thin:
 
 All real cognition, memory, and embodiment live elsewhere in the mesh. Hub just gives you a clean window into Oríon’s head.
 
-The UI now includes a **Topic Rail** panel (below Vision/Collapse) that shows the top topics and most drifting sessions for a selected window. Use the window/max-topic/min-turn controls and the optional model version field to query the Hub proxy endpoints. Auto-refresh is enabled by default (60s) and can be toggled off.
+
+## Topic Studio Integration Contract
+
+Topic Studio does **not** call Topic Foundry directly from browser; it always goes through Hub proxy:
+- `GET /api/topic-foundry/ready`
+- `GET /api/topic-foundry/capabilities`
+
+Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
+
+### Expected capability keys used by active Topic Studio UI
+- `segmentation_modes_supported` (array): drives segmentation mode select options.
+- `supported_metrics` (array): drives model metric select options.
+- `default_metric` (string): preferred metric if available in supported list.
+- `defaults.embedding_source_url` (string): embedding URL default/hint.
+- `defaults.metric`, `defaults.min_cluster_size`: form prefill defaults.
+- `default_embedding_url` (string): fallback for embedding default.
+- `llm_enabled` (boolean): disables LLM segmentation options + enrich button when false.
+
+### UI behavior when keys are missing
+- Missing `segmentation_modes_supported` / `supported_metrics`: selector may appear empty.
+- Capability fetch failure: UI applies hardcoded fallback modes/metrics and marks endpoint warning.
+- Missing `llm_enabled`: treated as false (`Boolean(undefined)`), so UI shows effectively disabled LLM controls.
+- `/ready` fetch failure: status badge becomes **Unreachable**.
+- `/ready` success with degraded checks: status badge stays reachable but check-level badges can show fail.
+
+## Topic Studio Troubleshooting
+
+### `REACHABLE` but capability parse appears broken
+- `REACHABLE` is computed from successful `/ready` fetch, not `/capabilities` parse.
+- Check `Topic Foundry /capabilities` payload for arrays/keys listed above.
+- Inspect `#tsCapabilitiesWarning` and browser console for endpoint parse/fetch errors.
+
+### `LLM disabled` shown unexpectedly
+- Hub uses `/capabilities.llm_enabled` directly.
+- Verify Foundry env `TOPIC_FOUNDRY_LLM_ENABLE=true` and confirm payload returns `"llm_enabled": true`.
+- For bus mode, also ensure `TOPIC_FOUNDRY_LLM_USE_BUS=true` + `ORION_BUS_ENABLED=true` in Foundry.
+
+### Static JS cache/version notes
+- Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
+- If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
+

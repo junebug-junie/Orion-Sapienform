@@ -26,6 +26,8 @@ class VerbRegistry:
             raise FileNotFoundError(f"Verbs directory not found: {self.verbs_dir}")
 
         for path in self.verbs_dir.glob("*.yaml"):
+            if path.name == "active.yaml":
+                continue
             with path.open("r", encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             verb = VerbConfig(**raw)

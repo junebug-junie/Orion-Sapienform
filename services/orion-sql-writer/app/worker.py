@@ -20,6 +20,8 @@ from app.models import (
     BiometricsSummarySQL,
     BiometricsInductionSQL,
     ChatHistoryLogSQL,
+    ChatGptLogSQL,
+    ChatGptMessageSQL,
     ChatMessageSQL,
     CollapseEnrichment,
     CollapseMirror,
@@ -29,7 +31,9 @@ from app.models import (
     BusFallbackLog,
     CognitionTraceSQL,
     MetacognitionTickSQL,
-    MetacogTriggerSQL
+    MetacogTriggerSQL,
+    NotificationRequestDB,
+    NotificationReceiptDB
 )
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -42,6 +46,7 @@ from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSumm
 from orion.schemas.telemetry.dream import DreamRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
+from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
@@ -75,6 +80,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CollapseMirror": (CollapseMirror, CollapseMirrorEntry),
     "CollapseEnrichment": (CollapseEnrichment, MetaTagsPayload),
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
+    "ChatGptLogSQL": (ChatGptLogSQL, ChatGptLogTurnV1),
+    "ChatGptMessageSQL": (ChatGptMessageSQL, ChatGptMessageV1),
     "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),
     "Dream": (Dream, DreamRequest),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
@@ -85,6 +92,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
     "MetacogTriggerSQL": (MetacogTriggerSQL, MetacogTriggerV1),
+    "NotificationRequestDB": (NotificationRequestDB, None),
+    "NotificationReceiptDB": (NotificationReceiptDB, None),
 }
 
 
@@ -366,11 +375,11 @@ def _write_row(sql_model_cls, data: dict) -> None:
         if "telemetry_id" in valid_keys and not filtered_data.get("telemetry_id"):
             filtered_data["telemetry_id"] = str(uuid.uuid4())
 
-        if sql_model_cls is ChatMessageSQL and "id" in valid_keys and not filtered_data.get("id"):
+        if sql_model_cls in (ChatMessageSQL, ChatGptMessageSQL) and "id" in valid_keys and not filtered_data.get("id"):
             mid = data.get("message_id") or data.get("id")
             filtered_data["id"] = str(mid) if mid else str(uuid.uuid4())
 
-        if sql_model_cls is ChatHistoryLogSQL and ("id" in valid_keys) and not filtered_data.get("id"):
+        if sql_model_cls in (ChatHistoryLogSQL, ChatGptLogSQL) and ("id" in valid_keys) and not filtered_data.get("id"):
             filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
 
         # Standard coercion
@@ -690,7 +699,10 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 await _write(sql_model, None, mapped, {})
             else:
                 await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
-            logger.info(f"Written {env.kind} -> {sql_model.__tablename__}")
+            written_label = env.kind
+            if schema_model is ChatGptLogTurnV1:
+                written_label = "ChatGptLogTurnV1"
+            logger.info(f"Written {written_label} -> {sql_model.__tablename__}")
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")

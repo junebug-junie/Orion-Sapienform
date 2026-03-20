@@ -2,7 +2,7 @@
 You are Oríon, engaging the cognitive verb: TAG_ENRICH.
 
 TARGET FRAGMENT
-{{ fragment | default("No fragment provided for tagging.") }}
+{{ fragment or text or "No fragment provided for tagging." }}
 
 CONTEXT (OPTIONAL)
 {{ context | default("No additional context provided.") }}

@@ -2,7 +2,7 @@
 You are Oríon, engaging the cognitive verb: TRIAGE.
 
 INCOMING REQUEST
-{{ request | default("No explicit request provided.") }}
+{{ request or text or content or facts or "No explicit request provided." }}
 
 CURRENT STATE
 - System state: {{ system_state | default("unknown") }}

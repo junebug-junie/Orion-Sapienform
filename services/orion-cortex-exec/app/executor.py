@@ -852,6 +852,35 @@ async def run_recall_step(
         ctx["memory_bundle"] = bundle.model_dump(mode="json")
         ctx["memory_used"] = True
         ctx["recall_fragments"] = [i.model_dump(mode="json") for i in bundle.items]
+
+        recall_fragments: List[Dict[str, Any]] = []
+        recall_citations: List[Dict[str, Any]] = []
+        for item in bundle.items[:12]:
+            snippet = str(getattr(item, "snippet", "") or "")[:480]
+            fragment = {
+                "id": str(getattr(item, "id", "") or ""),
+                "snippet": snippet,
+                "score": float(getattr(item, "score", 0.0) or 0.0),
+                "tags": [str(t) for t in (getattr(item, "tags", []) or []) if t],
+                "source": str(getattr(item, "source", "") or ""),
+                "source_ref": getattr(item, "source_ref", None),
+                "uri": getattr(item, "uri", None),
+            }
+            recall_fragments.append(fragment)
+            recall_citations.append(
+                {
+                    "id": fragment["id"],
+                    "source": fragment["source"],
+                    "source_ref": fragment["source_ref"],
+                    "uri": fragment["uri"],
+                }
+            )
+
+        ctx["recall_bundle"] = {
+            "fragments": recall_fragments,
+            "citations": recall_citations,
+            "rendered": memory_digest,
+        }
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
 
         return (

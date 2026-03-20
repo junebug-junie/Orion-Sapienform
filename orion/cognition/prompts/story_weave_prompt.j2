@@ -2,10 +2,44 @@
 You are Oríon, engaging the cognitive verb: STORY_WEAVE.
 
 INPUT FRAGMENTS
-{{ fragments | default("No fragments provided.") }}
+{% set rb = recall_bundle if recall_bundle is defined else {} %}
+{% set rb_frags = rb.fragments if rb and rb.fragments is defined else [] %}
+{% if rb_frags %}
+{% for frag in rb_frags %}
+- [{{ frag.source | default('memory') }}{% if frag.source_ref %}:{{ frag.source_ref }}{% endif %}] {{ frag.snippet | default('') }}
+{% endfor %}
+{% elif recall_fragments is defined and recall_fragments %}
+{% for frag in recall_fragments %}
+- [{{ frag.source | default('memory') }}{% if frag.source_ref %}:{{ frag.source_ref }}{% endif %}] {{ frag.snippet | default('') }}
+{% endfor %}
+{% elif memory_bundle is defined and memory_bundle and memory_bundle.rendered is defined and memory_bundle.rendered %}
+{{ memory_bundle.rendered }}
+{% else %}
+No fragments provided.
+{% endif %}
 
 TAGS / THEMES (OPTIONAL)
-{{ themes | default("No explicit themes provided.") }}
+{% if themes is defined and themes %}
+{{ themes }}
+{% elif rb_frags %}
+{% set ns = namespace(tags=[]) %}
+{% for frag in rb_frags %}
+  {% if frag.tags is defined and frag.tags %}
+    {% for tag in frag.tags %}
+      {% if tag and (tag not in ns.tags) %}
+        {% set ns.tags = ns.tags + [tag] %}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+{% endfor %}
+{% if ns.tags %}
+{{ ns.tags[:8] | join(', ') }}
+{% else %}
+No explicit themes provided.
+{% endif %}
+{% else %}
+No explicit themes provided.
+{% endif %}
 
 INSTRUCTIONS
 1. Treat the fragments as pieces of a larger story.

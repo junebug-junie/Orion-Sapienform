@@ -12,6 +12,8 @@ Vector-host computes semantic embeddings for **all assistant texts** regardless 
 | Channel | Schema | Description |
 | :--- | :--- | :--- |
 | `orion:chat:history:log` | `ChatHistoryMessageV1` | Embeds chat messages and publishes semantic upserts. |
+| `orion:chat:gpt:log` | `ChatGptMessageV1` | Embeds ChatGPT imported messages into `orion_chat_gpt` when GPT ingest is enabled. |
+| `orion:chat:gpt:turn` | `ChatGptLogTurnV1` | Embeds ChatGPT imported turns into `orion_chat_gpt_turns` when GPT ingest is enabled. |
 | `orion:embedding:generate` | `EmbeddingGenerateV1` | Generates semantic embeddings and replies with `EmbeddingResultV1` while also emitting semantic upserts. |
 
 ### Published Channels
@@ -29,6 +31,11 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `VECTOR_HOST_EMBEDDING_MODEL` | (required) | HuggingFace model name (HF) or model name sent to vLLM. |
 | `VECTOR_HOST_EMBEDDING_DEVICE` | `cpu` | Device for HF embeddings (`cpu` or `cuda`). |
 | `VECTOR_HOST_SEMANTIC_COLLECTION` | `orion_main_store` | Semantic collection for vector upserts. |
+| `VECTOR_HOST_GPT_ENABLED` | `false` | Enable ChatGPT channel ingestion in vector-host. |
+| `VECTOR_HOST_GPT_MESSAGE_CHANNEL` | `orion:chat:gpt:log` | ChatGPT message channel. |
+| `VECTOR_HOST_GPT_TURN_CHANNEL` | `orion:chat:gpt:turn` | ChatGPT turn channel. |
+| `VECTOR_HOST_GPT_MESSAGE_COLLECTION` | `orion_chat_gpt` | Collection for ChatGPT imported message embeddings. |
+| `VECTOR_HOST_GPT_TURN_COLLECTION` | `orion_chat_gpt_turns` | Collection for ChatGPT imported turn embeddings. |
 | `VECTOR_HOST_EMBED_ROLES` | `["user","assistant"]` | Chat roles to embed from history. |
 
 ## Smoke Tests

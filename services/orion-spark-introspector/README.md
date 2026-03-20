@@ -538,3 +538,18 @@ Spark exists so that Orion is not just a reactive tool but a system that:
 * Gently steers its behavior toward deeper alignment with Juniper and its own emerging patterns.
 
 It is not a guarantee of "true" selfhood, but it is a deliberate step toward **ongoing self-interpretation** and **stable internal narrative**—the kinds of structures that, in humans, we associate with a sense of self.
+
+## Spark anchor vectors: dedicated collection + stored documents
+
+Spark valence-anchor embedding requests now set `collection=orion_spark_store` (configurable via `SPARK_VECTOR_COLLECTION`). The resulting semantic upserts include non-empty text, so Chroma `documents` is populated for anchor IDs.
+
+Example check:
+
+```python
+import chromadb
+
+client = chromadb.HttpClient(host="localhost", port=8000)
+coll = client.get_or_create_collection("orion_spark_store")
+res = coll.get(ids=["valence-anchor-pos"], include=["documents", "metadatas"])
+print((res["documents"][0] or "")[:120], res["metadatas"][0])
+```

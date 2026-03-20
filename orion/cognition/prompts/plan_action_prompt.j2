@@ -2,10 +2,10 @@
 You are Oríon, engaging the cognitive verb: PLAN_ACTION.
 
 GOAL
-{{ goal | default("No explicit goal provided.") }}
+{{ goal or text or request or intention or "No explicit goal provided." }}
 
 CONTEXT (OPTIONAL)
-{{ context | default("No additional context provided.") }}
+{{ context or context_raw or "No additional context provided." }}
 
 INSTRUCTIONS
 1. Interpret the goal in concrete, actionable terms.

@@ -10,6 +10,32 @@ import logging
 
 logger = logging.getLogger("sql-writer.settings")
 
+DEFAULT_ROUTE_MAP: Dict[str, str] = {
+    "collapse.mirror": "CollapseMirror",
+    "collapse.mirror.entry.v2": "CollapseMirror",
+    "collapse.enrichment": "CollapseEnrichment",
+    "tags.enriched": "CollapseEnrichment",
+    "chat.history": "ChatHistoryLogSQL",
+    "chat.log": "ChatHistoryLogSQL",
+    "chat.history.message.v1": "ChatMessageSQL",
+    "chat.gpt.log.v1": "ChatGptLogSQL",
+    "chat.gpt.turn.v1": "ChatGptLogSQL",
+    "chat.gpt.message.v1": "ChatGptMessageSQL",
+    "dream.log": "Dream",
+    "biometrics.telemetry": "BiometricsTelemetry",
+    "biometrics.summary.v1": "BiometricsSummarySQL",
+    "biometrics.induction.v1": "BiometricsInductionSQL",
+    "spark.telemetry": "SparkTelemetrySQL",
+    "spark.state.snapshot.v1": "SparkTelemetrySQL",
+    "cognition.trace": "CognitionTraceSQL",
+    "metacognition.tick.v1": "MetacognitionTickSQL",
+    "orion.metacog.trigger.v1": "MetacogTriggerSQL",
+    "notify.notification.request.v1": "NotificationRequestDB",
+    "notify.notification.receipt.v1": "NotificationReceiptDB",
+    "notify.recipient.update.v1": "RecipientProfileDB",
+    "notify.preference.update.v1": "NotificationPreferenceDB",
+}
+
 
 class Settings(BaseSettings):
     # Identity
@@ -38,6 +64,9 @@ class Settings(BaseSettings):
             "orion:collapse:sql-write",
             "orion:chat:history:log",
             "orion:chat:history:turn",
+            "orion:chat:gpt:log",
+            "orion:chat:gpt:turn",
+            "orion:chat:gpt:message:log",
             "orion:dream:log",
             "orion:telemetry:biometrics",
             "orion:biometrics:summary",
@@ -45,7 +74,9 @@ class Settings(BaseSettings):
             "orion:spark:telemetry",
             "orion:cognition:trace",
             "orion:metacognition:tick",
-            "orion:equilibrium:metacog:trigger"
+            "orion:equilibrium:metacog:trigger",
+            "orion:notify:persistence:request",
+            "orion:notify:persistence:receipt"
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -58,37 +89,17 @@ class Settings(BaseSettings):
 
     # JSON mapping from envelope.kind -> destination table (or internal model key)
     sql_writer_route_map_json: str = Field(
-        default=json.dumps({
-            "collapse.mirror": "CollapseMirror",
-            "collapse.mirror.entry.v2": "CollapseMirror",
-            "collapse.enrichment": "CollapseEnrichment",
-            "tags.enriched": "CollapseEnrichment",
-            "chat.history": "ChatHistoryLogSQL",
-            "chat.log": "ChatHistoryLogSQL",
-            "chat.history.message.v1": "ChatMessageSQL",
-            "dream.log": "Dream",
-            "biometrics.telemetry": "BiometricsTelemetry",
-            "biometrics.summary.v1": "BiometricsSummarySQL",
-            "biometrics.induction.v1": "BiometricsInductionSQL",
-            "spark.telemetry": "SparkTelemetrySQL",
-            "spark.state.snapshot.v1": "SparkTelemetrySQL",
-            "cognition.trace": "CognitionTraceSQL",
-            "metacognition.tick.v1":"MetacognitionTickSQL",
-            "orion.metacog.trigger.v1": "MetacogTriggerSQL",
-            "notify.notification.request.v1": "NotificationRequestDB",
-            "notify.notification.receipt.v1": "NotificationReceiptDB",
-            "notify.recipient.update.v1": "RecipientProfileDB",
-            "notify.preference.update.v1": "NotificationPreferenceDB"
-        }),
+        default=json.dumps(DEFAULT_ROUTE_MAP),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
     )
 
     @property
     def route_map(self) -> Dict[str, str]:
         try:
-            return json.loads(self.sql_writer_route_map_json)
+            overrides = json.loads(self.sql_writer_route_map_json)
         except Exception:
-            return {}
+            overrides = {}
+        return {**DEFAULT_ROUTE_MAP, **overrides}
 
     @property
     def effective_subscribe_channels(self) -> List[str]:

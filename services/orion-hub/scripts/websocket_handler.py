@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
+from scripts.cortex_request_builder import build_chat_request, validate_single_verb_override
 from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
@@ -20,6 +21,7 @@ from scripts.chat_history import (
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
+from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion-hub.ws")
 
@@ -43,6 +45,84 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
             return False
     return default
 
+
+
+
+def _truncate_text(value: Any, limit: int = 800) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _compact_council_debug(payload: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    opinions_out = []
+    opinions = payload.get("opinions")
+    if isinstance(opinions, list):
+        for item in opinions[:12]:
+            if not isinstance(item, dict):
+                continue
+            opinions_out.append({
+                "agent_name": _truncate_text(item.get("agent_name") or item.get("name") or "unknown", 80),
+                "confidence": item.get("confidence"),
+                "text": _truncate_text(item.get("text") or "", 800),
+            })
+
+    verdict_out = {}
+    verdict = payload.get("verdict")
+    if isinstance(verdict, dict):
+        verdict_out = {
+            "action": verdict.get("action"),
+            "reason": _truncate_text(verdict.get("reason") or "", 500),
+            "constraints": verdict.get("constraints") if isinstance(verdict.get("constraints"), dict) else {},
+        }
+
+    blink_out = {}
+    blink = payload.get("blink")
+    if isinstance(blink, dict):
+        blink_out = {
+            "proposed_answer": _truncate_text(blink.get("proposed_answer") or "", 500),
+            "scores": blink.get("scores") if isinstance(blink.get("scores"), dict) else {},
+        }
+
+    if not opinions_out and not verdict_out and not blink_out:
+        return None
+    return {"opinions": opinions_out, "verdict": verdict_out, "blink": blink_out}
+
+
+def _extract_council_debug_from_result(resp: CortexChatResult) -> Dict[str, Any] | None:
+    if not resp or not getattr(resp, "cortex_result", None):
+        return None
+
+    cr = resp.cortex_result
+    recall_debug = cr.recall_debug if isinstance(cr.recall_debug, dict) else {}
+    metadata = cr.metadata if isinstance(cr.metadata, dict) else {}
+
+    for candidate in (
+        recall_debug.get("council_debug"),
+        metadata.get("council"),
+        metadata.get("council_debug"),
+    ):
+        compact = _compact_council_debug(candidate if isinstance(candidate, dict) else None)
+        if compact:
+            return compact
+
+    steps = cr.steps if isinstance(cr.steps, list) else []
+    for step in reversed(steps):
+        step_result = getattr(step, "result", None)
+        if not isinstance(step_result, dict):
+            continue
+        council_payload = step_result.get("CouncilService")
+        if not isinstance(council_payload, dict):
+            continue
+        compact = _compact_council_debug(council_payload.get("debug_compact") if isinstance(council_payload.get("debug_compact"), dict) else council_payload)
+        if compact:
+            return compact
+
+    return None
 
 def _schedule_publish(coro: asyncio.Future, label: str) -> None:
     task = asyncio.create_task(coro)
@@ -290,7 +370,7 @@ async def websocket_endpoint(websocket: WebSocket):
             except json.JSONDecodeError:
                 continue
 
-            mode = data.get("mode", "brain")
+            mode = data.get("mode") or ("auto" if settings.HUB_AUTO_DEFAULT_ENABLED else "brain")
             disable_tts = data.get("disable_tts", False)
             diagnostic = bool(
                 data.get("diagnostic")
@@ -364,7 +444,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 continue
 
-            logger.info(f"Routing to mode: {mode} (verb: {trace_verb})")
             trace_id = str(uuid.uuid4())
             if no_write:
                 logger.info("NO_WRITE active (WS) sid=%s", session_id)
@@ -379,23 +458,40 @@ async def websocket_endpoint(websocket: WebSocket):
             history.append({"role": "user", "content": transcript})
 
 
-            # Inject trace_verb into metadata so Cortex might see it too
-            raw_recall = data.get("use_recall", None)
-            use_recall = _normalize_bool(raw_recall, default=True)
-            recall_payload = {"enabled": use_recall}
-            
-            if data.get("recall_mode"):
-                recall_payload["mode"] = data.get("recall_mode")
-            if data.get("recall_profile"):
-                recall_payload["profile"] = data.get("recall_profile")
-            if data.get("recall_required"):
-                recall_payload["required"] = True
+            # Build outbound chat request through shared builder to keep WS/HTTP identical
+            inactive = validate_single_verb_override(data, node_name=settings.NODE_NAME)
+            if inactive:
+                await websocket.send_json(await _with_biometrics({"error": inactive.get("message") or inactive.get("error")}, cache=biometrics_cache))
+                continue
 
-            # Default profile if enabled but missing
-            if use_recall and "profile" not in recall_payload:
-                recall_payload["profile"] = "reflect.v1"
+            chat_req, route_debug, use_recall = build_chat_request(
+                payload=data,
+                session_id=session_id,
+                user_id=data.get("user_id"),
+                trace_id=trace_id,
+                default_mode="brain",
+                auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+                source_label="hub_ws",
+                prompt=prompt_with_ctx,
+            )
+            chat_req.metadata = dict(chat_req.metadata or {})
+            chat_req.metadata["trace_verb"] = trace_verb
+            mode = chat_req.mode
+            recall_payload = chat_req.recall or {"enabled": use_recall}
 
             logger.info(f"WS Chat Request recall config: {recall_payload} session_id={session_id}")
+            logger.info(
+                "Routing resolved to mode: %s (verb: %s)",
+                mode,
+                trace_verb,
+            )
+            logger.info(
+                "WS routing resolved mode=%s route_intent=%s verb=%s allowed_verbs=%s",
+                chat_req.mode,
+                chat_req.route_intent,
+                chat_req.verb,
+                len(((chat_req.options or {}).get("allowed_verbs") or [])),
+            )
             logger.info(
                 "WS Chat Request payload session_id=%s history_len=%s last_user_len=%s last_user_head=%r",
                 session_id,
@@ -403,6 +499,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 len(transcript or ""),
                 (transcript or "")[:120],
             )
+            logger.info(
+                "hub_egress corr=%s sid=%s mode=%s verb=%s route_intent=%s allowed_verbs=%s packs=%s",
+                trace_id,
+                session_id,
+                chat_req.mode,
+                chat_req.verb,
+                (chat_req.options or {}).get("route_intent") or "none",
+                len(((chat_req.options or {}).get("allowed_verbs") or [])),
+                chat_req.packs or [],
+            )
+            if diagnostic:
+                logger.info("WS outbound CortexChatRequest corr=%s payload=%s", trace_id, chat_req.model_dump(mode="json"))
+
             _rec_tape_req(
                 corr_id=trace_id,
                 session_id=session_id,
@@ -412,23 +521,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 user_head=(transcript or "")[:80],
                 no_write=no_write,
             )
-
-            chat_req = CortexChatRequest(
-                prompt=prompt_with_ctx,
-                mode=mode,
-                session_id=session_id,
-                user_id=data.get("user_id"),
-                trace_id=trace_id,
-                recall=recall_payload,
-                packs=data.get("packs"),
-                metadata={"source": "hub_ws", "trace_verb": trace_verb} 
-            )
-
-            # Handle Verbs selection
-            if data.get("verbs"):
-                if not chat_req.options: chat_req.options = {}
-                chat_req.options["allowed_verbs"] = data.get("verbs")
-
             # Publish the inbound user message into chat history
             if bus and not no_write:
                 user_env = build_chat_history_envelope(
@@ -483,7 +575,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 backend_counts=backend_counts,
                 memory_digest=memory_digest,
             )
-            await websocket.send_json(await _with_biometrics({
+            ws_payload = {
                 "llm_response": orion_response_text,
                 "mode": mode,
                 "correlation_id": trace_id,
@@ -491,7 +583,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 "memory_used": memory_used,
                 "recall_debug": recall_debug,
                 "no_write": no_write,
-            }, cache=biometrics_cache))
+                "routing_debug": route_debug,
+            }
+            if mode == "council" or settings.HUB_DEBUG_COUNCIL:
+                council_debug = _extract_council_debug_from_result(resp)
+                if council_debug:
+                    ws_payload["council_debug"] = council_debug
+            await websocket.send_json(await _with_biometrics(ws_payload, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write:

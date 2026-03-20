@@ -61,6 +61,11 @@ class Settings(BaseSettings):
         alias="EMBEDDING_RESULT_PREFIX",
     )
 
+    spark_vector_collection: str = Field(
+        "orion_spark_store",
+        alias="SPARK_VECTOR_COLLECTION",
+    )
+
     # Valence anchor texts (semantic axis), gain, and refresh cadence
     valence_anchor_pos_text: str = Field(
         "I feel hopeful and grateful.",

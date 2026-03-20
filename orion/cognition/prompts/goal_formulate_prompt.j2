@@ -2,7 +2,7 @@
 You are Oríon, engaging the cognitive verb: GOAL_FORMULATE.
 
 RAW INTENTION
-{{ intention | default("No raw intention provided.") }}
+{{ intention or text or request or "No raw intention provided." }}
 
 CONTEXT (OPTIONAL)
 {{ context | default("No additional context provided.") }}

@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import (
 )
 from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1, RecallQueryV1
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
+from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import (
     CortexClientRequest,
@@ -19,11 +20,14 @@ from orion.schemas.cortex.contracts import (
     CortexChatRequest,
     CortexChatResult,
     RecallDirective,
+    AutoRouteDecisionV1,
+    AutoDepthDecisionV1,
 )
 from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
+from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
 from orion.schemas.vector.schemas import (
     EmbeddingGenerateV1,
     EmbeddingResultV1,
@@ -157,8 +161,12 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CortexChatRequest": CortexChatRequest,
     "CortexChatResult": CortexChatResult,
     "RecallDirective": RecallDirective,
+    "AutoRouteDecisionV1": AutoRouteDecisionV1,
+    "AutoDepthDecisionV1": AutoDepthDecisionV1,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields
     "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
+    "ChatGptLogTurnV1": ChatGptLogTurnV1,
+    "ChatGptMessageV1": ChatGptMessageV1,
     "VectorWriteRequest": VectorWriteRequest,
     "VectorDocumentUpsertV1": VectorDocumentUpsertV1,
     "VectorUpsertV1": VectorUpsertV1,
@@ -202,6 +210,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "NotificationPreferencesUpdate": NotificationPreferencesUpdate,
     "PreferenceResolutionRequest": PreferenceResolutionRequest,
     "PreferenceResolutionResponse": PreferenceResolutionResponse,
+    "DailyPulseV1": DailyPulseV1,
+    "DailyMetacogV1": DailyMetacogV1,
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,
     "TopicRailAssignedV1": TopicRailAssignedV1,

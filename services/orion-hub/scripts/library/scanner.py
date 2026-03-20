@@ -42,6 +42,8 @@ def scan_cognition_library() -> Dict[str, Any]:
     all_verbs = []
     try:
         for f in verbs_dir.glob("*.yaml"):
+            if f.name == "active.yaml":
+                continue
             all_verbs.append(f.stem)
     except Exception as e:
         logger.error(f"Error scanning verbs: {e}")

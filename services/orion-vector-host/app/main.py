@@ -16,6 +16,8 @@ from orion.schemas.chat_history import (
     CHAT_HISTORY_MESSAGE_KIND,
     CHAT_HISTORY_TURN_KIND,
 )
+from orion.schemas.chat_gpt_log import CHAT_GPT_LOG_TURN_KIND, CHAT_GPT_MESSAGE_KIND, ChatGptLogTurnV1
+from orion.schemas.chat_gpt_log import ChatGptMessageV1
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
 from .embedder import Embedder
@@ -91,16 +93,28 @@ async def _publish_semantic_upsert(
         logger.warning("Vector upsert skipped: bus unavailable.")
         return
 
-    payload = VectorUpsertV1(
-        doc_id=doc_id,
-        collection=collection_name,
-        embedding=embedding,
-        embedding_kind="semantic",
-        embedding_model=embedding_model,
-        embedding_dim=embedding_dim,
-        text=text,
-        meta={k: v for k, v in meta.items() if v is not None},
-    )
+    payload_obj = {
+        "doc_id": doc_id,
+        "collection": collection_name,
+        "embedding": embedding,
+        "embedding_kind": "semantic",
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "documents": [text],
+        "meta": {k: v for k, v in meta.items() if v is not None},
+    }
+    try:
+        payload = VectorUpsertV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.error(
+            "VectorUpsertV1 validation failed keys=%s requester_service=%s request_doc_id=%s collection=%s error=%s",
+            sorted(payload_obj.keys()),
+            meta.get("requester_service") if isinstance(meta, dict) else None,
+            meta.get("request_doc_id") if isinstance(meta, dict) else doc_id,
+            collection_name,
+            exc,
+        )
+        return
     envelope = BaseEnvelope(
         kind="vector.upsert.v1",
         source=_source(),
@@ -189,6 +203,65 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
         collection_name=settings.VECTOR_HOST_CHAT_MESSAGE_COLLECTION,
     )
 
+
+async def _handle_chat_gpt_message(env: BaseEnvelope) -> None:
+    if embedder is None:
+        logger.warning("Embedding skipped: embedder unavailable.")
+        return
+
+    payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+    if not isinstance(payload_obj, dict):
+        return
+
+    try:
+        message = ChatGptMessageV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.warning("ChatGPT message payload invalid: %s", exc)
+        return
+
+    text = (message.content or "").strip()
+    if not text:
+        logger.info("Skipping ChatGPT message with blank content message_id=%s", message.message_id)
+        return
+
+    doc_id = str(message.message_id)
+    timestamp = message.timestamp or (env.created_at.isoformat() if env.created_at else "")
+    meta = _base_meta(
+        env,
+        original_channel=settings.VECTOR_HOST_GPT_MESSAGE_CHANNEL,
+        role=message.role,
+        timestamp=timestamp,
+    )
+    meta.update(
+        {
+            "message_id": message.message_id,
+            "session_id": message.session_id,
+            "speaker": message.speaker,
+            "tags": message.tags,
+            "provider": message.provider,
+            "model": message.model,
+        }
+    )
+
+    try:
+        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+    except Exception as exc:
+        logger.warning("Embedding failed doc_id=%s error=%s", doc_id, exc)
+        return
+
+    await _publish_semantic_upsert(
+        env=env,
+        text=text,
+        doc_id=doc_id,
+        role=message.role,
+        meta=meta,
+        embedding=embedding,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        original_channel=settings.VECTOR_HOST_GPT_MESSAGE_CHANNEL,
+        collection_name=settings.VECTOR_HOST_GPT_MESSAGE_COLLECTION,
+    )
+
 async def _handle_chat_turn(env: BaseEnvelope) -> None:
     if embedder is None:
         logger.warning("Embedding skipped: embedder unavailable.")
@@ -252,14 +325,92 @@ async def _handle_chat_turn(env: BaseEnvelope) -> None:
     )
 
 
+
+async def _handle_chat_gpt_turn(env: BaseEnvelope) -> None:
+    if embedder is None:
+        logger.warning("Embedding skipped: embedder unavailable.")
+        return
+
+    payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+    if not isinstance(payload_obj, dict):
+        return
+
+    try:
+        turn = ChatGptLogTurnV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.warning("ChatGPT turn payload invalid: %s", exc)
+        return
+
+    if not (turn.prompt or turn.response):
+        return
+
+    text = f"{turn.prompt or ''}\n\n{turn.response or ''}".strip()
+    if not text:
+        logger.info("Skipping ChatGPT turn with blank prompt/response id=%s", turn.id)
+        return
+    doc_id = str(turn.correlation_id or turn.id or env.correlation_id)
+    corr = str(turn.correlation_id or env.correlation_id)
+
+    spark_meta = turn.spark_meta if isinstance(turn.spark_meta, dict) else {}
+    tags = None
+    if spark_meta.get("tags"):
+        tags = spark_meta.get("tags")
+    elif turn.session_id and str(turn.session_id).startswith("chatgpt:"):
+        tags = "source:chatgpt_export"
+
+    timestamp = env.created_at.isoformat() if env.created_at else ""
+    meta = _base_meta(
+        env,
+        original_channel=settings.VECTOR_HOST_GPT_TURN_CHANNEL,
+        role="turn",
+        timestamp=timestamp,
+    )
+    meta.update(
+        {
+            "correlation_id": corr,
+            "session_id": turn.session_id,
+            "source_service": env.source.name,
+            "source_node": env.source.node,
+            "original_channel": settings.VECTOR_HOST_GPT_TURN_CHANNEL,
+            "role": "turn",
+            "tags": tags,
+            "kind": CHAT_GPT_LOG_TURN_KIND,
+            "turn_id": turn.id,
+            "source_label": turn.source,
+            "spark_meta": json.dumps(spark_meta) if spark_meta else None,
+        }
+    )
+
+    try:
+        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+    except Exception as exc:
+        logger.warning("Embedding failed doc_id=%s error=%s", doc_id, exc)
+        return
+
+    await _publish_semantic_upsert(
+        env=env,
+        text=text,
+        doc_id=doc_id,
+        role="turn",
+        meta=meta,
+        embedding=embedding,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        original_channel=settings.VECTOR_HOST_GPT_TURN_CHANNEL,
+        collection_name=settings.VECTOR_HOST_GPT_TURN_COLLECTION,
+    )
+
+
 def _extract_embedding_text(payload_obj: Dict[str, Any]) -> Optional[str]:
     text = payload_obj.get("text")
     if isinstance(text, str) and text.strip():
         return text
     raw_input = payload_obj.get("input")
     if isinstance(raw_input, list) and raw_input:
-        return str(raw_input[0])
-    if isinstance(raw_input, str):
+        candidate = str(raw_input[0])
+        if candidate.strip():
+            return candidate
+    if isinstance(raw_input, str) and raw_input.strip():
         return raw_input
     return None
 
@@ -282,7 +433,15 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         logger.error("Embedding request include_latent=true is not supported; forcing false.")
         request = request.model_copy(update={"include_latent": False})
 
-    text = _extract_embedding_text(payload_obj)
+    target_collection = (
+        request.collection
+        if request and request.collection
+        else settings.VECTOR_HOST_SEMANTIC_COLLECTION
+    )
+
+    request_text = request.text if request else None
+    extracted_text = _extract_embedding_text(payload_obj)
+    doc_text = request_text if isinstance(request_text, str) and request_text.strip() else extracted_text
     doc_id = (
         (request.doc_id if request else None)
         or payload_obj.get("doc_id")
@@ -294,9 +453,9 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         "embedding.generate received doc_id=%s reply_to=%s text_len=%s",
         doc_id,
         "present" if reply_channel else "absent",
-        len(text) if text else 0,
+        len(doc_text) if doc_text else 0,
     )
-    if not text:
+    if not doc_text or not doc_text.strip():
         if reply_channel:
             error_payload = EmbeddingResultV1(
                 doc_id=doc_id,
@@ -318,7 +477,7 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         return
 
     try:
-        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+        embedding, embedding_model, embedding_dim = await embedder.embed(doc_text)
     except Exception as exc:
         logger.warning("Embedding request failed doc_id=%s error=%s", doc_id, exc)
         if reply_channel:
@@ -371,11 +530,12 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         {
             "request_doc_id": doc_id,
             "requester_service": env.source.name,
+            "text_preview": doc_text[:240],
         }
     )
     await _publish_semantic_upsert(
         env=env,
-        text=text,
+        text=doc_text,
         doc_id=doc_id,
         role="embedding_request",
         meta=meta,
@@ -383,13 +543,19 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
         embedding_model=embedding_model,
         embedding_dim=embedding_dim,
         original_channel=settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
-        collection_name=settings.VECTOR_HOST_SEMANTIC_COLLECTION,
+        collection_name=target_collection,
     )
 
 
 async def handle_envelope(env: BaseEnvelope) -> None:
     if env.kind == CHAT_HISTORY_TURN_KIND:
         await _handle_chat_turn(env)
+        return
+    if env.kind == CHAT_GPT_MESSAGE_KIND:
+        await _handle_chat_gpt_message(env)
+        return
+    if env.kind == CHAT_GPT_LOG_TURN_KIND:
+        await _handle_chat_gpt_turn(env)
         return
     if env.kind == CHAT_HISTORY_MESSAGE_KIND:
         await _handle_chat_history(env)
@@ -405,21 +571,26 @@ async def lifespan(app: FastAPI):
     global hunter, embedder
     embedder = Embedder(settings)
     cfg = _cfg()
+    patterns = [
+        settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
+        settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
+        settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
+    ]
+    if settings.VECTOR_HOST_GPT_ENABLED:
+        patterns.extend([
+            settings.VECTOR_HOST_GPT_MESSAGE_CHANNEL,
+            settings.VECTOR_HOST_GPT_TURN_CHANNEL,
+        ])
+
     hunter = Hunter(
         cfg,
-        patterns=[
-            settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
-            settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
-            settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
-        ],
+        patterns=patterns,
         handler=handle_envelope,
     )
     await hunter.start_background()
     logger.info(
-        "Vector host listening channels=%s,%s,%s",
-        settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
-        settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
-        settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
+        "Vector host listening channels=%s",
+        ",".join(patterns),
     )
     yield
     if hunter:

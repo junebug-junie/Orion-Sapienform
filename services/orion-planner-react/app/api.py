@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
 import time
 import uuid
@@ -11,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from orion.core.llm_json import parse_json_object, repair_json
 from .settings import settings
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage
@@ -76,24 +76,6 @@ def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
             return t.tool_id
 
     return requested
-
-
-def _repair_json(text: str) -> str:
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        text = text[start : end + 1]
-
-    text = text.replace(" None", " null").replace(":None", ":null")
-    text = text.replace(" True", " true").replace(":True", ":true")
-    text = text.replace(" False", " false").replace(":False", ":false")
-    text = re.sub(r",\s*([}\]])", r"\1", text)
-    return text
 
 
 def _format_schema(schema: Dict[str, Any]) -> str:
@@ -163,9 +145,25 @@ CORE INSTRUCTIONS:
 1. **ANSWER THE USER'S INTENT EFFICIENTLY.** 2. **DEFINITION OF DONE:** As soon as you have the information to answer the user, STOP. Set "finish": true.
 3. **DO NOT EXECUTE SUGGESTIONS:** If a tool result says "Mitigation: Consult a doctor", do NOT call a tool to do that. REPORT the mitigation to the user.
 4. **FORMAT:** Output strict JSON. 
-5. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
+5. **FIRST ACTION BIAS:** If TRACE is empty and the toolset includes "triage", choose "triage" as the first action.
+6. **INPUT FIELD MAPPING:** Populate tool-specific intent fields when calling tools:
+   - triage.request
+   - plan_action.goal
+   - goal_formulate.intention
+   - summarize_context.context_raw
+   - tag_enrich.fragment
+   - pattern_detect.fragments
+   - evaluate.output
+   - assess_risk.scenario
+   Also include "text" with the raw user request whenever possible.
+7. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
    - CORRECT: "action": {{ "tool_id": "assess_risk", "input": {{...}} }}
    - WRONG: "action": "assess_risk"
+8. **NO DOUBLE ENCODING:** Output must be a JSON OBJECT, not a JSON string.
+   - Do not wrap output in single or double quotes.
+   - Do not escape quotes with backslashes.
+   - WRONG: "{{\"thought\": \"...\"}}"
+   - RIGHT: {{"thought": "..."}}
 
 JSON FORMAT:
 {{
@@ -233,13 +231,10 @@ NEXT STEP (JSON ONLY):
     if "<think>" in text:
         text = text.split("</think>")[-1].strip()
 
-    text = _repair_json(text)
-    text = text.replace(r"\'", "'")
-
     try:
-        return json.loads(text)
+        return parse_json_object(text)
     except Exception as e:
-        raise RuntimeError(f"Planner LLM returned non-JSON: {text!r}") from e
+        raise RuntimeError(f"Planner LLM returned non-JSON: {repair_json(text)!r}") from e
 
 
 async def _call_cortex_verb(
@@ -460,13 +455,27 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
 
     except Exception as e:
         logger.exception("ReAct Loop Failed")
-        return PlannerResponse(status="error", error={"message": str(e)}, request_id=payload.request_id)
+        return PlannerResponse(status="error", stop_reason="error", error={"message": str(e)}, request_id=payload.request_id)
     finally:
         await bus.close()
+
+    stop_reason = "continue"
+    continue_reason = None
+    if final_answer and final_answer.content:
+        stop_reason = "final_answer"
+    if trace:
+        last_action = trace[-1].action if isinstance(trace[-1].action, dict) else None
+        if isinstance(last_action, dict):
+            stop_reason = "delegate"
+            continue_reason = "action_present"
+    if final_answer is None and not trace:
+        stop_reason = "continue"
 
     return PlannerResponse(
         request_id=payload.request_id,
         status="ok",
+        stop_reason=stop_reason,
+        continue_reason=continue_reason,
         final_answer=final_answer,
         trace=trace,
         usage=Usage(

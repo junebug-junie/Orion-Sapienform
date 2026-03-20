@@ -14,8 +14,10 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 # REMOVED: dispatch_metacognition_tick
 from .orchestrator import call_verb_runtime, dispatch_metacog_trigger
 from .settings import get_settings
+from .decision_router import DecisionRouter
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
+from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -40,6 +42,34 @@ def _is_diagnostic(raw_payload: dict | None) -> bool:
     return bool(isinstance(opts, dict) and (opts.get("diagnostic") or opts.get("diagnostic_mode")))
 
 
+
+
+def _normalize_and_validate_verb(req: CortexClientRequest) -> tuple[bool, str | None]:
+    mode = (req.mode or "brain").lower()
+    verb = (req.verb or "").strip()
+
+    if mode == "auto":
+        req.verb = None
+        return True, None
+
+    if not verb:
+        if mode == "brain":
+            req.verb = "chat_general"
+            verb = req.verb
+        else:
+            req.verb = None
+            return True, None
+
+    if mode in {"agent", "council"} and is_runtime_entry_verb(verb):
+        req.verb = verb
+        return True, None
+
+    if not is_active(verb, node_name=get_settings().node_name):
+        return False, verb
+
+    req.verb = verb
+    return True, None
+
 def _cfg() -> ChassisConfig:
     s = get_settings()
     return ChassisConfig(
@@ -52,6 +82,20 @@ def _cfg() -> ChassisConfig:
     )
 
 
+
+
+def _should_auto_route(req: CortexClientRequest, env: BaseEnvelope) -> tuple[bool, str]:
+    options = req.options if isinstance(req.options, dict) else {}
+    route_intent = str(options.get("route_intent") or req.route_intent or "none").lower()
+    requested = route_intent == "auto" or str(req.mode).lower() == "auto"
+    source_name = ((env.source.name if env.source else "") or "").strip().lower()
+    allowlisted = source_name in {"cortex-gateway"}
+
+    if not requested:
+        return False, "intent_none"
+    if not allowlisted:
+        return False, f"source_not_allowlisted:{source_name or 'unknown'}"
+    return True, "intent_auto_allowlisted"
 def _source() -> ServiceRef:
     s = get_settings()
     return ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
@@ -81,6 +125,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
 
     # 1. Ingress Validation
+    route_meta: dict | None = None
     try:
         raw_payload = env.payload if isinstance(env.payload, dict) else {}
         diagnostic = _is_diagnostic(raw_payload)
@@ -104,6 +149,55 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
         if diagnostic:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
+
+        should_route, route_reason = _should_auto_route(req, env)
+        logger.info(
+            "auto_depth_gate corr_id=%s should_auto=%s reason=%s source=%s mode=%s route_intent=%s",
+            str(env.correlation_id),
+            should_route,
+            route_reason,
+            ((env.source.name if env.source else "") or "unknown"),
+            req.mode,
+            (req.options.get("route_intent") if isinstance(req.options, dict) else None) or req.route_intent,
+        )
+
+        if should_route:
+            router = DecisionRouter(svc.bus)
+            routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
+            req = routed.request
+            route_meta = routed.decision.model_dump(mode="json")
+            logger.info(
+                "auto_depth_result corr_id=%s depth=%s primary_verb=%s router_source=%s confidence=%.2f",
+                str(env.correlation_id),
+                routed.decision.execution_depth,
+                routed.decision.primary_verb,
+                routed.decision.source,
+                routed.decision.confidence,
+            )
+        elif str(req.mode).lower() == "auto":
+            logger.info("auto_route_gate corr_id=%s fallback_mode=brain reason=%s", str(env.correlation_id), route_reason)
+            req.mode = "brain"
+
+        ok, bad_verb = _normalize_and_validate_verb(req)
+        if not ok:
+            failure = CortexClientResult(
+                ok=False,
+                mode=req.mode,
+                verb=bad_verb or "unknown",
+                status="fail",
+                memory_used=False,
+                recall_debug={},
+                steps=[],
+                error={"message": f"inactive_verb:{bad_verb}", "verb": bad_verb, "node": get_settings().node_name},
+                correlation_id=str(env.correlation_id),
+                final_text=f"Verb '{bad_verb}' is inactive on node {get_settings().node_name}.",
+            )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=failure.model_dump(mode="json"),
+            )
 
     except ValidationError as ve:
         trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
@@ -137,6 +231,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             causality_chain=env.causality_chain,
             trace=env.trace,
             timeout_sec=float(req.options.get("timeout_sec", 900.0)),
+            router_metadata=route_meta,
         )
 
         result_payload = verb_result.output if isinstance(verb_result.output, dict) else {}
@@ -169,11 +264,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if isinstance(final_meta, dict):
             final_meta["trace_verb"] = primary_verb
             final_meta["executed_verbs"] = executed_verbs
+            if route_meta:
+                final_meta["auto_route"] = route_meta
 
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
-            verb=req.verb,
+            verb=req.verb or "unknown",
             status=result_payload.get("status") or "fail",
             final_text=result_payload.get("final_text"),
             memory_used=bool(result_payload.get("memory_used")),

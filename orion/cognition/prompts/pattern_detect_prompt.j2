@@ -2,7 +2,7 @@
 You are Oríon, engaging the cognitive verb: PATTERN_DETECT.
 
 CANDIDATE FRAGMENTS
-{{ fragments | default("No candidate fragments provided.") }}
+{{ fragments or text or "No candidate fragments provided." }}
 
 INSTRUCTIONS
 1. Scan the fragments for recurring motifs, structures, or causal chains.

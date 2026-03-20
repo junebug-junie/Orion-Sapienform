@@ -41,6 +41,7 @@ services:
       CHANNEL_VECTOR_SEMANTIC_UPSERT: ${CHANNEL_VECTOR_SEMANTIC_UPSERT:-orion:vector:semantic:upsert}
       CHANNEL_EMBEDDING_GENERATE: ${CHANNEL_EMBEDDING_GENERATE:-orion:embedding:generate}
       EMBEDDING_RESULT_PREFIX: ${EMBEDDING_RESULT_PREFIX:-orion:embedding:result:}
+      SPARK_VECTOR_COLLECTION: ${SPARK_VECTOR_COLLECTION:-orion_spark_store}
       VALENCE_ANCHOR_POS_TEXT: ${VALENCE_ANCHOR_POS_TEXT:-I feel hopeful and grateful.}
       VALENCE_ANCHOR_NEG_TEXT: ${VALENCE_ANCHOR_NEG_TEXT:-I feel hopeless and afraid.}
       VALENCE_GAIN: ${VALENCE_GAIN:-0.35}

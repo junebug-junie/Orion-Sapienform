@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     NODE_NAME: str = Field(default="athena", alias="ORION_NODE_NAME")
     SERVICE_VERSION: str = Field(default="0.3.0", alias="SERVICE_VERSION")
     HUB_PORT: int = Field(default=8080, alias="HUB_PORT")
+    HUB_API_BASE_OVERRIDE: str = Field(default="", alias="HUB_API_BASE_OVERRIDE")
+    HUB_WS_BASE_OVERRIDE: str = Field(default="", alias="HUB_WS_BASE_OVERRIDE")
 
     # --- Whisper Transcription Settings (LEGACY/UNUSED - Hub uses Bus RPC now) ---
     WHISPER_MODEL_SIZE: str = Field(default="distil-medium.en", alias="WHISPER_MODEL_SIZE")
@@ -37,7 +39,7 @@ class Settings(BaseSettings):
         alias="ORION_BUS_URL",
     )
 
-    # --- Landing Pad Integration (Topic Rail) ---
+    # --- Landing Pad (Topic Rail) ---
     LANDING_PAD_URL: str = Field(
         default="http://orion-landing-pad:8370",
         alias="LANDING_PAD_URL",
@@ -160,9 +162,11 @@ class Settings(BaseSettings):
 
     # --- Recall Debugging ---
     HUB_DEBUG_RECALL: bool = Field(default=False, alias="HUB_DEBUG_RECALL")
+    HUB_DEBUG_COUNCIL: bool = Field(default=False, alias="HUB_DEBUG_COUNCIL")
 
     # --- No-Write Debug Mode (skip publishing chat history) ---
     HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")
+    HUB_AUTO_DEFAULT_ENABLED: bool = Field(default=False, alias="HUB_AUTO_DEFAULT_ENABLED")
 
 
 

@@ -531,7 +531,7 @@ async def _publish_in_app_event(
             event_kind=payload.event_kind,
             source_service=payload.source_service,
             title=payload.title,
-            body_text=_truncate_text(payload.body_text),
+            body_text=payload.body_text,
             tags=payload.tags,
             correlation_id=payload.correlation_id,
             session_id=payload.session_id,
@@ -617,7 +617,7 @@ def _chat_message_to_notification(payload: ChatMessageNotification) -> Notificat
         event_kind=CHAT_MESSAGE_EVENT_KIND,
         severity=payload.severity,
         title=payload.title or "New message from Orion",
-        body_text=payload.preview_text,
+        body_text=payload.full_text or payload.preview_text,
         body_md=payload.full_text,
         context=context,
         tags=payload.tags or ["chat", "message"],
@@ -682,11 +682,6 @@ def _resolve_notification_type(event_kind: str) -> Optional[str]:
     if event_kind == CHAT_MESSAGE_EVENT_KIND: return "chat_message"
     if event_kind == ATTENTION_EVENT_KIND: return "chat_attention"
     return None
-
-def _truncate_text(value: Optional[str], max_len: int = 500) -> Optional[str]:
-    if value is None: return None
-    if len(value) <= max_len: return value
-    return value[: max_len - 1].rstrip() + "…"
 
 def _check_presence():
     return False # Stateless stub

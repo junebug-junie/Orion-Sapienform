@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     state_node: str = Field("", alias="STATE_NODE")
 
     # Equilibrium metacog triggers
+    auto_router_llm_enabled: bool = Field(False, alias="AUTO_ROUTER_LLM_ENABLED")
+    auto_router_llm_request_channel: str = Field(
+        "orion:exec:request:LLMGatewayService",
+        alias="AUTO_ROUTER_LLM_REQUEST_CHANNEL",
+    )
+    auto_router_llm_reply_prefix: str = Field("orion:llm:reply", alias="AUTO_ROUTER_LLM_REPLY_PREFIX")
+
     channel_metacog_trigger: str = Field(
         "orion:equilibrium:metacog:trigger",
         validation_alias=AliasChoices("CHANNEL_EQUILIBRIUM_METACOG_TRIGGER", "CHANNEL_METACOG_TRIGGER"),

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from datetime import datetime
+
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -34,7 +35,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.vector.schemas import EmbeddingGenerateV1
 from orion.importers.chatgpt_export import (
     build_envelopes_for_turn,
     build_message_envelope,
@@ -51,8 +53,8 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Import ChatGPT export via Orion bus fanout.")
     parser.add_argument("--export", required=True, help="Path to chatgpt export (zip, dir, conversations.json)")
     parser.add_argument("--bus-url", default=os.getenv("ORION_BUS_URL", "redis://localhost:6379/0"))
-    parser.add_argument("--channel-log", default="orion:chat:history:log")
-    parser.add_argument("--channel-turn", default="orion:chat:history:turn")
+    parser.add_argument("--channel-log", default="orion:chat:gpt:message:log")
+    parser.add_argument("--channel-turn", default="orion:chat:gpt:log")
     parser.add_argument("--user-id", default="Juniper")
     parser.add_argument("--user-speaker", default="~Juniper")
     parser.add_argument("--assistant-speaker", default="ChatGPT")
@@ -65,8 +67,132 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--rate-limit", type=float, default=50.0)
     parser.add_argument("--state-file", default="scripts/.state/chatgpt_import.json")
     parser.add_argument("--force-full", action="store_true")
+    parser.add_argument("--emit-embeddings", action="store_true")
+    parser.add_argument("--embedding-channel", default="orion:embedding:generate")
+    parser.add_argument("--message-collection", default="orion_chat_gpt")
+    parser.add_argument("--turn-collection", default="orion_chat_gpt_turns")
     return parser.parse_args(argv)
 
+
+
+
+def _validate_channel_schemas(
+    channel_log: str,
+    channel_turn: str,
+    *,
+    embedding_channel: str | None = None,
+) -> None:
+    channels_file = ROOT / "orion" / "bus" / "channels.yaml"
+    if not channels_file.exists():
+        raise ValueError(f"Missing channels catalog: {channels_file}")
+
+    schema_by_name: Dict[str, str] = {}
+    current_name: str | None = None
+    for raw_line in channels_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line.startswith('- name:') or line.startswith('name:'):
+            current_name = line.split(':', 1)[1].strip().strip('"')
+            continue
+        if current_name and line.startswith('schema_id:'):
+            schema_by_name[current_name] = line.split(':', 1)[1].strip().strip('"')
+            current_name = None
+
+    expected = {
+        channel_log: "ChatGptMessageV1",
+        channel_turn: "ChatGptLogTurnV1",
+    }
+    if embedding_channel:
+        expected[embedding_channel] = "EmbeddingGenerateV1"
+    for channel, expected_schema in expected.items():
+        actual = schema_by_name.get(channel)
+        if actual != expected_schema:
+            raise ValueError(
+                f"Channel schema mismatch for {channel}: expected {expected_schema}, found {actual or 'missing'}."
+            )
+
+
+def _embedding_envelope(
+    *,
+    doc_id: str,
+    text: str,
+    collection: str,
+    correlation_id: Any,
+    metadata: Dict[str, Any],
+) -> BaseEnvelope:
+    payload = EmbeddingGenerateV1(
+        doc_id=doc_id,
+        text=text,
+        collection=collection,
+        include_latent=False,
+    ).model_dump(mode="json")
+    payload["metadata"] = metadata
+    return BaseEnvelope(
+        kind="embedding.generate.v1",
+        source=ServiceRef(
+            name=CHATGPT_IMPORTER_NAME,
+            version="0.1.0",
+            node=os.getenv("NODE_NAME", "importer"),
+        ),
+        correlation_id=correlation_id,
+        payload=payload,
+    )
+
+
+def _build_embedding_envelopes(
+    envelopes: Iterable[Tuple[str, BaseEnvelope]],
+    args: argparse.Namespace,
+) -> Tuple[List[Tuple[str, BaseEnvelope]], Dict[str, int]]:
+    embed_envelopes: List[Tuple[str, BaseEnvelope]] = []
+    counters = {"embedding_requests_published": 0}
+
+    for channel, env in envelopes:
+        payload = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+        if not isinstance(payload, dict):
+            continue
+
+        if channel == args.channel_log and payload.get("message_id") and payload.get("content"):
+            doc_id = str(payload.get("message_id"))
+            metadata = {
+                "role": payload.get("role"),
+                "session_id": payload.get("session_id"),
+                "timestamp": payload.get("timestamp"),
+                "tags": payload.get("tags") or [],
+                "original_channel": args.channel_log,
+                "source_service": CHATGPT_IMPORTER_NAME,
+            }
+            embed_env = _embedding_envelope(
+                doc_id=doc_id,
+                text=str(payload.get("content")),
+                collection=args.message_collection,
+                correlation_id=env.correlation_id,
+                metadata=metadata,
+            )
+            embed_envelopes.append((args.embedding_channel, embed_env))
+            counters["embedding_requests_published"] += 1
+
+        if channel == args.channel_turn and (payload.get("prompt") or payload.get("response")):
+            doc_id = str(payload.get("correlation_id") or payload.get("id"))
+            spark_meta = payload.get("spark_meta") if isinstance(payload.get("spark_meta"), dict) else {}
+            metadata = {
+                "session_id": payload.get("session_id"),
+                "timestamp": payload.get("timestamp") or payload.get("created_at"),
+                "source_conversation_id": spark_meta.get("source_conversation_id"),
+                "title": spark_meta.get("conversation_title"),
+                "original_channel": args.channel_turn,
+                "source_service": CHATGPT_IMPORTER_NAME,
+            }
+            text = f"{payload.get('prompt') or ''}\n\n{payload.get('response') or ''}".strip()
+            embed_env = _embedding_envelope(
+                doc_id=doc_id,
+                text=text,
+                collection=args.turn_collection,
+                correlation_id=env.correlation_id,
+                metadata=metadata,
+            )
+            embed_envelopes.append((args.embedding_channel, embed_env))
+            counters["embedding_requests_published"] += 1
+
+    return embed_envelopes, counters
 
 def _load_state(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -223,6 +349,11 @@ def _build_publish_envelopes(
 async def _run(args: argparse.Namespace) -> int:
     if args.only_messages and args.only_turns:
         raise ValueError("Choose only one of --only-messages or --only-turns.")
+    _validate_channel_schemas(
+        args.channel_log,
+        args.channel_turn,
+        embedding_channel=args.embedding_channel if args.emit_embeddings else None,
+    )
     if args.include_branches and args.only_turns:
         raise ValueError("--only-turns is not supported with --include-branches.")
     publish_messages = not args.only_turns
@@ -249,6 +380,7 @@ async def _run(args: argparse.Namespace) -> int:
         "messages_published": 0,
         "turns_emitted": 0,
         "turns_published": 0,
+        "embedding_requests_published": 0,
         "skipped_by_state_conversations": 0,
         "skipped_by_state_messages": 0,
     }
@@ -295,6 +427,12 @@ async def _run(args: argparse.Namespace) -> int:
             )
             counters["messages_published"] += publish_counts["messages_published"]
             counters["turns_published"] += publish_counts["turns_published"]
+
+            if args.emit_embeddings:
+                embedding_envelopes, embedding_counts = _build_embedding_envelopes(envelopes, args)
+                envelopes.extend(embedding_envelopes)
+                counters["embedding_requests_published"] += embedding_counts["embedding_requests_published"]
+
             if samples and not sample_envs:
                 sample_envs = samples
 
@@ -323,6 +461,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"messages_published={counters['messages_published']}")
     print(f"turns_emitted={counters['turns_emitted']}")
     print(f"turns_published={counters['turns_published']}")
+    print(f"embedding_requests_published={counters['embedding_requests_published']}")
     print(f"skipped_by_state_conversations={counters['skipped_by_state_conversations']}")
     print(f"skipped_by_state_messages={counters['skipped_by_state_messages']}")
 

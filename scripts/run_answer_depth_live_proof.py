@@ -11,18 +11,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
-from uuid import uuid4
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIVE_PROOF_DIR = REPO_ROOT / "docs" / "postflight" / "proof" / "live"
 
 # Ensure repo root import resolution when launched as `python scripts/...`.
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 script_dir = str(Path(__file__).resolve().parent)
 if script_dir in sys.path:
     sys.path.remove(script_dir)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
+# Import after sys.path cleanup so stdlib uuid->platform resolution is stable.
+from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.contracts import CortexChatRequest

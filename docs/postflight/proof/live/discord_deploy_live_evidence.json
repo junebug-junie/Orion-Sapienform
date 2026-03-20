@@ -1,12 +1,12 @@
 {
   "scenario": "discord_deploy_live",
-  "timestamp": "2026-03-20T04:54:50.617449+00:00",
-  "correlation_id": "9fa3aa5b-b07e-49c5-8851-b52f81b18edd",
+  "timestamp": "2026-03-20T06:28:11.250679+00:00",
+  "correlation_id": "e0531ae9-8e36-4a1a-9a00-c70df75e9080",
   "request_channel": "orion:cortex:request",
   "entrypoint": "orch",
-  "reply_channel": "orion:cortex:result:9fa3aa5b-b07e-49c5-8851-b52f81b18edd",
+  "reply_channel": "orion:cortex:result:e0531ae9-8e36-4a1a-9a00-c70df75e9080",
   "result_kind": null,
-  "error": "RPC timeout waiting on orion:cortex:result:9fa3aa5b-b07e-49c5-8851-b52f81b18edd",
+  "error": "RPC timeout waiting on orion:cortex:result:e0531ae9-8e36-4a1a-9a00-c70df75e9080",
   "request_text": null,
   "output_mode": null,
   "response_profile": null,
@@ -39,9 +39,9 @@
     "overall_pass": false
   },
   "pass_checks": {
-    "real_orch_path_observed": false,
-    "plannerreact_bus_observed": false,
-    "llm_bus_observed": false,
+    "real_orch_path_observed": true,
+    "plannerreact_bus_observed": true,
+    "llm_bus_observed": true,
     "output_mode_expected": null,
     "response_profile_expected": null,
     "delivery_pack_active": null,
@@ -57,18 +57,18 @@
     "gateway_request_kind": false,
     "orch_request_kind": true,
     "exec_request_kind": false,
-    "verb_request_kind": false,
-    "planner_request_kind": false,
+    "verb_request_kind": true,
+    "planner_request_kind": true,
     "agent_chain_request_kind": false,
-    "llm_request_kind": false
+    "llm_request_kind": true
   },
   "probe_events_excerpt": [
     {
-      "ts": "2026-03-20T04:49:50.067827+00:00",
+      "ts": "2026-03-20T06:24:10.668184+00:00",
       "channel": "orion:cortex:request",
       "kind": "cortex.orch.request",
-      "correlation_id": "9fa3aa5b-b07e-49c5-8851-b52f81b18edd",
-      "reply_to": "orion:cortex:result:9fa3aa5b-b07e-49c5-8851-b52f81b18edd",
+      "correlation_id": "e0531ae9-8e36-4a1a-9a00-c70df75e9080",
+      "reply_to": "orion:cortex:result:e0531ae9-8e36-4a1a-9a00-c70df75e9080",
       "payload_keys": [
         "context",
         "mode",
@@ -78,6 +78,72 @@
         "route_intent",
         "verb"
       ]
+    },
+    {
+      "ts": "2026-03-20T06:27:59.879585+00:00",
+      "channel": "orion:verb:request",
+      "kind": "verb.request",
+      "correlation_id": "e0531ae9-8e36-4a1a-9a00-c70df75e9080",
+      "reply_to": null,
+      "payload_keys": [
+        "caller",
+        "meta",
+        "payload",
+        "request_id",
+        "schema_id",
+        "trigger"
+      ]
+    },
+    {
+      "ts": "2026-03-20T06:27:59.988682+00:00",
+      "channel": "orion:exec:request:PlannerReactService",
+      "kind": "agent.planner.request",
+      "correlation_id": "e0531ae9-8e36-4a1a-9a00-c70df75e9080",
+      "reply_to": "orion:exec:result:PlannerReactService:e0531ae9-8e36-4a1a-9a00-c70df75e9080",
+      "payload_keys": [
+        "caller",
+        "context",
+        "goal",
+        "limits",
+        "preferences",
+        "request_id",
+        "toolset",
+        "trace"
+      ]
+    },
+    {
+      "ts": "2026-03-20T06:28:05.973078+00:00",
+      "channel": "orion:exec:result:PlannerReactService:e0531ae9-8e36-4a1a-9a00-c70df75e9080",
+      "kind": "agent.planner.result",
+      "correlation_id": "e0531ae9-8e36-4a1a-9a00-c70df75e9080",
+      "reply_to": null,
+      "payload_keys": [
+        "continue_reason",
+        "error",
+        "final_answer",
+        "request_id",
+        "status",
+        "stop_reason",
+        "trace",
+        "usage"
+      ]
+    },
+    {
+      "ts": "2026-03-20T06:28:05.983328+00:00",
+      "channel": "orion:exec:request:LLMGatewayService",
+      "kind": "llm.chat.request",
+      "correlation_id": "e0531ae9-8e36-4a1a-9a00-c70df75e9080",
+      "reply_to": "orion:exec:result:LLMGatewayService:b8992e90-f65c-4ef0-bf0b-58dc0fd92eaf",
+      "payload_keys": [
+        "messages",
+        "model",
+        "options",
+        "profile",
+        "raw_user_text",
+        "route",
+        "session_id",
+        "user_id"
+      ]
     }
   ],
   "unavailable_fields": {
@@ -86,5 +152,5 @@
     "gateway_path": "Gateway path timed out in this run; evidence captured via real Orch path fallback."
   },
   "raw_response_payload": null,
-  "gateway_error": "RPC timeout waiting on orion:cortex:gateway:result:f8841771-f04c-432f-b6e7-b9f1c9047a93"
+  "gateway_error": "RPC timeout waiting on orion:cortex:gateway:result:2c1b03e4-a7a2-4efe-b715-2066b0dfb9bc"
 }

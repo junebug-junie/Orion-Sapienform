@@ -1,9 +1,9 @@
 # Discord Deploy Live Evidence
 
-- timestamp: `2026-03-20T04:54:50.617449+00:00`
-- correlation_id: `9fa3aa5b-b07e-49c5-8851-b52f81b18edd`
+- timestamp: `2026-03-20T06:28:11.250679+00:00`
+- correlation_id: `e0531ae9-8e36-4a1a-9a00-c70df75e9080`
 - request_channel: `orion:cortex:request`
-- reply_channel: `orion:cortex:result:9fa3aa5b-b07e-49c5-8851-b52f81b18edd`
+- reply_channel: `orion:cortex:result:e0531ae9-8e36-4a1a-9a00-c70df75e9080`
 - result_kind: `None`
 - overall_pass: `False`
 
@@ -18,14 +18,14 @@
 - finalize_response_invoked: `None`
 
 ## Path Observed
-- {"gateway_request_kind": false, "orch_request_kind": true, "exec_request_kind": false, "verb_request_kind": false, "planner_request_kind": false, "agent_chain_request_kind": false, "llm_request_kind": false}
+- {"gateway_request_kind": false, "orch_request_kind": true, "exec_request_kind": false, "verb_request_kind": true, "planner_request_kind": true, "agent_chain_request_kind": false, "llm_request_kind": true}
 
 ## Pass Checks
 ```json
 {
-  "real_orch_path_observed": false,
-  "plannerreact_bus_observed": false,
-  "llm_bus_observed": false,
+  "real_orch_path_observed": true,
+  "plannerreact_bus_observed": true,
+  "llm_bus_observed": true,
   "output_mode_expected": null,
   "response_profile_expected": null,
   "delivery_pack_active": null,
@@ -69,7 +69,7 @@
 
 ## Error
 ```text
-RPC timeout waiting on orion:cortex:result:9fa3aa5b-b07e-49c5-8851-b52f81b18edd
+RPC timeout waiting on orion:cortex:result:e0531ae9-8e36-4a1a-9a00-c70df75e9080
 ```
 
 ## Unavailable Fields

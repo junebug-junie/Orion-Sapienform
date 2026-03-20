@@ -140,6 +140,76 @@ def _truncate_list(values: Any, max_items: int, max_chars: int) -> List[str]:
     return truncated
 
 
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _format_pad_frame_summary(pad_result: Any) -> str:
+    if not isinstance(pad_result, dict):
+        return str(pad_result)
+    if pad_result.get("status") == "missing":
+        return "missing"
+
+    frame = pad_result.get("frame")
+    if not isinstance(frame, dict):
+        return json.dumps(pad_result, ensure_ascii=False)[:500]
+
+    summary = frame.get("summary") if isinstance(frame.get("summary"), dict) else {}
+    top_signals = _truncate_list(summary.get("top_signals"), 3, 80)
+    active_tasks = _truncate_list(summary.get("active_tasks"), 2, 80)
+    risk_flags = _truncate_list(summary.get("risk_flags"), 2, 80)
+    salient_ids = frame.get("salient_event_ids") if isinstance(frame.get("salient_event_ids"), list) else []
+
+    parts = [
+        f"frame ts={frame.get('ts_ms', '?')}",
+        f"window_ms={frame.get('window_ms', '?')}",
+        f"salient_events={len(salient_ids)}",
+    ]
+    if top_signals:
+        parts.append(f"signals={'; '.join(top_signals)}")
+    if active_tasks:
+        parts.append(f"tasks={'; '.join(active_tasks)}")
+    if risk_flags:
+        parts.append(f"risks={'; '.join(risk_flags)}")
+    return ", ".join(parts)
+
+
+def _format_pad_stats_summary(pad_stats: Any) -> str:
+    if not isinstance(pad_stats, dict):
+        return "stats=unavailable"
+    stats = pad_stats.get("stats") if isinstance(pad_stats.get("stats"), dict) else pad_stats
+    if not isinstance(stats, dict) or not stats:
+        return "stats=unavailable"
+
+    fields: list[str] = []
+    for key in ("ingested", "dropped_total", "frames_built", "rpc_requests", "rpc_errors", "queue_depth"):
+        if key in stats and stats.get(key) is not None:
+            fields.append(f"{key}={stats.get(key)}")
+
+    last_salience = stats.get("last_salience")
+    if last_salience is not None:
+        try:
+            fields.append(f"last_salience={float(last_salience):.2f}")
+        except Exception:
+            fields.append(f"last_salience={last_salience}")
+
+    ts_ms = _safe_int(stats.get("last_frame_ts_ms"))
+    if ts_ms is not None:
+        try:
+            fields.append(
+                f"last_frame={datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()}"
+            )
+        except Exception:
+            fields.append(f"last_frame_ts_ms={ts_ms}")
+
+    return ", ".join(fields) if fields else "stats=available"
+
+
 _PATCH_KEY_ALIASES = {
     "change_ type_ scores": "change_type_scores",
     "numeric_ sisters": "numeric_sisters",
@@ -1379,12 +1449,14 @@ async def call_step_services(
                     trigger = MetacogTriggerV1(trigger_kind="unknown", reason="deserialization_failed")
 
                 pad_summary = "unknown"
+                pad_frame_result: Dict[str, Any] | None = None
+                pad_stats_result: Dict[str, Any] | None = None
                 spark_line = "unknown"
                 trace_summary = "unknown"
                 turn_effect = None
 
                 # Landing Pad
-                pad_reply_channel = f"orion:exec:result:PadRpc:{uuid4()}"
+                pad_reply_channel = f"{settings.channel_pad_rpc_reply_prefix}:{uuid4()}"
                 pad_req = PadRpcRequestV1(
                     request_id=correlation_id,
                     reply_channel=pad_reply_channel,
@@ -1408,13 +1480,58 @@ async def call_step_services(
                     pad_dec = bus.codec.decode(pad_msg.get("data"))
                     if pad_dec.ok:
                         pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
-                        pad_summary = str(pad_res.result)
+                        if pad_res.ok:
+                            pad_frame_result = pad_res.result or {}
+                            pad_summary = _format_pad_frame_summary(pad_frame_result)
+                        else:
+                            pad_summary = f"error: {pad_res.error or 'pad_rpc_failed'}"
                 except Exception as e:
-                    logger.warning("MetacogContextService pad RPC failed: %s", e)
+                    logger.warning("MetacogContextService pad frame RPC failed: %s", e)
                     pad_summary = f"error: {e}"
 
+                pad_stats_reply_channel = f"{settings.channel_pad_rpc_reply_prefix}:{uuid4()}"
+                pad_stats_req = PadRpcRequestV1(
+                    request_id=f"{correlation_id}:stats",
+                    reply_channel=pad_stats_reply_channel,
+                    method="get_stats",
+                    args={},
+                )
+                pad_stats_env = BaseEnvelope(
+                    kind=KIND_PAD_RPC_REQUEST_V1,
+                    source=source,
+                    correlation_id=correlation_id,
+                    reply_to=pad_stats_reply_channel,
+                    payload=pad_stats_req.model_dump(mode="json"),
+                )
+                try:
+                    pad_stats_msg = await bus.rpc_request(
+                        settings.channel_pad_rpc_request,
+                        pad_stats_env,
+                        reply_channel=pad_stats_reply_channel,
+                        timeout_sec=20.0,
+                    )
+                    pad_stats_dec = bus.codec.decode(pad_stats_msg.get("data"))
+                    if pad_stats_dec.ok:
+                        pad_stats_res = PadRpcResponseV1.model_validate(pad_stats_dec.envelope.payload)
+                        if pad_stats_res.ok:
+                            pad_stats_result = pad_stats_res.result or {}
+                        elif pad_summary == "unknown":
+                            pad_summary = f"error: {pad_stats_res.error or 'pad_stats_rpc_failed'}"
+                except Exception as e:
+                    logger.warning("MetacogContextService pad stats RPC failed: %s", e)
+                    if pad_summary == "unknown":
+                        pad_summary = f"error: {e}"
+
+                if pad_stats_result:
+                    pad_summary = f"{pad_summary} | {_format_pad_stats_summary(pad_stats_result)}"
+
+                ctx["pad_frame"] = pad_frame_result or {}
+                ctx["pad_frame_json"] = json.dumps(ctx["pad_frame"], indent=2)
+                ctx["pad_stats"] = pad_stats_result or {}
+                ctx["pad_stats_json"] = json.dumps(ctx["pad_stats"], indent=2)
+
                 # Spark (State Service)
-                state_reply_channel = f"orion:exec:result:StateService:{uuid4()}"
+                state_reply_channel = f"{settings.channel_state_reply_prefix}:{uuid4()}"
                 state_req = StateGetLatestRequest(scope="global")
                 state_env = BaseEnvelope(
                     kind="state.get_latest.v1",

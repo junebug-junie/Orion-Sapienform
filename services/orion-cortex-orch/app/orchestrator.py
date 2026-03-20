@@ -29,6 +29,18 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 logger = logging.getLogger("orion.cortex.orch")
 
+_DIRECT_VERB_TRIGGERS = {
+    "actions.respond_to_juniper_collapse_mirror.v1",
+    "skills.system.time_now.v1",
+    "skills.gpu.nvidia_smi_snapshot.v1",
+    "skills.docker.ps_status.v1",
+    "skills.biometrics.snapshot.v1",
+    "skills.biometrics.raw_recent.v1",
+    "skills.landing_pad.metrics_snapshot.v1",
+    "skills.landing_pad.last_events.v1",
+    "skills.system.notify_chat_message.v1",
+}
+
 def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
     """Two-step agent plan: planner-react followed by agent chain."""
     resolved_verb = verb_name or "agent_runtime"
@@ -332,8 +344,9 @@ def build_verb_request(
     trace: dict | None = None,
 ) -> tuple[VerbRequestV1, BaseEnvelope]:
     request_id = str(uuid4())
+    trigger_name = client_request.verb if client_request.verb in _DIRECT_VERB_TRIGGERS else "legacy.plan"
     verb_request = VerbRequestV1(
-        trigger="legacy.plan",
+        trigger=trigger_name,
         schema_id=plan_request.__class__.__name__,
         payload=plan_request.model_dump(mode="json"),
         request_id=request_id,

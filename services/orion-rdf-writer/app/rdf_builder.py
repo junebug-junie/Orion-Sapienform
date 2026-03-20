@@ -15,6 +15,7 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.rdf import RdfWriteRequest, RdfBuildRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 
+from app.autonomy import build_autonomy_triples
 from app.provenance import attach_provenance
 from app.settings import settings
 
@@ -144,7 +145,11 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             attach_provenance(g, subject_uri, meta.service_name)
             return g.serialize(format="nt"), "orion:enrichment"
 
-        # 5. Cognition Trace
+        # 5. Phase 3 autonomy artifact materialization
+        elif env_kind in ("memory.identity.snapshot.v1", "memory.drives.audit.v1", "memory.goals.proposed.v1"):
+            return build_autonomy_triples(env_kind, payload)
+
+        # 6. Cognition Trace
         elif env_kind == "cognition.trace":
             if isinstance(payload, dict):
                 trace = CognitionTracePayload.model_validate(payload)
@@ -152,18 +157,18 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
                 trace = payload
             return _handle_cognition_trace(g, trace)
 
-        # 6. Core Events (Legacy Fallback or "targets": ["rdf"])
+        # 7. Core Events (Legacy Fallback or "targets": ["rdf"])
         elif env_kind == "orion.event" or "targets" in str(payload):
              # Legacy dict handling
              if isinstance(payload, dict) and "rdf" in payload.get("targets", []):
                  return _legacy_dict_build(g, payload)
 
-        # 7. Chat History (Turn-level)
+        # 8. Chat History (Turn-level)
         elif env_kind == "chat.history":
             data = payload if isinstance(payload, dict) else payload.model_dump()
             return _handle_chat_turn(g, data)
 
-        # 8. Chat History (Message-level)
+        # 9. Chat History (Message-level)
         elif env_kind == "chat.history.message.v1":
             data = payload if isinstance(payload, dict) else payload.model_dump()
             return _handle_chat_message(g, data)

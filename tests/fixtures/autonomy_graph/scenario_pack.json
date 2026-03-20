@@ -1,0 +1,483 @@
+{
+  "scenarios": [
+    {
+      "scenario_id": "self-model-snapshot",
+      "description": "Identity snapshot for Orion self-model.",
+      "kind": "memory.identity.snapshot.v1",
+      "channel": "orion:memory:identity:snapshot",
+      "payload": {
+        "artifact_id": "identity-self-1",
+        "subject": "orion",
+        "model_layer": "self-model",
+        "entity_id": "self:orion",
+        "kind": "memory.identity.snapshot.v1",
+        "ts": "2026-03-19T12:00:00+00:00",
+        "confidence": 0.84,
+        "correlation_id": "corr-self-1",
+        "trace_id": "trace-self-1",
+        "turn_id": "turn-self-1",
+        "join_keys": [
+          "correlation_id",
+          "trace_id",
+          "turn_id",
+          "artifact_id"
+        ],
+        "provenance": {
+          "intake_channel": "orion:metacognition:tick",
+          "correlation_id": "corr-self-1",
+          "trace_id": "trace-self-1",
+          "turn_id": "turn-self-1",
+          "evidence_text": "Orion detected coherence drift in the latest turn.",
+          "evidence_summary": "Metacognitive summary about self-model instability.",
+          "source_event_refs": [
+            {
+              "event_id": "evt-self-1",
+              "kind": "metacognition.tick.v1",
+              "channel": "orion:metacognition:tick",
+              "correlation_id": "corr-self-1",
+              "trace_id": "trace-self-1",
+              "turn_id": "turn-self-1",
+              "created_at": "2026-03-19T12:00:00+00:00",
+              "source_service": "orion-spark-concept-induction"
+            }
+          ],
+          "evidence_items": [
+            {
+              "event_ref": {
+                "event_id": "evt-self-1",
+                "kind": "metacognition.tick.v1",
+                "channel": "orion:metacognition:tick",
+                "correlation_id": "corr-self-1",
+                "trace_id": "trace-self-1",
+                "turn_id": "turn-self-1",
+                "created_at": "2026-03-19T12:00:00+00:00",
+                "source_service": "orion-spark-concept-induction"
+              },
+              "summary": "Orion showed self-model coherence tension.",
+              "text": "A recent turn showed coherence loss.",
+              "source_summary": "metacognition.tick.v1 on orion:metacognition:tick"
+            }
+          ],
+          "tension_refs": [
+            "tension-self-1"
+          ]
+        },
+        "related_nodes": [
+          "subject:orion",
+          "tension-self-1"
+        ],
+        "anchor_strategy": "canonical-self-anchor",
+        "summary": "Orion remains anchored in self-model despite coherence tension.",
+        "source_event_refs": [],
+        "evidence_items": [],
+        "tension_kinds": [
+          "tension.contradiction.v1"
+        ],
+        "drive_pressures": {
+          "coherence": 0.81,
+          "predictive": 0.42
+        }
+      }
+    },
+    {
+      "scenario_id": "user-model-snapshot",
+      "description": "Identity snapshot for Juniper user-model.",
+      "kind": "memory.identity.snapshot.v1",
+      "channel": "orion:memory:identity:snapshot",
+      "payload": {
+        "artifact_id": "identity-user-1",
+        "subject": "juniper",
+        "model_layer": "user-model",
+        "entity_id": "user:juniper",
+        "kind": "memory.identity.snapshot.v1",
+        "ts": "2026-03-19T12:01:00+00:00",
+        "confidence": 0.83,
+        "correlation_id": "corr-user-1",
+        "trace_id": "trace-user-1",
+        "turn_id": "turn-user-1",
+        "join_keys": [
+          "correlation_id",
+          "trace_id",
+          "turn_id",
+          "artifact_id"
+        ],
+        "provenance": {
+          "intake_channel": "orion:chat:history:log",
+          "correlation_id": "corr-user-1",
+          "trace_id": "trace-user-1",
+          "turn_id": "turn-user-1",
+          "evidence_text": "Juniper asked for a precise debugging surface.",
+          "evidence_summary": "User-model request preserves explicit debugging intent.",
+          "source_event_refs": [
+            {
+              "event_id": "evt-user-1",
+              "kind": "chat.message",
+              "channel": "orion:chat:history:log",
+              "correlation_id": "corr-user-1",
+              "trace_id": "trace-user-1",
+              "turn_id": "turn-user-1",
+              "created_at": "2026-03-19T12:01:00+00:00",
+              "source_service": "orion-hub"
+            }
+          ],
+          "evidence_items": [
+            {
+              "event_ref": {
+                "event_id": "evt-user-1",
+                "kind": "chat.message",
+                "channel": "orion:chat:history:log",
+                "correlation_id": "corr-user-1",
+                "trace_id": "trace-user-1",
+                "turn_id": "turn-user-1",
+                "created_at": "2026-03-19T12:01:00+00:00",
+                "source_service": "orion-hub"
+              },
+              "summary": "Juniper requested verification deliverables.",
+              "text": "Please inspect the repo, implement the harness, and return exact commands.",
+              "source_summary": "chat.message on orion:chat:history:log"
+            }
+          ],
+          "tension_refs": [
+            "tension-user-1"
+          ]
+        },
+        "related_nodes": [
+          "subject:juniper",
+          "tension-user-1"
+        ],
+        "anchor_strategy": "explicit-user-anchor",
+        "summary": "Juniper remains anchored as the current user-model subject.",
+        "source_event_refs": [],
+        "evidence_items": [],
+        "tension_kinds": [
+          "tension.cognitive_load.v1"
+        ],
+        "drive_pressures": {
+          "relational": 0.73
+        }
+      }
+    },
+    {
+      "scenario_id": "world-model-snapshot",
+      "description": "Identity snapshot for a concrete world-model service entity.",
+      "kind": "memory.identity.snapshot.v1",
+      "channel": "orion:memory:identity:snapshot",
+      "payload": {
+        "artifact_id": "identity-world-1",
+        "subject": "service:auth-api",
+        "model_layer": "world-model",
+        "entity_id": "world:service:auth-api",
+        "kind": "memory.identity.snapshot.v1",
+        "ts": "2026-03-19T12:02:00+00:00",
+        "confidence": 0.82,
+        "correlation_id": "corr-world-1",
+        "trace_id": "trace-world-1",
+        "turn_id": "turn-world-1",
+        "join_keys": [
+          "correlation_id",
+          "trace_id",
+          "turn_id",
+          "artifact_id"
+        ],
+        "provenance": {
+          "intake_channel": "orion:system:health",
+          "correlation_id": "corr-world-1",
+          "trace_id": "trace-world-1",
+          "turn_id": "turn-world-1",
+          "evidence_text": "Auth API health telemetry identified a concrete world entity.",
+          "evidence_summary": "Concrete world-model anchor preserved.",
+          "source_event_refs": [
+            {
+              "event_id": "evt-world-1",
+              "kind": "system.health",
+              "channel": "orion:system:health",
+              "correlation_id": "corr-world-1",
+              "trace_id": "trace-world-1",
+              "turn_id": "turn-world-1",
+              "created_at": "2026-03-19T12:02:00+00:00",
+              "source_service": "telemetry-hub"
+            }
+          ],
+          "evidence_items": [
+            {
+              "event_ref": {
+                "event_id": "evt-world-1",
+                "kind": "system.health",
+                "channel": "orion:system:health",
+                "correlation_id": "corr-world-1",
+                "trace_id": "trace-world-1",
+                "turn_id": "turn-world-1",
+                "created_at": "2026-03-19T12:02:00+00:00",
+                "source_service": "telemetry-hub"
+              },
+              "summary": "Auth API is treated as a concrete world entity.",
+              "text": "service:auth-api should not collapse to a generic world anchor.",
+              "source_summary": "system.health on orion:system:health"
+            }
+          ],
+          "tension_refs": [
+            "tension-world-1"
+          ]
+        },
+        "related_nodes": [
+          "subject:service:auth-api",
+          "tension-world-1"
+        ],
+        "anchor_strategy": "concrete-world-entity",
+        "summary": "service:auth-api remains a world-model service entity.",
+        "source_event_refs": [],
+        "evidence_items": [],
+        "tension_kinds": [
+          "tension.identity_drift.v1"
+        ],
+        "drive_pressures": {
+          "predictive": 0.61
+        }
+      }
+    },
+    {
+      "scenario_id": "relationship-model-snapshot",
+      "description": "Identity snapshot for relationship-model continuity.",
+      "kind": "memory.identity.snapshot.v1",
+      "channel": "orion:memory:identity:snapshot",
+      "payload": {
+        "artifact_id": "identity-relationship-1",
+        "subject": "relationship",
+        "model_layer": "relationship-model",
+        "entity_id": "relationship:orion|juniper",
+        "kind": "memory.identity.snapshot.v1",
+        "ts": "2026-03-19T12:03:00+00:00",
+        "confidence": 0.8,
+        "correlation_id": "corr-relationship-1",
+        "trace_id": "trace-relationship-1",
+        "turn_id": "turn-relationship-1",
+        "join_keys": [
+          "correlation_id",
+          "trace_id",
+          "turn_id",
+          "artifact_id"
+        ],
+        "provenance": {
+          "intake_channel": "orion:chat:history:log",
+          "correlation_id": "corr-relationship-1",
+          "trace_id": "trace-relationship-1",
+          "turn_id": "turn-relationship-1",
+          "evidence_text": "The turn focused on Orion and Juniper as a relationship pair.",
+          "evidence_summary": "Relationship-model entity remains distinct.",
+          "source_event_refs": [
+            {
+              "event_id": "evt-relationship-1",
+              "kind": "chat.message",
+              "channel": "orion:chat:history:log",
+              "correlation_id": "corr-relationship-1",
+              "trace_id": "trace-relationship-1",
+              "turn_id": "turn-relationship-1",
+              "created_at": "2026-03-19T12:03:00+00:00",
+              "source_service": "orion-hub"
+            }
+          ],
+          "evidence_items": [
+            {
+              "event_ref": {
+                "event_id": "evt-relationship-1",
+                "kind": "chat.message",
+                "channel": "orion:chat:history:log",
+                "correlation_id": "corr-relationship-1",
+                "trace_id": "trace-relationship-1",
+                "turn_id": "turn-relationship-1",
+                "created_at": "2026-03-19T12:03:00+00:00",
+                "source_service": "orion-hub"
+              },
+              "summary": "The relationship channel remained explicit.",
+              "text": "relationship:orion|juniper must stay distinct from self and user.",
+              "source_summary": "chat.message on orion:chat:history:log"
+            }
+          ],
+          "tension_refs": [
+            "tension-relationship-1"
+          ]
+        },
+        "related_nodes": [
+          "subject:relationship",
+          "tension-relationship-1"
+        ],
+        "anchor_strategy": "canonical-relationship-anchor",
+        "summary": "The Orion/Juniper relationship remains its own model-layer entity.",
+        "source_event_refs": [],
+        "evidence_items": [],
+        "tension_kinds": [
+          "tension.distress.v1"
+        ],
+        "drive_pressures": {
+          "relational": 0.92
+        }
+      }
+    },
+    {
+      "scenario_id": "drive-audit",
+      "description": "Drive audit with active drive highlights and lineage.",
+      "kind": "memory.drives.audit.v1",
+      "channel": "orion:memory:drives:audit",
+      "payload": {
+        "artifact_id": "drive-audit-1",
+        "subject": "orion",
+        "model_layer": "self-model",
+        "entity_id": "self:orion",
+        "kind": "memory.drives.audit.v1",
+        "ts": "2026-03-19T12:04:00+00:00",
+        "confidence": 0.76,
+        "correlation_id": "corr-drive-1",
+        "trace_id": "trace-drive-1",
+        "turn_id": "turn-drive-1",
+        "join_keys": [
+          "correlation_id",
+          "trace_id",
+          "turn_id",
+          "artifact_id"
+        ],
+        "provenance": {
+          "intake_channel": "orion:metacognition:tick",
+          "correlation_id": "corr-drive-1",
+          "trace_id": "trace-drive-1",
+          "turn_id": "turn-drive-1",
+          "evidence_text": "Drive state reflects coherence pressure after a destabilizing turn.",
+          "evidence_summary": "Drive audit captured active tensions.",
+          "source_event_refs": [
+            {
+              "event_id": "evt-drive-1",
+              "kind": "metacognition.tick.v1",
+              "channel": "orion:metacognition:tick",
+              "correlation_id": "corr-drive-1",
+              "trace_id": "trace-drive-1",
+              "turn_id": "turn-drive-1",
+              "created_at": "2026-03-19T12:04:00+00:00",
+              "source_service": "orion-spark-concept-induction"
+            }
+          ],
+          "evidence_items": [
+            {
+              "event_ref": {
+                "event_id": "evt-drive-1",
+                "kind": "metacognition.tick.v1",
+                "channel": "orion:metacognition:tick",
+                "correlation_id": "corr-drive-1",
+                "trace_id": "trace-drive-1",
+                "turn_id": "turn-drive-1",
+                "created_at": "2026-03-19T12:04:00+00:00",
+                "source_service": "orion-spark-concept-induction"
+              },
+              "summary": "Coherence and predictive drives are active.",
+              "text": "The latest turn raised coherence and predictive pressure.",
+              "source_summary": "metacognition.tick.v1 on orion:metacognition:tick"
+            }
+          ],
+          "tension_refs": [
+            "tension-drive-1",
+            "tension-drive-2"
+          ]
+        },
+        "related_nodes": [
+          "tension-drive-1",
+          "tension-drive-2"
+        ],
+        "drive_pressures": {
+          "coherence": 0.91,
+          "predictive": 0.62
+        },
+        "drive_activations": {
+          "coherence": true,
+          "predictive": true
+        },
+        "active_drives": [
+          "coherence",
+          "predictive"
+        ],
+        "dominant_drive": "coherence",
+        "tension_kinds": [
+          "tension.contradiction.v1",
+          "tension.identity_drift.v1"
+        ],
+        "source_event_refs": [],
+        "evidence_items": [],
+        "summary": "Coherence dominates the current drive audit."
+      }
+    },
+    {
+      "scenario_id": "proposal-only-goal",
+      "description": "Goal proposal that remains proposal-only and non-executing.",
+      "kind": "memory.goals.proposed.v1",
+      "channel": "orion:memory:goals:proposed",
+      "payload": {
+        "artifact_id": "goal-1",
+        "subject": "orion",
+        "model_layer": "self-model",
+        "entity_id": "self:orion",
+        "kind": "memory.goals.proposed.v1",
+        "ts": "2026-03-19T12:05:00+00:00",
+        "confidence": 0.78,
+        "correlation_id": "corr-goal-1",
+        "trace_id": "trace-goal-1",
+        "turn_id": "turn-goal-1",
+        "join_keys": [
+          "correlation_id",
+          "trace_id",
+          "turn_id",
+          "artifact_id"
+        ],
+        "provenance": {
+          "intake_channel": "orion:metacognition:tick",
+          "correlation_id": "corr-goal-1",
+          "trace_id": "trace-goal-1",
+          "turn_id": "turn-goal-1",
+          "evidence_text": "The system proposed a coherence-stabilizing goal without execution semantics.",
+          "evidence_summary": "Goal remains proposal-only.",
+          "source_event_refs": [
+            {
+              "event_id": "evt-goal-1",
+              "kind": "metacognition.tick.v1",
+              "channel": "orion:metacognition:tick",
+              "correlation_id": "corr-goal-1",
+              "trace_id": "trace-goal-1",
+              "turn_id": "turn-goal-1",
+              "created_at": "2026-03-19T12:05:00+00:00",
+              "source_service": "orion-spark-concept-induction"
+            }
+          ],
+          "evidence_items": [
+            {
+              "event_ref": {
+                "event_id": "evt-goal-1",
+                "kind": "metacognition.tick.v1",
+                "channel": "orion:metacognition:tick",
+                "correlation_id": "corr-goal-1",
+                "trace_id": "trace-goal-1",
+                "turn_id": "turn-goal-1",
+                "created_at": "2026-03-19T12:05:00+00:00",
+                "source_service": "orion-spark-concept-induction"
+              },
+              "summary": "Coherence stabilization was proposed only.",
+              "text": "Stabilize internal coherence around the active evidence trail.",
+              "source_summary": "metacognition.tick.v1 on orion:metacognition:tick"
+            }
+          ],
+          "tension_refs": [
+            "tension-goal-1"
+          ]
+        },
+        "related_nodes": [
+          "tension-goal-1"
+        ],
+        "goal_statement": "Stabilize internal coherence around the active evidence trail.",
+        "proposal_signature": "proposal-sig-1",
+        "drive_origin": "coherence",
+        "priority": 0.88,
+        "cooldown_until": "2026-03-19T15:05:00+00:00",
+        "source_event_refs": [],
+        "evidence_items": [],
+        "tension_kinds": [
+          "tension.contradiction.v1"
+        ]
+      }
+    }
+  ]
+}

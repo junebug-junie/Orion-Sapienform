@@ -25,8 +25,10 @@ class ConceptSettings(BaseSettings):
     intake_channels: List[str] = Field(
         default_factory=lambda: [
             "orion:chat:history:log",
-            "orion:collapse:mirror",
-            "orion:memory:episode",
+            "orion:collapse:sql-write",
+            "orion:spark:telemetry",
+            "orion:metacognition:tick",
+            "orion:cognition:trace",
         ],
         validation_alias=AliasChoices("BUS_INTAKE_CHANNELS", "CONCEPT_INTAKE_CHANNELS"),
     )
@@ -50,6 +52,30 @@ class ConceptSettings(BaseSettings):
         "orion:collapse:sql-write",
         alias="BUS_SQL_OUT",
     )
+    drive_state_channel: str = Field(
+        "orion:memory:drives:state",
+        alias="BUS_DRIVE_STATE_OUT",
+    )
+    tension_event_channel: str = Field(
+        "orion:memory:tension:event",
+        alias="BUS_TENSION_EVENT_OUT",
+    )
+    drive_audit_channel: str = Field(
+        "orion:memory:drives:audit",
+        alias="BUS_DRIVE_AUDIT_OUT",
+    )
+    identity_snapshot_channel: str = Field(
+        "orion:memory:identity:snapshot",
+        alias="BUS_IDENTITY_SNAPSHOT_OUT",
+    )
+    goal_proposal_channel: str = Field(
+        "orion:memory:goals:proposed",
+        alias="BUS_GOAL_PROPOSAL_OUT",
+    )
+    turn_dossier_channel: str = Field(
+        "orion:debug:turn:dossier",
+        alias="BUS_TURN_DOSSIER_OUT",
+    )
 
     # Windowing
     window_max_events: int = Field(200, alias="CONCEPT_WINDOW_MAX_EVENTS")
@@ -63,7 +89,7 @@ class ConceptSettings(BaseSettings):
     spacy_model: str = Field("en_core_web_sm", alias="SPACY_MODEL")
     max_candidates: int = Field(50, alias="CONCEPT_MAX_CANDIDATES")
     embedding_base_url: str = Field(
-        "http://orion-embeddings-host:8000", alias="EMBEDDINGS_BASE_URL"
+        "http://orion-athena-vector-host:8320", alias="EMBEDDINGS_BASE_URL"
     )
     embedding_timeout_sec: float = Field(5.0, alias="EMBEDDINGS_TIMEOUT_SEC")
     cluster_cosine_threshold: float = Field(0.8, alias="CONCEPT_CLUSTER_THRESHOLD")
@@ -83,6 +109,11 @@ class ConceptSettings(BaseSettings):
     store_path: str = Field(
         "/tmp/concept-induction-state.json", alias="CONCEPT_STORE_PATH"
     )
+    drive_decay_tau_sec: float = Field(1800.0, alias="DRIVE_DECAY_TAU_SEC")
+    drive_saturation_gain: float = Field(1.8, alias="DRIVE_SATURATION_GAIN")
+    drive_activation_on: float = Field(0.62, alias="DRIVE_ACTIVATION_ON")
+    drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
+    goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
 
     # Heartbeat
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")

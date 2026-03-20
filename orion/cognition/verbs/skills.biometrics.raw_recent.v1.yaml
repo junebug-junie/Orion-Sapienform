@@ -1,0 +1,17 @@
+name: skills.biometrics.raw_recent.v1
+label: Skills — Biometrics Raw Recent
+description: Return recent raw biometrics samples from the biometrics service feed.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 20000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.biometrics.raw_recent.v1
+    description: Execute the direct Cortex-side biometrics raw sample skill.
+    order: 0
+    services: []

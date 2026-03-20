@@ -1,0 +1,43 @@
+{
+  "prompt": "Please provide instructions on how to deploy you onto Discord.",
+  "output_mode": "implementation_guide",
+  "response_profile": "technical_delivery",
+  "packs": [
+    "executive_pack",
+    "memory_pack",
+    "delivery_pack"
+  ],
+  "resolved_tool_ids_excerpt": [
+    "analyze_text",
+    "triage",
+    "plan_action",
+    "assess_risk",
+    "goal_formulate",
+    "evaluate",
+    "extract_facts",
+    "summarize_context",
+    "answer_direct",
+    "finalize_response",
+    "write_guide",
+    "write_tutorial",
+    "write_runbook",
+    "write_recommendation",
+    "compare_options",
+    "synthesize_patterns",
+    "generate_code_scaffold"
+  ],
+  "runtime_debug_flags": {
+    "triage_blocked_post_step0": true,
+    "repeated_plan_action_escalation": true,
+    "finalize_response_invoked": true,
+    "quality_evaluator_rewrite": true
+  },
+  "tool_call_sequence": [
+    "plan_action",
+    "write_guide",
+    "finalize_response",
+    "finalize_response"
+  ],
+  "final_answer_excerpt": "Discord Deployment Guide (Orion Discord Bot Bridge)\n\n1) Create the Discord application\n- Go to the Discord Developer Portal.\n- Create a new Application and add a Bot.\n- Enable the Bot and copy the Bot token.\n\n2) Configure environment variables\n- Set `DISCORD_BOT_TOKEN` in your runtime environment (never hard-code it).\n- Example:\n  - export DISCORD_BOT_TOKEN=\"your-token-here\"\n\n3) Choose Gateway intents + permissions\n- Enable only the intents you need.\n- Common starting point for bridges:\n  - `Guilds`\n  - `GuildMessages`\n  - `MessageContent` (if applicable in your server settings)\n\n4) Host the bot process\n- Start the bridge process with a persistent runner (systemd, Docker, or a supervised container).\n- Ensure the process restarts on failure.\n\n5) Invite the bot to your server\n- Generate the OAuth2 invite URL for the application.\n- Use the required scopes (typically bot) and permissions.\n- ",
+  "log_excerpt": "[agent-chain] wiring corr=corr-discord-deploy output_mode=implementation_guide profile=technical_delivery packs=['executive_pack', 'memory_pack', 'delivery_pack'] tools=['analyze_text', 'triage', 'plan_action', 'assess_risk', 'goal_formulate', 'evaluate', 'extract_facts', 'summarize_context', 'answer_direct', 'finalize_response', 'write_guide', 'write_tutorial', 'write_runbook', 'write_recommendation', 'compare_options', 'synthesize_patterns', 'generate_code_scaffold']\n[agent-chain] repeated_plan_action_escalation=1 -> tool_id=write_guide output_mode=implementation_guide\n[agent-chain] triage_blocked_post_step0=1 step=2 prior_trace_len=1 -> finalize_response\n[agent-chain] quality_evaluator_rewrite=1 output_mode=implementation_guide"
+}

@@ -1,0 +1,23 @@
+name: write_tutorial
+label: Write Tutorial
+description: >
+  Produce a tutorial with step-by-step instructions and examples. Include
+  concrete code, config, and explanations. No gather-requirements or review-refine filler.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: write_tutorial_prompt.j2
+
+steps:
+  - name: write_tutorial
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: write_tutorial_prompt.j2

@@ -26,6 +26,7 @@ from orion.schemas.agents.schemas import (
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionResult, StepExecutionResult
 from orion.cognition.verb_activation import is_active
+from orion.cognition.quality_evaluator import should_rewrite_for_instructional
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
@@ -320,13 +321,18 @@ class Supervisor:
         correlation_id: str,
         diagnostic: bool = False,
     ) -> Tuple[PlannerRequest, StepExecutionResult, FinalAnswer | None, Dict[str, Any] | None]:
+        ext_facts = {"text": ctx.get("memory_digest", "")}
+        if ctx.get("output_mode"):
+            ext_facts["output_mode"] = ctx["output_mode"]
+        if ctx.get("response_profile"):
+            ext_facts["response_profile"] = ctx["response_profile"]
         planner_req = PlannerRequest(
             request_id=correlation_id,
             caller="cortex-exec",
             goal=Goal(description=goal_text, metadata={"verb": ctx.get("verb")}),
             context=ContextBlock(
                 conversation_history=[LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])],
-                external_facts={"text": ctx.get("memory_digest", "")},
+                external_facts=ext_facts,
             ),
             toolset=toolset,
             trace=trace,
@@ -499,6 +505,8 @@ class Supervisor:
             "user_id": ctx.get("user_id"),
             "messages": ctx.get("messages") or [],
             "packs": packs,
+            "output_mode": ctx.get("output_mode"),
+            "response_profile": ctx.get("response_profile"),
         }
         reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
         t0 = time.time()
@@ -598,6 +606,14 @@ class Supervisor:
         packs = ctx.get("packs") or []
         tags = ctx.get("verb_tags") or []
         tools = self._toolset(packs=packs, tags=tags)
+        logger.info(
+            "supervisor_wiring corr=%s output_mode=%s profile=%s packs=%s tool_ids=%s",
+            correlation_id,
+            ctx.get("output_mode"),
+            ctx.get("response_profile"),
+            packs,
+            [t.tool_id for t in tools[:30]],
+        )
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
         if mode in {"agent", "council"}:
             tools = _ensure_agent_chain_tool(tools)
@@ -847,15 +863,59 @@ class Supervisor:
             except Exception:
                 pass
 
+        # Shallow planner-only final (no agent_chain): re-synthesize if meta-plan for delivery-oriented mode
+        if final_text and mode in {"agent", "council"}:
+            shallow, _ = should_rewrite_for_instructional(final_text, ctx.get("output_mode"))
+            if shallow:
+                logger.info(
+                    "supervisor_finalize_response_invoked=1 corr=%s output_mode=%s (planner meta-plan)",
+                    correlation_id,
+                    ctx.get("output_mode"),
+                )
+                ctx.setdefault("debug", {})["supervisor_meta_plan_finalize"] = True
+                try:
+                    ser_trace = json.dumps(
+                        [
+                            t.model_dump(mode="json") if hasattr(t, "model_dump") else dict(t)
+                            for t in trace
+                        ],
+                        default=str,
+                    )[:12000]
+                except Exception:
+                    ser_trace = "[]"
+                goal_txt = _last_user_message(ctx)
+                fin_step = await self._execute_action(
+                    source=source,
+                    action={
+                        "tool_id": "finalize_response",
+                        "input": {
+                            "original_request": goal_txt,
+                            "request": goal_txt,
+                            "text": goal_txt,
+                            "trace": ser_trace,
+                            "output_mode": ctx.get("output_mode") or "direct_answer",
+                            "response_profile": ctx.get("response_profile") or "direct_answer",
+                        },
+                    },
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    mode=mode,
+                    packs=packs or [],
+                )
+                step_results.append(fin_step)
+                if fin_step.status == "success":
+                    obs = _extract_observation(fin_step)
+                    final_text = obs.get("llm_output") or final_text
+
         logger.info(
-            "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=loop_complete final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+            "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=loop_complete final_len=%s output_mode=%s packs=%s steps=%s",
             correlation_id,
             mode,
             req.verb_name,
             len(final_text or ""),
-            False,
+            ctx.get("output_mode"),
+            packs,
             [s.step_name for s in step_results],
-            [],
         )
 
         overall_status = "success" if step_results and all(s.status == "success" for s in step_results if s) else "partial"

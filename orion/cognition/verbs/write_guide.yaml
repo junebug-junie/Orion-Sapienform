@@ -1,0 +1,23 @@
+name: write_guide
+label: Write Guide
+description: >
+  Produce a step-by-step guide with concrete instructions. Include specifics:
+  commands, env vars, config snippets, and troubleshooting. No filler or meta-planning.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: write_guide_prompt.j2
+
+steps:
+  - name: write_guide
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: write_guide_prompt.j2

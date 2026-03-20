@@ -93,15 +93,36 @@ def filter_allowed(
     return out
 
 
+# Instruction-like queries: prefer delivery verbs over analyze_text
+INSTRUCTION_QUERY_TOKENS = {"how", "deploy", "guide", "tutorial", "instructions", "setup", "implement"}
+DELIVERY_VERBS = {
+    "write_guide",
+    "write_tutorial",
+    "answer_direct",
+    "generate_code_scaffold",
+    "finalize_response",
+}
+
+
 def rank_verbs_for_query(catalog: Sequence[VerbInfo], text: str, k: int = 10) -> list[VerbInfo]:
     query_tokens = _tokenize(text)
     scored: list[tuple[int, str, VerbInfo]] = []
+    is_instruction_like = bool(query_tokens & INSTRUCTION_QUERY_TOKENS)
+
     for verb in catalog:
         name_tokens = _tokenize(verb.name.replace("-", "_").replace(" ", "_"))
         doc_tokens = _tokenize(" ".join([verb.label, verb.description, verb.category]))
         overlap_name = len(query_tokens & name_tokens)
         overlap_doc = len(query_tokens & doc_tokens)
         score = overlap_name * 4 + overlap_doc
+
+        # Prefer delivery verbs for instruction-like queries; demote analyze_text
+        if is_instruction_like:
+            if verb.name in DELIVERY_VERBS:
+                score += 10
+            if verb.name == "analyze_text":
+                score -= 5
+
         scored.append((score, verb.name, verb))
 
     scored.sort(key=lambda row: (-row[0], row[1]))

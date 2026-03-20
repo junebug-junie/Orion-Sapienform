@@ -1,0 +1,23 @@
+name: write_recommendation
+label: Write Recommendation
+description: >
+  Produce a decision recommendation with clear options, tradeoffs, and a
+  suggested path. Support the user in making a choice with concrete reasoning.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: write_recommendation_prompt.j2
+
+steps:
+  - name: write_recommendation
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: write_recommendation_prompt.j2

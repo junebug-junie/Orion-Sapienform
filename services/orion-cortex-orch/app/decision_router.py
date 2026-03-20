@@ -18,8 +18,13 @@ from orion.cognition.verb_catalog import (
     rank_verbs_for_query,
     serialize_shortlist,
 )
-from orion.schemas.cortex.contracts import AutoDepthDecisionV1, CortexClientRequest
+from orion.schemas.cortex.contracts import (
+    AutoDepthDecisionV1,
+    CortexClientRequest,
+    OutputModeDecisionV1,
+)
 
+from .output_mode_classifier import classify_output_mode
 from .settings import get_settings
 
 logger = logging.getLogger("orion.cortex.orch.router")
@@ -36,12 +41,14 @@ ENGINEERING_TERMS = {
 }
 ANALYSIS_TERMS = {"analyze", "analysis", "summarize", "summary", "extract", "classify", "intent"}
 COUNCIL_TERMS = {"argue both sides", "deliberate", "debate", "multi-perspective", "deep deliberation", "council"}
+INSTRUCTION_TERMS = {"how do", "how to", "instructions", "deploy", "guide", "tutorial", "setup", "walkthrough"}
 
 
 @dataclass(frozen=True)
 class RoutedRequest:
     request: CortexClientRequest
     decision: AutoDepthDecisionV1
+    output_mode_decision: OutputModeDecisionV1
 
 
 class DecisionRouter:
@@ -66,6 +73,8 @@ class DecisionRouter:
             return AutoDepthDecisionV1(execution_depth=3, primary_verb=None, confidence=0.82, reason="heuristic:council", source="heuristic")
         if "```" in text or any(term in text for term in ENGINEERING_TERMS):
             return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.85, reason="heuristic:engineering", source="heuristic")
+        if any(term in text for term in INSTRUCTION_TERMS):
+            return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.84, reason="heuristic:instruction", source="heuristic")
         if any(term in text for term in ANALYSIS_TERMS):
             primary = shortlist[0].name if shortlist else "analyze_text"
             return AutoDepthDecisionV1(execution_depth=1, primary_verb=primary, confidence=0.79, reason="heuristic:single_verb", source="heuristic")
@@ -108,6 +117,13 @@ class DecisionRouter:
         clamped = self._clamp_decision(decision, shortlist=shortlist)
         rewritten = req.model_copy(deep=True)
         rewritten.options["execution_depth"] = clamped.execution_depth
+
+        # Output mode classification for delivery-oriented routing
+        output_mode_decision = classify_output_mode(self._user_text(req))
+        rewritten.options["output_mode"] = output_mode_decision.output_mode
+        rewritten.options["response_profile"] = output_mode_decision.response_profile
+        rewritten.options["output_mode_decision"] = output_mode_decision.model_dump()
+
         if clamped.execution_depth == 1:
             rewritten.mode = "brain"
             rewritten.verb = clamped.primary_verb or "analyze_text"
@@ -120,7 +136,7 @@ class DecisionRouter:
         else:
             rewritten.mode = "brain"
             rewritten.verb = "chat_general"
-        return RoutedRequest(request=rewritten, decision=clamped)
+        return RoutedRequest(request=rewritten, decision=clamped, output_mode_decision=output_mode_decision)
 
     def _clamp_decision(self, decision: AutoDepthDecisionV1, *, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:
         depth = max(0, min(3, int(decision.execution_depth)))

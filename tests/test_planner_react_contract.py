@@ -40,10 +40,7 @@ def _load_planner_api_module():
 api = _load_planner_api_module()
 
 
-def test_delegate_mode_repairs_missing_action_with_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_call_planner_llm(**_: object) -> dict:
-        return {"thought": "x", "finish": False, "action": None, "final_answer": None}
-
+def _patch_bus(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_connect(self) -> None:  # noqa: ANN001
         return None
 
@@ -53,10 +50,17 @@ def test_delegate_mode_repairs_missing_action_with_fallback(monkeypatch: pytest.
     async def fake_rpc(self, *args, **kwargs):  # noqa: ANN001
         return {"data": b""}
 
-    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
     monkeypatch.setattr(api.OrionBusAsync, "connect", fake_connect)
     monkeypatch.setattr(api.OrionBusAsync, "close", fake_close)
     monkeypatch.setattr(api.OrionBusAsync, "rpc_request", fake_rpc)
+
+
+def test_delegate_mode_repairs_missing_action_with_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_call_planner_llm(**_: object) -> dict:
+        return {"thought": "x", "finish": False, "action": None, "final_answer": None}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
 
     req = PlannerRequest(
         goal=Goal(description="Help me decide next step"),
@@ -79,21 +83,10 @@ def test_delegate_mode_repairs_missing_action_with_fallback(monkeypatch: pytest.
 
 def test_delegate_mode_falls_back_when_planner_call_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_call_planner_llm(**_: object) -> dict:
-        raise RuntimeError("Planner LLM returned non-JSON: '{\"thought\":\"x\"'")
-
-    async def fake_connect(self) -> None:  # noqa: ANN001
-        return None
-
-    async def fake_close(self) -> None:  # noqa: ANN001
-        return None
-
-    async def fake_rpc(self, *args, **kwargs):  # noqa: ANN001
-        return {"data": b""}
+        raise api.PlannerParseError("Planner LLM returned non-JSON: '{\"thought\":\"x\"'")
 
     monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
-    monkeypatch.setattr(api.OrionBusAsync, "connect", fake_connect)
-    monkeypatch.setattr(api.OrionBusAsync, "close", fake_close)
-    monkeypatch.setattr(api.OrionBusAsync, "rpc_request", fake_rpc)
+    _patch_bus(monkeypatch)
 
     req = PlannerRequest(
         goal=Goal(description="Triage this"),
@@ -108,3 +101,114 @@ def test_delegate_mode_falls_back_when_planner_call_raises(monkeypatch: pytest.M
     assert res.stop_reason == "delegate"
     assert res.trace[-1].action is not None
     assert res.trace[-1].action["tool_id"] == "triage"
+
+
+def test_finish_true_with_string_final_answer_is_accepted_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_call_planner_llm(**_: object) -> dict:
+        return {"thought": "done", "finish": True, "action": None, "final_answer": "## Overview\nAll set."}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-string",
+        goal=Goal(description="Summarize"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert res.status == "ok"
+    assert res.stop_reason == "final_answer"
+    assert res.final_answer is not None
+    assert res.final_answer.content == "## Overview\nAll set."
+    assert res.final_answer.structured == {}
+
+
+def test_finish_true_with_dict_final_answer_is_normalized(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    async def fake_call_planner_llm(**_: object) -> dict:
+        return {
+            "thought": "done",
+            "finish": True,
+            "action": None,
+            "final_answer": {
+                "overview": "Top-level summary",
+                "next_steps": ["Ship patch", "Monitor logs"],
+            },
+        }
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-dict",
+        goal=Goal(description="Summarize"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    with caplog.at_level("INFO", logger="planner-react.api"):
+        res = asyncio.run(api.run_react_loop(req))
+
+    assert res.final_answer is not None
+    assert "### Overview" in res.final_answer.content
+    assert "Top-level summary" in res.final_answer.content
+    assert "Ship patch" in res.final_answer.content
+    assert res.final_answer.structured["overview"] == "Top-level summary"
+    assert "failure_category=normalization_applied" in caplog.text
+    assert "corr_id=req-dict" in caplog.text
+    assert "final_answer_type=dict" in caplog.text
+
+
+def test_finish_true_with_list_final_answer_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_call_planner_llm(**_: object) -> dict:
+        return {
+            "thought": "done",
+            "finish": True,
+            "action": None,
+            "final_answer": ["First item", {"details": "Second item"}],
+        }
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-list",
+        goal=Goal(description="Summarize"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert res.final_answer is not None
+    assert "- First item" in res.final_answer.content
+    assert "### Details" in res.final_answer.content
+    assert res.final_answer.structured["items"][0] == "First item"
+
+
+def test_malformed_response_triggers_repair_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_call_planner_llm(**_: object) -> dict:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {"thought": "bad", "finish": False, "action": None, "final_answer": {"unexpected": True}}
+        return {"thought": "repaired", "finish": True, "action": None, "final_answer": "Recovered"}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-repair",
+        goal=Goal(description="Repair me"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert calls["count"] == 2
+    assert res.final_answer is not None
+    assert res.final_answer.content == "Recovered"

@@ -37,9 +37,162 @@ logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
+
+class PlannerTransportError(RuntimeError):
+    """LLM transport, RPC, or gateway failure."""
+
+
+class PlannerParseError(RuntimeError):
+    """Planner response could not be parsed as JSON."""
+
+
+class PlannerSchemaError(RuntimeError):
+    """Planner response JSON was present but semantically invalid."""
+
+
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
+
+
+def _truncate_for_log(value: Any, limit: int = 300) -> str:
+    if isinstance(value, str):
+        raw = value
+    else:
+        try:
+            raw = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            raw = repr(value)
+    if len(raw) > limit:
+        return raw[:limit] + "... [TRUNCATED]"
+    return raw
+
+
+def _stringify_final_answer_node(value: Any, *, depth: int = 0) -> str:
+    if depth > 4:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    if isinstance(value, str):
+        return value.strip()
+
+    if isinstance(value, dict):
+        lines: List[str] = []
+        for key, item in value.items():
+            heading = str(key).replace("_", " ").strip().title() or "Section"
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    lines.append(f"### {heading}\n{text}")
+                continue
+            if isinstance(item, (dict, list)):
+                rendered = _stringify_final_answer_node(item, depth=depth + 1)
+                if rendered.strip():
+                    lines.append(f"### {heading}\n{rendered}")
+                continue
+            if item is not None:
+                lines.append(f"- **{key}**: {item}")
+        return "\n\n".join(line for line in lines if line.strip())
+
+    if isinstance(value, list):
+        if not value:
+            return ""
+        rendered_items: List[str] = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                rendered = _stringify_final_answer_node(item, depth=depth + 1)
+                if rendered.strip():
+                    rendered_items.append(f"- {rendered.replace(chr(10), chr(10) + '  ')}")
+            elif item is not None:
+                rendered_items.append(f"- {item}")
+        return "\n".join(rendered_items)
+
+    return ""
+
+
+def _normalize_finished_final_answer(final_answer: Any, thought: str) -> Optional[Dict[str, Any]]:
+    if isinstance(final_answer, str):
+        return {
+            "content": final_answer,
+            "structured": {},
+            "normalized": False,
+            "type": "str",
+        }
+
+    if isinstance(final_answer, dict):
+        preferred_content = final_answer.get("content")
+        if isinstance(preferred_content, str) and preferred_content.strip():
+            return {
+                "content": preferred_content,
+                "structured": final_answer.get("structured", final_answer) if isinstance(final_answer.get("structured"), dict) else final_answer,
+                "normalized": False,
+                "type": "dict",
+            }
+
+        rendered = _stringify_final_answer_node(final_answer)
+        if not rendered.strip():
+            rendered = json.dumps(final_answer, ensure_ascii=False, separators=(",", ":"))
+        if rendered.strip():
+            return {
+                "content": rendered,
+                "structured": final_answer,
+                "normalized": True,
+                "type": "dict",
+            }
+        return None
+
+    if isinstance(final_answer, list):
+        rendered = _stringify_final_answer_node(final_answer)
+        if not rendered.strip():
+            rendered = json.dumps(final_answer, ensure_ascii=False, separators=(",", ":"))
+        if rendered.strip():
+            return {
+                "content": rendered,
+                "structured": {"items": final_answer},
+                "normalized": True,
+                "type": "list",
+            }
+        return None
+
+    if final_answer is None and isinstance(thought, str) and thought.strip():
+        return None
+
+    return None
+
+
+def _validate_or_normalize_planner_step(planner_step: Any) -> Dict[str, Any]:
+    if not isinstance(planner_step, dict):
+        raise PlannerSchemaError(f"planner response must be an object, got {type(planner_step).__name__}")
+
+    normalized = dict(planner_step)
+    thought = normalized.get("thought", "")
+    normalized["thought"] = thought if isinstance(thought, str) else str(thought or "")
+
+    finish = normalized.get("finish", False)
+    if not isinstance(finish, bool):
+        raise PlannerSchemaError(f"finish must be boolean, got {type(finish).__name__}")
+    normalized["finish"] = finish
+
+    action = normalized.get("action")
+    if action is not None and not isinstance(action, (dict, str)):
+        raise PlannerSchemaError(f"action must be object|string|null, got {type(action).__name__}")
+
+    final_info = _normalize_finished_final_answer(normalized.get("final_answer"), normalized["thought"]) if finish else None
+    if finish:
+        if final_info is None or not final_info["content"].strip():
+            raise PlannerSchemaError("finish=true requires a usable final_answer")
+        normalized["final_answer"] = final_info["content"]
+        normalized["_final_answer_structured"] = final_info["structured"]
+        normalized["_final_answer_normalized"] = final_info["normalized"]
+        normalized["_final_answer_type"] = final_info["type"]
+        return normalized
+
+    if action is None:
+        raise PlannerSchemaError("finish=false requires an action")
+
+    normalized["_final_answer_structured"] = {}
+    normalized["_final_answer_normalized"] = False
+    normalized["_final_answer_type"] = type(normalized.get("final_answer")).__name__
+    return normalized
 
 
 def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
@@ -240,11 +393,11 @@ NEXT STEP (JSON ONLY):
     )
     decoded = bus.codec.decode(msg.get("data"))
     if not decoded.ok:
-        raise RuntimeError(f"LLM RPC Error: {decoded.error}")
+        raise PlannerTransportError(f"LLM RPC Error: {decoded.error}")
 
     resp_payload = decoded.envelope.payload or {}
     if "error" in resp_payload:
-        raise RuntimeError(f"LLM Gateway Error: {resp_payload.get('error')}")
+        raise PlannerTransportError(f"LLM Gateway Error: {resp_payload.get('error')}")
 
     try:
         chat_res = ChatResultPayload(**resp_payload)
@@ -256,7 +409,7 @@ NEXT STEP (JSON ONLY):
         text = text.split("</think>")[-1].strip()
 
     if text.strip().startswith("[Error:"):
-        raise RuntimeError(f"LLM Gateway error: {text.strip()}")
+        raise PlannerTransportError(f"LLM Gateway error: {text.strip()}")
 
     try:
         return parse_json_object(text)
@@ -264,7 +417,7 @@ NEXT STEP (JSON ONLY):
         repaired_preview = repair_json(text)
         if len(repaired_preview) > 500:
             repaired_preview = repaired_preview[:500] + "... [TRUNCATED]"
-        raise RuntimeError(
+        raise PlannerParseError(
             f"Planner LLM returned non-JSON (len={len(text)}): {repaired_preview!r}"
         ) from e
 
@@ -294,6 +447,7 @@ def _fallback_tool_id(step_index: int, toolset: List[ToolDef]) -> Optional[str]:
 async def _repair_or_fallback_step(
     *,
     bus: OrionBusAsync,
+    corr_id: str,
     step_index: int,
     planner_step: Dict[str, Any],
     goal: Goal,
@@ -303,12 +457,6 @@ async def _repair_or_fallback_step(
     limits: Limits,
     delegate_only: bool,
 ) -> Dict[str, Any]:
-    finish = planner_step.get("finish", False)
-    action = planner_step.get("action")
-    final = planner_step.get("final_answer")
-    if finish or action is not None or final is not None:
-        return planner_step
-
     repair_system = (
         "You violated planner contract. Output JSON ONLY with either "
         "(finish=true and final_answer) OR (finish=false and action object). "
@@ -325,16 +473,59 @@ async def _repair_or_fallback_step(
             system_override=repair_system,
             options_override={"temperature": 0, "max_tokens": 128, "return_json": True},
         )
+    except PlannerTransportError as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_transport_failure normalization_succeeded=false detail=%s",
+            corr_id,
+            step_index,
+            e,
+        )
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
+    except PlannerParseError as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_parse_failure normalization_succeeded=false detail=%s",
+            corr_id,
+            step_index,
+            e,
+        )
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
     except Exception as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_unknown_failure normalization_succeeded=false detail=%s",
+            corr_id,
+            step_index,
+            e,
+        )
         repaired = _planner_error_step(f"Planner repair failed: {e}")
 
-    repaired_finish = repaired.get("finish", False)
-    repaired_action = repaired.get("action")
-    repaired_final = repaired.get("final_answer")
-    if repaired_finish or repaired_action is not None or repaired_final is not None:
-        return repaired
+    try:
+        normalized_repaired = _validate_or_normalize_planner_step(repaired)
+        if normalized_repaired.get("_final_answer_normalized"):
+            logger.info(
+                "corr_id=%s step=%s failure_category=normalization_applied final_answer_type=%s normalization_succeeded=true raw_snippet=%s",
+                corr_id,
+                step_index,
+                normalized_repaired.get("_final_answer_type"),
+                _truncate_for_log(repaired),
+            )
+        return normalized_repaired
+    except PlannerSchemaError as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_schema_validation final_answer_type=%s normalization_succeeded=false raw_snippet=%s detail=%s",
+            corr_id,
+            step_index,
+            type(repaired.get("final_answer")).__name__ if isinstance(repaired, dict) and "final_answer" in repaired else "missing",
+            _truncate_for_log(repaired),
+            e,
+        )
 
     if delegate_only:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_fallback_invoked normalization_succeeded=false raw_snippet=%s",
+            corr_id,
+            step_index,
+            _truncate_for_log(planner_step),
+        )
         tool_id = _fallback_tool_id(step_index, toolset)
         if not tool_id:
             return {
@@ -357,6 +548,12 @@ async def _repair_or_fallback_step(
             "final_answer": None,
         }
 
+    logger.warning(
+        "corr_id=%s step=%s failure_category=repair_fallback_invoked normalization_succeeded=false raw_snippet=%s",
+        corr_id,
+        step_index,
+        _truncate_for_log(planner_step),
+    )
     return {
         "thought": planner_step.get("thought", ""),
         "finish": True,
@@ -475,6 +672,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
 
+    corr_id = payload.request_id or f"planner-react-{uuid.uuid4()}"
     trace: List[TraceStep] = list(payload.trace or [])
     tools_called: List[str] = []
     start = time.monotonic()
@@ -487,7 +685,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
             steps_used = step_index + 1
 
             try:
-                planner_step = await _call_planner_llm(
+                raw_planner_step = await _call_planner_llm(
                     bus=bus,
                     goal=payload.goal,
                     toolset=payload.toolset,
@@ -495,45 +693,78 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                     prior_trace=trace,
                     limits=payload.limits,
                 )
-            except Exception as e:
-                logger.warning("Step %s: planner LLM call failed (using repair/fallback path)", step_index)
-                logger.debug("Planner LLM call exception detail: %s", e)
+            except PlannerTransportError as e:
+                logger.warning(
+                    "corr_id=%s step=%s failure_category=llm_transport_failure normalization_succeeded=false detail=%s",
+                    corr_id,
+                    step_index,
+                    e,
+                )
                 planner_step = _planner_error_step(f"Planner call failed: {e}")
+            except PlannerParseError as e:
+                logger.warning(
+                    "corr_id=%s step=%s failure_category=planner_response_parse_failure normalization_succeeded=false detail=%s",
+                    corr_id,
+                    step_index,
+                    e,
+                )
+                planner_step = _planner_error_step(f"Planner call failed: {e}")
+            except Exception as e:
+                logger.warning(
+                    "corr_id=%s step=%s failure_category=llm_unknown_failure normalization_succeeded=false detail=%s",
+                    corr_id,
+                    step_index,
+                    e,
+                )
+                planner_step = _planner_error_step(f"Planner call failed: {e}")
+            else:
+                try:
+                    planner_step = _validate_or_normalize_planner_step(raw_planner_step)
+                    if planner_step.get("_final_answer_normalized"):
+                        logger.info(
+                            "corr_id=%s step=%s failure_category=normalization_applied final_answer_type=%s normalization_succeeded=true raw_snippet=%s",
+                            corr_id,
+                            step_index,
+                            planner_step.get("_final_answer_type"),
+                            _truncate_for_log(raw_planner_step),
+                        )
+                except PlannerSchemaError as e:
+                    logger.warning(
+                        "corr_id=%s step=%s failure_category=planner_response_schema_validation final_answer_type=%s normalization_succeeded=false raw_snippet=%s detail=%s",
+                        corr_id,
+                        step_index,
+                        type(raw_planner_step.get('final_answer')).__name__ if isinstance(raw_planner_step, dict) and 'final_answer' in raw_planner_step else "missing",
+                        _truncate_for_log(raw_planner_step),
+                        e,
+                    )
+                    planner_step = _planner_error_step(f"Planner response invalid: {e}")
 
             thought = planner_step.get("thought", "")
             finish = planner_step.get("finish", False)
             action = planner_step.get("action")
             final = planner_step.get("final_answer")
 
-            planner_step = await _repair_or_fallback_step(
-                bus=bus,
-                step_index=step_index,
-                planner_step=planner_step,
-                goal=payload.goal,
-                toolset=payload.toolset,
-                context=payload.context,
-                prior_trace=trace,
-                limits=payload.limits,
-                delegate_only=delegate_only,
-            )
-            thought = planner_step.get("thought", "")
-            finish = planner_step.get("finish", False)
-            action = planner_step.get("action")
-            final = planner_step.get("final_answer")
+            if not finish and action is None:
+                planner_step = await _repair_or_fallback_step(
+                    bus=bus,
+                    corr_id=corr_id,
+                    step_index=step_index,
+                    planner_step=planner_step,
+                    goal=payload.goal,
+                    toolset=payload.toolset,
+                    context=payload.context,
+                    prior_trace=trace,
+                    limits=payload.limits,
+                    delegate_only=delegate_only,
+                )
+                thought = planner_step.get("thought", "")
+                finish = planner_step.get("finish", False)
+                action = planner_step.get("action")
+                final = planner_step.get("final_answer")
 
             if finish or (final and not action):
-                if isinstance(final, dict):
-                    raw_content = final.get("content") or thought
-                    structured = final.get("structured", {})
-                else:
-                    raw_content = final if isinstance(final, str) else thought
-                    structured = {}
-                if isinstance(raw_content, (dict, list)):
-                    content = json.dumps(raw_content, ensure_ascii=False)
-                elif raw_content is None:
-                    content = ""
-                else:
-                    content = str(raw_content)
+                content = final if isinstance(final, str) else (thought or "")
+                structured = planner_step.get("_final_answer_structured", {})
                 final_answer = FinalAnswer(content=content, structured=structured)
                 trace.append(TraceStep(step_index=step_index, thought=thought))
                 break

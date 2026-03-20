@@ -56,8 +56,8 @@ def _patch_bus(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_delegate_mode_repairs_missing_action_with_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_call_planner_llm(**_: object) -> dict:
-        return {"thought": "x", "finish": False, "action": None, "final_answer": None}
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
+        return {"thought": "x", "finish": False, "action": None, "final_answer": None}, {"salvage_succeeded": False, "raw_snippet": ""}
 
     monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
     _patch_bus(monkeypatch)
@@ -82,7 +82,7 @@ def test_delegate_mode_repairs_missing_action_with_fallback(monkeypatch: pytest.
 
 
 def test_delegate_mode_falls_back_when_planner_call_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_call_planner_llm(**_: object) -> dict:
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
         raise api.PlannerParseError("Planner LLM returned non-JSON: '{\"thought\":\"x\"'")
 
     monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
@@ -104,8 +104,8 @@ def test_delegate_mode_falls_back_when_planner_call_raises(monkeypatch: pytest.M
 
 
 def test_finish_true_with_string_final_answer_is_accepted_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_call_planner_llm(**_: object) -> dict:
-        return {"thought": "done", "finish": True, "action": None, "final_answer": "## Overview\nAll set."}
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
+        return {"thought": "done", "finish": True, "action": None, "final_answer": "## Overview\nAll set."}, {"salvage_succeeded": False, "raw_snippet": ""}
 
     monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
     _patch_bus(monkeypatch)
@@ -126,8 +126,33 @@ def test_finish_true_with_string_final_answer_is_accepted_unchanged(monkeypatch:
     assert res.final_answer.structured == {}
 
 
+@pytest.mark.parametrize(
+    ("raw_text", "expected_snippet"),
+    [
+        (
+            'bash\n{"thought":"done","finish":true,"action":null,"final_answer":"## Deployment Instructions\\nShip it."}',
+            "## Deployment Instructions",
+        ),
+        (
+            'plaintext\n```json\n{"thought":"done","finish":true,"action":null,"final_answer":"Plain text final answer"}\n```',
+            "Plain text final answer",
+        ),
+        (
+            'Lead text before payload {"thought":"done","finish":true,"action":null,"final_answer":"Embedded JSON recovered"} trailing note',
+            "Embedded JSON recovered",
+        ),
+    ],
+)
+def test_salvage_layer_recovers_common_wrappers(raw_text: str, expected_snippet: str) -> None:
+    parsed, meta = api._parse_planner_response_text(raw_text)
+
+    assert meta["salvage_succeeded"] is True
+    assert parsed["finish"] is True
+    assert expected_snippet in parsed["final_answer"]
+
+
 def test_finish_true_with_dict_final_answer_is_normalized(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    async def fake_call_planner_llm(**_: object) -> dict:
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
         return {
             "thought": "done",
             "finish": True,
@@ -136,7 +161,7 @@ def test_finish_true_with_dict_final_answer_is_normalized(monkeypatch: pytest.Mo
                 "overview": "Top-level summary",
                 "next_steps": ["Ship patch", "Monitor logs"],
             },
-        }
+        }, {"salvage_succeeded": False, "raw_snippet": ""}
 
     monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
     _patch_bus(monkeypatch)
@@ -161,14 +186,66 @@ def test_finish_true_with_dict_final_answer_is_normalized(monkeypatch: pytest.Mo
     assert "final_answer_type=dict" in caplog.text
 
 
+def test_finish_true_with_content_dict_final_answer_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
+        return {
+            "thought": "done",
+            "finish": True,
+            "action": None,
+            "final_answer": {"content": "Structured content"},
+        }, {"salvage_succeeded": False, "raw_snippet": ""}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-content-dict",
+        goal=Goal(description="Summarize"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert res.final_answer is not None
+    assert res.final_answer.content == "Structured content"
+    assert res.final_answer.structured["content"] == "Structured content"
+
+
+def test_finish_true_with_text_dict_final_answer_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
+        return {
+            "thought": "done",
+            "finish": True,
+            "action": None,
+            "final_answer": {"text": "Use the text field"},
+        }, {"salvage_succeeded": False, "raw_snippet": ""}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-text-dict",
+        goal=Goal(description="Summarize"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert res.final_answer is not None
+    assert res.final_answer.content == "Use the text field"
+    assert res.final_answer.structured["text"] == "Use the text field"
+
+
 def test_finish_true_with_list_final_answer_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_call_planner_llm(**_: object) -> dict:
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
         return {
             "thought": "done",
             "finish": True,
             "action": None,
             "final_answer": ["First item", {"details": "Second item"}],
-        }
+        }, {"salvage_succeeded": False, "raw_snippet": ""}
 
     monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
     _patch_bus(monkeypatch)
@@ -191,11 +268,11 @@ def test_finish_true_with_list_final_answer_is_normalized(monkeypatch: pytest.Mo
 def test_malformed_response_triggers_repair_path(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"count": 0}
 
-    async def fake_call_planner_llm(**_: object) -> dict:
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
         calls["count"] += 1
         if calls["count"] == 1:
-            return {"thought": "bad", "finish": False, "action": None, "final_answer": {"unexpected": True}}
-        return {"thought": "repaired", "finish": True, "action": None, "final_answer": "Recovered"}
+            return {"thought": "bad", "finish": False, "action": None, "final_answer": {"unexpected": True}}, {"salvage_succeeded": False, "raw_snippet": ""}
+        return {"thought": "repaired", "finish": True, "action": None, "final_answer": "Recovered"}, {"salvage_succeeded": False, "raw_snippet": ""}
 
     monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
     _patch_bus(monkeypatch)
@@ -212,3 +289,34 @@ def test_malformed_response_triggers_repair_path(monkeypatch: pytest.MonkeyPatch
     assert calls["count"] == 2
     assert res.final_answer is not None
     assert res.final_answer.content == "Recovered"
+
+
+def test_repair_path_accepts_finish_true_without_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {"thought": "bad", "finish": False, "action": None, "final_answer": None}, {"salvage_succeeded": False, "raw_snippet": ""}
+        return {"finish": True, "final_answer": "## Deployment Instructions\nProceed."}, {"salvage_succeeded": False, "raw_snippet": ""}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-repair-finish",
+        goal=Goal(description="Repair me"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert calls["count"] == 2
+    assert res.final_answer is not None
+    assert res.final_answer.content == "## Deployment Instructions\nProceed."
+
+
+def test_unrecoverable_garbage_still_falls_back() -> None:
+    with pytest.raises(api.PlannerParseError):
+        api._parse_planner_response_text("total nonsense with no json object anywhere")

@@ -1,0 +1,16 @@
+name: delivery_pack
+label: Delivery Pack
+description: >
+  Verbs that produce user-facing artifacts: direct answers, guides, tutorials,
+  runbooks, recommendations, and code scaffolds.
+
+verbs:
+  - answer_direct
+  - finalize_response
+  - write_guide
+  - write_tutorial
+  - write_runbook
+  - write_recommendation
+  - compare_options
+  - synthesize_patterns
+  - generate_code_scaffold

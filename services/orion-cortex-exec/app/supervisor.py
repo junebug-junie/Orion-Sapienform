@@ -304,13 +304,18 @@ class Supervisor:
         correlation_id: str,
         diagnostic: bool = False,
     ) -> Tuple[PlannerRequest, StepExecutionResult, FinalAnswer | None, Dict[str, Any] | None]:
+        ext_facts = {"text": ctx.get("memory_digest", "")}
+        if ctx.get("output_mode"):
+            ext_facts["output_mode"] = ctx["output_mode"]
+        if ctx.get("response_profile"):
+            ext_facts["response_profile"] = ctx["response_profile"]
         planner_req = PlannerRequest(
             request_id=correlation_id,
             caller="cortex-exec",
             goal=Goal(description=goal_text, metadata={"verb": ctx.get("verb")}),
             context=ContextBlock(
                 conversation_history=[LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])],
-                external_facts={"text": ctx.get("memory_digest", "")},
+                external_facts=ext_facts,
             ),
             toolset=toolset,
             trace=trace,
@@ -483,6 +488,8 @@ class Supervisor:
             "user_id": ctx.get("user_id"),
             "messages": ctx.get("messages") or [],
             "packs": packs,
+            "output_mode": ctx.get("output_mode"),
+            "response_profile": ctx.get("response_profile"),
         }
         reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
         t0 = time.time()

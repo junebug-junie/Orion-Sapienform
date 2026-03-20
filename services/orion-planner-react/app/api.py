@@ -145,7 +145,7 @@ CORE INSTRUCTIONS:
 1. **ANSWER THE USER'S INTENT EFFICIENTLY.** 2. **DEFINITION OF DONE:** As soon as you have the information to answer the user, STOP. Set "finish": true.
 3. **DO NOT EXECUTE SUGGESTIONS:** If a tool result says "Mitigation: Consult a doctor", do NOT call a tool to do that. REPORT the mitigation to the user.
 4. **FORMAT:** Output strict JSON. 
-5. **FIRST ACTION BIAS:** If TRACE is empty and the toolset includes "triage", choose "triage" as the first action.
+5. **TRIAGE RULE:** triage is ONLY allowed when TRACE is empty (step 0). After step 0, do NOT call triage. If TRACE is empty and the toolset includes "triage", you may choose "triage" as the first action. Triage output is internal—use it to select the next tool, then produce the actual answer.
 6. **INPUT FIELD MAPPING:** Populate tool-specific intent fields when calling tools:
    - triage.request
    - plan_action.goal
@@ -155,6 +155,9 @@ CORE INSTRUCTIONS:
    - pattern_detect.fragments
    - evaluate.output
    - assess_risk.scenario
+   - answer_direct.request, finalize_response.original_request, write_guide.request
+   - write_tutorial.request, write_runbook.request, write_recommendation.request
+   - compare_options.request, synthesize_patterns.request, generate_code_scaffold.request
    Also include "text" with the raw user request whenever possible.
 7. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
    - CORRECT: "action": {{ "tool_id": "assess_risk", "input": {{...}} }}
@@ -164,6 +167,8 @@ CORE INSTRUCTIONS:
    - Do not escape quotes with backslashes.
    - WRONG: "{{\"thought\": \"...\"}}"
    - RIGHT: {{"thought": "..."}}
+
+9. **NO REPEATED TOOLS:** Do not call the same tool twice. Use the prior result; if you can answer, set finish: true.
 
 JSON FORMAT:
 {{

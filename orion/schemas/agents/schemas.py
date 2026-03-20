@@ -33,9 +33,11 @@ class AgentChainRequest(BaseModel):
     session_id: Optional[str] = None
     user_id: Optional[str] = None
     goal_description: Optional[str] = None
-    messages: Optional[List[LLMMessage]] = None 
+    messages: Optional[List[LLMMessage]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     packs: Optional[List[str]] = None
+    output_mode: Optional[str] = None
+    response_profile: Optional[str] = None
 
 
 class AgentChainResult(BaseModel):

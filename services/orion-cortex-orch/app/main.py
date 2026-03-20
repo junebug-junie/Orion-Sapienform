@@ -166,6 +166,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
             req = routed.request
             route_meta = routed.decision.model_dump(mode="json")
+            route_meta["output_mode_decision"] = routed.output_mode_decision.model_dump()
             logger.info(
                 "auto_depth_result corr_id=%s depth=%s primary_verb=%s router_source=%s confidence=%.2f",
                 str(env.correlation_id),

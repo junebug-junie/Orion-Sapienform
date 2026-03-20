@@ -11,7 +11,7 @@ from orion.schemas.cortex.schemas import ExecutionPlan, StepExecutionResult
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
-from app.supervisor import Supervisor, _ensure_agent_chain_tool
+from app.supervisor import Supervisor, _ensure_agent_chain_tool, _extract_latest_planner_thought
 
 
 class StubSupervisor(Supervisor):
@@ -177,3 +177,12 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestExtractLatestPlannerThought(unittest.TestCase):
+    def test_returns_none_for_empty_trace(self):
+        self.assertIsNone(_extract_latest_planner_thought({"PlannerReactService": {"trace": []}}))
+
+    def test_returns_last_thought_when_available(self):
+        thought = _extract_latest_planner_thought({"PlannerReactService": {"trace": [{"thought": "a"}, {"thought": "b"}]}})
+        self.assertEqual(thought, "b")
+

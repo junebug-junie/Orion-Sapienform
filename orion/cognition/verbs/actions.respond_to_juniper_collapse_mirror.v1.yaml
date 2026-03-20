@@ -1,0 +1,23 @@
+name: actions.respond_to_juniper_collapse_mirror.v1
+label: Actions — Respond to Juniper Collapse Mirror
+description: >
+  Direct Cortex-exec action verb that performs recall, synthesis, and notify
+  for Juniper-authored Collapse Mirror entries after policy dispatch from
+  orion-actions.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: true
+requires_memory: true
+recall_profile: reflect.v1
+timeout_ms: 300000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: actions.respond_to_juniper_collapse_mirror.v1
+    description: Execute the direct Cortex-side action adapter.
+    order: 0
+    services: []
+    requires_gpu: false
+    requires_memory: true

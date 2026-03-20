@@ -82,6 +82,22 @@ def _extract_observation(step_res: StepExecutionResult) -> Dict[str, Any]:
     return {"raw": step_res.result}
 
 
+def _extract_latest_planner_thought(planner_result: Any) -> Optional[str]:
+    if not isinstance(planner_result, dict):
+        return None
+    planner_payload = planner_result.get("PlannerReactService", {})
+    if not isinstance(planner_payload, dict):
+        return None
+    trace = planner_payload.get("trace")
+    if not isinstance(trace, list) or not trace:
+        return None
+    last = trace[-1]
+    if not isinstance(last, dict):
+        return None
+    thought = last.get("thought")
+    return str(thought) if thought is not None else None
+
+
 def _truncate_text(value: Any, limit: int = 240) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -670,7 +686,7 @@ class Supervisor:
             step_results.append(planner_step)
             executed_steps.append(planner_step.step_name)
 
-            planner_thought = planner_step.result.get("PlannerReactService", {}).get("trace", [{}])[-1].get("thought") if isinstance(planner_step.result, dict) else None
+            planner_thought = _extract_latest_planner_thought(planner_step.result)
             decision = _normalize_planner_decision(
                 planner_step=planner_step,
                 planner_final=planner_final,

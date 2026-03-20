@@ -33,6 +33,7 @@ class WindowEvent:
     text: str
     timestamp: datetime
     envelope: BaseEnvelope
+    intake_channel: str = "unknown"
 
 
 @dataclass
@@ -71,14 +72,19 @@ class ConceptInducer:
             node=settings.node_name,
         )
 
-    def _evidence_from_env(self, env: BaseEnvelope) -> ConceptEvidenceRef:
+    def _evidence_from_env(self, event: WindowEvent) -> ConceptEvidenceRef:
+        env = event.envelope
         ts = env.created_at if env.created_at.tzinfo else env.created_at.replace(tzinfo=timezone.utc)
         corr = env.correlation_id if hasattr(env, "correlation_id") else None
+        trace_id = None
+        if isinstance(env.trace, dict):
+            trace_id = env.trace.get("trace_id") or env.trace.get("trace")
         return ConceptEvidenceRef(
             message_id=env.id,
             correlation_id=corr,
+            trace_id=str(trace_id) if trace_id else None,
             timestamp=ts,
-            channel="unknown",
+            channel=event.intake_channel,
         )
 
     def _build_state_estimate(
@@ -136,7 +142,7 @@ class ConceptInducer:
         window_start = min((w.timestamp for w in window), default=datetime.now(timezone.utc))
         window_end = max((w.timestamp for w in window), default=datetime.now(timezone.utc))
         texts = [w.text for w in window]
-        evidence = [self._evidence_from_env(w.envelope) for w in window]
+        evidence = [self._evidence_from_env(w) for w in window]
 
         extraction = self.extractor.extract(texts, top_k=self.settings.max_candidates)
         candidates = extraction.candidates
@@ -151,7 +157,7 @@ class ConceptInducer:
                     concept_id=concept_id,
                     label=cand,
                     aliases=[],
-                    type="identity" if subject == "orion" else "relationship",
+                    type="identity" if subject in {"orion", "juniper"} else "relationship",
                     salience=1.0,
                     confidence=0.6 if not embeddings_resp.embeddings else 0.75,
                     embedding_ref=f"embedding:{concept_id}"

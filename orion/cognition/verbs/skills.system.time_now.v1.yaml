@@ -1,0 +1,17 @@
+name: skills.system.time_now.v1
+label: Skills — System Time Now
+description: Return local and UTC timestamps for the configured Orion timezone.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 15000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.system.time_now.v1
+    description: Execute the direct Cortex-side time skill.
+    order: 0
+    services: []

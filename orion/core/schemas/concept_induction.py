@@ -33,6 +33,7 @@ class ConceptEvidenceRef(BaseModel):
 
     message_id: UUID
     correlation_id: Optional[UUID] = None
+    trace_id: Optional[str] = None
     timestamp: datetime
     channel: str
 

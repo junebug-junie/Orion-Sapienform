@@ -20,7 +20,7 @@ Key knobs:
 - `BUS_PROFILE_OUT`: profile publish channel (kind `memory.concepts.profile.v1`)
 - `BUS_DELTA_OUT`: delta publish channel (kind `memory.concepts.delta.v1`)
 - `SPACY_MODEL`: spaCy model name (default `en_core_web_sm`)
-- `EMBEDDINGS_BASE_URL`: external embedding host, POST /embed with `{"items": [...]}`; gracefully degrades if missing
+- `EMBEDDINGS_BASE_URL`: vector host base URL; concept induction calls `POST /embedding` with `EmbeddingGenerateV1` payloads and degrades gracefully if unavailable
 - `USE_CORTEX_ORCH`: enable LLM refinement via Cortex-Orch verb `concept_induction`
 
 ## Local test

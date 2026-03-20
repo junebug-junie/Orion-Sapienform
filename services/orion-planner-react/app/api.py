@@ -104,6 +104,8 @@ async def _call_planner_llm(
     context: ContextBlock,
     prior_trace: List[TraceStep],
     limits: Limits,
+    system_override: Optional[str] = None,
+    options_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     trace_id = str(uuid.uuid4())
     exec_channel = f"{settings.exec_request_prefix}:{settings.llm_gateway_service_name}"
@@ -138,7 +140,7 @@ async def _call_planner_llm(
     om = ext_facts.get("output_mode") or ""
     rp = ext_facts.get("response_profile") or ""
 
-    system_msg = f"""
+    system_msg = (system_override or f"""
 You are Orion's internal ReAct planner.
 
 RUNTIME ROUTING (must respect):
@@ -189,7 +191,12 @@ JSON FORMAT:
   "action": null,
   "final_answer": {{ "content": "Summary of findings..." }}
 }}
-""".strip()
+WRONG:
+{{"thought":"Need more info","finish":false,"action":null,"final_answer":null}}
+
+RIGHT:
+{{"thought":"Need tool output first.","finish":false,"action":{{"tool_id":"triage","input":{{"text":"..."}}}},"final_answer":null}}
+""".strip())
 
     user_prompt = f"""
 GOAL: {goal.description}
@@ -214,7 +221,7 @@ NEXT STEP (JSON ONLY):
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_prompt},
         ],
-        "options": {"temperature": 0.1},
+        "options": options_override or {"temperature": 0.1, "max_tokens": 256, "return_json": True},
     }
 
     env = BaseEnvelope(
@@ -248,10 +255,114 @@ NEXT STEP (JSON ONLY):
     if "<think>" in text:
         text = text.split("</think>")[-1].strip()
 
+    if text.strip().startswith("[Error:"):
+        raise RuntimeError(f"LLM Gateway error: {text.strip()}")
+
     try:
         return parse_json_object(text)
     except Exception as e:
-        raise RuntimeError(f"Planner LLM returned non-JSON: {repair_json(text)!r}") from e
+        repaired_preview = repair_json(text)
+        if len(repaired_preview) > 500:
+            repaired_preview = repaired_preview[:500] + "... [TRUNCATED]"
+        raise RuntimeError(
+            f"Planner LLM returned non-JSON (len={len(text)}): {repaired_preview!r}"
+        ) from e
+
+
+def _planner_error_step(message: str) -> Dict[str, Any]:
+    return {
+        "thought": message,
+        "finish": False,
+        "action": None,
+        "final_answer": None,
+    }
+
+
+def _fallback_tool_id(step_index: int, toolset: List[ToolDef]) -> Optional[str]:
+    tool_ids = {t.tool_id for t in toolset}
+    if step_index == 0 and "triage" in tool_ids:
+        return "triage"
+    if "plan_action" in tool_ids:
+        return "plan_action"
+    if "analyze_text" in tool_ids:
+        return "analyze_text"
+    if toolset:
+        return toolset[0].tool_id
+    return None
+
+
+async def _repair_or_fallback_step(
+    *,
+    bus: OrionBusAsync,
+    step_index: int,
+    planner_step: Dict[str, Any],
+    goal: Goal,
+    toolset: List[ToolDef],
+    context: ContextBlock,
+    prior_trace: List[TraceStep],
+    limits: Limits,
+    delegate_only: bool,
+) -> Dict[str, Any]:
+    finish = planner_step.get("finish", False)
+    action = planner_step.get("action")
+    final = planner_step.get("final_answer")
+    if finish or action is not None or final is not None:
+        return planner_step
+
+    repair_system = (
+        "You violated planner contract. Output JSON ONLY with either "
+        "(finish=true and final_answer) OR (finish=false and action object). "
+        "Keep action.input compact; never paste full user text. Use text <= 300 chars."
+    )
+    try:
+        repaired = await _call_planner_llm(
+            bus=bus,
+            goal=goal,
+            toolset=toolset,
+            context=context,
+            prior_trace=prior_trace,
+            limits=limits,
+            system_override=repair_system,
+            options_override={"temperature": 0, "max_tokens": 128, "return_json": True},
+        )
+    except Exception as e:
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
+
+    repaired_finish = repaired.get("finish", False)
+    repaired_action = repaired.get("action")
+    repaired_final = repaired.get("final_answer")
+    if repaired_finish or repaired_action is not None or repaired_final is not None:
+        return repaired
+
+    if delegate_only:
+        tool_id = _fallback_tool_id(step_index, toolset)
+        if not tool_id:
+            return {
+                "thought": f"{planner_step.get('thought', '')} Planner contract failed and no tool is available.",
+                "finish": True,
+                "action": None,
+                "final_answer": {"content": "Planner failed: no available delegate tool."},
+            }
+
+        last_user = ""
+        if context.conversation_history:
+            last_msg = context.conversation_history[-1]
+            last_user = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content", "")
+        text_value = last_user or goal.description
+
+        return {
+            "thought": f"{planner_step.get('thought', '')} [Fallback action injected after contract violation.]".strip(),
+            "finish": False,
+            "action": {"tool_id": tool_id, "input": {"text": text_value, "request": goal.description}},
+            "final_answer": None,
+        }
+
+    return {
+        "thought": planner_step.get("thought", ""),
+        "finish": True,
+        "action": None,
+        "final_answer": {"content": "Planner failed contract: finish=false with no action after repair attempt."},
+    }
 
 
 async def _call_cortex_verb(
@@ -375,15 +486,36 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
         for step_index in range(payload.limits.max_steps):
             steps_used = step_index + 1
 
-            planner_step = await _call_planner_llm(
+            try:
+                planner_step = await _call_planner_llm(
+                    bus=bus,
+                    goal=payload.goal,
+                    toolset=payload.toolset,
+                    context=payload.context,
+                    prior_trace=trace,
+                    limits=payload.limits,
+                )
+            except Exception as e:
+                logger.warning("Step %s: planner LLM call failed (using repair/fallback path)", step_index)
+                logger.debug("Planner LLM call exception detail: %s", e)
+                planner_step = _planner_error_step(f"Planner call failed: {e}")
+
+            thought = planner_step.get("thought", "")
+            finish = planner_step.get("finish", False)
+            action = planner_step.get("action")
+            final = planner_step.get("final_answer")
+
+            planner_step = await _repair_or_fallback_step(
                 bus=bus,
+                step_index=step_index,
+                planner_step=planner_step,
                 goal=payload.goal,
                 toolset=payload.toolset,
                 context=payload.context,
                 prior_trace=trace,
                 limits=payload.limits,
+                delegate_only=delegate_only,
             )
-
             thought = planner_step.get("thought", "")
             finish = planner_step.get("finish", False)
             action = planner_step.get("action")

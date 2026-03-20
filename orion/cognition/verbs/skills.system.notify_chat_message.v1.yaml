@@ -1,0 +1,17 @@
+name: skills.system.notify_chat_message.v1
+label: Skills — Notify Chat Message
+description: Internal direct verb to emit a chat.message notification from Cortex-exec when policy allows it.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 20000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.system.notify_chat_message.v1
+    description: Execute the direct Cortex-side notify skill.
+    order: 0
+    services: []

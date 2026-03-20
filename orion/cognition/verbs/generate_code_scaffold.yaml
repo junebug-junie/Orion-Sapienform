@@ -1,0 +1,23 @@
+name: generate_code_scaffold
+label: Generate Code Scaffold
+description: >
+  Produce a code scaffold or implementation skeleton. Include concrete code,
+  structure, and integration points. No placeholder-only or meta-plan output.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: generate_code_scaffold_prompt.j2
+
+steps:
+  - name: generate
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: generate_code_scaffold_prompt.j2

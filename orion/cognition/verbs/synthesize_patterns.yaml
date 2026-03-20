@@ -1,0 +1,23 @@
+name: synthesize_patterns
+label: Synthesize Patterns
+description: >
+  Synthesize patterns, derive tradeoffs, and connect contexts. Produce
+  reflective analysis with architectural or design insights. No meta-planning.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: synthesize_patterns_prompt.j2
+
+steps:
+  - name: synthesize
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: synthesize_patterns_prompt.j2

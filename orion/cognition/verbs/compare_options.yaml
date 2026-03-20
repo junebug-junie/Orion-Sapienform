@@ -1,0 +1,23 @@
+name: compare_options
+label: Compare Options
+description: >
+  Produce a comparative analysis of options. Include pros/cons, tradeoffs,
+  and concrete criteria. Output the actual comparison, not a meta-plan to compare.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: compare_options_prompt.j2
+
+steps:
+  - name: compare
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: compare_options_prompt.j2

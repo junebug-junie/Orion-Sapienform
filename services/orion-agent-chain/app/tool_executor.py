@@ -77,6 +77,16 @@ class ToolExecutor:
             "pattern_detect": "fragments",
             "evaluate": "output",
             "assess_risk": "scenario",
+            # Delivery verbs
+            "answer_direct": "request",
+            "finalize_response": "original_request",
+            "write_guide": "request",
+            "write_tutorial": "request",
+            "write_runbook": "request",
+            "write_recommendation": "request",
+            "compare_options": "request",
+            "synthesize_patterns": "request",
+            "generate_code_scaffold": "request",
         }
         target_field = fallback_map.get(tool_id)
         if target_field and target_field not in ctx:

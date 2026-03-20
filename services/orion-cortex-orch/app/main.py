@@ -166,6 +166,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
             req = routed.request
             route_meta = routed.decision.model_dump(mode="json")
+            route_meta["output_mode_decision"] = routed.output_mode_decision.model_dump()
             logger.info(
                 "auto_depth_result corr_id=%s depth=%s primary_verb=%s router_source=%s confidence=%.2f",
                 str(env.correlation_id),
@@ -266,6 +267,26 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             final_meta["executed_verbs"] = executed_verbs
             if route_meta:
                 final_meta["auto_route"] = route_meta
+
+        # Answer-depth: surface agent-chain runtime_debug for live proof evidence
+        for s in steps:
+            if not isinstance(s.result, dict):
+                continue
+            ac = s.result.get("AgentChainService")
+            if isinstance(ac, dict) and ac.get("runtime_debug"):
+                rd = ac["runtime_debug"]
+                if isinstance(final_meta, dict):
+                    final_meta["answer_depth"] = {
+                        "output_mode": rd.get("output_mode"),
+                        "response_profile": rd.get("response_profile"),
+                        "packs": rd.get("packs"),
+                        "resolved_tool_ids": rd.get("resolved_tool_ids"),
+                        "triage_blocked_post_step0": rd.get("triage_blocked_post_step0"),
+                        "repeated_plan_action_escalation": rd.get("repeated_plan_action_escalation"),
+                        "finalize_response_invoked": rd.get("finalize_response_invoked"),
+                        "quality_evaluator_rewrite": rd.get("quality_evaluator_rewrite"),
+                    }
+                break
 
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),

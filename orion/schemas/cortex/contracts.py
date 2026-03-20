@@ -115,6 +115,37 @@ class AutoRouteDecisionV1(BaseModel):
     source: Literal["heuristic", "llm", "fallback"] = "heuristic"
 
 
+OutputMode = Literal[
+    "direct_answer",
+    "tutorial",
+    "implementation_guide",
+    "code_delivery",
+    "decision_support",
+    "comparative_analysis",
+    "debug_diagnosis",
+    "project_planning",
+    "reflective_depth",
+]
+
+ResponseProfile = Literal[
+    "direct_answer",
+    "tutorial_stepwise",
+    "technical_delivery",
+    "architect",
+    "reflective_depth",
+]
+
+
+class OutputModeDecisionV1(BaseModel):
+    """Output mode and response profile for answer depth routing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    output_mode: OutputMode = "direct_answer"
+    response_profile: ResponseProfile = "direct_answer"
+    direct_answer_bypass_used: bool = False
+
+
 class AutoDepthDecisionV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -27,6 +27,8 @@ from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestRepl
 from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
+from orion.cognition.output_mode_classifier import classify_output_mode
+
 logger = logging.getLogger("orion.cortex.orch")
 
 _DIRECT_VERB_TRIGGERS = {
@@ -250,6 +252,21 @@ async def _maybe_fetch_state(bus: OrionBusAsync, *, source: ServiceRef, correlat
         return None
 
 
+def _user_text_for_classifier(req: CortexClientRequest) -> str:
+    """Extract user text for output mode classification."""
+    raw = req.context.raw_user_text or req.context.user_message or ""
+    if raw:
+        return str(raw).strip()
+    for m in reversed(req.context.messages or []):
+        msg = m if isinstance(m, dict) else (m.model_dump() if hasattr(m, "model_dump") else {})
+        role = msg.get("role", "")
+        if str(role).lower() == "user":
+            content = msg.get("content") or msg.get("text") or ""
+            if content:
+                return str(content)[:10000]
+    return ""
+
+
 def build_plan_request(
     client_request: CortexClientRequest,
     correlation_id: str,
@@ -258,6 +275,37 @@ def build_plan_request(
 ) -> PlanExecutionRequest:
     plan = _build_plan_for_mode(client_request)
     context = _build_context(client_request)
+
+    # Output mode classification (from options when auto-routed, else classify here)
+    options = client_request.options if isinstance(client_request.options, dict) else {}
+    output_mode = options.get("output_mode")
+    response_profile = options.get("response_profile")
+    output_mode_decision = options.get("output_mode_decision")
+    if not output_mode or not response_profile:
+        omd = classify_output_mode(_user_text_for_classifier(client_request))
+        output_mode = output_mode or omd.output_mode
+        response_profile = response_profile or omd.response_profile
+        output_mode_decision = output_mode_decision or omd.model_dump()
+    context["output_mode"] = output_mode
+    context["response_profile"] = response_profile
+    if isinstance(output_mode_decision, dict):
+        context.setdefault("metadata", {})["output_mode_decision"] = output_mode_decision
+
+    # Ensure delivery_pack for all delivery-oriented modes (shared merge logic)
+    from orion.cognition.runtime_pack_merge import ensure_delivery_pack_in_packs
+
+    context["packs"] = ensure_delivery_pack_in_packs(
+        context.get("packs"),
+        output_mode=output_mode,
+        user_text=_user_text_for_classifier(client_request),
+    )
+    logger.info(
+        "orch_plan_wiring corr=%s output_mode=%s profile=%s packs=%s",
+        correlation_id,
+        output_mode,
+        response_profile,
+        context.get("packs"),
+    )
 
     # Attach latest Orion state (Spark) as a read-model artifact
     context.setdefault("metadata", {})["orion_state_pending"] = True

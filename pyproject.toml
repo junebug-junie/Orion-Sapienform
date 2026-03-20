@@ -19,6 +19,13 @@ dependencies = [
     "loguru>=0.7.2,<0.8.0"
 ]
 
+[project.optional-dependencies]
+# Minimal extras to import agent-chain / cognition stacks in CI (service tests use jinja2 + pydantic-settings).
+test-runtime = [
+    "jinja2>=3.1,<4.0",
+    "pydantic-settings>=2.0,<3.0",
+]
+
 [tool.poetry.group.brain.dependencies]
 fastapi = ">=0.115.0,<0.116.0"
 uvicorn = ">=0.30.6,<0.31.0"

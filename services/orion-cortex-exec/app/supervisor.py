@@ -113,6 +113,39 @@ def _compact_json(value: Any, limit: int = 220) -> str:
     return _truncate_text(rendered, limit=limit)
 
 
+def _coerce_pack_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        return [stripped]
+    return []
+
+
+def _effective_packs(ctx: Dict[str, Any], req: ExecutionPlan) -> List[str]:
+    packs: List[str] = []
+    for source in (
+        ctx.get("packs"),
+        (ctx.get("metadata") or {}).get("packs") if isinstance(ctx.get("metadata"), dict) else None,
+        req.metadata.get("packs") if isinstance(req.metadata, dict) else None,
+    ):
+        for pack in _coerce_pack_list(source):
+            if pack not in packs:
+                packs.append(pack)
+    return packs
+
+
 def _build_council_prompt(
     *,
     goal: str,
@@ -603,7 +636,8 @@ class Supervisor:
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
                 )
 
-        packs = ctx.get("packs") or []
+        packs = _effective_packs(ctx, req)
+        ctx["packs"] = packs
         tags = ctx.get("verb_tags") or []
         tools = self._toolset(packs=packs, tags=tags)
         logger.info(

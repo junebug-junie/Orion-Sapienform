@@ -57,6 +57,16 @@ def test_hub_auto_depth2_engineering_heuristic_and_plan_shape():
     assert [s.step_name for s in plan_req.plan.steps] == ["planner_react", "agent_chain"]
 
 
+def test_build_plan_request_preserves_delivery_pack_in_args_extra():
+    req = _req(mode="agent", text="write me a deployment runbook for this service")
+    req.packs = ["executive_pack"]
+
+    plan_req = build_plan_request(req, "corr-delivery")
+
+    assert "delivery_pack" in plan_req.context["packs"]
+    assert plan_req.args.extra["packs"] == plan_req.context["packs"]
+
+
 def test_non_auto_introspect_spark_never_touches_router(monkeypatch):
     called = {"router": 0}
 

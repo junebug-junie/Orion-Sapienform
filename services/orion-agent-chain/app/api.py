@@ -135,6 +135,17 @@ def _best_effort_text(*, last_thought: str, last_observation: Any, reason: str) 
     return reason
 
 
+def _usable_finalized_text(observation: Any) -> str:
+    if isinstance(observation, dict):
+        for key in ("llm_output", "text", "content"):
+            value = observation.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    if isinstance(observation, str) and observation.strip():
+        return observation
+    return ""
+
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -352,6 +363,20 @@ async def execute_agent_chain(
                 parent_correlation_id=parent_corr_id,
             )
             tools_called.append(tool_id)
+            if tool_id == "finalize_response":
+                final_text = _usable_finalized_text(observation)
+                if final_text:
+                    final_text, rewrote = await _maybe_rewrite_meta_plan(
+                        final_text, body, tool_executor, parent_corr_id, logger, output_mode, response_profile
+                    )
+                    dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
+                    return AgentChainResult(
+                        mode=body.mode,
+                        text=final_text,
+                        structured={},
+                        planner_raw={"runtime_debug": dbg, "trace": planner_payload.get("trace") or []},
+                        runtime_debug=dbg,
+                    )
             last["observation"] = observation
             last_observation = observation
             trace[-1] = last

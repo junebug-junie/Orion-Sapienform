@@ -299,6 +299,9 @@ def build_plan_request(
         output_mode=output_mode,
         user_text=_user_text_for_classifier(client_request),
     )
+    args = _plan_args(client_request, correlation_id)
+    if isinstance(args.extra, dict):
+        args.extra["packs"] = list(context.get("packs") or [])
     logger.info(
         "orch_plan_wiring corr=%s output_mode=%s profile=%s packs=%s",
         correlation_id,
@@ -310,7 +313,6 @@ def build_plan_request(
     # Attach latest Orion state (Spark) as a read-model artifact
     context.setdefault("metadata", {})["orion_state_pending"] = True
 
-    args = _plan_args(client_request, correlation_id)
     execution_depth = None
     if isinstance(client_request.options, dict):
         execution_depth = client_request.options.get("execution_depth")

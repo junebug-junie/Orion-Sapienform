@@ -207,6 +207,10 @@ def _diagnostic_enabled(req: CortexClientRequest) -> bool:
 def _plan_args(req: CortexClientRequest, correlation_id: str) -> PlanExecutionArgs:
     recall: RecallDirective = req.recall
     diagnostic = _diagnostic_enabled(req)
+    options = req.options if isinstance(req.options, dict) else {}
+    supervised = bool(options.get("supervised"))
+    force_agent_chain = bool(options.get("force_agent_chain"))
+    output_mode_decision = options.get("output_mode_decision") if isinstance(options.get("output_mode_decision"), dict) else None
     return PlanExecutionArgs(
         request_id=req.context.trace_id or correlation_id,
         user_id=req.context.user_id,
@@ -220,6 +224,9 @@ def _plan_args(req: CortexClientRequest, correlation_id: str) -> PlanExecutionAr
             "session_id": req.context.session_id,
             "verb": req.verb,
             "diagnostic": diagnostic,
+            "supervised": supervised,
+            "force_agent_chain": force_agent_chain,
+            "output_mode_decision": output_mode_decision,
         },
     )
 
@@ -303,11 +310,14 @@ def build_plan_request(
     if isinstance(args.extra, dict):
         args.extra["packs"] = list(context.get("packs") or [])
     logger.info(
-        "orch_plan_wiring corr=%s output_mode=%s profile=%s packs=%s",
+        "orch_plan_wiring corr=%s output_mode=%s profile=%s packs=%s supervised=%s force_agent_chain=%s output_mode_decision=%s",
         correlation_id,
         output_mode,
         response_profile,
         context.get("packs"),
+        bool(args.extra.get("supervised")) if isinstance(args.extra, dict) else False,
+        bool(args.extra.get("force_agent_chain")) if isinstance(args.extra, dict) else False,
+        bool(context.get("metadata", {}).get("output_mode_decision")) if isinstance(context.get("metadata"), dict) else False,
     )
 
     # Attach latest Orion state (Spark) as a read-model artifact

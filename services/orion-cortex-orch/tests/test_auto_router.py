@@ -67,6 +67,38 @@ def test_build_plan_request_preserves_delivery_pack_in_args_extra():
     assert plan_req.args.extra["packs"] == plan_req.context["packs"]
 
 
+def test_agent_mode_preserves_supervised_and_force_agent_chain_flags_in_exec_args():
+    req = _req(mode="agent", text="generate code scaffolding for this feature")
+    req.packs = ["executive_pack"]
+    req.options["supervised"] = True
+    req.options["force_agent_chain"] = True
+    req.options["diagnostic"] = True
+
+    plan_req = build_plan_request(req, "corr-agent-flags")
+
+    assert plan_req.args.extra["supervised"] is True
+    assert plan_req.args.extra["force_agent_chain"] is True
+    assert plan_req.args.extra["diagnostic"] is True
+    assert plan_req.context["metadata"]["output_mode_decision"]["output_mode"] == "code_delivery"
+    assert "delivery_pack" in plan_req.context["packs"]
+
+
+def test_auto_delivery_prompt_routes_to_agent_runtime_and_preserves_output_mode_signal():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="compare Docker Compose versus Kubernetes and recommend which to deploy")
+
+    routed = asyncio.run(router.route(req, correlation_id="c-auto-delivery", source=ServiceRef(name="orch", version="0", node="n")))
+    plan_req = build_plan_request(routed.request, "corr-auto-delivery", router_metadata=routed.decision.model_dump(mode="json"))
+
+    assert routed.request.mode == "agent"
+    assert routed.request.verb == "agent_runtime"
+    assert routed.request.options["output_mode"] == "comparative_analysis"
+    assert routed.request.options["response_profile"] == "reflective_depth"
+    assert plan_req.args.extra["output_mode_decision"]["output_mode"] == "comparative_analysis"
+    assert plan_req.context["metadata"]["output_mode_decision"]["response_profile"] == "reflective_depth"
+    assert "delivery_pack" in plan_req.context["packs"]
+
+
 def test_non_auto_introspect_spark_never_touches_router(monkeypatch):
     called = {"router": 0}
 

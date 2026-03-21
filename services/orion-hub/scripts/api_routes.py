@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
@@ -88,6 +89,29 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
         if lowered in {"0", "false", "no", "n", "off"}:
             return False
     return default
+
+
+def _log_hub_route_decision(
+    *,
+    corr_id: str,
+    session_id: str,
+    route_debug: Dict[str, Any],
+    user_prompt: str,
+) -> None:
+    summary = {
+        "corr_id": corr_id,
+        "session_id": session_id,
+        "selected_ui_route": route_debug.get("selected_ui_route"),
+        "emitted_mode": route_debug.get("mode"),
+        "emitted_verb": route_debug.get("verb"),
+        "emitted_options": route_debug.get("options") or {},
+        "packs": route_debug.get("packs") or [],
+        "force_agent_chain": bool(route_debug.get("force_agent_chain")),
+        "supervised": bool(route_debug.get("supervised")),
+        "diagnostic": bool(route_debug.get("diagnostic")),
+        "last_user_head": (user_prompt or "")[:120],
+    }
+    logger.info("hub_route_egress %s", json.dumps(summary, sort_keys=True, default=str))
 
 
 def _rec_tape_req(
@@ -488,6 +512,12 @@ async def handle_chat_request(
         (req.options or {}).get("route_intent") or "none",
         len(((req.options or {}).get("allowed_verbs") or [])),
         req.packs or [],
+    )
+    _log_hub_route_decision(
+        corr_id=corr_id,
+        session_id=session_id,
+        route_debug=route_debug,
+        user_prompt=user_prompt,
     )
 
     _rec_tape_req(

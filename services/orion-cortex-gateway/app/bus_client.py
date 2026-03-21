@@ -18,6 +18,36 @@ from .settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+
+def _request_summary(
+    *,
+    corr_id: Any,
+    reply_channel: str | None,
+    mode: str | None,
+    verb: str | None,
+    options: Dict[str, Any] | None,
+    recall: Dict[str, Any] | None,
+    packs: list[str] | None,
+    metadata: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    options = options or {}
+    recall = recall or {}
+    metadata = metadata or {}
+    return {
+        "corr_id": str(corr_id),
+        "source_service": "cortex-gateway",
+        "reply_channel": reply_channel,
+        "mode": mode,
+        "verb": verb,
+        "supervised": bool(options.get("supervised")),
+        "force_agent_chain": bool(options.get("force_agent_chain")),
+        "recall_enabled": bool(recall.get("enabled", True)),
+        "recall_profile": recall.get("profile"),
+        "packs": list(packs or []),
+        "output_mode": options.get("output_mode") or metadata.get("output_mode"),
+        "response_profile": options.get("response_profile") or metadata.get("response_profile"),
+    }
+
 class BusClient:
     def __init__(self):
         self.settings = get_settings()
@@ -53,9 +83,19 @@ class BusClient:
         )
 
         logger.info(
-            f"RPC Request channel={self.settings.channel_cortex_request} "
-            f"correlation_id={corr} reply_to={reply_to}"
+            "gateway_publish_orch %s",
+            _request_summary(
+                corr_id=corr,
+                reply_channel=reply_to,
+                mode=req.mode,
+                verb=req.verb,
+                options=req.options,
+                recall=req.recall.model_dump(mode="json"),
+                packs=req.packs,
+                metadata=req.context.metadata,
+            ),
         )
+        logger.info("gateway_wait_orch corr=%s reply=%s request_channel=%s", corr, reply_to, self.settings.channel_cortex_request)
         logger.debug(f"RPC Payload correlation_id={corr}: {env.payload}")
 
         async def _wait_for_matching_reply() -> Dict[str, Any]:
@@ -87,10 +127,10 @@ class BusClient:
                                 req.verb,
                             )
                             continue
-                        logger.info(f"RPC Success correlation_id={corr} kind={decoded.envelope.kind}")
+                        logger.info("gateway_orch_result corr=%s reply=%s kind=%s", corr, reply_to, decoded.envelope.kind)
                         return payload_dict
 
-                    logger.info(f"RPC Success correlation_id={corr} kind={decoded.envelope.kind}")
+                    logger.info("gateway_orch_result corr=%s reply=%s kind=%s", corr, reply_to, decoded.envelope.kind)
                     return payload  # Should be dict or primitive, or BaseEnvelope if unknown
             raise RuntimeError("RPC reply subscription closed without a match.")
 
@@ -100,7 +140,7 @@ class BusClient:
                 timeout=self.settings.gateway_rpc_timeout_sec,
             )
         except asyncio.TimeoutError as te:
-            logger.error(f"RPC Timeout correlation_id={corr}")
+            logger.error("gateway_orch_timeout corr=%s reply=%s timeout_sec=%s", corr, reply_to, self.settings.gateway_rpc_timeout_sec)
             raise TimeoutError(f"RPC timed out after {self.settings.gateway_rpc_timeout_sec}s") from te
 
     async def start_gateway_consumer(self):
@@ -143,7 +183,25 @@ class BusClient:
             payload=payload.model_dump(mode="json"),
         )
         await self.bus.publish(reply_to, reply_env)
-        logger.info(f"Sent reply to {reply_to}")
+        recall_debug = payload.cortex_result.recall_debug if payload.cortex_result else {}
+        recall_enabled = None
+        if isinstance(recall_debug, dict):
+            if recall_debug.get("skipped") == "disabled_by_client":
+                recall_enabled = False
+            elif "profile" in recall_debug or payload.cortex_result.memory_used:
+                recall_enabled = True
+        logger.info(
+            "gateway_publish_hub_result corr=%s reply=%s mode=%s verb=%s status=%s recall_enabled=%s recall_profile=%s output_mode=%s response_profile=%s",
+            correlation_id,
+            reply_to,
+            payload.cortex_result.mode if payload.cortex_result else None,
+            payload.cortex_result.verb if payload.cortex_result else None,
+            payload.cortex_result.status if payload.cortex_result else None,
+            recall_enabled,
+            (recall_debug or {}).get("profile") if isinstance(recall_debug, dict) else None,
+            ((payload.cortex_result.metadata or {}).get("answer_depth") or {}).get("output_mode") if payload.cortex_result else None,
+            ((payload.cortex_result.metadata or {}).get("answer_depth") or {}).get("response_profile") if payload.cortex_result else None,
+        )
 
     def _build_error_chat_result(
         self,
@@ -185,6 +243,19 @@ class BusClient:
             logger.info(f"Processing gateway request correlation_id={env.correlation_id}")
             # Validate payload
             req = CortexChatRequest.model_validate(env.payload)
+            logger.info(
+                "gateway_intake %s",
+                _request_summary(
+                    corr_id=env.correlation_id,
+                    reply_channel=env.reply_to,
+                    mode=req.mode,
+                    verb=req.verb,
+                    options=req.options,
+                    recall=req.recall,
+                    packs=req.packs,
+                    metadata=req.metadata,
+                ),
+            )
 
             # Logic similar to HTTP endpoint
             if req.mode in {"agent", "council"}:
@@ -265,7 +336,7 @@ class BusClient:
                     causality_chain=chain,
                     payload=failed_payload,
                 )
-                logger.info("Sent gateway error reply corr=%s reason=invalid_cortex_result", env.correlation_id)
+                logger.info("gateway_early_exit corr=%s reason=invalid_cortex_result reply=%s", env.correlation_id, env.reply_to)
                 return
 
             executed_verbs: list[str] = []
@@ -315,6 +386,6 @@ class BusClient:
                     causality_chain=getattr(env, "causality_chain", None),
                     payload=error_payload,
                 )
-                logger.info("Sent gateway error reply corr=%s", getattr(env, "correlation_id", None))
+                logger.info("gateway_early_exit corr=%s reason=exception reply=%s", getattr(env, "correlation_id", None), getattr(env, "reply_to", None))
             except Exception:
                 logger.exception("Failed to publish gateway error reply corr=%s", getattr(env, "correlation_id", None))

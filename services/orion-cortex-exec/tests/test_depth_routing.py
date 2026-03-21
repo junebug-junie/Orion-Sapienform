@@ -39,8 +39,22 @@ def test_depth0_and_depth1_skip_supervisor(monkeypatch):
 
 def test_depth2_uses_supervisor(monkeypatch):
     runner = PlanRunner()
-    sup = AsyncMock(return_value=MagicMock())
+    captured = {}
+
+    async def _execute(*, source, req, correlation_id, ctx, recall_cfg):
+        captured["source"] = source
+        captured["req"] = req
+        captured["correlation_id"] = correlation_id
+        captured["ctx"] = dict(ctx)
+        captured["recall_cfg"] = dict(recall_cfg)
+        return MagicMock()
+
+    sup = AsyncMock(side_effect=_execute)
     monkeypatch.setattr("app.router.Supervisor", lambda *_a, **_k: MagicMock(execute=sup))
     req = _req(2, "agent", "agent_runtime")
     asyncio.run(runner.run_plan(MagicMock(), source=ServiceRef(name="x", version="0", node="n"), req=req, correlation_id="c2", ctx={"mode": "agent"}))
     assert sup.await_count == 1
+    assert captured["correlation_id"] == "c2"
+    assert captured["ctx"]["mode"] == "agent"
+    assert captured["ctx"]["verb"] == "agent_runtime"
+    assert captured["recall_cfg"]["enabled"] is False

@@ -139,13 +139,16 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         req = CortexClientRequest.model_validate(raw_payload)
 
         logger.info(
-            "Validated orch request: corr=%s mode=%s verb=%s packs=%s recall_enabled=%s recall_required=%s",
+            "orch_intake corr=%s source=%s reply=%s mode=%s verb=%s supervised=%s recall_enabled=%s recall_profile=%s packs=%s",
             str(env.correlation_id),
+            (env.source.name if env.source else "unknown"),
+            env.reply_to,
             req.mode,
             req.verb,
-            req.packs,
+            bool((req.options or {}).get("supervised")),
             req.recall.enabled,
-            req.recall.required,
+            req.recall.profile,
+            req.packs,
         )
         if diagnostic:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())

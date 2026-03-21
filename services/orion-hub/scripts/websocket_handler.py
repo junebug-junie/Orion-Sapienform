@@ -597,6 +597,16 @@ async def websocket_endpoint(websocket: WebSocket):
             memory_used = bool(getattr(resp.cortex_result, "memory_used", False))
             if not memory_used:
                 memory_used = bool(recall_count)
+            logger.info(
+                "hub_ingress_result corr=%s sid=%s mode=%s status=%s final_len=%s memory_used=%s recall_count=%s",
+                trace_id,
+                session_id,
+                mode,
+                getattr(resp.cortex_result, "status", None),
+                len(orion_response_text or ""),
+                memory_used,
+                recall_count,
+            )
             _rec_tape_rsp(
                 corr_id=trace_id,
                 memory_used=memory_used,

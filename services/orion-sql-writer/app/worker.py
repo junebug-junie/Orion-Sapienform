@@ -5,7 +5,7 @@ import asyncio
 import logging
 import uuid
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional, Tuple, Type
 
 from sqlalchemy import inspect, update
@@ -43,7 +43,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSummaryV1, BiometricsInductionV1
-from orion.schemas.telemetry.dream import DreamRequest
+from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
@@ -83,7 +83,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ChatGptLogSQL": (ChatGptLogSQL, ChatGptLogTurnV1),
     "ChatGptMessageSQL": (ChatGptMessageSQL, ChatGptMessageV1),
     "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),
-    "Dream": (Dream, DreamRequest),
+    "Dream": (Dream, None),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
     "BiometricsSummarySQL": (BiometricsSummarySQL, BiometricsSummaryV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
@@ -109,6 +109,51 @@ def _cfg() -> ChassisConfig:
         error_channel=settings.error_channel,
         shutdown_timeout_sec=settings.shutdown_grace_sec,
     )
+
+
+def _normalize_dream_envelope_payload(
+    kind: str, payload: Any, extra_sql_fields: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Map dream.result.v1 / dream.log payloads to SQL row fields for the dreams table.
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+    corr = extra_sql_fields.get("correlation_id")
+
+    if kind == "dream.result.v1":
+        data = dict(payload)
+        if corr and not data.get("correlation_id"):
+            data["correlation_id"] = corr
+        dr = DreamResultV1.model_validate(data)
+        return {
+            "dream_date": dr.dream_date,
+            "tldr": dr.tldr,
+            "themes": dr.themes or [],
+            "symbols": dr.symbols or {},
+            "narrative": dr.narrative,
+            "fragments": dr.fragments or [],
+            "metrics": dr.merged_metrics_for_sql(),
+            "created_at": dr.created_at,
+        }
+
+    dq = DreamRequest.model_validate(payload)
+    text = (dq.context_text or "").strip()
+    return {
+        "dream_date": date.today(),
+        "tldr": text[:500] if text else None,
+        "narrative": text or None,
+        "themes": [],
+        "symbols": {},
+        "fragments": [],
+        "metrics": {
+            "legacy_dream_log": True,
+            "metadata": dq.metadata,
+            "integration_mode": dq.integration_mode,
+            "mood": dq.mood,
+            "correlation_id": corr,
+        },
+    }
 
 
 def _coerce_payload(model_cls, payload: Any):
@@ -697,6 +742,11 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                     )
                     return
                 await _write(sql_model, None, mapped, {})
+            elif sql_model is Dream:
+                normalized = _normalize_dream_envelope_payload(
+                    env.kind, data_to_process, extra_sql_fields
+                )
+                await _write(sql_model, None, normalized, {})
             else:
                 await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
             written_label = env.kind

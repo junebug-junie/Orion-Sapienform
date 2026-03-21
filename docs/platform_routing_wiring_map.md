@@ -10,6 +10,8 @@
 | `orion-planner-react` `_call_cortex_verb` helper | `orion:cortex:request` | `cortex.orch.request` / `CortexClientRequest` | hardcoded `agent` | caller-provided `verb_name` | `[]` | recall disabled | `orion-cortex-orch` |
 | `cortex-orch` (normal orchestration path) | `orion:verb:request` | `verb.request` / `VerbRequestV1` (`trigger=legacy.plan`, payload=`PlanExecutionRequest`) | copied into `meta.mode` | copied into `meta.verb` | included in plan context | copied into args/context recall | `orion-cortex-exec` |
 | `orion-equilibrium-service` | `orion:equilibrium:metacog:trigger` | `orion.metacog.trigger.v1` / `MetacogTriggerV1` | N/A (trigger event) | N/A | N/A | carries `recall_enabled` for downstream metacog run | `orion-cortex-orch` hunter |
+| Schedulers / `orion-dream` POST `/dreams/run` / any publisher | `orion:dream:trigger` | `dream.trigger` / `DreamTriggerPayload` or `DreamInternalTriggerV1` | N/A | N/A | N/A | N/A | `orion-cortex-orch` dream hunter → republishes `cortex.orch.request` (`verb=dream_cycle`) |
+| `orion-cortex-exec` | `orion:dream:log` | `dream.result.v1` / `DreamResultV1` | brain | `dream_cycle` | emergent | recall via `dream.v1` | `orion-sql-writer` |
 | `cortex-orch` metacog dispatcher | `orion:cortex:exec:request` | `cortex.exec.request` / `PlanExecutionRequest` | effectively brain-style metacog plan | hardcoded `log_orion_metacognition` | not pack-driven | recall override derived from trigger | `orion-cortex-exec` |
 
 ### Direct/bypass paths discovered
@@ -58,6 +60,11 @@ flowchart LR
     Orch -->|cortex.exec.request\nPlanExecutionRequest(verb=log_orion_metacognition)| Exec
     Exec -->|steps from verb YAML| Recall[RecallService]
     Exec -->|steps from verb YAML| LLM[LLMGatewayService]
+
+    DreamPub[Publisher dream.trigger] -->|orion:dream:trigger| DreamHunter[cortex-orch dream Hunter]
+    DreamHunter -->|cortex.orch.request verb=dream_cycle| Orch
+    Orch -->|cortex.exec.request| Exec
+    Exec -->|dream.result.v1| SQLW[orion-sql-writer dreams table]
 
     Spark[spark-introspector] -->|orion:cortex:request\nmode=brain verb=introspect_spark| Orch
     Orch -->|orion:verb:request| Exec

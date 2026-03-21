@@ -1,3 +1,5 @@
+# Verb activation: empty allow lists mean "all discovered verbs except deny".
+# dream_cycle is active by default (not denied). Legacy dream_preprocess / dream_simple stay off.
 default:
   allow: []
   deny:

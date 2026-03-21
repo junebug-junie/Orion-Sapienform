@@ -8,5 +8,5 @@ verbs:
   - reflect
   - self_critique
   - counterfactual
-  - dream_preprocess
+  - dream_cycle
   - simulate

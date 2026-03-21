@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion:cortex:gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
     CHANNEL_DREAM_REPLY_PREFIX: str = Field(default="orion:dream:reply", alias="DREAM_REPLY_PREFIX")
-    DREAM_VERB: str = Field(default="dream_simple", alias="DREAM_VERB")
+    DREAM_VERB: str = Field(default="dream_cycle", alias="DREAM_VERB")
 
     # --- Memory streams ---
     CHANNEL_COLLAPSE_SQL_PUBLISH: str = Field(default="orion:collapse:sql-write")

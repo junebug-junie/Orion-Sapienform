@@ -22,6 +22,7 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "chat.gpt.turn.v1": "ChatGptLogSQL",
     "chat.gpt.message.v1": "ChatGptMessageSQL",
     "dream.log": "Dream",
+    "dream.result.v1": "Dream",
     "biometrics.telemetry": "BiometricsTelemetry",
     "biometrics.summary.v1": "BiometricsSummarySQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",

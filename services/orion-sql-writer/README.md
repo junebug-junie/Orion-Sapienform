@@ -16,7 +16,9 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:chat:gpt:log` | `chat.gpt.message.v1` | `ChatGptMessageSQL` |
 | `orion:chat:gpt:turn` | `chat.gpt.log.v1`, `chat.gpt.turn.v1` | `ChatGptLogSQL` |
 | `orion:chat:gpt:message:log` | `chat.gpt.message.v1` | `ChatGptMessageSQL` |
-| `orion:dream:log` | `dream.log` | `Dream` |
+| `orion:dream:log` | `dream.result.v1` (canonical), `dream.log` (legacy) | `Dream` |
+
+**Dream persistence:** `dream.result.v1` payloads are validated as `DreamResultV1` and projected into `dreams`. Legacy `dream.log` + `DreamRequest` is still accepted and mapped into the same table (narrative from `context_text`). Extended telemetry lives under `metrics._dream_audit`.
 | `orion:telemetry:biometrics` | `biometrics.telemetry` | `BiometricsTelemetry` |
 | `orion:biometrics:summary` | `biometrics.summary.v1` | `BiometricsSummarySQL` |
 | `orion:biometrics:induction` | `biometrics.induction.v1` | `BiometricsInductionSQL` |

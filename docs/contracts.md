@@ -67,7 +67,9 @@ This registry maps logical flows to specific channels, message kinds, and payloa
 | **Vector Write** | `orion:vector:write` | `vector.write` (or specific kinds) | `orion.schemas.vector.schemas.VectorWriteRequest` |
 | **RDF Enqueue** | `orion:rdf-collapse:enqueue` | `rdf.write.request` | `orion.schemas.rdf.RdfWriteRequest` |
 | **Biometrics** | `orion:telemetry:biometrics` | `biometrics.telemetry` | `orion.schemas.telemetry.biometrics.BiometricsPayload` |
-| **Dream Trigger** | `orion:dream:trigger` | `dream.trigger` | `orion.schemas.dream.DreamRequest` |
+| **Dream Trigger** | `orion:dream:trigger` | `dream.trigger` | `orion.schemas.telemetry.dream.DreamTriggerPayload` (minimal) or `DreamInternalTriggerV1` (extended) |
+| **Dream Result (durable)** | `orion:dream:log` | `dream.result.v1` | `orion.schemas.telemetry.dream.DreamResultV1` |
+| **Dream Log (legacy)** | `orion:dream:log` | `dream.log` | `orion.schemas.telemetry.dream.DreamRequest` (deprecated; use `dream.result.v1`) |
 | **TTS Request** | `orion:tts:intake` | `tts.synthesize.request` | `orion.schemas.tts.TTSRequestPayload` |
 
 ### Landing Pad (pad.\* contracts)
@@ -113,6 +115,17 @@ The "Spark Engine" now supports **Neural Projection**, where LLM generations car
     *   `CortexClientResult` (Orch output)
     *   `CognitionTracePayload` (Trace output)
 *   **Ingestion:** `SignalMapper` projects `spark_vector` (via random projection) to tissue channels (Ch 0, Ch 1).
+
+---
+
+### Dream contracts (ownership)
+
+Dream contracts are defined in `orion/schemas/telemetry/dream.py`; no dream-specific types in `orion/schemas/cortex/contracts.py`.
+
+* **Trigger:** `dream.trigger` carries initiation only (`DreamTriggerPayload` or `DreamInternalTriggerV1`). It must not carry final dream narrative content.
+* **Result:** `dream.result.v1` is the canonical typed artifact (`DreamResultV1`). Cortex-Exec publishes it after `dream_cycle` synthesis; SQL Writer validates and projects into the `dreams` table.
+* **Legacy:** `dream.log` + `DreamRequest` remain for backward compatibility only.
+* **SQL projection:** `orion-sql-writer` subscribes to `orion:dream:log`, routes `dream.result.v1` to the `dreams` table, and folds extended fields into `metrics._dream_audit` when columns are unchanged.
 
 ---
 

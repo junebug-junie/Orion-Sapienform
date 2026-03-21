@@ -67,6 +67,10 @@ class Settings(BaseSettings):
         "orion:equilibrium:metacog:trigger",
         validation_alias=AliasChoices("CHANNEL_EQUILIBRIUM_METACOG_TRIGGER", "CHANNEL_METACOG_TRIGGER"),
     )
+    channel_dream_trigger: str = Field(
+        "orion:dream:trigger",
+        validation_alias=AliasChoices("CHANNEL_DREAM_TRIGGER", "DREAM_TRIGGER_CHANNEL"),
+    )
 
     class Config:
         env_file = ".env"

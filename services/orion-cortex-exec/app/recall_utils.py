@@ -17,6 +17,17 @@ def recall_enabled_value(recall_cfg: Dict[str, Any]) -> bool:
     return _normalize_bool(recall_cfg.get("enabled", True), default=True)
 
 
+DELIVERY_SAFE_OUTPUT_MODES = frozenset(
+    {
+        "implementation_guide",
+        "tutorial",
+        "code_delivery",
+        "comparative_analysis",
+        "decision_support",
+    }
+)
+
+
 def resolve_mode_profile(mode: str | None) -> Tuple[str, str]:
     normalized = str(mode or "").lower()
     if normalized == "deep":
@@ -60,6 +71,49 @@ def should_run_recall(
     if not (needs_memory or recall_required):
         return False, "no_memory_required"
     return True, "enabled"
+
+
+def delivery_safe_recall_decision(
+    recall_cfg: Dict[str, Any],
+    steps: Iterable[ExecutionStep],
+    *,
+    output_mode: str | None = None,
+    verb_profile: Optional[str] = None,
+) -> Dict[str, Any]:
+    recall_required = bool(recall_cfg.get("required", False))
+    recall_enabled = recall_enabled_value(recall_cfg)
+    explicit_profile = recall_cfg.get("profile")
+    base_profile, profile_source = resolve_profile(recall_cfg, verb_profile=verb_profile)
+    base_should_run, base_reason = should_run_recall(recall_cfg, steps)
+
+    if output_mode in DELIVERY_SAFE_OUTPUT_MODES and not explicit_profile:
+        if recall_required:
+            return {
+                "run_recall": base_should_run,
+                "reason": "delivery_required_profile_narrowed",
+                "profile": "assist.light.v1",
+                "profile_source": "delivery_safe_default",
+                "recall_gating_reason": "delivery_required_profile_narrowed",
+                "effective_enabled": True,
+            }
+        if recall_enabled:
+            return {
+                "run_recall": False,
+                "reason": "delivery_safe_default_disabled",
+                "profile": base_profile,
+                "profile_source": profile_source,
+                "recall_gating_reason": "delivery_safe_default_disabled",
+                "effective_enabled": False,
+            }
+
+    return {
+        "run_recall": base_should_run,
+        "reason": base_reason,
+        "profile": base_profile,
+        "profile_source": profile_source,
+        "recall_gating_reason": base_reason,
+        "effective_enabled": recall_enabled or recall_required,
+    }
 
 
 def has_inline_recall(steps: Iterable[ExecutionStep]) -> bool:

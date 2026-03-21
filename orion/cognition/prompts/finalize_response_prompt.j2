@@ -10,15 +10,27 @@ OUTPUT MODE
 RESPONSE PROFILE
 {{ response_profile | default("direct_answer") }}
 
+DELIVERY GROUNDING MODE
+{{ delivery_grounding_mode | default("default_delivery") }}
+
+GROUNDING CONTEXT
+{{ grounding_context or "Ground the answer in the architecture implied by the request." }}
+
 PRIOR WORK (trace/observations)
 {{ trace or prior_trace or observations or "No prior work." }}
+
+TRACE-PREFERRED OUTPUT
+{{ trace_preferred_output or "None" }}
 
 INSTRUCTIONS
 1. Synthesize the prior work above into a complete, user-facing answer.
 2. Produce the actual artifact the user asked for—a guide, tutorial, answer, or recommendation.
 3. Do NOT output: "gather requirements", "create a guide", "review and refine", or meta-planning language.
 4. Be concrete. Include steps, commands, config, or specifics as appropriate.
-5. If prior work is empty or sparse, produce your best direct answer from the original request.
+5. If `TRACE-PREFERRED OUTPUT` is present, treat it as the primary draft and refine it instead of rewriting from scratch.
+6. {{ anti_generic_drift or "Do not silently swap in an unrelated generic stack." }}
+7. If the request is Orion-specific, preserve Orion's actual runtime architecture and name the relevant services/components when useful.
+8. If prior work is empty or sparse, produce your best direct answer from the original request.
 
 OUTPUT
 Write the final response below.

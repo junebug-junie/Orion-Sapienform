@@ -9,6 +9,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import call_step_services, run_recall_step
 from .recall_utils import (
+    delivery_safe_recall_decision,
     has_inline_recall,
     recall_enabled_value,
     resolve_profile,
@@ -93,10 +94,16 @@ class PlanRunner:
         if isinstance(plan.metadata, dict):
             verb_recall_profile = plan.metadata.get("recall_profile") or None
         ctx.setdefault("plan_recall_profile", verb_recall_profile)
-        selected_profile, profile_source = resolve_profile(
+        recall_policy = delivery_safe_recall_decision(
             recall_cfg,
+            plan.steps,
+            output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
         )
+        selected_profile = recall_policy["profile"]
+        profile_source = recall_policy["profile_source"]
+        ctx.setdefault("debug", {})["recall_gating_reason"] = recall_policy["recall_gating_reason"]
+        ctx.setdefault("debug", {})["recall_profile"] = selected_profile
 
         if diagnostic:
             logger.info("Diagnostic PlanExecutionRequest json=%s", req.model_dump_json())
@@ -108,9 +115,10 @@ class PlanRunner:
                 recall_cfg,
             )
             logger.info(
-                "Recall selected profile=%s source=%s",
+                "Recall selected profile=%s source=%s gating_reason=%s",
                 selected_profile,
                 profile_source,
+                recall_policy["recall_gating_reason"],
             )
 
         logger.info(
@@ -161,14 +169,16 @@ class PlanRunner:
             )
 
         inline_recall = has_inline_recall(plan.steps)
-        should_recall, recall_reason = should_run_recall(recall_cfg, plan.steps)
+        should_recall = bool(recall_policy["run_recall"])
+        recall_reason = str(recall_policy["reason"])
 
         if should_recall and not inline_recall:
             logger.info(
-                "Recall resolved profile=%s source=%s gating=%s",
+                "Recall resolved profile=%s source=%s gating=%s recall_gating_reason=%s",
                 selected_profile,
                 profile_source,
                 recall_reason,
+                recall_policy["recall_gating_reason"],
             )
             recall_step, recall_debug, _ = await run_recall_step(
                 bus,
@@ -227,17 +237,24 @@ class PlanRunner:
 
         else:
             if inline_recall:
-                recall_debug = {"skipped": "inline_recall_step_present"}
+                recall_debug = {
+                    "skipped": "inline_recall_step_present",
+                    "recall_gating_reason": recall_policy["recall_gating_reason"],
+                }
                 logger.info(
                     "Recall skipped; inline RecallService step present",
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg, "diagnostic": diagnostic},
                 )
             else:
-                recall_debug = {"skipped": recall_reason}
+                recall_debug = {
+                    "skipped": recall_reason,
+                    "recall_gating_reason": recall_policy["recall_gating_reason"],
+                }
                 ctx["memory_used"] = False
                 logger.info(
-                    "Recall skipped by gating (%s)",
+                    "Recall skipped by gating (%s) recall_gating_reason=%s",
                     recall_reason,
+                    recall_policy["recall_gating_reason"],
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg, "diagnostic": diagnostic},
                 )
 

@@ -831,3 +831,16 @@ def find_collapse_entry(prior_step_results: Any) -> Optional[Dict[str, Any]]:
 
 
 CollapseMirrorEntry = CollapseMirrorEntryV2
+
+
+class CollapseMirrorStoredV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mirror_id: str
+    stored_at: str
+    correlation_id: str | None = None
+    is_causally_dense: bool = False
+    summary: str
+    trigger: str
+    what_changed_summary: str | None = None
+    mantra: str | None = None

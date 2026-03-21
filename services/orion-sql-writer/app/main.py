@@ -63,6 +63,27 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
             )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS journal_entries (
+                    entry_id TEXT PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    author TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    title TEXT NULL,
+                    body TEXT NOT NULL,
+                    source_kind TEXT NULL,
+                    source_ref TEXT NULL,
+                    correlation_id TEXT NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entries_created_at ON journal_entries (created_at);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entries_correlation_id ON journal_entries (correlation_id);"
+            )
         logger.info("🧬 chat_message correlation/trace columns ensured")
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)

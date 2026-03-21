@@ -34,6 +34,7 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "notify.notification.receipt.v1": "NotificationReceiptDB",
     "notify.recipient.update.v1": "RecipientProfileDB",
     "notify.preference.update.v1": "NotificationPreferenceDB",
+    "journal.entry.write.v1": "JournalEntrySQL",
 }
 
 
@@ -76,7 +77,8 @@ class Settings(BaseSettings):
             "orion:metacognition:tick",
             "orion:equilibrium:metacog:trigger",
             "orion:notify:persistence:request",
-            "orion:notify:persistence:receipt"
+            "orion:notify:persistence:receipt",
+            "orion:journal:write",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -92,6 +94,8 @@ class Settings(BaseSettings):
         default=json.dumps(DEFAULT_ROUTE_MAP),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
     )
+    sql_writer_emit_journal_created: bool = Field(True, alias="SQL_WRITER_EMIT_JOURNAL_CREATED")
+    sql_writer_journal_created_channel: str = Field("orion:journal:created", alias="SQL_WRITER_JOURNAL_CREATED_CHANNEL")
 
     @property
     def route_map(self) -> Dict[str, str]:

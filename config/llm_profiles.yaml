@@ -175,6 +175,76 @@ profiles:
       n_parallel: 2
       batch_size: 512
 
+  llama3-8b-instruct-q4km-atlas-metacog:
+    display_name: "Llama 3 8B Instruct – Q4_K_M (llama.cpp, Atlas Metacog Lane 2)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "llama-3-8b-instruct-q4_k_m"
+
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [2]
+      max_model_len: 4096
+      max_batch_tokens: 256
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "PawanKrd/Meta-Llama-3-8B-Instruct-GGUF"
+      hf_filename: "llama-3-8b-instruct.Q4_K_M.gguf"
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 4096
+      n_gpu_layers: 35
+      threads: 8
+      n_parallel: 1
+      batch_size: 256
+
+    notes: |
+      Atlas-specific metacog worker profile.
+      Mirrors the former Athena/P4 metacog lane, but pins to Atlas GPU lane 2.
+
+  qwen3-30b-a3b-q4km-atlas-agent:
+    display_name: "Qwen3 30B A3B – Q4_K_M (llama.cpp, Atlas Agent Lane 1)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3-30b-a3b-q4_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [1]
+      max_model_len: 32768
+      max_batch_tokens: 512
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.92
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "Qwen/Qwen3-30B-A3B-GGUF"
+      hf_filename: "Qwen3-30B-A3B-Q4_K_M.gguf"
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 32768
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 512
+
+    notes: |
+      Heavy Atlas agent worker for PlannerReact and AgentChain reasoning flows.
+      Intended to back gateway route="agent" on Atlas GPU lane 1.
+
   # ─────────────────────────────────────────────
   # 2) Llama3 7B on 2× V100 16GB
   #    - More throughput; same model

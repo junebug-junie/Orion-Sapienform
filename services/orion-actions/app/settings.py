@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     actions_subscribe_channel: str = Field("orion:collapse:triage", alias="ACTIONS_SUBSCRIBE_CHANNEL")
     actions_subscribe_channels: str = Field(
-        "orion:collapse:triage,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1",
+        "orion:collapse:triage,orion:collapse:stored,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1,orion:actions:trigger:journal.v1,orion:notify:persistence:request,orion:equilibrium:metacog:trigger",
         alias="ACTIONS_SUBSCRIBE_CHANNELS",
     )
     actions_audit_channel: str = Field("orion:actions:audit", alias="ACTIONS_AUDIT_CHANNEL")
@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     actions_skills_notify_enabled: bool = Field(False, alias="ACTIONS_SKILLS_NOTIFY_ENABLED")
     actions_skills_gpu_mem_threshold: float = Field(0.9, alias="ACTIONS_SKILLS_GPU_MEM_THRESHOLD")
     actions_skills_biometrics_stability_threshold: float = Field(0.3, alias="ACTIONS_SKILLS_BIOMETRICS_STABILITY_THRESHOLD")
+
+    actions_journaling_enabled: bool = Field(True, alias="ACTIONS_JOURNALING_ENABLED")
+    actions_journaling_daily_enabled: bool = Field(False, alias="ACTIONS_JOURNALING_DAILY_ENABLED")
+    actions_journaling_cooldown_seconds: int = Field(21600, alias="ACTIONS_JOURNALING_COOLDOWN_SECONDS")
+    actions_journaling_collapse_dense_only: bool = Field(True, alias="ACTIONS_JOURNALING_COLLAPSE_DENSE_ONLY")
+    actions_journal_session_id: str = Field("orion_journal", alias="ACTIONS_JOURNAL_SESSION_ID")
+    actions_journal_author: str = Field("orion", alias="ACTIONS_JOURNAL_AUTHOR")
+    actions_journal_write_channel: str = Field("orion:journal:write", alias="ACTIONS_JOURNAL_WRITE_CHANNEL")
 
     port: int = Field(7160, alias="ACTIONS_PORT")
 

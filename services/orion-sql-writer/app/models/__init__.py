@@ -21,6 +21,7 @@ from .cognition_trace import CognitionTraceSQL
 from .metacognition_tick import MetacognitionTickSQL
 from . metacognition_enriched import MetacognitionEnrichedSQL
 from .metacog_trigger import MetacogTriggerSQL
+from .journal_entry import JournalEntrySQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -39,5 +40,6 @@ __all__ = [
     "CognitionTraceSQL",
     "MetacognitionTickSQL",
     "MetacognitionEnrichedSQL",
-    "MetacogTriggerSQL"
+    "MetacogTriggerSQL",
+    "JournalEntrySQL",
 ]

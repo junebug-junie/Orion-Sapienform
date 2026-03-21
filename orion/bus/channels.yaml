@@ -404,6 +404,15 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:collapse:stored"
+    kind: "event"
+    schema_id: "CollapseMirrorStoredV1"
+    message_kind: "collapse.mirror.stored.v1"
+    producer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-actions", "*"]
+    stability: "experimental"
+    since: "2026-03-21"
+
   - name: "orion:collapse:events"
     kind: "event"
     schema_id: "CollapseMirrorEntryV2"
@@ -444,6 +453,15 @@ channels:
     consumer_services: ["orion-actions"]
     stability: "experimental"
     since: "2026-02-15"
+
+
+  - name: "orion:actions:trigger:journal.v1"
+    kind: "event"
+    schema_id: "JournalTriggerV1"
+    producer_services: ["orion-actions", "*"]
+    consumer_services: ["orion-actions"]
+    stability: "experimental"
+    since: "2026-03-21"
 
   - name: "orion:actions:audit"
     kind: "event"
@@ -993,6 +1011,25 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-02-05"
+
+
+  - name: "orion:journal:write"
+    kind: "event"
+    schema_id: "JournalEntryWriteV1"
+    message_kind: "journal.entry.write.v1"
+    producer_services: ["orion-actions"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-03-21"
+
+  - name: "orion:journal:created"
+    kind: "event"
+    schema_id: "JournalEntryWriteV1"
+    message_kind: "journal.entry.created.v1"
+    producer_services: ["orion-sql-writer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-03-21"
 
   - name: "orion:memory:drives:state"
     kind: "event"

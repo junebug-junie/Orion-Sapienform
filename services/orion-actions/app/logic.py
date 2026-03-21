@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from uuid import uuid4
 
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
+from orion.journaler import JournalTriggerV1, build_compose_request
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest
 
@@ -196,6 +197,27 @@ def build_cortex_orch_envelope(
         options={"source": "orion-actions", "policy_dispatch_only": True},
         recall={"enabled": True, "required": False, "profile": recall_profile},
         context=context,
+    )
+    return parent.derive_child(kind="cortex.orch.request", source=source, payload=req, reply_to=None)
+
+
+def build_journal_cortex_orch_envelope(
+    parent: BaseEnvelope,
+    *,
+    source: ServiceRef,
+    trigger: JournalTriggerV1,
+    session_id: str,
+    user_id: str | None = None,
+    recall_profile: str | None = "reflect.v1",
+    options: Dict[str, Any] | None = None,
+) -> BaseEnvelope:
+    req = build_compose_request(
+        trigger,
+        session_id=session_id,
+        user_id=user_id,
+        trace_id=str(parent.correlation_id),
+        recall_profile=recall_profile,
+        options=options,
     )
     return parent.derive_child(kind="cortex.orch.request", source=source, payload=req, reply_to=None)
 

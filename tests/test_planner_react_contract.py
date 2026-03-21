@@ -151,6 +151,26 @@ def test_salvage_layer_recovers_common_wrappers(raw_text: str, expected_snippet:
     assert expected_snippet in parsed["final_answer"]
 
 
+def test_salvage_prefers_outer_balanced_json_over_inner_tool_content() -> None:
+    raw_text = """
+{
+  "thought": "done",
+  "finish": true,
+  "action": null,
+  "final_answer": {
+    "content": "Use this final answer.",
+    "tool_preview": "```python\\nprint({'nested': 'object'})\\n```"
+  }
+}
+""".strip()
+
+    parsed, meta = api._parse_planner_response_text(raw_text)
+
+    assert parsed["finish"] is True
+    assert parsed["final_answer"]["content"] == "Use this final answer."
+    assert meta["salvage_succeeded"] is False
+
+
 def test_finish_true_with_dict_final_answer_is_normalized(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
         return {
@@ -315,6 +335,36 @@ def test_repair_path_accepts_finish_true_without_action(monkeypatch: pytest.Monk
     assert calls["count"] == 2
     assert res.final_answer is not None
     assert res.final_answer.content == "## Deployment Instructions\nProceed."
+
+
+def test_repair_path_accepts_finish_true_content_object_without_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {"thought": "bad", "finish": False, "action": None, "final_answer": None}, {"salvage_succeeded": False, "raw_snippet": ""}
+        return {
+            "finish": True,
+            "action": None,
+            "final_answer": {"content": "### Fixed\nShip the response."},
+        }, {"salvage_succeeded": False, "raw_snippet": ""}
+
+    monkeypatch.setattr(api, "_call_planner_llm", fake_call_planner_llm)
+    _patch_bus(monkeypatch)
+
+    req = PlannerRequest(
+        request_id="req-repair-content-object",
+        goal=Goal(description="Repair me"),
+        context=ContextBlock(),
+        toolset=[],
+    )
+
+    res = asyncio.run(api.run_react_loop(req))
+
+    assert calls["count"] == 2
+    assert res.final_answer is not None
+    assert res.final_answer.content == "### Fixed\nShip the response."
 
 
 def test_unrecoverable_garbage_still_falls_back() -> None:

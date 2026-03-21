@@ -174,6 +174,30 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         self.assertIn("analyze_text", step_names)
         self.assertIn("agent_chain", step_names)
 
+    def test_supervisor_prefers_effective_packs_from_context_metadata(self):
+        supervisor = StubSupervisor(planner_outputs=[(FinalAnswer(content="hello"), None, "final_answer")])
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent", "packs": "[\"executive_pack\",\"delivery_pack\"]"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "write a delivery guide"}],
+            "packs": ["executive_pack"],
+            "metadata": {"packs": ["executive_pack", "delivery_pack"]},
+            "max_steps": 1,
+        }
+
+        asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-packs",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+
+        self.assertIn("delivery_pack", ctx["packs"])
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -185,4 +209,3 @@ class TestExtractLatestPlannerThought(unittest.TestCase):
     def test_returns_last_thought_when_available(self):
         thought = _extract_latest_planner_thought({"PlannerReactService": {"trace": [{"thought": "a"}, {"thought": "b"}]}})
         self.assertEqual(thought, "b")
-

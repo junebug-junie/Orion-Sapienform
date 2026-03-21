@@ -171,35 +171,44 @@ def _parse_planner_response_text(raw_text: str) -> Tuple[Dict[str, Any], Dict[st
         or not stripped_raw.endswith("}")
     )
 
-    candidates: List[str] = []
+    parse_attempts: List[Tuple[str, bool]] = []
 
-    def add_candidate(candidate: Optional[str]) -> None:
+    def add_candidate(candidate: Optional[str], *, salvaged: bool) -> None:
         if not candidate:
             return
         normalized = candidate.strip()
-        if not normalized or normalized == raw.strip() or normalized in candidates:
+        if not normalized:
             return
-        candidates.append(normalized)
+        if any(existing == normalized for existing, _ in parse_attempts):
+            return
+        parse_attempts.append((normalized, salvaged))
+
+    outer_balanced = _extract_first_balanced_json_object(raw)
+    add_candidate(outer_balanced, salvaged=bool(outer_balanced and outer_balanced.strip() != raw.strip()))
+    add_candidate(raw if stripped_raw else None, salvaged=False)
 
     fence_stripped = _strip_code_fence_wrapper(raw)
     marker_stripped = _strip_leading_language_marker(raw)
     fence_then_marker = _strip_leading_language_marker(fence_stripped)
     marker_then_fence = _strip_code_fence_wrapper(marker_stripped)
 
-    add_candidate(fence_stripped)
-    add_candidate(marker_stripped)
-    add_candidate(fence_then_marker)
-    add_candidate(marker_then_fence)
+    add_candidate(fence_stripped, salvaged=fence_stripped.strip() != raw.strip())
+    add_candidate(marker_stripped, salvaged=marker_stripped.strip() != raw.strip())
+    add_candidate(fence_then_marker, salvaged=fence_then_marker.strip() != raw.strip())
+    add_candidate(marker_then_fence, salvaged=marker_then_fence.strip() != raw.strip())
 
-    for candidate in list(candidates):
-        add_candidate(_extract_first_balanced_json_object(candidate))
+    for candidate, _ in list(parse_attempts):
+        balanced = _extract_first_balanced_json_object(candidate)
+        add_candidate(balanced, salvaged=bool(balanced and balanced.strip() != raw.strip()))
 
-    add_candidate(_extract_first_balanced_json_object(raw))
-
-    for candidate in candidates:
+    for candidate, salvaged in parse_attempts:
         try:
             parsed = parse_json_object(candidate)
-            return parsed, {"salvage_succeeded": True, "raw_snippet": _truncate_for_log(raw), "salvaged_snippet": _truncate_for_log(candidate)}
+            return parsed, {
+                "salvage_succeeded": salvaged,
+                "raw_snippet": _truncate_for_log(raw),
+                "salvaged_snippet": _truncate_for_log(candidate),
+            }
         except Exception:
             continue
 
@@ -335,6 +344,7 @@ def _validate_or_normalize_planner_step(planner_step: Any) -> Dict[str, Any]:
         normalized["_final_answer_structured"] = final_info["structured"]
         normalized["_final_answer_normalized"] = final_info["normalized"]
         normalized["_final_answer_type"] = final_info["type"]
+        normalized["action"] = action if isinstance(action, (dict, str)) else None
         return normalized
 
     if action is None:

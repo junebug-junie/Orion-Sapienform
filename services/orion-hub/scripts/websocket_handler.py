@@ -46,6 +46,29 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
+def _log_hub_route_decision(
+    *,
+    corr_id: str,
+    session_id: str,
+    route_debug: Dict[str, Any],
+    user_prompt: str,
+) -> None:
+    summary = {
+        "corr_id": corr_id,
+        "session_id": session_id,
+        "selected_ui_route": route_debug.get("selected_ui_route"),
+        "emitted_mode": route_debug.get("mode"),
+        "emitted_verb": route_debug.get("verb"),
+        "emitted_options": route_debug.get("options") or {},
+        "packs": route_debug.get("packs") or [],
+        "force_agent_chain": bool(route_debug.get("force_agent_chain")),
+        "supervised": bool(route_debug.get("supervised")),
+        "diagnostic": bool(route_debug.get("diagnostic")),
+        "last_user_head": (user_prompt or "")[:120],
+    }
+    logger.info("hub_route_egress %s", json.dumps(summary, sort_keys=True, default=str))
+
+
 
 
 def _truncate_text(value: Any, limit: int = 800) -> str:
@@ -508,6 +531,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 (chat_req.options or {}).get("route_intent") or "none",
                 len(((chat_req.options or {}).get("allowed_verbs") or [])),
                 chat_req.packs or [],
+            )
+            _log_hub_route_decision(
+                corr_id=trace_id,
+                session_id=session_id,
+                route_debug=route_debug,
+                user_prompt=transcript,
             )
             if diagnostic:
                 logger.info("WS outbound CortexChatRequest corr=%s payload=%s", trace_id, chat_req.model_dump(mode="json"))

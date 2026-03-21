@@ -233,6 +233,41 @@ def test_finish_true_with_content_dict_final_answer_is_accepted(monkeypatch: pyt
     assert res.final_answer.structured["content"] == "Structured content"
 
 
+def test_call_planner_llm_routes_requests_to_agent_lane() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeCodec:
+        def decode(self, _data: bytes):
+            payload = {"content": "{\"thought\":\"done\",\"finish\":true,\"action\":null,\"final_answer\":{\"content\":\"ok\"}}"}
+            envelope = types.SimpleNamespace(payload=payload)
+            return types.SimpleNamespace(ok=True, envelope=envelope, error=None)
+
+    class FakeBus:
+        def __init__(self) -> None:
+            self.codec = FakeCodec()
+
+        async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):  # noqa: ANN001
+            captured["channel"] = channel
+            captured["env"] = env
+            captured["reply_channel"] = reply_channel
+            captured["timeout_sec"] = timeout_sec
+            return {"data": b"ok"}
+
+    result, _meta = asyncio.run(
+        api._call_planner_llm(
+            FakeBus(),
+            goal=Goal(description="Plan the safest Atlas rollout"),
+            toolset=[],
+            context=ContextBlock(conversation_history=[LLMMessage(role="user", content="Plan the rollout")]),
+            prior_trace=[],
+            limits=types.SimpleNamespace(timeout_seconds=5),
+        )
+    )
+
+    assert result["finish"] is True
+    assert captured["env"].payload["route"] == "agent"
+
+
 def test_finish_true_with_text_dict_final_answer_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_call_planner_llm(**_: object) -> tuple[dict, dict]:
         return {

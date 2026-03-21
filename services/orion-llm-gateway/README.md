@@ -27,7 +27,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `ORION_VECTOR_LATENT_COLLECTION` | `orion_latent_store` | Latent vector collection. |
 | `ORION_LLM_VLLM_URL` | `None` | URL for vLLM host. |
 | `ORION_LLM_LLAMACPP_URL` | `None` | URL for LlamaCpp Chat host. |
-| `LLM_GATEWAY_ROUTE_TABLE_JSON` | `None` | Optional JSON route table for single-subscriber routing. |
+| `LLM_GATEWAY_ROUTE_TABLE_JSON` | `None` | Preferred JSON route table for explicit single-subscriber routing. |
 | `LLM_ROUTE_DEFAULT` | `chat` | Default routing key when none provided. |
 | `LLM_ROUTE_CHAT_URL` | `None` | Fallback URL for `route=chat` (if JSON not set). |
 | `LLM_ROUTE_METACOG_URL` | `None` | Fallback URL for `route=metacog` (if JSON not set). |
@@ -43,7 +43,17 @@ docker-compose up -d orion-llm-gateway
 ```
 
 > Note: Only run a single `orion-llm-gateway` subscriber on the shared request topic.
-> In Juniper deployments this should be the Athena node.
+> Route isolation should be expressed through `LLM_GATEWAY_ROUTE_TABLE_JSON`, not by running multiple gateways.
+> The `chat` route should keep pointing at the existing Atlas chat worker endpoint; any internal Atlas lane-sharing stays behind that endpoint and is not modeled by the gateway.
+
+### Route table example
+```bash
+LLM_GATEWAY_ROUTE_TABLE_JSON='{
+  "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
+  "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
+  "agent":{"url":"http://100.121.214.30:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"}
+}'
+```
 
 ### Smoke Test
 ```bash

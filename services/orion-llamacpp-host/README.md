@@ -289,3 +289,19 @@ To run multiple models at once:
 - start multiple `llamacpp-host` instances (separate service names/ports)
 - each with a different `LLM_PROFILE_NAME`
 - and ideally different GPU pinning
+
+### Atlas multi-worker example
+
+For the Atlas route layout, use `docker-compose.atlas-workers.yml` to run one isolated host instance per logical worker:
+
+- `atlas-chat` → existing chat profile on Atlas, published on `ATLAS_CHAT_HOST_PORT`
+- `atlas-metacog` → `llama3-8b-instruct-q4km-atlas-metacog`, published on `ATLAS_METACOG_HOST_PORT`
+- `atlas-agent` → `qwen3-30b-a3b-q4km-atlas-agent`, published on `ATLAS_AGENT_HOST_PORT`
+
+Each worker uses:
+- one `LLM_PROFILE_NAME`
+- one `CUDA_VISIBLE_DEVICES_OVERRIDE`
+- one unique host port
+- one unique `SERVICE_NAME`
+
+This keeps the current one-profile-per-container design intact while making Atlas worker isolation explicit.

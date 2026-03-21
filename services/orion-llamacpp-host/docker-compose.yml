@@ -1,4 +1,5 @@
 # services/orion-llamacpp-host/docker-compose.yml
+# Single-worker compose. For Atlas multi-worker isolation, use docker-compose.atlas-workers.yml.
 
 services:
   orion-llamacpp-host:

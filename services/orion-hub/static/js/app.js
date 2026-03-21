@@ -101,6 +101,18 @@ loadDismissedIds();
   const messageList = document.getElementById('messageList');
   const messageFilter = document.getElementById('messageFilter');
   const toastContainer = document.getElementById('toastContainer');
+  const agentTraceApi = window.OrionAgentTrace || {};
+  const agentTraceModal = document.getElementById('agentTraceModal');
+  const agentTraceModalClose = document.getElementById('agentTraceModalClose');
+  const agentTraceModalMeta = document.getElementById('agentTraceModalMeta');
+  const agentTraceEmptyState = document.getElementById('agentTraceEmptyState');
+  const agentTraceContent = document.getElementById('agentTraceContent');
+  const agentTraceOverview = document.getElementById('agentTraceOverview');
+  const agentTraceSummary = document.getElementById('agentTraceSummary');
+  const agentTraceToolGroups = document.getElementById('agentTraceToolGroups');
+  const agentTraceTimelineBody = document.getElementById('agentTraceTimelineBody');
+  const agentTraceRawSummary = document.getElementById('agentTraceRawSummary');
+  const agentTraceRawPayloads = document.getElementById('agentTraceRawPayloads');
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -2148,17 +2160,175 @@ loadDismissedIds();
     if (!conversationDiv) return;
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
+    const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
+    const headerRow = document.createElement('div');
+    headerRow.className = 'mb-1 flex items-center justify-between gap-3';
     const header = document.createElement('p');
     header.className = `font-bold ${color}`;
     header.textContent = sender;
+    headerRow.appendChild(header);
     const body = document.createElement('p');
     body.className = `${colorClass} whitespace-pre-wrap`;
     body.textContent = text || "";
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
-    div.appendChild(header);
+    if (sender === 'Orion' && agentTraceApi.shouldShowAgentTrace && agentTraceApi.shouldShowAgentTrace(meta.agentTrace)) {
+      const traceButton = document.createElement('button');
+      const toolCount = Number(meta.agentTrace && meta.agentTrace.tool_call_count || 0);
+      traceButton.className = 'rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] font-semibold text-indigo-200 hover:bg-indigo-500/20';
+      traceButton.type = 'button';
+      traceButton.textContent = toolCount > 0 ? `Agent: ${toolCount} tools` : 'Agent Trace';
+      traceButton.addEventListener('click', () => openAgentTraceModal(meta.agentTrace, meta));
+      headerRow.appendChild(traceButton);
+    }
+    div.appendChild(headerRow);
     div.appendChild(body);
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
+  }
+
+  function closeAgentTraceModal() {
+    if (!agentTraceModal) return;
+    agentTraceModal.classList.add('hidden');
+    agentTraceModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function setAgentTraceEmptyState(isEmpty) {
+    if (agentTraceEmptyState) agentTraceEmptyState.classList.toggle('hidden', !isEmpty);
+    if (agentTraceContent) agentTraceContent.classList.toggle('hidden', !!isEmpty);
+  }
+
+  function renderAgentTraceOverview(summary) {
+    if (!agentTraceOverview) return;
+    const cards = [
+      ['Status', summary.status || '--'],
+      ['Duration', agentTraceApi.formatDuration ? agentTraceApi.formatDuration(summary.duration_ms) : '--'],
+      ['Steps', summary.step_count ?? 0],
+      ['Tool calls', summary.tool_call_count ?? 0],
+      ['Unique tools', summary.unique_tool_count ?? 0],
+      ['Families', Array.isArray(summary.unique_tool_families) && summary.unique_tool_families.length ? summary.unique_tool_families.join(', ') : '--'],
+    ];
+    agentTraceOverview.innerHTML = '';
+    cards.forEach(([label, value]) => {
+      const card = document.createElement('div');
+      card.className = 'rounded-xl border border-gray-700 bg-gray-800/50 p-3';
+      const title = document.createElement('div');
+      title.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      title.textContent = label;
+      const val = document.createElement('div');
+      val.className = 'mt-2 text-sm font-semibold text-gray-100';
+      val.textContent = String(value ?? '--');
+      card.appendChild(title);
+      card.appendChild(val);
+      agentTraceOverview.appendChild(card);
+    });
+  }
+
+  function renderAgentTraceToolGroups(summary) {
+    if (!agentTraceToolGroups) return;
+    const groups = agentTraceApi.groupToolsByFamily ? agentTraceApi.groupToolsByFamily(summary.tools) : [];
+    agentTraceToolGroups.innerHTML = '';
+    if (!groups.length) {
+      const empty = document.createElement('div');
+      empty.className = 'rounded-xl border border-dashed border-gray-700 bg-gray-900/50 p-3 text-xs text-gray-500';
+      empty.textContent = 'No tool usage was captured for this trace.';
+      agentTraceToolGroups.appendChild(empty);
+      return;
+    }
+    groups.forEach((group) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'rounded-xl border border-gray-700 bg-gray-900/40 p-3';
+
+      const header = document.createElement('div');
+      header.className = 'flex items-center justify-between gap-2';
+      const title = document.createElement('div');
+      title.className = 'text-sm font-semibold text-gray-100 capitalize';
+      title.textContent = group.family || 'unknown';
+      const meta = document.createElement('div');
+      meta.className = 'text-[11px] text-gray-400';
+      meta.textContent = `${group.count} call(s)`;
+      header.appendChild(title);
+      header.appendChild(meta);
+
+      const list = document.createElement('div');
+      list.className = 'mt-3 flex flex-wrap gap-2';
+      (group.tools || []).forEach((tool) => {
+        const chip = document.createElement('div');
+        chip.className = 'rounded-lg border border-gray-700 bg-gray-800 px-2 py-1 text-[11px] text-gray-200';
+        const durationLabel = agentTraceApi.formatDuration ? agentTraceApi.formatDuration(tool.duration_ms) : '--';
+        chip.textContent = `${tool.tool_id} · ${tool.count} · ${durationLabel}`;
+        list.appendChild(chip);
+      });
+
+      wrap.appendChild(header);
+      wrap.appendChild(list);
+      agentTraceToolGroups.appendChild(wrap);
+    });
+  }
+
+  function renderAgentTraceTimeline(summary) {
+    if (!agentTraceTimelineBody) return;
+    const rows = agentTraceApi.buildTimelineRows ? agentTraceApi.buildTimelineRows(summary) : [];
+    agentTraceTimelineBody.innerHTML = '';
+    if (!rows.length) {
+      const row = document.createElement('tr');
+      row.innerHTML = '<td class="px-3 py-3 text-gray-500" colspan="9">No timeline events were normalized for this trace.</td>';
+      agentTraceTimelineBody.appendChild(row);
+      return;
+    }
+    rows.forEach((entry) => {
+      const row = document.createElement('tr');
+      row.className = 'align-top';
+      const cells = [
+        entry.index,
+        entry.event_type,
+        entry.tool_id,
+        entry.tool_family,
+        entry.action_kind,
+        entry.effect_kind,
+        entry.status,
+        entry.duration_label,
+        entry.summary,
+      ];
+      cells.forEach((value, idx) => {
+        const cell = document.createElement('td');
+        cell.className = `px-3 py-2 ${idx === 8 ? 'max-w-md whitespace-pre-wrap text-gray-300' : 'whitespace-nowrap'}`;
+        cell.textContent = String(value ?? '--');
+        row.appendChild(cell);
+      });
+      agentTraceTimelineBody.appendChild(row);
+    });
+  }
+
+  function openAgentTraceModal(summary, meta = {}) {
+    if (!agentTraceModal) return;
+    if (!agentTraceApi.shouldShowAgentTrace || !agentTraceApi.shouldShowAgentTrace(summary)) {
+      setAgentTraceEmptyState(true);
+      if (agentTraceModalMeta) {
+        agentTraceModalMeta.textContent = meta.correlationId ? `corr ${meta.correlationId}` : 'No trace data available.';
+      }
+      agentTraceModal.classList.remove('hidden');
+      agentTraceModal.setAttribute('aria-hidden', 'false');
+      return;
+    }
+    setAgentTraceEmptyState(false);
+    if (agentTraceModalMeta) {
+      const corr = summary.corr_id || meta.correlationId || '--';
+      agentTraceModalMeta.textContent = `corr ${corr} · status ${summary.status || '--'} · ${summary.step_count || 0} steps`;
+    }
+    renderAgentTraceOverview(summary);
+    if (agentTraceSummary) {
+      agentTraceSummary.textContent = summary.summary_text || 'No deterministic summary available.';
+    }
+    renderAgentTraceToolGroups(summary);
+    renderAgentTraceTimeline(summary);
+    if (agentTraceRawSummary) {
+      agentTraceRawSummary.textContent = JSON.stringify(summary, null, 2);
+    }
+    if (agentTraceRawPayloads) {
+      agentTraceRawPayloads.textContent = JSON.stringify((summary && summary.raw) || {}, null, 2);
+    }
+    agentTraceModal.classList.remove('hidden');
+    agentTraceModal.setAttribute('aria-hidden', 'false');
   }
 
   async function loadNotifications() {
@@ -2856,6 +3026,19 @@ loadDismissedIds();
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }
+  if (agentTraceModalClose) {
+    agentTraceModalClose.addEventListener('click', closeAgentTraceModal);
+  }
+  if (agentTraceModal) {
+    agentTraceModal.addEventListener('click', (event) => {
+      if (event.target === agentTraceModal) closeAgentTraceModal();
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && agentTraceModal && !agentTraceModal.classList.contains('hidden')) {
+      closeAgentTraceModal();
+    }
+  });
 
   // --- WebSocket ---
   function setupWebSocket() {
@@ -2874,7 +3057,10 @@ loadDismissedIds();
       try {
           const d = JSON.parse(e.data);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-          if (d.llm_response) appendMessage('Orion', d.llm_response);
+          if (d.llm_response) appendMessage('Orion', d.llm_response, 'text-white', {
+            agentTrace: d.agent_trace,
+            correlationId: d.correlation_id,
+          });
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
@@ -2945,7 +3131,10 @@ loadDismissedIds();
         })
         .then(r => r.json())
         .then(d => {
-            if(d.text) appendMessage('Orion', d.text);
+            if(d.text) appendMessage('Orion', d.text, 'text-white', {
+              agentTrace: d.agent_trace,
+              correlationId: d.correlation_id,
+            });
             else if(d.error) appendMessage('System', d.error, 'text-red-400');
             updateMemoryPanelFromResponse(d);
         })

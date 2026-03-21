@@ -15,6 +15,7 @@ from .settings import settings
 from .session import ensure_session
 from .chat_history import build_chat_history_envelope, publish_chat_history
 from .library import scan_cognition_library
+from .trace_payloads import extract_agent_trace_payload
 from .cortex_request_builder import build_chat_request, validate_single_verb_override
 from orion.cognition.verb_activation import build_verb_list
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
@@ -546,9 +547,11 @@ async def handle_chat_request(
 
         memory_digest = None
         recall_debug = None
+        agent_trace = None
         if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
             recall_debug = resp.cortex_result.recall_debug
             memory_digest = recall_debug.get("memory_digest")
+        agent_trace = extract_agent_trace_payload(resp.cortex_result)
 
         recall_count = 0
         backend_counts = None
@@ -586,6 +589,7 @@ async def handle_chat_request(
             "tokens": len(text.split()), # simple approx
             "raw": raw_result,
             "recall_debug": recall_debug,
+            "agent_trace": agent_trace,
             "memory_used": memory_used,
             "memory_digest": memory_digest,
             "no_write": no_write,

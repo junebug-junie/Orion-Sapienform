@@ -15,6 +15,9 @@ from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.contracts import (
+    AgentTraceStepV1,
+    AgentTraceSummaryV1,
+    AgentTraceToolStatV1,
     CortexClientRequest,
     CortexClientResult,
     CortexChatRequest,
@@ -131,6 +134,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallQueryV1": RecallQueryV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
+    "AgentTraceToolStatV1": AgentTraceToolStatV1,
+    "AgentTraceStepV1": AgentTraceStepV1,
+    "AgentTraceSummaryV1": AgentTraceSummaryV1,
     "CortexExecRequestPayload": CortexExecRequestPayload,
     "CortexExecResultPayload": CortexExecResultPayload,
     "PlanExecutionRequest": PlanExecutionRequest,

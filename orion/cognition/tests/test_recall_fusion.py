@@ -44,3 +44,34 @@ def test_fuse_dedupe_and_limit():
     assert len(bundle.items) == 2  # dedup + per-source cap
     assert all(item.id in {"1", "3"} for item in bundle.items)
     assert "- [vector]" in bundle.rendered
+
+
+def test_self_factual_filters_exclude_induced_and_reflective_candidates():
+    candidates = [
+        {"id": "auth-rdf", "source": "rdf", "text": "authoritative self fact", "score": 0.8, "tags": ["trust:authoritative"]},
+        {"id": "reflective-rdf", "source": "rdf", "text": "reflective self story", "score": 0.99, "tags": ["trust:reflective"]},
+        {"id": "induced-sql", "source": "sql_timeline", "text": "induced self pattern", "score": 0.95, "tags": ["trust:induced"]},
+        {"id": "vector-auth", "source": "vector", "text": "vector fact", "score": 0.99, "tags": ["trust:authoritative"]},
+    ]
+
+    profile = {
+        "profile": "self.factual.v1",
+        "max_per_source": 4,
+        "max_total_items": 4,
+        "render_budget_tokens": 50,
+        "filters": {
+            "allowed_sources": ["rdf", "sql_timeline"],
+            "exclude_tags_prefixes": ["trust:induced", "trust:reflective"],
+        },
+    }
+
+    bundle, _ranking = fuse_candidates(
+        candidates=candidates,
+        profile=profile,
+        latency_ms=5,
+        query_text="self fact",
+        session_id=None,
+    )
+
+    assert [item.id for item in bundle.items] == ["auth-rdf"]
+    assert "reflective self story" not in bundle.rendered

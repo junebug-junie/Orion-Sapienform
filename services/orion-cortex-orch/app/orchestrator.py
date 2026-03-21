@@ -406,6 +406,7 @@ def build_verb_request(
     trace: dict | None = None,
 ) -> tuple[VerbRequestV1, BaseEnvelope]:
     request_id = str(uuid4())
+    reply_channel = f"orion:verb:result:{correlation_id}:{request_id}"
     trigger_name = client_request.verb if client_request.verb in _DIRECT_VERB_TRIGGERS else "legacy.plan"
     verb_request = VerbRequestV1(
         trigger=trigger_name,
@@ -426,6 +427,7 @@ def build_verb_request(
         correlation_id=correlation_id,
         causality_chain=list(causality_chain or []),
         trace=dict(trace or {}),
+        reply_to=reply_channel,
         payload=verb_request.model_dump(mode="json"),
     )
     return verb_request, envelope
@@ -463,27 +465,76 @@ async def call_verb_runtime(
         causality_chain=causality_chain,
         trace=trace,
     )
+    request_summary = {
+        "corr_id": correlation_id,
+        "source_service": source.name,
+        "reply_channel": envelope.reply_to,
+        "mode": client_request.mode,
+        "verb": client_request.verb or plan_request.plan.verb_name,
+        "supervised": bool((client_request.options or {}).get("supervised")),
+        "recall_enabled": bool(client_request.recall.enabled),
+        "recall_profile": client_request.recall.profile,
+        "packs": list(plan_request.context.get("packs") or []),
+        "output_mode": plan_request.context.get("output_mode"),
+        "response_profile": plan_request.context.get("response_profile"),
+    }
+    logger.info("orch_publish_verb_runtime %s", json.dumps(request_summary, sort_keys=True, default=str))
 
     async def _wait_for_result() -> VerbResultV1:
-        async with bus.subscribe("orion:verb:result") as pubsub:
+        reply_channel = str(envelope.reply_to or "orion:verb:result")
+        logger.info(
+            "orch_wait_verb_runtime corr=%s reply=%s request_id=%s",
+            correlation_id,
+            reply_channel,
+            verb_request.request_id,
+        )
+        async with bus.subscribe(reply_channel) as pubsub:
             await bus.publish("orion:verb:request", envelope)
             async for msg in bus.iter_messages(pubsub):
                 decoded = bus.codec.decode(msg.get("data"))
                 if not decoded.ok or decoded.envelope is None:
+                    logger.warning(
+                        "orch_wait_verb_runtime_decode_failed corr=%s reply=%s error=%s",
+                        correlation_id,
+                        reply_channel,
+                        decoded.error,
+                    )
                     continue
                 payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
                 try:
                     result = VerbResultV1.model_validate(payload)
                 except Exception:
+                    logger.warning(
+                        "orch_wait_verb_runtime_invalid_payload corr=%s reply=%s kind=%s",
+                        correlation_id,
+                        reply_channel,
+                        decoded.envelope.kind,
+                    )
                     continue
                 if result.request_id == verb_request.request_id:
+                    logger.info(
+                        "orch_verb_runtime_result corr=%s reply=%s request_id=%s ok=%s",
+                        correlation_id,
+                        reply_channel,
+                        result.request_id,
+                        result.ok,
+                    )
                     return result
+                logger.info(
+                    "orch_verb_runtime_skip corr=%s reply=%s expected_request_id=%s got_request_id=%s",
+                    correlation_id,
+                    reply_channel,
+                    verb_request.request_id,
+                    result.request_id,
+                )
         raise RuntimeError("Verb result subscription closed without a match.")
 
     try:
         return await asyncio.wait_for(_wait_for_result(), timeout=timeout_sec)
     except asyncio.TimeoutError as exc:
-        raise TimeoutError(f"RPC timeout waiting on orion:verb:result ({verb_request.request_id})") from exc
+        raise TimeoutError(
+            f"RPC timeout waiting on {envelope.reply_to or 'orion:verb:result'} ({verb_request.request_id})"
+        ) from exc
 
 
 async def dispatch_metacog_trigger(

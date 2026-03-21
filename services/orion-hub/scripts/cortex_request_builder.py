@@ -23,6 +23,23 @@ def _normalize_flag(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _build_recall_payload(payload: Dict[str, Any], *, use_recall: bool) -> Dict[str, Any]:
+    recall_mode = str(payload.get("recall_mode") or "hybrid").strip() or "hybrid"
+    recall_required = _normalize_flag(payload.get("recall_required"), default=False)
+    recall_profile = payload.get("recall_profile")
+    if isinstance(recall_profile, str):
+        recall_profile = recall_profile.strip() or None
+    if use_recall and recall_profile is None:
+        recall_profile = "reflect.v1"
+
+    return {
+        "enabled": use_recall,
+        "required": recall_required,
+        "mode": recall_mode,
+        "profile": recall_profile,
+    }
+
+
 def build_cortex_chat_request(
     *,
     payload: Dict[str, Any],
@@ -51,15 +68,7 @@ def build_cortex_chat_request(
     else:
         use_recall = str(raw_recall).strip().lower() in {"1", "true", "yes", "y", "on"}
 
-    recall_payload: Dict[str, Any] = {"enabled": use_recall}
-    if payload.get("recall_mode"):
-        recall_payload["mode"] = payload.get("recall_mode")
-    if payload.get("recall_profile"):
-        recall_payload["profile"] = payload.get("recall_profile")
-    if payload.get("recall_required"):
-        recall_payload["required"] = True
-    if use_recall and "profile" not in recall_payload:
-        recall_payload["profile"] = "reflect.v1"
+    recall_payload = _build_recall_payload(payload, use_recall=use_recall)
 
     options = dict(payload.get("options") or {}) if isinstance(payload.get("options"), dict) else {}
     if selected_ui_route == "agent":

@@ -299,9 +299,18 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
     assert verb_runtime is not None, "Verb runtime not initialized"
 
     raw_payload = env.payload if isinstance(env.payload, dict) else {}
+    corr_id = str(env.correlation_id or raw_payload.get("request_id") or "unknown")
+    reply_channel = str(env.reply_to or "orion:verb:result")
     try:
         req = VerbRequestV1.model_validate(raw_payload)
     except ValidationError as ve:
+        logger.warning(
+            "verb_runtime_validation_failed corr=%s reply=%s request_id=%s error=%s",
+            corr_id,
+            reply_channel,
+            raw_payload.get("request_id"),
+            ve,
+        )
         error_result = VerbResultV1(
             verb=str(raw_payload.get("trigger") or raw_payload.get("verb") or "unknown"),
             ok=False,
@@ -309,20 +318,44 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
             request_id=raw_payload.get("request_id"),
         )
         result_env = _derive_envelope(env, kind="verb.result", payload=error_result.model_dump(mode="json"))
-        await svc.bus.publish("orion:verb:result", result_env)
+        await svc.bus.publish(reply_channel, result_env)
+        if reply_channel != "orion:verb:result":
+            await svc.bus.publish("orion:verb:result", result_env)
         return
 
+    logger.info(
+        "verb_runtime_intake corr=%s reply=%s request_id=%s trigger=%s",
+        corr_id,
+        reply_channel,
+        req.request_id,
+        req.trigger,
+    )
     result = await verb_runtime.handle_request(
         req,
         extra_meta={
             "bus": svc.bus,
             "source": _source(),
-            "correlation_id": str(env.correlation_id),
+            "correlation_id": corr_id,
         },
     )
 
     result_env = _derive_envelope(env, kind="verb.result", payload=result.model_dump(mode="json"))
-    await svc.bus.publish("orion:verb:result", result_env)
+    await svc.bus.publish(reply_channel, result_env)
+    logger.info(
+        "verb_runtime_result corr=%s reply=%s request_id=%s ok=%s",
+        corr_id,
+        reply_channel,
+        result.request_id,
+        result.ok,
+    )
+    if reply_channel != "orion:verb:result":
+        await svc.bus.publish("orion:verb:result", result_env)
+        logger.info(
+            "verb_runtime_result_legacy_mirror corr=%s reply=%s legacy_channel=orion:verb:result request_id=%s",
+            corr_id,
+            reply_channel,
+            result.request_id,
+        )
 
     for effect in result.effects:
         effect_model = effect if isinstance(effect, VerbEffectV1) else VerbEffectV1.model_validate(effect)

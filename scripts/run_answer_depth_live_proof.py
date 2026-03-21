@@ -53,6 +53,40 @@ NEGATIVE_PATTERNS = [
     r"purely managerial",
 ]
 
+SAME_CORR_LOG_KEYS = [
+    "hub_route_egress",
+    "hub_ingress_result",
+    "gateway_intake",
+    "gateway_publish_orch",
+    "gateway_wait_orch",
+    "orch_intake",
+    "orch_plan_wiring",
+    "orch_publish_verb_runtime",
+    "orch_wait_verb_runtime",
+    "verb_runtime_intake",
+    "plan_start",
+    "verb_runtime_result",
+    "orch_verb_runtime_result",
+    "gateway_publish_hub_result",
+    "[planner-react] intake",
+    "[planner-react] replied",
+    "[agent-chain] intake",
+    "[agent-chain] replied",
+    "agent_runtime_stop",
+]
+
+BUS_HOP_LABELS = {
+    "cortex.gateway.chat.request": "hub_to_gateway_request",
+    "cortex.orch.request": "gateway_to_orch_request",
+    "verb.request": "orch_to_exec_verb_request",
+    "verb.result": "exec_to_orch_verb_result",
+    "agent.planner.request": "exec_to_planner_request",
+    "agent.planner.result": "planner_to_exec_result",
+    "agent.chain.request": "exec_to_agent_chain_request",
+    "agent.chain.result": "agent_chain_to_exec_result",
+    "cortex.gateway.chat.result": "gateway_to_hub_result",
+}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -98,6 +132,7 @@ class LiveScenario:
     mode: str = "agent"
     force_agent_chain: bool = True
     route_intent: str = "none"
+    recall_enabled: bool = True
 
 
 class ProbeCollector:
@@ -144,11 +179,30 @@ class ProbeCollector:
                         "ts": _now_iso(),
                         "channel": channel,
                         "kind": env.kind,
+                        "source_service": env.source.name if env.source else None,
                         "correlation_id": str(env.correlation_id),
                         "reply_to": env.reply_to,
                         "payload_keys": sorted(payload.keys()) if isinstance(payload, dict) else [],
                     }
                 )
+
+
+def _ordered_hops(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered: List[Dict[str, Any]] = []
+    for idx, event in enumerate(events):
+        kind = str(event.get("kind") or "")
+        ordered.append(
+            {
+                "index": idx,
+                "label": BUS_HOP_LABELS.get(kind, kind or "unknown"),
+                "kind": kind,
+                "channel": event.get("channel"),
+                "source_service": event.get("source_service"),
+                "reply_to": event.get("reply_to"),
+                "ts": event.get("ts"),
+            }
+        )
+    return ordered
 
 
 async def _run_gateway_chat(
@@ -168,6 +222,12 @@ async def _run_gateway_chat(
             "force_agent_chain": scenario.force_agent_chain,
             **(extra_options or {}),
         },
+        recall={
+            "enabled": scenario.recall_enabled,
+            "required": False,
+            "mode": "hybrid",
+            "profile": "reflect.v1" if scenario.recall_enabled else None,
+        },
     ).model_dump(mode="json")
 
     env = BaseEnvelope(
@@ -178,27 +238,27 @@ async def _run_gateway_chat(
         payload=payload,
     )
 
-    bus = OrionBusAsync(url=bus_url)
-    await bus.connect()
-    probe = ProbeCollector(
-        bus,
-        patterns=[
-            "orion:cortex:*",
-            "orion:verb:*",
-            "orion:exec:request:*",
-            "orion:exec:result:*",
-            "orion:llm:*",
-            "orion:cognition:trace",
-        ],
-        corr_id=corr,
-    )
-    await probe.start()
-
     started = _now_iso()
     error: Optional[str] = None
     raw_payload: Optional[Dict[str, Any]] = None
     result_kind: Optional[str] = None
+    probe_events: List[Dict[str, Any]] = []
+    bus = OrionBusAsync(url=bus_url)
     try:
+        await bus.connect()
+        probe = ProbeCollector(
+            bus,
+            patterns=[
+                "orion:cortex:*",
+                "orion:verb:*",
+                "orion:exec:request:*",
+                "orion:exec:result:*",
+                "orion:llm:*",
+                "orion:cognition:trace",
+            ],
+            corr_id=corr,
+        )
+        await probe.start()
         msg = await bus.rpc_request(
             "orion:cortex:gateway:request",
             env,
@@ -214,8 +274,10 @@ async def _run_gateway_chat(
     except Exception as e:
         error = str(e)
     finally:
-        await asyncio.sleep(0.4)
-        await probe.stop()
+        if "probe" in locals():
+            await asyncio.sleep(0.4)
+            await probe.stop()
+            probe_events = list(probe.events)
         await bus.close()
 
     finished = _now_iso()
@@ -228,10 +290,11 @@ async def _run_gateway_chat(
         "request_channel": "orion:cortex:gateway:request",
         "reply_channel": reply_channel,
         "result_kind": result_kind,
+        "recall_enabled": scenario.recall_enabled,
         "request_payload": payload,
         "response_payload": raw_payload,
         "error": error,
-        "probe_events": probe.events,
+        "probe_events": probe_events,
     }
 
 
@@ -261,7 +324,12 @@ async def _run_orch_chat(
             "diagnostic": True,
             **(extra_options or {}),
         },
-        recall=RecallDirective(enabled=False),
+        recall=RecallDirective(
+            enabled=scenario.recall_enabled,
+            required=False,
+            mode="hybrid",
+            profile="reflect.v1" if scenario.recall_enabled else None,
+        ),
         context=CortexClientContext(
             messages=[LLMMessage(role="user", content=scenario.prompt)],
             raw_user_text=scenario.prompt,
@@ -279,27 +347,27 @@ async def _run_orch_chat(
         payload=payload,
     )
 
-    bus = OrionBusAsync(url=bus_url)
-    await bus.connect()
-    probe = ProbeCollector(
-        bus,
-        patterns=[
-            "orion:cortex:*",
-            "orion:verb:*",
-            "orion:exec:request:*",
-            "orion:exec:result:*",
-            "orion:llm:*",
-            "orion:cognition:trace",
-        ],
-        corr_id=corr,
-    )
-    await probe.start()
-
     started = _now_iso()
     error: Optional[str] = None
     raw_payload: Optional[Dict[str, Any]] = None
     result_kind: Optional[str] = None
+    probe_events: List[Dict[str, Any]] = []
+    bus = OrionBusAsync(url=bus_url)
     try:
+        await bus.connect()
+        probe = ProbeCollector(
+            bus,
+            patterns=[
+                "orion:cortex:*",
+                "orion:verb:*",
+                "orion:exec:request:*",
+                "orion:exec:result:*",
+                "orion:llm:*",
+                "orion:cognition:trace",
+            ],
+            corr_id=corr,
+        )
+        await probe.start()
         msg = await bus.rpc_request(
             "orion:cortex:request",
             env,
@@ -315,8 +383,10 @@ async def _run_orch_chat(
     except Exception as e:
         error = str(e)
     finally:
-        await asyncio.sleep(0.4)
-        await probe.stop()
+        if "probe" in locals():
+            await asyncio.sleep(0.4)
+            await probe.stop()
+            probe_events = list(probe.events)
         await bus.close()
 
     finished = _now_iso()
@@ -336,14 +406,16 @@ async def _run_orch_chat(
         "request_channel": "orion:cortex:request",
         "reply_channel": reply_channel,
         "result_kind": result_kind,
+        "recall_enabled": scenario.recall_enabled,
         "request_payload": payload,
         "response_payload": response_payload,
         "error": error,
-        "probe_events": probe.events,
+        "probe_events": probe_events,
     }
 
 
 def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[str, Any]:
+    request_payload = raw.get("request_payload") or {}
     payload = raw.get("response_payload") or {}
     # Gateway wraps result as CortexChatResult(cortex_result=..., final_text=...)
     if isinstance(payload, dict):
@@ -426,18 +498,30 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
         unavailable["tool_sequence"] = "No step_name sequence available from cortex_result.steps."
 
     events = raw.get("probe_events") or []
+    ordered_hops = _ordered_hops(events if isinstance(events, list) else [])
     saw_orch = any(e.get("kind") == "cortex.orch.request" for e in events)
     saw_exec = any(e.get("kind") == "cortex.exec.request" for e in events)
     saw_verb_req = any(e.get("kind") == "verb.request" for e in events)
+    saw_verb_result = any(e.get("kind") == "verb.result" for e in events)
     saw_planner = any(e.get("kind") == "agent.planner.request" for e in events)
     saw_agent_chain = any(e.get("kind") == "agent.chain.request" for e in events)
     saw_llm = any(e.get("kind") == "llm.chat.request" for e in events)
+    saw_gateway_result = any(e.get("kind") == "cortex.gateway.chat.result" for e in events)
+    dedicated_verb_result = any(
+        e.get("kind") == "verb.result"
+        and str(e.get("channel") or "").startswith(f"orion:verb:result:{raw.get('correlation_id')}:")
+        for e in events
+    )
     # Orch->verb->exec is internal; we require orch + planner + llm + agent_chain for live path proof.
     real_orch_path = saw_orch and saw_verb_req and (saw_planner or saw_agent_chain) and saw_llm
 
     pass_checks = {
         "real_orch_path_observed": real_orch_path,
+        "dedicated_verb_result_observed": dedicated_verb_result,
+        "gateway_result_observed": saw_gateway_result,
         "plannerreact_bus_observed": saw_planner,
+        "agent_chain_bus_observed": saw_agent_chain,
+        "verb_result_bus_observed": saw_verb_result,
         "llm_bus_observed": saw_llm,
         "output_mode_expected": output_mode == "implementation_guide" if output_mode is not None else None,
         "response_profile_expected": response_profile == "technical_delivery" if response_profile is not None else None,
@@ -458,6 +542,8 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
     overall_pass = (
         raw.get("error") is None
         and pass_checks["real_orch_path_observed"] is True
+        and pass_checks["dedicated_verb_result_observed"] is True
+        and pass_checks["gateway_result_observed"] is True
         and pass_checks["plannerreact_bus_observed"] is True
         and pass_checks["llm_bus_observed"] is True
         and quality["overall_pass"] is True
@@ -472,6 +558,11 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
         "reply_channel": raw.get("reply_channel"),
         "result_kind": raw.get("result_kind"),
         "error": raw.get("error"),
+        "request_mode": request_payload.get("mode"),
+        "request_supervised": bool((request_payload.get("options") or {}).get("supervised")),
+        "request_force_agent_chain": bool((request_payload.get("options") or {}).get("force_agent_chain")),
+        "request_recall": request_payload.get("recall"),
+        "recall_enabled": _extract(request_payload, "recall", "enabled"),
         "request_text": _extract(raw, "request_payload", "prompt"),
         "output_mode": output_mode,
         "response_profile": response_profile,
@@ -486,6 +577,9 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
         "quality_checks": quality,
         "pass_checks": pass_checks,
         "overall_pass": overall_pass,
+        "ordered_hops": ordered_hops,
+        "same_corr_log_keys": SAME_CORR_LOG_KEYS,
+        "grep_command": f"grep -E \"{raw.get('correlation_id')}|{'|'.join(SAME_CORR_LOG_KEYS)}\" <service-log-file>",
         "path_observed": {
             "gateway_request_kind": any(e.get("kind") == "cortex.gateway.chat.request" for e in events),
             "orch_request_kind": saw_orch,
@@ -518,6 +612,12 @@ def _write_evidence(base_name: str, evidence: Dict[str, Any]) -> None:
         f"- result_kind: `{evidence.get('result_kind')}`",
         f"- overall_pass: `{evidence.get('overall_pass')}`",
         "",
+        "## Request Configuration",
+        f"- request_mode: `{evidence.get('request_mode')}`",
+        f"- request_supervised: `{evidence.get('request_supervised')}`",
+        f"- request_force_agent_chain: `{evidence.get('request_force_agent_chain')}`",
+        f"- request_recall: `{json.dumps(evidence.get('request_recall') or {}, ensure_ascii=False)}`",
+        "",
         "## Runtime Signals",
         f"- output_mode: `{evidence.get('output_mode')}`",
         f"- response_profile: `{evidence.get('response_profile')}`",
@@ -530,6 +630,21 @@ def _write_evidence(base_name: str, evidence: Dict[str, Any]) -> None:
         "",
         "## Path Observed",
         f"- {json.dumps(evidence.get('path_observed') or {}, ensure_ascii=False)}",
+        "",
+        "## Ordered Same-Corr Hops",
+        "```json",
+        json.dumps(evidence.get("ordered_hops") or [], indent=2, ensure_ascii=False),
+        "```",
+        "",
+        "## Same-Corr Log Keys",
+        "```json",
+        json.dumps(evidence.get("same_corr_log_keys") or [], indent=2, ensure_ascii=False),
+        "```",
+        "",
+        "## Grep Command",
+        "```bash",
+        evidence.get("grep_command") or "",
+        "```",
         "",
         "## Pass Checks",
         "```json",
@@ -576,6 +691,7 @@ async def _run_one(
     timeout_sec: float,
     base_name: str,
     extra_options: Optional[Dict[str, Any]] = None,
+    allow_orch_fallback: bool = False,
 ) -> Dict[str, Any]:
     raw = await _run_gateway_chat(
         bus_url=bus_url,
@@ -584,7 +700,7 @@ async def _run_one(
         extra_options=extra_options,
     )
     gateway_error = raw.get("error")
-    if gateway_error:
+    if gateway_error and allow_orch_fallback:
         # Gateway unavailable in this environment? Fall back to real Orch entry and record this explicitly.
         raw = await _run_orch_chat(
             bus_url=bus_url,
@@ -620,6 +736,16 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         action="store_true",
         help="Exit 0 even if checks fail; evidence is still emitted.",
     )
+    parser.add_argument(
+        "--disable-recall",
+        action="store_true",
+        help="Keep the supervised agent path but send recall.enabled=false for the traced request.",
+    )
+    parser.add_argument(
+        "--allow-orch-fallback",
+        action="store_true",
+        help="Allow fallback to the real Orch entry when Gateway is unavailable. Disabled by default for same-corr Hub proof runs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -633,20 +759,22 @@ async def _amain(argv: List[str]) -> int:
         results.append(
             await _run_one(
                 bus_url=args.bus_url,
-                scenario=LiveScenario(name="discord_deploy_live", prompt=DISCORD_PROMPT),
+                scenario=LiveScenario(name="discord_deploy_live", prompt=DISCORD_PROMPT, recall_enabled=not args.disable_recall),
                 timeout_sec=args.timeout_sec,
                 base_name="discord_deploy_live_evidence",
                 extra_options={"supervised": True, "diagnostic": True},
+                allow_orch_fallback=args.allow_orch_fallback,
             )
         )
     if args.scenario in {"all", "supervisor"}:
         results.append(
             await _run_one(
                 bus_url=args.bus_url,
-                scenario=LiveScenario(name="supervisor_meta_plan_live", prompt=SUPERVISOR_PROMPT),
+                scenario=LiveScenario(name="supervisor_meta_plan_live", prompt=SUPERVISOR_PROMPT, recall_enabled=not args.disable_recall),
                 timeout_sec=args.timeout_sec,
                 base_name="supervisor_meta_plan_live_evidence",
                 extra_options={"supervised": True, "diagnostic": True, "max_steps": 3},
+                allow_orch_fallback=args.allow_orch_fallback,
             )
         )
 
@@ -657,6 +785,7 @@ async def _amain(argv: List[str]) -> int:
             {
                 "scenario": r.get("scenario"),
                 "correlation_id": r.get("correlation_id"),
+                "recall_enabled": r.get("recall_enabled"),
                 "overall_pass": r.get("overall_pass"),
                 "error": r.get("error"),
             }
@@ -682,4 +811,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

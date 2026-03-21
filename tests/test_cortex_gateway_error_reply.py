@@ -106,3 +106,57 @@ def test_gateway_replies_when_result_validation_fails(monkeypatch):
 
     assert captured["payload"].cortex_result.ok is False
     assert captured["payload"].cortex_result.error.get("type") == "invalid_cortex_result"
+
+
+def test_gateway_disabled_recall_forwards_supervised_request_and_replies_to_hub(monkeypatch):
+    client = bus_mod.BusClient()
+    client.bus = _Bus(_Env())
+    captured = {}
+
+    async def _fake_rpc(req, correlation_id=None, causality_chain=None):
+        captured["orch_req"] = req
+        captured["orch_corr"] = correlation_id
+        captured["orch_chain"] = causality_chain
+        return {
+            "ok": True,
+            "mode": "agent",
+            "verb": "agent_runtime",
+            "status": "success",
+            "final_text": "done",
+            "memory_used": False,
+            "recall_debug": {"skipped": "disabled_by_client"},
+            "steps": [],
+            "error": None,
+            "correlation_id": str(correlation_id),
+            "metadata": {"trace_verb": "agent_runtime"},
+        }
+
+    async def _capture(*, reply_to, correlation_id, causality_chain, payload):
+        captured["reply_to"] = reply_to
+        captured["reply_corr"] = correlation_id
+        captured["reply_payload"] = payload
+
+    env = _Env()
+    env.payload = {
+        "prompt": "hello",
+        "mode": "agent",
+        "options": {"supervised": True},
+        "recall": {"enabled": False, "required": False, "mode": "hybrid", "profile": None},
+    }
+    client.bus = _Bus(env)
+
+    monkeypatch.setattr(client, "rpc_call_cortex_orch", _fake_rpc)
+    monkeypatch.setattr(client, "_publish_gateway_reply", _capture)
+
+    asyncio.run(client.handle_gateway_request({"data": b"x"}))
+
+    orch_req = captured["orch_req"]
+    assert orch_req.mode == "agent"
+    assert orch_req.options["supervised"] is True
+    assert orch_req.recall.enabled is False
+    assert orch_req.recall.required is False
+    assert orch_req.recall.mode == "hybrid"
+    assert orch_req.recall.profile is None
+    assert captured["reply_to"].endswith(str(env.correlation_id))
+    assert captured["reply_payload"].cortex_result.ok is True
+    assert captured["reply_payload"].cortex_result.verb == "agent_runtime"

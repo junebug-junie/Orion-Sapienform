@@ -29,6 +29,12 @@ META_PLAN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+GENERIC_STACK_PATTERN = re.compile(r"\b(flask|ubuntu|gunicorn|nginx|wsgi|systemd)\b", re.IGNORECASE)
+ORION_RUNTIME_PATTERN = re.compile(
+    r"\b(orion|hub|orch|exec|plannerreact|planner react|agentchain|agent chain|llm gateway|discord)\b",
+    re.IGNORECASE,
+)
+
 
 def looks_like_meta_plan(text: str) -> bool:
     """Return True if output appears to be meta-planning rather than concrete answer."""
@@ -37,9 +43,32 @@ def looks_like_meta_plan(text: str) -> bool:
     return bool(META_PLAN_PATTERN.search(text))
 
 
+def detect_generic_delivery_drift(
+    text: str,
+    *,
+    request_text: str = "",
+    grounding_mode: str | None = None,
+) -> Tuple[bool, str]:
+    if not text or grounding_mode != "orion_repo_architecture":
+        return False, ""
+    request_norm = (request_text or "").lower()
+    if "orion" not in request_norm:
+        return False, ""
+    if "discord" not in request_norm:
+        return False, ""
+    if not GENERIC_STACK_PATTERN.search(text):
+        return False, ""
+    if ORION_RUNTIME_PATTERN.search(text):
+        return False, ""
+    return True, "generic_architecture_drift"
+
+
 def should_rewrite_for_instructional(
     text: str,
     output_mode: str | None,
+    *,
+    request_text: str = "",
+    grounding_mode: str | None = None,
 ) -> Tuple[bool, str]:
     """
     Return (should_rewrite, reason).
@@ -62,6 +91,13 @@ def should_rewrite_for_instructional(
         return False, ""
     if looks_like_meta_plan(text):
         return True, "meta_plan_detected"
+    generic_drift, generic_reason = detect_generic_delivery_drift(
+        text,
+        request_text=request_text,
+        grounding_mode=grounding_mode,
+    )
+    if generic_drift:
+        return True, generic_reason
     # Short generic outputs that lack specifics
     if len(text.strip()) < 120 and not any(c in text for c in ["`", "1.", "2.", "Step", "```"]):
         return False, ""

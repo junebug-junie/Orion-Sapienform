@@ -26,11 +26,12 @@ from orion.schemas.agents.schemas import (
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionResult, StepExecutionResult
 from orion.cognition.verb_activation import is_active
+from orion.cognition.delivery_grounding import build_delivery_grounding_context
 from orion.cognition.quality_evaluator import should_rewrite_for_instructional
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
-from .recall_utils import has_inline_recall, resolve_profile, should_run_recall
+from .recall_utils import delivery_safe_recall_decision, has_inline_recall
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.supervisor")
@@ -359,6 +360,9 @@ class Supervisor:
             ext_facts["output_mode"] = ctx["output_mode"]
         if ctx.get("response_profile"):
             ext_facts["response_profile"] = ctx["response_profile"]
+        for key in ("delivery_grounding_mode", "grounding_context", "anti_generic_drift"):
+            if ctx.get(key):
+                ext_facts[key] = ctx[key]
         planner_req = PlannerRequest(
             request_id=correlation_id,
             caller="cortex-exec",
@@ -582,19 +586,26 @@ class Supervisor:
             verb_recall_profile = req.metadata.get("recall_profile") or None
         ctx.setdefault("plan_recall_profile", verb_recall_profile)
         recall_required = bool(recall_cfg.get("required", False))
-        selected_profile, profile_source = resolve_profile(
+        recall_policy = delivery_safe_recall_decision(
             recall_cfg,
+            req.steps,
+            output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
         )
+        selected_profile = recall_policy["profile"]
+        profile_source = recall_policy["profile_source"]
+        ctx.setdefault("debug", {})["recall_gating_reason"] = recall_policy["recall_gating_reason"]
         inline_recall = has_inline_recall(req.steps)
-        should_recall, recall_reason = should_run_recall(recall_cfg, req.steps)
+        should_recall = bool(recall_policy["run_recall"])
+        recall_reason = str(recall_policy["reason"])
 
         if should_recall and not inline_recall:
             logger.info(
-                "Supervisor recall resolved profile=%s source=%s gating=%s",
+                "Supervisor recall resolved profile=%s source=%s gating=%s recall_gating_reason=%s",
                 selected_profile,
                 profile_source,
                 recall_reason,
+                recall_policy["recall_gating_reason"],
             )
             recall_step, recall_debug, _ = await run_recall_step(
                 self.bus,
@@ -623,16 +634,23 @@ class Supervisor:
                 )
         else:
             if inline_recall:
-                recall_debug = {"skipped": "inline_recall_step_present"}
+                recall_debug = {
+                    "skipped": "inline_recall_step_present",
+                    "recall_gating_reason": recall_policy["recall_gating_reason"],
+                }
                 logger.info(
                     "Supervisor recall skipped; inline RecallService step present",
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
                 )
             else:
-                recall_debug = {"skipped": recall_reason}
+                recall_debug = {
+                    "skipped": recall_reason,
+                    "recall_gating_reason": recall_policy["recall_gating_reason"],
+                }
                 logger.info(
-                    "Supervisor recall skipped by gating (%s)",
+                    "Supervisor recall skipped by gating (%s) recall_gating_reason=%s",
                     recall_reason,
+                    recall_policy["recall_gating_reason"],
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
                 )
 
@@ -899,12 +917,23 @@ class Supervisor:
 
         # Shallow planner-only final (no agent_chain): re-synthesize if meta-plan for delivery-oriented mode
         if final_text and mode in {"agent", "council"}:
-            shallow, _ = should_rewrite_for_instructional(final_text, ctx.get("output_mode"))
+            grounding = build_delivery_grounding_context(
+                user_text=_last_user_message(ctx),
+                output_mode=ctx.get("output_mode"),
+            )
+            shallow, rewrite_reason = should_rewrite_for_instructional(
+                final_text,
+                ctx.get("output_mode"),
+                request_text=_last_user_message(ctx),
+                grounding_mode=grounding.get("delivery_grounding_mode"),
+            )
             if shallow:
                 logger.info(
-                    "supervisor_finalize_response_invoked=1 corr=%s output_mode=%s (planner meta-plan)",
+                    "supervisor_finalize_response_invoked=1 corr=%s output_mode=%s reason=%s grounding=%s",
                     correlation_id,
                     ctx.get("output_mode"),
+                    rewrite_reason,
+                    grounding.get("delivery_grounding_mode"),
                 )
                 ctx.setdefault("debug", {})["supervisor_meta_plan_finalize"] = True
                 try:
@@ -929,6 +958,7 @@ class Supervisor:
                             "trace": ser_trace,
                             "output_mode": ctx.get("output_mode") or "direct_answer",
                             "response_profile": ctx.get("response_profile") or "direct_answer",
+                            **grounding,
                         },
                     },
                     ctx=ctx,

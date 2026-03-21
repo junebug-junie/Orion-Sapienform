@@ -17,10 +17,11 @@ from .tool_executor import ToolExecutor
 from .tool_registry import ToolRegistry
 from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult, ToolDef
 from orion.cognition.output_mode_classifier import classify_output_mode
-from orion.cognition.quality_evaluator import should_rewrite_for_instructional
+from orion.cognition.quality_evaluator import detect_generic_delivery_drift, should_rewrite_for_instructional
 from orion.cognition.runtime_pack_merge import ensure_delivery_pack_in_packs
 from orion.cognition.agent_chain_guards import repeated_plan_action_needs_delivery, triage_must_finalize
 from orion.cognition.finalize_payload import build_finalize_tool_input
+from orion.cognition.delivery_grounding import build_delivery_grounding_context
 
 logger = logging.getLogger("agent-chain.api")
 
@@ -42,21 +43,35 @@ async def _maybe_rewrite_meta_plan(
     logger_inst: "logging.Logger",
     output_mode: str | None,
     response_profile: str | None = None,
+    trace_snapshot: list | None = None,
 ) -> tuple[str, bool]:
     """If text looks like meta-plan for instructional mode, rewrite via finalize_response."""
-    should_rewrite, _ = should_rewrite_for_instructional(text, output_mode)
+    grounding = build_delivery_grounding_context(user_text=body.text, output_mode=output_mode)
+    should_rewrite, rewrite_reason = should_rewrite_for_instructional(
+        text,
+        output_mode,
+        request_text=body.text,
+        grounding_mode=grounding.get("delivery_grounding_mode"),
+    )
     if not should_rewrite:
         return text, False
-    logger_inst.info("[agent-chain] quality_evaluator_rewrite=1 output_mode=%s", output_mode)
+    logger_inst.info(
+        "[agent-chain] quality_evaluator_rewrite=1 output_mode=%s reason=%s grounding=%s",
+        output_mode,
+        rewrite_reason,
+        grounding.get("delivery_grounding_mode"),
+    )
     try:
         fin_result = await tool_executor.execute_llm_verb(
             "finalize_response",
             {
                 "original_request": body.text,
-                "request": f"Rewrite the following as concrete, actionable instructions. Do not use meta-planning language:\n\n{text[:4000]}",
+                "request": f"Rewrite the following as a concrete, architecture-grounded answer. Do not use meta-planning language or silently swap architectures:\n\n{text[:4000]}",
                 "trace": text[:8000],
                 "output_mode": output_mode or "direct_answer",
                 "response_profile": response_profile or "direct_answer",
+                "trace_preferred_output": text[:8000],
+                **grounding,
             },
             parent_correlation_id=parent_corr_id,
         )
@@ -104,6 +119,48 @@ def _finalize_tool_input(
         output_mode=output_mode,
         response_profile=response_profile,
     )
+
+
+def _ground_tool_input(
+    *,
+    tool_id: str,
+    tool_input: dict[str, Any],
+    body: AgentChainRequest,
+    trace_snapshot: list,
+    output_mode: str | None,
+    response_profile: str | None,
+) -> dict[str, Any]:
+    grounded = dict(tool_input or {})
+    if tool_id not in {
+        "answer_direct",
+        "finalize_response",
+        "write_guide",
+        "write_tutorial",
+        "write_runbook",
+        "write_recommendation",
+        "compare_options",
+        "synthesize_patterns",
+        "generate_code_scaffold",
+    }:
+        return grounded
+    grounding = build_delivery_grounding_context(user_text=body.text, output_mode=output_mode)
+    grounded.setdefault("output_mode", output_mode or "direct_answer")
+    grounded.setdefault("response_profile", response_profile or "direct_answer")
+    grounded.setdefault("request", body.text)
+    grounded.setdefault("text", body.text)
+    grounded.setdefault("original_request", body.text)
+    grounded.setdefault("trace", json.dumps([dict(s) for s in trace_snapshot], default=str)[:12000])
+    grounded.update({k: v for k, v in grounding.items() if k not in grounded})
+    finalize_payload = build_finalize_tool_input(
+        user_text=body.text,
+        trace_snapshot=trace_snapshot,
+        output_mode=output_mode,
+        response_profile=response_profile,
+    )
+    for key in ("trace_preferred_output", "finalization_source_trace_used"):
+        if key in finalize_payload and key not in grounded:
+            grounded[key] = finalize_payload[key]
+    return grounded
 
 
 def _delivery_override_for_plan_action_repeat(
@@ -154,11 +211,13 @@ async def execute_agent_chain(
 ) -> AgentChainResult:
     parent_corr_id = str(correlation_id or uuid.uuid4())
     output_mode, response_profile = _effective_output_modes(body)
+    grounding = build_delivery_grounding_context(user_text=body.text, output_mode=output_mode)
     tools, pack_names = _resolve_tools(body, output_mode=output_mode)
     tool_ids = [t.tool_id for t in tools]
     dbg: dict[str, Any] = {
         "output_mode": output_mode,
         "response_profile": response_profile,
+        "delivery_grounding_mode": grounding.get("delivery_grounding_mode"),
         "packs": pack_names,
         "resolved_tool_ids": tool_ids,
         "triage_blocked_post_step0": False,
@@ -166,6 +225,8 @@ async def execute_agent_chain(
         "repeated_plan_action_escalation": False,
         "finalize_response_invoked": False,
         "quality_evaluator_rewrite": False,
+        "generic_drift_detected": False,
+        "finalization_source_trace_used": False,
     }
     logger.info(
         "[agent-chain] wiring corr=%s output_mode=%s profile=%s packs=%s tools=%s",
@@ -192,6 +253,7 @@ async def execute_agent_chain(
                 "text": body.text,
                 "output_mode": output_mode,
                 "response_profile": response_profile,
+                **grounding,
             },
         },
         "toolset": [t.model_dump() for t in tools],
@@ -234,11 +296,31 @@ async def execute_agent_chain(
             if text or structured:
                 if not text and structured:
                     text = json.dumps(structured, indent=2)
+                pre_rewrite_drift, _ = detect_generic_delivery_drift(
+                    text,
+                    request_text=body.text,
+                    grounding_mode=dbg.get("delivery_grounding_mode"),
+                )
                 text, rewrote = await _maybe_rewrite_meta_plan(
-                    text, body, tool_executor, parent_corr_id, logger, output_mode, response_profile
+                    text,
+                    body,
+                    tool_executor,
+                    parent_corr_id,
+                    logger,
+                    output_mode,
+                    response_profile,
+                    trace_snapshot=planner_payload.get("trace") or [],
                 )
                 if rewrote:
                     dbg["finalize_response_invoked"] = True
+                drifted, _ = detect_generic_delivery_drift(
+                    text,
+                    request_text=body.text,
+                    grounding_mode=dbg.get("delivery_grounding_mode"),
+                )
+                dbg["generic_drift_detected"] = dbg["generic_drift_detected"] or pre_rewrite_drift or drifted
+                if pre_rewrite_drift or drifted:
+                    logger.info("[agent-chain] generic_drift_detected=1 output_mode=%s", output_mode)
                 dbg["quality_evaluator_rewrite"] = rewrote
                 raw_resp = {**raw_resp, "runtime_debug": dbg}
                 return AgentChainResult(
@@ -316,7 +398,14 @@ async def execute_agent_chain(
                             logger.warning("[agent-chain] finalize_response failed: %s", e)
 
                     fallback, rewrote = await _maybe_rewrite_meta_plan(
-                        fallback, body, tool_executor, parent_corr_id, logger, output_mode, response_profile
+                        fallback,
+                        body,
+                        tool_executor,
+                        parent_corr_id,
+                        logger,
+                        output_mode,
+                        response_profile,
+                        trace_snapshot=planner_payload.get("trace") or [],
                     )
                     dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
                     if rewrote:
@@ -356,6 +445,21 @@ async def execute_agent_chain(
 
             if tool_id == "finalize_response":
                 dbg["finalize_response_invoked"] = True
+            tool_input = _ground_tool_input(
+                tool_id=str(tool_id),
+                tool_input=tool_input if isinstance(tool_input, dict) else {},
+                body=body,
+                trace_snapshot=planner_payload.get("trace") or [],
+                output_mode=output_mode,
+                response_profile=response_profile,
+            )
+            if tool_input.get("finalization_source_trace_used") is True:
+                dbg["finalization_source_trace_used"] = True
+                logger.info(
+                    "[agent-chain] finalization_source_trace_used=1 tool_id=%s output_mode=%s",
+                    tool_id,
+                    output_mode,
+                )
 
             observation = await tool_executor.execute_llm_verb(
                 tool_id,
@@ -366,10 +470,26 @@ async def execute_agent_chain(
             if tool_id == "finalize_response":
                 final_text = _usable_finalized_text(observation)
                 if final_text:
+                    dbg["quality_evaluator_rewrite"] = True
                     final_text, rewrote = await _maybe_rewrite_meta_plan(
-                        final_text, body, tool_executor, parent_corr_id, logger, output_mode, response_profile
+                        final_text,
+                        body,
+                        tool_executor,
+                        parent_corr_id,
+                        logger,
+                        output_mode,
+                        response_profile,
+                        trace_snapshot=planner_payload.get("trace") or [],
                     )
                     dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
+                    drifted, _ = detect_generic_delivery_drift(
+                        final_text,
+                        request_text=body.text,
+                        grounding_mode=dbg.get("delivery_grounding_mode"),
+                    )
+                    dbg["generic_drift_detected"] = dbg["generic_drift_detected"] or drifted
+                    if drifted:
+                        logger.info("[agent-chain] generic_drift_detected=1 output_mode=%s", output_mode)
                     return AgentChainResult(
                         mode=body.mode,
                         text=final_text,
@@ -399,7 +519,14 @@ async def execute_agent_chain(
             logger.warning("[agent-chain] finalize_response at step cap failed: %s", e)
             final_text = "Max steps reached. Please try a more focused request."
         final_text, rewrote = await _maybe_rewrite_meta_plan(
-            final_text, body, tool_executor, parent_corr_id, logger, output_mode, response_profile
+            final_text,
+            body,
+            tool_executor,
+            parent_corr_id,
+            logger,
+            output_mode,
+            response_profile,
+            trace_snapshot=planner_payload.get("trace") or [],
         )
         dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
         return AgentChainResult(

@@ -147,6 +147,7 @@ def test_salvage_layer_recovers_common_wrappers(raw_text: str, expected_snippet:
     parsed, meta = api._parse_planner_response_text(raw_text)
 
     assert meta["salvage_succeeded"] is True
+    assert meta["parse_mode"] == "normalized_from_jsonish"
     assert parsed["finish"] is True
     assert expected_snippet in parsed["final_answer"]
 
@@ -365,6 +366,39 @@ def test_repair_path_accepts_finish_true_content_object_without_action(monkeypat
     assert calls["count"] == 2
     assert res.final_answer is not None
     assert res.final_answer.content == "### Fixed\nShip the response."
+
+
+def test_raw_code_block_final_answer_is_salvaged() -> None:
+    parsed, meta = api._parse_planner_response_text("```bash\npython bot_bridge.py --discord\n```")
+
+    assert parsed["finish"] is True
+    assert parsed["final_answer"]["content"] == "python bot_bridge.py --discord"
+    assert meta["parse_mode"] == "salvaged_from_code_block"
+    assert meta["salvage_source"] == "bash"
+
+
+def test_mixed_text_final_answer_is_salvaged() -> None:
+    raw = "## Orion Discord Integration\n1. Add a Discord bridge service.\n2. Route messages through Orch and Exec."
+    parsed, meta = api._parse_planner_response_text(raw)
+
+    assert parsed["finish"] is True
+    assert "Discord bridge service" in parsed["final_answer"]["content"]
+    assert meta["parse_mode"] == "salvaged_final_answer_from_mixed_text"
+
+
+def test_finish_true_with_final_answer_content_and_no_action_normalizes_cleanly() -> None:
+    normalized = api._validate_or_normalize_planner_step(
+        {"thought": "done", "finish": True, "action": None, "final_answer": {"content": "Ship it"}}
+    )
+
+    assert normalized["finish"] is True
+    assert normalized["final_answer"] == "Ship it"
+    assert normalized["action"] is None
+
+
+def test_finish_false_without_action_fails_cleanly() -> None:
+    with pytest.raises(api.PlannerSchemaError, match="finish=false requires an action"):
+        api._validate_or_normalize_planner_step({"thought": "need tool", "finish": False, "action": None, "final_answer": None})
 
 
 def test_unrecoverable_garbage_still_falls_back() -> None:

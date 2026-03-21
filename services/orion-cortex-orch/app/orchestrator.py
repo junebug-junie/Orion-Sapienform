@@ -28,6 +28,7 @@ from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 from orion.cognition.output_mode_classifier import classify_output_mode
+from orion.cognition.delivery_grounding import build_delivery_grounding_context
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -295,6 +296,7 @@ def build_plan_request(
         output_mode_decision = output_mode_decision or omd.model_dump()
     context["output_mode"] = output_mode
     context["response_profile"] = response_profile
+    context.update(build_delivery_grounding_context(user_text=_user_text_for_classifier(client_request), output_mode=output_mode))
     if isinstance(output_mode_decision, dict):
         context.setdefault("metadata", {})["output_mode_decision"] = output_mode_decision
 

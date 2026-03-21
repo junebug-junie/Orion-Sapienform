@@ -18,6 +18,7 @@ from scripts.chat_history import (
     build_chat_turn_envelope,
     publish_chat_turn,
 )
+from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
@@ -569,12 +570,14 @@ async def websocket_endpoint(websocket: WebSocket):
             orion_response_text = ""
             memory_digest = None
             recall_debug = None
+            agent_trace = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
                 if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
                     recall_debug = resp.cortex_result.recall_debug
                     memory_digest = recall_debug.get("memory_digest")
+                agent_trace = extract_agent_trace_payload(resp.cortex_result)
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
@@ -621,6 +624,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "memory_digest": memory_digest,
                 "memory_used": memory_used,
                 "recall_debug": recall_debug,
+                "agent_trace": agent_trace,
                 "no_write": no_write,
                 "routing_debug": route_debug,
             }

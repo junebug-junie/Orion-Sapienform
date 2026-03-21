@@ -30,9 +30,11 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.notify import NotificationRequest
+from orion.schemas.self_study import SelfStudyRetrieveRequestV1
 from orion.notify.client import NotifyClient
 
 from .router import PlanRouter
+from .self_study import run_self_concept_induce, run_self_concept_reflect, run_self_repo_inspect, run_self_retrieve
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.verb_adapters")
@@ -786,6 +788,74 @@ class LandingPadLastEventsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             filtered.append(event)
         result = {"available": True, "events": filtered, "count": len(filtered)}
         return _skill_result_output(skill_name="skills.landing_pad.last_events.v1", result=result), []
+
+
+@verb("self_repo_inspect")
+class SelfRepoInspectVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
+        result = await run_self_repo_inspect(
+            bus=ctx.meta.get("bus"),
+            source=_actions_source(ctx.meta.get("source")),
+            correlation_id=correlation_id,
+        )
+        data = result.model_dump(mode="json")
+        return _skill_result_output(skill_name="self_repo_inspect", result=data), []
+
+
+@verb("self_concept_induce")
+class SelfConceptInduceVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
+        result = await run_self_concept_induce(
+            bus=ctx.meta.get("bus"),
+            source=_actions_source(ctx.meta.get("source")),
+            correlation_id=correlation_id,
+        )
+        data = result.model_dump(mode="json")
+        return _skill_result_output(skill_name="self_concept_induce", result=data), []
+
+
+@verb("self_concept_reflect")
+class SelfConceptReflectVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
+        result = await run_self_concept_reflect(
+            bus=ctx.meta.get("bus"),
+            source=_actions_source(ctx.meta.get("source")),
+            correlation_id=correlation_id,
+        )
+        data = result.model_dump(mode="json")
+        return _skill_result_output(skill_name="self_concept_reflect", result=data), []
+
+
+@verb("self_retrieve")
+class SelfRetrieveVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        if not skill_args and isinstance(payload.args.extra, dict):
+            skill_args = dict(payload.args.extra)
+        request = SelfStudyRetrieveRequestV1.model_validate(skill_args)
+        result = await run_self_retrieve(
+            request=request,
+            bus=ctx.meta.get("bus"),
+            source=_actions_source(ctx.meta.get("source")),
+            correlation_id=str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4())),
+        )
+        data = result.model_dump(mode="json")
+        return _skill_result_output(skill_name="self_retrieve", result=data), []
 
 
 @verb("skills.system.notify_chat_message.v1")

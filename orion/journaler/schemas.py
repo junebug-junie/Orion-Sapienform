@@ -20,6 +20,8 @@ JournalSourceKind = Literal[
     "metacog",
     "manual",
     "scheduler",
+    "self_study",
+    "self_reflection",
 ]
 JournalMode = Literal["daily", "response", "digest", "manual"]
 

@@ -35,6 +35,9 @@ from app.models import (
     NotificationRequestDB,
     NotificationReceiptDB,
     JournalEntrySQL,
+    SocialRoomTurnSQL,
+    ExternalRoomMessageSQL,
+    ExternalRoomParticipantSQL,
 )
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -49,6 +52,13 @@ from orion.schemas.telemetry.dream import DreamRequest
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
+from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
+from orion.schemas.social_bridge import (
+    ExternalRoomMessageV1,
+    ExternalRoomParticipantV1,
+    ExternalRoomPostResultV1,
+    ExternalRoomTurnSkippedV1,
+)
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
@@ -67,7 +77,8 @@ except ImportError:
 logger = logging.getLogger("sql-writer")
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
-INSERT_ONLY_MODELS = {JournalEntrySQL}
+SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
+INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL}
 
 
 def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
@@ -99,6 +110,9 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "NotificationRequestDB": (NotificationRequestDB, None),
     "NotificationReceiptDB": (NotificationReceiptDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
+    "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
+    "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
+    "ExternalRoomParticipantSQL": (ExternalRoomParticipantSQL, ExternalRoomParticipantV1),
 }
 
 
@@ -566,6 +580,17 @@ def _build_collapse_stored_payload(payload: dict[str, Any], *, correlation_id: s
     )
 
 
+def _build_social_turn_stored_payload(payload: dict[str, Any], *, correlation_id: str | None) -> SocialRoomTurnStoredV1:
+    base = dict(payload)
+    if correlation_id and not base.get("correlation_id"):
+        base["correlation_id"] = correlation_id
+    if not base.get("text"):
+        prompt = str(base.get("prompt") or "").strip()
+        response = str(base.get("response") or "").strip()
+        base["text"] = f"User: {prompt}\nOrion: {response}".strip()
+    return SocialRoomTurnStoredV1.model_validate(base)
+
+
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
     sess = get_session()
     try:
@@ -694,6 +719,11 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
         sql_model, schema_model = MODEL_MAP[route_key]
         try:
             data_to_process = env.payload
+            if route_key == "ExternalRoomMessageSQL":
+                if env.kind == "external.room.post.result.v1":
+                    schema_model = ExternalRoomPostResultV1
+                elif env.kind == "external.room.turn.skipped.v1":
+                    schema_model = ExternalRoomTurnSkippedV1
 
             if isinstance(data_to_process, dict):
                 data_to_process = data_to_process.copy()
@@ -769,6 +799,26 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                     await bus.publish("orion:collapse:stored", stored_env)
                 except Exception:
                     logger.exception("Failed to emit collapse stored event corr=%s", getattr(env, "correlation_id", None))
+            if (
+                env.kind == "social.turn.v1"
+                and write_ok
+                and bus is not None
+                and settings.sql_writer_emit_social_turn_stored
+            ):
+                try:
+                    stored_payload = _build_social_turn_stored_payload(
+                        env.payload if isinstance(env.payload, dict) else {},
+                        correlation_id=extra_sql_fields.get("correlation_id"),
+                    )
+                    stored_env = env.derive_child(
+                        kind=SOCIAL_TURN_STORED_KIND,
+                        source=ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name),
+                        payload=stored_payload.model_dump(mode="json"),
+                        reply_to=None,
+                    )
+                    await bus.publish(settings.sql_writer_social_turn_stored_channel, stored_env)
+                except Exception:
+                    logger.exception("Failed to emit social turn stored event corr=%s", getattr(env, "correlation_id", None))
             written_label = env.kind
             if schema_model is ChatGptLogTurnV1:
                 written_label = "ChatGptLogTurnV1"

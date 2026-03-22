@@ -123,10 +123,12 @@ def build_self_study_consumer_context(
     notes: Sequence[str] | None = None,
 ) -> SelfStudyConsumerContextV1:
     return SelfStudyConsumerContextV1(
+        consulted=True,
         consumer_name=decision.consumer_name,
         consumer_kind=decision.consumer_kind,
         retrieval_mode=decision.retrieval_mode or "factual",
         policy_reason=decision.policy_reason,
+        policy_decision=decision,
         used=result is not None,
         result=result,
         notes=list(notes or []),
@@ -135,9 +137,18 @@ def build_self_study_consumer_context(
 
 def render_self_study_consumer_context(context: SelfStudyConsumerContextV1, *, max_items: int = 6) -> str:
     if context.result is None:
-        return f"SELF-STUDY CONTEXT unavailable ({context.policy_reason})."
+        return (
+            "SELF-STUDY CONTEXT "
+            f"consumer={context.consumer_name} "
+            f"status=disabled reason={context.policy_reason}."
+        )
     lines = [
-        f"SELF-STUDY CONTEXT mode={context.retrieval_mode} consumer={context.consumer_name}",
+        (
+            "SELF-STUDY CONTEXT "
+            f"mode={context.retrieval_mode} "
+            f"consumer={context.consumer_name} "
+            f"policy={context.policy_reason}"
+        ),
         f"Counts: total={context.result.counts.total}, authoritative={context.result.counts.authoritative}, induced={context.result.counts.induced}, reflective={context.result.counts.reflective}",
     ]
     shown = 0

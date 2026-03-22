@@ -1,9 +1,74 @@
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from orion.cognition.verb_activation import is_active
 from orion.schemas.cortex.contracts import CortexChatRequest
+from orion.schemas.social_memory import (
+    SocialParticipantContinuityV1,
+    SocialRoomContinuityV1,
+    SocialStanceSnapshotV1,
+)
+
+try:
+    from scripts.social_room import (
+        SOCIAL_ROOM_PROFILE,
+        SOCIAL_ROOM_RECALL_PROFILE,
+        SOCIAL_ROOM_VERB,
+        build_social_artifact_dialogue,
+        build_style_adaptation_snapshot,
+        build_social_concept_evidence,
+        build_social_grounding_state,
+        is_social_room_payload,
+        resolve_social_skill_allowlist,
+        select_social_room_skill,
+    )
+except ImportError:  # pragma: no cover - test/module-loader compatibility
+    HERE = Path(__file__).resolve().parent
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
+    from social_room import (  # type: ignore
+        SOCIAL_ROOM_PROFILE,
+        SOCIAL_ROOM_RECALL_PROFILE,
+        SOCIAL_ROOM_VERB,
+        build_social_artifact_dialogue,
+        build_style_adaptation_snapshot,
+        build_social_concept_evidence,
+        build_social_grounding_state,
+        is_social_room_payload,
+        resolve_social_skill_allowlist,
+        select_social_room_skill,
+    )
+
+
+def _hub_social_skills_enabled() -> bool:
+    return _normalize_flag(os.getenv("HUB_SOCIAL_SKILLS_ENABLED"), default=True)
+
+
+def _hub_social_skill_allowlist() -> str:
+    return os.getenv(
+        "HUB_SOCIAL_SKILLS_ALLOWLIST",
+        "social_artifact_dialogue,social_summarize_thread,social_safe_recall,social_self_ground,social_followup_question,social_room_reflection,social_exit_or_pause",
+    )
+
+
+def _hub_social_style_adaptation_enabled() -> bool:
+    return _normalize_flag(os.getenv("HUB_SOCIAL_STYLE_ADAPTATION_ENABLED"), default=True)
+
+
+def _hub_social_room_rituals_enabled() -> bool:
+    return _normalize_flag(os.getenv("HUB_SOCIAL_ROOM_RITUALS_ENABLED"), default=True)
+
+
+def _hub_social_style_confidence_floor() -> float:
+    try:
+        value = float(os.getenv("HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR", "0.35"))
+    except Exception:
+        value = 0.35
+    return max(0.0, min(value, 1.0))
 
 
 def _normalize_mode(value: Any, *, default_mode: str, auto_default_enabled: bool) -> str:
@@ -40,6 +105,77 @@ def _build_recall_payload(payload: Dict[str, Any], *, use_recall: bool) -> Dict[
     }
 
 
+def _build_social_epistemic_phrase_hint(
+    *,
+    epistemic_signal: Dict[str, Any],
+    epistemic_decision: Dict[str, Any],
+    room_continuity: Dict[str, Any],
+) -> Dict[str, str] | None:
+    if not epistemic_signal and not epistemic_decision:
+        return None
+
+    claim_kind = str(epistemic_signal.get("claim_kind") or "").strip().lower()
+    decision = str(epistemic_decision.get("decision") or "").strip().lower()
+    confidence = str(epistemic_signal.get("confidence_level") or "").strip().lower()
+    ambiguity = str(epistemic_signal.get("ambiguity_level") or "").strip().lower()
+
+    lead_in = ""
+    caution = ""
+    if claim_kind == "recall":
+        lead_in = "Lead naturally with a memory frame such as 'From what I remember,' or 'As I remember it,'."
+        caution = "Keep recall bounded to what is actually supported; do not overstate uncertain details."
+    elif claim_kind == "summary":
+        lead_in = "Lead naturally with a compact summary frame such as 'Quick summary:' or 'Where we seem to be is...'."
+        caution = "Stay with the active thread and avoid drifting into broader claims than the room asked for."
+    elif claim_kind == "inference":
+        lead_in = "Lead naturally with an interpretive frame such as 'My read is...' or 'It seems like...'."
+        caution = "Mark interpretation as interpretation rather than memory or fact."
+    elif claim_kind == "speculation":
+        lead_in = "Lead naturally with a tentative frame such as 'Tentatively,' or 'My best guess is...'."
+        caution = "Stay obviously tentative and prefer visible room context over invented detail."
+    elif claim_kind == "clarification_needed" or decision == "ask_clarifying_question":
+        lead_in = "Ask one short clarifying question first, without preamble or extra explanation."
+        caution = "Clarify scope, thread, or target before making a claim."
+    elif claim_kind == "proposal":
+        lead_in = "Keep the reply narrow and treat the topic as still pending rather than settled."
+        caution = "Do not frame pending or declined shared-artifact state as accepted memory."
+
+    if ambiguity in {"medium", "high"} and decision != "ask_clarifying_question":
+        caution = (
+            f"{caution} Default to the narrower thread and audience because ambiguity is still {ambiguity}."
+        ).strip()
+    if confidence == "low" and claim_kind in {"recall", "inference", "speculation"}:
+        caution = (
+            f"{caution} Confidence is low, so keep the wording modest and avoid sounding definitive."
+        ).strip()
+    active_claims = room_continuity.get("active_claims") if isinstance(room_continuity, dict) else []
+    claim_states = {
+        str(item.get("current_stance") or "").strip().lower()
+        for item in (active_claims or [])
+        if isinstance(item, dict)
+    }
+    if claim_states & {"provisional", "disputed", "corrected", "revised", "withdrawn"}:
+        caution = (
+            f"{caution} Track what was claimed versus what was corrected, and do not present provisional or disputed claims as settled fact."
+        ).strip()
+    consensus_states = {
+        str(item.get("consensus_state") or "").strip().lower()
+        for item in ((room_continuity.get("claim_consensus_states") or []) if isinstance(room_continuity, dict) else [])
+        if isinstance(item, dict)
+    }
+    if consensus_states & {"partial", "contested", "corrected"}:
+        caution = (
+            f"{caution} Attribute who holds which view and avoid flattening contested or partial alignment into room consensus."
+        ).strip()
+
+    if not lead_in and not caution:
+        return None
+    return {
+        "lead_in": lead_in,
+        "caution": " ".join(part for part in (caution,) if part).strip(),
+    }
+
+
 def build_cortex_chat_request(
     *,
     payload: Dict[str, Any],
@@ -56,6 +192,9 @@ def build_cortex_chat_request(
         default_mode=default_mode,
         auto_default_enabled=auto_default_enabled,
     )
+    social_room = is_social_room_payload(payload)
+    if social_room:
+        selected_ui_route = "brain"
     mode = selected_ui_route
 
     raw_recall = payload.get("use_recall", None)
@@ -69,15 +208,25 @@ def build_cortex_chat_request(
         use_recall = str(raw_recall).strip().lower() in {"1", "true", "yes", "y", "on"}
 
     recall_payload = _build_recall_payload(payload, use_recall=use_recall)
+    if social_room:
+        recall_payload["enabled"] = use_recall
+        recall_payload["required"] = False
+        recall_payload["mode"] = "hybrid"
+        recall_payload["profile"] = SOCIAL_ROOM_RECALL_PROFILE if use_recall else None
 
     options = dict(payload.get("options") or {}) if isinstance(payload.get("options"), dict) else {}
     if selected_ui_route == "agent":
         options.setdefault("supervised", True)
+    if social_room:
+        options["tool_execution_policy"] = "none"
+        options["action_execution_policy"] = "none"
 
     selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
 
     verb_override: str | None = None
-    if len(selected_verbs) == 1:
+    if social_room and not selected_verbs:
+        verb_override = SOCIAL_ROOM_VERB
+    elif len(selected_verbs) == 1:
         verb_override = selected_verbs[0]
         options.pop("allowed_verbs", None)
         if mode == "auto":
@@ -96,6 +245,116 @@ def build_cortex_chat_request(
         options["route_intent"] = "auto"
     else:
         options.pop("route_intent", None)
+    if social_room:
+        route_intent = "none"
+        options.pop("route_intent", None)
+
+    metadata: Dict[str, Any] = {
+        "source": source_label,
+        "hub_route": {
+            "selected_ui_route": selected_ui_route,
+        },
+    }
+    if social_room:
+        peer_continuity = payload.get("social_peer_continuity") or {}
+        room_continuity = payload.get("social_room_continuity") or {}
+        stance_snapshot = payload.get("social_stance_snapshot") or {}
+        peer_style_hint = payload.get("social_peer_style_hint") or {}
+        room_ritual_summary = payload.get("social_room_ritual_summary") or {}
+        bridge_summary = payload.get("social_bridge_summary") or ((room_continuity or {}).get("bridge_summary")) or {}
+        clarifying_question = payload.get("social_clarifying_question") or ((room_continuity or {}).get("clarifying_question")) or {}
+        deliberation_decision = payload.get("social_deliberation_decision") or ((room_continuity or {}).get("deliberation_decision")) or {}
+        turn_handoff = payload.get("social_turn_handoff") or ((room_continuity or {}).get("turn_handoff")) or {}
+        closure_signal = payload.get("social_closure_signal") or ((room_continuity or {}).get("closure_signal")) or {}
+        floor_decision = payload.get("social_floor_decision") or ((room_continuity or {}).get("floor_decision")) or {}
+        open_commitments = payload.get("social_open_commitments") or ((room_continuity or {}).get("active_commitments")) or []
+        thread_routing = payload.get("social_thread_routing") or ((payload.get("social_turn_policy") or {}).get("thread_routing")) or {}
+        handoff_signal = payload.get("social_handoff_signal") or ((payload.get("social_turn_policy") or {}).get("handoff_signal")) or {}
+        repair_signal = payload.get("social_repair_signal") or ((payload.get("social_turn_policy") or {}).get("repair_signal")) or {}
+        repair_decision = payload.get("social_repair_decision") or ((payload.get("social_turn_policy") or {}).get("repair_decision")) or {}
+        epistemic_signal = payload.get("social_epistemic_signal") or ((payload.get("social_turn_policy") or {}).get("epistemic_signal")) or {}
+        epistemic_decision = payload.get("social_epistemic_decision") or ((payload.get("social_turn_policy") or {}).get("epistemic_decision")) or {}
+        epistemic_phrase_hint = _build_social_epistemic_phrase_hint(
+            epistemic_signal=epistemic_signal if isinstance(epistemic_signal, dict) else {},
+            epistemic_decision=epistemic_decision if isinstance(epistemic_decision, dict) else {},
+            room_continuity=room_continuity if isinstance(room_continuity, dict) else {},
+        )
+        skill_cfg = payload.get("social_skill_selection_config") or {}
+        allowlist_raw = (
+            skill_cfg.get("allowlist")
+            if isinstance(skill_cfg, dict) and skill_cfg.get("allowlist") is not None
+            else _hub_social_skill_allowlist()
+        )
+        skill_allowlist = resolve_social_skill_allowlist(
+            ",".join(allowlist_raw) if isinstance(allowlist_raw, list) else allowlist_raw
+        )
+        artifact_proposal, artifact_revision, artifact_confirmation, _, _ = build_social_artifact_dialogue(
+            payload=payload,
+            prompt=prompt,
+        )
+        skills_enabled = _hub_social_skills_enabled()
+        if isinstance(skill_cfg, dict) and skill_cfg.get("enabled") is not None:
+            skills_enabled = _normalize_flag(skill_cfg.get("enabled"), default=_hub_social_skills_enabled())
+        selection, skill_result, skill_request = select_social_room_skill(
+            payload=payload,
+            prompt=prompt,
+            skills_enabled=skills_enabled,
+            allowlist=skill_allowlist,
+        )
+        style_cfg = payload.get("social_style_config") or {}
+        adaptation_enabled = _hub_social_style_adaptation_enabled()
+        rituals_enabled = _hub_social_room_rituals_enabled()
+        if isinstance(style_cfg, dict) and style_cfg.get("enabled") is not None:
+            adaptation_enabled = _normalize_flag(style_cfg.get("enabled"), default=adaptation_enabled)
+        if isinstance(style_cfg, dict) and style_cfg.get("rituals_enabled") is not None:
+            rituals_enabled = _normalize_flag(style_cfg.get("rituals_enabled"), default=rituals_enabled)
+        confidence_floor = _hub_social_style_confidence_floor()
+        if isinstance(style_cfg, dict) and style_cfg.get("confidence_floor") is not None:
+            try:
+                confidence_floor = max(0.0, min(float(style_cfg.get("confidence_floor")), 1.0))
+            except Exception:
+                confidence_floor = _hub_social_style_confidence_floor()
+        adaptation_snapshot = build_style_adaptation_snapshot(
+            payload=payload,
+            confidence_floor=confidence_floor,
+            adaptation_enabled=adaptation_enabled,
+            rituals_enabled=rituals_enabled,
+        )
+        metadata.update(
+            {
+                "chat_profile": SOCIAL_ROOM_PROFILE,
+                "social_grounding_state": build_social_grounding_state(payload=payload).model_dump(mode="json"),
+                "social_concept_evidence": [
+                    item.model_dump(mode="json") for item in build_social_concept_evidence(payload.get("concept_evidence"))
+                ],
+                "social_peer_continuity": SocialParticipantContinuityV1.model_validate(peer_continuity).model_dump(mode="json") if peer_continuity else None,
+                "social_room_continuity": SocialRoomContinuityV1.model_validate(room_continuity).model_dump(mode="json") if room_continuity else None,
+                "social_stance_snapshot": SocialStanceSnapshotV1.model_validate(stance_snapshot).model_dump(mode="json") if stance_snapshot else None,
+                "social_peer_style_hint": peer_style_hint or None,
+                "social_room_ritual_summary": room_ritual_summary or None,
+                "social_bridge_summary": bridge_summary or None,
+                "social_clarifying_question": clarifying_question or None,
+                "social_deliberation_decision": deliberation_decision or None,
+                "social_turn_handoff": turn_handoff or None,
+                "social_closure_signal": closure_signal or None,
+                "social_floor_decision": floor_decision or None,
+                "social_open_commitments": open_commitments[:2] if isinstance(open_commitments, list) else None,
+                "social_thread_routing": thread_routing or None,
+                "social_handoff_signal": handoff_signal or None,
+                "social_repair_signal": repair_signal or None,
+                "social_repair_decision": repair_decision or None,
+                "social_epistemic_signal": epistemic_signal or None,
+                "social_epistemic_decision": epistemic_decision or None,
+                "social_epistemic_phrase_hint": epistemic_phrase_hint,
+                "social_style_adaptation": adaptation_snapshot.model_dump(mode="json"),
+                "social_artifact_proposal": artifact_proposal.model_dump(mode="json") if artifact_proposal else None,
+                "social_artifact_revision": artifact_revision.model_dump(mode="json") if artifact_revision else None,
+                "social_artifact_confirmation": artifact_confirmation.model_dump(mode="json") if artifact_confirmation else None,
+                "social_skill_request": skill_request.model_dump(mode="json"),
+                "social_skill_selection": selection.model_dump(mode="json"),
+                "social_skill_result": skill_result.model_dump(mode="json") if skill_result else None,
+            }
+        )
 
     req = CortexChatRequest(
         prompt=prompt,
@@ -108,12 +367,7 @@ def build_cortex_chat_request(
         verb=verb_override,
         options=options,
         recall=recall_payload,
-        metadata={
-            "source": source_label,
-            "hub_route": {
-                "selected_ui_route": selected_ui_route,
-            },
-        },
+        metadata=metadata,
     )
     diagnostic_value = payload.get("diagnostic")
     if diagnostic_value is None and isinstance(payload.get("options"), dict):
@@ -133,7 +387,17 @@ def build_cortex_chat_request(
         "supervised": _normalize_flag((req.options or {}).get("supervised"), default=False),
         "force_agent_chain": _normalize_flag((req.options or {}).get("force_agent_chain"), default=False),
         "diagnostic": _normalize_flag(diagnostic_value, default=False),
+        "chat_profile": SOCIAL_ROOM_PROFILE if social_room else None,
     }
+    if social_room:
+        debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []
+        debug["social_skill_selection"] = metadata.get("social_skill_selection")
+        debug["social_skill_request"] = metadata.get("social_skill_request")
+        debug["social_skill_result"] = metadata.get("social_skill_result")
+        debug["social_style_adaptation"] = metadata.get("social_style_adaptation")
+        debug["social_artifact_proposal"] = metadata.get("social_artifact_proposal")
+        debug["social_artifact_revision"] = metadata.get("social_artifact_revision")
+        debug["social_artifact_confirmation"] = metadata.get("social_artifact_confirmation")
     return req, debug, use_recall
 
 

@@ -22,6 +22,9 @@ from .metacognition_tick import MetacognitionTickSQL
 from . metacognition_enriched import MetacognitionEnrichedSQL
 from .metacog_trigger import MetacogTriggerSQL
 from .journal_entry import JournalEntrySQL
+from .social_room_turn import SocialRoomTurnSQL
+from .external_room_message import ExternalRoomMessageSQL
+from .external_room_participant import ExternalRoomParticipantSQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -42,4 +45,7 @@ __all__ = [
     "MetacognitionEnrichedSQL",
     "MetacogTriggerSQL",
     "JournalEntrySQL",
+    "SocialRoomTurnSQL",
+    "ExternalRoomMessageSQL",
+    "ExternalRoomParticipantSQL",
 ]

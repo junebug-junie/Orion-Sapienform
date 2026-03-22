@@ -40,6 +40,49 @@ from orion.core.verbs.base import VerbContext  # noqa: E402
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest  # noqa: E402
 
 
+def test_resolve_repo_root_prefers_explicit_env_override(monkeypatch, tmp_path):
+    forced_root = tmp_path / "forced-root"
+    forced_root.mkdir()
+    monkeypatch.setenv("ORION_REPO_ROOT", str(forced_root))
+
+    resolved = self_study._resolve_repo_root(tmp_path / "nested" / "app" / "self_study.py")
+
+    assert resolved == forced_root.resolve()
+
+
+def test_resolve_repo_root_detects_normal_repo_layout_from_markers(tmp_path, monkeypatch):
+    monkeypatch.delenv("ORION_REPO_ROOT", raising=False)
+    repo_root = tmp_path / "Orion-Sapienform"
+    service_dir = repo_root / "services" / "orion-cortex-exec" / "app"
+    service_dir.mkdir(parents=True)
+    (repo_root / "pyproject.toml").write_text('[tool.poetry]\nname = "orion"\n', encoding="utf-8")
+    (repo_root / "orion").mkdir()
+    (repo_root / "config").mkdir()
+
+    resolved = self_study._resolve_repo_root(service_dir / "self_study.py")
+
+    assert resolved == repo_root.resolve()
+
+
+def test_resolve_repo_root_handles_flattened_container_layout_without_crashing(tmp_path, monkeypatch):
+    monkeypatch.delenv("ORION_REPO_ROOT", raising=False)
+    module_path = tmp_path / "app" / "app" / "self_study.py"
+
+    resolved = self_study._resolve_repo_root(module_path)
+
+    assert resolved == (tmp_path / "app").resolve()
+
+
+def test_resolve_repo_root_fallback_is_deterministic_when_markers_absent(tmp_path, monkeypatch):
+    monkeypatch.delenv("ORION_REPO_ROOT", raising=False)
+    module_path = tmp_path / "sandbox" / "nested" / "self_study.py"
+
+    first = self_study._resolve_repo_root(module_path)
+    second = self_study._resolve_repo_root(module_path)
+
+    assert first == second == (tmp_path / "sandbox").resolve()
+
+
 class _FakeBus:
     def __init__(self, *, fail_channel: str | None = None) -> None:
         self.fail_channel = fail_channel

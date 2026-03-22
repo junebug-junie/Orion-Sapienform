@@ -13,10 +13,11 @@ import requests
 
 from .settings import settings
 from .session import ensure_session
-from .chat_history import build_chat_history_envelope, publish_chat_history
+from .chat_history import build_chat_history_envelope, publish_chat_history, publish_social_room_turn
 from .library import scan_cognition_library
 from .trace_payloads import extract_agent_trace_payload
 from .cortex_request_builder import build_chat_request, validate_single_verb_override
+from .social_room import is_social_room_payload, social_room_client_meta
 from orion.cognition.verb_activation import build_verb_list
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatResult
@@ -649,6 +650,14 @@ async def api_chat(
             final_corr_id = correlation_id or str(uuid4())
 
             envelopes = []
+            social_meta = {}
+            if is_social_room_payload(payload):
+                social_meta = social_room_client_meta(
+                    payload=payload,
+                    route_debug=result.get("routing_debug") or {},
+                    trace_verb=(result.get("routing_debug") or {}).get("verb"),
+                    memory_digest=result.get("memory_digest"),
+                )
             if latest_user_prompt:
                 envelopes.append(
                     build_chat_history_envelope(
@@ -658,6 +667,7 @@ async def api_chat(
                         correlation_id=final_corr_id,
                         speaker=payload.get("user_id") or "user",
                         tags=[result.get("mode", "brain")],
+                        client_meta=social_meta or None,
                     )
                 )
             envelopes.append(
@@ -668,9 +678,24 @@ async def api_chat(
                     correlation_id=final_corr_id,
                     speaker=settings.SERVICE_NAME,
                     tags=[result.get("mode", "brain")],
+                    client_meta=social_meta or None,
                 )
             )
             await publish_chat_history(bus, envelopes)
+            if social_meta:
+                await publish_social_room_turn(
+                    bus,
+                    prompt=latest_user_prompt,
+                    response=text,
+                    session_id=session_id,
+                    correlation_id=final_corr_id,
+                    user_id=payload.get("user_id"),
+                    source_label="hub_http",
+                    recall_profile=((result.get("routing_debug") or {}).get("recall_profile")),
+                    trace_verb=(result.get("routing_debug") or {}).get("verb"),
+                    client_meta=social_meta,
+                    memory_digest=result.get("memory_digest"),
+                )
 
             # Legacy log for downstream SQL-writer compatibility
             chat_log_payload = {

@@ -65,6 +65,95 @@ async def lifespan(app: FastAPI):
             )
             conn.exec_driver_sql(
                 """
+                CREATE TABLE IF NOT EXISTS social_room_turns (
+                    turn_id TEXT PRIMARY KEY,
+                    correlation_id TEXT NULL,
+                    session_id TEXT NULL,
+                    user_id TEXT NULL,
+                    source TEXT NOT NULL,
+                    profile TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    recall_profile TEXT NULL,
+                    trace_verb TEXT NULL,
+                    tags JSONB NULL,
+                    concept_evidence JSONB NULL,
+                    grounding_state JSONB NULL,
+                    redaction JSONB NULL,
+                    client_meta JSONB NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_social_room_turns_session_id ON social_room_turns (session_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_social_room_turns_corr_id ON social_room_turns (correlation_id);"
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS external_room_messages (
+                    event_id TEXT PRIMARY KEY,
+                    correlation_id TEXT NULL,
+                    platform TEXT NOT NULL,
+                    room_id TEXT NOT NULL,
+                    thread_id TEXT NULL,
+                    direction TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    transport_message_id TEXT NOT NULL,
+                    reply_to_message_id TEXT NULL,
+                    sender_id TEXT NOT NULL,
+                    sender_name TEXT NULL,
+                    sender_kind TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    transport_ts TEXT NULL,
+                    raw_payload JSONB NULL,
+                    metadata JSONB NULL,
+                    delivery_ok BOOLEAN NULL,
+                    delivery_error TEXT NULL,
+                    skip_reason TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_external_room_messages_room_id ON external_room_messages (room_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_external_room_messages_transport_msg_id ON external_room_messages (transport_message_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_external_room_messages_corr_id ON external_room_messages (correlation_id);"
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS external_room_participants (
+                    participant_ref TEXT PRIMARY KEY,
+                    platform TEXT NOT NULL,
+                    room_id TEXT NOT NULL,
+                    participant_id TEXT NOT NULL,
+                    participant_name TEXT NULL,
+                    participant_kind TEXT NOT NULL,
+                    last_message_id TEXT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    metadata JSONB NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_external_room_participants_room_id ON external_room_participants (room_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_external_room_participants_platform ON external_room_participants (platform);"
+            )
+            conn.exec_driver_sql(
+                """
                 CREATE TABLE IF NOT EXISTS journal_entries (
                     entry_id TEXT PRIMARY KEY,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

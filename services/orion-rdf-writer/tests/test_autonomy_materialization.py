@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
+import os
 from pathlib import Path
 
 from rdflib import Graph, Literal, Namespace
@@ -8,10 +10,20 @@ from rdflib.namespace import RDF, XSD
 
 ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault("GRAPHDB_URL", "http://example.test")
+os.environ.setdefault("ORION_BUS_URL", "redis://example.test/0")
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SERVICE_ROOT))
-
-from app.autonomy import build_autonomy_triples  # noqa: E402
+AUTONOMY_SPEC = importlib.util.spec_from_file_location("rdf_writer_autonomy", SERVICE_ROOT / "app" / "autonomy.py")
+RDF_BUILDER_SPEC = importlib.util.spec_from_file_location("rdf_writer_builder", SERVICE_ROOT / "app" / "rdf_builder.py")
+assert AUTONOMY_SPEC and AUTONOMY_SPEC.loader
+assert RDF_BUILDER_SPEC and RDF_BUILDER_SPEC.loader
+autonomy_mod = importlib.util.module_from_spec(AUTONOMY_SPEC)
+rdf_builder_mod = importlib.util.module_from_spec(RDF_BUILDER_SPEC)
+AUTONOMY_SPEC.loader.exec_module(autonomy_mod)
+RDF_BUILDER_SPEC.loader.exec_module(rdf_builder_mod)
+build_autonomy_triples = autonomy_mod.build_autonomy_triples
+build_triples_from_envelope = rdf_builder_mod.build_triples_from_envelope
 
 ORION = Namespace("http://conjourney.net/orion#")
 
@@ -208,3 +220,57 @@ def test_relationship_model_materialization_stays_distinct_from_self_and_user():
     assert (entity_uri, RDF.type, ORION.RelationshipModelEntity) in graph
     assert (entity_uri, RDF.type, ORION.SelfModelEntity) not in graph
     assert (entity_uri, RDF.type, ORION.UserModelEntity) not in graph
+
+
+def test_social_room_stored_event_materializes_turn_and_evidence():
+    nt, graph_name = build_triples_from_envelope(
+        "social.turn.stored.v1",
+        {
+            "turn_id": "social-turn-1",
+            "correlation_id": "corr-social-1",
+            "session_id": "sid-social",
+            "source": "hub_ws",
+            "profile": "social_room",
+            "prompt": "stay with me socially",
+            "response": "I’m right here.",
+            "text": "User: stay with me socially\nOrion: I’m right here.",
+            "created_at": "2026-03-21T12:00:00+00:00",
+            "stored_at": "2026-03-21T12:00:01+00:00",
+            "recall_profile": "social.room.v1",
+            "trace_verb": "chat_social_room",
+            "tags": ["social_room", "chat_social_room"],
+            "concept_evidence": [
+                {
+                    "ref_id": "identity-1",
+                    "source_kind": "memory.identity.snapshot.v1",
+                    "summary": "Oríon maintained peer continuity.",
+                    "confidence": 0.8,
+                }
+            ],
+            "grounding_state": {
+                "profile": "social_room",
+                "identity_label": "Oríon",
+                "relationship_frame": "peer",
+                "self_model_hint": "distributed social presence",
+                "continuity_anchor": "Juniper ↔ Oríon ongoing peer dialogue",
+                "stance": "warm, direct, grounded",
+            },
+            "redaction": {
+                "prompt_score": 0.0,
+                "response_score": 0.0,
+                "memory_score": 0.0,
+                "overall_score": 0.0,
+                "recall_safe": True,
+                "redaction_level": "low",
+                "reasons": [],
+            },
+            "client_meta": {"chat_profile": "social_room"},
+        },
+    )
+    graph = _parse(nt)
+
+    assert graph_name == "orion:chat:social"
+    turn_uri = next(graph.subjects(ORION.artifactId, Literal("social-turn-1", datatype=XSD.string)))
+    assert (turn_uri, RDF.type, ORION.SocialRoomTurn) in graph
+    assert (turn_uri, ORION.recallSafe, Literal(True, datatype=XSD.boolean)) in graph
+    assert list(graph.objects(turn_uri, ORION.supportedByEvidence))

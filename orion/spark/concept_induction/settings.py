@@ -25,6 +25,7 @@ class ConceptSettings(BaseSettings):
     intake_channels: List[str] = Field(
         default_factory=lambda: [
             "orion:chat:history:log",
+            "orion:chat:social:stored",
             "orion:collapse:sql-write",
             "orion:spark:telemetry",
             "orion:metacognition:tick",

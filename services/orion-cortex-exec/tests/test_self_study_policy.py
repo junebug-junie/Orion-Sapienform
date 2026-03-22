@@ -103,7 +103,25 @@ def test_context_and_request_helpers_round_trip() -> None:
     assert request.retrieval_mode == "conceptual"
     assert request.filters.limit == 3
     assert request.filters.text_query == "planner"
+    assert context.consulted is True
     assert context.used is True
+    assert context.policy_decision.consumer_kind == "planning_architecture"
     assert context.notes == ["used in prompt"]
-    assert "SELF-STUDY CONTEXT mode=conceptual consumer=legacy.plan" in rendered
+    assert "SELF-STUDY CONTEXT mode=conceptual consumer=legacy.plan policy=policy_allowed" in rendered
     assert "Planner pipeline" in rendered
+
+
+def test_disabled_context_render_is_explicit() -> None:
+    decision = resolve_self_study_consumer_policy(
+        consumer_name="unknown.consumer",
+        output_mode="implementation_guide",
+        config={"enabled": True},
+    )
+
+    context = build_self_study_consumer_context(decision, result=None, notes=["policy denied"])
+
+    assert context.used is False
+    assert context.policy_decision.policy_reason == "unknown_consumer"
+    assert render_self_study_consumer_context(context) == (
+        "SELF-STUDY CONTEXT consumer=unknown.consumer status=disabled reason=unknown_consumer."
+    )

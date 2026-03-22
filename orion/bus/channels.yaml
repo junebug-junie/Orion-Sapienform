@@ -745,6 +745,294 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:chat:social:turn"
+    kind: "event"
+    schema_id: "SocialRoomTurnV1"
+    message_kind: "social.turn.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-03-21"
+
+  - name: "orion:chat:social:stored"
+    kind: "event"
+    schema_id: "SocialRoomTurnStoredV1"
+    message_kind: "social.turn.stored.v1"
+    producer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-vector-host", "orion-rdf-writer", "orion-meta-tags", "orion-spark-concept-induction", "*"]
+    stability: "experimental"
+    since: "2026-03-21"
+
+  - name: "orion:bridge:social:participant"
+    kind: "event"
+    schema_id: "ExternalRoomParticipantV1"
+    message_kind: "external.room.participant.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:bridge:social:room:intake"
+    kind: "event"
+    schema_id: "ExternalRoomMessageV1"
+    message_kind: "external.room.message.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:bridge:social:room:delivery"
+    kind: "event"
+    schema_id: "ExternalRoomPostResultV1"
+    message_kind: "external.room.post.result.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:bridge:social:room:skipped"
+    kind: "event"
+    schema_id: "ExternalRoomTurnSkippedV1"
+    message_kind: "external.room.turn.skipped.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:participant:continuity"
+    kind: "event"
+    schema_id: "SocialParticipantContinuityV1"
+    message_kind: "social.participant.continuity.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:room:continuity"
+    kind: "event"
+    schema_id: "SocialRoomContinuityV1"
+    message_kind: "social.room.continuity.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:stance:snapshot"
+    kind: "event"
+    schema_id: "SocialStanceSnapshotV1"
+    message_kind: "social.stance.snapshot.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:relational:update"
+    kind: "event"
+    schema_id: "SocialRelationalMemoryUpdateV1"
+    message_kind: "social.relational.update.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:open-thread"
+    kind: "event"
+    schema_id: "SocialOpenThreadV1"
+    message_kind: "social.open-thread.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:peer-style"
+    kind: "event"
+    schema_id: "SocialPeerStyleHintV1"
+    message_kind: "social.peer-style.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:room-ritual"
+    kind: "event"
+    schema_id: "SocialRoomRitualSummaryV1"
+    message_kind: "social.room-ritual.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:commitment"
+    kind: "event"
+    schema_id: "SocialCommitmentV1"
+    message_kind: "social.commitment.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:commitment:resolution"
+    kind: "event"
+    schema_id: "SocialCommitmentResolutionV1"
+    message_kind: "social.commitment.resolution.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:claim"
+    kind: "event"
+    schema_id: "SocialClaimV1"
+    message_kind: "social.claim.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:claim:revision"
+    kind: "event"
+    schema_id: "SocialClaimRevisionV1"
+    message_kind: "social.claim.revision.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:claim:stance"
+    kind: "event"
+    schema_id: "SocialClaimStanceV1"
+    message_kind: "social.claim.stance.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:claim:attribution"
+    kind: "event"
+    schema_id: "SocialClaimAttributionV1"
+    message_kind: "social.claim.attribution.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:claim:consensus"
+    kind: "event"
+    schema_id: "SocialConsensusStateV1"
+    message_kind: "social.claim.consensus.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:claim:divergence"
+    kind: "event"
+    schema_id: "SocialDivergenceSignalV1"
+    message_kind: "social.claim.divergence.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:bridge-summary"
+    kind: "event"
+    schema_id: "SocialBridgeSummaryV1"
+    message_kind: "social.bridge-summary.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:clarifying-question"
+    kind: "event"
+    schema_id: "SocialClarifyingQuestionV1"
+    message_kind: "social.clarifying-question.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:deliberation:decision"
+    kind: "event"
+    schema_id: "SocialDeliberationDecisionV1"
+    message_kind: "social.deliberation.decision.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:turn-handoff"
+    kind: "event"
+    schema_id: "SocialTurnHandoffV1"
+    message_kind: "social.turn-handoff.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:closure-signal"
+    kind: "event"
+    schema_id: "SocialClosureSignalV1"
+    message_kind: "social.closure-signal.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:floor:decision"
+    kind: "event"
+    schema_id: "SocialFloorDecisionV1"
+    message_kind: "social.floor.decision.v1"
+    producer_services: ["orion-social-memory"]
+    consumer_services: ["*", "orion-social-room-bridge", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:repair:signal"
+    kind: "event"
+    schema_id: "SocialRepairSignalV1"
+    message_kind: "social.repair.signal.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["*", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:repair:decision"
+    kind: "event"
+    schema_id: "SocialRepairDecisionV1"
+    message_kind: "social.repair.decision.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["*", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:epistemic:signal"
+    kind: "event"
+    schema_id: "SocialEpistemicSignalV1"
+    message_kind: "social.epistemic.signal.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["*", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:epistemic:decision"
+    kind: "event"
+    schema_id: "SocialEpistemicDecisionV1"
+    message_kind: "social.epistemic.decision.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["*", "orion-hub"]
+    stability: "experimental"
+    since: "2026-03-22"
+
+  - name: "orion:social:turn-policy"
+    kind: "event"
+    schema_id: "SocialTurnPolicyDecisionV1"
+    message_kind: "social.turn.policy.v1"
+    producer_services: ["orion-social-room-bridge"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-03-22"
+
   - name: "orion:chat:gpt:log"
     kind: "event"
     schema_id: "ChatGptMessageV1"

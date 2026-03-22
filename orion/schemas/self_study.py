@@ -291,10 +291,12 @@ class SelfStudyConsumerPolicyDecisionV1(BaseModel):
 class SelfStudyConsumerContextV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    consulted: bool = True
     consumer_name: str
     consumer_kind: SelfStudyConsumerKind
     retrieval_mode: SelfStudyRetrievalMode
     policy_reason: str
+    policy_decision: SelfStudyConsumerPolicyDecisionV1
     used: bool = False
     result: SelfStudyRetrieveResultV1 | None = None
     notes: list[str] = Field(default_factory=list)

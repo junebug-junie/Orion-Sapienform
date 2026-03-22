@@ -11,6 +11,7 @@ sys.path.insert(0, str(SERVICE_ROOT))
 from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 from app.models.journal_entry import JournalEntrySQL  # noqa: E402
+from app.models.social_room_turn import SocialRoomTurnSQL  # noqa: E402
 from app.settings import DEFAULT_ROUTE_MAP, Settings  # noqa: E402
 from app.worker import _write_row, handle_envelope  # noqa: E402
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
@@ -58,6 +59,14 @@ class TestSqlWriterJournal(unittest.TestCase):
         settings = Settings()
         self.assertEqual(DEFAULT_ROUTE_MAP["journal.entry.write.v1"], "JournalEntrySQL")
         self.assertIn("orion:journal:write", settings.effective_subscribe_channels)
+        self.assertEqual(DEFAULT_ROUTE_MAP["social.turn.v1"], "SocialRoomTurnSQL")
+        self.assertIn("orion:chat:social:turn", settings.effective_subscribe_channels)
+        self.assertEqual(DEFAULT_ROUTE_MAP["external.room.message.v1"], "ExternalRoomMessageSQL")
+        self.assertEqual(DEFAULT_ROUTE_MAP["external.room.participant.v1"], "ExternalRoomParticipantSQL")
+        self.assertIn("orion:bridge:social:room:intake", settings.effective_subscribe_channels)
+        self.assertIn("orion:bridge:social:participant", settings.effective_subscribe_channels)
+        self.assertTrue(settings.sql_writer_emit_social_turn_stored)
+        self.assertEqual(settings.sql_writer_social_turn_stored_channel, "orion:chat:social:stored")
 
     def test_journal_insert_success_emits_created_event(self):
         import app.worker as worker_mod  # noqa: E402
@@ -187,6 +196,115 @@ class TestSqlWriterJournal(unittest.TestCase):
                     "mode": "manual",
                     "title": None,
                     "body": "Append only",
+                },
+            )
+        finally:
+            worker_mod.get_session = original_get_session
+            worker_mod.remove_session = original_remove_session
+
+        self.assertTrue(result)
+        self.assertEqual(len(fake_session.add_calls), 1)
+        self.assertEqual(fake_session.merge_calls, [])
+
+    def test_social_turn_insert_emits_post_commit_stored_event(self):
+        import app.worker as worker_mod  # noqa: E402
+
+        async def fake_write(*args, **kwargs):
+            return True
+
+        original_write = worker_mod._write
+        worker_mod._write = fake_write
+        try:
+            env = BaseEnvelope(
+                kind="social.turn.v1",
+                source=ServiceRef(name="hub"),
+                correlation_id="00000000-0000-0000-0000-000000000004",
+                payload={
+                    "turn_id": "social-1",
+                    "correlation_id": "00000000-0000-0000-0000-000000000004",
+                    "session_id": "sid-social",
+                    "source": "hub_ws",
+                    "profile": "social_room",
+                    "prompt": "Hey, stay close to the conversation.",
+                    "response": "I’m here with you.",
+                    "text": "User: Hey, stay close to the conversation.\nOrion: I’m here with you.",
+                    "recall_profile": "social.room.v1",
+                    "tags": ["social_room"],
+                    "concept_evidence": [],
+                    "grounding_state": {"profile": "social_room", "identity_label": "Oríon", "relationship_frame": "peer", "self_model_hint": "distributed social presence", "stance": "warm, direct, grounded"},
+                    "redaction": {"prompt_score": 0.0, "response_score": 0.0, "memory_score": 0.0, "overall_score": 0.0, "recall_safe": True, "redaction_level": "low", "reasons": []},
+                    "client_meta": {"chat_profile": "social_room"},
+                },
+            )
+            bus = _FakeBus()
+            asyncio.run(handle_envelope(env, bus=bus))
+        finally:
+            worker_mod._write = original_write
+
+        self.assertEqual(len(bus.published), 1)
+        channel, stored_env = bus.published[0]
+        self.assertEqual(channel, Settings().sql_writer_social_turn_stored_channel)
+        self.assertEqual(stored_env.kind, "social.turn.stored.v1")
+        self.assertEqual(stored_env.payload["turn_id"], "social-1")
+        self.assertEqual(stored_env.payload["profile"], "social_room")
+
+    def test_disabled_social_turn_emit_skips_post_commit_event(self):
+        import app.worker as worker_mod  # noqa: E402
+        import app.settings as settings_mod  # noqa: E402
+
+        async def fake_write(*args, **kwargs):
+            return True
+
+        original_write = worker_mod._write
+        original_settings = settings_mod.settings
+        worker_mod._write = fake_write
+        settings_mod.settings = Settings(SQL_WRITER_EMIT_SOCIAL_TURN_STORED=False)
+        worker_mod.settings = settings_mod.settings
+        try:
+            env = BaseEnvelope(
+                kind="social.turn.v1",
+                source=ServiceRef(name="hub"),
+                correlation_id="00000000-0000-0000-0000-000000000005",
+                payload={
+                    "turn_id": "social-3",
+                    "correlation_id": "00000000-0000-0000-0000-000000000005",
+                    "session_id": "sid-social",
+                    "source": "hub_ws",
+                    "profile": "social_room",
+                    "prompt": "still here?",
+                    "response": "Yes.",
+                    "text": "User: still here?\nOrion: Yes.",
+                },
+            )
+            bus = _FakeBus()
+            asyncio.run(handle_envelope(env, bus=bus))
+        finally:
+            worker_mod._write = original_write
+            settings_mod.settings = original_settings
+            worker_mod.settings = original_settings
+
+        self.assertEqual(bus.published, [])
+
+    def test_append_only_social_turn_uses_insert_not_merge(self):
+        import app.worker as worker_mod  # noqa: E402
+
+        fake_session = _FakeSession()
+        original_get_session = worker_mod.get_session
+        original_remove_session = worker_mod.remove_session
+        worker_mod.get_session = lambda: fake_session
+        worker_mod.remove_session = lambda: None
+        try:
+            result = _write_row(
+                SocialRoomTurnSQL,
+                {
+                    "turn_id": "social-2",
+                    "correlation_id": "corr-social-2",
+                    "session_id": "sid-social",
+                    "source": "hub_ws",
+                    "profile": "social_room",
+                    "prompt": "hi",
+                    "response": "hello",
+                    "text": "User: hi\nOrion: hello",
                 },
             )
         finally:

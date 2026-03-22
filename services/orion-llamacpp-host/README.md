@@ -122,7 +122,7 @@ HF_TOKEN=
 LLAMACPP_CTX_SIZE_OVERRIDE=
 LLAMACPP_N_GPU_LAYERS_OVERRIDE=
 LLAMACPP_THREADS_OVERRIDE=
-LLAMACPP_PARALLEL_OVERRIDE=
+LLAMACPP_N_PARALLEL_OVERRIDE=
 LLAMACPP_BATCH_SIZE_OVERRIDE=
 CUDA_VISIBLE_DEVICES_OVERRIDE=
 ```
@@ -305,3 +305,54 @@ Each worker uses:
 - one unique `SERVICE_NAME`
 
 This keeps the current one-profile-per-container design intact while making Atlas worker isolation explicit.
+
+### Atlas operator bring-up
+
+`docker-compose.atlas-workers.yml` is the repo's cleanest Atlas pattern for the
+current `chat` / `metacog` / `agent` layout, but it is still an operator-edited
+compose example rather than a fully automated deployment system. It assumes:
+
+- Docker is run from the repo root
+- the external Docker network `app-net` already exists
+- shared values such as `ORION_BUS_URL`, `LLM_CACHE_DIR`, and `HF_TOKEN` are
+  available in the shell or an env file
+- Atlas worker-specific values are provided through the `ATLAS_*` variables
+
+Recommended flow:
+
+1. Copy `services/orion-llamacpp-host/.env_example` to a local Atlas worker env
+   file such as `services/orion-llamacpp-host/.env.atlas`.
+2. Edit the shared values:
+   - `ORION_BUS_URL`
+   - `LLM_CACHE_DIR`
+   - `HF_TOKEN` / `hf_token` if required
+3. Edit the per-worker unique values:
+   - `ATLAS_CHAT_PROFILE_NAME`
+   - `ATLAS_CHAT_CUDA_VISIBLE_DEVICES`
+   - `ATLAS_CHAT_HOST_PORT`
+   - `ATLAS_METACOG_PROFILE_NAME`
+   - `ATLAS_METACOG_CUDA_VISIBLE_DEVICES`
+   - `ATLAS_METACOG_HOST_PORT`
+   - `ATLAS_AGENT_PROFILE_NAME`
+   - `ATLAS_AGENT_CUDA_VISIBLE_DEVICES`
+   - `ATLAS_AGENT_HOST_PORT`
+4. Ensure the published host ports are all different and that each worker pins a
+   non-overlapping GPU selection unless intentional sharing is desired.
+5. Start the workers:
+
+```bash
+docker network create app-net >/dev/null 2>&1 || true
+
+docker compose \
+  --env-file services/orion-llamacpp-host/.env.atlas \
+  -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
+  up -d --build atlas-chat atlas-metacog atlas-agent
+```
+
+6. Verify each worker directly:
+
+```bash
+curl http://localhost:${ATLAS_CHAT_HOST_PORT}/health
+curl http://localhost:${ATLAS_METACOG_HOST_PORT}/health
+curl http://localhost:${ATLAS_AGENT_HOST_PORT}/health
+```

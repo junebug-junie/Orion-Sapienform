@@ -1,5 +1,10 @@
 services:
   atlas-chat:
+    # Atlas multi-worker pattern:
+    # - one compose service per logical gateway route
+    # - one profile per container
+    # - one published host port per container
+    # - one explicit CUDA_VISIBLE_DEVICES binding per container
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
@@ -11,6 +16,7 @@ services:
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      # Required: set ATLAS_CHAT_PROFILE_NAME in your env file/shell.
       - LLM_PROFILE_NAME=${ATLAS_CHAT_PROFILE_NAME}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
 
 from app.main import (
+    _rpc_request_with_retry,
     _daily_metacog_dedupe_key,
     _daily_pulse_dedupe_key,
     _extract_plan_final_text,
@@ -12,6 +14,7 @@ from app.main import (
     build_daily_window,
     should_run_daily,
 )
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 
 
@@ -99,3 +102,71 @@ def test_metacog_schema_and_json_parser():
 
     with pytest.raises(Exception):
         _json_loads_strict("[]")
+
+
+def test_rpc_request_with_retry_retries_once_after_timeout():
+    class FakeBus:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):  # noqa: ANN001
+            self.calls.append(
+                {
+                    "request_channel": request_channel,
+                    "reply_channel": reply_channel,
+                    "attempt": envelope.payload["attempt"],
+                    "timeout_sec": timeout_sec,
+                }
+            )
+            if len(self.calls) == 1:
+                raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
+            return {"data": b"ok"}
+
+    bus = FakeBus()
+    source = ServiceRef(name="tests", version="0.1.0", node="athena")
+
+    result = asyncio.run(
+        _rpc_request_with_retry(
+            bus=bus,
+            request_channel="orion:cortex:exec:request",
+            reply_prefix="orion:exec:result",
+            timeout_sec=12.5,
+            operation_name="daily plan daily_pulse_v1",
+            envelope_factory=lambda reply_channel, attempt: BaseEnvelope(
+                kind="test.request",
+                source=source,
+                reply_to=reply_channel,
+                payload={"attempt": attempt},
+            ),
+        )
+    )
+
+    assert result == {"data": b"ok"}
+    assert [call["attempt"] for call in bus.calls] == [1, 2]
+    assert all(str(call["reply_channel"]).startswith("orion:exec:result:") for call in bus.calls)
+    assert bus.calls[0]["reply_channel"] != bus.calls[1]["reply_channel"]
+
+
+def test_rpc_request_with_retry_raises_after_last_timeout():
+    class FakeBus:
+        async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):  # noqa: ANN001
+            raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
+
+    source = ServiceRef(name="tests", version="0.1.0", node="athena")
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(
+            _rpc_request_with_retry(
+                bus=FakeBus(),
+                request_channel="orion:cortex:exec:request",
+                reply_prefix="orion:exec:result",
+                timeout_sec=5.0,
+                operation_name="daily plan daily_pulse_v1",
+                envelope_factory=lambda reply_channel, attempt: BaseEnvelope(
+                    kind="test.request",
+                    source=source,
+                    reply_to=reply_channel,
+                    payload={"attempt": attempt},
+                ),
+            )
+        )

@@ -8,7 +8,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -164,6 +164,44 @@ def _json_loads_strict(text: str) -> dict[str, Any]:
     return data
 
 
+async def _rpc_request_with_retry(
+    *,
+    bus: Any,
+    request_channel: str,
+    reply_prefix: str,
+    timeout_sec: float,
+    envelope_factory: Callable[[str, int], BaseEnvelope],
+    operation_name: str,
+    max_attempts: int = 2,
+) -> dict[str, Any]:
+    last_error: TimeoutError | None = None
+    for attempt in range(1, max(1, max_attempts) + 1):
+        reply_channel = new_reply_channel(reply_prefix)
+        envelope = envelope_factory(reply_channel, attempt)
+        try:
+            return await bus.rpc_request(
+                request_channel,
+                envelope,
+                reply_channel=reply_channel,
+                timeout_sec=timeout_sec,
+            )
+        except TimeoutError as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            logger.warning(
+                "%s timed out attempt=%s/%s request_channel=%s reply_channel=%s timeout_sec=%.1f; retrying",
+                operation_name,
+                attempt,
+                max_attempts,
+                request_channel,
+                reply_channel,
+                timeout_sec,
+            )
+    assert last_error is not None
+    raise last_error
+
+
 def _daily_pulse_dedupe_key(window: DailyWindow) -> str:
     return f"actions:daily_pulse:{window.request_date}:{settings.node_name}:{settings.actions_recipient_group}"
 
@@ -294,28 +332,35 @@ async def lifespan(app: FastAPI):
 
     async def _run_plan(parent: BaseEnvelope, *, verb_name: str, context: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         plan = build_plan_for_verb(verb_name)
-        req = PlanExecutionRequest(
-            plan=plan,
-            args=PlanExecutionArgs(
-                request_id=str(parent.correlation_id),
-                trigger_source=settings.service_name,
-                user_id=settings.actions_recipient_group,
-                extra={
-                    "mode": "brain",
-                    "session_id": settings.actions_session_id,
-                    "verb": verb_name,
-                    "trace_id": str(parent.correlation_id),
-                },
-            ),
-            context=context,
-        )
-        reply_channel = new_reply_channel("orion:exec:result")
-        req_env = parent.derive_child(kind=req.kind, source=src, payload=req, reply_to=reply_channel)
-        msg = await hunter.bus.rpc_request(
-            settings.cortex_exec_request_channel,
-            req_env,
-            reply_channel=reply_channel,
-            timeout_sec=float(settings.actions_exec_timeout_seconds),
+        request_id = str(parent.correlation_id)
+        timeout_sec = float(settings.actions_exec_timeout_seconds)
+
+        def _plan_envelope(reply_channel: str, attempt: int) -> BaseEnvelope:
+            req = PlanExecutionRequest(
+                plan=plan,
+                args=PlanExecutionArgs(
+                    request_id=request_id,
+                    trigger_source=settings.service_name,
+                    user_id=settings.actions_recipient_group,
+                    extra={
+                        "mode": "brain",
+                        "session_id": settings.actions_session_id,
+                        "verb": verb_name,
+                        "trace_id": request_id,
+                        "rpc_attempt": attempt,
+                    },
+                ),
+                context=context,
+            )
+            return parent.derive_child(kind=req.kind, source=src, payload=req, reply_to=reply_channel)
+
+        msg = await _rpc_request_with_retry(
+            bus=hunter.bus,
+            request_channel=settings.cortex_exec_request_channel,
+            reply_prefix="orion:exec:result",
+            timeout_sec=timeout_sec,
+            envelope_factory=_plan_envelope,
+            operation_name=f"daily plan {verb_name}",
         )
         decoded = hunter.bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:

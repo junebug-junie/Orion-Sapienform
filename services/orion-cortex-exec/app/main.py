@@ -18,7 +18,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime
 
 from orion.schemas.cortex.exec import CortexExecResultPayload
-from orion.schemas.cortex.schemas import PlanExecutionRequest
+from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from .router import PlanRouter
@@ -371,6 +371,26 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
             reply_channel,
             result.request_id,
         )
+
+    try:
+        if req.trigger == "legacy.plan":
+            plan_req = PlanExecutionRequest.model_validate(req.payload)
+            result_payload = result.output if isinstance(result.output, dict) else {}
+            plan_result_payload = result_payload.get("result") if isinstance(result_payload.get("result"), dict) else result_payload
+            plan_result = PlanExecutionResult.model_validate(plan_result_payload)
+            dream_env = build_dream_publish_envelope(
+                source=_source(),
+                causality_chain=list(env.causality_chain or []),
+                correlation_id=corr_id,
+                res=plan_result,
+                context=plan_req.context if isinstance(plan_req.context, dict) else {},
+                extra=plan_req.args.extra if plan_req.args else None,
+            )
+            if dream_env is not None:
+                await svc.bus.publish(settings.channel_dream_log, dream_env)
+                logger.info("Published dream.result.v1 to %s via verb runtime", settings.channel_dream_log)
+    except Exception as exc:
+        logger.warning("dream.result.v1 legacy-plan publish skipped/failed corr=%s err=%s", corr_id, exc)
 
     for effect in result.effects:
         effect_model = effect if isinstance(effect, VerbEffectV1) else VerbEffectV1.model_validate(effect)

@@ -1907,13 +1907,19 @@ loadDismissedIds();
     if (!notification) return null;
     const msgId = notification.message_id || notification.messageId;
     if (!msgId) return null;
+    const agentTrace = agentTraceApi.extractAgentTrace
+      ? agentTraceApi.extractAgentTrace(notification)
+      : (notification.agent_trace || notification.agentTrace || null);
     return {
       message_id: msgId,
       session_id: notification.session_id || notification.sessionId,
       created_at: notification.created_at || notification.createdAt,
+      correlation_id: notification.correlation_id || notification.correlationId,
       severity: notification.severity || 'info',
       title: notification.title || 'New message from Orion',
       preview_text: notification.body_text || notification.preview_text || notification.previewText || '',
+      full_text: notification.full_text || notification.fullText || notification.body_text || '',
+      agent_trace: agentTrace,
       status: (notification.status || 'unread').toLowerCase(),
       silent: Boolean(notification.silent),
     };
@@ -2003,7 +2009,7 @@ loadDismissedIds();
 
         const bodyText = document.createElement('div');
         bodyText.className = 'text-[11px] text-gray-300 whitespace-pre-wrap';
-        bodyText.textContent = item.preview_text || '';
+        bodyText.textContent = item.full_text || item.preview_text || '';
 
         const actions = document.createElement('div');
         actions.className = 'flex items-center gap-2 text-[10px]';
@@ -2037,6 +2043,8 @@ loadDismissedIds();
         actions.appendChild(dismissBtn);
 
         body.appendChild(bodyText);
+        const tracePanel = createAgentTracePanel(item.agent_trace, { correlationId: item.correlation_id });
+        if (tracePanel) body.appendChild(tracePanel);
         body.appendChild(actions);
 
         details.appendChild(summary);
@@ -2433,6 +2441,35 @@ loadDismissedIds();
     header.className = `font-bold ${color}`;
     header.textContent = sender;
     headerRow.appendChild(header);
+    if (sender === 'Orion') {
+      const actionRow = document.createElement('div');
+      actionRow.className = 'flex items-center gap-2';
+      if (
+        socialInspectionApi.shouldShowSocialInspection
+        && socialInspectionApi.shouldShowSocialInspection(meta.routingDebug)
+        && typeof window.syncSocialInspectionFromRouteDebug === 'function'
+        && typeof window.openSocialInspectionModal === 'function'
+      ) {
+        const inspectionButton = document.createElement('button');
+        inspectionButton.className = 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20';
+        inspectionButton.type = 'button';
+        inspectionButton.textContent = 'Social Inspect';
+        inspectionButton.addEventListener('click', () => {
+          window.syncSocialInspectionFromRouteDebug(meta.routingDebug);
+          window.openSocialInspectionModal({
+            routeDebug: meta.routingDebug,
+            liveSnapshot: meta.routingDebug && meta.routingDebug.social_inspection,
+            memorySnapshot: null,
+            loadingMemory: false,
+            error: '',
+          });
+        });
+        actionRow.appendChild(inspectionButton);
+      }
+      if (actionRow.childNodes.length) {
+        headerRow.appendChild(actionRow);
+      }
+    }
     const body = document.createElement('p');
     body.className = `${colorClass} whitespace-pre-wrap`;
     body.textContent = text || "";
@@ -2472,6 +2509,10 @@ loadDismissedIds();
     }
     div.appendChild(headerRow);
     div.appendChild(body);
+    if (sender === 'Orion') {
+      const tracePanel = createAgentTracePanel(meta.agentTrace, meta);
+      if (tracePanel) div.appendChild(tracePanel);
+    }
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
   }
@@ -2487,8 +2528,9 @@ loadDismissedIds();
     if (agentTraceContent) agentTraceContent.classList.toggle('hidden', !!isEmpty);
   }
 
-  function renderAgentTraceOverview(summary) {
-    if (!agentTraceOverview) return;
+  function buildAgentTraceOverviewNode(summary) {
+    const root = document.createElement('div');
+    root.className = 'grid gap-3 md:grid-cols-3 xl:grid-cols-6';
     const cards = [
       ['Status', summary.status || '--'],
       ['Duration', agentTraceApi.formatDuration ? agentTraceApi.formatDuration(summary.duration_ms) : '--'],
@@ -2497,7 +2539,6 @@ loadDismissedIds();
       ['Unique tools', summary.unique_tool_count ?? 0],
       ['Families', Array.isArray(summary.unique_tool_families) && summary.unique_tool_families.length ? summary.unique_tool_families.join(', ') : '--'],
     ];
-    agentTraceOverview.innerHTML = '';
     cards.forEach(([label, value]) => {
       const card = document.createElement('div');
       card.className = 'rounded-xl border border-gray-700 bg-gray-800/50 p-3';
@@ -2509,20 +2550,21 @@ loadDismissedIds();
       val.textContent = String(value ?? '--');
       card.appendChild(title);
       card.appendChild(val);
-      agentTraceOverview.appendChild(card);
+      root.appendChild(card);
     });
+    return root;
   }
 
-  function renderAgentTraceToolGroups(summary) {
-    if (!agentTraceToolGroups) return;
+  function buildAgentTraceToolGroupsNode(summary) {
+    const root = document.createElement('div');
+    root.className = 'space-y-3';
     const groups = agentTraceApi.groupToolsByFamily ? agentTraceApi.groupToolsByFamily(summary.tools) : [];
-    agentTraceToolGroups.innerHTML = '';
     if (!groups.length) {
       const empty = document.createElement('div');
       empty.className = 'rounded-xl border border-dashed border-gray-700 bg-gray-900/50 p-3 text-xs text-gray-500';
       empty.textContent = 'No tool usage was captured for this trace.';
-      agentTraceToolGroups.appendChild(empty);
-      return;
+      root.appendChild(empty);
+      return root;
     }
     groups.forEach((group) => {
       const wrap = document.createElement('div');
@@ -2551,42 +2593,214 @@ loadDismissedIds();
 
       wrap.appendChild(header);
       wrap.appendChild(list);
-      agentTraceToolGroups.appendChild(wrap);
+      root.appendChild(wrap);
     });
+    return root;
   }
 
-  function renderAgentTraceTimeline(summary) {
-    if (!agentTraceTimelineBody) return;
+  function buildAgentTraceTimelineNode(summary) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'overflow-hidden rounded-2xl border border-gray-700 bg-gray-900/40';
+    const scroll = document.createElement('div');
+    scroll.className = 'overflow-x-auto';
+    const table = document.createElement('table');
+    table.className = 'min-w-full divide-y divide-gray-800 text-left text-xs';
+    table.innerHTML = `
+      <thead class="bg-gray-900/70 text-gray-400">
+        <tr>
+          <th class="px-3 py-2 font-medium">#</th>
+          <th class="px-3 py-2 font-medium">Event</th>
+          <th class="px-3 py-2 font-medium">Tool</th>
+          <th class="px-3 py-2 font-medium">Family</th>
+          <th class="px-3 py-2 font-medium">Action</th>
+          <th class="px-3 py-2 font-medium">Effect</th>
+          <th class="px-3 py-2 font-medium">Status</th>
+          <th class="px-3 py-2 font-medium">Duration</th>
+          <th class="px-3 py-2 font-medium">Summary</th>
+        </tr>
+      </thead>
+    `;
+    const tbody = document.createElement('tbody');
+    tbody.className = 'divide-y divide-gray-800 bg-gray-950/40';
     const rows = agentTraceApi.buildTimelineRows ? agentTraceApi.buildTimelineRows(summary) : [];
-    agentTraceTimelineBody.innerHTML = '';
     if (!rows.length) {
       const row = document.createElement('tr');
       row.innerHTML = '<td class="px-3 py-3 text-gray-500" colspan="9">No timeline events were normalized for this trace.</td>';
-      agentTraceTimelineBody.appendChild(row);
-      return;
-    }
-    rows.forEach((entry) => {
-      const row = document.createElement('tr');
-      row.className = 'align-top';
-      const cells = [
-        entry.index,
-        entry.event_type,
-        entry.tool_id,
-        entry.tool_family,
-        entry.action_kind,
-        entry.effect_kind,
-        entry.status,
-        entry.duration_label,
-        entry.summary,
-      ];
-      cells.forEach((value, idx) => {
-        const cell = document.createElement('td');
-        cell.className = `px-3 py-2 ${idx === 8 ? 'max-w-md whitespace-pre-wrap text-gray-300' : 'whitespace-nowrap'}`;
-        cell.textContent = String(value ?? '--');
-        row.appendChild(cell);
+      tbody.appendChild(row);
+    } else {
+      rows.forEach((entry) => {
+        const row = document.createElement('tr');
+        row.className = 'align-top';
+        const cells = [
+          entry.index,
+          entry.event_type,
+          entry.tool_id,
+          entry.tool_family,
+          entry.action_kind,
+          entry.effect_kind,
+          entry.status,
+          entry.duration_label,
+          entry.summary,
+        ];
+        cells.forEach((value, idx) => {
+          const cell = document.createElement('td');
+          cell.className = `px-3 py-2 ${idx === 8 ? 'max-w-md whitespace-pre-wrap text-gray-300' : 'whitespace-nowrap'}`;
+          cell.textContent = String(value ?? '--');
+          row.appendChild(cell);
+        });
+        tbody.appendChild(row);
       });
-      agentTraceTimelineBody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    wrapper.appendChild(scroll);
+    return wrapper;
+  }
+
+  function buildAgentTraceRawPayloadsNode(summary) {
+    const details = document.createElement('details');
+    details.className = 'rounded-xl border border-gray-700 bg-gray-900/40';
+    const summaryRow = document.createElement('summary');
+    summaryRow.className = 'cursor-pointer px-3 py-2 text-xs uppercase tracking-wide text-gray-400';
+    summaryRow.textContent = 'Raw payloads';
+
+    const body = document.createElement('div');
+    body.className = 'space-y-3 border-t border-gray-800 px-3 py-3';
+
+    const summaryBlock = document.createElement('div');
+    const summaryTitle = document.createElement('div');
+    summaryTitle.className = 'mb-1 text-[10px] uppercase tracking-wide text-gray-500';
+    summaryTitle.textContent = 'Summary';
+    const summaryPre = document.createElement('pre');
+    summaryPre.className = 'overflow-x-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] text-gray-200';
+    summaryPre.textContent = JSON.stringify(summary, null, 2);
+    summaryBlock.appendChild(summaryTitle);
+    summaryBlock.appendChild(summaryPre);
+
+    const rawBlock = document.createElement('div');
+    const rawTitle = document.createElement('div');
+    rawTitle.className = 'mb-1 text-[10px] uppercase tracking-wide text-gray-500';
+    rawTitle.textContent = 'Raw';
+    const rawPre = document.createElement('pre');
+    rawPre.className = 'overflow-x-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] text-gray-200';
+    rawPre.textContent = JSON.stringify((summary && summary.raw) || {}, null, 2);
+    rawBlock.appendChild(rawTitle);
+    rawBlock.appendChild(rawPre);
+
+    body.appendChild(summaryBlock);
+    body.appendChild(rawBlock);
+    details.appendChild(summaryRow);
+    details.appendChild(body);
+    return details;
+  }
+
+  function populateAgentTraceModal(summary) {
+    if (!agentTraceOverview || !agentTraceToolGroups || !agentTraceTimelineBody) return;
+    agentTraceOverview.innerHTML = '';
+    Array.from(buildAgentTraceOverviewNode(summary).children).forEach((child) => agentTraceOverview.appendChild(child));
+    if (agentTraceSummary) {
+      agentTraceSummary.textContent = summary.summary_text || 'No deterministic summary available.';
+    }
+    agentTraceToolGroups.innerHTML = '';
+    Array.from(buildAgentTraceToolGroupsNode(summary).children).forEach((child) => agentTraceToolGroups.appendChild(child));
+    agentTraceTimelineBody.innerHTML = '';
+    const timeline = buildAgentTraceTimelineNode(summary);
+    const replacementBody = timeline.querySelector('tbody');
+    if (replacementBody) {
+      Array.from(replacementBody.children).forEach((row) => agentTraceTimelineBody.appendChild(row));
+    }
+    if (agentTraceRawSummary) {
+      agentTraceRawSummary.textContent = JSON.stringify(summary, null, 2);
+    }
+    if (agentTraceRawPayloads) {
+      agentTraceRawPayloads.textContent = JSON.stringify((summary && summary.raw) || {}, null, 2);
+    }
+  }
+
+  function createAgentTracePanel(summary, meta = {}) {
+    if (!agentTraceApi.shouldShowAgentTrace || !agentTraceApi.shouldShowAgentTrace(summary)) return null;
+
+    const panel = document.createElement('div');
+    panel.className = 'mt-3 rounded-xl border border-gray-700 bg-gray-800/40 p-3 space-y-2';
+
+    const header = document.createElement('div');
+    header.className = 'flex items-center justify-between gap-2';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'flex-1 text-left text-xs text-gray-300 hover:text-white';
+    toggle.innerHTML = '<span class="uppercase tracking-wide">Agent Trace</span>';
+
+    const headerActions = document.createElement('div');
+    headerActions.className = 'flex items-center gap-2';
+
+    const expand = document.createElement('button');
+    expand.type = 'button';
+    expand.className = 'text-[10px] text-indigo-300 hover:text-indigo-200';
+    expand.textContent = 'Open modal';
+    expand.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAgentTraceModal(summary, meta);
     });
+
+    const caret = document.createElement('span');
+    caret.className = 'text-gray-500';
+    caret.textContent = '▾';
+
+    headerActions.appendChild(expand);
+    headerActions.appendChild(caret);
+    header.appendChild(toggle);
+    header.appendChild(headerActions);
+
+    const body = document.createElement('div');
+    body.className = 'hidden space-y-4 text-xs text-gray-300';
+
+    const metaLine = document.createElement('div');
+    metaLine.className = 'text-[10px] text-gray-500';
+    const corr = summary.corr_id || meta.correlationId || '--';
+    metaLine.textContent = `corr ${corr} · status ${summary.status || '--'} · ${summary.step_count || 0} steps`;
+
+    const summaryBlock = document.createElement('div');
+    const summaryTitle = document.createElement('div');
+    summaryTitle.className = 'mb-1 text-gray-500';
+    summaryTitle.textContent = 'Deterministic summary';
+    const summaryText = document.createElement('div');
+    summaryText.className = 'rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-sm text-gray-200';
+    summaryText.textContent = summary.summary_text || 'No deterministic summary available.';
+    summaryBlock.appendChild(summaryTitle);
+    summaryBlock.appendChild(summaryText);
+
+    const toolsBlock = document.createElement('div');
+    const toolsTitle = document.createElement('div');
+    toolsTitle.className = 'mb-1 text-gray-500';
+    toolsTitle.textContent = 'Grouped tool usage';
+    toolsBlock.appendChild(toolsTitle);
+    toolsBlock.appendChild(buildAgentTraceToolGroupsNode(summary));
+
+    const timelineBlock = document.createElement('div');
+    const timelineTitle = document.createElement('div');
+    timelineTitle.className = 'mb-1 text-gray-500';
+    timelineTitle.textContent = 'Timeline';
+    timelineBlock.appendChild(timelineTitle);
+    timelineBlock.appendChild(buildAgentTraceTimelineNode(summary));
+
+    body.appendChild(metaLine);
+    body.appendChild(buildAgentTraceOverviewNode(summary));
+    body.appendChild(summaryBlock);
+    body.appendChild(toolsBlock);
+    body.appendChild(timelineBlock);
+    body.appendChild(buildAgentTraceRawPayloadsNode(summary));
+
+    toggle.addEventListener('click', () => {
+      const nextHidden = !body.classList.contains('hidden');
+      body.classList.toggle('hidden', nextHidden);
+      caret.textContent = nextHidden ? '▾' : '▴';
+    });
+
+    panel.appendChild(header);
+    panel.appendChild(body);
+    return panel;
   }
 
   function openAgentTraceModal(summary, meta = {}) {
@@ -2605,18 +2819,7 @@ loadDismissedIds();
       const corr = summary.corr_id || meta.correlationId || '--';
       agentTraceModalMeta.textContent = `corr ${corr} · status ${summary.status || '--'} · ${summary.step_count || 0} steps`;
     }
-    renderAgentTraceOverview(summary);
-    if (agentTraceSummary) {
-      agentTraceSummary.textContent = summary.summary_text || 'No deterministic summary available.';
-    }
-    renderAgentTraceToolGroups(summary);
-    renderAgentTraceTimeline(summary);
-    if (agentTraceRawSummary) {
-      agentTraceRawSummary.textContent = JSON.stringify(summary, null, 2);
-    }
-    if (agentTraceRawPayloads) {
-      agentTraceRawPayloads.textContent = JSON.stringify((summary && summary.raw) || {}, null, 2);
-    }
+    populateAgentTraceModal(summary);
     agentTraceModal.classList.remove('hidden');
     agentTraceModal.setAttribute('aria-hidden', 'false');
   }
@@ -2770,16 +2973,7 @@ loadDismissedIds();
       const data = await resp.json();
       if (Array.isArray(data)) {
         chatMessages = data
-          .map((item) => ({
-          message_id: item.message_id || item.messageId,
-          session_id: item.session_id || item.sessionId,
-          created_at: item.created_at || item.createdAt,
-          severity: item.severity || 'info',
-          title: item.title || 'New message from Orion',
-          preview_text: item.preview_text || item.previewText || '',
-          status: (item.status || 'unread').toLowerCase(),
-          silent: false,
-          }))
+          .map((item) => normalizeChatMessage(item))
           .filter((m) => m && m.session_id && m.message_id)
           .filter((m) => !isDismissed(m.message_id));
         renderChatMessages();

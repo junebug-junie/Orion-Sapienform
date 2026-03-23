@@ -53,3 +53,28 @@ console.log(JSON.stringify({{
     assert payload["groupedCounts"] == [1, 1, 2]
     assert payload["timelineSummary"] == "Planner selected analyze_text."
     assert payload["timelineDuration"] == "80 ms"
+
+
+def test_agent_trace_helpers_gate_message_level_debug_sections() -> None:
+    script = f"""
+const helpers = require({json.dumps(str(JS_PATH))});
+const message = {{
+  message_id: 'msg-1',
+  agent_trace: {{
+    mode: 'agent',
+    summary_text: 'Agent executed tools.',
+    tools: [{{ tool_id: 'planner_react', tool_family: 'planning', count: 1, duration_ms: 100 }}],
+    steps: [],
+  }},
+}};
+console.log(JSON.stringify({{
+  show: helpers.shouldShowAgentTraceForMessage(message),
+  missing: helpers.shouldShowAgentTraceForMessage({{ message_id: 'msg-2' }}),
+  extractedMode: helpers.extractAgentTrace(message).mode,
+}}));
+"""
+    payload = json.loads(_run_node(script))
+
+    assert payload["show"] is True
+    assert payload["missing"] is False
+    assert payload["extractedMode"] == "agent"

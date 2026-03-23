@@ -25,6 +25,15 @@
     return hasSteps || hasTools || Boolean(normalized.summary_text);
   }
 
+  function extractAgentTrace(messageLike) {
+    if (!messageLike || typeof messageLike !== 'object') return null;
+    return normalizeSummary(messageLike.agent_trace || messageLike.agentTrace || null);
+  }
+
+  function shouldShowAgentTraceForMessage(messageLike) {
+    return shouldShowAgentTrace(extractAgentTrace(messageLike));
+  }
+
   function formatDuration(durationMs) {
     const ms = Number(durationMs || 0);
     if (!Number.isFinite(ms) || ms <= 0) return '--';
@@ -79,6 +88,8 @@
   const api = {
     normalizeSummary,
     shouldShowAgentTrace,
+    extractAgentTrace,
+    shouldShowAgentTraceForMessage,
     formatDuration,
     groupToolsByFamily,
     buildTimelineRows,

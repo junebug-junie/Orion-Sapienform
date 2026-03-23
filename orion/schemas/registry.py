@@ -48,6 +48,14 @@ from orion.schemas.social_bridge import (
     ExternalRoomTurnSkippedV1,
 )
 from orion.schemas.social_commitment import SocialCommitmentResolutionV1, SocialCommitmentV1
+from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
+from orion.schemas.social_context import SocialContextCandidateV1, SocialContextSelectionDecisionV1, SocialContextWindowV1
+from orion.schemas.social_inspection import (
+    SocialInspectionDecisionTraceV1,
+    SocialInspectionSectionV1,
+    SocialInspectionSnapshotV1,
+)
+from orion.schemas.social_freshness import SocialDecaySignalV1, SocialMemoryFreshnessV1, SocialRegroundingDecisionV1
 from orion.schemas.social_deliberation import (
     SocialBridgeSummaryV1,
     SocialClarifyingQuestionV1,
@@ -79,6 +87,20 @@ from orion.schemas.social_autonomy import SocialOpenThreadV1, SocialTurnPolicyDe
 from orion.schemas.social_style import SocialPeerStyleHintV1, SocialRoomRitualSummaryV1, SocialStyleAdaptationSnapshotV1
 from orion.schemas.social_skills import SocialSkillRequestV1, SocialSkillResultV1, SocialSkillSelectionV1
 from orion.schemas.social_thread import SocialHandoffSignalV1, SocialThreadRoutingDecisionV1, SocialThreadStateV1
+from orion.schemas.social_scenario import (
+    SocialScenarioEvaluationResultV1,
+    SocialScenarioExpectationV1,
+    SocialScenarioFixtureV1,
+)
+from orion.schemas.social_gif import (
+    SocialGifIntentV1,
+    SocialGifInterpretationV1,
+    SocialGifObservedSignalV1,
+    SocialGifPolicyDecisionV1,
+    SocialGifProxyContextV1,
+    SocialGifUsageStateV1,
+)
+from orion.schemas.social_shakedown import SocialShakedownFixV1, SocialShakedownIssueV1
 from orion.schemas.vector.schemas import (
     EmbeddingGenerateV1,
     EmbeddingResultV1,
@@ -303,6 +325,18 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ExternalRoomTurnSkippedV1": ExternalRoomTurnSkippedV1,
     "SocialParticipantContinuityV1": SocialParticipantContinuityV1,
     "SocialRoomContinuityV1": SocialRoomContinuityV1,
+    "SocialCalibrationSignalV1": SocialCalibrationSignalV1,
+    "SocialPeerCalibrationV1": SocialPeerCalibrationV1,
+    "SocialTrustBoundaryV1": SocialTrustBoundaryV1,
+    "SocialContextCandidateV1": SocialContextCandidateV1,
+    "SocialContextSelectionDecisionV1": SocialContextSelectionDecisionV1,
+    "SocialContextWindowV1": SocialContextWindowV1,
+    "SocialInspectionSnapshotV1": SocialInspectionSnapshotV1,
+    "SocialInspectionSectionV1": SocialInspectionSectionV1,
+    "SocialInspectionDecisionTraceV1": SocialInspectionDecisionTraceV1,
+    "SocialDecaySignalV1": SocialDecaySignalV1,
+    "SocialRegroundingDecisionV1": SocialRegroundingDecisionV1,
+    "SocialMemoryFreshnessV1": SocialMemoryFreshnessV1,
     "SocialStanceSnapshotV1": SocialStanceSnapshotV1,
     "SocialRelationalMemoryUpdateV1": SocialRelationalMemoryUpdateV1,
     "SocialArtifactProposalV1": SocialArtifactProposalV1,
@@ -313,6 +347,17 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SocialPeerStyleHintV1": SocialPeerStyleHintV1,
     "SocialRoomRitualSummaryV1": SocialRoomRitualSummaryV1,
     "SocialStyleAdaptationSnapshotV1": SocialStyleAdaptationSnapshotV1,
+    "SocialScenarioFixtureV1": SocialScenarioFixtureV1,
+    "SocialScenarioExpectationV1": SocialScenarioExpectationV1,
+    "SocialScenarioEvaluationResultV1": SocialScenarioEvaluationResultV1,
+    "SocialGifPolicyDecisionV1": SocialGifPolicyDecisionV1,
+    "SocialGifIntentV1": SocialGifIntentV1,
+    "SocialGifUsageStateV1": SocialGifUsageStateV1,
+    "SocialGifObservedSignalV1": SocialGifObservedSignalV1,
+    "SocialGifProxyContextV1": SocialGifProxyContextV1,
+    "SocialGifInterpretationV1": SocialGifInterpretationV1,
+    "SocialShakedownIssueV1": SocialShakedownIssueV1,
+    "SocialShakedownFixV1": SocialShakedownFixV1,
     "SocialSkillRequestV1": SocialSkillRequestV1,
     "SocialSkillResultV1": SocialSkillResultV1,
     "SocialSkillSelectionV1": SocialSkillSelectionV1,

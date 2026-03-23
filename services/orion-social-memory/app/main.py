@@ -45,3 +45,19 @@ async def summary(
     if not platform.strip() or not room_id.strip():
         raise HTTPException(status_code=400, detail="platform_and_room_id_required")
     return await service.get_summary(platform=platform.strip(), room_id=room_id.strip(), participant_id=participant_id)
+
+
+@app.get("/inspection")
+async def inspection(
+    platform: str = Query(...),
+    room_id: str = Query(...),
+    participant_id: str | None = Query(None),
+) -> Dict[str, Any]:
+    if not platform.strip() or not room_id.strip():
+        raise HTTPException(status_code=400, detail="platform_and_room_id_required")
+    logging.getLogger("orion-social-memory").info(
+        "social_inspection_request_served room_id=%s participant_id=%s",
+        room_id.strip(),
+        participant_id or "room",
+    )
+    return await service.get_inspection(platform=platform.strip(), room_id=room_id.strip(), participant_id=participant_id)

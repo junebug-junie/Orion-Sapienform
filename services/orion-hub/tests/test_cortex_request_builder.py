@@ -203,9 +203,9 @@ def test_social_room_profile_forces_brain_chat_verb_and_safe_recall() -> None:
                 "confidence": 0.6,
                 "last_updated_at": "2026-03-22T12:00:00+00:00",
             },
-            "social_room_ritual_summary": {
-                "ritual_key": "callsyne:room-alpha",
-                "platform": "callsyne",
+                "social_room_ritual_summary": {
+                    "ritual_key": "callsyne:room-alpha",
+                    "platform": "callsyne",
                 "room_id": "room-alpha",
                 "greeting_style": "warm",
                 "reentry_style": "grounded",
@@ -215,10 +215,57 @@ def test_social_room_profile_forces_brain_chat_verb_and_safe_recall() -> None:
                 "room_tone_summary": "Calm, warm, curious.",
                 "culture_summary": "The room leans warm on greeting and brief on pause.",
                 "evidence_count": 3,
-                "confidence": 0.6,
-                "last_updated_at": "2026-03-22T12:00:00+00:00",
+                    "confidence": 0.6,
+                    "last_updated_at": "2026-03-22T12:00:00+00:00",
+                },
+                "social_context_window": {
+                    "window_id": "context-window-1",
+                    "platform": "callsyne",
+                    "room_id": "room-alpha",
+                    "thread_key": "callsyne:room-alpha:thread:thread-1",
+                    "participant_id": "peer-1",
+                    "selected_candidates": [
+                        {
+                            "candidate_id": "candidate-1",
+                            "platform": "callsyne",
+                            "room_id": "room-alpha",
+                            "thread_key": "callsyne:room-alpha:thread:thread-1",
+                            "participant_id": "peer-1",
+                            "candidate_kind": "peer_continuity",
+                            "reference_key": "callsyne:room-alpha:peer-1",
+                            "summary": "Recurring peer who likes synthesis and grounded follow-up.",
+                            "relevance_score": 0.9,
+                            "priority_band": "high",
+                            "freshness_band": "fresh",
+                            "inclusion_decision": "include",
+                            "rationale": "Addressed-peer context should lead.",
+                            "reasons": ["addressed_peer_context"],
+                            "max_window_budget": 4,
+                            "metadata": {"source": "social-memory"},
+                        }
+                    ],
+                    "budget_max": 4,
+                    "total_candidates_considered": 1,
+                    "rationale": "Compact local-first selection.",
+                    "reasons": ["addressed_peer_context_preferred"],
+                    "metadata": {"source": "social-memory"},
+                },
+                "social_context_selection_decision": {
+                    "decision_id": "context-decision-1",
+                    "platform": "callsyne",
+                    "room_id": "room-alpha",
+                    "thread_key": "callsyne:room-alpha:thread:thread-1",
+                    "selected_candidate_ids": ["candidate-1"],
+                    "total_candidates_considered": 1,
+                    "included_count": 1,
+                    "softened_count": 0,
+                    "excluded_count": 0,
+                    "budget_max": 4,
+                    "rationale": "Compact local-first selection.",
+                    "reasons": ["addressed_peer_context_preferred"],
+                    "metadata": {"source": "social-memory"},
+                },
             },
-        },
         session_id="sid-social",
         user_id="user-social",
         trace_id="trace-social",
@@ -254,6 +301,8 @@ def test_social_room_profile_forces_brain_chat_verb_and_safe_recall() -> None:
     assert debug["chat_profile"] == "social_room"
     assert debug["social_skill_selection"]["suppressed_reason"] == "no_skill_needed"
     assert debug["social_style_adaptation"]["guardrail"].startswith("Adapt lightly")
+    assert debug["social_inspection"]["metadata"]["tool_execution_available"] == "false"
+    assert any(section["section_kind"] == "context_window" for section in debug["social_inspection"]["sections"])
 
 
 def test_social_room_epistemic_phrase_hint_is_injected_for_interpretive_turns() -> None:
@@ -317,9 +366,48 @@ def test_social_room_epistemic_phrase_hint_is_injected_for_interpretive_turns() 
     )
 
     assert req.metadata["social_epistemic_phrase_hint"]["lead_in"].startswith("Lead naturally with an interpretive frame")
-    assert "interpretation" in req.metadata["social_epistemic_phrase_hint"]["caution"].lower()
-    assert "provisional or disputed claims" in req.metadata["social_epistemic_phrase_hint"]["caution"].lower()
-    assert "avoid flattening contested or partial alignment" in req.metadata["social_epistemic_phrase_hint"]["caution"].lower()
+    assert "read" in req.metadata["social_epistemic_phrase_hint"]["caution"].lower()
+
+
+def test_social_room_clarifying_epistemic_hint_stays_compact() -> None:
+    req, _, _ = hub_builder.build_chat_request(
+        payload={
+            "chat_profile": "social_room",
+            "social_epistemic_signal": {
+                "claim_kind": "clarification_needed",
+                "confidence_level": "medium",
+                "ambiguity_level": "high",
+            },
+            "social_epistemic_decision": {
+                "decision": "ask_clarifying_question",
+                "rationale": "clarify target before asserting",
+            },
+            "social_room_continuity": {
+                "room_key": "callsyne:room-alpha",
+                "platform": "callsyne",
+                "room_id": "room-alpha",
+                "recurring_topics": ["grounding"],
+                "active_participants": ["CallSyne Peer"],
+                "recent_thread_summary": "The room is discussing pacing.",
+                "room_tone_summary": "Calm and grounded.",
+                "open_threads": ["How fast should the room move?"],
+                "evidence_refs": ["social-turn-1"],
+                "evidence_count": 2,
+                "last_updated_at": "2026-03-22T12:00:00+00:00",
+            },
+        },
+        session_id="sid-epistemic-clarify",
+        user_id="user-social",
+        trace_id="trace-epistemic-clarify",
+        default_mode="brain",
+        auto_default_enabled=True,
+        source_label="hub_ws",
+        prompt="Wait, which thread do you mean?",
+    )
+
+    assert req.metadata["social_epistemic_phrase_hint"]["lead_in"] == "Ask one short clarifying question first."
+    assert "without preamble" not in req.metadata["social_epistemic_phrase_hint"]["lead_in"].lower()
+    assert req.metadata["social_epistemic_phrase_hint"]["caution"] == "Clarify scope, thread, or target before making a claim."
 
 
 def test_social_room_floor_metadata_is_injected_without_enabling_tools() -> None:

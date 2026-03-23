@@ -1,0 +1,1919 @@
+{
+  "scenarios": [
+    {
+      "scenario_id": "direct-peer-question-multi-peer",
+      "description": "Directly addressed peer question in a busy multi-peer room should route locally and keep peer continuity available.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "active_participants": [
+        "CallSyne Peer",
+        "Another Peer",
+        "Archivist"
+      ],
+      "seeded_state": {
+        "participant": {
+          "participant_name": "CallSyne Peer",
+          "recent_shared_topics": [
+            "pacing",
+            "grounding"
+          ],
+          "interaction_tone_summary": "Direct and grounded.",
+          "safe_continuity_summary": "Recurring peer who prefers direct grounded replies.",
+          "evidence_refs": [
+            "seed-1"
+          ],
+          "evidence_count": 2,
+          "confidence": 0.66
+        },
+        "room": {
+          "recurring_topics": [
+            "pacing",
+            "routing"
+          ],
+          "active_participants": [
+            "CallSyne Peer",
+            "Another Peer",
+            "Archivist"
+          ],
+          "recent_thread_summary": "The room is splitting pacing from routing.",
+          "room_tone_summary": "Warm and active.",
+          "open_threads": [
+            "Should pacing be answered locally?"
+          ],
+          "evidence_refs": [
+            "seed-room-1"
+          ],
+          "evidence_count": 3,
+          "current_thread_key": "callsyne:room-alpha:thread:thread-direct",
+          "current_thread_summary": "CallSyne Peer is asking Orion for a pacing read.",
+          "active_threads": [
+            {
+              "thread_key": "callsyne:room-alpha:thread:thread-direct",
+              "thread_summary": "CallSyne Peer is asking Orion for a pacing read.",
+              "audience_scope": "peer",
+              "open_question": true,
+              "target_participant_id": "orion",
+              "target_participant_name": "Or\u00edon"
+            },
+            {
+              "thread_key": "callsyne:room-alpha:thread:thread-recap",
+              "thread_summary": "A recap thread is available if needed.",
+              "audience_scope": "summary",
+              "open_question": false
+            }
+          ]
+        },
+        "peer_style": {
+          "participant_name": "CallSyne Peer",
+          "style_hints_summary": "Prefers compact grounded replies.",
+          "evidence_count": 2,
+          "confidence": 0.64
+        },
+        "room_ritual": {
+          "culture_summary": "The room is warm on re-entry and brief on handoff.",
+          "evidence_count": 2,
+          "confidence": 0.58
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-direct",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, what's your read on the pacing here?",
+          "mentions_orion": true,
+          "message_id": "msg-direct-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "audience_scope": "peer",
+        "epistemic_claim_kind": "inference",
+        "epistemic_lead_in_contains": "interpretive frame",
+        "selected_context_kinds": [
+          "thread",
+          "peer_continuity"
+        ],
+        "inspection_section_kinds": [
+          "context_window",
+          "routing"
+        ],
+        "prompt_must_contain": [
+          "THREAD ROUTING:",
+          "PEER CONTINUITY:"
+        ],
+        "prompt_must_not_contain": [
+          "As an AI"
+        ]
+      }
+    },
+    {
+      "scenario_id": "contested-claim-plain-reply",
+      "description": "A contested claim can stay as a plain peer reply without forcing a bridge summary.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "active_participants": [
+        "CallSyne Peer",
+        "Another Peer"
+      ],
+      "transcript_turns": [
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-bridge",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "prompt": "I think the pacing is the problem here.",
+          "response": "I can stay with that read."
+        },
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-bridge",
+          "participant_id": "peer-2",
+          "participant_name": "Another Peer",
+          "prompt": "I disagree \u2014 it feels more like thread split than pacing.",
+          "response": "That helps; I can answer that directly without trying to bridge the whole room."
+        },
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-bridge",
+          "participant_id": "peer-2",
+          "participant_name": "Another Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, what's your read on the pacing split?",
+          "mentions_orion": true,
+          "message_id": "msg-plain-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "epistemic_claim_kind": "inference",
+        "deliberation_decision_kind": "normal_peer_reply",
+        "bridge_summary_expected": false,
+        "inspection_section_kinds": [
+          "deliberation"
+        ],
+        "prompt_must_contain": [
+          "If a plain peer reply will do the job"
+        ],
+        "prompt_must_not_contain": [
+          "status=accepted"
+        ]
+      }
+    },
+    {
+      "scenario_id": "ambiguous-divergence-clarify-once",
+      "description": "Ambiguous divergence should surface one clarifying question and compact epistemic framing.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "transcript_turns": [
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-clarify",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "prompt": "Are those the same thing, or do you mean the room-level conclusion or just the local view?",
+          "response": "I can narrow it if needed."
+        },
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-clarify",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Wait, which thread do you mean?",
+          "mentions_orion": true,
+          "message_id": "msg-clarify-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "ask_follow_up",
+        "routing_decision": "reply_to_peer",
+        "epistemic_claim_kind": "clarification_needed",
+        "epistemic_decision": "ask_clarifying_question",
+        "epistemic_lead_in_contains": "Ask one short clarifying question first.",
+        "deliberation_decision_kind": "ask_clarifying_question",
+        "clarifying_question_expected": true,
+        "handoff_decision_kind": "leave_open",
+        "inspection_section_kinds": [
+          "deliberation",
+          "routing"
+        ],
+        "prompt_must_contain": [
+          "CLARIFYING QUESTION HINT:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "stale-snapshot-vs-fresh-divergence",
+      "description": "Stale consensus and resumptive context should lose to fresher live divergence.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "active_participants": [
+        "CallSyne Peer",
+        "Another Peer"
+      ],
+      "seeded_state": {
+        "participant": {
+          "participant_name": "CallSyne Peer",
+          "safe_continuity_summary": "Recurring peer on the pacing thread.",
+          "evidence_count": 2,
+          "evidence_refs": [
+            "seed-peer-1"
+          ],
+          "last_seen_at": "2026-03-10T12:00:00+00:00"
+        },
+        "room": {
+          "recurring_topics": [
+            "pacing"
+          ],
+          "active_participants": [
+            "CallSyne Peer",
+            "Another Peer"
+          ],
+          "recent_thread_summary": "Pacing thread.",
+          "room_tone_summary": "Warm and curious.",
+          "open_threads": [
+            "thread:thread-1"
+          ],
+          "evidence_refs": [
+            "social-turn-old"
+          ],
+          "evidence_count": 3,
+          "last_updated_at": "2026-03-22T12:00:00+00:00",
+          "shared_artifact_scope": "room_local",
+          "shared_artifact_status": "accepted",
+          "shared_artifact_summary": "Accepted as room-local continuity around pacing.",
+          "shared_artifact_reason": "explicit keep/remember language made the scope legible",
+          "current_thread_key": "callsyne:room-alpha:thread:thread-1",
+          "current_thread_summary": "Pacing thread.",
+          "claim_consensus_states": [
+            {
+              "consensus_id": "consensus-old-1",
+              "claim_id": "claim-old-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "thread_key": "callsyne:room-alpha:thread:thread-1",
+              "normalized_claim_key": "the pacing read is settled",
+              "consensus_state": "consensus",
+              "supporting_participant_ids": [
+                "peer-1",
+                "peer-2"
+              ],
+              "disputing_participant_ids": [],
+              "questioning_participant_ids": [],
+              "orion_stance": "support",
+              "confidence": 0.8,
+              "supporting_evidence_count": 3,
+              "updated_at": "2026-03-10T12:00:00+00:00",
+              "reasons": [
+                "support_count=3"
+              ],
+              "metadata": {
+                "source": "social-memory",
+                "regrounding_decision": "soften"
+              }
+            }
+          ],
+          "claim_divergence_signals": [
+            {
+              "divergence_id": "diverge-1",
+              "claim_id": "claim-new-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "thread_key": "callsyne:room-alpha:thread:thread-1",
+              "normalized_claim_key": "the pacing read is still contested",
+              "divergence_detected": true,
+              "consensus_state": "contested",
+              "participant_stances": {
+                "peer-1": "support",
+                "peer-2": "dispute"
+              },
+              "orion_stance": "unknown",
+              "confidence": 0.72,
+              "supporting_evidence_count": 2,
+              "updated_at": "2026-03-22T12:00:00+00:00",
+              "reasons": [
+                "divergence_requires_attribution"
+              ],
+              "metadata": {
+                "source": "social-memory"
+              }
+            }
+          ],
+          "memory_freshness": [
+            {
+              "freshness_id": "fresh-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "artifact_kind": "claim_consensus",
+              "freshness_state": "stale",
+              "decay_level": "moderate",
+              "regrounding_decision": "soften",
+              "confidence": 0.5,
+              "evidence_count": 2,
+              "last_updated_at": "2026-03-10T12:00:00+00:00",
+              "rationale": "Older consensus is stale.",
+              "reasons": [
+                "support_is_stale"
+              ],
+              "metadata": {
+                "source": "social-memory"
+              }
+            }
+          ]
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-1",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, what's your read on where the pacing claim stands now?",
+          "mentions_orion": true,
+          "message_id": "msg-stale-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "epistemic_claim_kind": "inference",
+        "selected_context_kinds": [
+          "divergence"
+        ],
+        "excluded_context_kinds": [
+          "consensus",
+          "episode_snapshot",
+          "reentry_anchor"
+        ],
+        "softened_context_kinds": [],
+        "inspection_section_kinds": [
+          "context_window",
+          "freshness"
+        ]
+      }
+    },
+    {
+      "scenario_id": "repair-after-wrong-thread-response",
+      "description": "A wrong-thread correction should trigger repair-aware routing instead of continuing the stale answer path.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "active_participants": [
+        "CallSyne Peer",
+        "Archivist"
+      ],
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Archivist"
+          ],
+          "recent_thread_summary": "Archivist is asking Cadence for the next routing step.",
+          "room_tone_summary": "Corrective but calm.",
+          "open_threads": [
+            "thread:thread-wrong"
+          ],
+          "evidence_count": 2,
+          "last_updated_at": "2026-03-22T12:00:00+00:00",
+          "current_thread_key": "callsyne:room-alpha:thread:thread-wrong",
+          "current_thread_summary": "Archivist is asking Cadence for the next routing step.",
+          "active_threads": [
+            {
+              "thread_key": "callsyne:room-alpha:thread:thread-wrong",
+              "thread_summary": "Archivist is asking Cadence for the next routing step.",
+              "audience_scope": "peer",
+              "open_question": true,
+              "target_participant_id": "peer-2",
+              "target_participant_name": "Archivist"
+            }
+          ]
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-wrong",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Wrong thread \u2014 that was for Archivist, not you.",
+          "mentions_orion": true,
+          "target_participant_id": "peer-2",
+          "target_participant_name": "Archivist",
+          "message_id": "msg-repair-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "wait",
+        "repair_decision": "reset_thread",
+        "repair_type": "thread_mismatch",
+        "epistemic_claim_kind": "clarification_needed",
+        "inspection_section_kinds": [
+          "routing"
+        ],
+        "prompt_must_contain": [
+          "follow the room's correction toward:",
+          "REPAIR DECISION:"
+        ],
+        "prompt_must_not_contain": [
+          "yield / retarget toward:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "pending-artifact-stays-non-active",
+      "description": "Pending artifact dialogue should remain inspectable but non-active for continuity and recall.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "transcript_turns": [
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-artifact",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "prompt": "Can you keep a short takeaway from this?",
+          "response": "I\u2019d treat it as session-only for now: \"grounded continuity cue.\" Does that wording match what you meant?",
+          "client_meta": {
+            "social_artifact_proposal": {
+              "proposal_id": "proposal-1",
+              "artifact_type": "shared_takeaway",
+              "proposed_summary_text": "grounded continuity cue",
+              "proposed_scope": "session_only",
+              "decision_state": "clarify_scope",
+              "confirmation_needed": true,
+              "rationale": "defaulted to the narrowest safe scope until the carry-forward target is clear"
+            }
+          }
+        },
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-artifact",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Do you remember the cue from a second ago?",
+          "mentions_orion": true,
+          "message_id": "msg-artifact-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "ask_follow_up",
+        "routing_decision": "reply_to_peer",
+        "epistemic_claim_kind": "proposal",
+        "require_pending_artifact_non_active": true,
+        "prompt_must_not_contain": [
+          "status=accepted"
+        ]
+      }
+    },
+    {
+      "scenario_id": "calibration-caution-not-deference",
+      "description": "Calibration should add caution and attribution pressure without making the prompt deferential.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "active_participants": [
+        "CallSyne Peer",
+        "Another Peer"
+      ],
+      "seeded_state": {
+        "participant": {
+          "participant_name": "CallSyne Peer",
+          "safe_continuity_summary": "Recurring summary-oriented peer.",
+          "evidence_count": 3,
+          "peer_calibration": {
+            "calibration_id": "cal-1",
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "participant_id": "peer-1",
+            "participant_name": "CallSyne Peer",
+            "thread_key": "callsyne:room-alpha:thread:thread-cal",
+            "scope": "peer_thread",
+            "calibration_kind": "strong_summary_partner",
+            "confidence": 0.82,
+            "evidence_count": 3,
+            "reversible": true,
+            "decay_hint": "decay_after_topic_shift",
+            "rationale": "Helpful summarizer, but not an authority.",
+            "reasons": [
+              "aligned_summary_language"
+            ],
+            "active_signal_ids": [
+              "signal-1"
+            ],
+            "caution_bias": 0.08,
+            "attribution_bias": 0.12,
+            "clarification_bias": 0.1,
+            "updated_at": "2026-03-22T12:00:00+00:00",
+            "metadata": {
+              "source": "social-memory",
+              "authority_shortcut": "disabled"
+            }
+          },
+          "trust_boundary": {
+            "boundary_id": "boundary-1",
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "participant_id": "peer-1",
+            "participant_name": "CallSyne Peer",
+            "thread_key": "callsyne:room-alpha:thread:thread-cal",
+            "scope": "peer_thread",
+            "calibration_kind": "strong_summary_partner",
+            "confidence": 0.76,
+            "evidence_count": 3,
+            "reversible": true,
+            "decay_hint": "decay_after_topic_shift",
+            "treat_claims_as_provisional": false,
+            "summary_anchor": true,
+            "use_narrower_attribution": true,
+            "require_clarification_before_shared_ground": false,
+            "caution_bias": 0.08,
+            "attribution_bias": 0.12,
+            "clarification_bias": 0.1,
+            "rationale": "Helpful summary support without authority.",
+            "reasons": [
+              "aligned_summary_language"
+            ],
+            "updated_at": "2026-03-22T12:00:00+00:00",
+            "metadata": {
+              "source": "social-memory",
+              "authority_shortcut": "disabled"
+            }
+          }
+        },
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Another Peer"
+          ],
+          "recent_thread_summary": "A summary-heavy thread is active.",
+          "room_tone_summary": "Calm and grounded.",
+          "open_threads": [
+            "thread:thread-cal"
+          ],
+          "evidence_count": 3,
+          "last_updated_at": "2026-03-22T12:00:00+00:00",
+          "current_thread_key": "callsyne:room-alpha:thread:thread-cal",
+          "current_thread_summary": "The room is asking for a grounded read.",
+          "trust_boundaries": [
+            {
+              "boundary_id": "boundary-room-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "thread_key": "callsyne:room-alpha:thread:thread-cal",
+              "scope": "room_thread",
+              "calibration_kind": "strong_summary_partner",
+              "confidence": 0.7,
+              "evidence_count": 2,
+              "reversible": true,
+              "decay_hint": "decay_after_topic_shift",
+              "treat_claims_as_provisional": true,
+              "summary_anchor": false,
+              "use_narrower_attribution": true,
+              "require_clarification_before_shared_ground": false,
+              "caution_bias": 0.08,
+              "attribution_bias": 0.12,
+              "clarification_bias": 0.1,
+              "rationale": "Caution should go up, not deference.",
+              "reasons": [
+                "contested_summary_room"
+              ],
+              "updated_at": "2026-03-22T12:00:00+00:00",
+              "metadata": {
+                "source": "social-memory"
+              }
+            }
+          ]
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-cal",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, what's your read on where we are?",
+          "mentions_orion": true,
+          "message_id": "msg-calibration-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "epistemic_claim_kind": "inference",
+        "prompt_must_contain": [
+          "TRUST BOUNDARIES:",
+          "calibration affects caution, not truth."
+        ],
+        "prompt_must_not_contain": [
+          "defer to"
+        ],
+        "inspection_section_kinds": [
+          "calibration"
+        ]
+      }
+    },
+    {
+      "scenario_id": "resolved-thread-leave-open",
+      "description": "A locally resolved thread with an open peer question should favor leave_open instead of forced closure.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "transcript_turns": [
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-open",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "prompt": "Can anyone else weigh in on this pacing question?",
+          "response": "I can leave that open for an answer."
+        },
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-open",
+          "participant_id": "peer-2",
+          "participant_name": "Another Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, does that feel settled enough for now?",
+          "mentions_orion": true,
+          "message_id": "msg-open-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "prompt_must_contain": [
+          "Leave-open is usually better than over-managing the next move."
+        ],
+        "floor_decision_kind": "leave_open"
+      }
+    },
+    {
+      "scenario_id": "blocked-private-material-stays-blocked",
+      "description": "Private client metadata should remain blocked across summary, inspection, and prompt evaluation surfaces.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "transcript_turns": [
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-private",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "prompt": "Can we keep the private thread off the record?",
+          "response": "Yes \u2014 I won't carry private details forward.",
+          "client_meta": {
+            "sealed_private": "do not surface this",
+            "private_note": "private-anchor"
+          }
+        },
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-private",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, can you keep the private thing sealed?",
+          "mentions_orion": true,
+          "message_id": "msg-private-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "ask_follow_up",
+        "routing_decision": "reply_to_peer",
+        "epistemic_claim_kind": "clarification_needed",
+        "blocked_strings": [
+          "do not surface this",
+          "private-anchor",
+          "sealed_private"
+        ],
+        "require_private_material_blocked": true,
+        "prompt_must_not_contain": [
+          "do not surface this",
+          "private-anchor"
+        ],
+        "inspection_section_kinds": [
+          "epistemic"
+        ]
+      }
+    },
+    {
+      "scenario_id": "explicit-landing-stays-local",
+      "description": "An explicit landing request in a direct two-peer thread should still stay local when a plain peer reply is better than a bridge summary.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "transcript_turns": [
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-local-landing",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "prompt": "I think the pacing is the problem here.",
+          "response": "I can stay with that read."
+        },
+        {
+          "fixture_kind": "social_turn",
+          "thread_id": "thread-local-landing",
+          "participant_id": "peer-2",
+          "participant_name": "Another Peer",
+          "prompt": "I disagree \u2014 it feels more like thread split than pacing. Where are we landing?",
+          "response": "That helps; I can answer that directly without trying to bridge the whole room."
+        },
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-local-landing",
+          "participant_id": "peer-2",
+          "participant_name": "Another Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, where are we landing between pacing and thread split?",
+          "mentions_orion": true,
+          "message_id": "msg-local-landing-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "epistemic_claim_kind": "summary",
+        "deliberation_decision_kind": "normal_peer_reply",
+        "bridge_summary_expected": false,
+        "inspection_section_kinds": [
+          "deliberation",
+          "routing"
+        ],
+        "prompt_must_contain": [
+          "If a plain peer reply will do the job"
+        ],
+        "prompt_must_not_contain": [
+          "BRIDGE SUMMARY HINT:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "clarifying-thread-excludes-resumptive-cues",
+      "description": "When a live clarifying question is already active, episode snapshots and re-entry anchors should drop out instead of nudging the reply.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "participant": {
+          "participant_name": "CallSyne Peer",
+          "safe_continuity_summary": "Recurring peer returning to the pacing thread.",
+          "recent_shared_topics": [
+            "pacing",
+            "thread split"
+          ],
+          "evidence_count": 3,
+          "evidence_refs": [
+            "seed-clarify-1"
+          ],
+          "last_seen_at": "2026-03-22T12:00:00+00:00"
+        },
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Another Peer"
+          ],
+          "recent_thread_summary": "The room is clarifying whether pacing and thread split are the same issue.",
+          "room_tone_summary": "Careful and grounded.",
+          "open_threads": [
+            "thread:thread-clarify-live"
+          ],
+          "evidence_count": 3,
+          "last_updated_at": "2026-03-22T12:00:00+00:00",
+          "current_thread_key": "callsyne:room-alpha:thread:thread-clarify-live",
+          "current_thread_summary": "The room is clarifying whether pacing and thread split are the same issue.",
+          "clarifying_question": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-clarify-live",
+            "active_claim_ids": [
+              "claim-1"
+            ],
+            "active_claim_keys": [
+              "pacing versus thread split"
+            ],
+            "trigger": "ambiguity",
+            "question_focus": "shared_core",
+            "question_text": "Which part do you want me to stay with first?",
+            "attributed_participants": {
+              "peer-1": "CallSyne Peer"
+            },
+            "confidence": 0.68,
+            "ambiguity_level": "medium",
+            "reasons": [
+              "ambiguity_markers_present"
+            ],
+            "metadata": {
+              "source": "social-memory"
+            }
+          },
+          "deliberation_decision": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-clarify-live",
+            "active_claim_ids": [
+              "claim-1"
+            ],
+            "active_claim_keys": [
+              "pacing versus thread split"
+            ],
+            "decision_kind": "ask_clarifying_question",
+            "trigger": "ambiguity",
+            "clarifying_question_id": "clarify-live-1",
+            "confidence": 0.68,
+            "ambiguity_level": "medium",
+            "reasons": [
+              "question_safer_than_assertion"
+            ],
+            "metadata": {
+              "source": "social-memory"
+            }
+          },
+          "floor_decision": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-clarify-live",
+            "decision_kind": "leave_open",
+            "rationale": "the clarifying question should stay open rather than Orion trying to manage the next move",
+            "reasons": [
+              "clarifying_question_present",
+              "leave_space_for_answer"
+            ],
+            "confidence": 0.62,
+            "metadata": {
+              "source": "social-memory"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "The room is usually warm on re-entry.",
+          "evidence_count": 2,
+          "confidence": 0.55
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-clarify-live",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, wait \u2014 which part do you mean?",
+          "mentions_orion": true,
+          "message_id": "msg-clarify-live-1"
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "clarifying_question_expected": true,
+        "deliberation_decision_kind": "ask_clarifying_question",
+        "excluded_context_kinds": [
+          "episode_snapshot",
+          "reentry_anchor"
+        ],
+        "inspection_section_kinds": [
+          "context_window",
+          "deliberation"
+        ],
+        "prompt_must_contain": [
+          "CLARIFYING QUESTION HINT:"
+        ],
+        "prompt_must_not_contain": [
+          "RE-ENTRY ANCHOR:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "light-affiliative-exchange-allows-bounded-gif",
+      "description": "A light, playful peer exchange can allow text-plus-GIF when cooldown and density rules are already clear.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+          "current_thread_summary": "A light, playful agreement thread.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 3,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 3,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.6
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-light",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon lol yes exactly",
+          "mentions_orion": true,
+          "message_id": "msg-gif-light-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "gif_allowed_expected": true,
+        "gif_decision_kind": "text_plus_gif",
+        "gif_intent_kind": "laugh_with",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "GIF EXPRESSION:",
+          "selected intent: laugh_with"
+        ]
+      }
+    },
+    {
+      "scenario_id": "playful-room-text-only-streak-allows-bounded-gif",
+      "description": "A fresh playful room with a text-only streak should still allow a bounded GIF even when the peer did not use one first.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+          "current_thread_summary": "A light, playful agreement thread.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 3,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 3,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "peer_style": {
+          "playfulness_tendency": 0.82
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "room_tone_summary": "Playful and warm.",
+          "confidence": 0.84,
+          "evidence_count": 4
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-light",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon yes exactly, that lands",
+          "mentions_orion": true,
+          "message_id": "msg-gif-playful-1",
+          "metadata": {
+            "peer_used_gif": "false",
+            "supports_media_hints": "true"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "gif_allowed_expected": true,
+        "gif_decision_kind": "text_plus_gif",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "GIF EXPRESSION:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "medium-chaos-room-keeps-gif-bounded",
+      "description": "A medium-chaos room should hold GIF use down so one playful reply does not add to thread churn.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon",
+            "Cadence"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-chaos",
+          "current_thread_summary": "A playful subthread inside a busier room.",
+          "active_threads": [
+            {
+              "thread_key": "callsyne:room-alpha:thread:thread-gif-chaos",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "thread_id": "thread-gif-chaos",
+              "active_participants": [
+                "CallSyne Peer",
+                "Or\u00edon"
+              ],
+              "audience_scope": "peer",
+              "last_speaker": "CallSyne Peer",
+              "open_question": false,
+              "handoff_flag": false,
+              "orion_involved": true,
+              "thread_summary": "Playful agreement thread.",
+              "last_activity_at": "2026-03-22T10:00:00+00:00",
+              "expires_at": "2099-03-22T16:00:00+00:00",
+              "metadata": {}
+            },
+            {
+              "thread_key": "callsyne:room-alpha:thread:thread-side",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "thread_id": "thread-side",
+              "active_participants": [
+                "Cadence",
+                "Mika"
+              ],
+              "audience_scope": "room",
+              "last_speaker": "Cadence",
+              "open_question": true,
+              "handoff_flag": true,
+              "orion_involved": false,
+              "thread_summary": "A side thread is still unresolved.",
+              "last_activity_at": "2026-03-22T10:00:00+00:00",
+              "expires_at": "2099-03-22T16:00:00+00:00",
+              "metadata": {}
+            }
+          ],
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-chaos",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 4,
+            "recent_gif_density": 0.16,
+            "recent_gif_turn_count": 1,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 6,
+            "recent_turn_was_gif": [
+              true,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [
+              "laugh_with"
+            ],
+            "recent_target_participant_ids": [
+              "peer-1"
+            ],
+            "recent_target_participant_names": [
+              "CallSyne Peer"
+            ],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 3,
+          "confidence": 0.78
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-chaos",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon lol yes exactly",
+          "mentions_orion": true,
+          "message_id": "msg-gif-chaos-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "gif_allowed_expected": false,
+        "gif_decision_kind": "text_only",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "GIF EXPRESSION:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "repeated-gif-intent-loop-stays-text-only",
+      "description": "Recent repeated GIF intent loops toward the same peer should stay text-only even in an otherwise playful exchange.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-loop",
+          "current_thread_summary": "A playful thread that already got similar reactions recently.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-loop",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 5,
+            "recent_gif_density": 0.1,
+            "recent_gif_turn_count": 1,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 8,
+            "recent_turn_was_gif": [
+              false,
+              true,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [
+              "laugh_with",
+              "celebrate",
+              "laugh_with"
+            ],
+            "recent_target_participant_ids": [
+              "peer-1",
+              "peer-2",
+              "peer-1"
+            ],
+            "recent_target_participant_names": [
+              "CallSyne Peer",
+              "Another Peer",
+              "CallSyne Peer"
+            ],
+            "last_intent_kind": "laugh_with",
+            "last_target_participant_id": "peer-1",
+            "last_target_participant_name": "CallSyne Peer",
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.7
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-loop",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon lol yes exactly",
+          "mentions_orion": true,
+          "message_id": "msg-gif-loop-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "gif_allowed_expected": false,
+        "gif_decision_kind": "text_only",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ]
+      }
+    },
+    {
+      "scenario_id": "stale-ritual-does-not-push-gif",
+      "description": "A stale ritual hint should not push Orion into a GIF when fresher caution context is telling the room to stay text-first.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+          "current_thread_summary": "A light, playful agreement thread.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 3,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 3,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          },
+          "memory_freshness": [
+            {
+              "freshness_id": "fresh-gif-ritual-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "participant_id": null,
+              "thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+              "artifact_kind": "room_ritual",
+              "freshness_state": "stale",
+              "regrounding_decision": "soften",
+              "confidence": 0.58,
+              "evidence_count": 2,
+              "last_updated_at": "2026-03-20T10:00:00+00:00",
+              "rationale": "Older room ritual read is fading.",
+              "metadata": {
+                "source": "scenario-replay"
+              }
+            },
+            {
+              "freshness_id": "fresh-gif-consensus-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "participant_id": null,
+              "thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+              "artifact_kind": "claim_consensus",
+              "freshness_state": "refresh_needed",
+              "regrounding_decision": "refresh_needed",
+              "confidence": 0.72,
+              "evidence_count": 3,
+              "last_updated_at": "2026-03-21T10:00:00+00:00",
+              "rationale": "Consensus needs refresh before style cues.",
+              "metadata": {
+                "source": "scenario-replay"
+              }
+            }
+          ]
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "confidence": 0.8,
+          "evidence_count": 3
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-light",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon yes exactly",
+          "mentions_orion": true,
+          "message_id": "msg-gif-stale-1",
+          "metadata": {
+            "peer_used_gif": "false",
+            "supports_media_hints": "true"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "gif_allowed_expected": false,
+        "gif_decision_kind": "text_only",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "selected_context_kinds": [
+          "freshness_hint"
+        ],
+        "softened_context_kinds": []
+      }
+    },
+    {
+      "scenario_id": "gif-transport-fallback-stays-text-only",
+      "description": "If transport cannot carry media hints, the same playful turn should degrade cleanly to text-only without leaking GIF metadata.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+          "current_thread_summary": "A light, playful agreement thread.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-light",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 3,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 3,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.6
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-light",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon lol yes exactly",
+          "mentions_orion": true,
+          "message_id": "msg-gif-transport-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "false"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "gif_allowed_expected": false,
+        "gif_decision_kind": "text_only",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "GIF EXPRESSION:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "peer-gif-clear-celebration-proxy",
+      "description": "A peer GIF with clear celebratory query/title metadata should produce a conservative celebratory proxy cue.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+          "current_thread_summary": "A light peer thread where a GIF just landed.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 5,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 5,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.7
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-proxy",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "we did it lol",
+          "mentions_orion": true,
+          "message_id": "msg-gif-proxy-clear-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true",
+            "gif_provider": "giphy",
+            "gif_query": "celebration reaction gif",
+            "gif_title": "tiny victory celebration",
+            "gif_tags": "celebrate,win,party"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "PEER GIF PROXY:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "peer-gif-ambiguous-metadata-stays-unknown",
+      "description": "A peer GIF with only vague metadata should remain unknown and low-confidence.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+          "current_thread_summary": "A light peer thread where a GIF just landed.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 5,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 5,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.7
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-proxy",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "...",
+          "mentions_orion": true,
+          "message_id": "msg-gif-proxy-ambiguous-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true",
+            "gif_title": "reaction gif"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "PEER GIF PROXY:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "peer-gif-text-disambiguates-laughter",
+      "description": "Nearby peer text should be able to lightly disambiguate an otherwise generic GIF toward laughter.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+          "current_thread_summary": "A light peer thread where a GIF just landed.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 5,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 5,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.7
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-proxy",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "lol this absolutely got me",
+          "mentions_orion": true,
+          "message_id": "msg-gif-proxy-laugh-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true",
+            "gif_provider": "giphy"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "PEER GIF PROXY:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "peer-gif-contested-turn-stays-secondary",
+      "description": "A plausible GIF reaction should stay secondary when the current turn is already contested or clarification-heavy.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+          "current_thread_summary": "A light peer thread where a GIF just landed.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 5,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 5,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          },
+          "claim_divergence_signals": [
+            {
+              "claim_id": "claim-gif-contested-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+              "normalized_claim_key": "which version is right",
+              "divergence_detected": true,
+              "consensus_state": "contested",
+              "participant_stances": {
+                "peer-1": "question",
+                "peer-2": "support"
+              },
+              "orion_stance": "unknown",
+              "confidence": 0.68,
+              "supporting_evidence_count": 2
+            }
+          ],
+          "claim_consensus_states": [
+            {
+              "claim_id": "claim-gif-contested-1",
+              "platform": "callsyne",
+              "room_id": "room-alpha",
+              "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+              "normalized_claim_key": "which version is right",
+              "consensus_state": "contested",
+              "supporting_participant_ids": [
+                "peer-2"
+              ],
+              "questioning_participant_ids": [
+                "peer-1"
+              ],
+              "orion_stance": "unknown",
+              "confidence": 0.62,
+              "supporting_evidence_count": 2
+            }
+          ]
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.7
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-proxy",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "Or\u00edon, which version are you talking about?",
+          "mentions_orion": true,
+          "message_id": "msg-gif-proxy-contested-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true",
+            "gif_query": "laugh reaction gif",
+            "gif_title": "laughing reaction"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "PEER GIF PROXY:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "peer-gif-misleading-tags-stays-uncertain",
+      "description": "Conflicting or low-signal title/tag metadata should stay uncertain instead of pretending precision.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+          "current_thread_summary": "A light peer thread where a GIF just landed.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 5,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 5,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.7
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-proxy",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "hmm",
+          "mentions_orion": true,
+          "message_id": "msg-gif-proxy-misleading-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true",
+            "gif_title": "reaction",
+            "gif_tags": "mood,reaction,what"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "PEER GIF PROXY:"
+        ]
+      }
+    },
+    {
+      "scenario_id": "peer-gif-no-useful-metadata-unknown",
+      "description": "Transport can indicate a GIF happened while still leaving the meaning unknown when no useful proxy metadata exists.",
+      "platform": "callsyne",
+      "room_id": "room-alpha",
+      "participant_id": "peer-1",
+      "seeded_state": {
+        "room": {
+          "active_participants": [
+            "CallSyne Peer",
+            "Or\u00edon"
+          ],
+          "current_thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+          "current_thread_summary": "A light peer thread where a GIF just landed.",
+          "gif_usage_state": {
+            "platform": "callsyne",
+            "room_id": "room-alpha",
+            "thread_key": "callsyne:room-alpha:thread:thread-gif-proxy",
+            "consecutive_gif_turns": 0,
+            "turns_since_last_orion_gif": 5,
+            "recent_gif_density": 0.0,
+            "recent_gif_turn_count": 0,
+            "recent_turn_window_size": 10,
+            "orion_turn_count": 5,
+            "recent_turn_was_gif": [
+              false,
+              false,
+              false
+            ],
+            "recent_intent_kinds": [],
+            "recent_target_participant_ids": [],
+            "recent_target_participant_names": [],
+            "metadata": {
+              "source": "scenario-replay"
+            }
+          }
+        },
+        "room_ritual": {
+          "culture_summary": "Warm, playful, lightly expressive.",
+          "evidence_count": 2,
+          "confidence": 0.7
+        }
+      },
+      "transcript_turns": [
+        {
+          "fixture_kind": "bridge_message",
+          "thread_id": "thread-gif-proxy",
+          "participant_id": "peer-1",
+          "participant_name": "CallSyne Peer",
+          "participant_kind": "peer_ai",
+          "text": "...",
+          "mentions_orion": true,
+          "message_id": "msg-gif-proxy-unknown-1",
+          "metadata": {
+            "peer_used_gif": "true",
+            "supports_media_hints": "true"
+          }
+        }
+      ],
+      "expectation": {
+        "turn_policy_decision": "reply",
+        "routing_decision": "reply_to_peer",
+        "inspection_section_kinds": [
+          "routing",
+          "gif"
+        ],
+        "prompt_must_contain": [
+          "PEER GIF PROXY:"
+        ]
+      }
+    }
+  ]
+}

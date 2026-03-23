@@ -274,7 +274,7 @@ def test_social_room_prompt_renders_repair_grounding_compactly() -> None:
     assert "REPAIR DECISION:" in rendered
     assert "type: audience_mismatch" in rendered
     assert "action: yield" in rendered
-    assert "yield / retarget toward: Cadence" in rendered
+    assert "follow the room's correction toward: Cadence" in rendered
     assert "do not over-apologize" in rendered
 
 
@@ -310,6 +310,54 @@ def test_social_room_prompt_renders_epistemic_grounding_naturally() -> None:
     assert "action: answer_summary" in rendered
     assert "lead-in: Lead naturally with a compact summary frame" in rendered
     assert "Prefer clarity over false certainty" in rendered
+
+
+def test_social_room_prompt_renders_bounded_gif_grounding() -> None:
+    template = Environment().from_string(
+        Path("orion/cognition/prompts/chat_social_room.j2").read_text(encoding="utf-8")
+    )
+    rendered = template.render(
+        metadata={
+            "social_gif_policy": {
+                "gif_allowed": True,
+                "decision_kind": "text_plus_gif",
+                "intent_kind": "laugh_with",
+                "rationale": "The turn is light and affiliative, so a GIF can stay secondary to the text.",
+                "cooldown_active": False,
+                "recent_gif_density": 0.1,
+            },
+            "social_gif_intent": {
+                "intent_kind": "laugh_with",
+                "gif_query": "warm laugh with you reaction gif",
+            },
+            "social_gif_observed_signal": {
+                "media_present": True,
+            },
+            "social_gif_proxy_context": {
+                "proxy_inputs_present": ["query", "title", "surrounding_text"],
+            },
+            "social_gif_interpretation": {
+                "reaction_class": "laugh_with",
+                "confidence_level": "low",
+                "ambiguity_level": "medium",
+                "cue_disposition": "softened",
+            },
+        },
+        memory_digest="",
+    )
+
+    assert "GIF EXPRESSION:" in rendered
+    assert "PEER GIF PROXY:" in rendered
+    assert "decision: text_plus_gif" in rendered
+    assert "selected intent: laugh_with" in rendered
+    assert "media hint: warm laugh with you reaction gif" in rendered
+    assert "likely reaction class: laugh_with" in rendered
+    assert "You cannot actually see the GIF" in rendered
+    assert "Treat any GIF as optional expressive garnish only" in rendered
+    assert "do not mention the GIF, narrate it" in rendered
+    assert "Treat inferred peer-GIF meaning as a soft cue" in rendered
+    assert "Let the sentence stand on its own" in rendered
+    assert "Keep serious, sensitive, repair-heavy" in rendered
 
 
 def test_social_room_prompt_renders_claim_grounding_and_revision_compactly() -> None:
@@ -433,7 +481,7 @@ def test_social_room_prompt_renders_clarifying_question_preference() -> None:
 
     assert "CLARIFYING QUESTION HINT:" in rendered
     assert "Are you asking for the room-level landing, or just the local thread read?" in rendered
-    assert "If a clarifying question would move the room further" in rendered
+    assert "If a clarifying question would genuinely move the room further" in rendered
 
 
 def test_social_room_prompt_includes_agreement_and_disagreement_grounding() -> None:
@@ -511,3 +559,208 @@ def test_social_room_prompt_warns_against_over_managing_the_room() -> None:
     assert "do not over-moderate the room" in rendered.lower()
     assert "do not act like a moderator or controller of the room" in rendered.lower()
     assert "Use handoff and closure hints as light conversational timing cues" in rendered
+    assert "If a plain peer reply will do the job" in rendered
+    assert "Leave-open is usually better than over-managing the next move." in rendered
+    assert "Let repair sound like a quick course correction" in rendered
+
+
+def test_social_room_prompt_renders_calibration_and_trust_boundary_grounding() -> None:
+    template = Environment().from_string(
+        Path("orion/cognition/prompts/chat_social_room.j2").read_text(encoding="utf-8")
+    )
+    rendered = template.render(
+        metadata={
+            "social_peer_continuity": {
+                "participant_id": "peer-1",
+                "participant_name": "CallSyne Peer",
+                "safe_continuity_summary": "Recurring peer with ongoing room context.",
+                "recent_shared_topics": ["continuity", "summary"],
+                "peer_calibration": {
+                    "platform": "callsyne",
+                    "room_id": "room-alpha",
+                    "participant_id": "peer-1",
+                    "participant_name": "CallSyne Peer",
+                    "thread_key": "callsyne:room-alpha:thread-1",
+                    "scope": "peer_thread",
+                    "calibration_kind": "revised_often",
+                    "confidence": 0.64,
+                    "evidence_count": 2,
+                    "reversible": True,
+                    "decay_hint": "decay_after_topic_shift",
+                    "rationale": "Local, reversible calibration inferred from repeated social-room evidence; it narrows caution and attribution but does not decide truth.",
+                    "reasons": ["repeated_claim_corrections", "caution_not_truth"],
+                    "active_signal_ids": ["sig-1"],
+                    "caution_bias": 0.32,
+                    "attribution_bias": 0.3,
+                    "clarification_bias": 0.28,
+                    "updated_at": "2026-03-22T12:00:00+00:00",
+                    "metadata": {"authority_shortcut": "disabled"},
+                },
+            },
+            "social_room_continuity": {
+                "room_id": "room-alpha",
+                "room_tone_summary": "Warm and direct.",
+                "recurring_topics": ["continuity"],
+                "open_threads": ["How should we phrase this?"],
+                "trust_boundaries": [
+                    {
+                        "platform": "callsyne",
+                        "room_id": "room-alpha",
+                        "participant_id": "peer-1",
+                        "participant_name": "CallSyne Peer",
+                        "thread_key": "callsyne:room-alpha:thread-1",
+                        "scope": "peer_thread",
+                        "calibration_kind": "revised_often",
+                        "confidence": 0.64,
+                        "evidence_count": 2,
+                        "reversible": True,
+                        "decay_hint": "decay_after_topic_shift",
+                        "treat_claims_as_provisional": True,
+                        "summary_anchor": False,
+                        "use_narrower_attribution": True,
+                        "require_clarification_before_shared_ground": True,
+                        "caution_bias": 0.32,
+                        "attribution_bias": 0.3,
+                        "clarification_bias": 0.28,
+                        "rationale": "Calibration changes caution, attribution, and clarification thresholds locally; it is not a truth or authority ranking.",
+                        "reasons": ["caution_not_truth"],
+                        "updated_at": "2026-03-22T12:00:00+00:00",
+                        "metadata": {"authority_shortcut": "disabled"},
+                    }
+                ],
+            },
+        },
+        memory_digest="",
+    )
+
+    assert "PEER CALIBRATION:" in rendered
+    assert "TRUST BOUNDARIES:" in rendered
+    assert "calibration affects caution, not truth" in rendered
+    assert "Do not become deferential, dismissive, or sycophantic because of calibration hints." in rendered
+    assert "A strong summary partner can help continuity, but never becomes hidden authority for truth claims." in rendered
+
+
+def test_social_room_prompt_renders_freshness_and_regrounding_hints() -> None:
+    template = Environment().from_string(
+        Path("orion/cognition/prompts/chat_social_room.j2").read_text(encoding="utf-8")
+    )
+    rendered = template.render(
+        metadata={
+            "social_peer_continuity": {
+                "participant_id": "peer-1",
+                "memory_freshness": [
+                    {
+                        "artifact_kind": "peer_calibration",
+                        "freshness_state": "stale",
+                        "regrounding_decision": "soften",
+                        "confidence": 0.42,
+                        "rationale": "Older calibration is no longer strongly supported here.",
+                    }
+                ],
+                "peer_calibration": {
+                    "calibration_kind": "unknown",
+                    "confidence": 0.42,
+                    "evidence_count": 1,
+                    "rationale": "Keep it cautious until refreshed.",
+                },
+            },
+            "social_room_continuity": {
+                "room_id": "room-alpha",
+                "memory_freshness": [
+                    {
+                        "artifact_kind": "claim_consensus",
+                        "freshness_state": "refresh_needed",
+                        "regrounding_decision": "reopen",
+                        "confidence": 0.38,
+                        "rationale": "Older consensus should be refreshed before it is treated as settled.",
+                    }
+                ],
+                "trust_boundaries": [
+                    {
+                        "scope": "room_thread",
+                        "calibration_kind": "disagreement_prone",
+                        "treat_claims_as_provisional": True,
+                        "summary_anchor": False,
+                        "use_narrower_attribution": True,
+                        "require_clarification_before_shared_ground": True,
+                        "rationale": "Keep shared claims provisional until refreshed.",
+                    }
+                ],
+            },
+        },
+        memory_digest="",
+    )
+
+    assert "PEER FRESHNESS / RE-GROUNDING:" in rendered
+    assert "ROOM FRESHNESS / RE-GROUNDING:" in rendered
+    assert "artifact=peer_calibration, freshness=stale, action=soften" in rendered
+    assert "artifact=claim_consensus, freshness=refresh_needed, action=reopen" in rendered
+    assert "stale state should be softened or refreshed before treating it as settled." in rendered
+
+
+def test_social_room_prompt_renders_selected_context_window() -> None:
+    template = Environment().from_string(
+        Path("orion/cognition/prompts/chat_social_room.j2").read_text(encoding="utf-8")
+    )
+    rendered = template.render(
+        metadata={
+            "social_context_selection_decision": {
+                "budget_max": 4,
+                "rationale": "Compact window keeps the local thread and addressed-peer context in focus.",
+            },
+            "social_context_window": {
+                "selected_candidates": [
+                    {
+                        "candidate_kind": "peer_continuity",
+                        "priority_band": "high",
+                        "freshness_band": "fresh",
+                        "inclusion_decision": "include",
+                        "summary": "Recurring peer who likes grounded synthesis.",
+                        "rationale": "Addressed-peer context should lead.",
+                    },
+                    {
+                        "candidate_kind": "thread",
+                        "priority_band": "critical",
+                        "freshness_band": "fresh",
+                        "inclusion_decision": "include",
+                        "summary": "Active thread: pacing remains contested.",
+                        "rationale": "Current thread outranks room-global background.",
+                    },
+                ]
+            },
+        },
+        memory_digest="",
+    )
+
+    assert "SELECTED SOCIAL CONTEXT WINDOW:" in rendered
+    assert "[peer_continuity | high | freshness=fresh | decision=include]" in rendered
+    assert "[thread | critical | freshness=fresh | decision=include]" in rendered
+    assert "Excluded or softened stale/background state is non-governing unless the turn explicitly reopens it." in rendered
+
+
+def test_social_room_prompt_renders_episode_snapshot_and_reentry_anchor_as_subordinate_context() -> None:
+    template = Environment().from_string(
+        Path("orion/cognition/prompts/chat_social_room.j2").read_text(encoding="utf-8")
+    )
+    rendered = template.render(
+        metadata={
+            "social_episode_snapshot": {
+                "summary": "The last coherent exchange was about grounded pacing in the room.",
+                "resumptive_hint": "Resume from grounded pacing if the room is still on that thread.",
+                "freshness_band": "aging",
+                "focus_topics": ["grounding", "pacing"],
+            },
+            "social_reentry_anchor": {
+                "reentry_style": "grounded",
+                "anchor_text": "Use a grounded re-entry: briefly name grounded pacing and check whether that is still where the room is.",
+                "freshness_band": "aging",
+            },
+        },
+        memory_digest="",
+    )
+
+    assert "EPISODE SNAPSHOT:" in rendered
+    assert "RE-ENTRY ANCHOR:" in rendered
+    assert "grounded pacing" in rendered
+    assert "treat this as resumptive background; fresher live thread state still wins." in rendered
+    assert "use this to resume gently, then verify whether the room is still there now." in rendered

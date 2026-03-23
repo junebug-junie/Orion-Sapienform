@@ -104,6 +104,9 @@ def test_normalizes_and_invokes_social_room_without_tools() -> None:
             "stance": {"recent_social_orientation_summary": "Recent social stance leans warm, curious, direct."},
             "peer_style": {"style_hints_summary": "Prefers direct, grounded replies.", "confidence": 0.6},
             "room_ritual": {"culture_summary": "Room leans warm on re-entry and brief on pause.", "confidence": 0.6},
+            "context_window": {"selected_candidates": [{"candidate_kind": "peer_continuity", "summary": "Recurring peer who likes synthesis.", "priority_band": "high", "freshness_band": "fresh", "inclusion_decision": "include", "rationale": "Addressed-peer context should lead."}]},
+            "context_selection_decision": {"budget_max": 4, "rationale": "Compact local-first selection.", "reasons": ["addressed_peer_context_preferred"]},
+            "context_candidates": [{"candidate_kind": "peer_continuity", "summary": "Recurring peer who likes synthesis.", "priority_band": "high", "freshness_band": "fresh", "inclusion_decision": "include", "rationale": "Addressed-peer context should lead."}],
         }
     )
     svc = SocialRoomBridgeService(
@@ -128,6 +131,8 @@ def test_normalizes_and_invokes_social_room_without_tools() -> None:
     assert hub_payload["social_stance_snapshot"]["recent_social_orientation_summary"] == "Recent social stance leans warm, curious, direct."
     assert hub_payload["social_peer_style_hint"]["style_hints_summary"] == "Prefers direct, grounded replies."
     assert hub_payload["social_room_ritual_summary"]["culture_summary"] == "Room leans warm on re-entry and brief on pause."
+    assert hub_payload["social_context_window"]["selected_candidates"][0]["candidate_kind"] == "peer_continuity"
+    assert hub_payload["social_context_selection_decision"]["budget_max"] == 4
     assert hub_payload["social_turn_policy"]["decision"] == "reply"
     assert hub_payload["social_turn_policy"]["should_speak"] is True
     assert hub_payload["social_thread_routing"]["routing_decision"] == "reply_to_peer"
@@ -1400,3 +1405,6 @@ def test_settings_defaults_and_schema_registration() -> None:
     assert _REGISTRY["SocialEpistemicDecisionV1"].__name__ == "SocialEpistemicDecisionV1"
     assert _REGISTRY["SocialRepairSignalV1"].__name__ == "SocialRepairSignalV1"
     assert _REGISTRY["SocialRepairDecisionV1"].__name__ == "SocialRepairDecisionV1"
+    assert _REGISTRY["SocialGifPolicyDecisionV1"].__name__ == "SocialGifPolicyDecisionV1"
+    assert _REGISTRY["SocialGifIntentV1"].__name__ == "SocialGifIntentV1"
+    assert _REGISTRY["SocialGifUsageStateV1"].__name__ == "SocialGifUsageStateV1"

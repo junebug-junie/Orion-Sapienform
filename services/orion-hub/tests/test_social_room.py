@@ -132,6 +132,82 @@ def test_social_room_client_meta_preserves_external_room_context() -> None:
                 "guardrail": "Adapt lightly to the peer and room while remaining Orion.",
                 "confidence": 0.6,
             },
+            "social_context_window": {
+                "window_id": "context-window-1",
+                "platform": "callsyne",
+                "room_id": "room-alpha",
+                "thread_key": "callsyne:room-alpha:thread:thread-1",
+                "participant_id": "peer-1",
+                "selected_candidates": [
+                    {
+                        "candidate_id": "candidate-1",
+                        "platform": "callsyne",
+                        "room_id": "room-alpha",
+                        "thread_key": "callsyne:room-alpha:thread:thread-1",
+                        "participant_id": "peer-1",
+                        "candidate_kind": "peer_continuity",
+                        "reference_key": "callsyne:room-alpha:peer-1",
+                        "summary": "Recurring peer.",
+                        "relevance_score": 0.9,
+                        "priority_band": "high",
+                        "freshness_band": "fresh",
+                        "inclusion_decision": "include",
+                        "rationale": "Addressed-peer context should lead.",
+                        "reasons": ["addressed_peer_context"],
+                        "max_window_budget": 4,
+                        "metadata": {"source": "social-memory"}
+                    }
+                ],
+                "budget_max": 4,
+                "total_candidates_considered": 1,
+                "rationale": "Compact local-first selection.",
+                "reasons": ["addressed_peer_context_preferred"],
+                "metadata": {"source": "social-memory"}
+            },
+            "social_context_selection_decision": {
+                "decision_id": "context-decision-1",
+                "platform": "callsyne",
+                "room_id": "room-alpha",
+                "thread_key": "callsyne:room-alpha:thread:thread-1",
+                "selected_candidate_ids": ["candidate-1"],
+                "total_candidates_considered": 1,
+                "included_count": 1,
+                "softened_count": 0,
+                "excluded_count": 0,
+                "budget_max": 4,
+                "rationale": "Compact local-first selection.",
+                "reasons": ["addressed_peer_context_preferred"],
+                "metadata": {"source": "social-memory"}
+            },
+            "social_episode_snapshot": {
+                "snapshot_id": "callsyne:room-alpha:thread-1:episode",
+                "platform": "callsyne",
+                "room_id": "room-alpha",
+                "thread_key": "callsyne:room-alpha:thread:thread-1",
+                "participant_id": "peer-1",
+                "summary": "The last coherent exchange was about grounded collaboration.",
+                "resumptive_hint": "Resume from grounded collaboration if the room is still on that thread.",
+                "focus_topics": ["continuity", "grounding"],
+                "last_active_at": "2026-03-22T12:00:00+00:00",
+                "freshness_band": "fresh",
+                "superseded_by_live_state": False,
+                "rationale": "Compact resumptive snapshot.",
+                "metadata": {"source": "social-memory"},
+            },
+            "social_reentry_anchor": {
+                "anchor_id": "callsyne:room-alpha:thread-1:reentry",
+                "platform": "callsyne",
+                "room_id": "room-alpha",
+                "thread_key": "callsyne:room-alpha:thread:thread-1",
+                "participant_id": "peer-1",
+                "source_snapshot_id": "callsyne:room-alpha:thread-1:episode",
+                "anchor_text": "Use a grounded re-entry: briefly name grounded collaboration and check whether that is still where the room is.",
+                "freshness_band": "fresh",
+                "reentry_style": "grounded",
+                "rationale": "Re-entry anchors remain subordinate to live state.",
+                "created_at": "2026-03-22T12:00:00+00:00",
+                "metadata": {"source": "social-memory"},
+            },
         },
         route_debug={"recall_profile": "social.room.v1"},
         trace_verb="chat_social_room",
@@ -148,6 +224,10 @@ def test_social_room_client_meta_preserves_external_room_context() -> None:
     assert meta["social_peer_style_hint"]["participant_id"] == "peer-1"
     assert meta["social_room_ritual_summary"]["room_id"] == "room-alpha"
     assert meta["social_style_adaptation"]["participant_id"] == "peer-1"
+    assert meta["social_context_window"]["selected_candidates"][0]["candidate_kind"] == "peer_continuity"
+    assert meta["social_context_selection_decision"]["budget_max"] == 4
+    assert meta["social_episode_snapshot"]["summary"].startswith("The last coherent exchange")
+    assert meta["social_reentry_anchor"]["reentry_style"] == "grounded"
 
 
 def test_social_room_skill_selector_defaults_to_no_skill_when_not_needed() -> None:

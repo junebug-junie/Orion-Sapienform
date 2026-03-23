@@ -12,6 +12,20 @@ from orion.schemas.social_memory import (
     SocialRoomContinuityV1,
     SocialStanceSnapshotV1,
 )
+from orion.schemas.social_context import (
+    SocialContextCandidateV1,
+    SocialContextSelectionDecisionV1,
+    SocialContextWindowV1,
+    SocialEpisodeSnapshotV1,
+    SocialReentryAnchorV1,
+)
+from orion.schemas.social_gif import (
+    SocialGifIntentV1,
+    SocialGifInterpretationV1,
+    SocialGifObservedSignalV1,
+    SocialGifPolicyDecisionV1,
+    SocialGifProxyContextV1,
+)
 
 try:
     from scripts.social_room import (
@@ -22,6 +36,7 @@ try:
         build_style_adaptation_snapshot,
         build_social_concept_evidence,
         build_social_grounding_state,
+        build_social_inspection_debug,
         is_social_room_payload,
         resolve_social_skill_allowlist,
         select_social_room_skill,
@@ -38,6 +53,7 @@ except ImportError:  # pragma: no cover - test/module-loader compatibility
         build_style_adaptation_snapshot,
         build_social_concept_evidence,
         build_social_grounding_state,
+        build_social_inspection_debug,
         is_social_room_payload,
         resolve_social_skill_allowlist,
         select_social_room_skill,
@@ -123,18 +139,18 @@ def _build_social_epistemic_phrase_hint(
     caution = ""
     if claim_kind == "recall":
         lead_in = "Lead naturally with a memory frame such as 'From what I remember,' or 'As I remember it,'."
-        caution = "Keep recall bounded to what is actually supported; do not overstate uncertain details."
+        caution = "Keep it to what is actually supported; don't overstate fuzzy details."
     elif claim_kind == "summary":
         lead_in = "Lead naturally with a compact summary frame such as 'Quick summary:' or 'Where we seem to be is...'."
-        caution = "Stay with the active thread and avoid drifting into broader claims than the room asked for."
+        caution = "Stay with the active thread and don't broaden the room's ask."
     elif claim_kind == "inference":
         lead_in = "Lead naturally with an interpretive frame such as 'My read is...' or 'It seems like...'."
-        caution = "Mark interpretation as interpretation rather than memory or fact."
+        caution = "Keep it sounding like a read, not a fact claim."
     elif claim_kind == "speculation":
         lead_in = "Lead naturally with a tentative frame such as 'Tentatively,' or 'My best guess is...'."
-        caution = "Stay obviously tentative and prefer visible room context over invented detail."
+        caution = "Stay tentative and stick to visible room context."
     elif claim_kind == "clarification_needed" or decision == "ask_clarifying_question":
-        lead_in = "Ask one short clarifying question first, without preamble or extra explanation."
+        lead_in = "Ask one short clarifying question first."
         caution = "Clarify scope, thread, or target before making a claim."
     elif claim_kind == "proposal":
         lead_in = "Keep the reply narrow and treat the topic as still pending rather than settled."
@@ -142,11 +158,11 @@ def _build_social_epistemic_phrase_hint(
 
     if ambiguity in {"medium", "high"} and decision != "ask_clarifying_question":
         caution = (
-            f"{caution} Default to the narrower thread and audience because ambiguity is still {ambiguity}."
+            f"{caution} Default to the narrower thread and audience."
         ).strip()
     if confidence == "low" and claim_kind in {"recall", "inference", "speculation"}:
         caution = (
-            f"{caution} Confidence is low, so keep the wording modest and avoid sounding definitive."
+            f"{caution} Keep the wording modest."
         ).strip()
     active_claims = room_continuity.get("active_claims") if isinstance(room_continuity, dict) else []
     claim_states = {
@@ -156,7 +172,7 @@ def _build_social_epistemic_phrase_hint(
     }
     if claim_states & {"provisional", "disputed", "corrected", "revised", "withdrawn"}:
         caution = (
-            f"{caution} Track what was claimed versus what was corrected, and do not present provisional or disputed claims as settled fact."
+            f"{caution} Track what was claimed versus what was corrected; don't turn provisional claims into settled fact."
         ).strip()
     consensus_states = {
         str(item.get("consensus_state") or "").strip().lower()
@@ -268,6 +284,16 @@ def build_cortex_chat_request(
         closure_signal = payload.get("social_closure_signal") or ((room_continuity or {}).get("closure_signal")) or {}
         floor_decision = payload.get("social_floor_decision") or ((room_continuity or {}).get("floor_decision")) or {}
         open_commitments = payload.get("social_open_commitments") or ((room_continuity or {}).get("active_commitments")) or []
+        context_window = payload.get("social_context_window") or {}
+        context_selection_decision = payload.get("social_context_selection_decision") or {}
+        context_candidates = payload.get("social_context_candidates") or []
+        episode_snapshot = payload.get("social_episode_snapshot") or {}
+        reentry_anchor = payload.get("social_reentry_anchor") or {}
+        gif_policy = payload.get("social_gif_policy") or {}
+        gif_intent = payload.get("social_gif_intent") or {}
+        gif_observed_signal = payload.get("social_gif_observed_signal") or {}
+        gif_proxy_context = payload.get("social_gif_proxy_context") or {}
+        gif_interpretation = payload.get("social_gif_interpretation") or {}
         thread_routing = payload.get("social_thread_routing") or ((payload.get("social_turn_policy") or {}).get("thread_routing")) or {}
         handoff_signal = payload.get("social_handoff_signal") or ((payload.get("social_turn_policy") or {}).get("handoff_signal")) or {}
         repair_signal = payload.get("social_repair_signal") or ((payload.get("social_turn_policy") or {}).get("repair_signal")) or {}
@@ -338,6 +364,11 @@ def build_cortex_chat_request(
                 "social_turn_handoff": turn_handoff or None,
                 "social_closure_signal": closure_signal or None,
                 "social_floor_decision": floor_decision or None,
+                "social_context_window": SocialContextWindowV1.model_validate(context_window).model_dump(mode="json") if context_window else None,
+                "social_context_selection_decision": SocialContextSelectionDecisionV1.model_validate(context_selection_decision).model_dump(mode="json") if context_selection_decision else None,
+                "social_context_candidates": [SocialContextCandidateV1.model_validate(item).model_dump(mode="json") for item in context_candidates[:8] if isinstance(item, dict)] if isinstance(context_candidates, list) else None,
+                "social_episode_snapshot": SocialEpisodeSnapshotV1.model_validate(episode_snapshot).model_dump(mode="json") if episode_snapshot else None,
+                "social_reentry_anchor": SocialReentryAnchorV1.model_validate(reentry_anchor).model_dump(mode="json") if reentry_anchor else None,
                 "social_open_commitments": open_commitments[:2] if isinstance(open_commitments, list) else None,
                 "social_thread_routing": thread_routing or None,
                 "social_handoff_signal": handoff_signal or None,
@@ -345,6 +376,11 @@ def build_cortex_chat_request(
                 "social_repair_decision": repair_decision or None,
                 "social_epistemic_signal": epistemic_signal or None,
                 "social_epistemic_decision": epistemic_decision or None,
+                "social_gif_policy": SocialGifPolicyDecisionV1.model_validate(gif_policy).model_dump(mode="json") if gif_policy else None,
+                "social_gif_intent": SocialGifIntentV1.model_validate(gif_intent).model_dump(mode="json") if gif_intent else None,
+                "social_gif_observed_signal": SocialGifObservedSignalV1.model_validate(gif_observed_signal).model_dump(mode="json") if gif_observed_signal else None,
+                "social_gif_proxy_context": SocialGifProxyContextV1.model_validate(gif_proxy_context).model_dump(mode="json") if gif_proxy_context else None,
+                "social_gif_interpretation": SocialGifInterpretationV1.model_validate(gif_interpretation).model_dump(mode="json") if gif_interpretation else None,
                 "social_epistemic_phrase_hint": epistemic_phrase_hint,
                 "social_style_adaptation": adaptation_snapshot.model_dump(mode="json"),
                 "social_artifact_proposal": artifact_proposal.model_dump(mode="json") if artifact_proposal else None,
@@ -398,6 +434,7 @@ def build_cortex_chat_request(
         debug["social_artifact_proposal"] = metadata.get("social_artifact_proposal")
         debug["social_artifact_revision"] = metadata.get("social_artifact_revision")
         debug["social_artifact_confirmation"] = metadata.get("social_artifact_confirmation")
+        debug["social_inspection"] = build_social_inspection_debug(payload=payload, route_debug=metadata, metadata=metadata)
     return req, debug, use_recall
 
 

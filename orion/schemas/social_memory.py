@@ -12,6 +12,8 @@ from orion.schemas.social_artifact import (
     SocialArtifactRevisionV1,
 )
 from orion.schemas.social_commitment import SocialCommitmentV1
+from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
+from orion.schemas.social_freshness import SocialDecaySignalV1, SocialMemoryFreshnessV1, SocialRegroundingDecisionV1
 from orion.schemas.social_deliberation import (
     SocialBridgeSummaryV1,
     SocialClarifyingQuestionV1,
@@ -22,6 +24,7 @@ from orion.schemas.social_floor import (
     SocialFloorDecisionV1,
     SocialTurnHandoffV1,
 )
+from orion.schemas.social_gif import SocialGifUsageStateV1
 from orion.schemas.social_claim import (
     SocialClaimAttributionV1,
     SocialClaimRevisionV1,
@@ -66,6 +69,12 @@ class SocialParticipantContinuityV1(BaseModel):
     shared_artifact_proposal: Optional[SocialArtifactProposalV1] = None
     shared_artifact_revision: Optional[SocialArtifactRevisionV1] = None
     shared_artifact_confirmation: Optional[SocialArtifactConfirmationV1] = None
+    calibration_signals: List[SocialCalibrationSignalV1] = Field(default_factory=list)
+    peer_calibration: Optional[SocialPeerCalibrationV1] = None
+    trust_boundary: Optional[SocialTrustBoundaryV1] = None
+    memory_freshness: List[SocialMemoryFreshnessV1] = Field(default_factory=list)
+    decay_signals: List[SocialDecaySignalV1] = Field(default_factory=list)
+    regrounding_decisions: List[SocialRegroundingDecisionV1] = Field(default_factory=list)
 
 
 class SocialRoomContinuityV1(BaseModel):
@@ -104,7 +113,14 @@ class SocialRoomContinuityV1(BaseModel):
     turn_handoff: Optional[SocialTurnHandoffV1] = None
     closure_signal: Optional[SocialClosureSignalV1] = None
     floor_decision: Optional[SocialFloorDecisionV1] = None
+    gif_usage_state: Optional[SocialGifUsageStateV1] = None
     active_commitments: List[SocialCommitmentV1] = Field(default_factory=list)
+    calibration_signals: List[SocialCalibrationSignalV1] = Field(default_factory=list)
+    peer_calibrations: List[SocialPeerCalibrationV1] = Field(default_factory=list)
+    trust_boundaries: List[SocialTrustBoundaryV1] = Field(default_factory=list)
+    memory_freshness: List[SocialMemoryFreshnessV1] = Field(default_factory=list)
+    decay_signals: List[SocialDecaySignalV1] = Field(default_factory=list)
+    regrounding_decisions: List[SocialRegroundingDecisionV1] = Field(default_factory=list)
 
 
 class SocialStanceSnapshotV1(BaseModel):

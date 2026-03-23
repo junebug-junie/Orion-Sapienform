@@ -5,9 +5,20 @@ import contextlib
 import logging
 from typing import Any, Dict
 
+from orion.inspection.social import build_social_inspection_snapshot
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.social_chat import SocialRoomTurnStoredV1
+from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
+from orion.schemas.social_context import (
+    SocialContextCandidateV1,
+    SocialContextSelectionDecisionV1,
+    SocialContextWindowV1,
+    SocialEpisodeSnapshotV1,
+    SocialReentryAnchorV1,
+)
+from orion.schemas.social_inspection import SocialInspectionSnapshotV1
+from orion.schemas.social_freshness import SocialDecaySignalV1, SocialMemoryFreshnessV1, SocialRegroundingDecisionV1
 from orion.schemas.social_artifact import SocialArtifactConfirmationV1, SocialArtifactProposalV1, SocialArtifactRevisionV1
 from orion.schemas.social_commitment import SocialCommitmentResolutionV1, SocialCommitmentV1
 from orion.schemas.social_claim import (
@@ -28,6 +39,7 @@ from orion.schemas.social_floor import (
     SocialFloorDecisionV1,
     SocialTurnHandoffV1,
 )
+from orion.schemas.social_gif import SocialGifUsageStateV1
 from orion.schemas.social_memory import (
     SocialParticipantContinuityV1,
     SocialRelationalMemoryUpdateV1,
@@ -52,14 +64,20 @@ from .synthesizer import (
     build_deliberation_result,
     build_floor_result,
     build_open_thread,
+    build_social_episode_snapshot,
+    build_social_context_window,
+    build_social_reentry_anchor,
     classify_shared_artifact_decision,
     extract_topics,
     update_room_claim_tracking,
     update_commitments,
+    synthesize_social_calibration,
+    synthesize_social_memory_hygiene,
     update_participant_continuity,
     update_peer_style_hint,
     update_room_continuity,
     update_room_ritual_summary,
+    update_social_gif_usage_state,
     update_social_stance,
 )
 
@@ -92,6 +110,12 @@ def _row_to_participant(row: SocialParticipantContinuitySQL | None) -> SocialPar
         shared_artifact_proposal=SocialArtifactProposalV1.model_validate(row.shared_artifact_proposal) if row.shared_artifact_proposal else None,
         shared_artifact_revision=SocialArtifactRevisionV1.model_validate(row.shared_artifact_revision) if row.shared_artifact_revision else None,
         shared_artifact_confirmation=SocialArtifactConfirmationV1.model_validate(row.shared_artifact_confirmation) if row.shared_artifact_confirmation else None,
+        calibration_signals=[SocialCalibrationSignalV1.model_validate(item) for item in (row.calibration_signals or []) if isinstance(item, dict)],
+        peer_calibration=SocialPeerCalibrationV1.model_validate(row.peer_calibration) if row.peer_calibration else None,
+        trust_boundary=SocialTrustBoundaryV1.model_validate(row.trust_boundary) if row.trust_boundary else None,
+        memory_freshness=[SocialMemoryFreshnessV1.model_validate(item) for item in (row.memory_freshness or []) if isinstance(item, dict)],
+        decay_signals=[SocialDecaySignalV1.model_validate(item) for item in (row.decay_signals or []) if isinstance(item, dict)],
+        regrounding_decisions=[SocialRegroundingDecisionV1.model_validate(item) for item in (row.regrounding_decisions or []) if isinstance(item, dict)],
     )
 
 
@@ -132,7 +156,14 @@ def _row_to_room(row: SocialRoomContinuitySQL | None) -> SocialRoomContinuityV1 
         turn_handoff=SocialTurnHandoffV1.model_validate(row.turn_handoff) if row.turn_handoff else None,
         closure_signal=SocialClosureSignalV1.model_validate(row.closure_signal) if row.closure_signal else None,
         floor_decision=SocialFloorDecisionV1.model_validate(row.floor_decision) if row.floor_decision else None,
+        gif_usage_state=SocialGifUsageStateV1.model_validate(row.gif_usage_state) if row.gif_usage_state else None,
         active_commitments=[SocialCommitmentV1.model_validate(item) for item in (row.active_commitments or []) if isinstance(item, dict)],
+        calibration_signals=[SocialCalibrationSignalV1.model_validate(item) for item in (row.calibration_signals or []) if isinstance(item, dict)],
+        peer_calibrations=[SocialPeerCalibrationV1.model_validate(item) for item in (row.peer_calibrations or []) if isinstance(item, dict)],
+        trust_boundaries=[SocialTrustBoundaryV1.model_validate(item) for item in (row.trust_boundaries or []) if isinstance(item, dict)],
+        memory_freshness=[SocialMemoryFreshnessV1.model_validate(item) for item in (row.memory_freshness or []) if isinstance(item, dict)],
+        decay_signals=[SocialDecaySignalV1.model_validate(item) for item in (row.decay_signals or []) if isinstance(item, dict)],
+        regrounding_decisions=[SocialRegroundingDecisionV1.model_validate(item) for item in (row.regrounding_decisions or []) if isinstance(item, dict)],
     )
 
 
@@ -253,6 +284,8 @@ class SocialMemoryService:
             room_updated = False
             peer_style_summary = None
             room_ritual_summary = None
+            peer_style_existing = None
+            room_ritual_existing = None
             created_commitments: list[SocialCommitmentV1] = []
             commitment_resolutions: list[SocialCommitmentResolutionV1] = []
             claim_tracking = ClaimTrackingResult()
@@ -305,8 +338,10 @@ class SocialMemoryService:
                     artifact_revision=peer_artifact_revision,
                     artifact_confirmation=peer_artifact_confirmation,
                 )
-                sess.merge(SocialParticipantContinuitySQL(**participant_summary.model_dump(mode="json")))
                 participant_updated = True
+                peer_style_existing = _row_to_peer_style(
+                    sess.get(SocialPeerStyleHintSQL, f"{platform}:{room_id}:{participant_id}")
+                )
                 if (
                     self.settings.social_memory_style_adaptation_enabled
                     and not artifact_dialogue_active
@@ -315,9 +350,6 @@ class SocialMemoryService:
                     and peer_artifact_revision is None
                     and peer_artifact_confirmation is None
                 ):
-                    peer_style_existing = _row_to_peer_style(
-                        sess.get(SocialPeerStyleHintSQL, f"{platform}:{room_id}:{participant_id}")
-                    )
                     peer_style_summary = update_peer_style_hint(
                         peer_style_existing,
                         turn,
@@ -327,9 +359,9 @@ class SocialMemoryService:
                         participant_name=participant_name,
                         confidence_floor=self.settings.social_memory_style_confidence_floor,
                     )
-                    sess.merge(SocialPeerStyleHintSQL(**peer_style_summary.model_dump(mode="json")))
 
                 room_existing = _row_to_room(sess.get(SocialRoomContinuitySQL, f"{platform}:{room_id}"))
+                room_ritual_existing = _row_to_room_ritual(sess.get(SocialRoomRitualSummarySQL, f"{platform}:{room_id}"))
                 active_commitments, created_commitments, commitment_resolutions = update_commitments(
                     room_existing.active_commitments if room_existing else [],
                     turn,
@@ -380,11 +412,38 @@ class SocialMemoryService:
                 )
                 room_summary = room_summary.model_copy(
                     update={
-                        "active_claims": claim_tracking.stances,
-                        "recent_claim_revisions": claim_tracking.revisions,
-                        "claim_attributions": claim_tracking.attributions,
-                        "claim_consensus_states": claim_tracking.consensus_states,
-                        "claim_divergence_signals": claim_tracking.divergence_signals,
+                        "active_claims": claim_tracking.stances or list(room_existing.active_claims if room_existing else []),
+                        "recent_claim_revisions": claim_tracking.revisions or list(room_existing.recent_claim_revisions if room_existing else []),
+                        "claim_attributions": claim_tracking.attributions or list(room_existing.claim_attributions if room_existing else []),
+                        "claim_consensus_states": claim_tracking.consensus_states or list(room_existing.claim_consensus_states if room_existing else []),
+                        "claim_divergence_signals": claim_tracking.divergence_signals or list(room_existing.claim_divergence_signals if room_existing else []),
+                    }
+                )
+                calibration = synthesize_social_calibration(
+                    existing_participant=participant_existing,
+                    existing_room=room_existing,
+                    turn=turn,
+                    platform=platform,
+                    room_id=room_id,
+                    participant_id=participant_id,
+                    participant_name=participant_name,
+                    thread_key=room_summary.current_thread_key,
+                    topics=topics,
+                    claim_tracking=claim_tracking,
+                    artifact_dialogue_active=artifact_dialogue_active,
+                )
+                participant_summary = participant_summary.model_copy(
+                    update={
+                        "calibration_signals": [item for item in calibration.signals if item.participant_id == participant_id][:3],
+                        "peer_calibration": calibration.peer_calibration or (participant_existing.peer_calibration if participant_existing else None),
+                        "trust_boundary": next((item for item in calibration.trust_boundaries if item.participant_id == participant_id), None) or (participant_existing.trust_boundary if participant_existing else None),
+                    }
+                )
+                room_summary = room_summary.model_copy(
+                    update={
+                        "calibration_signals": calibration.signals,
+                        "peer_calibrations": [calibration.peer_calibration] if calibration.peer_calibration else list(room_existing.peer_calibrations if room_existing else []),
+                        "trust_boundaries": calibration.trust_boundaries or list(room_existing.trust_boundaries if room_existing else []),
                     }
                 )
                 deliberation = build_deliberation_result(
@@ -414,6 +473,143 @@ class SocialMemoryService:
                         "floor_decision": floor_result.decision,
                     }
                 )
+                room_summary = room_summary.model_copy(
+                    update={
+                        "gif_usage_state": update_social_gif_usage_state(
+                            room_existing.gif_usage_state if room_existing else None,
+                            turn,
+                            platform=platform,
+                            room_id=room_id,
+                            thread_key=room_summary.current_thread_key,
+                            participant_id=participant_id,
+                            participant_name=participant_name,
+                        )
+                    }
+                )
+                memory_hygiene = synthesize_social_memory_hygiene(
+                    existing_participant=participant_existing,
+                    existing_room=room_existing,
+                    existing_peer_style=peer_style_existing,
+                    existing_room_ritual=room_ritual_existing,
+                    participant=participant_summary,
+                    room=room_summary,
+                    peer_style=peer_style_summary or peer_style_existing,
+                    room_ritual=room_ritual_summary or room_ritual_existing,
+                    turn=turn,
+                    platform=platform,
+                    room_id=room_id,
+                    participant_id=participant_id,
+                    thread_key=room_summary.current_thread_key,
+                    claim_tracking=claim_tracking,
+                    calibration=calibration,
+                    commitment_resolutions=commitment_resolutions,
+                    artifact_dialogue_active=artifact_dialogue_active,
+                    shared_artifact_statuses=[
+                        peer_artifact_decision.status,
+                        room_artifact_decision.status,
+                        room_summary.shared_artifact_status,
+                    ],
+                )
+                participant_freshness = [item for item in memory_hygiene.memory_freshness if item.participant_id == participant_id]
+                participant_decay = [item for item in memory_hygiene.decay_signals if item.participant_id == participant_id]
+                participant_reground = [item for item in memory_hygiene.regrounding_decisions if item.participant_id == participant_id]
+                room_freshness = [item for item in memory_hygiene.memory_freshness if item.participant_id is None]
+                room_decay = [item for item in memory_hygiene.decay_signals if item.participant_id is None]
+                room_reground = [item for item in memory_hygiene.regrounding_decisions if item.participant_id is None]
+                participant_summary = (memory_hygiene.participant or participant_summary).model_copy(update={
+                    "memory_freshness": participant_freshness[:4],
+                    "decay_signals": participant_decay[:4],
+                    "regrounding_decisions": participant_reground[:4],
+                })
+                room_summary = (memory_hygiene.room or room_summary).model_copy(update={
+                    "memory_freshness": room_freshness[:6],
+                    "decay_signals": room_decay[:6],
+                    "regrounding_decisions": room_reground[:6],
+                })
+                peer_style_summary = memory_hygiene.peer_style
+                room_ritual_summary = memory_hygiene.room_ritual
+                if room_summary.gif_usage_state is not None:
+                    logger.info(
+                        "social_gif_usage_state_updated room_id=%s participant_id=%s turns_since_last=%s density=%.2f consecutive=%s",
+                        room_id,
+                        participant_id,
+                        room_summary.gif_usage_state.turns_since_last_orion_gif,
+                        room_summary.gif_usage_state.recent_gif_density,
+                        room_summary.gif_usage_state.consecutive_gif_turns,
+                    )
+                sess.merge(SocialParticipantContinuitySQL(**participant_summary.model_dump(mode="json")))
+                for signal in calibration.detected_signals:
+                    logger.info(
+                        "social_calibration_signal_detected room_id=%s participant_id=%s thread_key=%s kind=%s confidence=%.2f evidence=%s",
+                        room_id,
+                        signal.participant_id or "room",
+                        signal.thread_key,
+                        signal.calibration_kind,
+                        signal.confidence,
+                        signal.evidence_count,
+                    )
+                if calibration.peer_calibration is not None:
+                    logger.info(
+                        "social_calibration_updated room_id=%s participant_id=%s kind=%s confidence=%.2f rationale=%s",
+                        room_id,
+                        calibration.peer_calibration.participant_id,
+                        calibration.peer_calibration.calibration_kind,
+                        calibration.peer_calibration.confidence,
+                        calibration.peer_calibration.rationale[:120],
+                    )
+                for signal in calibration.decayed_signals:
+                    logger.info(
+                        "social_calibration_decayed room_id=%s participant_id=%s thread_key=%s kind=%s confidence=%.2f evidence=%s",
+                        room_id,
+                        signal.participant_id or "room",
+                        signal.thread_key,
+                        signal.calibration_kind,
+                        signal.confidence,
+                        signal.evidence_count,
+                    )
+                for ignored in calibration.ignored_reasons:
+                    logger.info(
+                        "social_calibration_ignored room_id=%s reason=%s",
+                        room_id,
+                        ignored[:180],
+                    )
+                for signal in memory_hygiene.decay_signals:
+                    logger.info(
+                        "social_decay_signal_detected room_id=%s participant_id=%s thread_key=%s artifact=%s freshness=%s decay=%s confidence=%.2f evidence=%s",
+                        room_id,
+                        signal.participant_id or "room",
+                        signal.thread_key,
+                        signal.artifact_kind,
+                        signal.freshness_state,
+                        signal.decay_level,
+                        signal.confidence,
+                        signal.evidence_count,
+                    )
+                for decision in memory_hygiene.regrounding_decisions:
+                    event_name = {
+                        "soften": "social_state_softened",
+                        "reopen": "social_state_reopened",
+                        "expire": "social_state_expired",
+                        "refresh_needed": "social_refresh_needed_flagged",
+                    }.get(decision.decision, "social_state_kept")
+                    logger.info(
+                        "%s room_id=%s participant_id=%s thread_key=%s artifact=%s freshness=%s decay=%s confidence=%.2f reasons=%s",
+                        event_name,
+                        room_id,
+                        decision.participant_id or "room",
+                        decision.thread_key,
+                        decision.artifact_kind,
+                        decision.freshness_state,
+                        decision.decay_level,
+                        decision.confidence,
+                        ",".join(decision.reasons[:4]),
+                    )
+                for ignored in memory_hygiene.ignored_reasons:
+                    logger.info(
+                        "social_decay_ignored room_id=%s reason=%s",
+                        room_id,
+                        ignored[:180],
+                    )
                 sess.merge(SocialRoomContinuitySQL(**room_summary.model_dump(mode="json")))
                 room_updated = True
                 if room_summary.current_thread_key:
@@ -566,15 +762,17 @@ class SocialMemoryService:
                     and room_artifact_revision is None
                     and room_artifact_confirmation is None
                 ):
-                    room_ritual_existing = _row_to_room_ritual(sess.get(SocialRoomRitualSummarySQL, f"{platform}:{room_id}"))
                     room_ritual_summary = update_room_ritual_summary(
-                        room_ritual_existing,
+                        room_ritual_summary or room_ritual_existing,
                         turn,
                         platform=platform,
                         room_id=room_id,
                         room_summary=room_summary,
                         confidence_floor=self.settings.social_memory_style_confidence_floor,
                     )
+                if peer_style_summary is not None:
+                    sess.merge(SocialPeerStyleHintSQL(**peer_style_summary.model_dump(mode="json")))
+                if room_ritual_summary is not None:
                     sess.merge(SocialRoomRitualSummarySQL(**room_ritual_summary.model_dump(mode="json")))
                 if any(
                     item is not None
@@ -773,18 +971,137 @@ class SocialMemoryService:
                 sess.get(SocialPeerStyleHintSQL, f"{platform}:{room_id}:{participant_id}")
             ) if participant_id else None
             room_ritual = _row_to_room_ritual(sess.get(SocialRoomRitualSummarySQL, f"{platform}:{room_id}"))
+            context_window, context_selection_decision, context_candidates = build_social_context_window(
+                platform=platform,
+                room_id=room_id,
+                participant=participant,
+                room=room,
+                peer_style=peer_style,
+                room_ritual=room_ritual,
+            )
+            episode_snapshot = build_social_episode_snapshot(
+                platform=platform,
+                room_id=room_id,
+                participant=participant,
+                room=room,
+            )
+            reentry_anchor = build_social_reentry_anchor(
+                platform=platform,
+                room_id=room_id,
+                participant=participant,
+                room=room,
+                room_ritual=room_ritual,
+                episode_snapshot=episode_snapshot,
+            )
+            for candidate in context_candidates:
+                logger.info(
+                    "social_context_candidate_considered room_id=%s participant_id=%s kind=%s decision=%s freshness=%s relevance=%.2f",
+                    room_id,
+                    participant_id or "room",
+                    candidate.candidate_kind,
+                    candidate.inclusion_decision,
+                    candidate.freshness_band,
+                    candidate.relevance_score,
+                )
+                if candidate.inclusion_decision != "include":
+                    logger.info(
+                        "social_context_candidate_%s room_id=%s participant_id=%s kind=%s freshness=%s reason=%s",
+                        "softened" if candidate.inclusion_decision == "soften" else "excluded",
+                        room_id,
+                        participant_id or "room",
+                        candidate.candidate_kind,
+                        candidate.freshness_band,
+                        candidate.rationale[:160],
+                    )
+                    if candidate.freshness_band in {"stale", "refresh_needed", "expired"}:
+                        logger.info(
+                            "social_stale_state_excluded room_id=%s participant_id=%s kind=%s freshness=%s",
+                            room_id,
+                            participant_id or "room",
+                            candidate.candidate_kind,
+                            candidate.freshness_band,
+                        )
+            if context_selection_decision and "local_thread_state_preferred" in context_selection_decision.reasons:
+                logger.info(
+                    "social_local_thread_preferred room_id=%s participant_id=%s thread_key=%s",
+                    room_id,
+                    participant_id or "room",
+                    context_selection_decision.thread_key,
+                )
+            if context_window is not None:
+                logger.info(
+                    "social_context_window_assembled room_id=%s participant_id=%s thread_key=%s selected=%s budget=%s considered=%s",
+                    room_id,
+                    participant_id or "room",
+                    context_window.thread_key,
+                    len(context_window.selected_candidates),
+                    context_window.budget_max,
+                    context_window.total_candidates_considered,
+                )
             return {
                 "participant": participant.model_dump(mode="json") if participant else None,
                 "room": room.model_dump(mode="json") if room else None,
                 "stance": stance.model_dump(mode="json") if stance else None,
                 "peer_style": peer_style.model_dump(mode="json") if peer_style else None,
                 "room_ritual": room_ritual.model_dump(mode="json") if room_ritual else None,
+                "episode_snapshot": SocialEpisodeSnapshotV1.model_validate(episode_snapshot).model_dump(mode="json") if episode_snapshot else None,
+                "reentry_anchor": SocialReentryAnchorV1.model_validate(reentry_anchor).model_dump(mode="json") if reentry_anchor else None,
+                "context_window": context_window.model_dump(mode="json") if context_window else None,
+                "context_selection_decision": context_selection_decision.model_dump(mode="json") if context_selection_decision else None,
+                "context_candidates": [item.model_dump(mode="json") for item in context_candidates[:12]],
             }
         finally:
             try:
                 sess.close()
             finally:
                 remove_session()
+
+    async def get_inspection(self, *, platform: str, room_id: str, participant_id: str | None) -> Dict[str, Any]:
+        summary = await self.get_summary(platform=platform, room_id=room_id, participant_id=participant_id)
+        surfaces = {
+            "social_peer_continuity": summary.get("participant") or {},
+            "social_room_continuity": summary.get("room") or {},
+            "social_context_window": summary.get("context_window") or {},
+            "social_context_selection_decision": summary.get("context_selection_decision") or {},
+            "social_context_candidates": summary.get("context_candidates") or [],
+            "social_episode_snapshot": summary.get("episode_snapshot") or {},
+            "social_reentry_anchor": summary.get("reentry_anchor") or {},
+        }
+        room = dict(summary.get("room") or {})
+        inspection = build_social_inspection_snapshot(
+            platform=platform,
+            room_id=room_id,
+            participant_id=participant_id,
+            thread_key=(summary.get("context_window") or {}).get("thread_key") or room.get("current_thread_key"),
+            surfaces=surfaces,
+            source_surface="social-memory-summary",
+            source_service=self.settings.service_name,
+        )
+        logger.info(
+            "social_inspection_snapshot_built room_id=%s participant_id=%s sections=%s traces=%s source=%s",
+            room_id,
+            participant_id or "room",
+            len(inspection.sections),
+            len(inspection.decision_traces),
+            "social-memory-summary",
+        )
+        for section in inspection.sections:
+            logger.info(
+                "social_inspection_section_included room_id=%s participant_id=%s kind=%s included=%s traces=%s",
+                room_id,
+                participant_id or "room",
+                section.section_kind,
+                len(section.included_artifact_summaries),
+                len(section.decision_traces),
+            )
+        if int(inspection.metadata.get("safety_omissions") or 0) > 0:
+            logger.info(
+                "social_inspection_safety_omission room_id=%s participant_id=%s omitted=%s",
+                room_id,
+                participant_id or "room",
+                inspection.metadata.get("safety_omissions"),
+            )
+        return SocialInspectionSnapshotV1.model_validate(inspection).model_dump(mode="json")
 
     async def _publish(self, channel: str, kind: str, payload: Any) -> None:
         if self.bus is None or not getattr(self.bus, "enabled", False):

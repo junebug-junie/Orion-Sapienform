@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from orion.inspection.social import build_social_inspection_snapshot
 from orion.schemas.social_chat import (
     SocialConceptEvidenceV1,
     SocialGroundingStateV1,
@@ -25,6 +26,21 @@ from orion.schemas.social_style import (
     SocialRoomRitualSummaryV1,
     SocialStyleAdaptationSnapshotV1,
 )
+from orion.schemas.social_context import (
+    SocialContextCandidateV1,
+    SocialContextSelectionDecisionV1,
+    SocialContextWindowV1,
+    SocialEpisodeSnapshotV1,
+    SocialReentryAnchorV1,
+)
+from orion.schemas.social_gif import (
+    SocialGifIntentV1,
+    SocialGifInterpretationV1,
+    SocialGifObservedSignalV1,
+    SocialGifPolicyDecisionV1,
+    SocialGifProxyContextV1,
+)
+from orion.schemas.social_inspection import SocialInspectionSnapshotV1
 from orion.schemas.social_thread import SocialHandoffSignalV1, SocialThreadRoutingDecisionV1
 from orion.schemas.social_skills import (
     SocialSkillName,
@@ -684,6 +700,16 @@ def social_room_client_meta(
     skill_request = route_debug.get("social_skill_request") or payload.get("social_skill_request") or {}
     skill_selection = route_debug.get("social_skill_selection") or payload.get("social_skill_selection") or {}
     skill_result = route_debug.get("social_skill_result") or payload.get("social_skill_result") or {}
+    context_window = route_debug.get("social_context_window") or payload.get("social_context_window") or {}
+    context_selection_decision = route_debug.get("social_context_selection_decision") or payload.get("social_context_selection_decision") or {}
+    context_candidates = route_debug.get("social_context_candidates") or payload.get("social_context_candidates") or []
+    episode_snapshot = route_debug.get("social_episode_snapshot") or payload.get("social_episode_snapshot") or {}
+    reentry_anchor = route_debug.get("social_reentry_anchor") or payload.get("social_reentry_anchor") or {}
+    gif_policy = route_debug.get("social_gif_policy") or payload.get("social_gif_policy") or {}
+    gif_intent = route_debug.get("social_gif_intent") or payload.get("social_gif_intent") or {}
+    gif_observed_signal = route_debug.get("social_gif_observed_signal") or payload.get("social_gif_observed_signal") or {}
+    gif_proxy_context = route_debug.get("social_gif_proxy_context") or payload.get("social_gif_proxy_context") or {}
+    gif_interpretation = route_debug.get("social_gif_interpretation") or payload.get("social_gif_interpretation") or {}
     return {
         "chat_profile": SOCIAL_ROOM_PROFILE,
         "social_grounding_state": grounding.model_dump(mode="json"),
@@ -706,7 +732,84 @@ def social_room_client_meta(
         "social_skill_request": SocialSkillRequestV1.model_validate(skill_request).model_dump(mode="json") if skill_request else {},
         "social_skill_selection": SocialSkillSelectionV1.model_validate(skill_selection).model_dump(mode="json") if skill_selection else {},
         "social_skill_result": SocialSkillResultV1.model_validate(skill_result).model_dump(mode="json") if skill_result else {},
+        "social_episode_snapshot": SocialEpisodeSnapshotV1.model_validate(episode_snapshot).model_dump(mode="json") if episode_snapshot else {},
+        "social_reentry_anchor": SocialReentryAnchorV1.model_validate(reentry_anchor).model_dump(mode="json") if reentry_anchor else {},
+        "social_gif_policy": SocialGifPolicyDecisionV1.model_validate(gif_policy).model_dump(mode="json") if gif_policy else {},
+        "social_gif_intent": SocialGifIntentV1.model_validate(gif_intent).model_dump(mode="json") if gif_intent else {},
+        "social_gif_observed_signal": SocialGifObservedSignalV1.model_validate(gif_observed_signal).model_dump(mode="json") if gif_observed_signal else {},
+        "social_gif_proxy_context": SocialGifProxyContextV1.model_validate(gif_proxy_context).model_dump(mode="json") if gif_proxy_context else {},
+        "social_gif_interpretation": SocialGifInterpretationV1.model_validate(gif_interpretation).model_dump(mode="json") if gif_interpretation else {},
+        "social_context_window": SocialContextWindowV1.model_validate(context_window).model_dump(mode="json") if context_window else {},
+        "social_context_selection_decision": SocialContextSelectionDecisionV1.model_validate(context_selection_decision).model_dump(mode="json") if context_selection_decision else {},
+        "social_context_candidates": [SocialContextCandidateV1.model_validate(item).model_dump(mode="json") for item in context_candidates[:8] if isinstance(item, dict)] if isinstance(context_candidates, list) else [],
     }
+
+
+def build_social_inspection_debug(
+    *,
+    payload: Dict[str, Any],
+    route_debug: Dict[str, Any],
+    metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    room_continuity = metadata.get("social_room_continuity") or payload.get("social_room_continuity") or {}
+    context_window = metadata.get("social_context_window") or payload.get("social_context_window") or {}
+    participant_raw = ((metadata.get("social_peer_continuity") or {}).get("participant_id") or (payload.get("external_participant") or {}).get("participant_id"))
+    inspection = build_social_inspection_snapshot(
+        platform=str((room_continuity or {}).get("platform") or (payload.get("external_room") or {}).get("platform") or "unknown"),
+        room_id=str((room_continuity or {}).get("room_id") or (payload.get("external_room") or {}).get("room_id") or "unknown"),
+        participant_id=str(participant_raw) if participant_raw else None,
+        thread_key=str((context_window or {}).get("thread_key") or (room_continuity or {}).get("current_thread_key") or "") or None,
+        surfaces={
+            "social_peer_continuity": metadata.get("social_peer_continuity") or payload.get("social_peer_continuity") or {},
+            "social_room_continuity": room_continuity,
+            "social_context_window": context_window,
+            "social_context_selection_decision": metadata.get("social_context_selection_decision") or payload.get("social_context_selection_decision") or {},
+            "social_context_candidates": metadata.get("social_context_candidates") or payload.get("social_context_candidates") or [],
+            "social_thread_routing": metadata.get("social_thread_routing") or payload.get("social_thread_routing") or {},
+            "social_handoff_signal": metadata.get("social_handoff_signal") or payload.get("social_handoff_signal") or {},
+            "social_repair_signal": route_debug.get("social_repair_signal") or metadata.get("social_repair_signal") or payload.get("social_repair_signal") or {},
+            "social_repair_decision": route_debug.get("social_repair_decision") or metadata.get("social_repair_decision") or payload.get("social_repair_decision") or {},
+            "social_epistemic_signal": route_debug.get("social_epistemic_signal") or metadata.get("social_epistemic_signal") or payload.get("social_epistemic_signal") or {},
+            "social_epistemic_decision": route_debug.get("social_epistemic_decision") or metadata.get("social_epistemic_decision") or payload.get("social_epistemic_decision") or {},
+            "social_artifact_proposal": metadata.get("social_artifact_proposal") or payload.get("social_artifact_proposal") or {},
+            "social_artifact_revision": metadata.get("social_artifact_revision") or payload.get("social_artifact_revision") or {},
+            "social_artifact_confirmation": metadata.get("social_artifact_confirmation") or payload.get("social_artifact_confirmation") or {},
+            "social_episode_snapshot": metadata.get("social_episode_snapshot") or payload.get("social_episode_snapshot") or {},
+            "social_reentry_anchor": metadata.get("social_reentry_anchor") or payload.get("social_reentry_anchor") or {},
+            "social_gif_policy": route_debug.get("social_gif_policy") or metadata.get("social_gif_policy") or payload.get("social_gif_policy") or {},
+            "social_gif_intent": route_debug.get("social_gif_intent") or metadata.get("social_gif_intent") or payload.get("social_gif_intent") or {},
+            "social_gif_observed_signal": route_debug.get("social_gif_observed_signal") or metadata.get("social_gif_observed_signal") or payload.get("social_gif_observed_signal") or {},
+            "social_gif_proxy_context": route_debug.get("social_gif_proxy_context") or metadata.get("social_gif_proxy_context") or payload.get("social_gif_proxy_context") or {},
+            "social_gif_interpretation": route_debug.get("social_gif_interpretation") or metadata.get("social_gif_interpretation") or payload.get("social_gif_interpretation") or {},
+        },
+        source_surface="hub-routing-debug",
+        source_service="orion-hub",
+    )
+    logger.info(
+        "social_inspection_snapshot_built room_id=%s participant_id=%s sections=%s traces=%s source=%s",
+        inspection.room_id,
+        inspection.participant_id or "room",
+        len(inspection.sections),
+        len(inspection.decision_traces),
+        "hub-routing-debug",
+    )
+    for section in inspection.sections:
+        logger.info(
+            "social_inspection_section_included room_id=%s participant_id=%s kind=%s included=%s traces=%s",
+            inspection.room_id,
+            inspection.participant_id or "room",
+            section.section_kind,
+            len(section.included_artifact_summaries),
+            len(section.decision_traces),
+        )
+    if int(inspection.metadata.get("safety_omissions") or 0) > 0:
+        logger.info(
+            "social_inspection_safety_omission room_id=%s participant_id=%s omitted=%s",
+            inspection.room_id,
+            inspection.participant_id or "room",
+            inspection.metadata.get("safety_omissions"),
+        )
+    return SocialInspectionSnapshotV1.model_validate(inspection).model_dump(mode="json")
 
 
 def build_social_room_turn(

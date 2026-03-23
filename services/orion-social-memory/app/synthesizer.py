@@ -4,11 +4,21 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from typing import Any, Iterable
 
 from orion.schemas.social_autonomy import SocialOpenThreadV1
 from orion.schemas.social_artifact import SocialArtifactConfirmationV1, SocialArtifactProposalV1, SocialArtifactRevisionV1
 from orion.schemas.social_chat import SocialRoomTurnStoredV1
+from orion.schemas.social_calibration import SocialCalibrationSignalV1, SocialPeerCalibrationV1, SocialTrustBoundaryV1
+from orion.schemas.social_context import (
+    SocialContextCandidateV1,
+    SocialContextSelectionDecisionV1,
+    SocialContextWindowV1,
+    SocialEpisodeSnapshotV1,
+    SocialReentryAnchorV1,
+)
+from orion.schemas.social_freshness import SocialDecaySignalV1, SocialMemoryFreshnessV1, SocialRegroundingDecisionV1
 from orion.schemas.social_claim import (
     SocialClaimAttributionV1,
     SocialClaimRevisionV1,
@@ -28,6 +38,7 @@ from orion.schemas.social_floor import (
     SocialFloorDecisionV1,
     SocialTurnHandoffV1,
 )
+from orion.schemas.social_gif import SocialGifUsageStateV1
 from orion.schemas.social_memory import (
     SocialParticipantContinuityV1,
     SocialRoomContinuityV1,
@@ -191,6 +202,11 @@ _LEAVE_OPEN_HINTS = (
     "happy to leave that open",
     "open edge",
 )
+_CALIBRATION_SCOPE_HINTS = ("session-only", "session only", "room-local", "room local", "peer-local", "peer local", "between us", "for now", "keep it narrow")
+_CALIBRATION_UNCERTAINTY_HINTS = ("not sure", "i might be wrong", "maybe", "i think", "i may be off", "tentative", "could be")
+_CALIBRATION_DISAGREEMENT_HINTS = ("i disagree", "i don't think", "that isn't right", "not convinced", "still disagree")
+_GIF_WINDOW_SIZE = 10
+_GIF_INTENT_MEMORY = 4
 
 
 @dataclass(frozen=True)
@@ -226,6 +242,408 @@ class FloorResult:
     closure_signal: SocialClosureSignalV1 | None = None
     decision: SocialFloorDecisionV1 | None = None
     ignored_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CalibrationSynthesisResult:
+    signals: list[SocialCalibrationSignalV1] = field(default_factory=list)
+    peer_calibration: SocialPeerCalibrationV1 | None = None
+    trust_boundaries: list[SocialTrustBoundaryV1] = field(default_factory=list)
+    detected_signals: list[SocialCalibrationSignalV1] = field(default_factory=list)
+    decayed_signals: list[SocialCalibrationSignalV1] = field(default_factory=list)
+    ignored_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MemoryHygieneResult:
+    participant: SocialParticipantContinuityV1 | None = None
+    room: SocialRoomContinuityV1 | None = None
+    peer_style: SocialPeerStyleHintV1 | None = None
+    room_ritual: SocialRoomRitualSummaryV1 | None = None
+    memory_freshness: list[SocialMemoryFreshnessV1] = field(default_factory=list)
+    decay_signals: list[SocialDecaySignalV1] = field(default_factory=list)
+    regrounding_decisions: list[SocialRegroundingDecisionV1] = field(default_factory=list)
+    ignored_reasons: list[str] = field(default_factory=list)
+
+
+def _scope_for_signal(*, participant_id: str | None, thread_key: str | None) -> str:
+    if participant_id and thread_key:
+        return "peer_thread"
+    if participant_id:
+        return "peer_room"
+    if thread_key:
+        return "room_thread"
+    return "room"
+
+
+def update_social_gif_usage_state(
+    existing: SocialGifUsageStateV1 | None,
+    turn: SocialRoomTurnStoredV1,
+    *,
+    platform: str,
+    room_id: str,
+    thread_key: str | None,
+    participant_id: str | None,
+    participant_name: str | None,
+) -> SocialGifUsageStateV1:
+    social_meta = dict(turn.client_meta or {})
+    policy = dict(social_meta.get("social_gif_policy") or {})
+    intent = dict(social_meta.get("social_gif_intent") or {})
+    metadata = dict(policy.get("metadata") or {})
+    transport_degraded = str(metadata.get("transport_degraded") or "").strip().lower() == "true"
+    used_gif = bool(
+        policy
+        and bool(policy.get("gif_allowed"))
+        and str(policy.get("decision_kind") or "") == "text_plus_gif"
+        and not transport_degraded
+    )
+
+    recent_turn_was_gif = list(existing.recent_turn_was_gif if existing else [])
+    recent_turn_was_gif.append(bool(used_gif))
+    recent_turn_was_gif = recent_turn_was_gif[-_GIF_WINDOW_SIZE:]
+    recent_gif_turn_count = sum(1 for item in recent_turn_was_gif if item)
+    recent_gif_density = recent_gif_turn_count / float(len(recent_turn_was_gif) or 1)
+
+    if used_gif:
+        consecutive_gif_turns = int(existing.consecutive_gif_turns if existing else 0) + 1
+        turns_since_last = 0
+        last_gif_at = turn.created_at
+    else:
+        consecutive_gif_turns = 0
+        if existing is None:
+            turns_since_last = 999
+        else:
+            turns_since_last = int(existing.turns_since_last_orion_gif or 0) + 1
+        last_gif_at = existing.last_gif_at if existing else None
+
+    intent_kind = str(
+        intent.get("intent_kind")
+        or policy.get("intent_kind")
+        or (policy.get("selected_intent") or {}).get("intent_kind")
+        or ""
+    ).strip()
+    recent_intents = list(existing.recent_intent_kinds if existing else [])
+    if used_gif and intent_kind:
+        recent_intents.append(intent_kind)  # type: ignore[arg-type]
+    recent_intents = recent_intents[-_GIF_INTENT_MEMORY:]
+
+    recent_target_ids = list(existing.recent_target_participant_ids if existing else [])
+    recent_target_names = list(existing.recent_target_participant_names if existing else [])
+    if used_gif:
+        target_id = str(policy.get("target_participant_id") or participant_id or "").strip()
+        target_name = str(policy.get("target_participant_name") or participant_name or "").strip()
+        if target_id:
+            recent_target_ids.append(target_id)
+        if target_name:
+            recent_target_names.append(target_name)
+    recent_target_ids = recent_target_ids[-_GIF_INTENT_MEMORY:]
+    recent_target_names = recent_target_names[-_GIF_INTENT_MEMORY:]
+
+    room_thread_key = thread_key or existing.thread_key if existing else thread_key
+    return SocialGifUsageStateV1(
+        usage_state_id=existing.usage_state_id if existing else f"social-gif-usage-{uuid4()}",
+        platform=platform,
+        room_id=room_id,
+        thread_key=room_thread_key,
+        consecutive_gif_turns=consecutive_gif_turns,
+        turns_since_last_orion_gif=turns_since_last,
+        recent_gif_density=recent_gif_density,
+        recent_gif_turn_count=recent_gif_turn_count,
+        recent_turn_window_size=_GIF_WINDOW_SIZE,
+        orion_turn_count=int(existing.orion_turn_count if existing else 0) + 1,
+        recent_turn_was_gif=recent_turn_was_gif,
+        recent_intent_kinds=recent_intents,  # type: ignore[arg-type]
+        recent_target_participant_ids=recent_target_ids,
+        recent_target_participant_names=recent_target_names,
+        last_intent_kind=(intent_kind or existing.last_intent_kind if existing else intent_kind) or None,  # type: ignore[arg-type]
+        last_target_participant_id=(recent_target_ids[-1] if recent_target_ids else (existing.last_target_participant_id if existing else None)),
+        last_target_participant_name=(recent_target_names[-1] if recent_target_names else (existing.last_target_participant_name if existing else None)),
+        last_gif_at=last_gif_at,
+        metadata={
+            "source": "social-memory",
+            "last_decision_kind": str(policy.get("decision_kind") or "text_only"),
+            "transport_degraded": "true" if transport_degraded else "false",
+        },
+    )
+
+
+def _signal_scope_matches(signal: SocialCalibrationSignalV1, *, participant_id: str | None, thread_key: str | None) -> bool:
+    return (signal.participant_id or None) == (participant_id or None) and (signal.thread_key or None) == (thread_key or None)
+
+
+def _previous_signal(signals: list[SocialCalibrationSignalV1], *, kind: str, participant_id: str | None, thread_key: str | None) -> SocialCalibrationSignalV1 | None:
+    return next((item for item in signals if item.calibration_kind == kind and _signal_scope_matches(item, participant_id=participant_id, thread_key=thread_key)), None)
+
+
+def _topic_scope(topics: list[str]) -> str | None:
+    scoped = [sanitize_text(item)[:36] for item in topics if sanitize_text(item)]
+    return ", ".join(scoped[:2]) if scoped else None
+
+
+def _signal_confidence(evidence_count: int, *, capped_at: float = 0.82) -> float:
+    return max(0.0, min(capped_at, 0.22 + evidence_count * 0.14))
+
+
+def _trust_boundary_from_calibration(calibration: SocialPeerCalibrationV1 | None) -> SocialTrustBoundaryV1 | None:
+    if calibration is None or calibration.calibration_kind == "unknown":
+        return None
+    treat_claims_as_provisional = calibration.calibration_kind in {"revised_often", "disagreement_prone"}
+    summary_anchor = calibration.calibration_kind in {"reliable_continuity", "strong_summary_partner"}
+    use_narrower_attribution = calibration.calibration_kind in {"revised_often", "cautious_scope", "disagreement_prone"}
+    require_clarification = calibration.calibration_kind in {"revised_often", "disagreement_prone", "cautious_scope"}
+    if not any((treat_claims_as_provisional, summary_anchor, use_narrower_attribution, require_clarification)):
+        return None
+    return SocialTrustBoundaryV1(
+        platform=calibration.platform,
+        room_id=calibration.room_id,
+        participant_id=calibration.participant_id,
+        participant_name=calibration.participant_name,
+        thread_key=calibration.thread_key,
+        topic_scope=calibration.topic_scope,
+        scope=calibration.scope,
+        calibration_kind=calibration.calibration_kind,
+        confidence=calibration.confidence,
+        evidence_count=calibration.evidence_count,
+        reversible=True,
+        decay_hint=calibration.decay_hint,
+        treat_claims_as_provisional=treat_claims_as_provisional,
+        summary_anchor=summary_anchor,
+        use_narrower_attribution=use_narrower_attribution,
+        require_clarification_before_shared_ground=require_clarification,
+        caution_bias=max(calibration.caution_bias, 0.18 if treat_claims_as_provisional else 0.0),
+        attribution_bias=max(calibration.attribution_bias, 0.18 if use_narrower_attribution else 0.0),
+        clarification_bias=max(calibration.clarification_bias, 0.2 if require_clarification else 0.0),
+        rationale=(
+            "Calibration changes caution, attribution, and clarification thresholds locally; it is not a truth or authority ranking."
+        ),
+        reasons=list(calibration.reasons) + ["local_calibration_only", "caution_not_truth"],
+        metadata={"source": "social-memory", "authority_shortcut": "disabled"},
+    )
+
+
+def synthesize_social_calibration(
+    *,
+    existing_participant: SocialParticipantContinuityV1 | None,
+    existing_room: SocialRoomContinuityV1 | None,
+    turn: SocialRoomTurnStoredV1,
+    platform: str,
+    room_id: str,
+    participant_id: str | None,
+    participant_name: str | None,
+    thread_key: str | None,
+    topics: list[str],
+    claim_tracking: ClaimTrackingResult,
+    artifact_dialogue_active: bool,
+) -> CalibrationSynthesisResult:
+    prompt = sanitize_text(turn.prompt)
+    response = sanitize_text(turn.response)
+    combined = f"{prompt} {response}".lower().strip()
+    if artifact_dialogue_active:
+        return CalibrationSynthesisResult(ignored_reasons=["calibration skipped for pending_or_non_active_artifact_state"])
+    if _SEALED_RE.search(prompt) or _SEALED_RE.search(response):
+        return CalibrationSynthesisResult(ignored_reasons=["calibration skipped for blocked/private/sealed material"])
+
+    prior_signals = [
+        SocialCalibrationSignalV1.model_validate(item if isinstance(item, dict) else item.model_dump(mode="json"))
+        for item in ((existing_participant.calibration_signals if existing_participant else []) + (existing_room.calibration_signals if existing_room else []))
+    ]
+    existing_revision_count = len([item for item in (existing_room.recent_claim_revisions if existing_room else []) if (item.source_participant_id or None) == (participant_id or None)])
+    existing_divergence_count = len(existing_room.claim_divergence_signals if existing_room else [])
+    reasons_by_kind: dict[str, list[str]] = {}
+
+    continuity_overlap = set(existing_participant.recent_shared_topics if existing_participant else []) & set(topics)
+    if participant_id and ((existing_participant and existing_participant.evidence_count >= 2 and continuity_overlap) or (thread_key and existing_room and existing_room.current_thread_key == thread_key)):
+        reasons_by_kind["reliable_continuity"] = ["recurring_topic_overlap", "stable_thread_continuity"]
+
+    summary_aligned = (
+        any(hint in combined for hint in _SUMMARY_DELIVERY_HINTS + _ROOM_SUMMARY_HINTS)
+        and (
+            any(item.consensus_state in {"partial", "emerging", "consensus"} for item in claim_tracking.consensus_states)
+            or any(token in combined for token in ("aligned", "fits", "works for me", "shared core"))
+        )
+        and not claim_tracking.divergence_signals
+    )
+    if participant_id and summary_aligned:
+        reasons_by_kind["strong_summary_partner"] = ["aligned_summary_language", "consensus_backed_summary"]
+
+    scope_respecting = any(hint in combined for hint in _CALIBRATION_SCOPE_HINTS)
+    explicit_uncertainty = any(hint in combined for hint in _CALIBRATION_UNCERTAINTY_HINTS)
+    if participant_id and (scope_respecting or explicit_uncertainty):
+        reasons = []
+        if scope_respecting:
+            reasons.append("scope_respecting_language")
+        if explicit_uncertainty:
+            reasons.append("explicit_uncertainty")
+        reasons_by_kind["cautious_scope"] = reasons
+
+    participant_revisions = [item for item in claim_tracking.revisions if (item.source_participant_id or None) == (participant_id or None)]
+    if participant_id and participant_revisions:
+        reasons_by_kind["revised_often"] = ["repeated_claim_corrections", "revision_detected_in_scope"]
+
+    participant_divergence = False
+    for attribution in claim_tracking.attributions:
+        stance = (attribution.participant_stances or {}).get(participant_id or "", "unknown")
+        if stance in {"dispute", "correct", "withdraw"}:
+            participant_divergence = True
+            break
+    if participant_id and (participant_divergence or any(hint in combined for hint in _CALIBRATION_DISAGREEMENT_HINTS)) and claim_tracking.divergence_signals:
+        reasons_by_kind["disagreement_prone"] = ["repeated_disagreement_without_convergence", "divergence_signal_present"]
+
+    signals: list[SocialCalibrationSignalV1] = []
+    detected: list[SocialCalibrationSignalV1] = []
+    decayed: list[SocialCalibrationSignalV1] = []
+    ignored: list[str] = []
+    refreshed_keys: set[tuple[str, str | None, str | None]] = set()
+    topic_scope = _topic_scope(topics)
+    scope = _scope_for_signal(participant_id=participant_id, thread_key=thread_key)
+
+    for kind, base_reasons in reasons_by_kind.items():
+        previous = _previous_signal(prior_signals, kind=kind, participant_id=participant_id, thread_key=thread_key)
+        base_evidence = 1
+        if kind == "revised_often":
+            base_evidence = existing_revision_count + len(participant_revisions)
+        elif kind == "disagreement_prone":
+            base_evidence = existing_divergence_count + len(claim_tracking.divergence_signals)
+        elif kind == "reliable_continuity":
+            base_evidence = max(2, len(continuity_overlap) + (2 if existing_participant and existing_participant.evidence_count >= 2 else 1))
+        elif kind == "strong_summary_partner":
+            base_evidence = 2 if existing_participant and existing_participant.evidence_count >= 2 else 1
+        elif kind == "cautious_scope":
+            base_evidence = 1 + int(scope_respecting) + int(explicit_uncertainty) + int(bool(existing_participant and existing_participant.evidence_count >= 2))
+        evidence_count = max(int(previous.evidence_count if previous else 0), int(base_evidence))
+        if previous is not None and evidence_count == previous.evidence_count:
+            evidence_count += 1
+        confidence = _signal_confidence(evidence_count)
+        signal = SocialCalibrationSignalV1(
+            signal_id=previous.signal_id if previous else f"social-calibration-signal-{uuid4()}",
+            platform=platform,
+            room_id=room_id,
+            participant_id=participant_id,
+            participant_name=participant_name,
+            thread_key=thread_key,
+            topic_scope=topic_scope,
+            scope=scope,
+            calibration_kind=kind,
+            confidence=confidence,
+            evidence_count=evidence_count,
+            reversible=True,
+            decay_hint="decay_after_topic_shift" if thread_key else "decay_after_two_quiet_turns",
+            rationale=(
+                "Local, reversible calibration inferred from repeated social-room evidence; it narrows caution and attribution but does not decide truth."
+            ),
+            reasons=list(dict.fromkeys(base_reasons + ["local_only", "caution_not_truth"])),
+            updated_at=turn.created_at,
+            metadata={"source": "social-memory", "authority_shortcut": "disabled"},
+        )
+        refreshed_keys.add((kind, participant_id, thread_key))
+        if evidence_count < 2:
+            ignored.append(f"low-confidence signal ignored: {kind} evidence={evidence_count} scope={scope}")
+            continue
+        signals.append(signal)
+        detected.append(signal)
+
+    for previous in prior_signals:
+        key = (previous.calibration_kind, previous.participant_id, previous.thread_key)
+        if key in refreshed_keys:
+            continue
+        decayed_count = max(previous.evidence_count - 1, 0)
+        if decayed_count <= 0:
+            decayed.append(previous.model_copy(update={"evidence_count": 0, "confidence": 0.0, "updated_at": turn.created_at}))
+            continue
+        decayed_signal = previous.model_copy(
+            update={
+                "evidence_count": decayed_count,
+                "confidence": _signal_confidence(decayed_count, capped_at=max(previous.confidence - 0.08, 0.3)),
+                "updated_at": turn.created_at,
+                "reasons": merge_unique(previous.reasons, ["decayed_without_recent_reinforcement"], limit=5),
+            }
+        )
+        if decayed_count >= 2:
+            signals.append(decayed_signal)
+        decayed.append(decayed_signal)
+
+    signals = sorted(signals, key=lambda item: (item.confidence, item.evidence_count), reverse=True)[:4]
+    peer_signals = [item for item in signals if item.participant_id and item.scope in {"peer_thread", "peer_room"}]
+    peer_priority = {"revised_often": 5, "disagreement_prone": 4, "cautious_scope": 3, "strong_summary_partner": 2, "reliable_continuity": 1, "unknown": 0}
+    peer_signals = sorted(peer_signals, key=lambda item: (peer_priority.get(item.calibration_kind, 0), item.confidence, item.evidence_count), reverse=True)
+    peer_calibration = None
+    if peer_signals:
+        primary = peer_signals[0]
+        peer_calibration = SocialPeerCalibrationV1(
+            platform=platform,
+            room_id=room_id,
+            participant_id=participant_id,
+            participant_name=participant_name,
+            thread_key=thread_key if primary.scope == "peer_thread" else None,
+            topic_scope=topic_scope,
+            scope=primary.scope,
+            calibration_kind=primary.calibration_kind,
+            confidence=primary.confidence,
+            evidence_count=primary.evidence_count,
+            reversible=True,
+            decay_hint=primary.decay_hint,
+            rationale=(
+                "Compact peer-local calibration for caution and continuity only; use it to tune attribution or clarification, never as hidden authority."
+            ),
+            reasons=list(dict.fromkeys(primary.reasons + ["peer_local_calibration"])),
+            active_signal_ids=[item.signal_id for item in peer_signals[:3]],
+            caution_bias=max((0.32 if primary.calibration_kind in {"revised_often", "disagreement_prone"} else 0.18 if primary.calibration_kind == "cautious_scope" else 0.08), 0.0),
+            attribution_bias=0.3 if primary.calibration_kind in {"revised_often", "disagreement_prone", "cautious_scope"} else 0.12,
+            clarification_bias=0.28 if primary.calibration_kind in {"revised_often", "disagreement_prone", "cautious_scope"} else 0.1,
+            updated_at=turn.created_at,
+            metadata={"source": "social-memory", "authority_shortcut": "disabled"},
+        )
+
+    trust_boundaries: list[SocialTrustBoundaryV1] = []
+    peer_boundary = _trust_boundary_from_calibration(peer_calibration)
+    if peer_boundary is not None:
+        trust_boundaries.append(peer_boundary)
+    if claim_tracking.divergence_signals:
+        trust_boundaries.append(
+            SocialTrustBoundaryV1(
+                platform=platform,
+                room_id=room_id,
+                participant_id=None,
+                participant_name=None,
+                thread_key=thread_key,
+                topic_scope=topic_scope,
+                scope=_scope_for_signal(participant_id=None, thread_key=thread_key),
+                calibration_kind="disagreement_prone",
+                confidence=0.52 if len(claim_tracking.divergence_signals) == 1 else 0.64,
+                evidence_count=max(2, len(claim_tracking.divergence_signals) + len(claim_tracking.revisions)),
+                reversible=True,
+                decay_hint="decay_after_unreinforced_repair",
+                treat_claims_as_provisional=True,
+                summary_anchor=False,
+                use_narrower_attribution=True,
+                require_clarification_before_shared_ground=True,
+                caution_bias=0.34,
+                attribution_bias=0.3,
+                clarification_bias=0.36,
+                rationale="Room-local divergence means Orion should keep shared-ground claims narrower and ask for clarification before calling the thread settled.",
+                reasons=["room_local_divergence", "caution_not_truth"],
+                updated_at=turn.created_at,
+                metadata={"source": "social-memory", "authority_shortcut": "disabled"},
+            )
+        )
+
+    deduped_boundaries: list[SocialTrustBoundaryV1] = []
+    seen_boundary_keys: set[tuple[str, str | None, str | None]] = set()
+    for boundary in trust_boundaries:
+        key = (boundary.calibration_kind, boundary.participant_id, boundary.thread_key)
+        if key in seen_boundary_keys:
+            continue
+        seen_boundary_keys.add(key)
+        deduped_boundaries.append(boundary)
+
+    return CalibrationSynthesisResult(
+        signals=signals,
+        peer_calibration=peer_calibration,
+        trust_boundaries=deduped_boundaries[:3],
+        detected_signals=detected,
+        decayed_signals=decayed,
+        ignored_reasons=ignored,
+    )
 
 
 def utcnow_iso() -> str:
@@ -573,6 +991,348 @@ def _claim_candidate(
     )
 
 
+def _hours_since(*, now: datetime, value: str | None) -> float | None:
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return None
+    return max((now - parsed).total_seconds() / 3600.0, 0.0)
+
+
+def _freshness_bucket(*, age_hours: float | None, evidence_count: int, contradiction: bool = False, thread_shift: bool = False) -> tuple[str, str, str, list[str]] | None:
+    reasons: list[str] = []
+    if contradiction:
+        reasons.append("contradiction_or_correction")
+    if thread_shift:
+        reasons.append("thread_or_context_shift")
+    if age_hours is not None and age_hours >= 168:
+        reasons.append("support_is_old")
+    elif age_hours is not None and age_hours >= 72:
+        reasons.append("support_is_stale")
+    elif age_hours is not None and age_hours >= 24:
+        reasons.append("support_is_aging")
+    if evidence_count <= 1:
+        reasons.append("low_evidence_count")
+    if not reasons:
+        return None
+    if contradiction or thread_shift:
+        return ("refresh_needed", "strong", "reopen", reasons)
+    if age_hours is not None and age_hours >= 168 and evidence_count <= 1:
+        return ("expired", "strong", "expire", reasons)
+    if age_hours is not None and age_hours >= 72:
+        return ("stale", "moderate" if evidence_count > 1 else "strong", "soften" if evidence_count > 1 else "refresh_needed", reasons)
+    if evidence_count <= 1:
+        return ("refresh_needed", "light", "refresh_needed", reasons)
+    return ("aging", "light", "refresh_needed", reasons)
+
+
+def synthesize_social_memory_hygiene(
+    *,
+    existing_participant: SocialParticipantContinuityV1 | None,
+    existing_room: SocialRoomContinuityV1 | None,
+    existing_peer_style: SocialPeerStyleHintV1 | None,
+    existing_room_ritual: SocialRoomRitualSummaryV1 | None,
+    participant: SocialParticipantContinuityV1 | None,
+    room: SocialRoomContinuityV1 | None,
+    peer_style: SocialPeerStyleHintV1 | None,
+    room_ritual: SocialRoomRitualSummaryV1 | None,
+    turn: SocialRoomTurnStoredV1,
+    platform: str,
+    room_id: str,
+    participant_id: str | None,
+    thread_key: str | None,
+    claim_tracking: ClaimTrackingResult,
+    calibration: CalibrationSynthesisResult,
+    commitment_resolutions: list[SocialCommitmentResolutionV1],
+    artifact_dialogue_active: bool = False,
+    shared_artifact_statuses: list[str] | None = None,
+) -> MemoryHygieneResult:
+    prompt = sanitize_text(turn.prompt)
+    response = sanitize_text(turn.response)
+    if _SEALED_RE.search(prompt) or _SEALED_RE.search(response):
+        return MemoryHygieneResult(
+            participant=participant,
+            room=room,
+            peer_style=peer_style,
+            room_ritual=room_ritual,
+            ignored_reasons=["freshness hygiene skipped for blocked/private/sealed material"],
+        )
+    statuses = {str(item or "") for item in (shared_artifact_statuses or [])}
+    if artifact_dialogue_active or statuses & {"declined", "deferred"}:
+        return MemoryHygieneResult(
+            participant=participant,
+            room=room,
+            peer_style=peer_style,
+            room_ritual=room_ritual,
+            ignored_reasons=["freshness hygiene skipped for pending_or_non_active_artifact_state"],
+        )
+
+    now = _parse_iso(turn.created_at) or datetime.now(timezone.utc)
+    room_out = room
+    participant_out = participant
+    peer_style_out = peer_style
+    room_ritual_out = room_ritual
+    freshness: list[SocialMemoryFreshnessV1] = []
+    decay_signals: list[SocialDecaySignalV1] = []
+    decisions: list[SocialRegroundingDecisionV1] = []
+    ignored: list[str] = []
+
+    def _record(
+        *,
+        artifact_kind: str,
+        freshness_state: str,
+        decay_level: str,
+        decision: str,
+        confidence: float,
+        evidence_count: int,
+        last_updated_at: str,
+        reasons: list[str],
+        rationale: str,
+        scope_participant_id: str | None = None,
+        scope_thread_key: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> None:
+        payload = dict(
+            platform=platform,
+            room_id=room_id,
+            participant_id=scope_participant_id,
+            thread_key=scope_thread_key,
+            topic_scope=_topic_scope(extract_topics(turn, limit=3)),
+            artifact_kind=artifact_kind,
+            freshness_state=freshness_state,
+            decay_level=decay_level,
+            confidence=max(0.0, min(1.0, confidence)),
+            evidence_count=max(0, int(evidence_count)),
+            last_updated_at=last_updated_at,
+            rationale=rationale,
+            reasons=reasons[:6],
+            metadata=metadata or {"source": "social-memory"},
+        )
+        freshness.append(SocialMemoryFreshnessV1(regrounding_decision=decision, **payload))
+        decay_signals.append(SocialDecaySignalV1(**payload))
+        decisions.append(SocialRegroundingDecisionV1(decision=decision, **payload))
+
+    refreshed_claim_ids = {item.claim_id for item in claim_tracking.consensus_states}
+    contradicted_claim_ids = {item.claim_id for item in claim_tracking.divergence_signals} | {item.claim_id for item in claim_tracking.revisions}
+    updated_consensus: list[SocialConsensusStateV1] = []
+    for consensus in list(room.claim_consensus_states if room else []):
+        if consensus.claim_id in refreshed_claim_ids:
+            updated_consensus.append(consensus)
+            continue
+        age_hours = _hours_since(now=now, value=consensus.updated_at)
+        bucket = _freshness_bucket(
+            age_hours=age_hours,
+            evidence_count=int(consensus.supporting_evidence_count or 0),
+            contradiction=consensus.claim_id in contradicted_claim_ids,
+            thread_shift=bool(consensus.thread_key and thread_key and consensus.thread_key != thread_key),
+        )
+        if bucket is None:
+            updated_consensus.append(consensus)
+            continue
+        freshness_state, decay_level, action, reasons = bucket
+        softened_state = "contested" if "contradiction_or_correction" in reasons else "emerging"
+        updated_consensus.append(
+            consensus.model_copy(
+                update={
+                    "consensus_state": softened_state if action != "expire" else "none",
+                    "confidence": max(0.22, float(consensus.confidence) * (0.62 if action in {"soften", "reopen"} else 0.45)),
+                    "supporting_evidence_count": max(0, int(consensus.supporting_evidence_count or 0) - 1),
+                    "updated_at": turn.created_at,
+                    "reasons": list(dict.fromkeys(list(consensus.reasons) + reasons + ["refresh_before_treating_as_settled"])),
+                    "metadata": dict(consensus.metadata or {}, freshness_state=freshness_state, regrounding_decision=action),
+                }
+            )
+        )
+        _record(
+            artifact_kind="claim_consensus",
+            freshness_state=freshness_state,
+            decay_level=decay_level,
+            decision=action,
+            confidence=float(consensus.confidence),
+            evidence_count=int(consensus.supporting_evidence_count or 0),
+            last_updated_at=consensus.updated_at,
+            reasons=reasons,
+            rationale="Older or contradicted consensus should be softened and re-grounded before Orion treats it as current shared truth.",
+            scope_thread_key=consensus.thread_key or thread_key,
+        )
+    if room_out is not None:
+        room_out = room_out.model_copy(update={"claim_consensus_states": updated_consensus})
+
+    refreshed_calibration = bool(calibration.peer_calibration and participant and participant.peer_calibration and calibration.peer_calibration.updated_at == participant.peer_calibration.updated_at)
+    participant_revision_count = len([item for item in claim_tracking.revisions if (item.source_participant_id or None) == (participant_id or None)])
+    if participant_out is not None and participant_out.peer_calibration is not None and not refreshed_calibration:
+        peer_calibration = participant_out.peer_calibration
+        age_hours = _hours_since(now=now, value=peer_calibration.updated_at)
+        bucket = _freshness_bucket(
+            age_hours=age_hours,
+            evidence_count=int(peer_calibration.evidence_count or 0),
+            contradiction=participant_revision_count > 0 or bool(claim_tracking.divergence_signals),
+            thread_shift=bool(peer_calibration.thread_key and thread_key and peer_calibration.thread_key != thread_key),
+        )
+        if bucket is not None:
+            freshness_state, decay_level, action, reasons = bucket
+            new_kind = "unknown" if action in {"expire", "refresh_needed", "reopen"} else "cautious_scope"
+            softened_calibration = peer_calibration.model_copy(update={
+                "calibration_kind": new_kind,
+                "confidence": max(0.18, float(peer_calibration.confidence) * 0.58),
+                "evidence_count": max(0, int(peer_calibration.evidence_count or 0) - 1),
+                "updated_at": turn.created_at,
+                "rationale": "Earlier calibration is no longer strongly supported here; keep caution light and refresh locally before leaning on it.",
+                "reasons": list(dict.fromkeys(list(peer_calibration.reasons) + reasons + ["refresh_before_reusing_calibration"])),
+                "metadata": dict(peer_calibration.metadata or {}, freshness_state=freshness_state, regrounding_decision=action),
+            })
+            participant_out = participant_out.model_copy(update={"peer_calibration": softened_calibration})
+            boundary = participant_out.trust_boundary
+            if boundary is not None:
+                boundary = boundary.model_copy(update={
+                    "calibration_kind": new_kind,
+                    "confidence": max(0.18, float(boundary.confidence) * 0.65),
+                    "evidence_count": max(0, int(boundary.evidence_count or 0) - 1),
+                    "summary_anchor": False,
+                    "treat_claims_as_provisional": True,
+                    "use_narrower_attribution": True,
+                    "require_clarification_before_shared_ground": True,
+                    "updated_at": turn.created_at,
+                    "rationale": "Stale or contradicted calibration should only bias Orion toward caution and clarification until the room refreshes it.",
+                    "reasons": list(dict.fromkeys(list(boundary.reasons) + reasons + ["refresh_before_shared_ground"])),
+                    "metadata": dict(boundary.metadata or {}, freshness_state=freshness_state, regrounding_decision=action),
+                })
+            participant_out = participant_out.model_copy(update={"trust_boundary": boundary})
+            if room_out is not None:
+                room_out = room_out.model_copy(update={
+                    "peer_calibrations": [softened_calibration if item.participant_id == softened_calibration.participant_id else item for item in room_out.peer_calibrations],
+                    "trust_boundaries": [boundary if boundary is not None and item.participant_id == boundary.participant_id and item.thread_key == boundary.thread_key else item for item in room_out.trust_boundaries],
+                })
+            _record(
+                artifact_kind="peer_calibration",
+                freshness_state=freshness_state,
+                decay_level=decay_level,
+                decision=action,
+                confidence=float(peer_calibration.confidence),
+                evidence_count=int(peer_calibration.evidence_count or 0),
+                last_updated_at=peer_calibration.updated_at,
+                reasons=reasons,
+                rationale="Older peer-local calibration should soften toward unknown/cautious until fresh local evidence re-supports it.",
+                scope_participant_id=participant_id,
+                scope_thread_key=peer_calibration.thread_key or thread_key,
+            )
+
+    peer_style_refreshed = bool(peer_style and ((existing_peer_style is None) or peer_style.evidence_count > existing_peer_style.evidence_count))
+    if peer_style_out is not None and not peer_style_refreshed:
+        age_hours = _hours_since(now=now, value=peer_style_out.last_updated_at)
+        bucket = _freshness_bucket(age_hours=age_hours, evidence_count=int(peer_style_out.evidence_count or 0))
+        if bucket is not None:
+            freshness_state, decay_level, action, reasons = bucket
+            peer_style_out = peer_style_out.model_copy(update={
+                "style_hints_summary": "Older peer style read is fading; keep adaptation light and refresh from the current exchange before treating it as stable.",
+                "preferred_directness": _blend(peer_style_out.preferred_directness, 0.5, weight_old=0.4, weight_new=0.6),
+                "preferred_depth": _blend(peer_style_out.preferred_depth, 0.5, weight_old=0.4, weight_new=0.6),
+                "question_appetite": _blend(peer_style_out.question_appetite, 0.5, weight_old=0.4, weight_new=0.6),
+                "playfulness_tendency": _blend(peer_style_out.playfulness_tendency, 0.3, weight_old=0.4, weight_new=0.6),
+                "formality_tendency": _blend(peer_style_out.formality_tendency, 0.5, weight_old=0.4, weight_new=0.6),
+                "summarization_preference": _blend(peer_style_out.summarization_preference, 0.3, weight_old=0.4, weight_new=0.6),
+                "confidence": max(0.16, float(peer_style_out.confidence) * 0.58),
+                "evidence_count": max(0, int(peer_style_out.evidence_count or 0) - 1),
+                "last_updated_at": turn.created_at,
+            })
+            _record(
+                artifact_kind="peer_style",
+                freshness_state=freshness_state,
+                decay_level=decay_level,
+                decision=action,
+                confidence=float(peer_style.confidence),
+                evidence_count=int(peer_style.evidence_count or 0),
+                last_updated_at=peer_style.last_updated_at,
+                reasons=reasons,
+                rationale="Old style hints should fade so Orion adapts lightly and refreshes from present-room evidence instead of overfitting to stale preference reads.",
+                scope_participant_id=participant_id,
+                scope_thread_key=thread_key,
+            )
+
+    ritual_refreshed = bool(room_ritual and ((existing_room_ritual is None) or room_ritual.evidence_count > existing_room_ritual.evidence_count))
+    if room_ritual_out is not None and not ritual_refreshed:
+        age_hours = _hours_since(now=now, value=room_ritual_out.last_updated_at)
+        bucket = _freshness_bucket(age_hours=age_hours, evidence_count=int(room_ritual_out.evidence_count or 0), thread_shift=bool(existing_room and existing_room.current_thread_key and thread_key and existing_room.current_thread_key != thread_key))
+        if bucket is not None:
+            freshness_state, decay_level, action, reasons = bucket
+            room_ritual_out = room_ritual_out.model_copy(update={
+                "culture_summary": "Older room ritual read is fading; treat greeting, re-entry, and pause cues as soft guidance until the room repeats them again.",
+                "summary_cadence_preference": _blend(room_ritual_out.summary_cadence_preference, 0.3, weight_old=0.4, weight_new=0.6),
+                "confidence": max(0.16, float(room_ritual_out.confidence) * 0.58),
+                "evidence_count": max(0, int(room_ritual_out.evidence_count or 0) - 1),
+                "last_updated_at": turn.created_at,
+            })
+            _record(
+                artifact_kind="room_ritual",
+                freshness_state=freshness_state,
+                decay_level=decay_level,
+                decision=action,
+                confidence=float(room_ritual.confidence),
+                evidence_count=int(room_ritual.evidence_count or 0),
+                last_updated_at=room_ritual.last_updated_at,
+                reasons=reasons,
+                rationale="Room ritual summaries should fade when they stop repeating or the active thread/context shifts.",
+                scope_thread_key=thread_key,
+            )
+
+    if room_out is not None and existing_room is not None and existing_room.current_thread_key and thread_key and existing_room.current_thread_key != thread_key:
+        if existing_room.bridge_summary is not None and room_out.bridge_summary is None:
+            _record(
+                artifact_kind="deliberation_summary",
+                freshness_state="refresh_needed",
+                decay_level="moderate",
+                decision="reopen",
+                confidence=float(existing_room.bridge_summary.confidence),
+                evidence_count=int(existing_room.bridge_summary.evidence_count),
+                last_updated_at=existing_room.bridge_summary.updated_at,
+                reasons=["thread_or_context_shift"],
+                rationale="A bridge summary tied to an older thread should be reopened instead of silently carried into a new thread.",
+                scope_thread_key=existing_room.bridge_summary.thread_key,
+            )
+        if any(item is not None for item in (existing_room.turn_handoff, existing_room.closure_signal, existing_room.floor_decision)) and all(item is None for item in (room_out.turn_handoff, room_out.closure_signal, room_out.floor_decision)):
+            _record(
+                artifact_kind="handoff_closure",
+                freshness_state="expired",
+                decay_level="strong",
+                decision="expire",
+                confidence=0.5,
+                evidence_count=1,
+                last_updated_at=existing_room.last_updated_at,
+                reasons=["thread_or_context_shift"],
+                rationale="Older handoff/closure cues should expire when the room moves to a different active thread.",
+                scope_thread_key=existing_room.current_thread_key,
+            )
+
+    for resolution in commitment_resolutions:
+        if resolution.state != "expired":
+            continue
+        _record(
+            artifact_kind="commitment",
+            freshness_state="expired",
+            decay_level="strong",
+            decision="expire",
+            confidence=0.74,
+            evidence_count=1,
+            last_updated_at=resolution.resolved_at,
+            reasons=["commitment_ttl_elapsed"],
+            rationale="Expired conversational commitments should be cleared rather than treated as still pending or silently completed.",
+            scope_thread_key=resolution.thread_key,
+        )
+
+    if not freshness and not decisions and calibration.ignored_reasons:
+        ignored.extend(calibration.ignored_reasons)
+
+    return MemoryHygieneResult(
+        participant=participant_out,
+        room=room_out,
+        peer_style=peer_style_out,
+        room_ritual=room_ritual_out,
+        memory_freshness=freshness,
+        decay_signals=decay_signals,
+        regrounding_decisions=decisions,
+        ignored_reasons=ignored,
+    )
+
+
 def update_room_claim_tracking(
     existing: SocialRoomContinuityV1 | None,
     turn: SocialRoomTurnStoredV1,
@@ -849,8 +1609,8 @@ def _disagreement_edge(
 def _bridge_summary_text(shared_core: str, disagreement_edge: str, views: list[str]) -> str:
     view_text = "; ".join(views[:3])
     if view_text:
-        return f"Shared core: {shared_core}. Views: {view_text}. Disagreement edge: {disagreement_edge}."[:420]
-    return f"Shared core: {shared_core}. Disagreement edge: {disagreement_edge}."[:320]
+        return f"Shared core: {shared_core}. Views: {view_text}. Open edge: {disagreement_edge}."[:360]
+    return f"Shared core: {shared_core}. Open edge: {disagreement_edge}."[:260]
 
 
 def build_deliberation_result(
@@ -884,8 +1644,16 @@ def build_deliberation_result(
     routing_audience = "peer"
     if room and room.active_threads:
         routing_audience = room.active_threads[0].audience_scope
+    trust_boundaries = list(room.trust_boundaries if room else [])
+    calibration_requires_clarification = any(item.require_clarification_before_shared_ground for item in trust_boundaries)
+    calibration_narrows_attribution = any(item.use_narrower_attribution or item.treat_claims_as_provisional for item in trust_boundaries)
 
-    if ambiguity_markers and not (partial or contested or explicit_landing_request):
+    direct_peer_thread = routing_audience in {"peer", "thread"}
+    should_clarify = bool(ambiguity_markers)
+    if calibration_requires_clarification and (claim_tracking.revisions or claim_tracking.divergence_signals) and not direct_peer_thread:
+        should_clarify = True
+
+    if should_clarify and not (partial or contested or explicit_landing_request):
         question = SocialClarifyingQuestionV1(
             platform=room.platform if room else str((turn.client_meta or {}).get("external_room", {}).get("platform") or "unknown"),
             room_id=room.room_id if room else str((turn.client_meta or {}).get("external_room", {}).get("room_id") or "unknown"),
@@ -895,14 +1663,14 @@ def build_deliberation_result(
             trigger="ambiguity",
             question_focus="scope" if "room" in lowered or "local" in lowered else "shared_core",
             question_text=(
-                "Are you asking for the room-level landing, or just the local thread read?"
+                "Do you want the room-level read, or just this thread?"
                 if ("room" in lowered or "local" in lowered)
-                else "Which part should I bridge first — the shared core or the disagreement edge?"
+                else "Which part do you want me to stay with first?"
             ),
             attributed_participants=participants,
-            confidence=0.74,
-            ambiguity_level="high",
-            reasons=["ambiguity_markers_present", "question_safer_than_assertion"],
+            confidence=0.68,
+            ambiguity_level="medium",
+            reasons=[reason for reason, present in [("ambiguity_markers_present", ambiguity_markers), ("calibration_requires_clarification", calibration_requires_clarification), ("question_safer_than_assertion", True)] if present],
             metadata={"source": "social-memory"},
         )
         decision = SocialDeliberationDecisionV1(
@@ -921,7 +1689,23 @@ def build_deliberation_result(
         )
         return DeliberationResult(clarifying_question=question, decision=decision)
 
-    if partial or contested or explicit_landing_request or repeated_cross_talk:
+    local_explicit_landing = bool(
+        direct_peer_thread
+        and explicit_landing_request
+        and not repeated_cross_talk
+        and len(participants) <= 2
+    )
+
+    bridge_useful = bool(
+        (partial or contested)
+        and shared_core
+        and (disagreement_edge or explicit_landing_request)
+        and (not direct_peer_thread or explicit_landing_request or repeated_cross_talk)
+        and (repeated_cross_talk or explicit_landing_request or len(participants) >= 2 or routing_audience in {"room", "summary"})
+        and not local_explicit_landing
+    )
+
+    if bridge_useful:
         trigger = "explicit_landing_request" if explicit_landing_request else "contested_shared_core" if contested else "crosstalk" if repeated_cross_talk else "partial_agreement"
         agreement_points = []
         if shared_core:
@@ -929,6 +1713,8 @@ def build_deliberation_result(
         if room and room.current_thread_summary:
             agreement_points.append(f"the room is still on {sanitize_text(room.current_thread_summary)[:100]}")
         disagreement_points = [disagreement_edge]
+        bridge_confidence = (0.68 if contested else 0.64 if partial else 0.62) - (0.08 if calibration_narrows_attribution else 0.0)
+        bridge_reasons = [reason for reason, present in [("partial_agreement_detected", bool(partial)), ("contested_shared_core_detected", bool(contested)), ("repeated_cross_talk_detected", repeated_cross_talk), ("explicit_landing_request_detected", explicit_landing_request), ("calibration_narrows_attribution", calibration_narrows_attribution)] if present]
         bridge = SocialBridgeSummaryV1(
             platform=room.platform if room else str((turn.client_meta or {}).get("external_room", {}).get("platform") or "unknown"),
             room_id=room.room_id if room else str((turn.client_meta or {}).get("external_room", {}).get("room_id") or "unknown"),
@@ -943,23 +1729,20 @@ def build_deliberation_result(
             disagreement_points=disagreement_points[:2],
             attributed_participants=participants,
             summary_text=_bridge_summary_text(shared_core, disagreement_edge, views),
-            proposed_bridge_framing="Offer a compact bridge summary that names both the overlap and the unresolved edge without pretending the room fully agrees.",
-            confidence=0.72 if contested else 0.68 if partial else 0.66,
-            ambiguity_level="medium" if explicit_landing_request or repeated_cross_talk else "low",
+            proposed_bridge_framing="Offer a brief bridge that names the overlap first and then the live open edge without sounding like a moderator.",
+            confidence=max(0.42, bridge_confidence),
+            ambiguity_level="medium" if repeated_cross_talk else "low",
             preserve_disagreement=True,
-            reasons=[reason for reason, present in [("partial_agreement_detected", bool(partial)), ("contested_shared_core_detected", bool(contested)), ("repeated_cross_talk_detected", repeated_cross_talk), ("explicit_landing_request_detected", explicit_landing_request)] if present],
+            reasons=bridge_reasons,
             metadata={"source": "social-memory"},
         )
-        decision_kind = "normal_room_reply" if explicit_landing_request or repeated_cross_talk or routing_audience in {"room", "summary"} else "bridge_summary"
-        if decision_kind != "bridge_summary":
-            decision_kind = "bridge_summary"
         decision = SocialDeliberationDecisionV1(
             platform=bridge.platform,
             room_id=bridge.room_id,
             thread_key=bridge.thread_key,
             active_claim_ids=list(bridge.active_claim_ids),
             active_claim_keys=list(bridge.active_claim_keys),
-            decision_kind=decision_kind,
+            decision_kind="bridge_summary",
             trigger=bridge.trigger,
             bridge_summary_id=bridge.bridge_summary_id,
             confidence=bridge.confidence,
@@ -1022,19 +1805,19 @@ def _handoff_phrase(
     open_edge = ""
     if room and room.bridge_summary and room.bridge_summary.disagreement_edge:
         edge = sanitize_text(room.bridge_summary.disagreement_edge)
-        open_edge = f" I think the open edge is still {edge[:72]}." if edge else ""
+        open_edge = f" The live edge still seems to be {edge[:56]}." if edge else ""
     if decision_kind == "yield_to_peer" and target_name:
-        return f"{target_name}, does that match your read?"
+        return f"{target_name}, how does that land for you?"
     if decision_kind == "invite_peer" and target_name:
-        return f"{target_name}, does that match what you meant?"
+        return f"{target_name}, what part feels most live to you?"
     if decision_kind == "invite_room":
-        return "I’ll leave it there unless someone wants to reopen that."
+        return "Happy to leave it there if someone wants to pick it up."
     if decision_kind == "close_thread":
-        return "That sounds aligned enough for now."
+        return "That feels aligned enough for now."
     if decision_kind == "leave_open":
         if target_name:
-            return f"{target_name}, I’ll leave space for your answer.{open_edge}"[:180]
-        return "I’ll leave that open for an answer."
+            return f"{target_name}, I’ll leave a little space there.{open_edge}"[:160]
+        return "I’ll leave that open."
     return ""
 
 
@@ -1081,29 +1864,35 @@ def build_floor_result(
     room_id = room.room_id if room else str((turn.client_meta or {}).get("external_room", {}).get("room_id") or "unknown")
     thread_key = room.current_thread_key if room else None
     target_id, target_name, audience_scope = _floor_target(room=room, claim_tracking=claim_tracking)
+    trust_boundaries = list(room.trust_boundaries if room else [])
+    clarification_boundary_active = any(item.require_clarification_before_shared_ground for item in trust_boundaries)
 
     decision_kind = "no_handoff"
     rationale = "no conservative handoff or closure signal is needed"
     reasons = ["no_floor_intervention_needed"]
 
     if room and room.clarifying_question is not None:
-        if target_id or target_name:
+        if (target_id or target_name) and audience_scope == "peer" and not (room.active_threads and len(room.active_threads) >= 2):
             decision_kind = "invite_peer"
-            rationale = "the clarifying question should leave space for the most relevant peer to answer"
-            reasons = ["clarifying_question_present", "target_peer_available"]
+            rationale = "the clarifying question should stay pointed at the most relevant peer without Orion over-managing the room"
+            reasons = ["clarifying_question_present", "target_peer_available", "single_peer_thread"]
         else:
             decision_kind = "leave_open"
-            rationale = "the clarifying question should stay open rather than Orion filling the gap"
+            rationale = "the clarifying question should stay open rather than Orion trying to manage the next move"
             reasons = ["clarifying_question_present", "leave_space_for_answer"]
     elif room and room.bridge_summary is not None:
-        if target_id or target_name:
+        if (target_id or target_name) and audience_scope == "peer" and not active_commitments:
             decision_kind = "yield_to_peer"
-            rationale = "after a bridge summary, the floor should go back to the peer most tied to the open edge"
-            reasons = ["bridge_summary_present", "target_peer_available"]
+            rationale = "after a brief bridge, the floor should go back to the peer most tied to the open edge"
+            reasons = ["bridge_summary_present", "target_peer_available", "peer_reply_preferred"]
         else:
-            decision_kind = "invite_room"
-            rationale = "the room-level bridge summary should hand the floor back broadly without Orion over-continuing"
-            reasons = ["bridge_summary_present", "room_scope_follow_up"]
+            decision_kind = "leave_open"
+            rationale = "after a bridge summary, leaving space is usually more natural than trying to manage the room"
+            reasons = ["bridge_summary_present", "leave_space"]
+    elif clarification_boundary_active and (claim_tracking.divergence_signals or claim_tracking.revisions):
+        decision_kind = "leave_open"
+        rationale = "trust-boundary guidance keeps the thread open until the disagreement or revision is clarified"
+        reasons = ["clarification_boundary_active", "leave_space"]
     elif _thread_locally_resolved(
         turn=turn,
         room=room,
@@ -1114,7 +1903,7 @@ def build_floor_result(
         rationale = "the local thread looks aligned enough to close without forcing more turns"
         reasons = ["resolved_thread_detected"]
     elif room and room.active_threads and room.active_threads[0].open_question:
-        if audience_scope in {"room", "summary"} or len(room.active_threads) >= 2:
+        if audience_scope in {"room", "summary"} and len(room.active_threads) >= 2:
             decision_kind = "invite_room"
             rationale = "the thread is still open, but the next contribution is better left to the room"
             reasons = ["open_question_detected", "room_should_pick_up"]
@@ -1821,6 +2610,102 @@ def build_orientation_summary(snapshot: SocialStanceSnapshotV1) -> str:
     return f"Recent social stance leans {', '.join(top)}."
 
 
+def build_social_episode_snapshot(
+    *,
+    platform: str,
+    room_id: str,
+    participant: SocialParticipantContinuityV1 | None,
+    room: SocialRoomContinuityV1 | None,
+) -> SocialEpisodeSnapshotV1 | None:
+    if room is None and participant is None:
+        return None
+
+    thread_key = room.current_thread_key if room else None
+    participant_id = participant.participant_id if participant else None
+    live_thread_summary = sanitize_text(room.current_thread_summary if room else "")
+    recent_thread_summary = sanitize_text(room.recent_thread_summary if room else "")
+    peer_summary = sanitize_text(participant.safe_continuity_summary if participant else "")
+    summary = live_thread_summary or recent_thread_summary or peer_summary
+    if not summary:
+        return None
+
+    focus_topics = merge_unique(
+        list(participant.recent_shared_topics if participant else []),
+        list(room.recurring_topics if room else []),
+        limit=4,
+    )
+    last_active_at = (
+        (room.last_updated_at if room and (live_thread_summary or recent_thread_summary) else None)
+        or (participant.last_seen_at if participant else None)
+        or utcnow_iso()
+    )
+    freshness_band = "fresh"
+    age_hours = _hours_since(now=datetime.now(timezone.utc), value=last_active_at)
+    if age_hours is not None:
+        if age_hours >= 168:
+            freshness_band = "refresh_needed"
+        elif age_hours >= 72:
+            freshness_band = "stale"
+        elif age_hours >= 24:
+            freshness_band = "aging"
+    superseded = bool(live_thread_summary and recent_thread_summary and live_thread_summary != recent_thread_summary)
+    resumptive_hint = (
+        f"Resume from {summary[:140]}, but verify that it is still the live thread before treating it as settled."
+        if freshness_band in {"stale", "refresh_needed"} or superseded
+        else f"Resume from {summary[:140]} if the room is still on that thread."
+    )
+    return SocialEpisodeSnapshotV1(
+        snapshot_id=f"{platform}:{room_id}:{thread_key or participant_id or 'room'}:episode",
+        platform=platform,
+        room_id=room_id,
+        thread_key=thread_key,
+        participant_id=participant_id,
+        summary=summary[:220],
+        resumptive_hint=resumptive_hint[:220],
+        focus_topics=focus_topics,
+        last_active_at=last_active_at,
+        freshness_band=freshness_band,
+        superseded_by_live_state=superseded,
+        rationale="Compact resumptive snapshot keeps the last coherent local exchange available without letting it outrank fresher live state.",
+        metadata={"source": "social-memory"},
+    )
+
+
+def build_social_reentry_anchor(
+    *,
+    platform: str,
+    room_id: str,
+    participant: SocialParticipantContinuityV1 | None,
+    room: SocialRoomContinuityV1 | None,
+    room_ritual: SocialRoomRitualSummaryV1 | None,
+    episode_snapshot: SocialEpisodeSnapshotV1 | None,
+) -> SocialReentryAnchorV1 | None:
+    if episode_snapshot is None:
+        return None
+    reentry_style = room_ritual.reentry_style if room_ritual is not None else "grounded"
+    active_thread = sanitize_text(room.current_thread_summary if room else "")
+    participant_label = participant.participant_name or participant.participant_id if participant else "the room"
+    anchor_core = active_thread or episode_snapshot.summary
+    if not anchor_core:
+        return None
+    anchor_text = (
+        f"Use a {reentry_style} re-entry with {participant_label}: briefly name {anchor_core[:120]} and check whether that is still where the room is."
+    )
+    return SocialReentryAnchorV1(
+        anchor_id=f"{platform}:{room_id}:{episode_snapshot.thread_key or episode_snapshot.participant_id or 'room'}:reentry",
+        platform=platform,
+        room_id=room_id,
+        thread_key=episode_snapshot.thread_key,
+        participant_id=episode_snapshot.participant_id,
+        source_snapshot_id=episode_snapshot.snapshot_id,
+        anchor_text=anchor_text[:220],
+        freshness_band=episode_snapshot.freshness_band,
+        reentry_style=reentry_style,
+        rationale="Re-entry anchors compress how to resume the last coherent exchange while explicitly yielding to fresher local thread state.",
+        metadata={"source": "social-memory"},
+    )
+
+
 def build_open_thread(
     turn: SocialRoomTurnStoredV1,
     *,
@@ -2009,6 +2894,394 @@ def artifact_dialogue_records(
     return proposal_obj, revision_obj, confirmation_obj
 
 
+def build_social_context_window(
+    *,
+    platform: str,
+    room_id: str,
+    participant: SocialParticipantContinuityV1 | None,
+    room: SocialRoomContinuityV1 | None,
+    peer_style: SocialPeerStyleHintV1 | None,
+    room_ritual: SocialRoomRitualSummaryV1 | None,
+    budget_max: int = 6,
+) -> tuple[SocialContextWindowV1 | None, SocialContextSelectionDecisionV1 | None, list[SocialContextCandidateV1]]:
+    if room is None and participant is None and peer_style is None and room_ritual is None:
+        return None, None, []
+
+    now = datetime.now(timezone.utc)
+    thread_key = (room.current_thread_key if room else None) or (participant.peer_calibration.thread_key if participant and participant.peer_calibration else None)
+    participant_id = participant.participant_id if participant else None
+    freshness_lookup: dict[tuple[str, str | None], str] = {}
+    freshness_scores = {"fresh": 1.0, "aging": 0.7, "refresh_needed": 0.5, "stale": 0.3, "expired": 0.1}
+    priority_scores = {"critical": 5, "high": 4, "medium": 3, "low": 2, "background": 1}
+    decision_scores = {"include": 3, "soften": 2, "exclude": 1}
+
+    for item in list(participant.memory_freshness if participant else []) + list(room.memory_freshness if room else []):
+        key = (item.artifact_kind, item.participant_id or None)
+        existing = freshness_lookup.get(key)
+        if existing is None or freshness_scores.get(item.freshness_state, 0.0) < freshness_scores.get(existing, 1.0):
+            freshness_lookup[key] = item.freshness_state
+
+    def _band_from_timestamp(ts: str | None) -> str:
+        age = _hours_since(now=now, value=ts)
+        if age is None or age < 24:
+            return "fresh"
+        if age < 72:
+            return "aging"
+        if age < 168:
+            return "stale"
+        return "refresh_needed"
+
+    def _freshness_for(kind: str, *, scope_participant_id: str | None = None, timestamp: str | None = None) -> str:
+        return freshness_lookup.get((kind, scope_participant_id)) or freshness_lookup.get((kind, None)) or _band_from_timestamp(timestamp)
+
+    candidates: list[SocialContextCandidateV1] = []
+
+    def _candidate(
+        *,
+        candidate_kind: str,
+        summary: str,
+        relevance_score: float,
+        priority_band: str,
+        freshness_band: str,
+        inclusion_decision: str,
+        rationale: str,
+        reasons: list[str],
+        reference_key: str = "",
+        scope_participant_id: str | None = None,
+        scope_thread_key: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> None:
+        if not summary.strip():
+            return
+        candidates.append(
+            SocialContextCandidateV1(
+                platform=platform,
+                room_id=room_id,
+                thread_key=scope_thread_key,
+                participant_id=scope_participant_id,
+                candidate_kind=candidate_kind,
+                reference_key=reference_key,
+                summary=summary[:220],
+                relevance_score=relevance_score,
+                priority_band=priority_band,
+                freshness_band=freshness_band,
+                inclusion_decision=inclusion_decision,
+                rationale=rationale,
+                reasons=reasons[:6],
+                max_window_budget=budget_max,
+                metadata=metadata or {"source": "social-memory"},
+            )
+        )
+
+    divergence_present = bool(room and room.claim_divergence_signals)
+    fresh_divergence_present = any(_freshness_for("divergence", timestamp=item.updated_at) in {"fresh", "aging"} for item in (room.claim_divergence_signals if room else []))
+    active_commitments = [item for item in (room.active_commitments if room else []) if item.state == "open"] if room else []
+    episode_snapshot = build_social_episode_snapshot(platform=platform, room_id=room_id, participant=participant, room=room)
+    reentry_anchor = build_social_reentry_anchor(
+        platform=platform,
+        room_id=room_id,
+        participant=participant,
+        room=room,
+        room_ritual=room_ritual,
+        episode_snapshot=episode_snapshot,
+    )
+
+    if participant is not None and participant.safe_continuity_summary:
+        _candidate(
+            candidate_kind="peer_continuity",
+            summary=participant.safe_continuity_summary,
+            relevance_score=0.94,
+            priority_band="high",
+            freshness_band=_freshness_for("participant_continuity", scope_participant_id=participant.participant_id, timestamp=participant.last_seen_at),
+            inclusion_decision="include",
+            rationale="Addressed-peer continuity should outrank room-global background when Orion is responding to a specific peer.",
+            reasons=["addressed_peer_context", "local_over_generic_room"],
+            reference_key=participant.peer_key,
+            scope_participant_id=participant.participant_id,
+            scope_thread_key=thread_key,
+        )
+
+    if room is not None and room.current_thread_summary:
+        _candidate(
+            candidate_kind="thread",
+            summary=room.current_thread_summary,
+            relevance_score=0.91,
+            priority_band="critical",
+            freshness_band=_freshness_for("room_continuity", timestamp=room.last_updated_at),
+            inclusion_decision="include",
+            rationale="The active local thread should govern current grounding before room-global summaries do.",
+            reasons=["active_thread_preferred", "local_thread_over_room_global"],
+            reference_key=room.current_thread_key or room.room_key,
+            scope_thread_key=room.current_thread_key,
+        )
+    elif room is not None and room.recent_thread_summary:
+        _candidate(
+            candidate_kind="room_continuity",
+            summary=room.recent_thread_summary,
+            relevance_score=0.46,
+            priority_band="low",
+            freshness_band=_freshness_for("room_continuity", timestamp=room.last_updated_at),
+            inclusion_decision="soften",
+            rationale="Generic room continuity is useful background, but it should not outrank thread-local context.",
+            reasons=["generic_room_background"],
+            reference_key=room.room_key,
+            scope_thread_key=thread_key,
+        )
+
+    live_local_thread = bool(room is not None and (room.current_thread_summary or room.recent_thread_summary))
+    live_room_intervention = bool(
+        room is not None
+        and (
+            room.clarifying_question is not None
+            or (room.deliberation_decision and room.deliberation_decision.decision_kind in {"bridge_summary", "ask_clarifying_question"})
+            or (room.floor_decision and room.floor_decision.decision_kind in {"leave_open", "invite_peer", "yield_to_peer"})
+        )
+    )
+
+    if episode_snapshot is not None:
+        episode_decision = "include"
+        if live_local_thread:
+            episode_decision = "exclude" if active_commitments or fresh_divergence_present or live_room_intervention else "soften"
+        _candidate(
+            candidate_kind="episode_snapshot",
+            summary=episode_snapshot.summary,
+            relevance_score=0.58 if episode_decision == "include" else 0.32 if episode_decision == "soften" else 0.18,
+            priority_band="medium" if episode_decision == "include" else "low",
+            freshness_band=episode_snapshot.freshness_band,
+            inclusion_decision=episode_decision,
+            rationale="Episode snapshots keep resumptive context compact, but they should remain subordinate to fresher live thread state.",
+            reasons=["resumptive_context", "subordinate_to_live_state"],
+            reference_key=episode_snapshot.snapshot_id,
+            scope_participant_id=episode_snapshot.participant_id,
+            scope_thread_key=episode_snapshot.thread_key or thread_key,
+        )
+
+    if reentry_anchor is not None:
+        anchor_decision = "include"
+        if live_local_thread:
+            anchor_decision = "exclude" if active_commitments or divergence_present or live_room_intervention else "soften"
+        _candidate(
+            candidate_kind="reentry_anchor",
+            summary=reentry_anchor.anchor_text,
+            relevance_score=0.5 if anchor_decision == "include" else 0.28 if anchor_decision == "soften" else 0.14,
+            priority_band="low",
+            freshness_band=reentry_anchor.freshness_band,
+            inclusion_decision=anchor_decision,
+            rationale="Re-entry anchors are resumptive guidance only and should yield to live thread, commitment, and freshness signals.",
+            reasons=["resumption_style", f"reentry_style={reentry_anchor.reentry_style}"],
+            reference_key=reentry_anchor.anchor_id,
+            scope_participant_id=reentry_anchor.participant_id,
+            scope_thread_key=reentry_anchor.thread_key or thread_key,
+        )
+
+    for commitment in active_commitments[:2]:
+        _candidate(
+            candidate_kind="commitment",
+            summary=commitment.summary,
+            relevance_score=0.89 if commitment.due_state in {"fresh", "due_soon"} else 0.74,
+            priority_band="critical" if commitment.due_state in {"fresh", "due_soon"} else "high",
+            freshness_band="fresh" if commitment.due_state == "fresh" else "aging" if commitment.due_state == "due_soon" else "stale",
+            inclusion_decision="include",
+            rationale="Unresolved conversational commitments should stay in-window ahead of older ambient style or ritual hints.",
+            reasons=["open_commitment", f"due_state={commitment.due_state}"],
+            reference_key=commitment.commitment_id,
+            scope_thread_key=commitment.thread_key or thread_key,
+            metadata={"source": "social-memory", "commitment_type": commitment.commitment_type},
+        )
+
+    for divergence in (room.claim_divergence_signals if room else [])[:2]:
+        freshness_band = _freshness_for("divergence", timestamp=divergence.updated_at)
+        _candidate(
+            candidate_kind="divergence",
+            summary=divergence.normalized_claim_key,
+            relevance_score=0.87 if freshness_band in {"fresh", "aging"} else 0.7,
+            priority_band="critical",
+            freshness_band=freshness_band,
+            inclusion_decision="include",
+            rationale="Fresh contested claims should outrank older settled-looking summaries so Orion doesn't overstate stale consensus.",
+            reasons=["current_contested_claim", f"consensus_state={divergence.consensus_state}"],
+            reference_key=divergence.claim_id,
+            scope_thread_key=divergence.thread_key or thread_key,
+        )
+
+    for consensus in (room.claim_consensus_states if room else [])[:2]:
+        freshness_band = _freshness_for("claim_consensus", timestamp=consensus.updated_at)
+        decision = "include"
+        rationale = "Fresh consensus can stay in the active window when no fresher contradiction is dominating the thread."
+        reasons = [f"consensus_state={consensus.consensus_state}"]
+        score = 0.72
+        priority = "medium"
+        if freshness_band in {"stale", "refresh_needed", "expired"}:
+            decision = "exclude" if fresh_divergence_present else "soften"
+            rationale = "Older consensus should be softened or excluded when fresher contested state or explicit refresh-needed guidance is present."
+            reasons.append("stale_consensus")
+            score = 0.32 if decision == "exclude" else 0.46
+            priority = "low"
+        _candidate(
+            candidate_kind="consensus",
+            summary=consensus.normalized_claim_key,
+            relevance_score=score,
+            priority_band=priority,
+            freshness_band=freshness_band,
+            inclusion_decision=decision,
+            rationale=rationale,
+            reasons=reasons,
+            reference_key=consensus.claim_id,
+            scope_thread_key=consensus.thread_key or thread_key,
+        )
+
+    if participant is not None and participant.peer_calibration is not None:
+        calibration = participant.peer_calibration
+        freshness_band = _freshness_for("peer_calibration", scope_participant_id=participant.participant_id, timestamp=calibration.updated_at)
+        decision = "include" if freshness_band in {"fresh", "aging"} else "soften" if freshness_band == "stale" else "exclude"
+        _candidate(
+            candidate_kind="calibration",
+            summary=f"{calibration.calibration_kind}: {calibration.rationale}",
+            relevance_score=0.78 if decision == "include" else 0.48 if decision == "soften" else 0.22,
+            priority_band="high" if decision == "include" else "medium" if decision == "soften" else "low",
+            freshness_band=freshness_band,
+            inclusion_decision=decision,
+            rationale="Fresh calibration can help locally, but stale calibration should soften or fall out so it doesn't govern the turn.",
+            reasons=["peer_local_calibration", f"freshness={freshness_band}"],
+            reference_key=calibration.calibration_id,
+            scope_participant_id=participant.participant_id,
+            scope_thread_key=calibration.thread_key or thread_key,
+        )
+
+    for freshness in (list(participant.memory_freshness if participant else []) + list(room.memory_freshness if room else []))[:4]:
+        if freshness.freshness_state not in {"refresh_needed", "stale"}:
+            continue
+        _candidate(
+            candidate_kind="freshness_hint",
+            summary=f"{freshness.artifact_kind}: {freshness.rationale}",
+            relevance_score=0.82 if freshness.freshness_state == "refresh_needed" else 0.64,
+            priority_band="high" if freshness.freshness_state == "refresh_needed" else "medium",
+            freshness_band=freshness.freshness_state,
+            inclusion_decision="include",
+            rationale="Refresh-needed hints belong in-window when they prevent stale assumptions from dominating the reply.",
+            reasons=["refresh_needed_guardrail", freshness.artifact_kind],
+            reference_key=freshness.freshness_id,
+            scope_participant_id=freshness.participant_id,
+            scope_thread_key=freshness.thread_key or thread_key,
+        )
+
+    if peer_style is not None:
+        freshness_band = _freshness_for("peer_style", scope_participant_id=participant_id, timestamp=peer_style.last_updated_at)
+        decision = "include" if freshness_band == "fresh" and not active_commitments and not divergence_present and not (room and room.current_thread_summary) else "soften" if freshness_band in {"aging", "stale"} or active_commitments or divergence_present or (room and room.current_thread_summary) else "exclude"
+        _candidate(
+            candidate_kind="style",
+            summary=peer_style.style_hints_summary,
+            relevance_score=0.58 if decision == "include" else 0.36 if decision == "soften" else 0.18,
+            priority_band="medium" if decision == "include" else "low",
+            freshness_band=freshness_band,
+            inclusion_decision=decision,
+            rationale="Peer style matters, but it should yield to active commitments and fresher thread-critical state.",
+            reasons=["peer_style_hint", f"freshness={freshness_band}"],
+            reference_key=peer_style.peer_style_key,
+            scope_participant_id=peer_style.participant_id,
+            scope_thread_key=thread_key,
+        )
+
+    if room_ritual is not None:
+        freshness_band = _freshness_for("room_ritual", timestamp=room_ritual.last_updated_at)
+        decision = "exclude" if active_commitments or divergence_present or (room and room.current_thread_summary) else "soften" if freshness_band in {"stale", "refresh_needed", "aging"} else "include"
+        if freshness_band == "expired":
+            decision = "exclude"
+        _candidate(
+            candidate_kind="ritual",
+            summary=room_ritual.culture_summary,
+            relevance_score=0.34 if decision == "include" else 0.18 if decision == "soften" else 0.08,
+            priority_band="low",
+            freshness_band=freshness_band,
+            inclusion_decision=decision,
+            rationale="Old ritual hints are background context and should give way to live commitments or fresher local thread state.",
+            reasons=["room_ritual_hint", f"freshness={freshness_band}"],
+            reference_key=room_ritual.ritual_key,
+            scope_thread_key=thread_key,
+        )
+
+    if room is not None and room.bridge_summary is not None:
+        bridge_decision = "include" if room.deliberation_decision and room.deliberation_decision.decision_kind == "bridge_summary" else "soften"
+        _candidate(
+            candidate_kind="deliberation",
+            summary=room.bridge_summary.summary_text or room.bridge_summary.shared_core,
+            relevance_score=0.62 if bridge_decision == "include" else 0.34,
+            priority_band="medium" if bridge_decision == "include" else "low",
+            freshness_band=_band_from_timestamp(room.bridge_summary.created_at),
+            inclusion_decision=bridge_decision if room.bridge_summary.disagreement_edge else "soften",
+            rationale="Deliberation framing is useful when it is still attached to the active thread and genuinely better than a plain local reply.",
+            reasons=["bridge_summary", f"decision={room.deliberation_decision.decision_kind if room.deliberation_decision else 'unknown'}"],
+            reference_key=room.bridge_summary.bridge_summary_id,
+            scope_thread_key=room.bridge_summary.thread_key or thread_key,
+        )
+    if room is not None and room.turn_handoff is not None:
+        handoff_decision = "include" if room.turn_handoff.decision_kind in {"yield_to_peer", "invite_peer"} else "soften"
+        _candidate(
+            candidate_kind="handoff",
+            summary=room.turn_handoff.handoff_text or room.turn_handoff.decision_kind,
+            relevance_score=0.66 if handoff_decision == "include" else 0.3,
+            priority_band="medium" if handoff_decision == "include" else "low",
+            freshness_band=_band_from_timestamp(room.turn_handoff.created_at),
+            inclusion_decision=handoff_decision,
+            rationale="Fresh handoff cues should stay available when they still shape timing, but leave-open or closure cues should not overpower the local reply.",
+            reasons=["turn_handoff", f"decision={room.turn_handoff.decision_kind}"],
+            reference_key=room.turn_handoff.handoff_id,
+            scope_thread_key=room.turn_handoff.thread_key or thread_key,
+        )
+
+    ranked = sorted(
+        candidates,
+        key=lambda item: (decision_scores[item.inclusion_decision], priority_scores[item.priority_band], item.relevance_score),
+        reverse=True,
+    )
+    selected = [item for item in ranked if item.inclusion_decision in {"include", "soften"}][:budget_max]
+    decision_reasons = ["selected_local_current_context", f"budget={budget_max}"]
+    if participant is not None and any(item.candidate_kind == "peer_continuity" for item in selected):
+        decision_reasons.append("addressed_peer_context_preferred")
+    if any(item.candidate_kind == "thread" for item in selected):
+        decision_reasons.append("local_thread_state_preferred")
+    if any(item.candidate_kind == "freshness_hint" for item in selected):
+        decision_reasons.append("refresh_needed_guardrails_kept")
+
+    selection = SocialContextSelectionDecisionV1(
+        platform=platform,
+        room_id=room_id,
+        thread_key=thread_key,
+        selected_candidate_ids=[item.candidate_id for item in selected],
+        total_candidates_considered=len(candidates),
+        included_count=len([item for item in candidates if item.inclusion_decision == "include"]),
+        softened_count=len([item for item in candidates if item.inclusion_decision == "soften"]),
+        excluded_count=len([item for item in candidates if item.inclusion_decision == "exclude"]),
+        budget_max=budget_max,
+        rationale="Compact social context window keeps the most relevant local state in view without letting stale or room-global baggage dominate the prompt.",
+        reasons=decision_reasons,
+        metadata={"source": "social-memory", "window_policy": "local_current_over_stale_global"},
+    )
+    window = SocialContextWindowV1(
+        platform=platform,
+        room_id=room_id,
+        thread_key=thread_key,
+        participant_id=participant_id,
+        selected_candidates=selected,
+        budget_max=budget_max,
+        total_candidates_considered=len(candidates),
+        rationale="Selected context emphasizes addressed-peer, active-thread, unresolved, and refresh-needed state over stale or generic baggage.",
+        reasons=list(selection.reasons),
+        metadata={"source": "social-memory", "budget_mode": "compact"},
+    )
+    return window, selection, candidates
+
+
+def _style_support_present(turn: SocialRoomTurnStoredV1) -> bool:
+    combined = f"{sanitize_text(turn.prompt)} {sanitize_text(turn.response)}".lower()
+    return any(re.search(rf"\b{re.escape(token)}\b", combined) for token in ("direct", "grounded", "gentle", "brief", "summary", "summarize", "recap", "warm", "playful", "formal", "question", "shorter", "deeper"))
+
+
+def _ritual_support_present(turn: SocialRoomTurnStoredV1) -> bool:
+    combined = f"{sanitize_text(turn.prompt)} {sanitize_text(turn.response)}".lower()
+    return any(re.search(rf"\b{re.escape(token)}\b", combined) for token in ("hello", "hi", "hey", "back", "warm", "brief", "pause", "later", "summary", "recap", "thread", "grounded"))
+
+
 def update_peer_style_hint(
     existing: SocialPeerStyleHintV1 | None,
     turn: SocialRoomTurnStoredV1,
@@ -2019,6 +3292,8 @@ def update_peer_style_hint(
     participant_name: str | None,
     confidence_floor: float,
 ) -> SocialPeerStyleHintV1:
+    if existing is not None and not _style_support_present(turn):
+        return existing
     metrics = _style_metrics(turn)
     evidence_count = int((existing.evidence_count if existing else 0) + 1)
     directness = _blend(existing.preferred_directness if existing else 0.5, metrics["directness"])
@@ -2065,6 +3340,8 @@ def update_room_ritual_summary(
     room_summary: SocialRoomContinuityV1,
     confidence_floor: float,
 ) -> SocialRoomRitualSummaryV1:
+    if existing is not None and not _ritual_support_present(turn):
+        return existing
     prompt = sanitize_text(turn.prompt).lower()
     response = sanitize_text(turn.response).lower()
     evidence_count = int((existing.evidence_count if existing else 0) + 1)

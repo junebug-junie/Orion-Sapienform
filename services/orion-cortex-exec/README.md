@@ -31,6 +31,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_PLANNER_INTAKE` | ... | Planner worker channel. |
 | `CHANNEL_AGENT_CHAIN_INTAKE` | ... | Agent Chain worker channel. |
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
+| `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
 
 ## Running & Testing
 
@@ -38,6 +39,10 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 ```bash
 docker-compose up -d orion-cortex-exec
 ```
+
+### Self-study repo root override
+If self-study runs in a flattened container layout, set `ORION_REPO_ROOT` to the mounted repo root to override auto-detection; otherwise the service searches upward for repo markers and falls back to the container app root.
+
 
 ### Smoke Test
 Exec is tested via the Orchestrator flow.

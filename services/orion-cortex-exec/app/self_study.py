@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -40,7 +41,36 @@ from orion.schemas.self_study import (
 
 logger = logging.getLogger("orion.cortex.exec.self_study")
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _resolve_repo_root(module_path: str | Path | None = None) -> Path:
+    env_root = os.getenv("ORION_REPO_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+
+    resolved_path = Path(module_path or __file__).resolve()
+    search_roots = (
+        (resolved_path.parent, *resolved_path.parents)
+        if resolved_path.suffix
+        else (resolved_path, *resolved_path.parents)
+    )
+    for candidate in search_roots:
+        if (candidate / ".git").exists() or (candidate / "pyproject.toml").exists():
+            return candidate
+        if (candidate / "services").is_dir() and (
+            (candidate / "orion").is_dir() or (candidate / "config").is_dir()
+        ):
+            return candidate
+
+    fallback_root = resolved_path.parent.parent if resolved_path.suffix else resolved_path.parent
+    logger.warning(
+        "self_study_repo_root_fallback module_path=%s fallback=%s",
+        resolved_path,
+        fallback_root,
+    )
+    return fallback_root
+
+
+REPO_ROOT = _resolve_repo_root()
 ORION = Namespace("http://conjourney.net/orion#")
 SELF = Namespace("http://conjourney.net/orion/self#")
 RDF_ENQUEUE_CHANNEL = "orion:rdf:enqueue"

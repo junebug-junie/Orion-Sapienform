@@ -39,6 +39,8 @@ const ATTENTION_EVENT_KIND = "orion.chat.attention";
 const CHAT_MESSAGE_EVENT_KIND = "orion.chat.message";
 const RECIPIENT_GROUP = "juniper_primary";
 let topicAutoRefreshTimer = null;
+let latestSocialInspectionState = null;
+const socialInspectionCache = new Map();
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
@@ -114,6 +116,21 @@ loadDismissedIds();
   const agentTraceTimelineBody = document.getElementById('agentTraceTimelineBody');
   const agentTraceRawSummary = document.getElementById('agentTraceRawSummary');
   const agentTraceRawPayloads = document.getElementById('agentTraceRawPayloads');
+  const outboundRoutingDebug = document.getElementById('outboundRoutingDebug');
+  const socialInspectionOpen = document.getElementById('socialInspectionOpen');
+  const socialInspectionPanelStatus = document.getElementById('socialInspectionPanelStatus');
+  const socialInspectionBadgeRow = document.getElementById('socialInspectionBadgeRow');
+  const socialInspectionPanelSummary = document.getElementById('socialInspectionPanelSummary');
+  const socialInspectionModal = document.getElementById('socialInspectionModal');
+  const socialInspectionModalClose = document.getElementById('socialInspectionModalClose');
+  const socialInspectionModalMeta = document.getElementById('socialInspectionModalMeta');
+  const socialInspectionModalBadges = document.getElementById('socialInspectionModalBadges');
+  const socialInspectionModalSummary = document.getElementById('socialInspectionModalSummary');
+  const socialInspectionModalLoading = document.getElementById('socialInspectionModalLoading');
+  const socialInspectionModalError = document.getElementById('socialInspectionModalError');
+  const socialInspectionLiveSurface = document.getElementById('socialInspectionLiveSurface');
+  const socialInspectionMemorySurface = document.getElementById('socialInspectionMemorySurface');
+  const socialInspectionMemoryMeta = document.getElementById('socialInspectionMemoryMeta');
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -1511,6 +1528,12 @@ loadDismissedIds();
     else if (orionState === 'processing') updateStatus('Processing...');
   }
 
+  function updateRoutingDebugPanel(data) {
+    if (!outboundRoutingDebug) return;
+    const routeDebug = data && typeof data.routing_debug === 'object' ? data.routing_debug : null;
+    outboundRoutingDebug.textContent = routeDebug ? JSON.stringify(routeDebug, null, 2) : '--';
+  }
+
   function updateMemoryPanelFromResponse(data) {
     if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
     const recallDebug = data && typeof data.recall_debug === 'object' ? data.recall_debug : null;
@@ -1527,6 +1550,248 @@ loadDismissedIds();
     recallCountValue.textContent = typeof recallCount === 'number' ? recallCount : "--";
     backendCountsValue.textContent = backendCounts ? JSON.stringify(backendCounts, null, 2) : "--";
     memoryDigestPre.textContent = memoryDigest || "--";
+    updateRoutingDebugPanel(data);
+  }
+
+  function renderSocialInspectionBadges(container, badges) {
+    if (!container) return;
+    container.innerHTML = '';
+    const toneMap = {
+      indigo: 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200',
+      sky: 'border-sky-500/40 bg-sky-500/10 text-sky-200',
+      amber: 'border-amber-500/40 bg-amber-500/10 text-amber-200',
+      emerald: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200',
+      violet: 'border-violet-500/40 bg-violet-500/10 text-violet-200',
+      fuchsia: 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-200',
+      orange: 'border-orange-500/40 bg-orange-500/10 text-orange-200',
+      rose: 'border-rose-500/40 bg-rose-500/10 text-rose-200',
+      gray: 'border-gray-600 bg-gray-800/70 text-gray-200',
+    };
+    (Array.isArray(badges) ? badges : []).forEach((badge) => {
+      const pill = document.createElement('div');
+      pill.className = `rounded-full border px-2.5 py-1 text-[11px] ${toneMap[badge.tone] || toneMap.gray}`;
+      pill.textContent = `${badge.label}: ${badge.value}`;
+      container.appendChild(pill);
+    });
+  }
+
+  function renderSocialInspectionSummary(container, rows) {
+    if (!container) return;
+    container.innerHTML = '';
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-2';
+      const label = document.createElement('div');
+      label.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      label.textContent = row.label || '--';
+      const value = document.createElement('div');
+      value.className = 'mt-1 text-sm text-gray-100';
+      value.textContent = row.value || '--';
+      wrap.appendChild(label);
+      wrap.appendChild(value);
+      container.appendChild(wrap);
+    });
+  }
+
+  function appendSocialInspectionStateList(parent, labelText, items, accentClass) {
+    if (!parent || !Array.isArray(items) || !items.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'space-y-1';
+    const label = document.createElement('div');
+    label.className = `text-[10px] uppercase tracking-wide ${accentClass}`;
+    label.textContent = labelText;
+    const list = document.createElement('ul');
+    list.className = 'space-y-1 text-[11px] text-gray-300';
+    items.forEach((item) => {
+      const li = document.createElement('li');
+      li.className = 'rounded-lg border border-gray-800 bg-gray-950/50 px-2 py-1';
+      li.textContent = item;
+      list.appendChild(li);
+    });
+    wrap.appendChild(label);
+    wrap.appendChild(list);
+    parent.appendChild(wrap);
+  }
+
+  function renderSocialInspectionSurface(container, surfaceModel, emptyMessage) {
+    if (!container) return;
+    container.innerHTML = '';
+    const model = surfaceModel && typeof surfaceModel === 'object' ? surfaceModel : null;
+    if (!model || !Array.isArray(model.sections) || !model.sections.length) {
+      const empty = document.createElement('div');
+      empty.className = 'rounded-xl border border-dashed border-gray-700 bg-gray-950/40 p-3 text-sm text-gray-500';
+      empty.textContent = emptyMessage;
+      container.appendChild(empty);
+      return;
+    }
+    const summary = document.createElement('div');
+    summary.className = 'rounded-xl border border-gray-800 bg-gray-950/60 px-3 py-2 text-sm text-gray-200';
+    summary.textContent = model.summary || 'No inspection summary available.';
+    container.appendChild(summary);
+    model.sections.forEach((section) => {
+      const details = document.createElement('details');
+      details.className = 'rounded-xl border border-gray-800 bg-gray-950/40 p-3';
+      if (section.kind === 'context_window' || section.kind === 'routing' || section.kind === 'epistemic') {
+        details.open = true;
+      }
+      const summaryRow = document.createElement('summary');
+      summaryRow.className = 'cursor-pointer list-none';
+      const top = document.createElement('div');
+      top.className = 'flex items-start justify-between gap-3';
+      const titleWrap = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'text-sm font-semibold text-white';
+      title.textContent = section.title;
+      const why = document.createElement('div');
+      why.className = 'mt-1 text-[11px] text-gray-400';
+      why.textContent = section.why || 'No explanation captured.';
+      titleWrap.appendChild(title);
+      titleWrap.appendChild(why);
+      const counts = document.createElement('div');
+      counts.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      counts.textContent = `${(section.selected || []).length} selected · ${(section.softened || []).length} softened · ${(section.excluded || []).length} excluded`;
+      top.appendChild(titleWrap);
+      top.appendChild(counts);
+      summaryRow.appendChild(top);
+      details.appendChild(summaryRow);
+
+      const body = document.createElement('div');
+      body.className = 'mt-3 space-y-3';
+      appendSocialInspectionStateList(body, 'Selected', section.selected && section.selected.length ? section.selected : section.included, 'text-emerald-300');
+      appendSocialInspectionStateList(body, 'Softened', section.softened, 'text-amber-300');
+      appendSocialInspectionStateList(body, 'Excluded / omitted', section.excluded, 'text-rose-300');
+      appendSocialInspectionStateList(body, 'Freshness / confidence', [...(section.freshness || []), ...(section.confidence || [])], 'text-sky-300');
+      if (Array.isArray(section.traces) && section.traces.length) {
+        const traceWrap = document.createElement('div');
+        traceWrap.className = 'space-y-2';
+        const traceLabel = document.createElement('div');
+        traceLabel.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+        traceLabel.textContent = 'Decision traces';
+        traceWrap.appendChild(traceLabel);
+        section.traces.forEach((trace) => {
+          const item = document.createElement('div');
+          item.className = 'rounded-lg border border-gray-800 bg-gray-900/80 px-3 py-2';
+          const traceHead = document.createElement('div');
+          traceHead.className = 'text-[11px] font-semibold text-gray-100';
+          traceHead.textContent = trace.summary || trace.trace_kind || 'Trace';
+          const traceWhy = document.createElement('div');
+          traceWhy.className = 'mt-1 text-[11px] text-gray-400';
+          traceWhy.textContent = trace.why_it_mattered || 'No explanation captured.';
+          item.appendChild(traceHead);
+          item.appendChild(traceWhy);
+          traceWrap.appendChild(item);
+        });
+        body.appendChild(traceWrap);
+      }
+      details.appendChild(body);
+      container.appendChild(details);
+    });
+  }
+
+  function setSocialInspectionModalState({ loading = false, error = '', meta = '', memoryMeta = '' } = {}) {
+    if (socialInspectionModalLoading) socialInspectionModalLoading.classList.toggle('hidden', !loading);
+    if (socialInspectionModalError) {
+      socialInspectionModalError.classList.toggle('hidden', !error);
+      socialInspectionModalError.textContent = error || '';
+    }
+    if (socialInspectionModalMeta && meta) socialInspectionModalMeta.textContent = meta;
+    if (socialInspectionMemoryMeta) socialInspectionMemoryMeta.textContent = memoryMeta || 'Not loaded';
+  }
+
+  function renderSocialInspectionState(state) {
+    latestSocialInspectionState = state;
+    if (!socialInspectionApi.buildOperatorSummary) return;
+    if (!state || !state.routeDebug) {
+      if (socialInspectionPanelStatus) socialInspectionPanelStatus.textContent = 'Waiting for a social-room turn.';
+      if (socialInspectionOpen) socialInspectionOpen.disabled = true;
+      renderSocialInspectionBadges(socialInspectionBadgeRow, []);
+      renderSocialInspectionSummary(socialInspectionPanelSummary, []);
+      renderSocialInspectionBadges(socialInspectionModalBadges, []);
+      renderSocialInspectionSummary(socialInspectionModalSummary, []);
+      renderSocialInspectionSurface(socialInspectionLiveSurface, null, 'No live social inspection has been captured yet.');
+      renderSocialInspectionSurface(socialInspectionMemorySurface, null, 'Open a social-room turn to load the social-memory inspection snapshot.');
+      setSocialInspectionModalState({ loading: false, error: '', meta: 'Live Hub routing debug with social-memory inspection on demand.', memoryMeta: 'Not loaded' });
+      return;
+    }
+    const model = socialInspectionApi.buildOperatorSummary(state.routeDebug, state.liveSnapshot, state.memorySnapshot);
+    if (socialInspectionPanelStatus) {
+      socialInspectionPanelStatus.textContent = `${model.query.platform || '--'} · ${model.query.room_id || '--'} · ${model.liveSnapshot && model.liveSnapshot.sections ? model.liveSnapshot.sections.length : 0} sections`;
+    }
+    if (socialInspectionOpen) socialInspectionOpen.disabled = !model.query.available;
+    renderSocialInspectionBadges(socialInspectionBadgeRow, model.badges);
+    renderSocialInspectionSummary(socialInspectionPanelSummary, model.summaryRows.slice(0, 4));
+    renderSocialInspectionBadges(socialInspectionModalBadges, model.badges);
+    renderSocialInspectionSummary(socialInspectionModalSummary, model.summaryRows);
+    renderSocialInspectionSurface(
+      socialInspectionLiveSurface,
+      socialInspectionApi.buildSurfaceModel(state.liveSnapshot, 'Live turn'),
+      'No live social inspection has been captured yet.'
+    );
+    renderSocialInspectionSurface(
+      socialInspectionMemorySurface,
+      socialInspectionApi.buildSurfaceModel(state.memorySnapshot, 'Memory baseline'),
+      'Open this inspector to fetch the bounded social-memory snapshot.'
+    );
+    setSocialInspectionModalState({
+      loading: Boolean(state.loadingMemory),
+      error: state.error || '',
+      meta: `${model.query.platform || '--'} · room ${model.query.room_id || '--'} · participant ${model.query.participant_id || 'room'}`,
+      memoryMeta: state.memorySnapshot ? 'Loaded from /inspection' : (state.loadingMemory ? 'Loading…' : 'Not loaded'),
+    });
+  }
+
+  async function fetchSocialMemoryInspection(query) {
+    const params = new URLSearchParams();
+    params.set('platform', query.platform);
+    params.set('room_id', query.room_id);
+    if (query.participant_id) params.set('participant_id', query.participant_id);
+    const response = await fetch(`${API_BASE_URL}/api/social-memory/inspection?${params.toString()}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload && payload.detail ? payload.detail : `HTTP ${response.status}`);
+    }
+    return payload;
+  }
+
+  async function openSocialInspectionModal(sourceState = latestSocialInspectionState) {
+    if (!socialInspectionModal || !sourceState || !sourceState.routeDebug || !socialInspectionApi.resolveInspectionQuery) return;
+    const query = socialInspectionApi.resolveInspectionQuery(sourceState.routeDebug);
+    socialInspectionModal.classList.remove('hidden');
+    socialInspectionModal.setAttribute('aria-hidden', 'false');
+    renderSocialInspectionState({ ...sourceState, loadingMemory: Boolean(sourceState.loadingMemory) });
+    if (!query.available || sourceState.memorySnapshot || sourceState.loadingMemory) return;
+    const cached = socialInspectionCache.get(query.cache_key);
+    if (cached) {
+      renderSocialInspectionState({ ...sourceState, memorySnapshot: cached, loadingMemory: false, error: '' });
+      return;
+    }
+    renderSocialInspectionState({ ...sourceState, loadingMemory: true, error: '' });
+    try {
+      const memorySnapshot = await fetchSocialMemoryInspection(query);
+      socialInspectionCache.set(query.cache_key, memorySnapshot);
+      renderSocialInspectionState({ ...sourceState, memorySnapshot, loadingMemory: false, error: '' });
+    } catch (error) {
+      renderSocialInspectionState({ ...sourceState, loadingMemory: false, error: error.message || 'Failed to load social-memory inspection.' });
+    }
+  }
+
+  function closeSocialInspectionModal() {
+    if (!socialInspectionModal) return;
+    socialInspectionModal.classList.add('hidden');
+    socialInspectionModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function syncSocialInspectionFromRouteDebug(routeDebug) {
+    if (!socialInspectionApi.shouldShowSocialInspection || !socialInspectionApi.shouldShowSocialInspection(routeDebug)) return;
+    renderSocialInspectionState({
+      routeDebug,
+      liveSnapshot: routeDebug.social_inspection,
+      memorySnapshot: latestSocialInspectionState && latestSocialInspectionState.routeDebug && socialInspectionApi.resolveInspectionQuery(routeDebug).cache_key === socialInspectionApi.resolveInspectionQuery(latestSocialInspectionState.routeDebug).cache_key
+        ? latestSocialInspectionState.memorySnapshot
+        : null,
+      loadingMemory: false,
+      error: '',
+    });
   }
 
   function toggleMemoryPanel() {
@@ -2209,6 +2474,39 @@ loadDismissedIds();
     body.className = `${colorClass} whitespace-pre-wrap`;
     body.textContent = text || "";
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
+    if (sender === 'Orion') {
+      const actionRow = document.createElement('div');
+      actionRow.className = 'flex items-center gap-2';
+      if (agentTraceApi.shouldShowAgentTrace && agentTraceApi.shouldShowAgentTrace(meta.agentTrace)) {
+        const traceButton = document.createElement('button');
+        const toolCount = Number(meta.agentTrace && meta.agentTrace.tool_call_count || 0);
+        traceButton.className = 'rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] font-semibold text-indigo-200 hover:bg-indigo-500/20';
+        traceButton.type = 'button';
+        traceButton.textContent = toolCount > 0 ? `Agent: ${toolCount} tools` : 'Agent Trace';
+        traceButton.addEventListener('click', () => openAgentTraceModal(meta.agentTrace, meta));
+        actionRow.appendChild(traceButton);
+      }
+      if (socialInspectionApi.shouldShowSocialInspection && socialInspectionApi.shouldShowSocialInspection(meta.routingDebug)) {
+        const inspectionButton = document.createElement('button');
+        inspectionButton.className = 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20';
+        inspectionButton.type = 'button';
+        inspectionButton.textContent = 'Social Inspect';
+        inspectionButton.addEventListener('click', () => {
+          syncSocialInspectionFromRouteDebug(meta.routingDebug);
+          openSocialInspectionModal({
+            routeDebug: meta.routingDebug,
+            liveSnapshot: meta.routingDebug.social_inspection,
+            memorySnapshot: latestSocialInspectionState ? latestSocialInspectionState.memorySnapshot : null,
+            loadingMemory: false,
+            error: '',
+          });
+        });
+        actionRow.appendChild(inspectionButton);
+      }
+      if (actionRow.childNodes.length) {
+        headerRow.appendChild(actionRow);
+      }
+    }
     div.appendChild(headerRow);
     div.appendChild(body);
     if (sender === 'Orion') {
@@ -3212,6 +3510,17 @@ loadDismissedIds();
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }
+  if (socialInspectionOpen) {
+    socialInspectionOpen.addEventListener('click', () => openSocialInspectionModal());
+  }
+  if (socialInspectionModalClose) {
+    socialInspectionModalClose.addEventListener('click', closeSocialInspectionModal);
+  }
+  if (socialInspectionModal) {
+    socialInspectionModal.addEventListener('click', (event) => {
+      if (event.target === socialInspectionModal) closeSocialInspectionModal();
+    });
+  }
   if (agentTraceModalClose) {
     agentTraceModalClose.addEventListener('click', closeAgentTraceModal);
   }
@@ -3221,10 +3530,16 @@ loadDismissedIds();
     });
   }
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && socialInspectionModal && !socialInspectionModal.classList.contains('hidden')) {
+      closeSocialInspectionModal();
+      return;
+    }
     if (event.key === 'Escape' && agentTraceModal && !agentTraceModal.classList.contains('hidden')) {
       closeAgentTraceModal();
     }
   });
+
+  renderSocialInspectionState(null);
 
   // --- WebSocket ---
   function setupWebSocket() {
@@ -3243,11 +3558,15 @@ loadDismissedIds();
       try {
           const d = JSON.parse(e.data);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-          if (d.llm_response) appendMessage('Orion', d.llm_response, 'text-white', {
-            agentTrace: d.agent_trace,
-            correlationId: d.correlation_id,
-            routingDebug: d.routing_debug,
-          });
+          if (d.llm_response) {
+            appendMessage('Orion', d.llm_response, 'text-white', {
+              agentTrace: d.agent_trace,
+              correlationId: d.correlation_id,
+              routingDebug: d.routing_debug,
+            });
+            updateMemoryPanelFromResponse(d);
+            syncSocialInspectionFromRouteDebug(d.routing_debug);
+          }
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
@@ -3318,12 +3637,14 @@ loadDismissedIds();
         })
         .then(r => r.json())
         .then(d => {
-            if(d.text) appendMessage('Orion', d.text, 'text-white', {
-              agentTrace: d.agent_trace,
-              correlationId: d.correlation_id,
-              routingDebug: d.routing_debug,
-            });
-            else if(d.error) appendMessage('System', d.error, 'text-red-400');
+            if(d.text) {
+              appendMessage('Orion', d.text, 'text-white', {
+                agentTrace: d.agent_trace,
+                correlationId: d.correlation_id,
+                routingDebug: d.routing_debug,
+              });
+              syncSocialInspectionFromRouteDebug(d.routing_debug);
+            } else if(d.error) appendMessage('System', d.error, 'text-red-400');
             updateMemoryPanelFromResponse(d);
         })
         .catch(e => appendMessage('System', "HTTP Failed: " + e.message, 'text-red-400'));

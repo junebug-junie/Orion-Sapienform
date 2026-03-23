@@ -124,6 +124,12 @@ from orion.schemas.telemetry.biometrics import (
     BiometricsInductionV1,
     BiometricsClusterV1,
 )
+from orion.schemas.telemetry.dream import (
+    DreamInternalTriggerV1,
+    DreamRequest,
+    DreamResultV1,
+    DreamTriggerPayload,
+)
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
 from orion.schemas.self_study import (
@@ -382,6 +388,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BiometricsSummaryV1": BiometricsSummaryV1,
     "BiometricsInductionV1": BiometricsInductionV1,
     "BiometricsClusterV1": BiometricsClusterV1,
+    "DreamRequest": DreamRequest,
+    "DreamTriggerPayload": DreamTriggerPayload,
+    "DreamInternalTriggerV1": DreamInternalTriggerV1,
+    "DreamResultV1": DreamResultV1,
     "PadEventV1": PadEventV1,
     "StateFrameV1": StateFrameV1,
     "PadRpcRequestV1": PadRpcRequestV1,

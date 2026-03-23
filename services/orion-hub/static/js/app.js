@@ -102,6 +102,7 @@ loadDismissedIds();
   const messageFilter = document.getElementById('messageFilter');
   const toastContainer = document.getElementById('toastContainer');
   const agentTraceApi = window.OrionAgentTrace || {};
+  const socialInspectionApi = window.OrionSocialInspection || {};
   const agentTraceModal = document.getElementById('agentTraceModal');
   const agentTraceModalClose = document.getElementById('agentTraceModalClose');
   const agentTraceModalMeta = document.getElementById('agentTraceModalMeta');
@@ -2175,6 +2176,35 @@ loadDismissedIds();
     header.className = `font-bold ${color}`;
     header.textContent = sender;
     headerRow.appendChild(header);
+    if (sender === 'Orion') {
+      const actionRow = document.createElement('div');
+      actionRow.className = 'flex items-center gap-2';
+      if (
+        socialInspectionApi.shouldShowSocialInspection
+        && socialInspectionApi.shouldShowSocialInspection(meta.routingDebug)
+        && typeof window.syncSocialInspectionFromRouteDebug === 'function'
+        && typeof window.openSocialInspectionModal === 'function'
+      ) {
+        const inspectionButton = document.createElement('button');
+        inspectionButton.className = 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20';
+        inspectionButton.type = 'button';
+        inspectionButton.textContent = 'Social Inspect';
+        inspectionButton.addEventListener('click', () => {
+          window.syncSocialInspectionFromRouteDebug(meta.routingDebug);
+          window.openSocialInspectionModal({
+            routeDebug: meta.routingDebug,
+            liveSnapshot: meta.routingDebug && meta.routingDebug.social_inspection,
+            memorySnapshot: null,
+            loadingMemory: false,
+            error: '',
+          });
+        });
+        actionRow.appendChild(inspectionButton);
+      }
+      if (actionRow.childNodes.length) {
+        headerRow.appendChild(actionRow);
+      }
+    }
     const body = document.createElement('p');
     body.className = `${colorClass} whitespace-pre-wrap`;
     body.textContent = text || "";
@@ -3216,6 +3246,7 @@ loadDismissedIds();
           if (d.llm_response) appendMessage('Orion', d.llm_response, 'text-white', {
             agentTrace: d.agent_trace,
             correlationId: d.correlation_id,
+            routingDebug: d.routing_debug,
           });
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
@@ -3290,6 +3321,7 @@ loadDismissedIds();
             if(d.text) appendMessage('Orion', d.text, 'text-white', {
               agentTrace: d.agent_trace,
               correlationId: d.correlation_id,
+              routingDebug: d.routing_debug,
             });
             else if(d.error) appendMessage('System', d.error, 'text-red-400');
             updateMemoryPanelFromResponse(d);

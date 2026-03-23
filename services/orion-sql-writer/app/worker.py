@@ -728,9 +728,9 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
             if isinstance(data_to_process, dict):
                 data_to_process = data_to_process.copy()
                 if "node" not in data_to_process and env.source and env.source.node:
-                    data_to_process["node"] = env.source.node
+                    extra_sql_fields.setdefault("node", env.source.node)
                 if "source_message_id" not in data_to_process and env.id:
-                    data_to_process["source_message_id"] = str(env.id)
+                    extra_sql_fields.setdefault("source_message_id", str(env.id))
 
             if sql_model is CollapseMirror and isinstance(data_to_process, dict):
                 base_id = (

@@ -51,6 +51,10 @@ class Settings(BaseSettings):
         default="http://orion-topic-foundry:8615",
         alias="TOPIC_FOUNDRY_BASE_URL",
     )
+    SOCIAL_MEMORY_BASE_URL: str = Field(
+        default="http://orion-social-memory:8765",
+        alias="SOCIAL_MEMORY_BASE_URL",
+    )
 
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")

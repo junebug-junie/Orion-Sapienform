@@ -77,6 +77,16 @@ async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any
             return await response.json()
 
 
+async def _fetch_social_memory(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = settings.SOCIAL_MEMORY_BASE_URL.rstrip("/")
+    url = f"{base_url}{path}"
+    timeout = aiohttp.ClientTimeout(total=settings.TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+
+
 def _normalize_bool(value: Any, default: bool = True) -> bool:
     if value is None:
         return default
@@ -236,6 +246,27 @@ async def proxy_topic_foundry(path: str, request: Request) -> Response:
     except aiohttp.ClientError as exc:
         logger.warning("Topic Foundry proxy error: %s", exc)
         raise HTTPException(status_code=502, detail="Topic Foundry proxy request failed") from exc
+
+
+@router.get("/api/social-memory/inspection")
+async def api_social_memory_inspection(
+    platform: str = Query(...),
+    room_id: str = Query(...),
+    participant_id: str | None = Query(None),
+):
+    if not settings.SOCIAL_MEMORY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Social memory base URL not configured")
+    try:
+        return await _fetch_social_memory(
+            "/inspection",
+            {"platform": platform, "room_id": room_id, "participant_id": participant_id},
+        )
+    except aiohttp.ClientResponseError as exc:
+        detail = exc.message or "Social memory inspection request failed"
+        raise HTTPException(status_code=exc.status or 502, detail=detail) from exc
+    except aiohttp.ClientError as exc:
+        logger.warning("Social memory inspection proxy error: %s", exc)
+        raise HTTPException(status_code=502, detail="Social memory inspection request failed") from exc
 
 
 @router.put("/api/notify/recipients/{recipient_group}")

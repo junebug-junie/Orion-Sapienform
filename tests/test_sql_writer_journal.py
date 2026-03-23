@@ -68,6 +68,46 @@ class TestSqlWriterJournal(unittest.TestCase):
         self.assertTrue(settings.sql_writer_emit_social_turn_stored)
         self.assertEqual(settings.sql_writer_social_turn_stored_channel, "orion:chat:social:stored")
 
+    def test_journal_routing_keeps_schema_payload_clean_and_moves_db_metadata_to_extra_fields(self):
+        import app.worker as worker_mod  # noqa: E402
+
+        captured = []
+
+        async def fake_write(sql_model, schema_model, payload, extra_fields):
+            captured.append((sql_model.__tablename__, schema_model.__name__, payload, extra_fields))
+            return True
+
+        original_write = worker_mod._write
+        worker_mod._write = fake_write
+        try:
+            env = BaseEnvelope(
+                kind="journal.entry.write.v1",
+                id="00000000-0000-0000-0000-000000000010",
+                source=ServiceRef(name="orion-actions", node="writer-node"),
+                correlation_id="00000000-0000-0000-0000-000000000011",
+                payload={
+                    "entry_id": "entry-clean",
+                    "created_at": "2026-03-21T12:00:00+00:00",
+                    "author": "orion",
+                    "mode": "daily",
+                    "title": "Morning",
+                    "body": "Keep payload strict.",
+                    "source_kind": "scheduler",
+                    "source_ref": "2026-03-21",
+                    "correlation_id": "00000000-0000-0000-0000-000000000011",
+                },
+            )
+            asyncio.run(handle_envelope(env, bus=_FakeBus()))
+        finally:
+            worker_mod._write = original_write
+
+        self.assertEqual(captured[0][0], "journal_entries")
+        self.assertEqual(captured[0][1], "JournalEntryWriteV1")
+        self.assertNotIn("node", captured[0][2])
+        self.assertNotIn("source_message_id", captured[0][2])
+        self.assertEqual(captured[0][3]["node"], "writer-node")
+        self.assertEqual(captured[0][3]["source_message_id"], "00000000-0000-0000-0000-000000000010")
+
     def test_journal_insert_success_emits_created_event(self):
         import app.worker as worker_mod  # noqa: E402
 

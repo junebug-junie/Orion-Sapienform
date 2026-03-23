@@ -23,8 +23,8 @@ orion-gdb-client
 #orion-power-guard 
 #orion-recall               
 #orion-gpu-cluster-power
-#orion-bus-mirror
-#orion-bus-tap
+orion-bus-mirror
+orion-bus-tap
 #orion-biometrics
 #orion-dream
 #orion-meta-tags

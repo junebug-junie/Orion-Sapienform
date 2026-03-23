@@ -267,6 +267,7 @@ class SelfStudyRetrieveResultV1(BaseModel):
 
     run_id: str
     retrieval_mode: SelfStudyRetrievalMode
+    backend_used: SelfStudyStorageSurface | None = None
     applied_filters: SelfStudyRetrieveFiltersV1
     groups: list[SelfStudyRetrievalGroupV1] = Field(default_factory=list)
     counts: SelfStudyRetrievalCountsV1
@@ -300,3 +301,47 @@ class SelfStudyConsumerContextV1(BaseModel):
     used: bool = False
     result: SelfStudyRetrieveResultV1 | None = None
     notes: list[str] = Field(default_factory=list)
+
+
+class SelfStudyHarnessScenarioResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    success: bool
+    retrieval_mode: SelfStudyRetrievalMode | None = None
+    consumer_name: str | None = None
+    consumer_kind: SelfStudyConsumerKind | None = None
+    summary_counts: dict[str, int] = Field(default_factory=dict)
+    boundary_violations: list[str] = Field(default_factory=list)
+    degradation_notes: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class SelfStudyHarnessSoakResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    iterations: int = 1
+    warnings: list[str] = Field(default_factory=list)
+    duplicate_notes: list[str] = Field(default_factory=list)
+    drift_notes: list[str] = Field(default_factory=list)
+
+
+class SelfStudyHarnessSummaryV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed: int = 0
+    failed: int = 0
+    warnings: int = 0
+    duplicate_notes: list[str] = Field(default_factory=list)
+    drift_notes: list[str] = Field(default_factory=list)
+
+
+class SelfStudyHarnessResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    timestamp: str
+    scenarios_run: list[SelfStudyHarnessScenarioResultV1] = Field(default_factory=list)
+    soak: SelfStudyHarnessSoakResultV1 | None = None
+    summary: SelfStudyHarnessSummaryV1

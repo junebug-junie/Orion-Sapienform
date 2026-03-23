@@ -1,3 +1,5 @@
+"""Legacy row-shape models. The canonical bus payload is DreamResultV1 from
+orion.schemas.telemetry.dream; the worker normalizes via _normalize_dream_envelope_payload."""
 from datetime import datetime, date
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field

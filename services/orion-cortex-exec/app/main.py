@@ -23,6 +23,7 @@ from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from .router import PlanRouter
 from .settings import settings
+from .dream_publish import build_dream_publish_envelope
 from .core_event_cache import get_core_event_cache
 from .trace_cache import get_trace_cache
 from .verb_adapters import LegacyPlanVerb, RespondToJuniperCollapseMirrorVerb  # noqa: F401 - register verb adapter
@@ -202,6 +203,20 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=CortexExecResultPayload(ok=False, error=str(e)),
         )
 
+    try:
+        dream_env = build_dream_publish_envelope(
+            source=_source(),
+            causality_chain=list(env.causality_chain or []),
+            correlation_id=corr_id,
+            res=res,
+            context=ctx,
+            extra=req_env.payload.args.extra if req_env.payload.args else None,
+        )
+        if dream_env is not None:
+            await svc.bus.publish(settings.channel_dream_log, dream_env)
+            logger.info("Published dream.result.v1 to %s", settings.channel_dream_log)
+    except Exception as exc:
+        logger.warning("dream.result.v1 publish skipped/failed corr=%s err=%s", corr_id, exc)
 
     if env.reply_to:
         manual_result = CortexExecResult(

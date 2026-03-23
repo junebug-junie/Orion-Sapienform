@@ -1,3 +1,5 @@
+# LEGACY: Not on canonical path. Canonical flow: cortex-orch dream_cycle verb via Recall + LLM.
+# This module uses direct SQL/RDF/vector fan-out and is donor-only.
 # ==================================================
 # app/dream_cycle.py — Orion Dream
 # ==================================================

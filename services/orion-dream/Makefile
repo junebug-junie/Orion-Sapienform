@@ -24,7 +24,7 @@ wake:
 wake_today:
 	@docker exec -it $$(docker ps -qf name=$${PROJECT:-orion-athena}-dream) python -c 'import datetime as dt; from app.wake_readout import build_readout, write_readout; ro=build_readout(on_date=dt.date.today(), use_latest_if_missing=False); print(ro); write_readout("manual_dream_test", ro)'
 dream:
-	@docker exec -it $$(docker ps -qf name=$${PROJECT:-orion-athena}-dream) python -c 'import asyncio; import logging; logging.basicConfig(level=logging.INFO, format="[DREAM_CMD] %(levelname)s - %(name)s - %(message)s"); from app.context import initialize_bus; from app.dream_cycle import run_dream; print("[DREAM_CMD] Initializing bus..."); initialize_bus(); print("[DREAM_CMD] Running dream cycle..."); asyncio.run(run_dream())'
+	@curl -s -X POST "http://localhost:$${PORT:-8620}/dreams/run" -H "Content-Type: application/json" && echo " Dream trigger published (cortex-orch will run dream_cycle)."
 debug-env:
 	@echo "--- Checking ENV inside container (via docker exec) ---"
 	@docker exec $$(docker ps -qf name=$${PROJECT:-orion-athena}-dream) env | grep ORION_BUS_ENABLED

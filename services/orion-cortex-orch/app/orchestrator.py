@@ -11,7 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.core.verbs import VerbRequestV1, VerbResultV1
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
@@ -24,7 +24,8 @@ from orion.schemas.cortex.schemas import (
 from .clients import CortexExecClient, StateServiceClient
 from .settings import get_settings
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
-from orion.schemas.cortex.contracts import CortexClientRequest, RecallDirective
+from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
+from orion.schemas.telemetry.dream import DreamInternalTriggerV1, DreamTriggerPayload
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 from orion.cognition.output_mode_classifier import classify_output_mode
@@ -633,4 +634,71 @@ async def dispatch_metacog_trigger(
         trace_id,
         parent_event_id,
         rpc_timeout,
+    )
+
+
+async def dispatch_dream_trigger(
+    bus: OrionBusAsync,
+    *,
+    source: ServiceRef,
+    env: BaseEnvelope,
+) -> None:
+    """
+    Normalize `dream.trigger` into the canonical Orch intake (`cortex.orch.request`, verb=dream_cycle).
+    Accepts `DreamInternalTriggerV1` or legacy `DreamTriggerPayload`.
+    """
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    try:
+        internal = DreamInternalTriggerV1.model_validate(payload)
+    except Exception:
+        try:
+            legacy = DreamTriggerPayload.model_validate(payload)
+            internal = DreamInternalTriggerV1(mode=legacy.mode)
+        except Exception as exc:
+            logger.warning("Dream trigger validation failed: %s", exc)
+            return
+
+    correlation_uuid = env.correlation_id if getattr(env, "correlation_id", None) else uuid4()
+    correlation_id_str = str(correlation_uuid)
+    trace_id = (env.trace or {}).get("trace_id") or correlation_id_str
+    parent_event_id = (env.trace or {}).get("event_id") or str(getattr(env, "id", "") or "")
+
+    recall_profile = (internal.profile or "").strip() or "dream.v1"
+    recall = RecallDirective(enabled=True, required=False, profile=recall_profile)
+
+    req = CortexClientRequest(
+        mode="brain",
+        verb="dream_cycle",
+        packs=["emergent_pack"],
+        options={},
+        recall=recall,
+        context=CortexClientContext(
+            messages=[LLMMessage(role="user", content="Dream cycle.")],
+            raw_user_text="Dream cycle.",
+            trace_id=trace_id,
+            metadata={
+                "dream_trigger": internal.model_dump(mode="json"),
+                "dream_mode": internal.mode,
+            },
+        ),
+    )
+
+    orch_env = BaseEnvelope(
+        kind="cortex.orch.request",
+        source=source,
+        correlation_id=correlation_uuid,
+        causality_chain=list(env.causality_chain or []),
+        trace={
+            **(env.trace or {}),
+            "trace_id": trace_id,
+            **({"event_id": parent_event_id} if parent_event_id else {}),
+        },
+        payload=req.model_dump(mode="json"),
+    )
+    settings = get_settings()
+    await bus.publish(settings.channel_cortex_request, orch_env)
+    logger.info(
+        "Dispatched dream.trigger -> cortex.orch.request verb=dream_cycle trace_id=%s profile=%s",
+        trace_id,
+        recall_profile,
     )

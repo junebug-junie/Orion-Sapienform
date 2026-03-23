@@ -60,3 +60,10 @@ def test_self_factual_profile_loads():
     assert prof["filters"]["allowed_sources"] == ["rdf", "sql_timeline"]
     assert prof["filters"]["exclude_tags_prefixes"] == ["trust:induced", "trust:reflective"]
     assert prof["policy"]["trust_tiers"] == ["authoritative"]
+def test_dream_v1_profile_loads():
+    profiles = load_profiles()
+    assert "dream.v1" in profiles
+    prof = get_profile("dream.v1")
+    assert prof["profile"] == "dream.v1"
+    assert prof["max_total_items"] >= 24
+    assert int(prof.get("render_budget_tokens") or 0) >= 256

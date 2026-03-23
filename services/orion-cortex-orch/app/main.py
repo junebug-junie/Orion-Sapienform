@@ -13,7 +13,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 from orion.normalizers.agent_trace import build_agent_trace_summary
 
 # REMOVED: dispatch_metacognition_tick
-from .orchestrator import call_verb_runtime, dispatch_metacog_trigger
+from .orchestrator import call_verb_runtime, dispatch_dream_trigger, dispatch_metacog_trigger
 from .settings import get_settings
 from .decision_router import DecisionRouter
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
@@ -348,6 +348,15 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
 svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
 equilibrium_hunter: Hunter
+dream_hunter: Hunter
+
+
+async def _handle_dream_envelope(env: BaseEnvelope) -> None:
+    if env.kind != "dream.trigger":
+        return
+    trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+    logger.info("Dream trigger intake kind=%s trace_id=%s", env.kind, trace_id)
+    await dispatch_dream_trigger(dream_hunter.bus, source=_source(), env=env)
 
 
 async def _handle_equilibrium_envelope(env: BaseEnvelope) -> None:
@@ -377,6 +386,12 @@ equilibrium_hunter = Hunter(
     ],
 )
 
+dream_hunter = Hunter(
+    _cfg(),
+    handler=_handle_dream_envelope,
+    patterns=[get_settings().channel_dream_trigger],
+)
+
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
@@ -387,7 +402,7 @@ async def main() -> None:
         f"exec_channel={s.channel_exec_request} "
         f"bus={s.orion_bus_url}"
     )
-    await asyncio.gather(svc.start(), equilibrium_hunter.start())
+    await asyncio.gather(svc.start(), equilibrium_hunter.start(), dream_hunter.start())
 
 
 if __name__ == "__main__":

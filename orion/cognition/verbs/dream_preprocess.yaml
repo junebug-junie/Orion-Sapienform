@@ -1,3 +1,4 @@
+# LEGACY: direct Vector/RDF/SQL gather — not used on the canonical dream path. Prefer dream_cycle.
 name: dream_preprocess
 label: Dream Preprocess
 description: >

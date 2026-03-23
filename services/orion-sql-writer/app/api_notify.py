@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 from sqlalchemy import or_
@@ -9,6 +9,7 @@ from app.models.notify_models import (
     NotificationRequestDB,
     NotificationReceiptDB,
 )
+from orion.schemas.cortex.contracts import AgentTraceSummaryV1
 from orion.schemas.notify import (
     ChatAttentionState,
     ChatMessageState,
@@ -45,6 +46,7 @@ def _attention_to_schema(row: NotificationRequestDB) -> ChatAttentionState:
     )
 
 def _chat_message_to_schema(row: NotificationRequestDB, receipts: List[NotificationReceiptDB] = None) -> ChatMessageState:
+    context = row.context or {}
     first_seen_at = row.message_first_seen_at
     opened_at = row.message_opened_at
     dismissed_at = row.message_dismissed_at
@@ -80,6 +82,7 @@ def _chat_message_to_schema(row: NotificationRequestDB, receipts: List[Notificat
         title=row.title,
         preview_text=row.message_preview_text or row.body_text or "",
         full_text=row.message_full_text or row.body_md,
+        agent_trace=_parse_agent_trace(context),
         tags=row.tags or [],
         severity=row.severity,
         require_read_receipt=row.message_require_read_receipt,
@@ -90,6 +93,18 @@ def _chat_message_to_schema(row: NotificationRequestDB, receipts: List[Notificat
         escalated_at=row.message_escalated_at,
         status=status,
     )
+
+
+def _parse_agent_trace(context: Dict[str, Any] | None) -> Optional[AgentTraceSummaryV1]:
+    raw = context.get("agent_trace") if isinstance(context, dict) else None
+    if not raw:
+        return None
+    if isinstance(raw, AgentTraceSummaryV1):
+        return raw
+    try:
+        return AgentTraceSummaryV1.model_validate(raw)
+    except Exception:
+        return None
 
 @router.get("/attention")
 async def list_attention(limit: int = 50, status: Optional[str] = None):

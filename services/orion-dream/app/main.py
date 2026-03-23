@@ -10,7 +10,7 @@ from orion.core.bus.bus_service_chassis import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.dream import DreamTriggerPayload
 from app.settings import settings
-from app.dream_api import app as dream_api
+from app.dream_api import router as dream_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,8 +37,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount dream_api routes
-app.mount("/dreams", dream_api)
+# Dream readout routes
+app.include_router(dream_router, prefix="/dreams")
 
 @app.post("/dreams/run", summary="Manually run the dream cycle")
 async def run_dream_endpoint(mode: str = "standard"):

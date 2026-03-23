@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+import requests
 import yaml
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
@@ -78,6 +79,11 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 SELF_GRAPH = "orion:self"
 SELF_INDUCED_GRAPH = "orion:self:induced"
 SELF_REFLECTIVE_GRAPH = "orion:self:reflective"
+GRAPHDB_DEFAULT_URL = "http://orion-athena-graphdb:7200"
+GRAPHDB_DEFAULT_REPO = "collapse"
+GRAPHDB_DEFAULT_USER = "admin"
+GRAPHDB_DEFAULT_PASS = "admin"
+GRAPHDB_TIMEOUT_SEC = 5.0
 TRUST_TIER = "authoritative"
 INDUCED_TRUST_TIER = "induced"
 REFLECTIVE_TRUST_TIER = "reflective"
@@ -868,6 +874,576 @@ def _build_self_study_retrieval_records(
     return fact_records + concept_records + reflection_records
 
 
+def _filter_allows_trust_tier(filters: SelfStudyRetrieveFiltersV1, trust_tier: str) -> bool:
+    return not filters.trust_tiers or trust_tier in filters.trust_tiers
+
+
+def _filter_allows_record_type(filters: SelfStudyRetrieveFiltersV1, record_type: str) -> bool:
+    return not filters.record_types or record_type in filters.record_types
+
+
+def _filter_allows_source_kind(filters: SelfStudyRetrieveFiltersV1, source_kind: str) -> bool:
+    return not filters.source_kinds or source_kind in filters.source_kinds
+
+
+def _graphdb_endpoint() -> str | None:
+    explicit = (os.getenv("RECALL_RDF_ENDPOINT_URL") or "").strip()
+    if explicit:
+        return explicit
+    base = (os.getenv("GRAPHDB_URL") or "").strip()
+    repo = (os.getenv("GRAPHDB_REPO") or "").strip()
+    if not base and not repo:
+        return None
+    if not base:
+        base = GRAPHDB_DEFAULT_URL
+    if not repo:
+        repo = GRAPHDB_DEFAULT_REPO
+    return f"{base.rstrip('/')}/repositories/{repo}"
+
+
+def _graphdb_auth() -> tuple[str, str]:
+    return (
+        (os.getenv("RECALL_RDF_USER") or os.getenv("GRAPHDB_USER") or GRAPHDB_DEFAULT_USER).strip(),
+        (os.getenv("RECALL_RDF_PASS") or os.getenv("GRAPHDB_PASS") or GRAPHDB_DEFAULT_PASS).strip(),
+    )
+
+
+def _escape_sparql(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _sparql_values(var_name: str, values: Sequence[str], *, uris: bool = False) -> str:
+    if not values:
+        return ""
+    if uris:
+        rendered = " ".join(f"<{value}>" for value in values)
+    else:
+        rendered = " ".join(f'"{_escape_sparql(value)}"' for value in values)
+    return f"VALUES ?{var_name} {{ {rendered} }}"
+
+
+def _graphdb_query_limit(request: SelfStudyRetrieveRequestV1) -> int:
+    requested = max(1, int(request.filters.limit or 12))
+    return max(requested * 4, requested + 8)
+
+
+def _execute_graphdb_select(
+    endpoint: str,
+    sparql: str,
+) -> list[dict[str, dict[str, str]]]:
+    response = requests.post(
+        endpoint,
+        data=sparql,
+        headers={
+            "Content-Type": "application/sparql-query",
+            "Accept": "application/sparql-results+json",
+        },
+        auth=_graphdb_auth(),
+        timeout=GRAPHDB_TIMEOUT_SEC,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return list(payload.get("results", {}).get("bindings", []))
+
+
+def _binding_value(binding: dict[str, dict[str, str]], key: str) -> str | None:
+    raw = binding.get(key)
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("value")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _graphdb_fact_records(request: SelfStudyRetrieveRequestV1, *, endpoint: str) -> list[SelfStudyRetrievedRecordV1]:
+    if not _filter_allows_trust_tier(request.filters, TRUST_TIER):
+        return []
+    if not _filter_allows_record_type(request.filters, "fact"):
+        return []
+    if not _filter_allows_source_kind(request.filters, "self_repo_inspect"):
+        return []
+
+    clauses = []
+    if request.filters.stable_ids:
+        clauses.append(_sparql_values("stable_id", request.filters.stable_ids))
+    query_text = (request.filters.text_query or "").strip().lower()
+    text_filter = ""
+    if query_text:
+        escaped = _escape_sparql(query_text)
+        text_filter = (
+            "FILTER("
+            f'CONTAINS(LCASE(STR(?title)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?source_path)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?category)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?origin_name)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?origin_kind)), "{escaped}")'
+            ")"
+        )
+    sparql = f"""
+    PREFIX orion: <http://conjourney.net/orion#>
+    SELECT ?stable_id ?title ?category ?source_path ?origin_kind ?origin_name ?symbol_name ?snapshot_id
+    WHERE {{
+      GRAPH <{SELF_GRAPH}> {{
+        ?snapshot a orion:AuthoritativeSelfSnapshot ;
+                  orion:snapshotId ?snapshot_id ;
+                  orion:hasAuthoritativeFact ?fact .
+        ?fact a orion:AuthoritativeSelfFact ;
+              orion:factId ?stable_id ;
+              orion:factName ?title ;
+              orion:factCategory ?category ;
+              orion:sourcePath ?source_path ;
+              orion:trustTier "authoritative" .
+        OPTIONAL {{ ?fact orion:originKind ?origin_kind }}
+        OPTIONAL {{ ?fact orion:originName ?origin_name }}
+        OPTIONAL {{ ?fact orion:symbolName ?symbol_name }}
+        {clauses[0] if clauses else ""}
+        {text_filter}
+      }}
+    }}
+    ORDER BY ?stable_id
+    LIMIT {_graphdb_query_limit(request)}
+    """
+    bindings = _execute_graphdb_select(endpoint, sparql)
+    records: list[SelfStudyRetrievedRecordV1] = []
+    for binding in bindings:
+        stable_id = _binding_value(binding, "stable_id")
+        title = _binding_value(binding, "title")
+        category = _binding_value(binding, "category")
+        source_path = _binding_value(binding, "source_path")
+        snapshot_id = _binding_value(binding, "snapshot_id")
+        if not stable_id or not title or not category or not source_path or not snapshot_id:
+            continue
+        records.append(
+            SelfStudyRetrievedRecordV1(
+                stable_id=stable_id,
+                trust_tier=TRUST_TIER,
+                record_type="fact",
+                title=title,
+                content_preview=f"{category} | {source_path}",
+                source_kind="self_repo_inspect",
+                storage_surface="rdf_graph",
+                source_snapshot_id=snapshot_id,
+                source_path=source_path,
+                origin_kind=_binding_value(binding, "origin_kind"),
+                origin_name=_binding_value(binding, "origin_name"),
+                symbol_name=_binding_value(binding, "symbol_name"),
+                metadata={"provenance": ["graphdb", SELF_GRAPH]},
+            )
+        )
+    return records
+
+
+def _graphdb_concept_evidence(
+    endpoint: str,
+    *,
+    concept_uris: Sequence[str],
+) -> dict[str, list[SelfConceptEvidenceRefV1]]:
+    if not concept_uris:
+        return {}
+    sparql = f"""
+    PREFIX orion: <http://conjourney.net/orion#>
+    SELECT ?concept_uri ?snapshot_id ?item_id ?source_path ?origin_kind ?origin_name ?symbol_name
+    WHERE {{
+      GRAPH <{SELF_INDUCED_GRAPH}> {{
+        {_sparql_values("concept_uri", concept_uris, uris=True)}
+        ?concept_uri orion:supportedBy ?fact .
+      }}
+      GRAPH <{SELF_GRAPH}> {{
+        ?snapshot orion:snapshotId ?snapshot_id ;
+                  orion:hasAuthoritativeFact ?fact .
+        ?fact orion:factId ?item_id ;
+              orion:sourcePath ?source_path ;
+              orion:trustTier "authoritative" .
+        OPTIONAL {{ ?fact orion:originKind ?origin_kind }}
+        OPTIONAL {{ ?fact orion:originName ?origin_name }}
+        OPTIONAL {{ ?fact orion:symbolName ?symbol_name }}
+      }}
+    }}
+    ORDER BY ?concept_uri ?item_id
+    """
+    bindings = _execute_graphdb_select(endpoint, sparql)
+    evidence: dict[str, list[SelfConceptEvidenceRefV1]] = {}
+    for binding in bindings:
+        concept_uri = _binding_value(binding, "concept_uri")
+        snapshot_id = _binding_value(binding, "snapshot_id")
+        item_id = _binding_value(binding, "item_id")
+        source_path = _binding_value(binding, "source_path")
+        if not concept_uri or not snapshot_id or not item_id or not source_path:
+            continue
+        evidence.setdefault(concept_uri, []).append(
+            SelfConceptEvidenceRefV1(
+                snapshot_id=snapshot_id,
+                item_id=item_id,
+                source_path=source_path,
+                origin_kind=_binding_value(binding, "origin_kind"),
+                origin_name=_binding_value(binding, "origin_name"),
+                symbol_name=_binding_value(binding, "symbol_name"),
+            )
+        )
+    return evidence
+
+
+def _graphdb_concept_records(request: SelfStudyRetrieveRequestV1, *, endpoint: str) -> list[SelfStudyRetrievedRecordV1]:
+    if not _filter_allows_trust_tier(request.filters, INDUCED_TRUST_TIER):
+        return []
+    if not _filter_allows_record_type(request.filters, "concept"):
+        return []
+    if not _filter_allows_source_kind(request.filters, "self_concept_induce"):
+        return []
+
+    clauses = []
+    if request.filters.stable_ids:
+        clauses.append(_sparql_values("stable_id", request.filters.stable_ids))
+    if request.filters.concept_kinds:
+        clauses.append(_sparql_values("concept_kind", request.filters.concept_kinds))
+    query_text = (request.filters.text_query or "").strip().lower()
+    text_filter = ""
+    if query_text:
+        escaped = _escape_sparql(query_text)
+        text_filter = (
+            "FILTER("
+            f'CONTAINS(LCASE(STR(?title)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?description)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?concept_kind)), "{escaped}")'
+            ")"
+        )
+    sparql = f"""
+    PREFIX orion: <http://conjourney.net/orion#>
+    SELECT ?concept_uri ?stable_id ?concept_kind ?title ?description ?snapshot_id ?confidence
+    WHERE {{
+      GRAPH <{SELF_INDUCED_GRAPH}> {{
+        ?concept_uri a orion:InducedSelfConcept ;
+                     orion:conceptId ?stable_id ;
+                     orion:conceptKind ?concept_kind ;
+                     orion:label ?title ;
+                     orion:description ?description ;
+                     orion:sourceSnapshotId ?snapshot_id ;
+                     orion:trustTier "induced" .
+        OPTIONAL {{ ?concept_uri orion:confidence ?confidence }}
+        {" ".join(clauses)}
+        {text_filter}
+      }}
+    }}
+    ORDER BY ?stable_id
+    LIMIT {_graphdb_query_limit(request)}
+    """
+    bindings = _execute_graphdb_select(endpoint, sparql)
+    concept_uris = [uri for uri in (_binding_value(binding, "concept_uri") for binding in bindings) if uri]
+    evidence_map = _graphdb_concept_evidence(endpoint, concept_uris=concept_uris)
+    records: list[SelfStudyRetrievedRecordV1] = []
+    for binding in bindings:
+        concept_uri = _binding_value(binding, "concept_uri")
+        stable_id = _binding_value(binding, "stable_id")
+        title = _binding_value(binding, "title")
+        description = _binding_value(binding, "description")
+        snapshot_id = _binding_value(binding, "snapshot_id")
+        concept_kind = _binding_value(binding, "concept_kind")
+        if not concept_uri or not stable_id or not title or not description or not snapshot_id or not concept_kind:
+            continue
+        records.append(
+            SelfStudyRetrievedRecordV1(
+                stable_id=stable_id,
+                trust_tier=INDUCED_TRUST_TIER,
+                record_type="concept",
+                title=title,
+                content_preview=description,
+                source_kind="self_concept_induce",
+                storage_surface="rdf_graph",
+                source_snapshot_id=snapshot_id,
+                concept_kind=concept_kind,  # type: ignore[arg-type]
+                evidence=evidence_map.get(concept_uri, []),
+                metadata={
+                    "confidence": float(_binding_value(binding, "confidence") or 0.0),
+                    "provenance": ["graphdb", SELF_INDUCED_GRAPH],
+                },
+            )
+        )
+    return records
+
+
+def _graphdb_reflection_evidence(
+    endpoint: str,
+    *,
+    reflection_uris: Sequence[str],
+) -> dict[str, list[SelfConceptEvidenceRefV1]]:
+    if not reflection_uris:
+        return {}
+    sparql = f"""
+    PREFIX orion: <http://conjourney.net/orion#>
+    SELECT ?reflection_uri ?snapshot_id ?item_id ?source_path ?origin_kind ?origin_name ?symbol_name
+    WHERE {{
+      GRAPH <{SELF_REFLECTIVE_GRAPH}> {{
+        {_sparql_values("reflection_uri", reflection_uris, uris=True)}
+        ?reflection_uri orion:supportedBy ?fact .
+      }}
+      GRAPH <{SELF_GRAPH}> {{
+        ?snapshot orion:snapshotId ?snapshot_id ;
+                  orion:hasAuthoritativeFact ?fact .
+        ?fact orion:factId ?item_id ;
+              orion:sourcePath ?source_path ;
+              orion:trustTier "authoritative" .
+        OPTIONAL {{ ?fact orion:originKind ?origin_kind }}
+        OPTIONAL {{ ?fact orion:originName ?origin_name }}
+        OPTIONAL {{ ?fact orion:symbolName ?symbol_name }}
+      }}
+    }}
+    ORDER BY ?reflection_uri ?item_id
+    """
+    bindings = _execute_graphdb_select(endpoint, sparql)
+    evidence: dict[str, list[SelfConceptEvidenceRefV1]] = {}
+    for binding in bindings:
+        reflection_uri = _binding_value(binding, "reflection_uri")
+        snapshot_id = _binding_value(binding, "snapshot_id")
+        item_id = _binding_value(binding, "item_id")
+        source_path = _binding_value(binding, "source_path")
+        if not reflection_uri or not snapshot_id or not item_id or not source_path:
+            continue
+        evidence.setdefault(reflection_uri, []).append(
+            SelfConceptEvidenceRefV1(
+                snapshot_id=snapshot_id,
+                item_id=item_id,
+                source_path=source_path,
+                origin_kind=_binding_value(binding, "origin_kind"),
+                origin_name=_binding_value(binding, "origin_name"),
+                symbol_name=_binding_value(binding, "symbol_name"),
+            )
+        )
+    return evidence
+
+
+def _graphdb_reflection_concept_refs(
+    endpoint: str,
+    *,
+    reflection_uris: Sequence[str],
+) -> dict[str, list[SelfConceptRefV1]]:
+    if not reflection_uris:
+        return {}
+    sparql = f"""
+    PREFIX orion: <http://conjourney.net/orion#>
+    SELECT ?reflection_uri ?concept_id ?concept_kind ?label ?snapshot_id
+    WHERE {{
+      GRAPH <{SELF_REFLECTIVE_GRAPH}> {{
+        {_sparql_values("reflection_uri", reflection_uris, uris=True)}
+        ?reflection_uri orion:derivedFromConcept ?concept_uri .
+      }}
+      GRAPH <{SELF_INDUCED_GRAPH}> {{
+        ?concept_uri orion:conceptId ?concept_id ;
+                     orion:conceptKind ?concept_kind ;
+                     orion:label ?label ;
+                     orion:sourceSnapshotId ?snapshot_id ;
+                     orion:trustTier "induced" .
+      }}
+    }}
+    ORDER BY ?reflection_uri ?concept_id
+    """
+    bindings = _execute_graphdb_select(endpoint, sparql)
+    concept_refs: dict[str, list[SelfConceptRefV1]] = {}
+    for binding in bindings:
+        reflection_uri = _binding_value(binding, "reflection_uri")
+        concept_id = _binding_value(binding, "concept_id")
+        concept_kind = _binding_value(binding, "concept_kind")
+        label = _binding_value(binding, "label")
+        snapshot_id = _binding_value(binding, "snapshot_id")
+        if not reflection_uri or not concept_id or not concept_kind or not label or not snapshot_id:
+            continue
+        concept_refs.setdefault(reflection_uri, []).append(
+            SelfConceptRefV1(
+                concept_id=concept_id,
+                concept_kind=concept_kind,  # type: ignore[arg-type]
+                label=label,
+                source_snapshot_id=snapshot_id,
+            )
+        )
+    return concept_refs
+
+
+def _graphdb_reflection_records(request: SelfStudyRetrieveRequestV1, *, endpoint: str) -> list[SelfStudyRetrievedRecordV1]:
+    if not _filter_allows_trust_tier(request.filters, REFLECTIVE_TRUST_TIER):
+        return []
+    if not _filter_allows_record_type(request.filters, "reflection"):
+        return []
+    if not _filter_allows_source_kind(request.filters, "self_concept_reflect"):
+        return []
+
+    clauses = []
+    if request.filters.stable_ids:
+        clauses.append(_sparql_values("stable_id", request.filters.stable_ids))
+    if request.filters.reflection_kinds:
+        clauses.append(_sparql_values("reflection_kind", request.filters.reflection_kinds))
+    query_text = (request.filters.text_query or "").strip().lower()
+    text_filter = ""
+    if query_text:
+        escaped = _escape_sparql(query_text)
+        text_filter = (
+            "FILTER("
+            f'CONTAINS(LCASE(STR(?title)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?description)), "{escaped}") || '
+            f'CONTAINS(LCASE(STR(?reflection_kind)), "{escaped}")'
+            ")"
+        )
+    sparql = f"""
+    PREFIX orion: <http://conjourney.net/orion#>
+    SELECT ?reflection_uri ?stable_id ?reflection_kind ?title ?description ?snapshot_id ?confidence ?salience
+    WHERE {{
+      GRAPH <{SELF_REFLECTIVE_GRAPH}> {{
+        ?reflection_uri a orion:ReflectiveSelfFinding ;
+                        orion:reflectionId ?stable_id ;
+                        orion:reflectionKind ?reflection_kind ;
+                        orion:label ?title ;
+                        orion:description ?description ;
+                        orion:sourceSnapshotId ?snapshot_id ;
+                        orion:trustTier "reflective" .
+        OPTIONAL {{ ?reflection_uri orion:confidence ?confidence }}
+        OPTIONAL {{ ?reflection_uri orion:salience ?salience }}
+        {" ".join(clauses)}
+        {text_filter}
+      }}
+    }}
+    ORDER BY ?stable_id
+    LIMIT {_graphdb_query_limit(request)}
+    """
+    bindings = _execute_graphdb_select(endpoint, sparql)
+    reflection_uris = [uri for uri in (_binding_value(binding, "reflection_uri") for binding in bindings) if uri]
+    evidence_map = _graphdb_reflection_evidence(endpoint, reflection_uris=reflection_uris)
+    concept_ref_map = _graphdb_reflection_concept_refs(endpoint, reflection_uris=reflection_uris)
+    records: list[SelfStudyRetrievedRecordV1] = []
+    for binding in bindings:
+        reflection_uri = _binding_value(binding, "reflection_uri")
+        stable_id = _binding_value(binding, "stable_id")
+        reflection_kind = _binding_value(binding, "reflection_kind")
+        title = _binding_value(binding, "title")
+        description = _binding_value(binding, "description")
+        snapshot_id = _binding_value(binding, "snapshot_id")
+        if not reflection_uri or not stable_id or not reflection_kind or not title or not description or not snapshot_id:
+            continue
+        records.append(
+            SelfStudyRetrievedRecordV1(
+                stable_id=stable_id,
+                trust_tier=REFLECTIVE_TRUST_TIER,
+                record_type="reflection",
+                title=title,
+                content_preview=description,
+                source_kind="self_concept_reflect",
+                storage_surface="rdf_graph",
+                source_snapshot_id=snapshot_id,
+                reflection_kind=reflection_kind,  # type: ignore[arg-type]
+                evidence=evidence_map.get(reflection_uri, []),
+                concept_refs=concept_ref_map.get(reflection_uri, []),
+                metadata={
+                    "confidence": float(_binding_value(binding, "confidence") or 0.0),
+                    "salience": float(_binding_value(binding, "salience") or 0.0),
+                    "provenance": ["graphdb", SELF_REFLECTIVE_GRAPH],
+                },
+            )
+        )
+    return records
+
+
+def _build_retrieval_result(
+    *,
+    request: SelfStudyRetrieveRequestV1,
+    records: Sequence[SelfStudyRetrievedRecordV1],
+    backend_used: str | None,
+    backend_status: Sequence[SelfStudyRetrievalBackendStatusV1],
+    notes: Sequence[str],
+) -> SelfStudyRetrieveResultV1:
+    filtered = [record for record in records if _record_matches_filters(record, request.filters)]
+    filtered.sort(key=lambda item: (item.trust_tier, item.record_type, item.title, item.stable_id))
+    limited = _limit_records_for_mode(filtered, retrieval_mode=request.retrieval_mode, limit=request.filters.limit)
+    counts = SelfStudyRetrievalCountsV1(
+        total=len(limited),
+        authoritative=sum(1 for item in limited if item.trust_tier == TRUST_TIER),
+        induced=sum(1 for item in limited if item.trust_tier == INDUCED_TRUST_TIER),
+        reflective=sum(1 for item in limited if item.trust_tier == REFLECTIVE_TRUST_TIER),
+        facts=sum(1 for item in limited if item.record_type == "fact"),
+        concepts=sum(1 for item in limited if item.record_type == "concept"),
+        reflections=sum(1 for item in limited if item.record_type == "reflection"),
+    )
+    groups = [
+        SelfStudyRetrievalGroupV1(
+            trust_tier=trust_tier,
+            items=[item for item in limited if item.trust_tier == trust_tier],
+        )
+        for trust_tier in (TRUST_TIER, INDUCED_TRUST_TIER, REFLECTIVE_TRUST_TIER)
+        if any(item.trust_tier == trust_tier for item in limited)
+    ]
+    return SelfStudyRetrieveResultV1(
+        run_id=f"self-retrieve-{uuid4()}",
+        retrieval_mode=request.retrieval_mode,
+        backend_used=backend_used,  # type: ignore[arg-type]
+        applied_filters=request.filters,
+        groups=groups,
+        counts=counts,
+        backend_status=list(backend_status),
+        notes=list(notes),
+    )
+
+
+def _retrieve_self_study_in_process(request: SelfStudyRetrieveRequestV1) -> SelfStudyRetrieveResultV1:
+    snapshot = build_self_snapshot()
+    concepts = induce_self_concepts(snapshot)
+    findings = reflect_self_concepts(snapshot, concepts)
+
+    allowed_trust_tiers = set(_mode_allowed_trust_tiers(request.retrieval_mode))
+    allowed_record_types = set(_mode_allowed_record_types(request.retrieval_mode))
+    records = [
+        record
+        for record in _build_self_study_retrieval_records(snapshot, concepts, findings)
+        if record.trust_tier in allowed_trust_tiers and record.record_type in allowed_record_types
+    ]
+    backend_status = [
+        SelfStudyRetrievalBackendStatusV1(storage_surface="in_process", status="used", detail="Repo-derived self-study snapshot, concepts, and reflections."),
+        SelfStudyRetrievalBackendStatusV1(storage_surface="rdf_graph", status="not_queried", detail="GraphDB self-study retrieval was not attempted."),
+        SelfStudyRetrievalBackendStatusV1(storage_surface="journal", status="not_queried", detail="Phase 4B retrieval does not consume journal prose as primary self-study truth."),
+    ]
+    notes = [
+        "Self-study retrieval is explicit and mode-scoped; it does not widen self.factual.v1.",
+        "Fallback retrieval uses in-process self-study records and preserves trust tiers rather than flattening them.",
+    ]
+    return _build_retrieval_result(
+        request=request,
+        records=records,
+        backend_used="in_process",
+        backend_status=backend_status,
+        notes=notes,
+    )
+
+
+def _retrieve_self_study_from_graphdb(request: SelfStudyRetrieveRequestV1) -> SelfStudyRetrieveResultV1:
+    endpoint = _graphdb_endpoint()
+    if not endpoint:
+        raise RuntimeError("graphdb_not_configured")
+
+    allowed_trust_tiers = set(_mode_allowed_trust_tiers(request.retrieval_mode))
+    allowed_record_types = set(_mode_allowed_record_types(request.retrieval_mode))
+    records: list[SelfStudyRetrievedRecordV1] = []
+    if TRUST_TIER in allowed_trust_tiers and "fact" in allowed_record_types:
+        records.extend(_graphdb_fact_records(request, endpoint=endpoint))
+    if INDUCED_TRUST_TIER in allowed_trust_tiers and "concept" in allowed_record_types:
+        records.extend(_graphdb_concept_records(request, endpoint=endpoint))
+    if REFLECTIVE_TRUST_TIER in allowed_trust_tiers and "reflection" in allowed_record_types:
+        records.extend(_graphdb_reflection_records(request, endpoint=endpoint))
+
+    backend_status = [
+        SelfStudyRetrievalBackendStatusV1(storage_surface="rdf_graph", status="used", detail=f"Persisted self-study records queried from {endpoint}."),
+        SelfStudyRetrievalBackendStatusV1(storage_surface="in_process", status="not_queried", detail="GraphDB persisted self-study retrieval succeeded without fallback."),
+        SelfStudyRetrievalBackendStatusV1(storage_surface="journal", status="not_queried", detail="Phase 4B retrieval does not consume journal prose as primary self-study truth."),
+    ]
+    notes = [
+        "Self-study retrieval is explicit and mode-scoped; it does not widen self.factual.v1.",
+        "Phase 4B retrieval uses persisted GraphDB self-study records when available and preserves trust tiers end to end.",
+    ]
+    return _build_retrieval_result(
+        request=request,
+        records=records,
+        backend_used="rdf_graph",
+        backend_status=backend_status,
+        notes=notes,
+    )
+
+
 def _mode_allowed_trust_tiers(retrieval_mode: str) -> tuple[str, ...]:
     if retrieval_mode == "factual":
         return (TRUST_TIER,)
@@ -941,58 +1517,97 @@ def _limit_records_for_mode(records: Sequence[SelfStudyRetrievedRecordV1], *, re
 
 
 def retrieve_self_study(request: SelfStudyRetrieveRequestV1) -> SelfStudyRetrieveResultV1:
-    snapshot = build_self_snapshot()
-    concepts = induce_self_concepts(snapshot)
-    findings = reflect_self_concepts(snapshot, concepts)
+    requested_surfaces = set(request.filters.storage_surfaces)
+    wants_rdf_graph = not requested_surfaces or "rdf_graph" in requested_surfaces
+    wants_in_process = not requested_surfaces or "in_process" in requested_surfaces
 
-    allowed_trust_tiers = set(_mode_allowed_trust_tiers(request.retrieval_mode))
-    allowed_record_types = set(_mode_allowed_record_types(request.retrieval_mode))
-    records = [
-        record
-        for record in _build_self_study_retrieval_records(snapshot, concepts, findings)
-        if record.trust_tier in allowed_trust_tiers and record.record_type in allowed_record_types
-    ]
-    filtered = [record for record in records if _record_matches_filters(record, request.filters)]
-    filtered.sort(key=lambda item: (item.trust_tier, item.record_type, item.title, item.stable_id))
-    limited = _limit_records_for_mode(filtered, retrieval_mode=request.retrieval_mode, limit=request.filters.limit)
+    if wants_rdf_graph:
+        try:
+            graph_result = _retrieve_self_study_from_graphdb(request)
+            if graph_result.counts.total > 0 or not wants_in_process:
+                return graph_result
+            fallback = _retrieve_self_study_in_process(request)
+            return fallback.model_copy(
+                update={
+                    "notes": [
+                        *fallback.notes,
+                        "GraphDB self-study query returned no persisted matches; fell back to in-process retrieval.",
+                    ],
+                    "backend_status": [
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="in_process",
+                            status="used",
+                            detail="Fallback in-process self-study retrieval after persisted GraphDB query returned no matches.",
+                        ),
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="rdf_graph",
+                            status="used",
+                            detail="Persisted self-study GraphDB query succeeded but returned no matching records.",
+                        ),
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="journal",
+                            status="not_queried",
+                            detail="Phase 4B retrieval does not consume journal prose as primary self-study truth.",
+                        ),
+                    ],
+                }
+            )
+        except Exception as exc:
+            if not wants_in_process:
+                return _build_retrieval_result(
+                    request=request,
+                    records=[],
+                    backend_used=None,
+                    backend_status=[
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="rdf_graph",
+                            status="unavailable",
+                            detail=f"Persisted self-study GraphDB query failed: {exc}",
+                        ),
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="in_process",
+                            status="not_queried",
+                            detail="In-process fallback was not allowed by storage_surfaces filter.",
+                        ),
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="journal",
+                            status="not_queried",
+                            detail="Phase 4B retrieval does not consume journal prose as primary self-study truth.",
+                        ),
+                    ],
+                    notes=[
+                        "Self-study retrieval is explicit and mode-scoped; it does not widen self.factual.v1.",
+                        f"Persisted GraphDB self-study retrieval failed without fallback: {exc}",
+                    ],
+                )
+            fallback = _retrieve_self_study_in_process(request)
+            return fallback.model_copy(
+                update={
+                    "notes": [
+                        *fallback.notes,
+                        f"GraphDB self-study retrieval unavailable; fell back to in-process retrieval: {exc}",
+                    ],
+                    "backend_status": [
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="in_process",
+                            status="used",
+                            detail="Fallback in-process self-study retrieval after persisted GraphDB query was unavailable.",
+                        ),
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="rdf_graph",
+                            status="unavailable",
+                            detail=f"Persisted self-study GraphDB query failed: {exc}",
+                        ),
+                        SelfStudyRetrievalBackendStatusV1(
+                            storage_surface="journal",
+                            status="not_queried",
+                            detail="Phase 4B retrieval does not consume journal prose as primary self-study truth.",
+                        ),
+                    ],
+                }
+            )
 
-    counts = SelfStudyRetrievalCountsV1(
-        total=len(limited),
-        authoritative=sum(1 for item in limited if item.trust_tier == TRUST_TIER),
-        induced=sum(1 for item in limited if item.trust_tier == INDUCED_TRUST_TIER),
-        reflective=sum(1 for item in limited if item.trust_tier == REFLECTIVE_TRUST_TIER),
-        facts=sum(1 for item in limited if item.record_type == "fact"),
-        concepts=sum(1 for item in limited if item.record_type == "concept"),
-        reflections=sum(1 for item in limited if item.record_type == "reflection"),
-    )
-    groups = [
-        SelfStudyRetrievalGroupV1(
-            trust_tier=trust_tier,
-            items=[item for item in limited if item.trust_tier == trust_tier],
-        )
-        for trust_tier in (TRUST_TIER, INDUCED_TRUST_TIER, REFLECTIVE_TRUST_TIER)
-        if any(item.trust_tier == trust_tier for item in limited)
-    ]
-
-    backend_status = [
-        SelfStudyRetrievalBackendStatusV1(storage_surface="in_process", status="used", detail="Repo-derived self-study snapshot, concepts, and reflections."),
-        SelfStudyRetrievalBackendStatusV1(storage_surface="rdf_graph", status="not_queried", detail="Phase 3A retrieval does not query GraphDB directly."),
-        SelfStudyRetrievalBackendStatusV1(storage_surface="journal", status="not_queried", detail="Phase 3A retrieval does not consume journal prose as primary self-study truth."),
-    ]
-    notes = [
-        "Self-study retrieval is explicit and mode-scoped; it does not widen self.factual.v1.",
-        "Phase 3A retrieval uses in-process self-study records and preserves trust tiers rather than flattening them.",
-    ]
-
-    return SelfStudyRetrieveResultV1(
-        run_id=snapshot.run_id,
-        retrieval_mode=request.retrieval_mode,
-        applied_filters=request.filters,
-        groups=groups,
-        counts=counts,
-        backend_status=backend_status,
-        notes=notes,
-    )
+    return _retrieve_self_study_in_process(request)
 
 
 def build_self_study_journal_entry(snapshot: SelfSnapshotV1, *, correlation_id: str, created_at: datetime | None = None) -> JournalEntryWriteV1:

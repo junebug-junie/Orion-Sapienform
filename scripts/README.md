@@ -134,3 +134,22 @@ for name in ["orion_chat_gpt_turns", "orion_chat_turns", "orion_chat"]:
         print(name, "missing")
 PY
 ```
+
+## Self-Study Harness
+Run the unified Phase 4A self-study validation harness from the repo root:
+
+```bash
+python scripts/self_study_harness.py --format both
+```
+
+Optional soak mode repeats the reflective retrieval lane and reports drift/count instability without changing production logic:
+
+```bash
+python scripts/self_study_harness.py --format human --soak-iterations 3
+```
+
+Write the machine-readable result to disk for regression checks:
+
+```bash
+python scripts/self_study_harness.py --format json --json-out scripts/.reports/self_study_harness.json
+```

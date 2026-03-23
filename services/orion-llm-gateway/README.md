@@ -26,7 +26,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_VECTOR_LATENT_UPSERT` | `orion:vector:latent:upsert` | Latent vector upsert channel. |
 | `ORION_VECTOR_LATENT_COLLECTION` | `orion_latent_store` | Latent vector collection. |
 | `ORION_LLM_VLLM_URL` | `None` | URL for vLLM host. |
-| `ORION_LLM_LLAMACPP_URL` | `None` | URL for LlamaCpp Chat host. |
+| `ORION_LLM_LLAMACPP_URL` | `None` | Legacy single-endpoint llama.cpp URL; route-table mode is primary. |
 | `LLM_GATEWAY_ROUTE_TABLE_JSON` | `None` | Preferred JSON route table for explicit single-subscriber routing. |
 | `LLM_ROUTE_DEFAULT` | `chat` | Default routing key when none provided. |
 | `LLM_ROUTE_CHAT_URL` | `None` | Fallback URL for `route=chat` (if JSON not set). |
@@ -35,11 +35,20 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `LLM_ROUTE_SPECIALIST_URL` | `None` | Fallback URL for `route=specialist` (if JSON not set). |
 | `LLM_GATEWAY_HEALTH_PORT` | `8210` | Local HTTP health port. |
 
+Important routing note:
+
+- `LLM_GATEWAY_ROUTE_TABLE_JSON` is the primary mechanism for Atlas.
+- `served_by` is metadata returned for observability and smoke checks; it does
+  not drive routing.
+- The legacy per-route env aliases only cover `chat`, `metacog`, `latents`,
+  and `specialist`.
+- The current Atlas `agent` lane therefore requires `LLM_GATEWAY_ROUTE_TABLE_JSON`.
+
 ## Running & Testing
 
 ### Run via Docker
 ```bash
-docker-compose up -d orion-llm-gateway
+docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gateway
 ```
 
 > Note: Only run a single `orion-llm-gateway` subscriber on the shared request topic.
@@ -57,8 +66,9 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 
 ### Smoke Test
 ```bash
-# Verify using curl or internal tool, or via harness trace
-python scripts/bus_harness.py tap
+PYTHONPATH=/workspace/Orion-Sapienform python -m scripts.smoke_llm_gateway_routes \
+  --redis "${ORION_BUS_URL:-redis://localhost:6379/0}" \
+  --request-channel "${CHANNEL_LLM_INTAKE:-orion:exec:request:LLMGatewayService}"
 ```
 
 ### Health Check

@@ -1,143 +1,240 @@
 # orion-llamacpp-host
 
-A **bus-native, profile-driven llama.cpp server wrapper** for Orion.
+`orion-llamacpp-host` is Orion's **profile-driven llama.cpp wrapper**.
 
-This service exists to make **GGUF model serving deterministic**:
-- A single env var (`LLM_PROFILE_NAME`) selects the active model.
-- Everything else (model path, HF download spec, llama-server knobs, GPU pinning hints) lives in **`config/llm_profiles.yaml`**.
-- `.env` is for **selection + overrides only**.
+It exists to keep GGUF serving deterministic:
 
----
+- one container boots **one active profile**
+- `LLM_PROFILE_NAME` selects that profile
+- `config/llm_profiles.yaml` is the source of truth for model path / download spec / llama.cpp runtime knobs / GPU hints
+- `.env` should mostly contain **selection and safe overrides**, not model definitions
 
-## What it runs
-
-- **Engine:** `ghcr.io/ggerganov/llama.cpp:server-cuda-<build>`
-- **Wrapper:** `services/orion-llamacpp-host/app` (Python)
-- **Model format:** GGUF
-- **Network:** `app-net`
-
-The wrapper:
-1. Loads `config/llm_profiles.yaml`
-2. Selects the profile by `LLM_PROFILE_NAME`
-3. Resolves the GGUF file path
-4. If missing and a download spec is present, downloads from Hugging Face
-5. Launches `llama-server` with CLI flags derived from the profile (plus any env overrides)
+If you are standing up Atlas workers for the current `chat` / `metacog` / `agent` layout, start with the Atlas quickstart below and then use the repo-root [`postflight.md`](../../postflight.md) as the shareable operator runbook.
 
 ---
 
-## Repo layout (root-driven)
+## TL;DR for Atlas operators
 
-From the Orion repo root:
+For the current gateway route layout, Atlas should run **3 isolated `orion-llamacpp-host` containers**:
 
+| Route | Compose service | Worker `SERVICE_NAME` | Host port | Profile source | GPU binding env |
+| --- | --- | --- | --- | --- | --- |
+| `chat` | `atlas-chat` | `atlas-worker-1` | `8011` | `ATLAS_CHAT_PROFILE_NAME` | `ATLAS_CHAT_CUDA_VISIBLE_DEVICES` |
+| `metacog` | `atlas-metacog` | `atlas-worker-2` | `8012` | `llama3-8b-instruct-q4km-atlas-metacog` | `ATLAS_METACOG_CUDA_VISIBLE_DEVICES` |
+| `agent` | `atlas-agent` | `atlas-worker-agent-1` | `8014` | `qwen3-30b-a3b-q4km-atlas-agent` | `ATLAS_AGENT_CUDA_VISIBLE_DEVICES` |
+
+Use:
+
+- `services/orion-llamacpp-host/docker-compose.atlas-workers.yml`
+- `services/orion-llamacpp-host/.env_example`
+- `config/llm_profiles.yaml`
+- `../../postflight.md`
+
+Key rule: each worker must keep a unique **service identity**, **published port**, **`LLM_PROFILE_NAME`**, and **GPU visibility binding**.
+
+---
+
+## Atlas quickstart
+
+### 1. Create the Atlas worker env file
+
+```bash
+cp services/orion-llamacpp-host/.env_example services/orion-llamacpp-host/.env.atlas
 ```
-config/
-  llm_profiles.yaml
 
-services/
-  orion-llamacpp-host/
-    app/
-    docker-compose.yml
-    Dockerfile
-    requirements.txt
-    .env
+### 2. Edit the shared values
+
+At minimum set:
+
+```dotenv
+ORION_BUS_URL=redis://100.92.216.81:6379/0
+LLM_CACHE_DIR=/mnt/telemetry/llm-cache
+HF_TOKEN=
+hf_token=
 ```
 
-Important: `config/llm_profiles.yaml` is a **global registry** (many models). The active one is selected by `LLM_PROFILE_NAME`.
+### 3. Edit the per-worker unique values
+
+```dotenv
+ATLAS_CHAT_SERVICE_NAME=atlas-worker-1
+ATLAS_CHAT_PROFILE_NAME=llama3-8b-instruct-q4km-athena-p4
+ATLAS_CHAT_CUDA_VISIBLE_DEVICES=0
+ATLAS_CHAT_HOST_PORT=8011
+
+ATLAS_METACOG_SERVICE_NAME=atlas-worker-2
+ATLAS_METACOG_PROFILE_NAME=llama3-8b-instruct-q4km-atlas-metacog
+ATLAS_METACOG_CUDA_VISIBLE_DEVICES=2
+ATLAS_METACOG_HOST_PORT=8012
+
+ATLAS_AGENT_SERVICE_NAME=atlas-worker-agent-1
+ATLAS_AGENT_PROFILE_NAME=qwen3-30b-a3b-q4km-atlas-agent
+ATLAS_AGENT_CUDA_VISIBLE_DEVICES=1
+ATLAS_AGENT_HOST_PORT=8014
+```
+
+Notes:
+
+- `ATLAS_CHAT_PROFILE_NAME` is intentionally operator-supplied; keep it pointed at the current Atlas chat profile.
+- `ATLAS_METACOG_PROFILE_NAME` and `ATLAS_AGENT_PROFILE_NAME` already have Atlas-specific defaults in the compose file.
+- Do **not** let the three workers collide on host ports.
+- Do **not** let the three workers collide on GPU bindings unless you are intentionally sharing capacity.
+
+### 4. Ensure the Docker network exists
+
+```bash
+docker network create app-net >/dev/null 2>&1 || true
+```
+
+### 5. Launch the Atlas workers
+
+```bash
+docker compose \
+  --env-file services/orion-llamacpp-host/.env.atlas \
+  -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
+  up -d --build atlas-chat atlas-metacog atlas-agent
+```
+
+### 6. Verify each worker directly
+
+```bash
+curl http://localhost:${ATLAS_CHAT_HOST_PORT}/health
+curl http://localhost:${ATLAS_METACOG_HOST_PORT}/health
+curl http://localhost:${ATLAS_AGENT_HOST_PORT}/health
+```
+
+### 7. Then validate through the gateway
+
+Atlas worker validation is only half the story. The route map is gateway-centered, so once the workers are healthy, continue with:
+
+- `services/orion-llm-gateway/.env_example`
+- `services/orion-llm-gateway/README.md`
+- `../../postflight.md`
+
+Use the route smoke command documented in `postflight.md` / gateway README:
+
+```bash
+PYTHONPATH=/workspace/Orion-Sapienform python -m scripts.smoke_llm_gateway_routes \
+  --redis "${ORION_BUS_URL}" \
+  --request-channel "${CHANNEL_LLM_INTAKE}"
+```
+
+---
+
+## What this service actually does
+
+On boot, the wrapper:
+
+1. loads `config/llm_profiles.yaml`
+2. selects one profile via `LLM_PROFILE_NAME`
+3. resolves the GGUF model path
+4. downloads the GGUF from Hugging Face if the file is missing and the profile includes a download spec
+5. launches `llama-server` with the profile's runtime values plus any explicitly-set overrides
+
+This service is intentionally **not** an orchestrator. It runs **exactly one active profile per container**.
+
+---
+
+## Source-of-truth files
+
+When working on this service, these are the main files that matter:
+
+- `config/llm_profiles.yaml` — model/profile registry
+- `services/orion-llamacpp-host/.env_example` — selection + override contract, plus Atlas `ATLAS_*` examples
+- `services/orion-llamacpp-host/docker-compose.yml` — single-worker compose
+- `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` — Atlas 3-worker compose pattern
+- `services/orion-llamacpp-host/app/settings.py` — env contract actually parsed by the wrapper
+- `services/orion-llamacpp-host/app/main.py` — model resolution, GPU binding, and llama-server launch logic
+- `../../postflight.md` — operator-facing Atlas runbook
 
 ---
 
 ## Configuration model
 
-### 1) Profiles (source of truth)
+## 1. Profiles are the source of truth
 
-The wrapper expects a top-level `profiles:` key.
+The wrapper expects a top-level `profiles:` key in `config/llm_profiles.yaml`.
 
-Example shape:
+Minimal shape:
 
 ```yaml
 profiles:
-
-  deepseek-70b-gguf-atlas:
-    display_name: "DeepSeek R1 70B – GGUF via llama.cpp (Atlas)"
-    task_type: chat
+  llama3-8b-instruct-q4km-athena-p4:
     backend: llamacpp
-    model_id: "deepseek-r1-70b-q4_k_m"
-
-    supports_tools: false
-    supports_embeddings: false
-    supports_vision: false
-
+    model_id: llama-3-8b-instruct-q4_k_m
     gpu:
-      num_gpus: 4
-      tensor_parallel_size: 4
-      device_ids: [0,1,2,3]
-      max_model_len: 8192
-      max_batch_tokens: 512
-      max_concurrent_requests: 1
-      gpu_memory_fraction: 0.9
-
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
     llamacpp:
-      model_root: "/models/gguf"
-      hf_repo_id: "unsloth/DeepSeek-R1-Distill-Llama-70B-GGUF"
-      hf_filename: "DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
-
-      host: "0.0.0.0"
+      model_root: /models/gguf
+      hf_repo_id: PawanKrd/Meta-Llama-3-8B-Instruct-GGUF
+      hf_filename: llama-3-8b-instruct.Q4_K_M.gguf
+      host: 0.0.0.0
       port: 8080
-      ctx_size: 8192
-      n_gpu_layers: 80
-      threads: 16
-      parallel: 1
-      batch_size: 512
+      ctx_size: 4096
+      n_gpu_layers: 35
+      threads: 8
+      n_parallel: 1
+      batch_size: 256
 ```
 
-Notes:
-- `backend` **must** be `llamacpp` for this service.
-- `model_id` is Orion’s logical label.
-- The actual file is derived from:
-  - `llamacpp.model_root + llamacpp.hf_filename` (or)
-  - a direct GGUF path (if you set it up that way in your wrapper).
+Rules:
 
-### 2) Service `.env` (selection + overrides)
+- `backend` must be `llamacpp` for this service.
+- Prefer keeping model/runtime definition in the profile, not in `.env`.
+- For Atlas multi-worker use, the profile name is what differentiates chat/metacog/agent behavior.
 
-This file should be minimal. It chooses the profile and optionally overrides a few knobs.
+## 2. `.env` is for selection + overrides
 
-Recommended minimal `.env`:
+The wrapper directly cares about these envs:
 
-```bash
-# identity
+### Required or practically required
+
+```dotenv
 SERVICE_NAME=llamacpp-host
 SERVICE_VERSION=0.1.0
-
-# profile selection
-LLM_PROFILE_NAME=deepseek-70b-gguf-atlas
+ORION_BUS_URL=redis://100.92.216.81:6379/0
 LLM_PROFILES_CONFIG_PATH=/app/config/llm_profiles.yaml
-
-# model cache mount inside container (compose uses this)
+LLM_PROFILE_NAME=llama3-8b-instruct-q4km-athena-p4
 LLM_CACHE_DIR=/mnt/telemetry/llm-cache
+```
 
-# optional HF auth (only if gated/private)
+### Optional
+
+```dotenv
 HF_TOKEN=
-
-# optional overrides (blank = not set)
+hf_token=
+LLAMACPP_MODEL_PATH_OVERRIDE=
+LLAMACPP_HOST_OVERRIDE=
+LLAMACPP_PORT_OVERRIDE=
 LLAMACPP_CTX_SIZE_OVERRIDE=
 LLAMACPP_N_GPU_LAYERS_OVERRIDE=
 LLAMACPP_THREADS_OVERRIDE=
-LLAMACPP_PARALLEL_OVERRIDE=
+LLAMACPP_N_PARALLEL_OVERRIDE=
 LLAMACPP_BATCH_SIZE_OVERRIDE=
 CUDA_VISIBLE_DEVICES_OVERRIDE=
 ```
 
-Rule: if a value is already in the profile, **don’t duplicate it** in `.env` unless you’re overriding.
+### Compatibility / compose passthroughs
+
+These still appear in `.env_example` because the compose wiring expects them or sibling services use them, but the current `orion-llamacpp-host` runtime does not read them directly:
+
+```dotenv
+MODELS_MOUNT_ROOT=/models
+ENSURE_MODEL_DOWNLOAD=true
+WAIT_FOR_MODEL_SECONDS=0
+ORION_BUS_ENFORCE_CATALOG=true
+```
+
+Rule of thumb: if a value already exists in `config/llm_profiles.yaml`, do not duplicate it in `.env` unless you are deliberately overriding it.
 
 ---
 
-## docker-compose
+## Compose usage
 
-This service is run from the repo root with **two env files**:
-- root `.env` (shared stack)
-- service `.env` (selection + overrides)
+## Single-worker compose
 
-Example command:
+Use `services/orion-llamacpp-host/docker-compose.yml` when you want one standalone worker:
 
 ```bash
 docker compose \
@@ -147,120 +244,130 @@ docker compose \
   up -d --build
 ```
 
-### Key compose behaviors
+This is the simpler path for one worker / one profile.
 
-- Mounts the host GGUF cache into the container at `/models`.
-- Exposes llama-server on `LLAMACPP_HOST_PORT`.
-- Wrapper reads `/app/config/llm_profiles.yaml` (baked into the image).
+## Atlas multi-worker compose
+
+Use `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` for the current Atlas topology.
+
+Important characteristics of this compose file:
+
+- one compose service per gateway route (`atlas-chat`, `atlas-metacog`, `atlas-agent`)
+- one active profile per container
+- one published host port per container
+- one explicit GPU binding per container
+- all three services mount the same model cache root at `/models`
+- it assumes `app-net` already exists
+
+This is the repo's best current Atlas pattern, but it is still **operator-edited compose**, not a full deployment system.
 
 ---
 
 ## Runtime endpoints
 
-- **Health:** `GET /health`
-- **OpenAI-style:** `POST /v1/chat/completions`
+Each worker exposes:
 
-Typical internal URL (from app-net):
+- `GET /health`
+- `POST /v1/chat/completions`
 
-```
+Typical internal container URL:
+
+```text
 http://orion-llamacpp-host:8080
 ```
 
-If you map it to the host:
+Typical host-facing URL:
 
-```
+```text
 http://<host-ip>:<host-port>
 ```
 
+For Atlas multi-worker bring-up, the relevant host ports are normally `8011`, `8012`, and `8014`.
+
 ---
 
-## How the model gets onto disk
+## Model loading behavior
 
-### Automatic (preferred)
-If the GGUF file is missing under:
+## Automatic download
 
-```
-/models/gguf/<hf_filename>
-```
+If the resolved GGUF file does not exist and the selected profile includes:
 
-…and your profile provides:
 - `llamacpp.hf_repo_id`
 - `llamacpp.hf_filename`
 
-…the wrapper will download the file using `huggingface_hub`.
+then the wrapper will download the file into the configured model root.
 
-### Manual
-You can also copy models into the host cache directory:
+## Manual population
 
-```
+You can also stage the GGUF manually under:
+
+```text
 ${LLM_CACHE_DIR}/gguf/
 ```
 
-…and the service will pick them up.
+The compose files mount that cache into the container at `/models`.
 
 ---
 
-## GPU pinning
+## GPU pinning model
 
-Two layers exist:
+There are two layers:
 
-1. **Profile hint** (Orion semantics):
-   - `gpu.device_ids: [0,1,2,3]`
+1. **Profile hint** in `config/llm_profiles.yaml`
+   - example: `gpu.device_ids: [2]`
+2. **Actual container runtime binding**
+   - `CUDA_VISIBLE_DEVICES_OVERRIDE`
+   - or fallback to the profile's `gpu.device_ids`
 
-2. **Actual container pinning** (what NVIDIA runtime enforces):
-   - `CUDA_VISIBLE_DEVICES` (or your wrapper’s override)
+Recommended practice:
 
-Recommendation:
-- Use the profile `device_ids` as the default.
-- Only override via env when you’re actively rebalancing GPUs.
+- keep `gpu.device_ids` correct in the profile
+- use `CUDA_VISIBLE_DEVICES_OVERRIDE` only when the operator needs to rebalance GPU placement
+- for Atlas multi-worker setups, make the binding explicit for all 3 workers
 
 ---
 
 ## Common failures
 
 ### `llm_profiles.yaml not found`
-- Ensure the Dockerfile **copies** `config/` into the image at `/app/config`.
-- Ensure `LLM_PROFILES_CONFIG_PATH=/app/config/llm_profiles.yaml`.
+
+- confirm the image contains `/app/config/llm_profiles.yaml`
+- confirm `LLM_PROFILES_CONFIG_PATH=/app/config/llm_profiles.yaml`
 
 ### `LLM profile 'X' not found in registry`
-- Your YAML is probably:
-  - missing the top-level `profiles:` key, or
-  - the profile name doesn’t match `LLM_PROFILE_NAME`.
+
+- confirm the profile exists under the top-level `profiles:` key
+- confirm `LLM_PROFILE_NAME` exactly matches the registry key
+
+### `Model not found and no download spec available`
+
+- the selected profile resolved to a GGUF path that does not exist
+- and the profile does not provide a usable `hf_repo_id` / `hf_filename`
 
 ### `missing tensor ...`
-- Usually indicates one of:
-  - incompatible llama.cpp build vs GGUF version
-  - corrupted/incomplete download
-  - wrong file (not the expected quant)
 
-Fix:
-- delete the GGUF and re-download
-- confirm the exact filename in the profile matches what exists under `/models/gguf`
+Usually one of:
 
-### CLI flag errors (e.g. `invalid argument: --n-parallel`)
-- llama.cpp CLI flags change over time.
-- Confirm the correct flag name for your build (`--parallel` vs `--n-parallel`).
+- incompatible llama.cpp build vs GGUF version
+- incomplete or corrupted GGUF
+- wrong quant/file selected
+
+### CLI flag errors such as `--n-parallel`
+
+The wrapper currently launches llama.cpp using `--parallel`. If your engine build changes behavior, confirm the exact CLI supported by that image.
 
 ---
 
-## Recommended operating pattern
+## Debug commands
 
-- Keep `config/llm_profiles.yaml` as the authoritative model registry.
-- Switch models by changing **only** `LLM_PROFILE_NAME`.
-- Use env overrides only when troubleshooting stability (ctx, gpu layers, parallel, batch).
-
----
-
-## Quick debug commands
-
-### Verify profile exists inside image
+### Confirm the profile exists inside the image
 
 ```bash
 docker run --rm --entrypoint sh orion-llamacpp-host:0.1.0 -lc \
-  "grep -n 'deepseek-70b-gguf-atlas' -n /app/config/llm_profiles.yaml && echo OK"
+  "grep -n 'llama3-8b-instruct-q4km-athena-p4' /app/config/llm_profiles.yaml && echo OK"
 ```
 
-### Verify GGUF exists on the host
+### Confirm the GGUF exists on the host
 
 ```bash
 ls -lah ${LLM_CACHE_DIR}/gguf | head
@@ -274,34 +381,9 @@ watch -n 1 nvidia-smi
 
 ---
 
-## Versioning
+## Recommended operating pattern
 
-- `SERVICE_VERSION` should track wrapper changes.
-- Engine build is pinned by the llama.cpp image tag.
-
----
-
-## Notes
-
-This service is intentionally **not** an orchestration layer. It loads **exactly one active profile** per container instance.
-
-To run multiple models at once:
-- start multiple `llamacpp-host` instances (separate service names/ports)
-- each with a different `LLM_PROFILE_NAME`
-- and ideally different GPU pinning
-
-### Atlas multi-worker example
-
-For the Atlas route layout, use `docker-compose.atlas-workers.yml` to run one isolated host instance per logical worker:
-
-- `atlas-chat` → existing chat profile on Atlas, published on `ATLAS_CHAT_HOST_PORT`
-- `atlas-metacog` → `llama3-8b-instruct-q4km-atlas-metacog`, published on `ATLAS_METACOG_HOST_PORT`
-- `atlas-agent` → `qwen3-30b-a3b-q4km-atlas-agent`, published on `ATLAS_AGENT_HOST_PORT`
-
-Each worker uses:
-- one `LLM_PROFILE_NAME`
-- one `CUDA_VISIBLE_DEVICES_OVERRIDE`
-- one unique host port
-- one unique `SERVICE_NAME`
-
-This keeps the current one-profile-per-container design intact while making Atlas worker isolation explicit.
+- treat `config/llm_profiles.yaml` as the authoritative model registry
+- switch workers by changing `LLM_PROFILE_NAME`, not by rewriting runtime flags
+- keep Atlas isolation explicit with route -> URL mapping, unique worker identity, unique host port, and unique GPU binding
+- use `../../postflight.md` when handing the procedure to another operator or another GPT session

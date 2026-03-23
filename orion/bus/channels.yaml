@@ -95,6 +95,14 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:dream:trigger"
+    kind: "event"
+    schema_id: "DreamTriggerPayload"
+    producer_services: ["orion-dream"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "stable"
+    since: "2026-03-23"
+
   - name: "orion:cortex:gateway:request"
     kind: "request"
     schema_id: "CortexChatRequest"

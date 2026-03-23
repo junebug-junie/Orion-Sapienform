@@ -33,20 +33,32 @@ from app.models import (
     MetacognitionTickSQL,
     MetacogTriggerSQL,
     NotificationRequestDB,
-    NotificationReceiptDB
+    NotificationReceiptDB,
+    JournalEntrySQL,
+    SocialRoomTurnSQL,
+    ExternalRoomMessageSQL,
+    ExternalRoomParticipantSQL,
 )
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
-from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.journaler import JOURNAL_CREATED_KIND, JOURNAL_WRITE_KIND, JournalEntryWriteV1, build_created_event_payload
 
 # Shared schemas
-from orion.schemas.collapse_mirror import CollapseMirrorEntry
+from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSummaryV1, BiometricsInductionV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
+from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
+from orion.schemas.social_bridge import (
+    ExternalRoomMessageV1,
+    ExternalRoomParticipantV1,
+    ExternalRoomPostResultV1,
+    ExternalRoomTurnSkippedV1,
+)
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
@@ -64,6 +76,9 @@ except ImportError:
 
 logger = logging.getLogger("sql-writer")
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
+COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
+SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
+INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL}
 
 
 def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
@@ -94,6 +109,10 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "MetacogTriggerSQL": (MetacogTriggerSQL, MetacogTriggerV1),
     "NotificationRequestDB": (NotificationRequestDB, None),
     "NotificationReceiptDB": (NotificationReceiptDB, None),
+    "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
+    "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
+    "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
+    "ExternalRoomParticipantSQL": (ExternalRoomParticipantSQL, ExternalRoomParticipantV1),
 }
 
 
@@ -402,7 +421,7 @@ def _ensure_chat_history_from_message(
         existing.client_meta = _json_sanitize(client_meta)
 
 
-def _write_row(sql_model_cls, data: dict) -> None:
+def _write_row(sql_model_cls, data: dict) -> bool:
     sess = get_session()
     try:
         mapper = inspect(sql_model_cls)
@@ -516,7 +535,7 @@ def _write_row(sql_model_cls, data: dict) -> None:
                         sess.commit()
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
-                return
+                return True
 
         if sql_model_cls is ChatMessageSQL:
             client_meta = data.get("client_meta")
@@ -547,20 +566,36 @@ def _write_row(sql_model_cls, data: dict) -> None:
             except Exception as ex:
                 logger.warning(f"Failed to upsert chat_history_log from chat_message: {ex}")
 
+        if sql_model_cls in INSERT_ONLY_MODELS:
+            try:
+                sess.add(sql_model_cls(**filtered_data))
+                sess.commit()
+                return True
+            except IntegrityError as e:
+                sess.rollback()
+                if hasattr(e.orig, 'pgcode') and e.orig.pgcode == '23505':
+                    logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (append-only idempotent write).")
+                    return False
+                if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+                    logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (append-only idempotent write).")
+                    return False
+                raise
+
         try:
             sess.merge(sql_model_cls(**filtered_data))
             sess.commit()
+            return True
         except IntegrityError as e:
             sess.rollback()
             # Handle unique constraint violations gracefully (idempotency)
             # Postgres unique violation code is 23505
             if hasattr(e.orig, 'pgcode') and e.orig.pgcode == '23505':
                 logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
-                return
+                return False
             # Also catch generic duplicates if pgcode not available or different driver
             if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
                 logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
-                return
+                return False
             logger.error(f"IntegrityError writing to {sql_model_cls.__tablename__}: {e}")
             raise e
 
@@ -569,6 +604,36 @@ def _write_row(sql_model_cls, data: dict) -> None:
             sess.close()
         finally:
             remove_session()
+
+
+def _build_collapse_stored_payload(payload: dict[str, Any], *, correlation_id: str | None) -> CollapseMirrorStoredV1:
+    mirror_id = (
+        payload.get("id")
+        or payload.get("event_id")
+        or payload.get("correlation_id")
+        or correlation_id
+    )
+    return CollapseMirrorStoredV1(
+        mirror_id=str(mirror_id),
+        stored_at=datetime.now(timezone.utc).isoformat(),
+        correlation_id=correlation_id,
+        is_causally_dense=bool(payload.get("is_causally_dense")),
+        summary=str(payload.get("summary") or ""),
+        trigger=str(payload.get("trigger") or ""),
+        what_changed_summary=payload.get("what_changed_summary"),
+        mantra=payload.get("mantra"),
+    )
+
+
+def _build_social_turn_stored_payload(payload: dict[str, Any], *, correlation_id: str | None) -> SocialRoomTurnStoredV1:
+    base = dict(payload)
+    if correlation_id and not base.get("correlation_id"):
+        base["correlation_id"] = correlation_id
+    if not base.get("text"):
+        prompt = str(base.get("prompt") or "").strip()
+        response = str(base.get("response") or "").strip()
+        base["text"] = f"User: {prompt}\nOrion: {response}".strip()
+    return SocialRoomTurnStoredV1.model_validate(base)
 
 
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
@@ -595,7 +660,7 @@ def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = N
             remove_session()
 
 
-async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str, Any] = None) -> None:
+async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str, Any] = None) -> bool:
     if schema_cls:
         obj = _coerce_payload(schema_cls, payload)
         data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
@@ -606,13 +671,13 @@ async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str
         data.update(extra_fields)
 
     try:
-        await asyncio.to_thread(_write_row, sql_model_cls, data)
+        return await asyncio.to_thread(_write_row, sql_model_cls, data)
     except Exception as e:
         logger.error(f"Failed to write to primary table: {e}")
         raise
 
 
-async def handle_envelope(env: BaseEnvelope) -> None:
+async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     route_key = settings.route_map.get(env.kind)
 
     # -------------------------------------------------------------------------
@@ -699,13 +764,18 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         sql_model, schema_model = MODEL_MAP[route_key]
         try:
             data_to_process = env.payload
+            if route_key == "ExternalRoomMessageSQL":
+                if env.kind == "external.room.post.result.v1":
+                    schema_model = ExternalRoomPostResultV1
+                elif env.kind == "external.room.turn.skipped.v1":
+                    schema_model = ExternalRoomTurnSkippedV1
 
             if isinstance(data_to_process, dict):
                 data_to_process = data_to_process.copy()
                 if "node" not in data_to_process and env.source and env.source.node:
-                    data_to_process["node"] = env.source.node
+                    extra_sql_fields.setdefault("node", env.source.node)
                 if "source_message_id" not in data_to_process and env.id:
-                    data_to_process["source_message_id"] = str(env.id)
+                    extra_sql_fields.setdefault("source_message_id", str(env.id))
 
             if sql_model is CollapseMirror and isinstance(data_to_process, dict):
                 base_id = (
@@ -724,6 +794,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 target_id = data_to_process.get("id") or data_to_process.get("collapse_id")
                 if target_id: extra_sql_fields["collapse_id"] = target_id
 
+            write_ok = True
             if sql_model is SparkTelemetrySQL:
                 mapped = _map_spark_to_telemetry_row(
                     env.kind,
@@ -741,6 +812,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                         "spark telemetry normalization failed",
                     )
                     return
+                write_ok = await _write(sql_model, None, mapped, {})
                 await _write(sql_model, None, mapped, {})
             elif sql_model is Dream:
                 normalized = _normalize_dream_envelope_payload(
@@ -748,7 +820,56 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 )
                 await _write(sql_model, None, normalized, {})
             else:
-                await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
+                write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
+            # Post-commit safety: emit only after _write() has returned success.
+            if env.kind == JOURNAL_WRITE_KIND and write_ok and bus is not None and settings.sql_writer_emit_journal_created:
+                try:
+                    journal_payload = JournalEntryWriteV1.model_validate(env.payload)
+                    created_env = env.derive_child(
+                        kind=JOURNAL_CREATED_KIND,
+                        source=ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name),
+                        payload=build_created_event_payload(journal_payload),
+                        reply_to=None,
+                    )
+                    await bus.publish(settings.sql_writer_journal_created_channel, created_env)
+                except Exception:
+                    logger.exception("Failed to emit journal created event corr=%s", getattr(env, "correlation_id", None))
+            # Semantic stored event is also post-commit only.
+            if env.kind == "collapse.mirror" and write_ok and bus is not None:
+                try:
+                    stored_payload = _build_collapse_stored_payload(
+                        env.payload if isinstance(env.payload, dict) else {},
+                        correlation_id=extra_sql_fields.get("correlation_id"),
+                    )
+                    stored_env = env.derive_child(
+                        kind=COLLAPSE_STORED_KIND,
+                        source=ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name),
+                        payload=stored_payload.model_dump(mode="json"),
+                        reply_to=None,
+                    )
+                    await bus.publish("orion:collapse:stored", stored_env)
+                except Exception:
+                    logger.exception("Failed to emit collapse stored event corr=%s", getattr(env, "correlation_id", None))
+            if (
+                env.kind == "social.turn.v1"
+                and write_ok
+                and bus is not None
+                and settings.sql_writer_emit_social_turn_stored
+            ):
+                try:
+                    stored_payload = _build_social_turn_stored_payload(
+                        env.payload if isinstance(env.payload, dict) else {},
+                        correlation_id=extra_sql_fields.get("correlation_id"),
+                    )
+                    stored_env = env.derive_child(
+                        kind=SOCIAL_TURN_STORED_KIND,
+                        source=ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name),
+                        payload=stored_payload.model_dump(mode="json"),
+                        reply_to=None,
+                    )
+                    await bus.publish(settings.sql_writer_social_turn_stored_channel, stored_env)
+                except Exception:
+                    logger.exception("Failed to emit social turn stored event corr=%s", getattr(env, "correlation_id", None))
             written_label = env.kind
             if schema_model is ChatGptLogTurnV1:
                 written_label = "ChatGptLogTurnV1"
@@ -764,4 +885,11 @@ async def handle_envelope(env: BaseEnvelope) -> None:
 
 def build_hunter() -> Hunter:
     patterns = settings.effective_subscribe_channels
-    return Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
+    holder: dict[str, Any] = {}
+
+    async def _handler(env: BaseEnvelope) -> None:
+        await handle_envelope(env, bus=holder.get("bus"))
+
+    hunter = Hunter(_cfg(), patterns=patterns, handler=_handler)
+    holder["bus"] = hunter.bus
+    return hunter

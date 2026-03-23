@@ -4,7 +4,7 @@ import logging
 from typing import Iterable, List, Optional
 from uuid import UUID, uuid4
 
-from orion.core.bus.bus_schemas import ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.chat_history import (
     ChatHistoryMessageEnvelope,
     ChatHistoryMessageV1,
@@ -12,10 +12,14 @@ from orion.schemas.chat_history import (
     ChatHistoryTurnV1,
     ChatRole,
 )
+from orion.schemas.social_chat import SocialRoomTurnV1
+
+from .social_room import build_social_room_turn
 
 from .settings import settings
 
 logger = logging.getLogger("orion-hub.chat_history")
+SOCIAL_ROOM_TURN_CHANNEL = "orion:chat:social:turn"
 
 
 def build_chat_history_envelope(
@@ -140,3 +144,55 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
         await bus.publish(channel, env)
     except Exception as e:
         logger.warning("Failed to publish chat turn history: %s", e, exc_info=True)
+
+
+async def publish_social_room_turn(
+    bus,
+    *,
+    prompt: str,
+    response: str,
+    session_id: Optional[str],
+    correlation_id: UUID | str | None,
+    user_id: Optional[str],
+    source_label: str,
+    recall_profile: Optional[str],
+    trace_verb: Optional[str],
+    client_meta: Optional[dict] = None,
+    memory_digest: Optional[str] = None,
+) -> Optional[SocialRoomTurnV1]:
+    """Publish an append-only social_room turn event when the UI selected that chat profile."""
+    social_meta = dict(client_meta or {})
+    if str(social_meta.get("chat_profile") or "").strip().lower() != "social_room":
+        return None
+    if not bus or not getattr(bus, "enabled", False):
+        return None
+    if not settings.PUBLISH_CHAT_HISTORY_LOG:
+        return None
+    turn = build_social_room_turn(
+        prompt=prompt,
+        response=response,
+        session_id=session_id,
+        correlation_id=str(correlation_id) if correlation_id is not None else None,
+        user_id=user_id,
+        source=source_label,
+        recall_profile=recall_profile,
+        trace_verb=trace_verb,
+        client_meta=social_meta,
+        memory_digest=memory_digest,
+    )
+    env = BaseEnvelope(
+        kind="social.turn.v1",
+        correlation_id=correlation_id or uuid4(),
+        source=ServiceRef(
+            name=settings.SERVICE_NAME,
+            node=settings.NODE_NAME,
+            version=settings.SERVICE_VERSION,
+        ),
+        payload=turn,
+    )
+    try:
+        await bus.publish(SOCIAL_ROOM_TURN_CHANNEL, env)
+        return turn
+    except Exception as e:
+        logger.warning("Failed to publish social_room turn history: %s", e, exc_info=True)
+        return None

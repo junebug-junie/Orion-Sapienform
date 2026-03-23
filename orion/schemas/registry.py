@@ -13,8 +13,12 @@ from orion.core.bus.bus_schemas import (
 from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1, RecallQueryV1
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
+from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalTriggerV1
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import (
+    AgentTraceStepV1,
+    AgentTraceSummaryV1,
+    AgentTraceToolStatV1,
     CortexClientRequest,
     CortexClientResult,
     CortexChatRequest,
@@ -28,6 +32,53 @@ from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResu
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
+from orion.schemas.social_chat import (
+    SocialConceptEvidenceV1,
+    SocialGroundingStateV1,
+    SocialRedactionScoreV1,
+    SocialRoomTurnStoredV1,
+    SocialRoomTurnV1,
+)
+from orion.schemas.social_bridge import (
+    CallSyneRoomMessageV1,
+    ExternalRoomMessageV1,
+    ExternalRoomParticipantV1,
+    ExternalRoomPostRequestV1,
+    ExternalRoomPostResultV1,
+    ExternalRoomTurnSkippedV1,
+)
+from orion.schemas.social_commitment import SocialCommitmentResolutionV1, SocialCommitmentV1
+from orion.schemas.social_deliberation import (
+    SocialBridgeSummaryV1,
+    SocialClarifyingQuestionV1,
+    SocialDeliberationDecisionV1,
+)
+from orion.schemas.social_floor import (
+    SocialClosureSignalV1,
+    SocialFloorDecisionV1,
+    SocialTurnHandoffV1,
+)
+from orion.schemas.social_claim import (
+    SocialClaimAttributionV1,
+    SocialClaimRevisionV1,
+    SocialClaimStanceV1,
+    SocialClaimV1,
+    SocialConsensusStateV1,
+    SocialDivergenceSignalV1,
+)
+from orion.schemas.social_memory import (
+    SocialParticipantContinuityV1,
+    SocialRelationalMemoryUpdateV1,
+    SocialRoomContinuityV1,
+    SocialStanceSnapshotV1,
+)
+from orion.schemas.social_epistemic import SocialEpistemicDecisionV1, SocialEpistemicSignalV1
+from orion.schemas.social_repair import SocialRepairDecisionV1, SocialRepairSignalV1
+from orion.schemas.social_artifact import SocialArtifactProposalV1, SocialArtifactRevisionV1, SocialArtifactConfirmationV1
+from orion.schemas.social_autonomy import SocialOpenThreadV1, SocialTurnPolicyDecisionV1
+from orion.schemas.social_style import SocialPeerStyleHintV1, SocialRoomRitualSummaryV1, SocialStyleAdaptationSnapshotV1
+from orion.schemas.social_skills import SocialSkillRequestV1, SocialSkillResultV1, SocialSkillSelectionV1
+from orion.schemas.social_thread import SocialHandoffSignalV1, SocialThreadRoutingDecisionV1, SocialThreadStateV1
 from orion.schemas.vector.schemas import (
     EmbeddingGenerateV1,
     EmbeddingResultV1,
@@ -53,6 +104,28 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
+from orion.schemas.self_study import (
+    SelfConceptEvidenceRefV1,
+    SelfConceptInduceResultV1,
+    SelfConceptRefV1,
+    SelfConceptReflectResultV1,
+    SelfInducedConceptV1,
+    SelfKnowledgeItemV1,
+    SelfKnowledgeSectionCountsV1,
+    SelfStudyRetrievalBackendStatusV1,
+    SelfStudyRetrievalCountsV1,
+    SelfStudyRetrievalGroupV1,
+    SelfStudyRetrievedRecordV1,
+    SelfStudyConsumerContextV1,
+    SelfStudyConsumerPolicyDecisionV1,
+    SelfStudyRetrieveFiltersV1,
+    SelfStudyRetrieveRequestV1,
+    SelfStudyRetrieveResultV1,
+    SelfReflectiveFindingV1,
+    SelfRepoInspectResultV1,
+    SelfSnapshotV1,
+    SelfWritebackStatusV1,
+)
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
@@ -131,11 +204,15 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallQueryV1": RecallQueryV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
+    "AgentTraceToolStatV1": AgentTraceToolStatV1,
+    "AgentTraceStepV1": AgentTraceStepV1,
+    "AgentTraceSummaryV1": AgentTraceSummaryV1,
     "CortexExecRequestPayload": CortexExecRequestPayload,
     "CortexExecResultPayload": CortexExecResultPayload,
     "PlanExecutionRequest": PlanExecutionRequest,
     "PlanExecutionResult": PlanExecutionResult,
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,  # change_type dict coercion support
+    "CollapseMirrorStoredV1": CollapseMirrorStoredV1,
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacogTriggerV1": MetacogTriggerV1,
@@ -151,6 +228,26 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RdfWriteRequest": RdfWriteRequest,
     "RdfWriteResult": RdfWriteResult,
     "RdfBuildRequest": RdfBuildRequest,
+    "SelfKnowledgeItemV1": SelfKnowledgeItemV1,
+    "SelfKnowledgeSectionCountsV1": SelfKnowledgeSectionCountsV1,
+    "SelfSnapshotV1": SelfSnapshotV1,
+    "SelfWritebackStatusV1": SelfWritebackStatusV1,
+    "SelfRepoInspectResultV1": SelfRepoInspectResultV1,
+    "SelfConceptEvidenceRefV1": SelfConceptEvidenceRefV1,
+    "SelfInducedConceptV1": SelfInducedConceptV1,
+    "SelfConceptInduceResultV1": SelfConceptInduceResultV1,
+    "SelfConceptRefV1": SelfConceptRefV1,
+    "SelfReflectiveFindingV1": SelfReflectiveFindingV1,
+    "SelfConceptReflectResultV1": SelfConceptReflectResultV1,
+    "SelfStudyRetrieveFiltersV1": SelfStudyRetrieveFiltersV1,
+    "SelfStudyRetrieveRequestV1": SelfStudyRetrieveRequestV1,
+    "SelfStudyRetrievedRecordV1": SelfStudyRetrievedRecordV1,
+    "SelfStudyRetrievalGroupV1": SelfStudyRetrievalGroupV1,
+    "SelfStudyRetrievalCountsV1": SelfStudyRetrievalCountsV1,
+    "SelfStudyRetrievalBackendStatusV1": SelfStudyRetrievalBackendStatusV1,
+    "SelfStudyRetrieveResultV1": SelfStudyRetrieveResultV1,
+    "SelfStudyConsumerPolicyDecisionV1": SelfStudyConsumerPolicyDecisionV1,
+    "SelfStudyConsumerContextV1": SelfStudyConsumerContextV1,
     "VisionFramePointerPayload": VisionFramePointerPayload,
     "VisionArtifactPayload": VisionArtifactPayload,
     "VisionEdgeArtifact": VisionEdgeArtifact,
@@ -175,6 +272,53 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
     "ChatGptLogTurnV1": ChatGptLogTurnV1,
     "ChatGptMessageV1": ChatGptMessageV1,
+    "SocialConceptEvidenceV1": SocialConceptEvidenceV1,
+    "SocialGroundingStateV1": SocialGroundingStateV1,
+    "SocialRedactionScoreV1": SocialRedactionScoreV1,
+    "SocialRoomTurnV1": SocialRoomTurnV1,
+    "SocialRoomTurnStoredV1": SocialRoomTurnStoredV1,
+    "SocialCommitmentV1": SocialCommitmentV1,
+    "SocialCommitmentResolutionV1": SocialCommitmentResolutionV1,
+    "SocialBridgeSummaryV1": SocialBridgeSummaryV1,
+    "SocialClarifyingQuestionV1": SocialClarifyingQuestionV1,
+    "SocialDeliberationDecisionV1": SocialDeliberationDecisionV1,
+    "SocialTurnHandoffV1": SocialTurnHandoffV1,
+    "SocialClosureSignalV1": SocialClosureSignalV1,
+    "SocialFloorDecisionV1": SocialFloorDecisionV1,
+    "SocialClaimV1": SocialClaimV1,
+    "SocialClaimRevisionV1": SocialClaimRevisionV1,
+    "SocialClaimStanceV1": SocialClaimStanceV1,
+    "SocialClaimAttributionV1": SocialClaimAttributionV1,
+    "SocialConsensusStateV1": SocialConsensusStateV1,
+    "SocialDivergenceSignalV1": SocialDivergenceSignalV1,
+    "SocialEpistemicSignalV1": SocialEpistemicSignalV1,
+    "SocialEpistemicDecisionV1": SocialEpistemicDecisionV1,
+    "SocialRepairSignalV1": SocialRepairSignalV1,
+    "SocialRepairDecisionV1": SocialRepairDecisionV1,
+    "CallSyneRoomMessageV1": CallSyneRoomMessageV1,
+    "ExternalRoomParticipantV1": ExternalRoomParticipantV1,
+    "ExternalRoomMessageV1": ExternalRoomMessageV1,
+    "ExternalRoomPostRequestV1": ExternalRoomPostRequestV1,
+    "ExternalRoomPostResultV1": ExternalRoomPostResultV1,
+    "ExternalRoomTurnSkippedV1": ExternalRoomTurnSkippedV1,
+    "SocialParticipantContinuityV1": SocialParticipantContinuityV1,
+    "SocialRoomContinuityV1": SocialRoomContinuityV1,
+    "SocialStanceSnapshotV1": SocialStanceSnapshotV1,
+    "SocialRelationalMemoryUpdateV1": SocialRelationalMemoryUpdateV1,
+    "SocialArtifactProposalV1": SocialArtifactProposalV1,
+    "SocialArtifactRevisionV1": SocialArtifactRevisionV1,
+    "SocialArtifactConfirmationV1": SocialArtifactConfirmationV1,
+    "SocialOpenThreadV1": SocialOpenThreadV1,
+    "SocialTurnPolicyDecisionV1": SocialTurnPolicyDecisionV1,
+    "SocialPeerStyleHintV1": SocialPeerStyleHintV1,
+    "SocialRoomRitualSummaryV1": SocialRoomRitualSummaryV1,
+    "SocialStyleAdaptationSnapshotV1": SocialStyleAdaptationSnapshotV1,
+    "SocialSkillRequestV1": SocialSkillRequestV1,
+    "SocialSkillResultV1": SocialSkillResultV1,
+    "SocialSkillSelectionV1": SocialSkillSelectionV1,
+    "SocialThreadStateV1": SocialThreadStateV1,
+    "SocialThreadRoutingDecisionV1": SocialThreadRoutingDecisionV1,
+    "SocialHandoffSignalV1": SocialHandoffSignalV1,
     "VectorWriteRequest": VectorWriteRequest,
     "VectorDocumentUpsertV1": VectorDocumentUpsertV1,
     "VectorUpsertV1": VectorUpsertV1,
@@ -225,6 +369,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PreferenceResolutionRequest": PreferenceResolutionRequest,
     "PreferenceResolutionResponse": PreferenceResolutionResponse,
     "DailyPulseV1": DailyPulseV1,
+    "JournalTriggerV1": JournalTriggerV1,
+    "JournalEntryDraftV1": JournalEntryDraftV1,
+    "JournalEntryWriteV1": JournalEntryWriteV1,
     "DailyMetacogV1": DailyMetacogV1,
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,

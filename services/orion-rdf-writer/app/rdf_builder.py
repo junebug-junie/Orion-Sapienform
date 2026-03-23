@@ -13,6 +13,7 @@ from rdflib.namespace import RDF, RDFS, XSD
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.rdf import RdfWriteRequest, RdfBuildRequest
+from orion.schemas.social_chat import SocialRoomTurnStoredV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 
 from app.autonomy import build_autonomy_triples
@@ -173,6 +174,10 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             data = payload if isinstance(payload, dict) else payload.model_dump()
             return _handle_chat_message(g, data)
 
+        elif env_kind == "social.turn.stored.v1":
+            data = payload if isinstance(payload, dict) else payload.model_dump()
+            return _handle_social_room_turn(g, data)
+
         else:
             logger.debug(f"Unknown kind {env_kind} for RDF builder")
             return None, None
@@ -270,6 +275,39 @@ def _handle_cognition_trace(g: Graph, trace: CognitionTracePayload) -> Tuple[str
                      g.add((step_uri, ORION.hasEvidenceRef, Literal(val)))
 
     return g.serialize(format="nt"), "orion:cognition"
+
+
+def _handle_social_room_turn(g: Graph, payload: dict[str, Any]) -> Tuple[str, str]:
+    turn = SocialRoomTurnStoredV1.model_validate(payload)
+    turn_uri = URIRef(f"http://conjourney.net/orion/socialTurn/{_sanitize_fragment(turn.turn_id)}")
+    session_val = turn.session_id or "unknown"
+    g.add((turn_uri, RDF.type, ORION.SocialRoomTurn))
+    g.add((turn_uri, ORION.artifactId, Literal(turn.turn_id, datatype=XSD.string)))
+    g.add((turn_uri, ORION.sessionId, Literal(session_val, datatype=XSD.string)))
+    g.add((turn_uri, ORION.profile, Literal(turn.profile, datatype=XSD.string)))
+    g.add((turn_uri, ORION.promptText, Literal(turn.prompt)))
+    g.add((turn_uri, ORION.responseText, Literal(turn.response)))
+    g.add((turn_uri, ORION.textContent, Literal(turn.text or f"User: {turn.prompt}\nOrion: {turn.response}")))
+    if turn.trace_verb:
+        g.add((turn_uri, ORION.traceVerb, Literal(turn.trace_verb, datatype=XSD.string)))
+    if turn.recall_profile:
+        g.add((turn_uri, ORION.recallProfile, Literal(turn.recall_profile, datatype=XSD.string)))
+    g.add((turn_uri, ORION.redactionLevel, Literal(turn.redaction.redaction_level, datatype=XSD.string)))
+    g.add((turn_uri, ORION.recallSafe, Literal(turn.redaction.recall_safe, datatype=XSD.boolean)))
+    if turn.grounding_state.continuity_anchor:
+        g.add((turn_uri, ORION.continuityAnchor, Literal(turn.grounding_state.continuity_anchor)))
+    for tag in turn.tags:
+        g.add((turn_uri, ORION.hasTag, Literal(tag)))
+    for item in turn.concept_evidence:
+        evidence_uri = URIRef(f"{turn_uri}/evidence/{_sanitize_fragment(item.ref_id)}")
+        g.add((evidence_uri, RDF.type, ORION.SocialConceptEvidence))
+        g.add((evidence_uri, ORION.sourceRef, Literal(item.ref_id, datatype=XSD.string)))
+        g.add((evidence_uri, ORION.sourceKind, Literal(item.source_kind, datatype=XSD.string)))
+        g.add((evidence_uri, ORION.summaryText, Literal(item.summary)))
+        g.add((evidence_uri, ORION.confidence, Literal(item.confidence, datatype=XSD.float)))
+        g.add((turn_uri, ORION.supportedByEvidence, evidence_uri))
+    attach_provenance(g, turn_uri, turn.source)
+    return g.serialize(format="nt"), "orion:chat:social"
 
 
 # === Chat History ===

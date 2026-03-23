@@ -124,6 +124,7 @@ class ToolExecutor:
             payload={
                 "messages": [{"role": "user", "content": prompt}],
                 "raw_user_text": normalized_input.get("text") or "",
+                "route": "agent",
                 "options": {"temperature": 0.2},
             },
         )

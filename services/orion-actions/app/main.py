@@ -18,10 +18,24 @@ from fastapi import FastAPI
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+from orion.journaler import (
+    JOURNAL_WRITE_KIND,
+    JournalTriggerV1,
+    build_collapse_stored_trigger,
+    build_compose_request,
+    build_manual_trigger,
+    build_metacog_trigger,
+    build_notify_summary_trigger,
+    build_scheduler_trigger,
+    build_write_payload,
+    cooldown_key_for_trigger,
+    draft_from_cortex_result,
+)
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
-from orion.schemas.notify import NotificationRequest
+from orion.schemas.notify import NotificationRecord, NotificationRequest
+from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -178,6 +192,14 @@ def _daily_notify_request(*, event_kind: str, title: str, dedupe_key: str, corre
     )
 
 
+def _journal_daily_dedupe_key(window: DailyWindow) -> str:
+    return f"actions:journal:daily:{window.request_date}:{settings.node_name}"
+
+
+def should_journal_from_collapse(is_causally_dense: bool, *, dense_only: bool) -> bool:
+    return bool(is_causally_dense) or not dense_only
+
+
 def should_run_interval(*, now_monotonic: float, last_run_monotonic: float | None, interval_seconds: int, run_on_startup: bool) -> bool:
     if last_run_monotonic is None:
         return bool(run_on_startup)
@@ -238,12 +260,14 @@ def _threshold_notify_skill_args(*, findings: list[str], correlation_id: str) ->
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     deduper = ActionDedupe(ttl_seconds=settings.actions_dedupe_ttl_seconds)
+    journal_deduper = ActionDedupe(ttl_seconds=settings.actions_journaling_cooldown_seconds)
     sem = asyncio.Semaphore(max(1, int(settings.actions_max_concurrency)))
     from orion.notify.client import NotifyClient
     notify = NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10)
     src = _source_ref()
     last_daily_run: dict[str, str] = {}
     last_skill_run_monotonic: float | None = None
+    last_journal_run: str | None = None
 
     async def _audit(
         parent: BaseEnvelope,
@@ -301,6 +325,88 @@ async def lifespan(app: FastAPI):
         if not final_text:
             raise RuntimeError("cortex_exec_missing_final_text")
         return final_text, payload
+
+    async def _run_journal(parent: BaseEnvelope, *, trigger) -> dict[str, Any]:
+        req = build_compose_request(
+            trigger,
+            session_id=settings.actions_journal_session_id,
+            user_id=settings.actions_recipient_group,
+            trace_id=str(parent.correlation_id),
+            recall_profile=settings.actions_recall_profile,
+            options={"timeout_sec": float(settings.actions_exec_timeout_seconds)},
+        )
+        reply_channel = new_reply_channel("orion:cortex:result")
+        req_env = parent.derive_child(kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel)
+        msg = await hunter.bus.rpc_request(
+            settings.cortex_request_channel,
+            req_env,
+            reply_channel=reply_channel,
+            timeout_sec=float(settings.actions_exec_timeout_seconds),
+        )
+        decoded = hunter.bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
+        orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        if not orch_payload.get("ok", False):
+            raise RuntimeError(f"journal_compose_failed:{orch_payload.get('error') or orch_payload.get('status')}")
+        draft = draft_from_cortex_result(orch_payload)
+        write = build_write_payload(
+            draft,
+            trigger=trigger,
+            correlation_id=str(parent.correlation_id),
+            author=settings.actions_journal_author,
+        )
+        write_env = parent.derive_child(kind=JOURNAL_WRITE_KIND, source=src, payload=write.model_dump(mode="json"), reply_to=None)
+        await hunter.bus.publish(settings.actions_journal_write_channel, write_env)
+        return {
+            "draft": draft.model_dump(mode="json"),
+            "write": write.model_dump(mode="json"),
+            "orch_payload": orch_payload,
+        }
+
+    async def _dispatch_journal(parent: BaseEnvelope, *, trigger, audit_action: str, dedupe_key: str, reason: str | None = None) -> None:
+        if not settings.actions_journaling_enabled:
+            await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
+            return
+        if not journal_deduper.try_acquire(dedupe_key):
+            await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason=reason or "journal_cooldown")
+            return
+
+        acquired = False
+        t0 = time.monotonic()
+        try:
+            await sem.acquire()
+            acquired = True
+            result = await _run_journal(parent, trigger=trigger)
+            dt_ms = int((time.monotonic() - t0) * 1000)
+            journal_deduper.mark_done(dedupe_key)
+            await _audit(
+                parent,
+                status="completed",
+                event_id=dedupe_key,
+                action_name=audit_action,
+                extra={
+                    "duration_ms": dt_ms,
+                    "journal_mode": result["draft"]["mode"],
+                    "write_channel": settings.actions_journal_write_channel,
+                    "journal_entry_id": result["write"]["entry_id"],
+                },
+            )
+        except Exception as exc:
+            dt_ms = int((time.monotonic() - t0) * 1000)
+            await _audit(
+                parent,
+                status="failed",
+                event_id=dedupe_key,
+                action_name=audit_action,
+                reason=str(exc),
+                extra={"duration_ms": dt_ms},
+            )
+            logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
+        finally:
+            if acquired:
+                sem.release()
+            journal_deduper.release(dedupe_key)
 
     async def _execute_daily(parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str):
         if not deduper.try_acquire(dedupe_key):
@@ -455,6 +561,79 @@ async def lifespan(app: FastAPI):
         dedupe_key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
         await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)
 
+    async def _handle_journal_manual(env: BaseEnvelope) -> None:
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        trigger: JournalTriggerV1 | None = None
+        try:
+            trigger = JournalTriggerV1.model_validate(payload)
+        except Exception:
+            summary = str(payload.get("summary") or "").strip()
+            if not summary:
+                await _audit(env, status="skipped", event_id=str(env.correlation_id), action_name="journal.manual", reason="missing_summary")
+                return
+            trigger = build_manual_trigger(
+                summary=summary,
+                prompt_seed=payload.get("prompt_seed"),
+                source_ref=payload.get("source_ref"),
+            )
+        await _dispatch_journal(
+            env,
+            trigger=trigger,
+            audit_action="journal.manual",
+            dedupe_key=cooldown_key_for_trigger(trigger),
+        )
+
+    async def _handle_journal_notify(env: BaseEnvelope) -> None:
+        try:
+            record = NotificationRecord.model_validate(env.payload)
+        except Exception:
+            return
+        if record.event_kind != "orion.digest.daily":
+            return
+        trigger = build_notify_summary_trigger(record)
+        await _dispatch_journal(
+            env,
+            trigger=trigger,
+            audit_action="journal.notify_summary",
+            dedupe_key=cooldown_key_for_trigger(trigger),
+        )
+
+    async def _handle_journal_metacog(env: BaseEnvelope) -> None:
+        try:
+            trigger_payload = MetacogTriggerV1.model_validate(env.payload)
+        except Exception:
+            return
+        trigger = build_metacog_trigger(trigger_payload)
+        await _dispatch_journal(
+            env,
+            trigger=trigger,
+            audit_action="journal.metacog_digest",
+            dedupe_key=cooldown_key_for_trigger(trigger),
+        )
+
+    async def _handle_journal_collapse_stored(env: BaseEnvelope) -> bool:
+        try:
+            stored = CollapseMirrorStoredV1.model_validate(env.payload)
+        except Exception:
+            return False
+        if not should_journal_from_collapse(stored.is_causally_dense, dense_only=settings.actions_journaling_collapse_dense_only):
+            await _audit(
+                env,
+                status="skipped",
+                event_id=str(stored.mirror_id or env.correlation_id),
+                action_name="journal.collapse_response",
+                reason="collapse_not_dense",
+            )
+            return True
+        trigger = build_collapse_stored_trigger(stored)
+        await _dispatch_journal(
+            env,
+            trigger=trigger,
+            audit_action="journal.collapse_response",
+            dedupe_key=cooldown_key_for_trigger(trigger),
+        )
+        return True
+
     async def handle_envelope(env: BaseEnvelope) -> None:
         kind = str(env.kind or "")
         if kind == "orion.actions.trigger.daily_pulse.v1":
@@ -463,6 +642,18 @@ async def lifespan(app: FastAPI):
         if kind == "orion.actions.trigger.daily_metacog.v1":
             await _handle_manual_daily(env, action_name=ACTION_DAILY_METACOG_V1)
             return
+        if kind == "orion.actions.trigger.journal.v1":
+            await _handle_journal_manual(env)
+            return
+        if kind == "notify.notification.request.v1":
+            await _handle_journal_notify(env)
+            return
+        if kind == "orion.metacog.trigger.v1":
+            await _handle_journal_metacog(env)
+            return
+        if kind == "collapse.mirror.stored.v1":
+            if await _handle_journal_collapse_stored(env):
+                return
 
         # fallback by payload shape/channel drift: collapse flow stays default
         await _handle_collapse(env)
@@ -497,7 +688,7 @@ async def lifespan(app: FastAPI):
         return _extract_skill_result_from_orch(orch_payload)
 
     async def _scheduler_loop() -> None:
-        nonlocal last_skill_run_monotonic
+        nonlocal last_skill_run_monotonic, last_journal_run
         while True:
             try:
                 now_utc = datetime.now(timezone.utc)
@@ -553,6 +744,29 @@ async def lifespan(app: FastAPI):
                     env = BaseEnvelope(kind="orion.actions.trigger.daily_metacog.v1", source=src, payload={"date": window.request_date})
                     await _execute_daily(env, action_name=ACTION_DAILY_METACOG_V1, window=window, dedupe_key=key)
                     last_daily_run[ACTION_DAILY_METACOG_V1] = meta_local_date
+
+                journal_should_run, journal_local_date = should_run_daily(
+                    now_utc=now_utc,
+                    tz_name=settings.actions_daily_timezone,
+                    hour_local=settings.actions_daily_pulse_hour_local,
+                    minute_local=settings.actions_daily_pulse_minute_local,
+                    last_ran_date=last_journal_run,
+                )
+                if settings.actions_journaling_enabled and settings.actions_journaling_daily_enabled and journal_should_run:
+                    window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
+                    trigger = build_scheduler_trigger(
+                        summary=f"Daily journal cadence for {window.request_date} in {window.timezone}.",
+                        prompt_seed=json.dumps(window.__dict__, sort_keys=True),
+                        source_ref=window.request_date,
+                    )
+                    env = BaseEnvelope(kind="orion.actions.trigger.journal.v1", source=src, payload=trigger.model_dump(mode="json"))
+                    await _dispatch_journal(
+                        env,
+                        trigger=trigger,
+                        audit_action="journal.daily_summary",
+                        dedupe_key=_journal_daily_dedupe_key(window),
+                    )
+                    last_journal_run = journal_local_date
             except asyncio.CancelledError:
                 raise
             except Exception:

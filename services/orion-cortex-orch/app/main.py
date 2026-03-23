@@ -10,6 +10,7 @@ from pydantic import Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
+from orion.normalizers.agent_trace import build_agent_trace_summary
 
 # REMOVED: dispatch_metacognition_tick
 from .orchestrator import call_verb_runtime, dispatch_dream_trigger, dispatch_metacog_trigger
@@ -291,6 +292,18 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                     }
                 break
 
+        agent_trace = build_agent_trace_summary(
+            correlation_id=str(env.correlation_id),
+            message_id=str(env.correlation_id),
+            mode=req.mode,
+            status=result_payload.get("status") or "fail",
+            final_text=result_payload.get("final_text"),
+            steps=steps,
+            metadata=final_meta if isinstance(final_meta, dict) else {},
+        )
+        if isinstance(final_meta, dict) and agent_trace is not None:
+            final_meta["agent_trace_available"] = True
+
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
@@ -302,6 +315,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             steps=steps,
             error=error_payload,
             correlation_id=str(env.correlation_id),
+            agent_trace=agent_trace,
             metadata=final_meta,
         )
 

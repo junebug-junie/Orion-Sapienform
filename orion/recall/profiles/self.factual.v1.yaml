@@ -1,0 +1,33 @@
+profile: self.factual.v1
+vector_top_k: 0
+rdf_top_k: 8
+sql_top_k: 3
+sql_chat_top_k: 0
+max_per_source: 8
+max_total_items: 8
+render_budget_tokens: 256
+enable_query_expansion: false
+enable_sql_timeline: true
+time_decay_half_life_hours: 24
+backend_weights:
+  rdf: 1.2
+  sql_timeline: 0.2
+  sql_chat: 0.0
+  rdf_chat: 0.0
+  vector: 0.0
+filters:
+  allowed_sources:
+    - rdf
+    - sql_timeline
+  prefer_tags:
+    - trust:authoritative
+    - self:authoritative
+  prefer_tags_boost: 0.15
+  exclude_tags_prefixes:
+    - trust:induced
+    - trust:reflective
+policy:
+  trust_tiers:
+    - authoritative
+  recent_task_continuity: true
+  reflective_synthesis: false

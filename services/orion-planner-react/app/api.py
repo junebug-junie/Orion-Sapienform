@@ -691,6 +691,7 @@ NEXT STEP (JSON ONLY):
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_prompt},
         ],
+        "route": "agent",
         "options": options_override or {"temperature": 0.1, "max_tokens": 256, "return_json": True},
     }
 

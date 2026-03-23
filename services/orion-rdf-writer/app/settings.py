@@ -67,6 +67,7 @@ class Settings(BaseSettings):
             self.CHANNEL_EVENTS_COLLAPSE,
             self.CHANNEL_EVENTS_TAGGED,
             self.CHANNEL_EVENTS_TAGGED_CHAT,
+            "orion:chat:social:stored",
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_WORKER_RDF,
             self.CORTEX_LOG_CHANNEL,

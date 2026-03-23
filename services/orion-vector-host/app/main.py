@@ -18,6 +18,7 @@ from orion.schemas.chat_history import (
 )
 from orion.schemas.chat_gpt_log import CHAT_GPT_LOG_TURN_KIND, CHAT_GPT_MESSAGE_KIND, ChatGptLogTurnV1
 from orion.schemas.chat_gpt_log import ChatGptMessageV1
+from orion.schemas.social_chat import SocialRoomTurnStoredV1
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
 
 from .embedder import Embedder
@@ -31,6 +32,9 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 
 embedder: Optional[Embedder] = None
 hunter: Optional[Hunter] = None
+SOCIAL_ROOM_STORED_KIND = "social.turn.stored.v1"
+SOCIAL_ROOM_STORED_CHANNEL = "orion:chat:social:stored"
+SOCIAL_ROOM_COLLECTION = "orion_social_room"
 
 
 def _should_skip_memory(payload: Dict[str, Any]) -> bool:
@@ -325,6 +329,60 @@ async def _handle_chat_turn(env: BaseEnvelope) -> None:
     )
 
 
+async def _handle_social_room_turn(env: BaseEnvelope) -> None:
+    if embedder is None:
+        logger.warning("Embedding skipped: embedder unavailable.")
+        return
+    payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
+    if not isinstance(payload_obj, dict):
+        return
+    try:
+        turn = SocialRoomTurnStoredV1.model_validate(payload_obj)
+    except Exception as exc:
+        logger.warning("Social room stored payload invalid: %s", exc)
+        return
+    text = turn.text or f"User: {turn.prompt}\nOrion: {turn.response}".strip()
+    if not text:
+        return
+    meta = _base_meta(
+        env,
+        original_channel=SOCIAL_ROOM_STORED_CHANNEL,
+        role="social_room",
+        timestamp=turn.stored_at or turn.created_at,
+    )
+    meta.update(
+        {
+            "turn_id": turn.turn_id,
+            "session_id": turn.session_id,
+            "profile": turn.profile,
+            "recall_profile": turn.recall_profile,
+            "trace_verb": turn.trace_verb,
+            "tags": turn.tags,
+            "grounding_state": turn.grounding_state.model_dump(mode="json"),
+            "redaction": turn.redaction.model_dump(mode="json"),
+            "concept_evidence": [item.model_dump(mode="json") for item in turn.concept_evidence],
+            "client_meta": turn.client_meta,
+        }
+    )
+    try:
+        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+    except Exception as exc:
+        logger.warning("Embedding failed social turn=%s error=%s", turn.turn_id, exc)
+        return
+    await _publish_semantic_upsert(
+        env=env,
+        text=text,
+        doc_id=turn.turn_id,
+        role="social_room",
+        meta=meta,
+        embedding=embedding,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        original_channel=SOCIAL_ROOM_STORED_CHANNEL,
+        collection_name=SOCIAL_ROOM_COLLECTION,
+    )
+
+
 
 async def _handle_chat_gpt_turn(env: BaseEnvelope) -> None:
     if embedder is None:
@@ -548,6 +606,9 @@ async def _handle_embedding_request(env: BaseEnvelope) -> None:
 
 
 async def handle_envelope(env: BaseEnvelope) -> None:
+    if env.kind == SOCIAL_ROOM_STORED_KIND:
+        await _handle_social_room_turn(env)
+        return
     if env.kind == CHAT_HISTORY_TURN_KIND:
         await _handle_chat_turn(env)
         return
@@ -574,6 +635,7 @@ async def lifespan(app: FastAPI):
     patterns = [
         settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
         settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
+        SOCIAL_ROOM_STORED_CHANNEL,
         settings.VECTOR_HOST_EMBEDDING_REQUEST_CHANNEL,
     ]
     if settings.VECTOR_HOST_GPT_ENABLED:

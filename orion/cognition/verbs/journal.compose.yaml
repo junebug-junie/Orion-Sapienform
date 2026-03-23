@@ -1,0 +1,31 @@
+name: journal.compose
+label: Journal Compose
+description: Given a normalized journal trigger, draft a reflective journal entry and return strict structured output.
+category: reflective
+priority: normal
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: true
+recall_profile: reflect.v1
+timeout_ms: 180000
+max_recursion_depth: 0
+steps:
+  - name: recall_context
+    description: Gather only reflective context relevant to the normalized journal trigger.
+    order: -1
+    services:
+      - RecallService
+    requires_gpu: false
+    requires_memory: true
+    timeout_ms: 60000
+    recall_profile: reflect.v1
+  - name: draft_journal_entry
+    description: Draft the journal entry as strict JSON; no tool selection or agentic planning.
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: journal_compose_prompt.j2
+    requires_gpu: false
+    requires_memory: true
+    timeout_ms: 120000

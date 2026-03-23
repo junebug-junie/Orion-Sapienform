@@ -1,12 +1,18 @@
 {
-  "timestamp": "2026-03-20T04:54:50.618184+00:00",
+  "timestamp": "2026-03-21T02:02:19.276370+00:00",
   "bus_url": "redis://100.92.216.81:6379/0",
   "results": [
     {
       "scenario": "discord_deploy_live",
-      "correlation_id": "9fa3aa5b-b07e-49c5-8851-b52f81b18edd",
-      "overall_pass": false,
-      "error": "RPC timeout waiting on orion:cortex:result:9fa3aa5b-b07e-49c5-8851-b52f81b18edd"
+      "correlation_id": "7e9763e5-eb85-43c9-b9b6-70d3dbd9e1ee",
+      "overall_pass": true,
+      "error": null
+    },
+    {
+      "scenario": "supervisor_meta_plan_live",
+      "correlation_id": "2dd3975a-6975-47ab-ad5d-0e2e7282e30c",
+      "overall_pass": true,
+      "error": null
     }
   ]
 }

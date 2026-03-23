@@ -16,8 +16,11 @@ from scripts.chat_history import (
     build_chat_history_envelope,
     publish_chat_history,
     build_chat_turn_envelope,
+    publish_social_room_turn,
     publish_chat_turn,
 )
+from scripts.social_room import is_social_room_payload, social_room_client_meta
+from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
@@ -501,6 +504,16 @@ async def websocket_endpoint(websocket: WebSocket):
             chat_req.metadata["trace_verb"] = trace_verb
             mode = chat_req.mode
             recall_payload = chat_req.recall or {"enabled": use_recall}
+            turn_client_meta = dict(client_meta)
+            if is_social_room_payload(data):
+                turn_client_meta.update(
+                    social_room_client_meta(
+                        payload=data,
+                        route_debug=route_debug,
+                        trace_verb=trace_verb,
+                        memory_digest=None,
+                    )
+                )
 
             logger.info(f"WS Chat Request recall config: {recall_payload} session_id={session_id}")
             logger.info(
@@ -562,19 +575,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     message_id=f"{trace_id}:user",
                     memory_status="accepted",
                     memory_tier="ephemeral",
-                    client_meta=client_meta,
+                    client_meta=turn_client_meta,
                 )
                 _schedule_publish(publish_chat_history(bus, [user_env]), "chat.history user")
 
             orion_response_text = ""
             memory_digest = None
             recall_debug = None
+            agent_trace = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
                 if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
                     recall_debug = resp.cortex_result.recall_debug
                     memory_digest = recall_debug.get("memory_digest")
+                agent_trace = extract_agent_trace_payload(resp.cortex_result)
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
@@ -621,6 +636,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "memory_digest": memory_digest,
                 "memory_used": memory_used,
                 "recall_debug": recall_debug,
+                "agent_trace": agent_trace,
                 "no_write": no_write,
                 "routing_debug": route_debug,
             }
@@ -632,8 +648,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write:
+                enriched_client_meta = dict(turn_client_meta)
                 try:
                     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+                    if is_social_room_payload(data):
+                        enriched_client_meta.update(
+                            social_room_client_meta(
+                                payload=data,
+                                route_debug=route_debug,
+                                trace_verb=trace_verb,
+                                memory_digest=memory_digest,
+                            )
+                        )
 
                     # Extract rich metadata
                     gateway_meta = {}
@@ -671,10 +698,27 @@ async def websocket_endpoint(websocket: WebSocket):
                         turn_id=trace_id,
                         memory_status="accepted",
                         memory_tier="ephemeral",
-                        client_meta=client_meta,
+                        client_meta=enriched_client_meta,
                     )
                     _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
                     logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
+                    if is_social_room_payload(data):
+                        _schedule_publish(
+                            publish_social_room_turn(
+                                bus,
+                                prompt=transcript,
+                                response=orion_response_text,
+                                session_id=publish_session_id,
+                                correlation_id=trace_id,
+                                user_id=data.get("user_id"),
+                                source_label="hub_ws",
+                                recall_profile=recall_payload.get("profile"),
+                                trace_verb=trace_verb,
+                                client_meta=enriched_client_meta,
+                                memory_digest=memory_digest,
+                            ),
+                            "chat.social turn",
+                        )
                     # 2. Spark Introspection Candidate
                     candidate_payload = {
                         "trace_id": trace_id,
@@ -716,7 +760,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         message_id=f"{trace_id}:assistant",
                         memory_status="accepted",
                         memory_tier="ephemeral",
-                        client_meta=client_meta,
+                        client_meta=enriched_client_meta,
                     )
                     _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
                 except Exception as e:

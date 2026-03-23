@@ -35,6 +35,12 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "notify.notification.receipt.v1": "NotificationReceiptDB",
     "notify.recipient.update.v1": "RecipientProfileDB",
     "notify.preference.update.v1": "NotificationPreferenceDB",
+    "journal.entry.write.v1": "JournalEntrySQL",
+    "social.turn.v1": "SocialRoomTurnSQL",
+    "external.room.message.v1": "ExternalRoomMessageSQL",
+    "external.room.post.result.v1": "ExternalRoomMessageSQL",
+    "external.room.turn.skipped.v1": "ExternalRoomMessageSQL",
+    "external.room.participant.v1": "ExternalRoomParticipantSQL",
 }
 
 
@@ -65,6 +71,11 @@ class Settings(BaseSettings):
             "orion:collapse:sql-write",
             "orion:chat:history:log",
             "orion:chat:history:turn",
+            "orion:chat:social:turn",
+            "orion:bridge:social:room:intake",
+            "orion:bridge:social:room:delivery",
+            "orion:bridge:social:room:skipped",
+            "orion:bridge:social:participant",
             "orion:chat:gpt:log",
             "orion:chat:gpt:turn",
             "orion:chat:gpt:message:log",
@@ -77,7 +88,8 @@ class Settings(BaseSettings):
             "orion:metacognition:tick",
             "orion:equilibrium:metacog:trigger",
             "orion:notify:persistence:request",
-            "orion:notify:persistence:receipt"
+            "orion:notify:persistence:receipt",
+            "orion:journal:write",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -92,6 +104,13 @@ class Settings(BaseSettings):
     sql_writer_route_map_json: str = Field(
         default=json.dumps(DEFAULT_ROUTE_MAP),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
+    )
+    sql_writer_emit_journal_created: bool = Field(True, alias="SQL_WRITER_EMIT_JOURNAL_CREATED")
+    sql_writer_journal_created_channel: str = Field("orion:journal:created", alias="SQL_WRITER_JOURNAL_CREATED_CHANNEL")
+    sql_writer_emit_social_turn_stored: bool = Field(True, alias="SQL_WRITER_EMIT_SOCIAL_TURN_STORED")
+    sql_writer_social_turn_stored_channel: str = Field(
+        "orion:chat:social:stored",
+        alias="SQL_WRITER_SOCIAL_TURN_STORED_CHANNEL",
     )
 
     @property

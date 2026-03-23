@@ -52,6 +52,89 @@ class CortexClientRequest(BaseModel):
     context: CortexClientContext
 
 
+ToolFamilyLiteral = Literal[
+    "reasoning",
+    "planning",
+    "recall",
+    "communication",
+    "runtime",
+    "external",
+    "device",
+    "memory",
+    "orchestration",
+    "unknown",
+]
+
+ActionKindLiteral = Literal[
+    "inspect",
+    "analyze",
+    "retrieve",
+    "decide",
+    "delegate",
+    "notify",
+    "write",
+    "execute",
+    "summarize",
+    "unknown",
+]
+
+EffectKindLiteral = Literal[
+    "read_only",
+    "state_change",
+    "side_effect",
+    "external_io",
+    "unknown",
+]
+
+
+class AgentTraceToolStatV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_id: str
+    tool_family: ToolFamilyLiteral = "unknown"
+    action_kind: ActionKindLiteral = "unknown"
+    effect_kind: EffectKindLiteral = "unknown"
+    count: int = 0
+    duration_ms: Optional[int] = None
+
+
+class AgentTraceStepV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    index: int
+    event_type: str
+    tool_id: Optional[str] = None
+    tool_family: Optional[ToolFamilyLiteral] = None
+    action_kind: ActionKindLiteral = "unknown"
+    effect_kind: EffectKindLiteral = "unknown"
+    status: str = "unknown"
+    duration_ms: Optional[int] = None
+    summary: str = ""
+    detail: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentTraceSummaryV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    corr_id: Optional[str] = None
+    message_id: Optional[str] = None
+    mode: Literal["agent"] = "agent"
+    status: str = "unknown"
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    duration_ms: int = 0
+    step_count: int = 0
+    tool_call_count: int = 0
+    unique_tool_count: int = 0
+    unique_tool_families: List[ToolFamilyLiteral] = Field(default_factory=list)
+    action_counts: Dict[str, int] = Field(default_factory=dict)
+    effect_counts: Dict[str, int] = Field(default_factory=dict)
+    summary_text: str = ""
+    tools: List[AgentTraceToolStatV1] = Field(default_factory=list)
+    steps: List[AgentTraceStepV1] = Field(default_factory=list)
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
 class CortexClientResult(BaseModel):
     """Reply contract returned to clients via Orch."""
     model_config = ConfigDict(extra="forbid")
@@ -67,6 +150,7 @@ class CortexClientResult(BaseModel):
     steps: List[StepExecutionResult] = Field(default_factory=list)
     error: Optional[Dict[str, Any]] = None
     correlation_id: Optional[str] = None
+    agent_trace: Optional[AgentTraceSummaryV1] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

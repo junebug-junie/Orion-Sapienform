@@ -112,6 +112,33 @@ def _tag_prefix_boost(tags: List[str], profile: Dict[str, Any]) -> float:
     return boost
 
 
+def _candidate_allowed(cand: Dict[str, Any], profile: Dict[str, Any]) -> bool:
+    filters = profile.get("filters")
+    if not isinstance(filters, dict):
+        return True
+
+    source = str(cand.get("source") or "unknown")
+    tags = [str(tag) for tag in (cand.get("tags") or []) if tag]
+
+    allowed_sources = filters.get("allowed_sources")
+    if isinstance(allowed_sources, list) and allowed_sources:
+        if source not in {str(item) for item in allowed_sources}:
+            return False
+
+    excluded_prefixes = filters.get("exclude_tags_prefixes")
+    if isinstance(excluded_prefixes, list):
+        for tag in tags:
+            if any(tag.startswith(str(prefix)) for prefix in excluded_prefixes):
+                return False
+
+    required_any = filters.get("required_tags_any")
+    if isinstance(required_any, list) and required_any:
+        if not any(tag in {str(item) for item in required_any} for tag in tags):
+            return False
+
+    return True
+
+
 def _turn_effect_boost(cand: Dict[str, Any], profile: Dict[str, Any]) -> float:
     sql_cfg = profile.get("sql")
     if not isinstance(sql_cfg, dict):
@@ -162,6 +189,8 @@ def fuse_candidates(
 
     denial_patterns = _denial_patterns()
     for cand in candidates:
+        if not _candidate_allowed(cand, profile):
+            continue
         source = str(cand.get("source") or "unknown")
         backend_counts[source] = backend_counts.get(source, 0) + 1
         key = _key_for(cand)

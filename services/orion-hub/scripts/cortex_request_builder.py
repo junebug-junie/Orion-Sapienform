@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from orion.cognition.verb_activation import is_active
+from orion.cognition.workflows import (
+    derive_workflow_execution_policy,
+    resolve_user_workflow_invocation,
+    workflow_registry_payload,
+)
 from orion.schemas.cortex.contracts import CortexChatRequest
 from orion.schemas.social_memory import (
     SocialParticipantContinuityV1,
@@ -239,8 +244,16 @@ def build_cortex_chat_request(
 
     selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
 
+    workflow_match = None
+    if not social_room and len(selected_verbs) == 0:
+        workflow_match = resolve_user_workflow_invocation(prompt)
+
     verb_override: str | None = None
-    if social_room and not selected_verbs:
+    if workflow_match is not None:
+        mode = "brain"
+        selected_ui_route = "brain" if selected_ui_route == "auto" else selected_ui_route
+        options.pop("route_intent", None)
+    elif social_room and not selected_verbs:
         verb_override = SOCIAL_ROOM_VERB
     elif len(selected_verbs) == 1:
         verb_override = selected_verbs[0]
@@ -264,13 +277,27 @@ def build_cortex_chat_request(
     if social_room:
         route_intent = "none"
         options.pop("route_intent", None)
+    if workflow_match is not None:
+        route_intent = "none"
+        options.pop("route_intent", None)
 
     metadata: Dict[str, Any] = {
         "source": source_label,
         "hub_route": {
             "selected_ui_route": selected_ui_route,
         },
+        "available_workflows": workflow_registry_payload(user_invocable_only=True),
     }
+    if workflow_match is not None:
+        metadata["workflow_request"] = workflow_match.model_dump(mode="json")
+        metadata["workflow_request"]["invoked_from_chat"] = True
+        metadata["workflow_request"]["execution_policy"] = derive_workflow_execution_policy(
+            workflow_id=workflow_match.workflow_id,
+            prompt=prompt,
+            session_id=session_id,
+            user_id=user_id,
+        ).model_dump(mode="json")
+
     if social_room:
         peer_continuity = payload.get("social_peer_continuity") or {}
         room_continuity = payload.get("social_room_continuity") or {}
@@ -424,6 +451,9 @@ def build_cortex_chat_request(
         "force_agent_chain": _normalize_flag((req.options or {}).get("force_agent_chain"), default=False),
         "diagnostic": _normalize_flag(diagnostic_value, default=False),
         "chat_profile": SOCIAL_ROOM_PROFILE if social_room else None,
+        "workflow_id": metadata.get("workflow_request", {}).get("workflow_id") if isinstance(metadata.get("workflow_request"), dict) else None,
+        "workflow_request": metadata.get("workflow_request"),
+        "workflow_execution_policy": metadata.get("workflow_request", {}).get("execution_policy") if isinstance(metadata.get("workflow_request"), dict) else None,
     }
     if social_room:
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []

@@ -105,6 +105,7 @@ loadDismissedIds();
   const toastContainer = document.getElementById('toastContainer');
   const agentTraceApi = window.OrionAgentTrace || {};
   const socialInspectionApi = window.OrionSocialInspection || {};
+  const workflowUiApi = window.OrionWorkflowUI || {};
   const agentTraceModal = document.getElementById('agentTraceModal');
   const agentTraceModalClose = document.getElementById('agentTraceModalClose');
   const agentTraceModalMeta = document.getElementById('agentTraceModalMeta');
@@ -116,6 +117,14 @@ loadDismissedIds();
   const agentTraceTimelineBody = document.getElementById('agentTraceTimelineBody');
   const agentTraceRawSummary = document.getElementById('agentTraceRawSummary');
   const agentTraceRawPayloads = document.getElementById('agentTraceRawPayloads');
+  const workflowModal = document.getElementById('workflowModal');
+  const workflowModalClose = document.getElementById('workflowModalClose');
+  const workflowModalTitle = document.getElementById('workflowModalTitle');
+  const workflowModalMeta = document.getElementById('workflowModalMeta');
+  const workflowModalBadges = document.getElementById('workflowModalBadges');
+  const workflowModalSummary = document.getElementById('workflowModalSummary');
+  const workflowModalDetailSurface = document.getElementById('workflowModalDetailSurface');
+  const workflowModalRaw = document.getElementById('workflowModalRaw');
   const outboundRoutingDebug = document.getElementById('outboundRoutingDebug');
   const socialInspectionOpen = document.getElementById('socialInspectionOpen');
   const socialInspectionPanelStatus = document.getElementById('socialInspectionPanelStatus');
@@ -1896,6 +1905,176 @@ loadDismissedIds();
     });
   }
 
+  function statusChipClass(status) {
+    switch (String(status || '').toLowerCase()) {
+      case 'completed':
+        return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200';
+      case 'failed':
+        return 'border-red-500/40 bg-red-500/10 text-red-200';
+      case 'running':
+        return 'border-amber-500/40 bg-amber-500/10 text-amber-200';
+      case 'requested':
+        return 'border-sky-500/40 bg-sky-500/10 text-sky-200';
+      default:
+        return 'border-violet-500/40 bg-violet-500/10 text-violet-200';
+    }
+  }
+
+  function normalizeWorkflow(messageLike, explicitStatus) {
+    if (!workflowUiApi.normalizeWorkflow) return null;
+    const options = explicitStatus ? { status: explicitStatus } : {};
+    return workflowUiApi.normalizeWorkflow(
+      (messageLike && (messageLike.workflow || messageLike.raw_workflow || messageLike.rawWorkflow)) || messageLike,
+      options,
+    );
+  }
+
+  function buildWorkflowMetaBadges(workflow) {
+    const badges = [];
+    if (!workflow) return badges;
+    badges.push({ label: workflowUiApi.getWorkflowBadgeLabel ? workflowUiApi.getWorkflowBadgeLabel(workflow) : `Workflow · ${workflow.display_name || workflow.id}`, className: 'border-violet-500/40 bg-violet-500/10 text-violet-200' });
+    const statusLabel = workflowUiApi.getWorkflowStatusLabel ? workflowUiApi.getWorkflowStatusLabel(workflow.status) : (workflow.status || '');
+    if (statusLabel) badges.push({ label: statusLabel, className: statusChipClass(workflow.status) });
+    if (Array.isArray(workflow.persisted) && workflow.persisted.length) badges.push({ label: 'Persisted', className: 'border-gray-600/50 bg-gray-800/70 text-gray-200' });
+    if (workflow.action_assistance_used) badges.push({ label: 'Actions assist', className: 'border-gray-600/50 bg-gray-800/70 text-gray-200' });
+    return badges;
+  }
+
+  function renderBadgeRow(badges) {
+    const row = document.createElement('div');
+    row.className = 'flex flex-wrap items-center gap-2';
+    (badges || []).forEach((badge) => {
+      if (!badge || !badge.label) return;
+      const chip = document.createElement('span');
+      chip.className = `inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${badge.className || 'border-gray-700 bg-gray-800 text-gray-200'}`;
+      chip.textContent = badge.label;
+      row.appendChild(chip);
+    });
+    return row;
+  }
+
+  function buildWorkflowSummaryLine(workflow) {
+    if (!workflow) return '';
+    const summary = [];
+    if (workflow.summary) summary.push(workflow.summary);
+    if (Array.isArray(workflow.persisted) && workflow.persisted.length) summary.push(`persisted ${workflow.persisted.length}`);
+    if (Array.isArray(workflow.scheduled) && workflow.scheduled.length) summary.push(`scheduled ${workflow.scheduled.length}`);
+    return summary.join(' · ');
+  }
+
+  function buildWorkflowModalSummaryCard(label, value) {
+    const card = document.createElement('div');
+    card.className = 'rounded-xl border border-gray-700 bg-gray-800/50 p-3';
+    const title = document.createElement('div');
+    title.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    title.textContent = label;
+    const body = document.createElement('div');
+    body.className = 'mt-2 text-sm font-semibold text-gray-100 whitespace-pre-wrap';
+    body.textContent = value || '--';
+    card.appendChild(title);
+    card.appendChild(body);
+    return card;
+  }
+
+  function closeWorkflowModal() {
+    if (!workflowModal) return;
+    workflowModal.classList.add('hidden');
+    workflowModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function openWorkflowModal(workflow) {
+    const normalized = normalizeWorkflow(workflow);
+    if (!workflowModal || !normalized) return;
+    if (workflowModalTitle) workflowModalTitle.textContent = normalized.display_name || normalized.id || 'Workflow';
+    if (workflowModalMeta) {
+      const statusLabel = workflowUiApi.getWorkflowStatusLabel ? workflowUiApi.getWorkflowStatusLabel(normalized.status) : (normalized.status || '--');
+      workflowModalMeta.textContent = `${normalized.id || '--'} · ${statusLabel || '--'}`;
+    }
+    if (workflowModalBadges) {
+      workflowModalBadges.innerHTML = '';
+      workflowModalBadges.appendChild(renderBadgeRow(buildWorkflowMetaBadges(normalized)));
+    }
+    if (workflowModalSummary) {
+      workflowModalSummary.innerHTML = '';
+      const rows = [
+        ['Summary', normalized.summary || '--'],
+        ['Run again prompt', normalized.rerun_prompt || '--'],
+      ];
+      rows.forEach(([label, value]) => workflowModalSummary.appendChild(buildWorkflowModalSummaryCard(label, value)));
+    }
+    if (workflowModalDetailSurface) {
+      workflowModalDetailSurface.innerHTML = '';
+      const rows = workflowUiApi.buildWorkflowDetailRows ? workflowUiApi.buildWorkflowDetailRows(normalized) : [];
+      rows.forEach(([label, value]) => {
+        const row = document.createElement('div');
+        row.className = 'grid grid-cols-1 gap-1 border-b border-gray-800 pb-3 last:border-b-0 last:pb-0 md:grid-cols-[160px_minmax(0,1fr)]';
+        const key = document.createElement('div');
+        key.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+        key.textContent = label;
+        const val = document.createElement('div');
+        val.className = 'text-sm text-gray-200 whitespace-pre-wrap break-words';
+        val.textContent = String(value ?? '--');
+        row.appendChild(key);
+        row.appendChild(val);
+        workflowModalDetailSurface.appendChild(row);
+      });
+    }
+    if (workflowModalRaw) workflowModalRaw.textContent = JSON.stringify(normalized.raw_metadata || normalized, null, 2);
+    workflowModal.classList.remove('hidden');
+    workflowModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function createWorkflowPanel(workflow, options = {}) {
+    const normalized = normalizeWorkflow(workflow, options.status);
+    if (!normalized) return null;
+
+    const panel = document.createElement('div');
+    panel.className = 'mt-3 rounded-xl border border-violet-500/20 bg-violet-500/5 p-3 space-y-3';
+
+    const header = document.createElement('div');
+    header.className = 'flex flex-wrap items-center justify-between gap-2';
+    header.appendChild(renderBadgeRow(buildWorkflowMetaBadges(normalized)));
+
+    const actions = document.createElement('div');
+    actions.className = 'flex flex-wrap items-center gap-2';
+
+    const detailsButton = document.createElement('button');
+    detailsButton.type = 'button';
+    detailsButton.className = 'rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-200 hover:bg-violet-500/20';
+    detailsButton.textContent = 'Workflow details';
+    detailsButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openWorkflowModal(normalized);
+    });
+    actions.appendChild(detailsButton);
+
+    if (workflowUiApi.canRunAgain && workflowUiApi.canRunAgain(normalized)) {
+      const rerunButton = document.createElement('button');
+      rerunButton.type = 'button';
+      rerunButton.className = 'rounded-full border border-gray-700 bg-gray-800 px-2 py-1 text-[10px] font-semibold text-gray-200 hover:bg-gray-700';
+      rerunButton.textContent = 'Run again';
+      rerunButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof options.onRunAgain === 'function') {
+          await options.onRunAgain(normalized);
+        }
+      });
+      actions.appendChild(rerunButton);
+    }
+
+    header.appendChild(actions);
+    panel.appendChild(header);
+
+    const summary = document.createElement('div');
+    summary.className = 'text-[11px] text-violet-100/90 whitespace-pre-wrap';
+    summary.textContent = buildWorkflowSummaryLine(normalized) || 'Structured workflow turn.';
+    panel.appendChild(summary);
+
+    return panel;
+  }
+
   function isChatMessageNotification(notification) {
     return (
       notification &&
@@ -1910,6 +2089,12 @@ loadDismissedIds();
     const agentTrace = agentTraceApi.extractAgentTrace
       ? agentTraceApi.extractAgentTrace(notification)
       : (notification.agent_trace || notification.agentTrace || null);
+    const rawMessage = {
+      ...notification,
+      metadata: notification.metadata || (notification.raw && notification.raw.metadata) || {},
+      context: notification.context || {},
+    };
+    const workflow = workflowUiApi.extractWorkflow ? workflowUiApi.extractWorkflow(rawMessage) : null;
     return {
       message_id: msgId,
       session_id: notification.session_id || notification.sessionId,
@@ -1920,8 +2105,10 @@ loadDismissedIds();
       preview_text: notification.body_text || notification.preview_text || notification.previewText || '',
       full_text: notification.full_text || notification.fullText || notification.body_text || '',
       agent_trace: agentTrace,
+      workflow: workflow,
       status: (notification.status || 'unread').toLowerCase(),
       silent: Boolean(notification.silent),
+      raw: rawMessage,
     };
   }
 
@@ -2002,6 +2189,7 @@ loadDismissedIds();
         preview.textContent = item.preview_text || '';
 
         summary.appendChild(headerRow);
+        if (item.workflow) summary.appendChild(renderBadgeRow(buildWorkflowMetaBadges(item.workflow)));
         summary.appendChild(preview);
 
         const body = document.createElement('div');
@@ -2043,6 +2231,11 @@ loadDismissedIds();
         actions.appendChild(dismissBtn);
 
         body.appendChild(bodyText);
+        const workflowPanel = createWorkflowPanel(item.workflow, {
+          status: item.status,
+          onRunAgain: async (workflow) => submitExplicitChatText(workflow.rerun_prompt),
+        });
+        if (workflowPanel) body.appendChild(workflowPanel);
         const tracePanel = createAgentTracePanel(item.agent_trace, { correlationId: item.correlation_id });
         if (tracePanel) body.appendChild(tracePanel);
         body.appendChild(actions);
@@ -2508,6 +2701,10 @@ loadDismissedIds();
       }
     }
     div.appendChild(headerRow);
+    const workflowPanel = sender === 'Orion' ? createWorkflowPanel(meta.workflow, {
+      onRunAgain: async (workflow) => submitExplicitChatText(workflow.rerun_prompt),
+    }) : null;
+    if (workflowPanel) div.appendChild(workflowPanel);
     div.appendChild(body);
     if (sender === 'Orion') {
       const tracePanel = createAgentTracePanel(meta.agentTrace, meta);
@@ -3524,9 +3721,17 @@ loadDismissedIds();
   if (agentTraceModalClose) {
     agentTraceModalClose.addEventListener('click', closeAgentTraceModal);
   }
+  if (workflowModalClose) {
+    workflowModalClose.addEventListener('click', closeWorkflowModal);
+  }
   if (agentTraceModal) {
     agentTraceModal.addEventListener('click', (event) => {
       if (event.target === agentTraceModal) closeAgentTraceModal();
+    });
+  }
+  if (workflowModal) {
+    workflowModal.addEventListener('click', (event) => {
+      if (event.target === workflowModal) closeWorkflowModal();
     });
   }
   document.addEventListener('keydown', (event) => {
@@ -3536,6 +3741,10 @@ loadDismissedIds();
     }
     if (event.key === 'Escape' && agentTraceModal && !agentTraceModal.classList.contains('hidden')) {
       closeAgentTraceModal();
+      return;
+    }
+    if (event.key === 'Escape' && workflowModal && !workflowModal.classList.contains('hidden')) {
+      closeWorkflowModal();
     }
   });
 
@@ -3563,6 +3772,7 @@ loadDismissedIds();
               agentTrace: d.agent_trace,
               correlationId: d.correlation_id,
               routingDebug: d.routing_debug,
+              workflow: d.workflow,
             });
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
@@ -3594,16 +3804,16 @@ loadDismissedIds();
     };
   }
 
-  async function sendTextMessage() {
-    const text = chatInput.value.trim();
-    if (!text) return;
-    appendMessage('You', text);
-    chatInput.value = '';
+  async function submitExplicitChatText(text) {
+    const value = String(text || '').trim();
+    if (!value) return;
+    appendMessage('You', value);
+    if (chatInput) chatInput.value = '';
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
     const payload = {
-       text_input: text,
+       text_input: value,
        mode: currentMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
@@ -3621,7 +3831,7 @@ loadDismissedIds();
         updateStatus('Sent...');
     } else {
         appendMessage('System', 'WebSocket not connected. Trying HTTP fallback...', 'text-yellow-400');
-        
+
         if (!orionSessionId) await initSession();
         payload.session_id = orionSessionId;
 
@@ -3629,11 +3839,10 @@ loadDismissedIds();
         if (orionSessionId) headers['X-Orion-Session-Id'] = orionSessionId;
         if (noWriteToggle && noWriteToggle.checked) headers['X-Orion-No-Write'] = '1';
 
-        // Fallback to HTTP if WS is down
         fetch(`${API_BASE_URL}/api/chat`, {
             method: 'POST',
             headers: headers,
-            body: JSON.stringify({messages:[{role:'user', content:text}], ...payload})
+            body: JSON.stringify({messages:[{role:'user', content:value}], ...payload})
         })
         .then(r => r.json())
         .then(d => {
@@ -3642,6 +3851,7 @@ loadDismissedIds();
                 agentTrace: d.agent_trace,
                 correlationId: d.correlation_id,
                 routingDebug: d.routing_debug,
+                workflow: d.workflow,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
             } else if(d.error) appendMessage('System', d.error, 'text-red-400');
@@ -3649,6 +3859,12 @@ loadDismissedIds();
         })
         .catch(e => appendMessage('System', "HTTP Failed: " + e.message, 'text-red-400'));
     }
+  }
+
+  async function sendTextMessage() {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    await submitExplicitChatText(text);
   }
 
   // --- Audio ---

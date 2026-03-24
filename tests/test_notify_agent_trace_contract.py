@@ -72,6 +72,13 @@ def test_notify_chat_message_roundtrip_preserves_agent_trace() -> None:
         preview_text="Agent-backed response.",
         full_text="Agent-backed response with trace metadata.",
         agent_trace=_sample_trace(),
+        workflow={
+            'id': 'dream_cycle',
+            'display_name': 'Dream Cycle',
+            'status': 'completed',
+            'summary': 'Dream synthesis complete.',
+            'user_invocable': True,
+        },
     )
 
     notification = notify_main._chat_message_to_notification(payload)
@@ -81,6 +88,8 @@ def test_notify_chat_message_roundtrip_preserves_agent_trace() -> None:
     assert state.agent_trace is not None
     assert state.agent_trace.mode == "agent"
     assert state.agent_trace.summary_text.startswith("Agent planned then analyzed")
+    assert notification.context['workflow']['id'] == 'dream_cycle'
+    assert state.workflow['id'] == 'dream_cycle'
 
 
 def test_sql_notify_reader_exposes_agent_trace_from_stored_context() -> None:
@@ -97,7 +106,7 @@ def test_sql_notify_reader_exposes_agent_trace_from_stored_context() -> None:
         body_text="Agent-backed response.",
         message_full_text="Agent-backed response with trace metadata.",
         body_md="Agent-backed response with trace metadata.",
-        context={"agent_trace": _sample_trace().model_dump(mode="json")},
+        context={"agent_trace": _sample_trace().model_dump(mode="json"), "workflow": {'id': 'journal_pass', 'display_name': 'Journal Pass', 'status': 'completed'}},
         tags=["chat", "message"],
         severity="info",
         message_require_read_receipt=True,
@@ -113,3 +122,4 @@ def test_sql_notify_reader_exposes_agent_trace_from_stored_context() -> None:
     assert state.agent_trace is not None
     assert state.agent_trace.corr_id == "corr-agent-visible"
     assert state.agent_trace.tool_call_count == 2
+    assert state.workflow['id'] == 'journal_pass'

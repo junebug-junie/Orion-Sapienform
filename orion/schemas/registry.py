@@ -219,6 +219,11 @@ from orion.schemas.topic_foundry import (
     TopicFoundryEnrichCompleteV1,
     TopicFoundryRunCompleteV1,
 )
+from orion.schemas.workflow_execution import (
+    WorkflowDispatchRequestV1,
+    WorkflowExecutionPolicyV1,
+    WorkflowScheduleSpecV1,
+)
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -443,6 +448,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TopicFoundryEnrichCompleteV1": TopicFoundryEnrichCompleteV1,
     "TopicFoundryDriftAlertV1": TopicFoundryDriftAlertV1,
     "KgEdgeIngestV1": KgEdgeIngestV1,
+    "WorkflowScheduleSpecV1": WorkflowScheduleSpecV1,
+    "WorkflowExecutionPolicyV1": WorkflowExecutionPolicyV1,
+    "WorkflowDispatchRequestV1": WorkflowDispatchRequestV1,
 
 }
 

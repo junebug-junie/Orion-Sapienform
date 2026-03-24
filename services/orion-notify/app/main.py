@@ -543,6 +543,7 @@ async def _publish_in_app_event(
             agent_trace=agent_trace,
             notification_type=notification_type,
             silent=silent,
+            workflow=_parse_workflow(payload.context),
         )
         env = BaseEnvelope(
             kind="notify.in_app.v1",
@@ -617,6 +618,8 @@ def _chat_message_to_notification(payload: ChatMessageNotification) -> Notificat
     }
     if payload.agent_trace is not None:
         context["agent_trace"] = payload.agent_trace.model_dump(mode="json")
+    if payload.workflow:
+        context["workflow"] = dict(payload.workflow)
     return NotificationRequest(
         source_service=payload.source_service,
         event_kind=CHAT_MESSAGE_EVENT_KIND,
@@ -667,7 +670,8 @@ def _chat_message_to_schema(payload: NotificationRequest) -> ChatMessageState:
         tags=payload.tags,
         severity=payload.severity,
         require_read_receipt=bool(ctx.get("require_read_receipt")),
-        status="unread"
+        status="unread",
+        workflow=_parse_workflow(ctx),
     )
 
 def _parse_attention_id(context: Dict[str, Any]) -> Optional[UUID]:
@@ -684,6 +688,17 @@ def _parse_message_id(context: Dict[str, Any]) -> Optional[UUID]:
     try: return UUID(str(raw))
     except: return None
 
+
+
+
+def _parse_workflow(context: Dict[str, Any] | None) -> Dict[str, Any]:
+    raw = context.get("workflow") if isinstance(context, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    workflow_id = str(raw.get("id") or raw.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return {}
+    return dict(raw)
 
 def _parse_agent_trace(context: Dict[str, Any] | None) -> Optional[AgentTraceSummaryV1]:
     raw = context.get("agent_trace") if isinstance(context, dict) else None

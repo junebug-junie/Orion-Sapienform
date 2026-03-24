@@ -16,6 +16,7 @@ from orion.normalizers.agent_trace import build_agent_trace_summary
 from .orchestrator import call_verb_runtime, dispatch_dream_trigger, dispatch_metacog_trigger
 from .settings import get_settings
 from .decision_router import DecisionRouter
+from .workflow_runtime import execute_chat_workflow, has_explicit_workflow_request
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
@@ -170,7 +171,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
             req = routed.request
             route_meta = routed.decision.model_dump(mode="json")
-            route_meta["output_mode_decision"] = routed.output_mode_decision.model_dump()
+            output_mode_decision = getattr(routed, "output_mode_decision", None)
+            if output_mode_decision is not None and hasattr(output_mode_decision, "model_dump"):
+                route_meta["output_mode_decision"] = output_mode_decision.model_dump()
             logger.info(
                 "auto_depth_result corr_id=%s depth=%s primary_verb=%s router_source=%s confidence=%.2f",
                 str(env.correlation_id),
@@ -182,6 +185,23 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         elif str(req.mode).lower() == "auto":
             logger.info("auto_route_gate corr_id=%s fallback_mode=brain reason=%s", str(env.correlation_id), route_reason)
             req.mode = "brain"
+
+        if has_explicit_workflow_request(req):
+            workflow_result = await execute_chat_workflow(
+                bus=svc.bus,
+                source=sref,
+                req=req,
+                correlation_id=str(env.correlation_id),
+                causality_chain=env.causality_chain,
+                trace=env.trace,
+                call_verb_runtime=call_verb_runtime,
+            )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=workflow_result.model_dump(mode="json"),
+            )
 
         ok, bad_verb = _normalize_and_validate_verb(req)
         if not ok:

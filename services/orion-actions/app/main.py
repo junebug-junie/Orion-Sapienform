@@ -36,6 +36,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
 
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -53,11 +54,21 @@ from .logic import (
     should_trigger,
 )
 from .settings import settings
+from .workflow_scheduler import (
+    ScheduledWorkflowEntry,
+    advance_after_dispatch,
+    due_schedules,
+    register_schedule,
+    schedule_label,
+)
 
 logger = logging.getLogger("orion-actions")
 
 ACTION_DAILY_PULSE_V1 = "daily_pulse_v1"
 ACTION_DAILY_METACOG_V1 = "daily_metacog_v1"
+ACTION_WORKFLOW_SCHEDULE_V1 = "workflow.schedule.v1"
+WORKFLOW_TRIGGER_KIND = "orion.actions.trigger.workflow.v1"
+WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
 
 
 @dataclass
@@ -306,6 +317,7 @@ async def lifespan(app: FastAPI):
     last_daily_run: dict[str, str] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
+    workflow_schedules: dict[str, ScheduledWorkflowEntry] = {}
 
     async def _audit(
         parent: BaseEnvelope,
@@ -679,8 +691,66 @@ async def lifespan(app: FastAPI):
         )
         return True
 
+    async def _dispatch_scheduled_workflow(entry: ScheduledWorkflowEntry) -> None:
+        workflow_request = dict(entry.request.workflow_request or {})
+        policy = dict(workflow_request.get("execution_policy") or {})
+        policy["invocation_mode"] = "immediate"
+        workflow_request["execution_policy"] = policy
+        workflow_request["scheduled_dispatch"] = {
+            "request_id": entry.request.request_id,
+            "source": "orion-actions",
+            "scheduled_label": schedule_label(entry),
+        }
+        env = build_skill_cortex_orch_envelope(
+            BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={}),
+            source=src,
+            verb="chat_general",
+            session_id=entry.request.execution_policy.session_id or settings.actions_session_id,
+            user_id=entry.request.execution_policy.origin_user_id or settings.actions_recipient_group,
+            metadata={
+                "workflow_request": workflow_request,
+                "workflow_dispatch_source": "orion-actions-scheduler",
+            },
+            options={"source": "orion-actions", "policy_dispatch_only": True},
+            recall_enabled=False,
+        )
+        payload = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else dict(env.payload or {})
+        payload["verb"] = None
+        payload["route_intent"] = "none"
+        payload["mode"] = "brain"
+        await dispatch_cortex_request(
+            bus=hunter.bus,
+            channel=settings.cortex_request_channel,
+            envelope=env.model_copy(update={"payload": payload}),
+        )
+
+    async def _handle_workflow_schedule(env: BaseEnvelope) -> None:
+        try:
+            request = WorkflowDispatchRequestV1.model_validate(env.payload)
+        except Exception:
+            await _audit(env, status="failed", event_id=str(env.correlation_id), action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_workflow_dispatch_payload")
+            return
+        entry = register_schedule(schedules=workflow_schedules, request=request)
+        if entry is None:
+            await _audit(env, status="failed", event_id=request.request_id, action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_schedule")
+            return
+        await _audit(
+            env,
+            status="scheduled",
+            event_id=request.request_id,
+            action_name=ACTION_WORKFLOW_SCHEDULE_V1,
+            extra={
+                "workflow_id": request.workflow_id,
+                "notify_on": request.execution_policy.notify_on,
+                "next_run_utc": entry.next_run_utc.isoformat(),
+            },
+        )
+
     async def handle_envelope(env: BaseEnvelope) -> None:
         kind = str(env.kind or "")
+        if kind == WORKFLOW_TRIGGER_KIND:
+            await _handle_workflow_schedule(env)
+            return
         if kind == "orion.actions.trigger.daily_pulse.v1":
             await _handle_manual_daily(env, action_name=ACTION_DAILY_PULSE_V1)
             return
@@ -733,7 +803,7 @@ async def lifespan(app: FastAPI):
         return _extract_skill_result_from_orch(orch_payload)
 
     async def _scheduler_loop() -> None:
-        nonlocal last_skill_run_monotonic, last_journal_run
+        nonlocal last_skill_run_monotonic, last_journal_run, workflow_schedules
         while True:
             try:
                 now_utc = datetime.now(timezone.utc)
@@ -812,6 +882,22 @@ async def lifespan(app: FastAPI):
                         dedupe_key=_journal_daily_dedupe_key(window),
                     )
                     last_journal_run = journal_local_date
+
+                for entry in due_schedules(workflow_schedules, now_utc=now_utc):
+                    dispatch_env = BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={})
+                    await _dispatch_scheduled_workflow(entry)
+                    await _audit(
+                        dispatch_env,
+                        status="dispatched",
+                        event_id=entry.request.request_id,
+                        action_name="workflow.dispatch.v1",
+                        extra={
+                            "workflow_id": entry.request.workflow_id,
+                            "notify_on": entry.request.execution_policy.notify_on,
+                            "next_run_utc": entry.next_run_utc.isoformat(),
+                        },
+                    )
+                    advance_after_dispatch(schedules=workflow_schedules, entry=entry, now_utc=now_utc)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -819,11 +905,14 @@ async def lifespan(app: FastAPI):
 
             await asyncio.sleep(45)
 
-    hunter = Hunter(_cfg(), patterns=settings.subscribe_patterns(), handler=handle_envelope)
+    patterns = settings.subscribe_patterns()
+    if WORKFLOW_TRIGGER_CHANNEL not in patterns:
+        patterns.append(WORKFLOW_TRIGGER_CHANNEL)
+    hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
 
     logger.info(
         "Starting orion-actions Hunter channels=%s bus=%s cortex_request=%s",
-        settings.subscribe_patterns(),
+        patterns,
         settings.orion_bus_url,
         settings.cortex_request_channel,
     )

@@ -134,6 +134,7 @@ class ChatMessageNotification(BaseModel):
     severity: str = Field("info")
     require_read_receipt: bool = Field(True)
     expires_at: Optional[datetime] = None
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatMessageReceipt(BaseModel):
@@ -164,6 +165,7 @@ class ChatMessageState(BaseModel):
     dismissed_at: Optional[datetime] = None
     escalated_at: Optional[datetime] = None
     status: str = Field("unread")
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RecipientProfile(BaseModel):
@@ -238,6 +240,7 @@ class HubNotificationEvent(BaseModel):
     agent_trace: Optional[AgentTraceSummaryV1] = None
     notification_type: Optional[str] = None
     silent: Optional[bool] = None
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NotificationReceiptEvent(BaseModel):

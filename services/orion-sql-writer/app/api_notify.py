@@ -92,8 +92,20 @@ def _chat_message_to_schema(row: NotificationRequestDB, receipts: List[Notificat
         dismissed_at=dismissed_at,
         escalated_at=row.message_escalated_at,
         status=status,
+        workflow=_parse_workflow(context),
     )
 
+
+
+
+def _parse_workflow(context: Dict[str, Any] | None) -> Dict[str, Any]:
+    raw = context.get("workflow") if isinstance(context, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    workflow_id = str(raw.get("id") or raw.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return {}
+    return dict(raw)
 
 def _parse_agent_trace(context: Dict[str, Any] | None) -> Optional[AgentTraceSummaryV1]:
     raw = context.get("agent_trace") if isinstance(context, dict) else None

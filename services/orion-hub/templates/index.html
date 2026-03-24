@@ -1788,6 +1788,31 @@
     </div>
   </div>
   
+  <div id="workflowModal" class="hidden fixed inset-0 z-[68] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-violet-300">Workflow details</div>
+          <h2 id="workflowModalTitle" class="mt-1 text-lg font-semibold text-white">Workflow</h2>
+          <div id="workflowModalMeta" class="mt-1 text-[11px] text-gray-400">Structured workflow metadata for this Orion turn.</div>
+        </div>
+        <button id="workflowModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <div id="workflowModalBadges" class="flex flex-wrap gap-2"></div>
+        <div id="workflowModalSummary" class="grid grid-cols-1 gap-2 md:grid-cols-2"></div>
+        <section class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+          <div class="text-xs uppercase tracking-wide text-gray-500">Structured detail</div>
+          <div id="workflowModalDetailSurface" class="mt-4 space-y-3"></div>
+        </section>
+        <details class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+          <summary class="cursor-pointer text-xs uppercase tracking-wide text-gray-400">Raw workflow metadata</summary>
+          <pre id="workflowModalRaw" class="mt-4 overflow-x-auto rounded-xl border border-gray-800 bg-gray-950/70 p-3 text-[11px] text-gray-200"></pre>
+        </details>
+      </div>
+    </div>
+  </div>
+
   <div id="socialInspectionModal" class="hidden fixed inset-0 z-[70] bg-black/80 p-4 md:p-8" aria-hidden="true">
     <div class="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
       <div class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
@@ -1833,7 +1858,8 @@
     window.__HUB_CFG__ = {{HUB_CFG}};
   </script>
   <script src="/static/js/agent-trace.js?v=20260321.1" defer></script>
+  <script src="/static/js/workflow-ui.js?v=20260324.1" defer></script>
   <script src="/static/js/social-inspection.js?v=20260323.1" defer></script>
-  <script src="/static/js/app.js?v=20260323.1" defer></script>
+  <script src="/static/js/app.js?v=20260324.1" defer></script>
 </body>
 </html>

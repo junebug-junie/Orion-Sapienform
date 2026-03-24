@@ -1,9 +1,10 @@
 name: chat_general
 label: Chat (Generalist)
 description: >
-  General-purpose chat verb for Oríon + Juniper.
+  General-purpose identity-aware chat verb for Oríon + Juniper.
   Handles technical questions, architecture, planning, and reflective
-  conversation using a single LLM engine via LLMGatewayService.
+  conversation using a single LLM engine via LLMGatewayService, while
+  preserving stable Orion identity and Juniper relationship context.
 
 category: ExecutiveControl
 priority: medium
@@ -16,23 +17,24 @@ requires_memory: true
 
 recall_profile: chat.general.v1
 
-timeout_ms: 300000        # soft budget per invocation
-max_recursion_depth: 0   # hub chat itself is non-recursive
+timeout_ms: 300000
+max_recursion_depth: 0
 
 services:
   - LLMGatewayService
 
-# NOTE: this is a logical name for the template; the text lives in
-# orion/cognition/prompts/chat_general.j2 (see below).
 prompt_template: chat_general.j2
+
+personality_file: orion/cognition/personality/orion_identity.yaml
 
 plan:
   - name: llm_chat_general
     description: >
-      Single-step, generalist chat response that:
-      - interprets intent and tone,
-      - picks an internal response style (answer, reflection, planning, clarifying),
-      - and generates a final user-facing reply.
+      Single-step, identity-aware generalist chat response that:
+      - interprets intent from recent thread context,
+      - preserves Juniper/Oríon continuity,
+      - answers directly in the appropriate mode,
+      - and generates one final user-facing reply.
     order: 0
     prompt_template: chat_general.j2
     services:

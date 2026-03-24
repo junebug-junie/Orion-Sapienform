@@ -96,6 +96,16 @@ loadDismissedIds();
   const recallCountValue = document.getElementById('recallCountValue');
   const backendCountsValue = document.getElementById('backendCountsValue');
   const memoryDigestPre = document.getElementById('memoryDigestPre');
+  const agentTraceDebugPanel = document.getElementById('agentTraceDebugPanel');
+  const agentTraceDebugToggle = document.getElementById('agentTraceDebugToggle');
+  const agentTraceDebugCaret = document.getElementById('agentTraceDebugCaret');
+  const agentTraceDebugBody = document.getElementById('agentTraceDebugBody');
+  const agentTraceDebugMeta = document.getElementById('agentTraceDebugMeta');
+  const agentTraceDebugOverview = document.getElementById('agentTraceDebugOverview');
+  const agentTraceDebugSummary = document.getElementById('agentTraceDebugSummary');
+  const agentTraceDebugToolGroups = document.getElementById('agentTraceDebugToolGroups');
+  const agentTraceDebugTimeline = document.getElementById('agentTraceDebugTimeline');
+  const agentTraceDebugRaw = document.getElementById('agentTraceDebugRaw');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
@@ -1553,6 +1563,56 @@ loadDismissedIds();
     updateRoutingDebugPanel(data);
   }
 
+  function clearAgentTraceDebugPanel() {
+    if (agentTraceDebugPanel) agentTraceDebugPanel.classList.add('hidden');
+    if (agentTraceDebugBody) agentTraceDebugBody.classList.add('hidden');
+    if (agentTraceDebugCaret) agentTraceDebugCaret.textContent = '▾';
+    if (agentTraceDebugMeta) agentTraceDebugMeta.textContent = '--';
+    if (agentTraceDebugOverview) agentTraceDebugOverview.innerHTML = '';
+    if (agentTraceDebugSummary) agentTraceDebugSummary.textContent = '--';
+    if (agentTraceDebugToolGroups) agentTraceDebugToolGroups.innerHTML = '';
+    if (agentTraceDebugTimeline) agentTraceDebugTimeline.innerHTML = '';
+    if (agentTraceDebugRaw) agentTraceDebugRaw.innerHTML = '';
+  }
+
+  function updateAgentTraceDebugPanel(summary, meta = {}) {
+    if (
+      !agentTraceDebugPanel
+      || !agentTraceDebugBody
+      || !agentTraceDebugOverview
+      || !agentTraceDebugSummary
+      || !agentTraceDebugToolGroups
+      || !agentTraceDebugTimeline
+      || !agentTraceDebugRaw
+    ) {
+      return;
+    }
+    if (!agentTraceApi.shouldShowAgentTrace || !agentTraceApi.shouldShowAgentTrace(summary)) {
+      clearAgentTraceDebugPanel();
+      return;
+    }
+
+    agentTraceDebugPanel.classList.remove('hidden');
+    if (agentTraceDebugMeta) {
+      const corr = summary.corr_id || meta.correlationId || '--';
+      agentTraceDebugMeta.textContent = `corr ${corr} · status ${summary.status || '--'} · ${summary.step_count || 0} steps`;
+    }
+
+    agentTraceDebugOverview.innerHTML = '';
+    Array.from(buildAgentTraceOverviewNode(summary).children).forEach((child) => agentTraceDebugOverview.appendChild(child));
+
+    agentTraceDebugSummary.textContent = summary.summary_text || 'No deterministic summary available.';
+
+    agentTraceDebugToolGroups.innerHTML = '';
+    Array.from(buildAgentTraceToolGroupsNode(summary).children).forEach((child) => agentTraceDebugToolGroups.appendChild(child));
+
+    agentTraceDebugTimeline.innerHTML = '';
+    agentTraceDebugTimeline.appendChild(buildAgentTraceTimelineNode(summary));
+
+    agentTraceDebugRaw.innerHTML = '';
+    agentTraceDebugRaw.appendChild(buildAgentTraceRawPayloadsNode(summary));
+  }
+
   function renderSocialInspectionBadges(container, badges) {
     if (!container) return;
     container.innerHTML = '';
@@ -1797,6 +1857,13 @@ loadDismissedIds();
   function toggleMemoryPanel() {
     if (!memoryPanelBody) return;
     memoryPanelBody.classList.toggle('hidden');
+  }
+
+  function toggleAgentTraceDebugPanel() {
+    if (!agentTraceDebugBody) return;
+    const nextHidden = !agentTraceDebugBody.classList.contains('hidden');
+    agentTraceDebugBody.classList.toggle('hidden', nextHidden);
+    if (agentTraceDebugCaret) agentTraceDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function isAttentionNotification(notification) {
@@ -2475,6 +2542,7 @@ loadDismissedIds();
     body.textContent = text || "";
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
     if (sender === 'Orion') {
+      updateAgentTraceDebugPanel(meta.agentTrace, meta);
       const actionRow = document.createElement('div');
       actionRow.className = 'flex items-center gap-2';
       if (agentTraceApi.shouldShowAgentTrace && agentTraceApi.shouldShowAgentTrace(meta.agentTrace)) {
@@ -3340,7 +3408,12 @@ loadDismissedIds();
     notifySettingsSave.addEventListener('click', () => saveNotifySettings());
   }
 
-  if (clearButton && conversationDiv) clearButton.addEventListener('click', () => conversationDiv.innerHTML = '');
+  if (clearButton && conversationDiv) {
+    clearButton.addEventListener('click', () => {
+      conversationDiv.innerHTML = '';
+      clearAgentTraceDebugPanel();
+    });
+  }
   if (copyButton && conversationDiv) {
     copyButton.addEventListener('click', () => {
       navigator.clipboard.writeText(conversationDiv.innerText);
@@ -3509,6 +3582,9 @@ loadDismissedIds();
 
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
+  }
+  if (agentTraceDebugToggle) {
+    agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
   }
   if (socialInspectionOpen) {
     socialInspectionOpen.addEventListener('click', () => openSocialInspectionModal());

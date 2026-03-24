@@ -225,6 +225,40 @@
           </div>
         </div>
 
+        <div id="agentTraceDebugPanel" class="hidden bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <button
+            id="agentTraceDebugToggle"
+            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
+            type="button"
+          >
+            <span class="uppercase tracking-wide">Agent Trace</span>
+            <span id="agentTraceDebugCaret" class="text-gray-500">▾</span>
+          </button>
+          <div id="agentTraceDebugBody" class="hidden space-y-4 text-xs text-gray-300">
+            <div id="agentTraceDebugMeta" class="text-[10px] text-gray-500">--</div>
+            <div id="agentTraceDebugOverview" class="space-y-3"></div>
+            <div>
+              <div class="text-gray-500 mb-1">Deterministic summary</div>
+              <div
+                id="agentTraceDebugSummary"
+                class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-sm text-gray-200 whitespace-pre-wrap"
+              >--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Grouped tool usage</div>
+              <div id="agentTraceDebugToolGroups"></div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Timeline</div>
+              <div id="agentTraceDebugTimeline"></div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Raw payload</div>
+              <div id="agentTraceDebugRaw"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between gap-3">
             <div>

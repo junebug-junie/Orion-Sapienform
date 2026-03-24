@@ -118,6 +118,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     payload_context = raw_payload.get("context") or req_env.payload.context or {}
 
     # 2. Merge Context
+    plan_metadata = req_env.payload.plan.metadata if isinstance(req_env.payload.plan.metadata, dict) else {}
     ctx = {
         **payload_context,
         **(req_env.payload.args.extra or {}),
@@ -126,7 +127,11 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         "trace_id": trace_id,
         "parent_event_id": parent_event_id,
         "correlation_id": corr_id,
+        "plan_metadata": plan_metadata,
     }
+    personality_file = plan_metadata.get("personality_file")
+    if personality_file:
+        ctx["personality_file"] = personality_file
     ctx.setdefault("trigger_correlation_id", ctx.get("chat_correlation_id") or corr_id)
     ctx.setdefault("trigger_trace_id", trace_id)
 

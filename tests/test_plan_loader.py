@@ -9,3 +9,9 @@ def test_build_plan_for_verb_loads_prompt_text():
     assert plan.steps
     assert isinstance(plan.steps[0].prompt_template, str)
     assert "chat_mode" in (plan.steps[0].prompt_template or "")
+
+
+
+def test_build_plan_for_verb_exposes_personality_file_metadata():
+    plan = build_plan_for_verb("chat_general", mode="brain")
+    assert plan.metadata.get("personality_file") == "orion/cognition/personality/orion_identity.yaml"

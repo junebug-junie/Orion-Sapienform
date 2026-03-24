@@ -43,6 +43,7 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
     timeout_ms = int(data.get("timeout_ms", 120000) or 120000)
     default_services = list(data.get("services") or [])
     verb_recall_profile = data.get("recall_profile")
+    personality_file = str(data.get("personality_file") or "").strip()
     default_prompt = load_prompt_template(str(data.get("prompt_template") or ""))
 
     steps: list[ExecutionStep] = []
@@ -97,5 +98,6 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
             "verb_yaml": f"{verb_name}.yaml",
             "mode": mode,
             "recall_profile": str(verb_recall_profile) if verb_recall_profile else "",
+            "personality_file": personality_file,
         },
     )

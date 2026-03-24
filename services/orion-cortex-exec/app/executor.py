@@ -44,6 +44,7 @@ from orion.schemas.telemetry.turn_effect_explanations import (
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 
+from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
 from .recall_utils import resolve_profile
@@ -607,6 +608,23 @@ def _trace_meta_from_ctx(
 
 
 
+def _inject_identity_context(ctx: Dict[str, Any]) -> None:
+    personality_file = str(ctx.get("personality_file") or "").strip()
+    if not personality_file:
+        return
+
+    if all(k in ctx for k in ("orion_identity_summary", "juniper_relationship_summary", "response_policy_summary")):
+        return
+
+    try:
+        identity_data = load_identity_file(personality_file)
+        identity_context = build_identity_context(identity_data)
+        for key, value in identity_context.items():
+            ctx.setdefault(key, value)
+    except Exception:
+        logger.warning("Failed to load personality file: %s", personality_file, exc_info=True)
+
+
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
 
@@ -1012,6 +1030,8 @@ async def call_step_services(
     llm_client = LLMGatewayClient(bus)
     planner_client = PlannerReactClient(bus)
     agent_client = AgentChainClient(bus)
+
+    _inject_identity_context(ctx)
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"

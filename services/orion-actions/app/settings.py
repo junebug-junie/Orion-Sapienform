@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -75,6 +75,18 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"
         populate_by_name = True
+
+    @field_validator(
+        "actions_workflow_schedule_claim_batch_size",
+        "actions_workflow_attention_overdue_min_seconds",
+        "actions_workflow_attention_reminder_cooldown_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_blank_workflow_ints(cls, value: object, info: ValidationInfo) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return cls.model_fields[info.field_name].default
+        return value
 
     def subscribe_patterns(self) -> list[str]:
         raw = self.actions_subscribe_channels or self.actions_subscribe_channel

@@ -51,6 +51,11 @@ from .recall_utils import resolve_profile
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
+from .chat_stance import (
+    build_chat_stance_inputs,
+    fallback_chat_stance_brief,
+    parse_chat_stance_brief,
+)
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -1032,6 +1037,8 @@ async def call_step_services(
     agent_client = AgentChainClient(bus)
 
     _inject_identity_context(ctx)
+    if step.verb_name == "chat_general":
+        build_chat_stance_inputs(ctx)
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
@@ -1870,6 +1877,14 @@ async def call_step_services(
                 )
 
                 merged_result[service] = result_object.model_dump(mode="json")
+                if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
+                    brief_text = _extract_llm_text(result_object)
+                    parsed_brief = parse_chat_stance_brief(brief_text)
+                    if parsed_brief is None:
+                        parsed_brief = fallback_chat_stance_brief(ctx)
+                        logs.append("warn <- chat stance brief parse failed; using fallback brief")
+                    ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
+                    merged_result["ChatStanceBrief"] = ctx["chat_stance_brief"]
 
                 if spark_vector is None:
                     try:

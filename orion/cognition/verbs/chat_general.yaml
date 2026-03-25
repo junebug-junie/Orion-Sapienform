@@ -28,14 +28,22 @@ prompt_template: chat_general.j2
 personality_file: orion/cognition/personality/orion_identity.yaml
 
 plan:
+  - name: synthesize_chat_stance_brief
+    description: >
+      Bounded internal synthesis pass that composes identity kernel, concept induction,
+      social state, and reflective continuity into a strict stance brief.
+      This step is toolless and emits only internal structured guidance.
+    order: 0
+    prompt_template: chat_stance_brief.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: true
   - name: llm_chat_general
     description: >
-      Single-step, identity-aware generalist chat response that:
-      - interprets intent from recent thread context,
-      - preserves Juniper/Oríon continuity,
-      - answers directly in the appropriate mode,
-      - and generates one final user-facing reply.
-    order: 0
+      Final speech pass that answers Juniper directly using the synthesized stance brief.
+      Keeps chat bounded, identity-aware, and non-agentic.
+    order: 1
     prompt_template: chat_general.j2
     services:
       - LLMGatewayService

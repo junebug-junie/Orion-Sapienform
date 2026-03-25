@@ -213,6 +213,7 @@ from orion.schemas.notify import (
     RecipientProfileUpdate,
 )
 from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
+from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.topic_foundry import (
     KgEdgeIngestV1,
     TopicFoundryDriftAlertV1,
@@ -315,6 +316,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallDirective": RecallDirective,
     "AutoRouteDecisionV1": AutoRouteDecisionV1,
     "AutoDepthDecisionV1": AutoDepthDecisionV1,
+    "ChatStanceBrief": ChatStanceBrief,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields
     "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
     "ChatGptLogTurnV1": ChatGptLogTurnV1,

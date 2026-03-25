@@ -222,6 +222,12 @@ from orion.schemas.topic_foundry import (
 from orion.schemas.workflow_execution import (
     WorkflowDispatchRequestV1,
     WorkflowExecutionPolicyV1,
+    WorkflowScheduleAnalyticsV1,
+    WorkflowScheduleEventRecordV1,
+    WorkflowScheduleManageRequestV1,
+    WorkflowScheduleManageResponseV1,
+    WorkflowScheduleRecordV1,
+    WorkflowScheduleRunRecordV1,
     WorkflowScheduleSpecV1,
 )
 
@@ -451,6 +457,12 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorkflowScheduleSpecV1": WorkflowScheduleSpecV1,
     "WorkflowExecutionPolicyV1": WorkflowExecutionPolicyV1,
     "WorkflowDispatchRequestV1": WorkflowDispatchRequestV1,
+    "WorkflowScheduleRecordV1": WorkflowScheduleRecordV1,
+    "WorkflowScheduleAnalyticsV1": WorkflowScheduleAnalyticsV1,
+    "WorkflowScheduleEventRecordV1": WorkflowScheduleEventRecordV1,
+    "WorkflowScheduleRunRecordV1": WorkflowScheduleRunRecordV1,
+    "WorkflowScheduleManageRequestV1": WorkflowScheduleManageRequestV1,
+    "WorkflowScheduleManageResponseV1": WorkflowScheduleManageResponseV1,
 
 }
 

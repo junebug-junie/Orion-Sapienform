@@ -71,3 +71,38 @@ def test_named_workflow_prompt_with_schedule_and_notify_parses_execution_policy(
     assert policy['schedule']['kind'] == 'recurring'
     assert policy['schedule']['cadence'] == 'weekly'
     assert debug['workflow_execution_policy']['notify_on'] == 'completion'
+
+
+def test_management_prompt_routes_to_schedule_management_request() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={'mode': 'auto'},
+        session_id='sid-workflow',
+        user_id='user-1',
+        trace_id='trace-workflow',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='What workflow runs do I have scheduled?',
+    )
+
+    assert req.metadata.get('workflow_request') is None
+    assert req.metadata['workflow_schedule_management']['operation'] == 'list'
+    assert debug['workflow_management_operation'] == 'list'
+
+
+def test_management_update_prompt_builds_bounded_patch() -> None:
+    req, _, _ = hub_builder.build_chat_request(
+        payload={'mode': 'auto'},
+        session_id='sid-workflow',
+        user_id='user-1',
+        trace_id='trace-workflow',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='Move my nightly journal pass to 10pm',
+    )
+
+    mgmt = req.metadata['workflow_schedule_management']
+    assert mgmt['operation'] == 'update'
+    assert mgmt['workflow_id'] == 'journal_pass'
+    assert mgmt['patch']['hour_local'] == 22

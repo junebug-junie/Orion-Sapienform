@@ -21,7 +21,8 @@ from .cortex_request_builder import build_chat_request, validate_single_verb_ove
 from .social_room import is_social_room_payload, social_room_client_meta
 from orion.cognition.verb_activation import build_verb_list
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
-from orion.schemas.cortex.contracts import CortexChatResult
+from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
+from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 from orion.schemas.notify import (
     ChatAttentionAck,
     ChatMessageReceipt,
@@ -48,6 +49,54 @@ class PreferencesResolveProxyRequest(BaseModel):
     recipient_group: str
     event_kind: str
     severity: str
+
+
+class WorkflowScheduleUpdateRequest(BaseModel):
+    run_at_utc: Optional[str] = None
+    cadence: Optional[str] = None
+    day_of_week: Optional[int] = None
+    hour_local: Optional[int] = None
+    minute_local: Optional[int] = None
+    timezone: Optional[str] = None
+    notify_on: Optional[str] = None
+    expected_revision: Optional[int] = None
+
+
+async def _execute_workflow_schedule_management(*, session_id: str, user_id: Optional[str], request: WorkflowScheduleManageRequestV1) -> Dict[str, Any]:
+    from .main import cortex_client
+
+    if cortex_client is None:
+        raise RuntimeError("Cortex client unavailable")
+
+    corr_id = str(uuid4())
+    chat_req = CortexChatRequest(
+        prompt="workflow schedule management",
+        mode="brain",
+        route_intent="none",
+        session_id=session_id,
+        user_id=user_id,
+        trace_id=corr_id,
+        metadata={"workflow_schedule_management": request.model_dump(mode="json")},
+    )
+    resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=corr_id)
+    metadata = resp.cortex_result.metadata if isinstance(resp.cortex_result.metadata, dict) else {}
+    payload = metadata.get("workflow_schedule_management") if isinstance(metadata.get("workflow_schedule_management"), dict) else {}
+    if payload:
+        try:
+            return WorkflowScheduleManageResponseV1.model_validate(payload).model_dump(mode="json")
+        except Exception:
+            return payload
+    return {
+        "ok": bool(resp.cortex_result.ok),
+        "operation": request.operation,
+        "request_id": request.request_id,
+        "message": resp.final_text or "No schedule response payload.",
+        "schedules": [],
+        "history": [],
+        "ambiguous": False,
+        "error_code": "invalid_management_payload",
+        "error_details": {},
+    }
 
 
 async def _proxy_request(request: Request, base_url: str, path: str) -> Response:
@@ -757,6 +806,75 @@ async def api_chat(
             )
 
     return result
+
+
+@router.get("/api/workflow/schedules")
+async def api_workflow_schedule_list(
+    x_orion_session_id: Optional[str] = Header(None),
+    user_id: Optional[str] = Query(default=None),
+    include_history: bool = Query(default=False),
+):
+    from .main import bus
+    if not bus:
+        raise HTTPException(status_code=503, detail="bus unavailable")
+    session_id = await ensure_session(x_orion_session_id, bus)
+    req = WorkflowScheduleManageRequestV1(
+        operation="list",
+        request_id=str(uuid4()),
+        include_history=include_history,
+        session_id=session_id,
+        origin_user_id=user_id,
+    )
+    return await _execute_workflow_schedule_management(session_id=session_id, user_id=user_id, request=req)
+
+
+@router.get("/api/workflow/schedules/{schedule_id}/history")
+async def api_workflow_schedule_history(
+    schedule_id: str,
+    x_orion_session_id: Optional[str] = Header(None),
+    user_id: Optional[str] = Query(default=None),
+):
+    from .main import bus
+    if not bus:
+        raise HTTPException(status_code=503, detail="bus unavailable")
+    session_id = await ensure_session(x_orion_session_id, bus)
+    req = WorkflowScheduleManageRequestV1(
+        operation="history",
+        request_id=str(uuid4()),
+        schedule_id=schedule_id,
+        include_history=True,
+        session_id=session_id,
+        origin_user_id=user_id,
+    )
+    return await _execute_workflow_schedule_management(session_id=session_id, user_id=user_id, request=req)
+
+
+@router.post("/api/workflow/schedules/{schedule_id}/{operation}")
+async def api_workflow_schedule_action(
+    schedule_id: str,
+    operation: str,
+    payload: Optional[WorkflowScheduleUpdateRequest] = None,
+    x_orion_session_id: Optional[str] = Header(None),
+    user_id: Optional[str] = Query(default=None),
+):
+    normalized_operation = str(operation or "").strip().lower()
+    if normalized_operation not in {"cancel", "pause", "resume", "update"}:
+        raise HTTPException(status_code=400, detail="unsupported_operation")
+
+    from .main import bus
+    if not bus:
+        raise HTTPException(status_code=503, detail="bus unavailable")
+    session_id = await ensure_session(x_orion_session_id, bus)
+    patch = payload.model_dump(exclude_none=True) if payload is not None else None
+    req = WorkflowScheduleManageRequestV1(
+        operation=normalized_operation,
+        request_id=str(uuid4()),
+        schedule_id=schedule_id,
+        patch=patch,
+        session_id=session_id,
+        origin_user_id=user_id,
+    )
+    return await _execute_workflow_schedule_management(session_id=session_id, user_id=user_id, request=req)
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS

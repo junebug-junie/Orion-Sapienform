@@ -16,7 +16,12 @@ from orion.normalizers.agent_trace import build_agent_trace_summary
 from .orchestrator import call_verb_runtime, dispatch_dream_trigger, dispatch_metacog_trigger
 from .settings import get_settings
 from .decision_router import DecisionRouter
-from .workflow_runtime import execute_chat_workflow, has_explicit_workflow_request
+from .workflow_runtime import (
+    execute_chat_workflow,
+    execute_workflow_schedule_management,
+    has_explicit_workflow_request,
+    has_workflow_schedule_management_request,
+)
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
@@ -201,6 +206,20 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 correlation_id=env.correlation_id,
                 causality_chain=env.causality_chain,
                 payload=workflow_result.model_dump(mode="json"),
+            )
+
+        if has_workflow_schedule_management_request(req):
+            management_result = await execute_workflow_schedule_management(
+                bus=svc.bus,
+                source=sref,
+                req=req,
+                correlation_id=str(env.correlation_id),
+            )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=management_result.model_dump(mode="json"),
             )
 
         ok, bad_verb = _normalize_and_validate_verb(req)

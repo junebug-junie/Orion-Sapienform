@@ -10,3 +10,4 @@ numpy==2.0.2
 scipy==1.13.1
 joblib==1.4.2
 redis[hiredis]==5.0.7
+PyYAML==6.0.3

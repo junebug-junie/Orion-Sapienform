@@ -616,33 +616,69 @@ def _trace_meta_from_ctx(
 
 
 def _inject_identity_context(ctx: Dict[str, Any]) -> None:
-    personality_file = str(ctx.get("personality_file") or "").strip()
+    plan_metadata = ctx.get("plan_metadata") if isinstance(ctx.get("plan_metadata"), dict) else {}
+    personality_declared_in_metadata = "personality_file" in plan_metadata
+    raw_personality_file = ctx.get("personality_file")
+    if raw_personality_file is None and personality_declared_in_metadata:
+        raw_personality_file = plan_metadata.get("personality_file")
+    personality_file = str(raw_personality_file or "").strip()
+
     required_keys = ("orion_identity_summary", "juniper_relationship_summary", "response_policy_summary")
     if all(k in ctx and isinstance(ctx.get(k), list) and ctx.get(k) for k in required_keys):
         logger.debug("identity_injection skipped: identity context already present")
         return
 
-    personality_file_exists = False
+    personality_file_loaded = False
+    identity_kernel_source = "configured_yaml"
     if personality_file:
         try:
             identity_data = load_identity_file(personality_file)
-            personality_file_exists = True
             identity_context = build_identity_context(identity_data)
-            for key, value in identity_context.items():
-                if isinstance(value, list) and value:
-                    ctx[key] = value
+            has_yaml_identity = any(
+                isinstance(identity_context.get(key), list) and identity_context.get(key)
+                for key in required_keys
+            )
+            if has_yaml_identity:
+                personality_file_loaded = True
+                for key, value in identity_context.items():
+                    if isinstance(value, list) and value:
+                        ctx[key] = value
+            else:
+                identity_kernel_source = "fallback_empty_yaml"
+                logger.warning(
+                    "identity_injection fallback reason=empty_yaml personality_file=%s",
+                    personality_file,
+                )
         except Exception:
-            logger.warning("Failed to load personality file: %s; using fallback identity kernel", personality_file, exc_info=True)
+            identity_kernel_source = "fallback_load_error"
+            logger.warning(
+                "identity_injection fallback reason=load_error personality_file=%s",
+                personality_file,
+                exc_info=True,
+            )
     else:
-        logger.warning("No personality_file configured; using fallback identity kernel")
+        identity_kernel_source = "fallback_missing_metadata"
+        logger.warning(
+            "identity_injection fallback reason=missing_metadata personality_declared_in_metadata=%s raw_personality_file=%r",
+            personality_declared_in_metadata,
+            raw_personality_file,
+        )
 
     fallback_identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(fallback_identity)
+    if identity_kernel_source == "configured_yaml":
+        if all(k in ctx and isinstance(ctx.get(k), list) and ctx.get(k) for k in required_keys):
+            identity_kernel_source = "configured_yaml"
+        else:
+            identity_kernel_source = "fallback_empty_yaml"
+    ctx["identity_kernel_source"] = identity_kernel_source
     try:
         logger.info(
-            "identity_context_ready personality_file=%s personality_file_loaded=%s orion_count=%s juniper_count=%s policy_count=%s",
+            "identity_context_ready identity_kernel_source=%s personality_file=%s personality_declared_in_metadata=%s personality_file_loaded=%s orion_count=%s juniper_count=%s policy_count=%s",
+            identity_kernel_source,
             personality_file or None,
-            personality_file_exists,
+            personality_declared_in_metadata,
+            personality_file_loaded,
             len(ctx.get("orion_identity_summary") or []),
             len(ctx.get("juniper_relationship_summary") or []),
             len(ctx.get("response_policy_summary") or []),

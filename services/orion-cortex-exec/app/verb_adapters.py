@@ -173,12 +173,17 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
             ), []
 
         payload_context = payload.context or {}
+        plan_metadata = payload.plan.metadata if isinstance(payload.plan.metadata, dict) else {}
         ctx_payload = {
             **payload_context,
             **(payload.args.extra or {}),
             "user_id": payload.args.user_id,
             "trigger_source": payload.args.trigger_source,
+            "plan_metadata": plan_metadata,
         }
+        if "personality_file" in plan_metadata:
+            # Preserve personality declaration from verb profile metadata all the way into execution ctx.
+            ctx_payload["personality_file"] = plan_metadata.get("personality_file")
         recall_cfg = ctx_payload.get("recall")
         if not isinstance(recall_cfg, dict):
             recall_cfg = {}

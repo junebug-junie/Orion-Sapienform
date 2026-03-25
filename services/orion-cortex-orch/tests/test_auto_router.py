@@ -7,6 +7,7 @@ from app import main as orch_main
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs.models import VerbResultV1
 from orion.schemas.cortex.contracts import CortexClientRequest
+from orion.schemas.cortex.schemas import PlanExecutionRequest
 
 
 def _req(mode: str = "auto", text: str = "please refactor this module") -> CortexClientRequest:
@@ -131,3 +132,14 @@ def test_non_auto_introspect_spark_never_touches_router(monkeypatch):
     )
     asyncio.run(orch_main.handle(env))
     assert called["router"] == 0
+
+
+def test_chat_general_personality_file_survives_plan_request_serialization():
+    req = _req(mode="brain", text="hello")
+    req.verb = "chat_general"
+    plan_req = build_plan_request(req, "corr-personality")
+    assert plan_req.plan.metadata.get("personality_file") == "orion/cognition/personality/orion_identity.yaml"
+
+    serialized = plan_req.model_dump(mode="json")
+    restored = PlanExecutionRequest.model_validate(serialized)
+    assert restored.plan.metadata.get("personality_file") == "orion/cognition/personality/orion_identity.yaml"

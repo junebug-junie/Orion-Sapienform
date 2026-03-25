@@ -129,9 +129,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         "correlation_id": corr_id,
         "plan_metadata": plan_metadata,
     }
-    personality_file = plan_metadata.get("personality_file")
-    if personality_file:
-        ctx["personality_file"] = personality_file
+    if "personality_file" in plan_metadata:
+        # Preserve declaration state (including empty string) for precise identity fallback diagnostics.
+        ctx["personality_file"] = plan_metadata.get("personality_file")
     ctx.setdefault("trigger_correlation_id", ctx.get("chat_correlation_id") or corr_id)
     ctx.setdefault("trigger_trace_id", trace_id)
 

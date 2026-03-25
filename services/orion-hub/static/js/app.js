@@ -41,6 +41,8 @@ const RECIPIENT_GROUP = "juniper_primary";
 let topicAutoRefreshTimer = null;
 let latestSocialInspectionState = null;
 const socialInspectionCache = new Map();
+let workflowSchedules = [];
+let selectedSchedule = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
@@ -116,6 +118,7 @@ loadDismissedIds();
   const agentTraceApi = window.OrionAgentTrace || {};
   const socialInspectionApi = window.OrionSocialInspection || {};
   const workflowUiApi = window.OrionWorkflowUI || {};
+  const scheduleUiApi = window.OrionWorkflowScheduleUI || {};
   const agentTraceModal = document.getElementById('agentTraceModal');
   const agentTraceModalClose = document.getElementById('agentTraceModalClose');
   const agentTraceModalMeta = document.getElementById('agentTraceModalMeta');
@@ -136,6 +139,30 @@ loadDismissedIds();
   const workflowModalDetailSurface = document.getElementById('workflowModalDetailSurface');
   const workflowModalRaw = document.getElementById('workflowModalRaw');
   const outboundRoutingDebug = document.getElementById('outboundRoutingDebug');
+  const scheduleInventoryMeta = document.getElementById('scheduleInventoryMeta');
+  const scheduleAttentionSummary = document.getElementById('scheduleAttentionSummary');
+  const scheduleFilter = document.getElementById('scheduleFilter');
+  const scheduleRefreshButton = document.getElementById('scheduleRefreshButton');
+  const scheduleInventoryStatus = document.getElementById('scheduleInventoryStatus');
+  const scheduleInventoryList = document.getElementById('scheduleInventoryList');
+  const scheduleModal = document.getElementById('scheduleModal');
+  const scheduleModalClose = document.getElementById('scheduleModalClose');
+  const scheduleModalTitle = document.getElementById('scheduleModalTitle');
+  const scheduleModalMeta = document.getElementById('scheduleModalMeta');
+  const scheduleModalBadges = document.getElementById('scheduleModalBadges');
+  const scheduleModalSummary = document.getElementById('scheduleModalSummary');
+  const scheduleModalAnalytics = document.getElementById('scheduleModalAnalytics');
+  const scheduleModalAnalyticsSummary = document.getElementById('scheduleModalAnalyticsSummary');
+  const scheduleModalAnalyticsTrend = document.getElementById('scheduleModalAnalyticsTrend');
+  const scheduleModalHistory = document.getElementById('scheduleModalHistory');
+  const scheduleEditModal = document.getElementById('scheduleEditModal');
+  const scheduleEditModalClose = document.getElementById('scheduleEditModalClose');
+  const scheduleEditCadence = document.getElementById('scheduleEditCadence');
+  const scheduleEditNotify = document.getElementById('scheduleEditNotify');
+  const scheduleEditHour = document.getElementById('scheduleEditHour');
+  const scheduleEditMinute = document.getElementById('scheduleEditMinute');
+  const scheduleEditStatus = document.getElementById('scheduleEditStatus');
+  const scheduleEditSave = document.getElementById('scheduleEditSave');
   const socialInspectionOpen = document.getElementById('socialInspectionOpen');
   const socialInspectionPanelStatus = document.getElementById('socialInspectionPanelStatus');
   const socialInspectionBadgeRow = document.getElementById('socialInspectionBadgeRow');
@@ -2142,6 +2169,345 @@ loadDismissedIds();
     return panel;
   }
 
+  function normalizeSchedule(entry) {
+    if (!scheduleUiApi.normalizeSchedule) return null;
+    return scheduleUiApi.normalizeSchedule(entry);
+  }
+
+  function scheduleStateBadge(state) {
+    const cls = scheduleUiApi.stateChipClass ? scheduleUiApi.stateChipClass(state) : 'border-gray-700 bg-gray-800 text-gray-200';
+    const chip = document.createElement('span');
+    chip.className = `inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cls}`;
+    chip.textContent = String(state || 'unknown');
+    return chip;
+  }
+
+  function scheduleHealthBadge(health) {
+    const cls = scheduleUiApi.healthChipClass ? scheduleUiApi.healthChipClass(health) : 'border-gray-700 bg-gray-800 text-gray-200';
+    const chip = document.createElement('span');
+    chip.className = `inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cls}`;
+    chip.textContent = `health: ${String(health || 'idle')}`;
+    return chip;
+  }
+
+  function scheduleTimeLabel(value) {
+    return scheduleUiApi.asLocal ? scheduleUiApi.asLocal(value) : String(value || '--');
+  }
+
+  function formatOverdue(seconds) {
+    if (!Number.isFinite(Number(seconds))) return 'Overdue';
+    const total = Math.max(0, Number(seconds));
+    if (total < 3600) return `Overdue ${Math.round(total / 60)}m`;
+    if (total < 86400) return `Overdue ${Math.round(total / 3600)}h`;
+    return `Overdue ${Math.round(total / 86400)}d`;
+  }
+
+  function scheduleNeedsAttention(item) {
+    return Boolean(item?.analytics?.needs_attention || item?.analytics?.is_overdue);
+  }
+
+  function scheduleOverdueBadge(seconds) {
+    const chip = document.createElement('span');
+    chip.className = 'inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200';
+    chip.textContent = formatOverdue(seconds);
+    return chip;
+  }
+
+  async function fetchScheduleInventory() {
+    const res = await fetch(`${API_BASE_URL}/api/workflow/schedules`);
+    if (!res.ok) throw new Error(`Schedule list failed (${res.status})`);
+    const payload = await res.json();
+    const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
+    workflowSchedules = schedules.map((item) => normalizeSchedule(item)).filter(Boolean);
+    if (scheduleInventoryMeta) scheduleInventoryMeta.textContent = `${workflowSchedules.length} schedule(s) loaded`;
+    return payload;
+  }
+
+  function filteredSchedules() {
+    const mode = scheduleFilter ? scheduleFilter.value : 'active';
+    if (mode === 'needs_attention') return workflowSchedules.filter((item) => scheduleNeedsAttention(item));
+    if (mode === 'all') return workflowSchedules;
+    if (mode === 'paused') return workflowSchedules.filter((item) => item.state === 'paused');
+    if (mode === 'cancelled') return workflowSchedules.filter((item) => item.state === 'cancelled');
+    return workflowSchedules.filter((item) => !['cancelled', 'completed'].includes(item.state));
+  }
+
+  function renderScheduleAttentionSummary() {
+    if (!scheduleAttentionSummary) return;
+    const needsAttention = workflowSchedules.filter((item) => scheduleNeedsAttention(item));
+    if (!needsAttention.length) {
+      scheduleAttentionSummary.classList.add('hidden');
+      scheduleAttentionSummary.textContent = '';
+      return;
+    }
+    const overdueCount = needsAttention.filter((item) => item.analytics?.is_overdue).length;
+    scheduleAttentionSummary.classList.remove('hidden');
+    scheduleAttentionSummary.textContent = `${needsAttention.length} schedule(s) need attention${overdueCount ? ` · ${overdueCount} overdue` : ''}.`;
+  }
+
+  function renderScheduleAnalyticsDetails(schedule) {
+    if (!scheduleModalAnalytics || !scheduleModalAnalyticsSummary || !scheduleModalAnalyticsTrend) return;
+    const analytics = schedule?.analytics;
+    if (!analytics) {
+      scheduleModalAnalytics.classList.add('hidden');
+      return;
+    }
+    scheduleModalAnalytics.classList.remove('hidden');
+    scheduleModalAnalyticsSummary.innerHTML = '';
+    scheduleModalAnalyticsTrend.innerHTML = '';
+    const summaryRows = [
+      ['Health', analytics.health || '--'],
+      ['Needs attention', analytics.needs_attention ? 'yes' : 'no'],
+      ['Overdue', analytics.is_overdue ? formatOverdue(analytics.overdue_seconds) : 'no'],
+      ['Missed runs', String(analytics.missed_run_count || 0)],
+      ['Last success', scheduleTimeLabel(analytics.last_success_at)],
+      ['Last failure', scheduleTimeLabel(analytics.last_failure_at)],
+      ['Recent counts', `${analytics.recent_success_count || 0} success / ${analytics.recent_failure_count || 0} failure`],
+      ['Most recent result', analytics.most_recent_result_status || '--'],
+    ];
+    summaryRows.forEach(([label, value]) => scheduleModalAnalyticsSummary.appendChild(buildWorkflowModalSummaryCard(label, value)));
+
+    const trend = document.createElement('div');
+    trend.className = 'text-[11px] text-gray-300';
+    trend.textContent = analytics.trend_text || 'No recent runs.';
+    scheduleModalAnalyticsTrend.appendChild(trend);
+    (analytics.recent_outcomes || []).forEach((status) => {
+      const chip = document.createElement('span');
+      chip.className = `inline-flex rounded-full border px-2 py-0.5 text-[10px] ${scheduleUiApi.historyStatusClass ? scheduleUiApi.historyStatusClass(status) : 'border-gray-700 bg-gray-800 text-gray-200'}`;
+      chip.textContent = status;
+      scheduleModalAnalyticsTrend.appendChild(chip);
+    });
+  }
+
+  async function performScheduleAction(scheduleId, operation, body) {
+    const req = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    };
+    const res = await fetch(`${API_BASE_URL}/api/workflow/schedules/${encodeURIComponent(scheduleId)}/${operation}`, req);
+    const payload = await res.json();
+    if (!res.ok || payload.ok === false) {
+      const err = new Error(payload.message || `Schedule ${operation} failed`);
+      err.code = payload.error_code || null;
+      err.details = payload.error_details || {};
+      throw err;
+    }
+    return payload;
+  }
+
+  async function openScheduleDetails(schedule) {
+    const normalized = normalizeSchedule(schedule);
+    if (!normalized || !scheduleModal) return;
+    selectedSchedule = normalized;
+    if (scheduleModalTitle) scheduleModalTitle.textContent = normalized.workflow_display_name;
+    if (scheduleModalMeta) scheduleModalMeta.textContent = `${normalized.workflow_id} · id:${normalized.schedule_id_short} · rev:${normalized.revision}`;
+    if (scheduleModalBadges) {
+      scheduleModalBadges.innerHTML = '';
+      scheduleModalBadges.appendChild(scheduleStateBadge(normalized.state));
+      if (normalized.analytics?.health) scheduleModalBadges.appendChild(scheduleHealthBadge(normalized.analytics.health));
+      if (normalized.analytics?.is_overdue) scheduleModalBadges.appendChild(scheduleOverdueBadge(normalized.analytics.overdue_seconds));
+    }
+    if (scheduleModalSummary) {
+      scheduleModalSummary.innerHTML = '';
+      const rows = [
+        ['Next run', scheduleTimeLabel(normalized.next_run_at)],
+        ['Cadence', normalized.cadence_summary || '--'],
+        ['Notify', normalized.notify_on || 'none'],
+        ['Last run', scheduleTimeLabel(normalized.last_run_at)],
+        ['Last result', normalized.last_result_status || '--'],
+        ['Schedule ID', normalized.schedule_id],
+        ['Revision', String(normalized.revision || 0)],
+        ['Source', `${normalized.source_service || '--'} / ${normalized.source_kind || '--'}`],
+      ];
+      rows.forEach(([label, value]) => scheduleModalSummary.appendChild(buildWorkflowModalSummaryCard(label, value)));
+    }
+    renderScheduleAnalyticsDetails(normalized);
+
+    if (scheduleModalHistory) {
+      scheduleModalHistory.innerHTML = '<div class="text-gray-500">Loading history…</div>';
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/workflow/schedules/${encodeURIComponent(normalized.schedule_id)}/history`);
+        const payload = await res.json();
+        const refreshedSchedule = normalizeSchedule(payload.schedule || normalized.raw || {});
+        if (refreshedSchedule) {
+          selectedSchedule = refreshedSchedule;
+          renderScheduleAnalyticsDetails(refreshedSchedule);
+        }
+        const history = Array.isArray(payload.history)
+          ? payload.history.map((item) => (scheduleUiApi.normalizeHistoryItem ? scheduleUiApi.normalizeHistoryItem(item) : item)).filter(Boolean)
+          : [];
+        const events = Array.isArray(payload.events)
+          ? payload.events.map((item) => (scheduleUiApi.normalizeEventItem ? scheduleUiApi.normalizeEventItem(item) : item)).filter(Boolean)
+          : [];
+        scheduleModalHistory.innerHTML = '';
+        if (!history.length && !events.length) {
+          scheduleModalHistory.innerHTML = '<div class="text-gray-500">No run history yet.</div>';
+        } else {
+          if (history.length) {
+            const runHeader = document.createElement('div');
+            runHeader.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+            runHeader.textContent = 'Run attempts';
+            scheduleModalHistory.appendChild(runHeader);
+            history.slice(0, 5).forEach((item) => {
+              const row = document.createElement('div');
+              row.className = 'rounded border border-gray-800 bg-gray-900/60 px-2 py-2 flex items-center justify-between gap-2';
+              const left = document.createElement('div');
+              left.className = 'flex items-center gap-2';
+              const chip = document.createElement('span');
+              chip.className = `inline-flex rounded-full border px-2 py-0.5 text-[10px] ${scheduleUiApi.historyStatusClass ? scheduleUiApi.historyStatusClass(item.status) : 'border-gray-700 bg-gray-800 text-gray-200'}`;
+              chip.textContent = item.status || 'unknown';
+              left.appendChild(chip);
+              const when = document.createElement('span');
+              when.className = 'text-[11px] text-gray-300';
+              when.textContent = scheduleTimeLabel(item.dispatch_at || item.completed_at);
+              left.appendChild(when);
+              row.appendChild(left);
+              if (item.error) {
+                const err = document.createElement('span');
+                err.className = 'text-[11px] text-red-300 truncate';
+                err.textContent = item.error;
+                row.appendChild(err);
+              }
+              scheduleModalHistory.appendChild(row);
+            });
+          }
+          if (events.length) {
+            const evtHeader = document.createElement('div');
+            evtHeader.className = 'mt-2 text-[10px] uppercase tracking-wide text-gray-500';
+            evtHeader.textContent = 'Lifecycle events';
+            scheduleModalHistory.appendChild(evtHeader);
+            events.slice(0, 5).forEach((event) => {
+              const row = document.createElement('div');
+              row.className = 'rounded border border-gray-800 bg-gray-900/50 px-2 py-1 text-[11px] text-gray-300';
+              row.textContent = `${String(event.kind || 'event').replace(/_/g, ' ')} · ${scheduleTimeLabel(event.occurred_at)}`;
+              scheduleModalHistory.appendChild(row);
+            });
+          }
+        }
+      } catch (err) {
+        scheduleModalHistory.innerHTML = `<div class="text-red-300">${err.message}</div>`;
+      }
+    }
+
+    scheduleModal.classList.remove('hidden');
+    scheduleModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeScheduleModal() {
+    if (!scheduleModal) return;
+    scheduleModal.classList.add('hidden');
+    scheduleModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function openScheduleEdit(schedule) {
+    selectedSchedule = normalizeSchedule(schedule);
+    if (!selectedSchedule || !scheduleEditModal) return;
+    if (scheduleEditCadence) scheduleEditCadence.value = '';
+    if (scheduleEditNotify) scheduleEditNotify.value = '';
+    if (scheduleEditHour) scheduleEditHour.value = '';
+    if (scheduleEditMinute) scheduleEditMinute.value = '';
+    if (scheduleEditStatus) scheduleEditStatus.textContent = `Editing ${selectedSchedule.workflow_display_name} (${selectedSchedule.schedule_id})`;
+    scheduleEditModal.classList.remove('hidden');
+    scheduleEditModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeScheduleEdit() {
+    if (!scheduleEditModal) return;
+    scheduleEditModal.classList.add('hidden');
+    scheduleEditModal.setAttribute('aria-hidden', 'true');
+  }
+
+  async function renderScheduleInventory() {
+    if (!scheduleInventoryList) return;
+    renderScheduleAttentionSummary();
+    const items = filteredSchedules().slice().sort((a, b) => String(a.next_run_at || '').localeCompare(String(b.next_run_at || '')));
+    scheduleInventoryList.innerHTML = '';
+    if (!items.length) {
+      scheduleInventoryList.innerHTML = '<div class="text-gray-500 text-xs">No schedules for this filter.</div>';
+      return;
+    }
+    items.forEach((item) => {
+      const row = document.createElement('div');
+      row.className = 'rounded-xl border border-gray-800 bg-gray-900/50 p-3 space-y-2';
+
+      const top = document.createElement('div');
+      top.className = 'flex items-center justify-between gap-2';
+      const title = document.createElement('div');
+      title.className = 'text-sm font-semibold text-gray-100';
+      title.textContent = item.workflow_display_name;
+      top.appendChild(title);
+      const badges = document.createElement('div');
+      badges.className = 'flex items-center gap-1';
+      badges.appendChild(scheduleStateBadge(item.state));
+      if (item.analytics?.health) badges.appendChild(scheduleHealthBadge(item.analytics.health));
+      if (item.analytics?.is_overdue) badges.appendChild(scheduleOverdueBadge(item.analytics.overdue_seconds));
+      top.appendChild(badges);
+
+      const meta = document.createElement('div');
+      meta.className = 'text-[11px] text-gray-300';
+      meta.textContent = `#${item.schedule_id_short} · Next: ${scheduleTimeLabel(item.next_run_at)} · ${item.cadence_summary} · notify=${item.notify_on}`;
+      const analyticsLine = document.createElement('div');
+      analyticsLine.className = 'text-[11px] text-gray-400';
+      if (item.analytics) {
+        const parts = [];
+        if (item.analytics.trend_text) parts.push(item.analytics.trend_text);
+        if (item.analytics.last_success_at) parts.push(`last success ${scheduleTimeLabel(item.analytics.last_success_at)}`);
+        if (item.analytics.last_failure_at) parts.push(`last failure ${scheduleTimeLabel(item.analytics.last_failure_at)}`);
+        analyticsLine.textContent = parts.join(' · ') || 'No recent analytics.';
+      } else {
+        analyticsLine.textContent = 'Analytics unavailable.';
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'flex flex-wrap gap-2';
+      const actionDefs = [
+        ['Details', () => openScheduleDetails(item), 'bg-gray-800', false],
+        ['Edit', () => openScheduleEdit(item), 'bg-gray-800', false],
+      ];
+      if (item.state === 'paused') actionDefs.push(['Resume', async () => { await performScheduleAction(item.schedule_id, 'resume'); await loadScheduleInventory(); }, 'bg-emerald-700', true]);
+      else if (!['cancelled', 'completed'].includes(item.state)) actionDefs.push(['Pause', async () => { await performScheduleAction(item.schedule_id, 'pause'); await loadScheduleInventory(); }, 'bg-amber-700', true]);
+      if (!['cancelled', 'completed'].includes(item.state)) actionDefs.push(['Cancel', async () => { await performScheduleAction(item.schedule_id, 'cancel'); await loadScheduleInventory(); }, 'bg-red-700', true]);
+
+      actionDefs.forEach(([label, fn, cls, notifyAction]) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `px-2 py-1 rounded text-[10px] text-white ${cls} hover:opacity-90`;
+        btn.textContent = label;
+        btn.addEventListener('click', async () => {
+          try {
+            await fn();
+            if (notifyAction) showToast(`Schedule ${label.toLowerCase()} succeeded.`);
+          } catch (err) {
+            if (scheduleInventoryStatus) scheduleInventoryStatus.textContent = err.message;
+            if (notifyAction) showToast(`Schedule ${label.toLowerCase()} failed: ${err.message}`);
+          }
+        });
+        actions.appendChild(btn);
+      });
+
+      row.appendChild(top);
+      row.appendChild(meta);
+      row.appendChild(analyticsLine);
+      row.appendChild(actions);
+      scheduleInventoryList.appendChild(row);
+    });
+  }
+
+  async function loadScheduleInventory(options = {}) {
+    if (scheduleInventoryStatus) scheduleInventoryStatus.textContent = 'Loading schedules…';
+    try {
+      await fetchScheduleInventory();
+      await renderScheduleInventory();
+      if (scheduleInventoryStatus) scheduleInventoryStatus.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+      if (options.toast) showToast('Schedules refreshed.');
+    } catch (err) {
+      if (scheduleInventoryStatus) scheduleInventoryStatus.textContent = err.message || 'Failed to load schedules';
+      if (options.toast) showToast(`Schedule refresh failed: ${err.message || 'unknown error'}`);
+      if (scheduleInventoryList) scheduleInventoryList.innerHTML = '';
+    }
+  }
+
   function isChatMessageNotification(notification) {
     return (
       notification &&
@@ -3800,6 +4166,53 @@ loadDismissedIds();
   if (workflowModalClose) {
     workflowModalClose.addEventListener('click', closeWorkflowModal);
   }
+  if (scheduleRefreshButton) {
+    scheduleRefreshButton.addEventListener('click', () => loadScheduleInventory({ toast: true }));
+  }
+  if (scheduleFilter) {
+    scheduleFilter.addEventListener('change', () => renderScheduleInventory());
+  }
+  if (scheduleModalClose) {
+    scheduleModalClose.addEventListener('click', closeScheduleModal);
+  }
+  if (scheduleModal) {
+    scheduleModal.addEventListener('click', (event) => {
+      if (event.target === scheduleModal) closeScheduleModal();
+    });
+  }
+  if (scheduleEditModalClose) {
+    scheduleEditModalClose.addEventListener('click', closeScheduleEdit);
+  }
+  if (scheduleEditModal) {
+    scheduleEditModal.addEventListener('click', (event) => {
+      if (event.target === scheduleEditModal) closeScheduleEdit();
+    });
+  }
+  if (scheduleEditSave) {
+    scheduleEditSave.addEventListener('click', async () => {
+      if (!selectedSchedule) return;
+      const patch = {};
+      if (scheduleEditCadence && scheduleEditCadence.value) patch.cadence = scheduleEditCadence.value;
+      if (scheduleEditNotify && scheduleEditNotify.value) patch.notify_on = scheduleEditNotify.value;
+      if (scheduleEditHour && scheduleEditHour.value !== '') patch.hour_local = Number(scheduleEditHour.value);
+      if (scheduleEditMinute && scheduleEditMinute.value !== '') patch.minute_local = Number(scheduleEditMinute.value);
+      if (selectedSchedule && Number.isFinite(selectedSchedule.revision)) patch.expected_revision = selectedSchedule.revision;
+      if (scheduleEditStatus) scheduleEditStatus.textContent = `Saving (rev ${selectedSchedule.revision})…`;
+      try {
+        await performScheduleAction(selectedSchedule.schedule_id, 'update', patch);
+        if (scheduleEditStatus) scheduleEditStatus.textContent = 'Saved.';
+        showToast('Schedule update saved.');
+        closeScheduleEdit();
+        await loadScheduleInventory();
+      } catch (err) {
+        const msg = String(err.message || 'Update failed');
+        const code = String(err.code || '');
+        const isConflict = code === 'schedule_revision_conflict';
+        if (scheduleEditStatus) scheduleEditStatus.textContent = isConflict ? `${msg} Refresh and retry.` : msg;
+        showToast(isConflict ? 'Schedule changed elsewhere. Refresh and retry.' : msg);
+      }
+    });
+  }
   if (agentTraceModal) {
     agentTraceModal.addEventListener('click', (event) => {
       if (event.target === agentTraceModal) closeAgentTraceModal();
@@ -3821,10 +4234,19 @@ loadDismissedIds();
     }
     if (event.key === 'Escape' && workflowModal && !workflowModal.classList.contains('hidden')) {
       closeWorkflowModal();
+      return;
+    }
+    if (event.key === 'Escape' && scheduleModal && !scheduleModal.classList.contains('hidden')) {
+      closeScheduleModal();
+      return;
+    }
+    if (event.key === 'Escape' && scheduleEditModal && !scheduleEditModal.classList.contains('hidden')) {
+      closeScheduleEdit();
     }
   });
 
   renderSocialInspectionState(null);
+  loadScheduleInventory();
 
   // --- WebSocket ---
   function setupWebSocket() {

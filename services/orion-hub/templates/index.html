@@ -345,6 +345,28 @@
           <div id="notificationList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
         </div>
       </div>
+
+      <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-semibold text-white">Workflow Schedules</h3>
+            <div id="scheduleInventoryMeta" class="text-[11px] text-gray-400">Durable schedule inventory from Actions.</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="scheduleFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="active" selected>Active</option>
+              <option value="needs_attention">Needs Attention</option>
+              <option value="all">All</option>
+              <option value="paused">Paused</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <button id="scheduleRefreshButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div id="scheduleAttentionSummary" class="hidden rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"></div>
+        <div id="scheduleInventoryStatus" class="text-xs text-gray-500">Loading…</div>
+        <div id="scheduleInventoryList" class="space-y-2 max-h-80 overflow-y-auto text-xs"></div>
+      </div>
     </div>
 
     <div class="w-full flex flex-col lg:flex-row gap-6 items-stretch">
@@ -922,6 +944,71 @@
       </div>
       <div id="tsRunResultsModalMeta" class="px-4 py-2 text-[11px] text-gray-400">--</div>
       <pre id="tsRunResultsModalText" class="flex-1 overflow-auto m-4 mt-0 p-3 rounded border border-gray-700 bg-gray-950/80 text-[12px] text-gray-100 whitespace-pre-wrap">--</pre>
+    </div>
+  </div>
+
+  <div id="scheduleModal" class="hidden fixed inset-0 z-[69] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-cyan-300">Schedule details</div>
+          <h2 id="scheduleModalTitle" class="mt-1 text-lg font-semibold text-white">Scheduled workflow</h2>
+          <div id="scheduleModalMeta" class="mt-1 text-[11px] text-gray-400">Lifecycle and run metadata.</div>
+        </div>
+        <button id="scheduleModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <div id="scheduleModalBadges" class="flex flex-wrap gap-2"></div>
+        <div id="scheduleModalSummary" class="grid grid-cols-1 gap-2 md:grid-cols-2"></div>
+        <section id="scheduleModalAnalytics" class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+          <div class="text-xs uppercase tracking-wide text-gray-500">Schedule analytics</div>
+          <div id="scheduleModalAnalyticsSummary" class="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2"></div>
+          <div id="scheduleModalAnalyticsTrend" class="mt-3 flex flex-wrap gap-1"></div>
+        </section>
+        <section class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+          <div class="text-xs uppercase tracking-wide text-gray-500">Recent run history</div>
+          <div id="scheduleModalHistory" class="mt-3 space-y-2 text-xs text-gray-300"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="scheduleEditModal" class="hidden fixed inset-0 z-[71] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto w-full max-w-xl rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <h2 class="text-lg font-semibold text-white">Edit schedule</h2>
+        <button id="scheduleEditModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="space-y-3 px-5 py-4">
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <label class="text-xs text-gray-300">Cadence
+            <select id="scheduleEditCadence" class="mt-1 w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="">Unchanged</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </label>
+          <label class="text-xs text-gray-300">Notify
+            <select id="scheduleEditNotify" class="mt-1 w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="">Unchanged</option>
+              <option value="none">None</option>
+              <option value="completion">Completion</option>
+              <option value="failure">Failure</option>
+              <option value="success">Success</option>
+            </select>
+          </label>
+          <label class="text-xs text-gray-300">Hour (local)
+            <input id="scheduleEditHour" type="number" min="0" max="23" class="mt-1 w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+          </label>
+          <label class="text-xs text-gray-300">Minute (local)
+            <input id="scheduleEditMinute" type="number" min="0" max="59" class="mt-1 w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+          </label>
+        </div>
+        <div class="flex items-center justify-between">
+          <div id="scheduleEditStatus" class="text-xs text-gray-400">Update applies bounded schedule patch fields.</div>
+          <button id="scheduleEditSave" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-1">Save</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1859,7 +1946,8 @@
   </script>
   <script src="/static/js/agent-trace.js?v=20260321.1" defer></script>
   <script src="/static/js/workflow-ui.js?v=20260324.1" defer></script>
+  <script src="/static/js/workflow-schedule-ui.js?v=20260325.1" defer></script>
   <script src="/static/js/social-inspection.js?v=20260323.1" defer></script>
-  <script src="/static/js/app.js?v=20260324.1" defer></script>
+  <script src="/static/js/app.js?v=20260325.1" defer></script>
 </body>
 </html>

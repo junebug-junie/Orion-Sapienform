@@ -9,6 +9,7 @@ from orion.cognition.verb_activation import is_active
 from orion.cognition.workflows import (
     derive_workflow_execution_policy,
     resolve_user_workflow_invocation,
+    resolve_workflow_schedule_management,
     workflow_registry_payload,
 )
 from orion.schemas.cortex.contracts import CortexChatRequest
@@ -245,11 +246,14 @@ def build_cortex_chat_request(
     selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
 
     workflow_match = None
+    workflow_management = None
     if not social_room and len(selected_verbs) == 0:
-        workflow_match = resolve_user_workflow_invocation(prompt)
+        workflow_management = resolve_workflow_schedule_management(prompt, user_id=user_id, session_id=session_id)
+        if workflow_management is None:
+            workflow_match = resolve_user_workflow_invocation(prompt)
 
     verb_override: str | None = None
-    if workflow_match is not None:
+    if workflow_match is not None or workflow_management is not None:
         mode = "brain"
         selected_ui_route = "brain" if selected_ui_route == "auto" else selected_ui_route
         options.pop("route_intent", None)
@@ -277,7 +281,7 @@ def build_cortex_chat_request(
     if social_room:
         route_intent = "none"
         options.pop("route_intent", None)
-    if workflow_match is not None:
+    if workflow_match is not None or workflow_management is not None:
         route_intent = "none"
         options.pop("route_intent", None)
 
@@ -297,6 +301,8 @@ def build_cortex_chat_request(
             session_id=session_id,
             user_id=user_id,
         ).model_dump(mode="json")
+    elif workflow_management is not None:
+        metadata["workflow_schedule_management"] = workflow_management.request.model_dump(mode="json")
 
     if social_room:
         peer_continuity = payload.get("social_peer_continuity") or {}
@@ -454,6 +460,7 @@ def build_cortex_chat_request(
         "workflow_id": metadata.get("workflow_request", {}).get("workflow_id") if isinstance(metadata.get("workflow_request"), dict) else None,
         "workflow_request": metadata.get("workflow_request"),
         "workflow_execution_policy": metadata.get("workflow_request", {}).get("execution_policy") if isinstance(metadata.get("workflow_request"), dict) else None,
+        "workflow_management_operation": metadata.get("workflow_schedule_management", {}).get("operation") if isinstance(metadata.get("workflow_schedule_management"), dict) else None,
     }
     if social_room:
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.chat_stance import build_chat_stance_inputs, fallback_chat_stance_brief, parse_chat_stance_brief
+from app.chat_stance import (
+    build_chat_stance_inputs,
+    enforce_chat_stance_quality,
+    fallback_chat_stance_brief,
+    parse_chat_stance_brief,
+)
 from orion.schemas.chat_stance import ChatStanceBrief
 
 
@@ -54,4 +59,47 @@ def test_parse_chat_stance_brief_and_fallback() -> None:
 
     fb = fallback_chat_stance_brief({"user_message": "can you help"})
     assert fb.answer_strategy == "DirectAnswer"
-    assert "generic assistant sludge" in fb.response_hazards
+    assert "generic assistant self-description" in fb.response_hazards
+
+
+def test_build_chat_stance_inputs_falls_back_when_identity_missing() -> None:
+    ctx = {"user_message": "who are you and who am i"}
+    built = build_chat_stance_inputs(ctx)
+    assert built["identity"]["orion"]
+    assert built["identity"]["juniper"]
+    assert built["identity"]["response_policy"]
+    assert any("not a generic assistant" in item.lower() for item in built["identity"]["orion"])
+
+
+def test_fallback_chat_stance_brief_identity_turn_anchors_orion_and_juniper() -> None:
+    fb = fallback_chat_stance_brief({"user_message": "Low ball first. Who are you and who am I?"})
+    assert fb.conversation_frame == "identity_emergence"
+    assert fb.active_identity_facets
+    assert fb.active_relationship_facets
+    assert "generic assistant self-description" in fb.response_hazards
+
+
+def test_semantic_guard_enriches_weak_generic_identity_brief() -> None:
+    weak = ChatStanceBrief(
+        conversation_frame="mixed",
+        user_intent="identity question",
+        self_relevance="none",
+        juniper_relevance="none",
+        active_identity_facets=[],
+        active_growth_axes=[],
+        active_relationship_facets=[],
+        social_posture=[],
+        reflective_themes=[],
+        active_tensions=[],
+        dream_motifs=[],
+        response_priorities=[],
+        response_hazards=[],
+        answer_strategy="Generic assistant answer",
+        stance_summary="I am a conversational AI designed to assist.",
+    )
+    ctx = {"user_message": "who are you and who am i"}
+    enriched, fired = enforce_chat_stance_quality(weak, ctx)
+    assert fired is True
+    assert enriched.active_identity_facets
+    assert enriched.active_relationship_facets
+    assert enriched.conversation_frame == "identity_emergence"

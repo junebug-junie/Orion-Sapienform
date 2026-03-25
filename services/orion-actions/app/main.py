@@ -36,7 +36,6 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
 
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -54,21 +53,20 @@ from .logic import (
     should_trigger,
 )
 from .settings import settings
-from .workflow_scheduler import (
-    ScheduledWorkflowEntry,
-    advance_after_dispatch,
-    due_schedules,
-    register_schedule,
-    schedule_label,
-)
+from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
+
+from .workflow_schedule_store import ClaimedSchedule, ScheduleAttentionSignal, WorkflowScheduleStore
 
 logger = logging.getLogger("orion-actions")
 
 ACTION_DAILY_PULSE_V1 = "daily_pulse_v1"
 ACTION_DAILY_METACOG_V1 = "daily_metacog_v1"
 ACTION_WORKFLOW_SCHEDULE_V1 = "workflow.schedule.v1"
+ACTION_WORKFLOW_MANAGE_V1 = "workflow.manage.v1"
 WORKFLOW_TRIGGER_KIND = "orion.actions.trigger.workflow.v1"
 WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
+WORKFLOW_MANAGE_KIND = "orion.actions.manage.workflow.v1"
+WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
 
 
 @dataclass
@@ -241,6 +239,56 @@ def _daily_notify_request(*, event_kind: str, title: str, dedupe_key: str, corre
     )
 
 
+def _schedule_attention_notify_request(*, signal: ScheduleAttentionSignal, correlation_id: str) -> NotificationRequest:
+    schedule = signal.schedule
+    analytics = signal.analytics
+    short_id = schedule.schedule_id[-8:] if len(schedule.schedule_id) > 8 else schedule.schedule_id
+    health = str(analytics.health or "idle")
+    status_word = "recovered" if signal.transition == "recovered" else "needs attention"
+    overdue = "none"
+    if analytics.is_overdue:
+        overdue = f"{int(analytics.overdue_seconds or 0)}s"
+    title = f"Workflow schedule {status_word}: {schedule.workflow_display_name or schedule.workflow_id}"
+    body = (
+        f"Schedule #{short_id} ({schedule.workflow_id}) {status_word}. "
+        f"health={health}, condition={signal.kind}, overdue={overdue}, "
+        f"recent={int(analytics.recent_success_count or 0)} success/{int(analytics.recent_failure_count or 0)} failure."
+    )
+    severity = "warning"
+    if signal.kind == "failing":
+        severity = "error"
+    if signal.transition == "recovered":
+        severity = "info"
+    dedupe_condition = signal.kind if signal.state == "active" else "recovered"
+    return NotificationRequest(
+        source_service=settings.service_name,
+        event_kind="workflow.schedule.attention.v1",
+        severity=severity,
+        title=title,
+        body_text=body,
+        context={
+            "schedule_id": schedule.schedule_id,
+            "schedule_id_short": short_id,
+            "workflow_id": schedule.workflow_id,
+            "workflow_display_name": schedule.workflow_display_name,
+            "health": health,
+            "condition": signal.kind,
+            "transition": signal.transition,
+            "state": signal.state,
+            "is_overdue": bool(analytics.is_overdue),
+            "overdue_seconds": analytics.overdue_seconds,
+            "missed_run_count": analytics.missed_run_count,
+            "needs_attention": bool(analytics.needs_attention),
+        },
+        tags=["workflow", "schedule", "attention", health],
+        recipient_group=settings.actions_recipient_group,
+        dedupe_key=f"workflow:schedule:attention:{schedule.schedule_id}:{dedupe_condition}",
+        dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
+        correlation_id=correlation_id,
+        session_id=schedule.execution_policy.session_id or settings.actions_session_id,
+    )
+
+
 def _journal_daily_dedupe_key(window: DailyWindow) -> str:
     return f"actions:journal:daily:{window.request_date}:{settings.node_name}"
 
@@ -317,7 +365,7 @@ async def lifespan(app: FastAPI):
     last_daily_run: dict[str, str] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
-    workflow_schedules: dict[str, ScheduledWorkflowEntry] = {}
+    workflow_schedule_store = WorkflowScheduleStore(settings.actions_workflow_schedule_store_path)
 
     async def _audit(
         parent: BaseEnvelope,
@@ -691,22 +739,23 @@ async def lifespan(app: FastAPI):
         )
         return True
 
-    async def _dispatch_scheduled_workflow(entry: ScheduledWorkflowEntry) -> None:
-        workflow_request = dict(entry.request.workflow_request or {})
+    async def _dispatch_scheduled_workflow(claimed: ClaimedSchedule) -> None:
+        entry = claimed.schedule
+        workflow_request = dict(entry.workflow_request or {})
         policy = dict(workflow_request.get("execution_policy") or {})
         policy["invocation_mode"] = "immediate"
         workflow_request["execution_policy"] = policy
         workflow_request["scheduled_dispatch"] = {
-            "request_id": entry.request.request_id,
+            "request_id": entry.request_id,
             "source": "orion-actions",
-            "scheduled_label": schedule_label(entry),
+            "scheduled_label": (entry.next_run_at.isoformat() if entry.next_run_at else "scheduled"),
         }
         env = build_skill_cortex_orch_envelope(
             BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={}),
             source=src,
             verb="chat_general",
-            session_id=entry.request.execution_policy.session_id or settings.actions_session_id,
-            user_id=entry.request.execution_policy.origin_user_id or settings.actions_recipient_group,
+            session_id=entry.execution_policy.session_id or settings.actions_session_id,
+            user_id=entry.execution_policy.origin_user_id or settings.actions_recipient_group,
             metadata={
                 "workflow_request": workflow_request,
                 "workflow_dispatch_source": "orion-actions-scheduler",
@@ -730,7 +779,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             await _audit(env, status="failed", event_id=str(env.correlation_id), action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_workflow_dispatch_payload")
             return
-        entry = register_schedule(schedules=workflow_schedules, request=request)
+        entry = workflow_schedule_store.upsert_from_dispatch(request)
         if entry is None:
             await _audit(env, status="failed", event_id=request.request_id, action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_schedule")
             return
@@ -741,15 +790,49 @@ async def lifespan(app: FastAPI):
             action_name=ACTION_WORKFLOW_SCHEDULE_V1,
             extra={
                 "workflow_id": request.workflow_id,
+                "schedule_id": entry.schedule_id,
                 "notify_on": request.execution_policy.notify_on,
-                "next_run_utc": entry.next_run_utc.isoformat(),
+                "next_run_utc": entry.next_run_at.isoformat() if entry.next_run_at else None,
             },
         )
+
+    async def _reply_management(env: BaseEnvelope, response: WorkflowScheduleManageResponseV1) -> None:
+        if not env.reply_to:
+            return
+        reply = env.derive_child(kind=WORKFLOW_MANAGE_KIND, source=src, payload=response.model_dump(mode="json"), reply_to=None)
+        await hunter.bus.publish(str(env.reply_to), reply)
+
+    async def _handle_workflow_management(env: BaseEnvelope) -> None:
+        try:
+            request = WorkflowScheduleManageRequestV1.model_validate(env.payload)
+        except Exception:
+            response = WorkflowScheduleManageResponseV1(
+                ok=False,
+                operation="list",
+                request_id=str(env.correlation_id),
+                message="invalid_workflow_management_payload",
+                error_code="invalid_management_payload",
+            )
+            await _reply_management(env, response)
+            return
+        response = workflow_schedule_store.apply_management(request)
+        await _audit(
+            env,
+            status="completed" if response.ok else "failed",
+            event_id=request.request_id,
+            action_name=ACTION_WORKFLOW_MANAGE_V1,
+            reason=None if response.ok else response.message,
+            extra={"operation": request.operation, "ambiguous": response.ambiguous, "schedule_count": len(response.schedules)},
+        )
+        await _reply_management(env, response)
 
     async def handle_envelope(env: BaseEnvelope) -> None:
         kind = str(env.kind or "")
         if kind == WORKFLOW_TRIGGER_KIND:
             await _handle_workflow_schedule(env)
+            return
+        if kind == WORKFLOW_MANAGE_KIND:
+            await _handle_workflow_management(env)
             return
         if kind == "orion.actions.trigger.daily_pulse.v1":
             await _handle_manual_daily(env, action_name=ACTION_DAILY_PULSE_V1)
@@ -803,7 +886,7 @@ async def lifespan(app: FastAPI):
         return _extract_skill_result_from_orch(orch_payload)
 
     async def _scheduler_loop() -> None:
-        nonlocal last_skill_run_monotonic, last_journal_run, workflow_schedules
+        nonlocal last_skill_run_monotonic, last_journal_run
         while True:
             try:
                 now_utc = datetime.now(timezone.utc)
@@ -883,21 +966,41 @@ async def lifespan(app: FastAPI):
                     )
                     last_journal_run = journal_local_date
 
-                for entry in due_schedules(workflow_schedules, now_utc=now_utc):
+                for claimed in workflow_schedule_store.claim_due(now_utc=now_utc, limit=settings.actions_workflow_schedule_claim_batch_size):
                     dispatch_env = BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={})
-                    await _dispatch_scheduled_workflow(entry)
-                    await _audit(
-                        dispatch_env,
-                        status="dispatched",
-                        event_id=entry.request.request_id,
-                        action_name="workflow.dispatch.v1",
-                        extra={
-                            "workflow_id": entry.request.workflow_id,
-                            "notify_on": entry.request.execution_policy.notify_on,
-                            "next_run_utc": entry.next_run_utc.isoformat(),
-                        },
-                    )
-                    advance_after_dispatch(schedules=workflow_schedules, entry=entry, now_utc=now_utc)
+                    try:
+                        await _dispatch_scheduled_workflow(claimed)
+                        await _audit(
+                            dispatch_env,
+                            status="dispatched",
+                            event_id=claimed.schedule.request_id,
+                            action_name="workflow.dispatch.v1",
+                            extra={
+                                "schedule_id": claimed.schedule.schedule_id,
+                                "workflow_id": claimed.schedule.workflow_id,
+                                "notify_on": claimed.schedule.execution_policy.notify_on,
+                                "next_run_utc": claimed.schedule.next_run_at.isoformat() if claimed.schedule.next_run_at else None,
+                            },
+                        )
+                    except Exception as exc:
+                        workflow_schedule_store.mark_dispatch_failed(run_id=claimed.run.run_id, schedule_id=claimed.schedule.schedule_id, error=str(exc), now_utc=now_utc)
+                        raise
+                signals = workflow_schedule_store.evaluate_attention_signals(
+                    now_utc=now_utc,
+                    overdue_min_seconds=settings.actions_workflow_attention_overdue_min_seconds,
+                    reminder_cooldown_seconds=settings.actions_workflow_attention_reminder_cooldown_seconds,
+                )
+                for signal in signals:
+                    req = _schedule_attention_notify_request(signal=signal, correlation_id=str(uuid4()))
+                    accepted = await asyncio.to_thread(notify.send, req)
+                    if not accepted.ok:
+                        logger.warning(
+                            "workflow attention notify failed schedule_id=%s transition=%s condition=%s detail=%s",
+                            signal.schedule.schedule_id,
+                            signal.transition,
+                            signal.kind,
+                            accepted.detail,
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -908,6 +1011,8 @@ async def lifespan(app: FastAPI):
     patterns = settings.subscribe_patterns()
     if WORKFLOW_TRIGGER_CHANNEL not in patterns:
         patterns.append(WORKFLOW_TRIGGER_CHANNEL)
+    if WORKFLOW_MANAGE_CHANNEL not in patterns:
+        patterns.append(WORKFLOW_MANAGE_CHANNEL)
     hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
 
     logger.info(

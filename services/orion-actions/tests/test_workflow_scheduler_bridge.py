@@ -1,18 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import importlib.util
-from pathlib import Path
-import sys
 
+from app.workflow_schedule_store import WorkflowScheduleStore
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
-
-MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "workflow_scheduler.py"
-SPEC = importlib.util.spec_from_file_location("actions_workflow_scheduler", MODULE_PATH)
-assert SPEC and SPEC.loader
-workflow_scheduler = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = workflow_scheduler
-SPEC.loader.exec_module(workflow_scheduler)
 
 
 def _dispatch_request(*, request_id: str, kind: str = "one_shot") -> WorkflowDispatchRequestV1:
@@ -35,16 +26,7 @@ def _dispatch_request(*, request_id: str, kind: str = "one_shot") -> WorkflowDis
         {
             "request_id": request_id,
             "workflow_id": "journal_pass",
-            "workflow_request": {
-                "workflow_id": "journal_pass",
-                "execution_policy": {
-                    "workflow_id": "journal_pass",
-                    "invocation_mode": "scheduled",
-                    "notify_on": "completion",
-                    "recipient_group": "juniper_primary",
-                    "schedule": schedule,
-                },
-            },
+            "workflow_request": {"workflow_id": "journal_pass"},
             "execution_policy": {
                 "workflow_id": "journal_pass",
                 "invocation_mode": "scheduled",
@@ -56,21 +38,34 @@ def _dispatch_request(*, request_id: str, kind: str = "one_shot") -> WorkflowDis
     )
 
 
-def test_registers_one_shot_schedule_and_marks_due() -> None:
-    schedules = {}
-    request = _dispatch_request(request_id="req-1", kind="one_shot")
-    workflow_scheduler.register_schedule(schedules=schedules, request=request, now_utc=datetime(2026, 3, 24, 5, 0, tzinfo=timezone.utc))
-    assert "req-1" in schedules
-    due = workflow_scheduler.due_schedules(schedules, now_utc=datetime(2026, 3, 24, 6, 1, tzinfo=timezone.utc))
-    assert len(due) == 1
+def test_claim_due_is_restart_safe(tmp_path) -> None:
+    path = tmp_path / "wf-schedules.json"
+    store = WorkflowScheduleStore(str(path))
+    store.upsert_from_dispatch(_dispatch_request(request_id="req-1", kind="one_shot"))
+    assert len(store.claim_due(now_utc=datetime(2026, 3, 24, 6, 1, tzinfo=timezone.utc))) == 1
+
+    reloaded = WorkflowScheduleStore(str(path))
+    assert len(reloaded.claim_due(now_utc=datetime(2026, 3, 24, 6, 2, tzinfo=timezone.utc))) == 0
 
 
-def test_recurring_schedule_advances_after_dispatch() -> None:
-    schedules = {}
-    request = _dispatch_request(request_id="req-2", kind="recurring")
-    entry = workflow_scheduler.register_schedule(schedules=schedules, request=request, now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
-    assert entry is not None
-    first = entry.next_run_utc
-    workflow_scheduler.advance_after_dispatch(schedules=schedules, entry=entry, now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
-    assert "req-2" in schedules
-    assert entry.next_run_utc > first
+def test_recurring_schedule_advances_after_dispatch(tmp_path) -> None:
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    store.upsert_from_dispatch(_dispatch_request(request_id="req-2", kind="recurring"), now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
+    before = store.list_schedules(include_inactive=True)[0].next_run_at
+    store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
+    after = store.list_schedules(include_inactive=True)[0].next_run_at
+    assert before is not None and after is not None and after > before
+
+
+def test_recurring_dispatch_failure_requeues_claimed_slot(tmp_path) -> None:
+    store = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    store.upsert_from_dispatch(_dispatch_request(request_id="req-3", kind="recurring"), now_utc=datetime(2026, 3, 24, 7, 0, tzinfo=timezone.utc))
+    claimed = store.claim_due(now_utc=datetime(2026, 3, 25, 7, 0, tzinfo=timezone.utc))
+    assert len(claimed) == 1
+    claimed_for = claimed[0].run.metadata.get("claimed_for_run_at")
+    assert claimed_for is not None
+    store.mark_dispatch_failed(run_id=claimed[0].run.run_id, schedule_id=claimed[0].schedule.schedule_id, error="downstream failure", now_utc=datetime(2026, 3, 25, 7, 1, tzinfo=timezone.utc))
+    reloaded = WorkflowScheduleStore(str(tmp_path / "wf-schedules.json"))
+    row = reloaded.list_schedules(include_inactive=True)[0]
+    assert row.next_run_at is not None
+    assert row.next_run_at.isoformat() == claimed_for

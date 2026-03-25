@@ -487,6 +487,22 @@ channels:
     stability: "experimental"
     since: "2026-03-24"
 
+  - name: "orion:actions:manage:workflow.v1"
+    kind: "request"
+    schema_id: "WorkflowScheduleManageRequestV1"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-actions"]
+    stability: "experimental"
+    since: "2026-03-24"
+
+  - name: "orion:actions:manage:result:*"
+    kind: "result"
+    schema_id: "WorkflowScheduleManageResponseV1"
+    producer_services: ["orion-actions"]
+    consumer_services: ["orion-cortex-orch"]
+    stability: "experimental"
+    since: "2026-03-24"
+
   - name: "orion:actions:audit"
     kind: "event"
     schema_id: "GenericPayloadV1"

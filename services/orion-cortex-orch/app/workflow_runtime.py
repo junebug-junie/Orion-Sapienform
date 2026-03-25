@@ -23,10 +23,12 @@ from orion.spark.concept_induction.settings import get_settings as get_concept_s
 from orion.spark.concept_induction.store import LocalProfileStore
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1
+from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 
 logger = logging.getLogger("orion.cortex.orch.workflow_runtime")
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 ACTIONS_WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
+ACTIONS_WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
 NOTIFY_PERSISTENCE_REQUEST_CHANNEL = "orion:notify:persistence:request"
 
 
@@ -38,6 +40,18 @@ def has_explicit_workflow_request(req: CortexClientRequest) -> bool:
     metadata = req.context.metadata if isinstance(req.context.metadata, dict) else {}
     workflow_request = metadata.get("workflow_request")
     return isinstance(workflow_request, dict) and bool(workflow_request.get("workflow_id"))
+
+
+def has_workflow_schedule_management_request(req: CortexClientRequest) -> bool:
+    metadata = req.context.metadata if isinstance(req.context.metadata, dict) else {}
+    manage = metadata.get("workflow_schedule_management")
+    return isinstance(manage, dict) and bool(manage.get("operation"))
+
+
+def _workflow_schedule_management_request(req: CortexClientRequest) -> Dict[str, Any]:
+    metadata = req.context.metadata if isinstance(req.context.metadata, dict) else {}
+    manage = metadata.get("workflow_schedule_management")
+    return dict(manage) if isinstance(manage, dict) else {}
 
 
 def _workflow_request(req: CortexClientRequest) -> Dict[str, Any]:
@@ -233,6 +247,72 @@ async def _schedule_workflow_dispatch(
         recall_debug={},
         steps=[],
         error=None,
+        correlation_id=correlation_id,
+        metadata=metadata,
+    )
+
+
+async def execute_workflow_schedule_management(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    req: CortexClientRequest,
+    correlation_id: str,
+) -> CortexClientResult:
+    raw = _workflow_schedule_management_request(req)
+    request = WorkflowScheduleManageRequestV1.model_validate(raw)
+    reply_channel = f"orion:actions:manage:result:{correlation_id}"
+    env = BaseEnvelope(
+        kind="orion.actions.manage.workflow.v1",
+        source=source,
+        correlation_id=correlation_id,
+        payload=request.model_dump(mode="json"),
+        reply_to=reply_channel,
+    )
+    msg = await bus.rpc_request(
+        ACTIONS_WORKFLOW_MANAGE_CHANNEL,
+        env,
+        reply_channel=reply_channel,
+        timeout_sec=20.0,
+    )
+    decoded = bus.codec.decode(msg.get("data"))
+    if not decoded.ok or decoded.envelope is None:
+        raise WorkflowExecutionError(f"workflow_manage_decode_failed:{decoded.error}")
+    payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+    response = WorkflowScheduleManageResponseV1.model_validate(payload)
+
+    lines: list[str] = [f"Workflow schedule {response.operation}: {'ok' if response.ok else 'failed'}", response.message]
+    if response.error_code:
+        lines.append(f"error_code={response.error_code}")
+    if response.schedule is not None:
+        lines.append(
+            f"schedule_id={response.schedule.schedule_id} workflow={response.schedule.workflow_id} state={response.schedule.state} next_run={response.schedule.next_run_at}"
+        )
+    if response.schedules:
+        lines.append("Schedules:")
+        for item in response.schedules[:10]:
+            cadence = item.execution_policy.schedule.label if item.execution_policy.schedule and item.execution_policy.schedule.label else (
+                item.execution_policy.schedule.cadence if item.execution_policy.schedule else "one-shot"
+            )
+            short_id = item.schedule_id[-8:] if len(item.schedule_id) > 8 else item.schedule_id
+            lines.append(
+                f"- {item.workflow_display_name or item.workflow_id} | {item.state} | next={item.next_run_at} | cadence={cadence} | notify={item.notify_on} | id={short_id}"
+            )
+    if response.ambiguous:
+        lines.append("Multiple matching schedules found. Please specify schedule_id.")
+    final_text = "\n".join(lines)
+    metadata = _workflow_metadata_base(request=raw, status="completed" if response.ok else "failed")
+    metadata["workflow_schedule_management"] = response.model_dump(mode="json")
+    return CortexClientResult(
+        ok=response.ok,
+        mode="brain",
+        verb="workflow.schedule.management",
+        status="success" if response.ok else "fail",
+        final_text=final_text,
+        memory_used=False,
+        recall_debug={},
+        steps=[],
+        error=None if response.ok else {"message": response.message, "code": response.error_code, "details": response.error_details},
         correlation_id=correlation_id,
         metadata=metadata,
     )

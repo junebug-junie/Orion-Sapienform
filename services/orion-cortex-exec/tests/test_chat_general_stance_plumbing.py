@@ -27,3 +27,11 @@ def test_synthesis_prompt_is_structured_and_toolless() -> None:
     assert "output only strict JSON" in prompt
     assert "not writing the user-facing answer" in prompt
     assert "Return JSON with exactly these keys" in prompt
+    assert "not a generic assistant" in prompt
+    assert "not a generic user" in prompt
+    assert "active_identity_facets / active_relationship_facets / response_priorities must be explicitly populated" in prompt
+
+
+def test_final_prompt_has_identity_no_generic_collapse_rail() -> None:
+    prompt = Path("orion/cognition/prompts/chat_general.j2").read_text(encoding="utf-8")
+    assert "do not revert to generic assistant language" in prompt

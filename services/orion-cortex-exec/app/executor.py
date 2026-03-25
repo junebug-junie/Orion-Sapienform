@@ -53,7 +53,9 @@ from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
 from .chat_stance import (
     build_chat_stance_inputs,
+    enforce_chat_stance_quality,
     fallback_chat_stance_brief,
+    identity_kernel_with_fallbacks,
     parse_chat_stance_brief,
 )
 
@@ -615,19 +617,38 @@ def _trace_meta_from_ctx(
 
 def _inject_identity_context(ctx: Dict[str, Any]) -> None:
     personality_file = str(ctx.get("personality_file") or "").strip()
-    if not personality_file:
+    required_keys = ("orion_identity_summary", "juniper_relationship_summary", "response_policy_summary")
+    if all(k in ctx and isinstance(ctx.get(k), list) and ctx.get(k) for k in required_keys):
+        logger.debug("identity_injection skipped: identity context already present")
         return
 
-    if all(k in ctx for k in ("orion_identity_summary", "juniper_relationship_summary", "response_policy_summary")):
-        return
+    personality_file_exists = False
+    if personality_file:
+        try:
+            identity_data = load_identity_file(personality_file)
+            personality_file_exists = True
+            identity_context = build_identity_context(identity_data)
+            for key, value in identity_context.items():
+                if isinstance(value, list) and value:
+                    ctx[key] = value
+        except Exception:
+            logger.warning("Failed to load personality file: %s; using fallback identity kernel", personality_file, exc_info=True)
+    else:
+        logger.warning("No personality_file configured; using fallback identity kernel")
 
+    fallback_identity = identity_kernel_with_fallbacks(ctx)
+    ctx.update(fallback_identity)
     try:
-        identity_data = load_identity_file(personality_file)
-        identity_context = build_identity_context(identity_data)
-        for key, value in identity_context.items():
-            ctx.setdefault(key, value)
+        logger.info(
+            "identity_context_ready personality_file=%s personality_file_loaded=%s orion_count=%s juniper_count=%s policy_count=%s",
+            personality_file or None,
+            personality_file_exists,
+            len(ctx.get("orion_identity_summary") or []),
+            len(ctx.get("juniper_relationship_summary") or []),
+            len(ctx.get("response_policy_summary") or []),
+        )
     except Exception:
-        logger.warning("Failed to load personality file: %s", personality_file, exc_info=True)
+        logger.debug("identity_context_ready logging failed", exc_info=True)
 
 
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
@@ -1038,7 +1059,14 @@ async def call_step_services(
 
     _inject_identity_context(ctx)
     if step.verb_name == "chat_general":
-        build_chat_stance_inputs(ctx)
+        stance_inputs = build_chat_stance_inputs(ctx)
+        logger.info(
+            "chat_stance_inputs_ready has_identity_keys=%s orion_count=%s juniper_count=%s policy_count=%s",
+            sorted(list((stance_inputs.get("identity") or {}).keys())),
+            len((stance_inputs.get("identity") or {}).get("orion") or []),
+            len((stance_inputs.get("identity") or {}).get("juniper") or []),
+            len((stance_inputs.get("identity") or {}).get("response_policy") or []),
+        )
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
@@ -1883,6 +1911,24 @@ async def call_step_services(
                     if parsed_brief is None:
                         parsed_brief = fallback_chat_stance_brief(ctx)
                         logs.append("warn <- chat stance brief parse failed; using fallback brief")
+                    else:
+                        logger.info(
+                            "chat_stance_brief_parsed frame=%s identity_facets=%s relationship_facets=%s priorities=%s",
+                            parsed_brief.conversation_frame,
+                            len(parsed_brief.active_identity_facets),
+                            len(parsed_brief.active_relationship_facets),
+                            len(parsed_brief.response_priorities),
+                        )
+                    parsed_brief, semantic_fallback = enforce_chat_stance_quality(parsed_brief, ctx)
+                    if semantic_fallback:
+                        logs.append("warn <- chat stance brief semantic guard enriched/replaced brief")
+                    logger.info(
+                        "chat_stance_brief_quality_guard frame=%s identity_facets=%s relationship_facets=%s semantic_fallback=%s",
+                        parsed_brief.conversation_frame,
+                        len(parsed_brief.active_identity_facets),
+                        len(parsed_brief.active_relationship_facets),
+                        semantic_fallback,
+                    )
                     ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
                     merged_result["ChatStanceBrief"] = ctx["chat_stance_brief"]
 

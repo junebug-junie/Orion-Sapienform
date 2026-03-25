@@ -22,6 +22,20 @@ def test_inject_identity_context_fails_soft_on_missing_file() -> None:
 
     _inject_identity_context(ctx)
 
-    assert "orion_identity_summary" not in ctx
-    assert "juniper_relationship_summary" not in ctx
-    assert "response_policy_summary" not in ctx
+    assert "orion_identity_summary" in ctx
+    assert "juniper_relationship_summary" in ctx
+    assert "response_policy_summary" in ctx
+    assert any("not a generic assistant" in item.lower() for item in ctx["orion_identity_summary"])
+    assert any("not a generic user" in item.lower() for item in ctx["juniper_relationship_summary"])
+
+
+def test_inject_identity_context_backfills_when_existing_lists_empty() -> None:
+    ctx = {
+        "orion_identity_summary": [],
+        "juniper_relationship_summary": [],
+        "response_policy_summary": [],
+    }
+    _inject_identity_context(ctx)
+    assert ctx["orion_identity_summary"]
+    assert ctx["juniper_relationship_summary"]
+    assert ctx["response_policy_summary"]

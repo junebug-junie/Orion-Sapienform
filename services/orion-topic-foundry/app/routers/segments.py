@@ -19,6 +19,7 @@ router = APIRouter()
 @router.get("/segments", response_model=Union[SegmentListResponse, SegmentListPage])
 def list_segments(
     run_id: UUID,
+    response: Response,
     q: str | None = Query(default=None),
     aspect: str | None = Query(default=None),
     has_enrichment: bool | None = Query(default=None),
@@ -29,7 +30,6 @@ def list_segments(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     format: str | None = Query(default=None),
-    response: Response,
 ):
     rows = fetch_segments(
         run_id,

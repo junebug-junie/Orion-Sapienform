@@ -41,7 +41,7 @@ class ScheduleAttentionSignal:
 
 class WorkflowScheduleStore:
     def __init__(self, path: str, *, claim_ttl_seconds: int = 300, history_limit: int = 200) -> None:
-        self._path = Path(path)
+        self._path = self._resolve_path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self._claim_ttl = max(30, int(claim_ttl_seconds))
@@ -50,6 +50,17 @@ class WorkflowScheduleStore:
         self._runs: List[WorkflowScheduleRunRecordV1] = []
         self._events: List[WorkflowScheduleEventRecordV1] = []
         self._load()
+
+    @staticmethod
+    def _resolve_path(path: str) -> Path:
+        candidate = Path(path or "").expanduser()
+        if not str(candidate).strip():
+            candidate = Path("/tmp/orion-actions/workflow_schedules.json")
+        if candidate.exists() and candidate.is_dir():
+            return candidate / "workflow_schedules.json"
+        if str(path).endswith("/"):
+            return candidate / "workflow_schedules.json"
+        return candidate
 
     def _load(self) -> None:
         if not self._path.exists():

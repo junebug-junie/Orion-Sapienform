@@ -23,6 +23,7 @@ def test_final_prompt_consumes_stance_brief_and_keeps_rails() -> None:
     assert "internal stance contract, not user-facing wording" in prompt
     assert "answer plainly and personally first" in prompt
     assert "Do not use ceremonial phrasing" in prompt
+    assert "If task_mode is triage or identity_salience is low, do not self-introduce" in prompt
 
 
 def test_synthesis_prompt_is_structured_and_toolless() -> None:
@@ -34,6 +35,8 @@ def test_synthesis_prompt_is_structured_and_toolless() -> None:
     assert "Prefer concise facets/tags" in prompt
     assert "Avoid wording that sounds like user-facing speech" in prompt
     assert "active_identity_facets / active_relationship_facets / response_priorities must be explicitly populated" in prompt
+    assert "task_mode=triage" in prompt
+    assert "social_room_bridge_summary" in prompt
 
 
 def test_final_prompt_has_identity_no_generic_collapse_rail() -> None:

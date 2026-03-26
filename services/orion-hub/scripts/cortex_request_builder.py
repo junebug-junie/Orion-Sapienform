@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -32,6 +33,8 @@ from orion.schemas.social_gif import (
     SocialGifPolicyDecisionV1,
     SocialGifProxyContextV1,
 )
+
+logger = logging.getLogger("orion-hub.request-builder")
 
 try:
     from scripts.social_room import (
@@ -247,16 +250,33 @@ def build_cortex_chat_request(
 
     workflow_match = None
     workflow_management = None
-    if not social_room and len(selected_verbs) == 0:
+    workflow_resolution_reason = "social_room_profile"
+    if not social_room:
         workflow_management = resolve_workflow_schedule_management(prompt, user_id=user_id, session_id=session_id)
-        if workflow_management is None:
+        if workflow_management is not None:
+            workflow_resolution_reason = "explicit_schedule_management_match"
+        else:
             workflow_match = resolve_user_workflow_invocation(prompt)
+            if workflow_match is not None:
+                workflow_resolution_reason = "explicit_named_workflow_match"
+            else:
+                workflow_resolution_reason = "no_workflow_match"
 
     verb_override: str | None = None
     if workflow_match is not None or workflow_management is not None:
         mode = "brain"
         selected_ui_route = "brain" if selected_ui_route == "auto" else selected_ui_route
         options.pop("route_intent", None)
+        if selected_verbs:
+            logger.info(
+                "workflow_resolution_result %s",
+                {
+                    "matched_workflow_id": workflow_match.workflow_id if workflow_match is not None else None,
+                    "fallback_route": "workflow_lane",
+                    "reason": "named_workflow_precedence_over_selected_verbs",
+                    "selected_verbs": selected_verbs,
+                },
+            )
     elif social_room and not selected_verbs:
         verb_override = SOCIAL_ROOM_VERB
     elif len(selected_verbs) == 1:
@@ -461,6 +481,9 @@ def build_cortex_chat_request(
         "workflow_request": metadata.get("workflow_request"),
         "workflow_execution_policy": metadata.get("workflow_request", {}).get("execution_policy") if isinstance(metadata.get("workflow_request"), dict) else None,
         "workflow_management_operation": metadata.get("workflow_schedule_management", {}).get("operation") if isinstance(metadata.get("workflow_schedule_management"), dict) else None,
+        "workflow_resolution_reason": workflow_resolution_reason,
+        "workflow_requested": bool(workflow_match is not None or workflow_management is not None),
+        "fallback_route": "workflow_lane" if (workflow_match is not None or workflow_management is not None) else "chat_or_auto_route",
     }
     if social_room:
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []

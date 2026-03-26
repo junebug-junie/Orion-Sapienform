@@ -1,5 +1,6 @@
 name: introspect_spark
 kind: task
+personality_file: orion/cognition/personality/orion_identity.yaml
 # Short timeout because this is a background feeling, not a complex thought
 timeout_ms: 300000
 steps:

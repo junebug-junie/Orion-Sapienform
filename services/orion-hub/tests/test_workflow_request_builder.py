@@ -35,6 +35,75 @@ def test_named_workflow_prompt_routes_into_explicit_workflow_request() -> None:
     assert debug['workflow_id'] == 'concept_induction_pass'
 
 
+def test_explicit_workflow_prompts_resolve_for_all_supported_named_workflows() -> None:
+    cases = [
+        ("Would you please run a journal pass?", "journal_pass"),
+        ("Run a self review", "self_review"),
+        ("Run your dream cycle", "dream_cycle"),
+        ("Run through your concept induction graphs", "concept_induction_pass"),
+    ]
+    for prompt, expected_workflow_id in cases:
+        req, debug, _ = hub_builder.build_chat_request(
+            payload={"mode": "auto"},
+            session_id="sid-workflow",
+            user_id="user-1",
+            trace_id="trace-workflow",
+            default_mode="brain",
+            auto_default_enabled=False,
+            source_label="hub_http",
+            prompt=prompt,
+        )
+        assert req.metadata["workflow_request"]["workflow_id"] == expected_workflow_id
+        assert req.mode == "brain"
+        assert req.route_intent == "none"
+        assert debug["fallback_route"] == "workflow_lane"
+
+
+def test_explicit_named_workflow_takes_precedence_over_chat_general_verb_selection() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={"mode": "auto", "verbs": ["chat_general"]},
+        session_id="sid-workflow",
+        user_id="user-1",
+        trace_id="trace-workflow",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Would you please run a journal pass?",
+    )
+
+    assert req.mode == "brain"
+    assert req.route_intent == "none"
+    assert req.verb is None
+    assert req.metadata["workflow_request"]["workflow_id"] == "journal_pass"
+    assert debug["workflow_resolution_reason"] == "explicit_named_workflow_match"
+
+
+def test_http_and_ws_workflow_resolution_parity_for_explicit_named_workflow() -> None:
+    prompt = "Run through your concept induction graphs"
+    http_req, _, _ = hub_builder.build_chat_request(
+        payload={"mode": "auto"},
+        session_id="sid-workflow",
+        user_id="user-1",
+        trace_id="trace-http",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt=prompt,
+    )
+    ws_req, _, _ = hub_builder.build_chat_request(
+        payload={"mode": "auto"},
+        session_id="sid-workflow",
+        user_id="user-1",
+        trace_id="trace-ws",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_ws",
+        prompt=prompt,
+    )
+    assert http_req.metadata["workflow_request"]["workflow_id"] == ws_req.metadata["workflow_request"]["workflow_id"]
+    assert http_req.mode == ws_req.mode == "brain"
+
+
 def test_non_matching_prompt_preserves_existing_routing_behavior() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={'mode': 'auto'},

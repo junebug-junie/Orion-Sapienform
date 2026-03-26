@@ -55,9 +55,11 @@ from .logic import (
 from .settings import settings
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 
+from .workflow_schedule_metrics import WorkflowScheduleMetrics
 from .workflow_schedule_store import ClaimedSchedule, ScheduleAttentionSignal, WorkflowScheduleStore
 
 logger = logging.getLogger("orion-actions")
+PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 ACTION_DAILY_PULSE_V1 = "daily_pulse_v1"
 ACTION_DAILY_METACOG_V1 = "daily_metacog_v1"
@@ -67,6 +69,19 @@ WORKFLOW_TRIGGER_KIND = "orion.actions.trigger.workflow.v1"
 WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
 WORKFLOW_MANAGE_KIND = "orion.actions.manage.workflow.v1"
 WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
+
+
+def _runtime_identity() -> dict[str, str]:
+    return {
+        "service": settings.service_name,
+        "version": settings.service_version,
+        "node": settings.node_name,
+        "git_sha": os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT") or "unknown",
+        "build_timestamp": os.getenv("BUILD_TIMESTAMP") or "unknown",
+        "environment": os.getenv("ORION_ENV") or os.getenv("ENVIRONMENT") or "unknown",
+        "process_started_at": PROCESS_STARTED_AT_UTC.isoformat(),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @dataclass
@@ -89,6 +104,7 @@ def _ensure_logging() -> None:
 
 
 _ensure_logging()
+workflow_schedule_metrics = WorkflowScheduleMetrics()
 
 
 def _cfg() -> ChassisConfig:
@@ -293,6 +309,20 @@ def _journal_daily_dedupe_key(window: DailyWindow) -> str:
     return f"actions:journal:daily:{window.request_date}:{settings.node_name}"
 
 
+async def _publish_workflow_attention_signal(*, signal: ScheduleAttentionSignal, notify) -> None:
+    req = _schedule_attention_notify_request(signal=signal, correlation_id=str(uuid4()))
+    accepted = await asyncio.to_thread(notify.send, req)
+    workflow_schedule_metrics.incr_attention(signal.transition)
+    if not accepted.ok:
+        logger.warning(
+            "workflow attention notify failed schedule_id=%s transition=%s condition=%s detail=%s",
+            signal.schedule.schedule_id,
+            signal.transition,
+            signal.kind,
+            accepted.detail,
+        )
+
+
 def should_journal_from_collapse(is_causally_dense: bool, *, dense_only: bool) -> bool:
     return bool(is_causally_dense) or not dense_only
 
@@ -365,7 +395,10 @@ async def lifespan(app: FastAPI):
     last_daily_run: dict[str, str] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
-    workflow_schedule_store = WorkflowScheduleStore(settings.actions_workflow_schedule_store_path)
+    workflow_schedule_store = WorkflowScheduleStore(
+        settings.actions_workflow_schedule_store_path,
+        metrics=workflow_schedule_metrics,
+    )
 
     async def _audit(
         parent: BaseEnvelope,
@@ -779,10 +812,29 @@ async def lifespan(app: FastAPI):
         except Exception:
             await _audit(env, status="failed", event_id=str(env.correlation_id), action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_workflow_dispatch_payload")
             return
+        logger.info(
+            "actions_workflow_registration corr=%s workflow_id=%s invocation_mode=%s schedule_kind=%s",
+            env.correlation_id,
+            request.workflow_id,
+            request.execution_policy.invocation_mode,
+            request.execution_policy.schedule.kind if request.execution_policy.schedule else None,
+        )
         entry = workflow_schedule_store.upsert_from_dispatch(request)
         if entry is None:
+            logger.info(
+                "actions_workflow_registration_result corr=%s workflow_id=%s status=failed reason=invalid_schedule",
+                env.correlation_id,
+                request.workflow_id,
+            )
             await _audit(env, status="failed", event_id=request.request_id, action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_schedule")
             return
+        logger.info(
+            "actions_workflow_registration_result corr=%s workflow_id=%s status=scheduled schedule_id=%s next_run_utc=%s",
+            env.correlation_id,
+            request.workflow_id,
+            entry.schedule_id,
+            entry.next_run_at.isoformat() if entry.next_run_at else None,
+        )
         await _audit(
             env,
             status="scheduled",
@@ -991,16 +1043,7 @@ async def lifespan(app: FastAPI):
                     reminder_cooldown_seconds=settings.actions_workflow_attention_reminder_cooldown_seconds,
                 )
                 for signal in signals:
-                    req = _schedule_attention_notify_request(signal=signal, correlation_id=str(uuid4()))
-                    accepted = await asyncio.to_thread(notify.send, req)
-                    if not accepted.ok:
-                        logger.warning(
-                            "workflow attention notify failed schedule_id=%s transition=%s condition=%s detail=%s",
-                            signal.schedule.schedule_id,
-                            signal.transition,
-                            signal.kind,
-                            accepted.detail,
-                        )
+                    await _publish_workflow_attention_signal(signal=signal, notify=notify)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1021,6 +1064,7 @@ async def lifespan(app: FastAPI):
         settings.orion_bus_url,
         settings.cortex_request_channel,
     )
+    logger.info("actions_runtime_identity %s", json.dumps(_runtime_identity(), sort_keys=True))
 
     hunter_task = asyncio.create_task(hunter.start(), name="orion-actions-hunter")
     scheduler_task = asyncio.create_task(_scheduler_loop(), name="orion-actions-scheduler")
@@ -1046,6 +1090,11 @@ async def health() -> dict:
         "version": settings.service_version,
         "node": settings.node_name,
     }
+
+
+@app.get("/info")
+async def info() -> dict:
+    return _runtime_identity()
 
 
 if __name__ == "__main__":

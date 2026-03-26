@@ -19,7 +19,7 @@ from orion.journaler.worker import (
 )
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
-from orion.spark.concept_induction.settings import get_settings as get_concept_settings
+from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH, get_settings as get_concept_settings
 from orion.spark.concept_induction.store import LocalProfileStore
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1
@@ -122,6 +122,14 @@ def _workflow_summary_text(*, title: str, status: str, main_result: str, persist
         f"Scheduled: {', '.join(scheduled_items) if scheduled_items else 'none'}",
     ]
     return "\n".join(lines)
+
+
+def _coerce_journal_title(*, raw_title: Any, fallback_summary: str, correlation_id: str) -> str:
+    title = str(raw_title or "").strip()
+    if title:
+        return title
+    seed = str(fallback_summary or "").strip() or "Journal Pass"
+    return f"Journal Pass · {seed[:64]} · {correlation_id[:8]}"
 
 
 def _should_notify(*, notify_on: str, ok: bool) -> bool:
@@ -380,15 +388,21 @@ async def _execute_dream_cycle(
         options_patch={"workflow_execution": True},
     )
     final_text = payload.get("final_text") or "Dream cycle completed through the existing dream verb."
+    payload_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    dream_persisted = bool(payload_metadata.get("dream_result_published") or payload_metadata.get("dream_persisted"))
+    persisted = ["dream.result.v1"] if dream_persisted else []
+    if not dream_persisted:
+        final_text = f"{final_text} Dream persistence was not confirmed by the execution payload."
     metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "Dream Cycle",
         "status": "completed" if verb_result.ok else "failed",
         "subverb": "dream_cycle",
-        "persisted": ["dream.result.v1"] if verb_result.ok else [],
+        "persisted": persisted,
         "scheduled": [],
         "main_result": final_text,
+        "dream_persistence_confirmed": dream_persisted,
     }
     return CortexClientResult(
         ok=verb_result.ok,
@@ -399,7 +413,7 @@ async def _execute_dream_cycle(
             title="Dream Cycle",
             status="completed" if verb_result.ok else "failed",
             main_result=final_text,
-            persisted=metadata["workflow"]["persisted"],
+            persisted=persisted,
         ),
         memory_used=bool(payload.get("memory_used")),
         recall_debug=payload.get("recall_debug") or {},
@@ -445,6 +459,11 @@ async def _execute_journal_pass(
     )
     compose_payload = _extract_result_payload(verb_result)
     draft = draft_from_cortex_result(compose_payload)
+    title = _coerce_journal_title(raw_title=draft.title, fallback_summary=trigger.summary, correlation_id=correlation_id)
+    body = str(draft.body or "").strip()
+    if not body:
+        raise WorkflowExecutionError("journal_pass_empty_body")
+    draft = draft.model_copy(update={"title": title, "body": body}, deep=True)
     write = build_write_payload(
         draft,
         trigger=trigger,
@@ -590,6 +609,7 @@ async def _execute_concept_induction_pass(
     del bus, source, causality_chain, trace, call_verb_runtime
     workflow_id = "concept_induction_pass"
     settings = get_concept_settings()
+    using_placeholder_store = settings.store_path == DEFAULT_CONCEPT_STORE_PATH
     store = LocalProfileStore(settings.store_path)
     subjects = list(settings.subjects or ["orion", "juniper", "relationship"])
     reviews: List[Dict[str, Any]] = []
@@ -611,40 +631,48 @@ async def _execute_concept_induction_pass(
                 "window_end": profile.window_end.isoformat(),
             }
         )
+    ok = bool(reviews)
+    status = "completed" if ok else "failed"
     if reviews:
         main_result = "; ".join(
             f"{item['subject']} rev {item['revision']} with {item['concept_count']} concepts / {item['cluster_count']} clusters"
             for item in reviews
         )
+    elif using_placeholder_store:
+        main_result = (
+            "Concept induction profiles are not configured in this environment "
+            f"(CONCEPT_STORE_PATH still defaults to {DEFAULT_CONCEPT_STORE_PATH})."
+        )
     else:
-        main_result = f"No concept induction profiles were available in {settings.store_path}."
-    metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
+        main_result = f"Concept induction profiles are not available in the configured store ({settings.store_path})."
+    metadata = _workflow_metadata_base(request=_workflow_request(req), status=status)
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "Concept Induction Pass",
-        "status": "completed",
+        "status": status,
         "subverb": None,
         "persisted": [],
         "scheduled": [],
         "main_result": main_result,
         "profile_store_path": settings.store_path,
+        "profile_store_placeholder_path": using_placeholder_store,
         "profiles_reviewed": reviews,
     }
     return CortexClientResult(
-        ok=True,
+        ok=ok,
         mode="brain",
         verb=workflow_id,
-        status="success",
+        status="success" if ok else "fail",
         final_text=_workflow_summary_text(
             title="Concept Induction Pass",
-            status="completed",
+            status=status,
             main_result=main_result,
             persisted=[],
         ),
         memory_used=False,
         recall_debug={},
         steps=[],
-        error=None,
+        error=None if ok else {"message": main_result, "code": "concept_profiles_unavailable"},
         correlation_id=correlation_id,
         metadata=metadata,
     )
@@ -668,6 +696,13 @@ async def execute_chat_workflow(
 
     policy = _execution_policy(req, workflow_id)
     logger.info("workflow_requested corr=%s workflow_id=%s alias=%s session_id=%s mode=%s notify_on=%s", correlation_id, workflow_id, request.get("matched_alias"), req.context.session_id, policy.invocation_mode, policy.notify_on)
+    logger.info(
+        "workflow_path_decision corr=%s workflow_id=%s invocation_mode=%s schedule_kind=%s",
+        correlation_id,
+        workflow_id,
+        policy.invocation_mode,
+        policy.schedule.kind if policy.schedule else None,
+    )
     if policy.invocation_mode == "scheduled":
         logger.info("workflow_scheduled corr=%s workflow_id=%s schedule=%s", correlation_id, workflow_id, policy.schedule.model_dump(mode="json") if policy.schedule else {})
         return await _schedule_workflow_dispatch(
@@ -752,4 +787,12 @@ async def execute_chat_workflow(
         execution_source="immediate",
     )
     logger.info("workflow_completed corr=%s workflow_id=%s ok=%s", correlation_id, workflow_id, result.ok)
+    logger.info(
+        "workflow_response_shape corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s",
+        correlation_id,
+        workflow_id,
+        (result.metadata.get("workflow") or {}).get("status") if isinstance(result.metadata, dict) else None,
+        len(((result.metadata.get("workflow") or {}).get("scheduled") or [])) if isinstance(result.metadata, dict) else 0,
+        len(((result.metadata.get("workflow") or {}).get("persisted") or [])) if isinstance(result.metadata, dict) else 0,
+    )
     return result

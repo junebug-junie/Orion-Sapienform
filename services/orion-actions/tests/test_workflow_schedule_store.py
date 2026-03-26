@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from app.workflow_schedule_metrics import WorkflowScheduleMetrics
 from app.workflow_schedule_store import WorkflowScheduleStore
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleUpdatePatchV1
 
@@ -148,3 +149,23 @@ def test_attention_signals_dedupe_and_recovery(tmp_path):
     recovered = store.evaluate_attention_signals(now_utc=datetime(2026, 3, 25, 6, 5, tzinfo=timezone.utc), reminder_cooldown_seconds=9999)
     assert len(recovered) == 1
     assert recovered[0].transition == "recovered"
+
+
+def test_structured_error_metrics_increment(tmp_path):
+    metrics = WorkflowScheduleMetrics()
+    store = WorkflowScheduleStore(str(tmp_path / "schedules.json"), metrics=metrics)
+    created = store.upsert_from_dispatch(_dispatch("r1", workflow_id="journal_pass", recurring=True))
+    assert created is not None
+    _ = store.apply_management(
+        WorkflowScheduleManageRequestV1(
+            operation="update",
+            request_id="m-conflict",
+            schedule_id=created.schedule_id,
+            patch=WorkflowScheduleUpdatePatchV1(hour_local=21, expected_revision=created.revision - 1),
+        )
+    )
+    _ = store.apply_management(WorkflowScheduleManageRequestV1(operation="pause", request_id="m-pause", schedule_id=created.schedule_id))
+    _ = store.apply_management(WorkflowScheduleManageRequestV1(operation="pause", request_id="m-pause-again", schedule_id=created.schedule_id))
+    snap = metrics.snapshot()
+    assert snap["workflow_schedule_error_total|error_code=schedule_revision_conflict"] == 1
+    assert snap["workflow_schedule_error_total|error_code=already_paused"] == 1

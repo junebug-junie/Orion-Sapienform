@@ -1,0 +1,44 @@
+name: assess_runtime_state
+label: Assess Runtime State
+description: >
+  Semantic runtime-health assessment verb that delegates capability execution
+  through the AgentChain capability selector into read-only system inspection skills.
+
+category: ExecutiveControl
+priority: high
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - system_inspection
+side_effect_level: none
+
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+
+output_schema:
+  type: object
+  properties:
+    selected_verb:
+      type: string
+    selected_skill_family:
+      type: string
+    selected_skill:
+      type: string
+    reason:
+      type: string
+    execution_summary:
+      type: string
+    raw_payload_ref:
+      type: object

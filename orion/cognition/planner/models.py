@@ -16,3 +16,7 @@ class VerbConfig(BaseModel):
     timeout_ms: Optional[int] = None
     requires_gpu: Optional[bool] = None
     requires_memory: Optional[bool] = None
+    execution_mode: Optional[str] = None
+    requires_capability_selector: Optional[bool] = None
+    preferred_skill_families: List[str] = Field(default_factory=list)
+    side_effect_level: Optional[str] = None

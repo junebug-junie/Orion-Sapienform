@@ -5,6 +5,8 @@ import asyncio
 import logging
 import traceback
 import json
+import os
+from datetime import datetime, timezone
 
 from pydantic import Field, ValidationError
 
@@ -27,6 +29,7 @@ from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
 
 logger = logging.getLogger("orion.cortex.orch")
+PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 # Channels
 # We only listen for the trigger now. The SQL Writer handles the ticks independently.
@@ -108,9 +111,32 @@ def _source() -> ServiceRef:
     return ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
 
 
+def _runtime_identity() -> dict[str, str]:
+    s = get_settings()
+    return {
+        "service": s.service_name,
+        "version": s.service_version,
+        "node": s.node_name,
+        "git_sha": os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT") or "unknown",
+        "build_timestamp": os.getenv("BUILD_TIMESTAMP") or "unknown",
+        "environment": os.getenv("ORION_ENV") or os.getenv("ENVIRONMENT") or "unknown",
+        "process_started_at": PROCESS_STARTED_AT_UTC.isoformat(),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     sref = _source()
     logger.info(f"Handling Orch Request kind={env.kind} corr_id={env.correlation_id}")
+
+    if env.kind == "orion.cortex.orch.info.request.v1":
+        return BaseEnvelope(
+            kind="orion.cortex.orch.info.result.v1",
+            source=sref,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload=_runtime_identity(),
+        )
 
     if env.kind not in ("cortex.orch.request", "legacy.message"):
         return CortexOrchResult(
@@ -441,6 +467,7 @@ async def main() -> None:
         f"exec_channel={s.channel_exec_request} "
         f"bus={s.orion_bus_url}"
     )
+    logger.info("orch_runtime_identity %s", json.dumps(_runtime_identity(), sort_keys=True))
     await asyncio.gather(svc.start(), equilibrium_hunter.start(), dream_hunter.start())
 
 

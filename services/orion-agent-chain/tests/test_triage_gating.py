@@ -24,9 +24,12 @@ def test_triage_blocked_after_step_0(monkeypatch):
     """When planner returns triage at step_idx>0, override to finalize_response."""
     call_count = 0
 
+    seen_toolsets = []
+
     async def fake_planner(payload, *, parent_correlation_id=None, rpc_bus=None):
         nonlocal call_count
         call_count += 1
+        seen_toolsets.append([t.get("tool_id") for t in (payload.get("toolset") or [])])
         trace = payload.get("trace") or []
         if call_count == 1:
             return {
@@ -44,10 +47,12 @@ def test_triage_blocked_after_step_0(monkeypatch):
     monkeypatch.setattr(agent_api, "call_planner_react", fake_planner)
     monkeypatch.setattr(agent_api, "ToolExecutor", lambda *a, **k: fake_exec)
     tdef = ToolDef(tool_id="triage", description="t", input_schema={}, output_schema={})
+    pdef = ToolDef(tool_id="plan_action", description="p", input_schema={}, output_schema={})
+    edef = ToolDef(tool_id="evaluate", description="e", input_schema={}, output_schema={})
     monkeypatch.setattr(
         agent_api,
         "_resolve_tools",
-        lambda body, output_mode=None: ([tdef], ["executive_pack", "delivery_pack"]),
+        lambda body, output_mode=None: ([tdef, pdef, edef], ["executive_pack", "delivery_pack"]),
     )
 
     req = AgentChainRequest(text="how to deploy to Discord", mode="agent", messages=[{"role": "user", "content": "how to deploy"}])
@@ -56,5 +61,7 @@ def test_triage_blocked_after_step_0(monkeypatch):
     tool_ids = [c[0] for c in fake_exec.calls]
     assert len(tool_ids) >= 1
     if len(tool_ids) >= 2:
-        assert tool_ids[1] == "finalize_response"
+        assert tool_ids[1] == "plan_action"
     assert out.runtime_debug.get("triage_blocked_post_step0") is True
+    assert "triage" in seen_toolsets[0]
+    assert "triage" not in seen_toolsets[1]

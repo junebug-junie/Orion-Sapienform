@@ -27,6 +27,23 @@ Current codes:
 
 UI and chat surfaces should branch on `error_code`, not message text matching.
 
+### Lightweight counters (v1 hardening)
+Actions now exposes narrow in-process counters at decision points:
+- `workflow_schedule_attention_entered_total`
+- `workflow_schedule_attention_reminder_total`
+- `workflow_schedule_attention_recovered_total`
+- `workflow_schedule_error_total|error_code=<code>`
+
+Counters are incremented where the backend actually decides transitions or emits structured management errors.
+They are intentionally internal-only for v1 and are meant to be wired into a future exporter without changing schedule logic.
+
+## Integration proof coverage
+- Actionsâ†’Notify attention publishing is now integration-tested across real schedule/store transitions.
+- Coverage asserts:
+  - exact dedupe key shapes for failing/overdue/recovered
+  - transition payload fields (`transition`, `condition`, `state`, short schedule id)
+  - no-spam behavior for unchanged loops under reminder cooldown
+
 ## Concurrency and idempotency guarantees
 - Store operations are serialized with an in-process lock (`RLock`) and persisted atomically via temp-file replace.
 - Claim marks schedule state before dispatch, preventing duplicate claims after restart for one-shot schedules.
@@ -52,4 +69,6 @@ Likely next substrate: PostgreSQL with optimistic revision checks and `SELECT â€
 ## Known limitations
 - Cross-process locking is not provided; active/active writes to the same file are unsupported.
 - Reminder notifications are bounded by scheduler cadence and configured cooldown, not cron-precise windows.
-- Browser smoke still validates a focused critical lane rather than full UI matrix.
+- Browser smoke remains focused to the critical operator lane, not a full UI matrix.
+- CI now guarantees that focused lane via `schedule-browser-smoke` GitHub Actions workflow (Playwright Chromium).
+- Local equivalent command: `pytest -q services/orion-hub/tests/test_schedule_panel_browser_smoke.py` (or `make -C services/orion-hub test-smoke-browser`).

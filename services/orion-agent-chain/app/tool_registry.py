@@ -70,10 +70,15 @@ class ToolRegistry:
                 if verb_name in seen:
                     continue
                 seen.add(verb_name)
+                if str(verb_name).startswith("skills."):
+                    continue
 
                 verb_cfg = self._verb_registry.get(verb_name)
                 services = verb_cfg.services or []
-                if services != ["LLMGatewayService"]:
+                execution_mode = str(verb_cfg.execution_mode or "").strip().lower()
+                is_capability_backed = execution_mode == "capability_backed"
+                is_reasoning_llm = services == ["LLMGatewayService"]
+                if not (is_reasoning_llm or is_capability_backed):
                     continue
 
                 input_schema = verb_cfg.input_schema or _RICH_INPUT_SCHEMA
@@ -91,6 +96,10 @@ class ToolRegistry:
                         description=verb_cfg.description or f"Orion verb: {verb_cfg.name}",
                         input_schema=input_schema,
                         output_schema=output_schema,
+                        execution_mode=(verb_cfg.execution_mode or ("reasoning_only" if is_reasoning_llm else None)),
+                        requires_capability_selector=bool(verb_cfg.requires_capability_selector),
+                        preferred_skill_families=list(verb_cfg.preferred_skill_families or []),
+                        side_effect_level=verb_cfg.side_effect_level or ("none" if is_reasoning_llm else "low"),
                     )
                 )
 

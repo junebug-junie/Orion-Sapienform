@@ -11,7 +11,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, ServiceRef
+from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, CortexClientResult, LLMMessage, RecallDirective
 
+from .actions_skill_registry import ActionsSkillRegistry
+from .capability_bridge import normalize_capability_observation, resolve_capability_decision
 from .settings import settings
 
 logger = logging.getLogger("agent-chain.tool-exec")
@@ -31,6 +34,7 @@ class ToolExecutor:
             trim_blocks=True,
             lstrip_blocks=True,
         )
+        self._actions_registry = ActionsSkillRegistry(verbs_dir=self.verbs_dir)
 
     def _load_verb(self, tool_id: str) -> Dict[str, Any]:
         path = self.verbs_dir / f"{tool_id}.yaml"
@@ -106,6 +110,14 @@ class ToolExecutor:
 
     async def execute_llm_verb(self, tool_id: str, tool_input: Dict[str, Any], *, parent_correlation_id: str | None = None) -> Dict[str, Any]:
         verb_cfg = self._load_verb(tool_id)
+        execution_mode = str(verb_cfg.get("execution_mode") or "").strip().lower()
+        if execution_mode == "capability_backed" or bool(verb_cfg.get("requires_capability_selector")):
+            return await self._execute_capability_backed_verb(
+                verb_cfg=verb_cfg,
+                tool_id=tool_id,
+                tool_input=tool_input,
+                parent_correlation_id=parent_correlation_id,
+            )
         services = verb_cfg.get("services") or []
         if isinstance(services, list) and services and "LLMGatewayService" not in services:
             raise RuntimeError(f"Tool {tool_id} is not LLM-only and cannot be executed in agent-chain delegate mode")
@@ -152,3 +164,71 @@ class ToolExecutor:
             "spark_meta": chat.spark_meta,
             "model_used": chat.model_used,
         }
+
+    async def _execute_capability_backed_verb(
+        self,
+        *,
+        verb_cfg: Dict[str, Any],
+        tool_id: str,
+        tool_input: Dict[str, Any],
+        parent_correlation_id: str | None,
+    ) -> Dict[str, Any]:
+        decision = resolve_capability_decision(
+            verb=tool_id,
+            preferred_skill_families=list(verb_cfg.get("preferred_skill_families") or []),
+            registry=self._actions_registry,
+        )
+        if not decision.selected_skill:
+            return normalize_capability_observation(
+                decision=decision,
+                execution_summary="No compatible orion-actions skill available.",
+                raw_payload={"status": "unavailable"},
+            )
+
+        corr = str(uuid4())
+        reply_channel = f"orion:agent-chain:capability:reply:{corr}"
+        normalized_input = self._normalize_inputs(tool_id, tool_input)
+        req = CortexClientRequest(
+            mode="brain",
+            route_intent="none",
+            verb=decision.selected_skill,
+            packs=["executive_pack"],
+            options={"policy_dispatch_only": True, "source": "agent_chain_capability_bridge"},
+            recall=RecallDirective(enabled=False, required=False, mode="hybrid"),
+            context=CortexClientContext(
+                messages=[LLMMessage(role="user", content=str(normalized_input.get("text") or ""))],
+                raw_user_text=str(normalized_input.get("text") or ""),
+                user_message=str(normalized_input.get("text") or ""),
+                session_id="agent-chain-capability",
+                user_id="agent-chain",
+                trace_id=parent_correlation_id,
+                metadata={
+                    "capability_decision": decision.model_dump(mode="json"),
+                    "capability_bridge": True,
+                },
+            ),
+        )
+        env = BaseEnvelope(
+            kind="cortex.orch.request",
+            source=ServiceRef(name=settings.service_name, version=settings.service_version),
+            correlation_id=corr,
+            reply_to=reply_channel,
+            payload=req.model_dump(mode="json"),
+        )
+        msg = await self.bus.rpc_request(
+            "orion:cortex:request",
+            env,
+            reply_channel=reply_channel,
+            timeout_sec=float(settings.default_timeout_seconds),
+        )
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            raise RuntimeError(f"Capability bridge decode failed: {decoded.error}")
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        result = CortexClientResult.model_validate(payload)
+        summary = f"Executed {decision.selected_skill}: status={result.status} ok={result.ok}"
+        return normalize_capability_observation(
+            decision=decision,
+            execution_summary=summary,
+            raw_payload={"status": result.status, "ok": result.ok, "final_text": result.final_text},
+        )

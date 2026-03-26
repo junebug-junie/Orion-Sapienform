@@ -346,3 +346,53 @@ def test_concept_induction_pass_reports_placeholder_store_as_unconfigured(monkey
     assert result.ok is False
     assert result.metadata['workflow']['profile_store_placeholder_path'] is True
     assert 'not configured in this environment' in result.metadata['workflow']['main_result']
+
+
+def test_orch_handle_workflow_failure_returns_explicit_failure_without_chat_fallback(monkeypatch) -> None:
+    async def _raise_execute_chat_workflow(**kwargs):
+        raise RuntimeError("workflow backend unavailable")
+
+    monkeypatch.setattr(orch_main, "execute_chat_workflow", _raise_execute_chat_workflow)
+
+    env = BaseEnvelope(
+        kind="cortex.orch.request",
+        source=ServiceRef(name="cortex-gateway"),
+        correlation_id="00000000-0000-0000-0000-000000009001",
+        payload=_req("journal_pass").model_dump(mode="json"),
+    )
+    res = asyncio.run(orch_main.handle(env))
+    payload = CortexClientResult.model_validate(res.payload)
+    assert payload.ok is False
+    assert payload.verb == "journal_pass"
+    assert "not replaced with chat_general" in (payload.final_text or "")
+    assert payload.metadata["workflow"]["executed"] is False
+
+
+def test_workflow_summary_never_claims_persisted_without_confirmed_write() -> None:
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": "Dream synthesis complete.",
+                    "steps": [],
+                    "memory_used": True,
+                    "recall_debug": {"profile": "dream.v1"},
+                    "metadata": {},
+                }
+            }
+        )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("dream_cycle"),
+            correlation_id="00000000-0000-0000-0000-000000009002",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert "Persisted: none" in (result.final_text or "")
+    assert result.metadata["workflow"]["persisted"] == []

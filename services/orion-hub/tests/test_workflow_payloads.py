@@ -49,3 +49,18 @@ def test_extract_workflow_payload_returns_normalized_shape() -> None:
     assert payload['user_invocable'] is True
     assert payload['persisted'] == ['dream.result.v1']
     assert payload['matched_alias'] == 'run your dream cycle'
+
+
+def test_extract_workflow_payload_does_not_fabricate_workflow_success_for_chat_general() -> None:
+    result = CortexClientResult(
+        ok=True,
+        mode="brain",
+        verb="chat_general",
+        status="success",
+        final_text="A normal chat response",
+        memory_used=False,
+        recall_debug={},
+        steps=[],
+        metadata={"trace_verb": "chat_general"},
+    )
+    assert workflow_payloads.extract_workflow_payload(result) is None

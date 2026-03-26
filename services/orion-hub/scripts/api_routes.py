@@ -608,6 +608,19 @@ async def handle_chat_request(
     workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
     execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
     logger.info(
+        "workflow_resolution_result %s",
+        json.dumps(
+            {
+                "correlation_id": corr_id,
+                "matched_workflow_id": (workflow_request or {}).get("workflow_id") if isinstance(workflow_request, dict) else None,
+                "fallback_route": route_debug.get("fallback_route"),
+                "reason": route_debug.get("workflow_resolution_reason"),
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
+    logger.info(
         "hub_workflow_request corr=%s sid=%s workflow_id=%s invocation_mode=%s schedule_kind=%s",
         corr_id,
         session_id,

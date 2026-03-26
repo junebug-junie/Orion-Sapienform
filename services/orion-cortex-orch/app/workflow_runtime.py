@@ -398,6 +398,7 @@ async def _execute_dream_cycle(
         "workflow_id": workflow_id,
         "display_name": "Dream Cycle",
         "status": "completed" if verb_result.ok else "failed",
+        "executed": True,
         "subverb": "dream_cycle",
         "persisted": persisted,
         "scheduled": [],
@@ -486,6 +487,7 @@ async def _execute_journal_pass(
         "workflow_id": workflow_id,
         "display_name": "Journal Pass",
         "status": "completed",
+        "executed": True,
         "subverb": "journal.compose",
         "persisted": [f"journal.entry.write.v1:{write.entry_id}"],
         "scheduled": [],
@@ -552,6 +554,7 @@ async def _execute_self_review(
         "workflow_id": workflow_id,
         "display_name": "Self Review",
         "status": "completed" if verb_result.ok else "failed",
+        "executed": True,
         "subverb": "self_concept_reflect",
         "persisted": persisted,
         "scheduled": [],
@@ -650,6 +653,7 @@ async def _execute_concept_induction_pass(
         "workflow_id": workflow_id,
         "display_name": "Concept Induction Pass",
         "status": status,
+        "executed": True,
         "subverb": None,
         "persisted": [],
         "scheduled": [],
@@ -759,6 +763,20 @@ async def execute_chat_workflow(
             raise WorkflowExecutionError(f"unimplemented_workflow:{workflow_id}")
     except Exception:
         logger.exception("workflow_failed corr=%s workflow_id=%s", correlation_id, workflow_id)
+        logger.info(
+            "workflow_execution_truth %s",
+            json.dumps(
+                {
+                    "correlation_id": correlation_id,
+                    "workflow_id": workflow_id,
+                    "executed": False,
+                    "persisted": False,
+                    "persistence_kind": [],
+                },
+                sort_keys=True,
+                default=str,
+            ),
+        )
         await _emit_workflow_notify(
             bus=bus,
             source=source,
@@ -787,6 +805,21 @@ async def execute_chat_workflow(
         execution_source="immediate",
     )
     logger.info("workflow_completed corr=%s workflow_id=%s ok=%s", correlation_id, workflow_id, result.ok)
+    workflow_meta = (result.metadata or {}).get("workflow") if isinstance(result.metadata, dict) else {}
+    logger.info(
+        "workflow_execution_truth %s",
+        json.dumps(
+            {
+                "correlation_id": correlation_id,
+                "workflow_id": workflow_id,
+                "executed": bool((workflow_meta or {}).get("executed", True)),
+                "persisted": bool((workflow_meta or {}).get("persisted")),
+                "persistence_kind": (workflow_meta or {}).get("persisted") or [],
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
     logger.info(
         "workflow_response_shape corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s",
         correlation_id,

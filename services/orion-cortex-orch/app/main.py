@@ -218,15 +218,44 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             req.mode = "brain"
 
         if has_explicit_workflow_request(req):
-            workflow_result = await execute_chat_workflow(
-                bus=svc.bus,
-                source=sref,
-                req=req,
-                correlation_id=str(env.correlation_id),
-                causality_chain=env.causality_chain,
-                trace=env.trace,
-                call_verb_runtime=call_verb_runtime,
-            )
+            try:
+                workflow_result = await execute_chat_workflow(
+                    bus=svc.bus,
+                    source=sref,
+                    req=req,
+                    correlation_id=str(env.correlation_id),
+                    causality_chain=env.causality_chain,
+                    trace=env.trace,
+                    call_verb_runtime=call_verb_runtime,
+                )
+            except Exception as exc:
+                workflow_request = (req.context.metadata or {}).get("workflow_request") if isinstance(req.context.metadata, dict) else {}
+                workflow_id = workflow_request.get("workflow_id") if isinstance(workflow_request, dict) else None
+                logger.exception("workflow_execution_failed corr=%s workflow_id=%s", str(env.correlation_id), workflow_id)
+                workflow_result = CortexClientResult(
+                    ok=False,
+                    mode="brain",
+                    verb=str(workflow_id or "workflow"),
+                    status="fail",
+                    final_text=f"Workflow '{workflow_id or 'unknown'}' failed and was not replaced with chat_general.",
+                    memory_used=False,
+                    recall_debug={},
+                    steps=[],
+                    error={"message": str(exc), "type": type(exc).__name__, "workflow_id": workflow_id},
+                    correlation_id=str(env.correlation_id),
+                    metadata={
+                        "workflow_status": "failed",
+                        "workflow_request": workflow_request if isinstance(workflow_request, dict) else {},
+                        "workflow": {
+                            "workflow_id": workflow_id,
+                            "status": "failed",
+                            "main_result": "Workflow execution failed before completion.",
+                            "persisted": [],
+                            "scheduled": [],
+                            "executed": False,
+                        },
+                    },
+                )
             return CortexOrchResult(
                 source=sref,
                 correlation_id=env.correlation_id,

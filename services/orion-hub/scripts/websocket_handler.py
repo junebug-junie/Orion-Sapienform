@@ -504,6 +504,19 @@ async def websocket_endpoint(websocket: WebSocket):
             workflow_request = chat_req.metadata.get("workflow_request") if isinstance(chat_req.metadata, dict) else None
             execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
             logger.info(
+                "workflow_resolution_result %s",
+                json.dumps(
+                    {
+                        "correlation_id": trace_id,
+                        "matched_workflow_id": (workflow_request or {}).get("workflow_id") if isinstance(workflow_request, dict) else None,
+                        "fallback_route": route_debug.get("fallback_route"),
+                        "reason": route_debug.get("workflow_resolution_reason"),
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+            )
+            logger.info(
                 "hub_workflow_request corr=%s sid=%s workflow_id=%s invocation_mode=%s schedule_kind=%s source=ws",
                 trace_id,
                 session_id,
@@ -617,6 +630,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
                     orion_response_text = s[len("Orion:"):].lstrip()
+                if hasattr(resp, "cortex_result") and resp.cortex_result:
+                    trace_verb = str(
+                        ((resp.cortex_result.metadata or {}).get("trace_verb") if isinstance(resp.cortex_result.metadata, dict) else None)
+                        or resp.cortex_result.verb
+                        or trace_verb
+                    )
             except Exception as e:
                 logger.error(f"Chat RPC Error: {e}")
                 await websocket.send_json(

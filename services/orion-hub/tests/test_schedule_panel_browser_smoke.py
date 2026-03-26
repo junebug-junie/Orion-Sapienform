@@ -28,6 +28,11 @@ def test_schedule_panel_browser_smoke(tmp_path):
             schedule_id:'abc1234567', workflow_id:'journal_pass', workflow_display_name:'Journal Pass', state:'scheduled', notify_on:'completion',
             next_run_at:'2026-03-26T05:00:00Z', execution_policy:{{schedule:{{kind:'recurring', cadence:'daily', hour_local:22, minute_local:0}}}},
             analytics:{{health:'degraded', needs_attention:true, is_overdue:true, overdue_seconds:3600, recent_run_count:5, recent_success_count:2, recent_failure_count:3, recent_outcomes:['failed','failed','completed']}}
+          }}),
+          api.normalizeSchedule({{
+            schedule_id:'def9876543', workflow_id:'metacog_reflect', workflow_display_name:'Metacog Reflect', state:'scheduled', notify_on:'completion',
+            next_run_at:'2026-03-26T05:05:00Z', execution_policy:{{schedule:{{kind:'recurring', cadence:'daily', hour_local:23, minute_local:0}}}},
+            analytics:{{health:'failing', needs_attention:true, is_overdue:false, overdue_seconds:null, recent_run_count:5, recent_success_count:0, recent_failure_count:4, recent_outcomes:['failed','failed','failed']}}
           }})
         ];
         const list = document.getElementById('scheduleInventoryList');
@@ -84,7 +89,9 @@ def test_schedule_panel_browser_smoke(tmp_path):
         page = browser.new_page()
         page.goto(page_path.as_uri())
 
-        assert page.locator('.health').first.inner_text() == 'degraded'
+        assert page.locator('.health').count() == 2
+        assert page.locator('.health').nth(0).inner_text() == 'degraded'
+        assert page.locator('.health').nth(1).inner_text() == 'failing'
         assert page.locator('.overdue').first.inner_text() == 'Overdue'
 
         page.locator('.details').first.click()

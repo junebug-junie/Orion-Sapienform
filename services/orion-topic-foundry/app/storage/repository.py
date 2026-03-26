@@ -587,8 +587,12 @@ def segment_facets(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 f"""
-                SELECT COALESCE(jsonb_array_elements_text(aspects), NULL) AS key, COUNT(*) AS count
-                {base_query} AND aspects IS NOT NULL
+                SELECT key, COUNT(*) AS count
+                FROM (
+                    SELECT jsonb_array_elements_text(aspects) AS key
+                    {base_query} AND aspects IS NOT NULL
+                ) expanded
+                WHERE key IS NOT NULL AND key <> ''
                 GROUP BY key
                 ORDER BY count DESC
                 """,
@@ -598,8 +602,12 @@ def segment_facets(
 
             cur.execute(
                 f"""
-                SELECT (meaning->>'intent') AS key, COUNT(*) AS count
-                {base_query} AND meaning ? 'intent'
+                SELECT key, COUNT(*) AS count
+                FROM (
+                    SELECT (meaning->>'intent') AS key
+                    {base_query} AND meaning ? 'intent'
+                ) expanded
+                WHERE key IS NOT NULL AND key <> ''
                 GROUP BY key
                 ORDER BY count DESC
                 """,

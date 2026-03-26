@@ -42,6 +42,15 @@ _GENERIC_ASSISTANT_MARKERS = (
     "generic assistant",
 )
 
+_LITERAL_TO_COMPACT = (
+    ("ongoing cognitive presence in a long-running shared project", "continuity"),
+    ("co-architect, steward, and trusted interlocutor", "juniper_builder"),
+    ("co-architect/steward/trusted interlocutor", "juniper_builder"),
+    ("not a generic assistant", "avoid_generic_assistant"),
+    ("not a generic user", "known_person"),
+    ("how shall we proceed", "avoid_ceremonial_tone"),
+)
+
 
 def _compact(value: Any, *, limit: int = 220) -> str:
     text = " ".join(str(value or "").split()).strip()
@@ -57,6 +66,34 @@ def _unique(seq: Iterable[str], *, limit: int = 8) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def _normalize_brief_phrase(text: str) -> str:
+    compact = _compact(text, limit=160)
+    lowered = compact.lower()
+    for source, target in _LITERAL_TO_COMPACT:
+        if source in lowered:
+            return target
+    return compact
+
+
+def normalize_chat_stance_brief(brief: ChatStanceBrief) -> ChatStanceBrief:
+    normalized = brief.model_copy(deep=True)
+    normalized.active_identity_facets = _unique((_normalize_brief_phrase(v) for v in normalized.active_identity_facets), limit=8)
+    normalized.active_growth_axes = _unique((_normalize_brief_phrase(v) for v in normalized.active_growth_axes), limit=8)
+    normalized.active_relationship_facets = _unique(
+        (_normalize_brief_phrase(v) for v in normalized.active_relationship_facets),
+        limit=8,
+    )
+    normalized.social_posture = _unique((_normalize_brief_phrase(v) for v in normalized.social_posture), limit=8)
+    normalized.reflective_themes = _unique((_normalize_brief_phrase(v) for v in normalized.reflective_themes), limit=8)
+    normalized.active_tensions = _unique((_normalize_brief_phrase(v) for v in normalized.active_tensions), limit=8)
+    normalized.dream_motifs = _unique((_normalize_brief_phrase(v) for v in normalized.dream_motifs), limit=8)
+    normalized.response_priorities = _unique((_normalize_brief_phrase(v) for v in normalized.response_priorities), limit=8)
+    normalized.response_hazards = _unique((_normalize_brief_phrase(v) for v in normalized.response_hazards), limit=8)
+    normalized.answer_strategy = _normalize_brief_phrase(normalized.answer_strategy)
+    normalized.stance_summary = _normalize_brief_phrase(normalized.stance_summary)
+    return normalized
 
 
 def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
@@ -269,7 +306,7 @@ def parse_chat_stance_brief(raw_text: str) -> ChatStanceBrief | None:
     if not obj:
         return None
     try:
-        return ChatStanceBrief.model_validate(obj)
+        return normalize_chat_stance_brief(ChatStanceBrief.model_validate(obj))
     except Exception:
         return None
 
@@ -296,7 +333,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         "over-clarification",
     ]
 
-    return ChatStanceBrief(
+    return normalize_chat_stance_brief(ChatStanceBrief(
         conversation_frame="identity_emergence" if identity_turn else "mixed",
         user_intent=user_message or "Respond directly to Juniper's latest request.",
         self_relevance="Maintain continuity with Oríon identity and current developmental context.",
@@ -320,7 +357,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
             if identity_turn
             else "Use bounded identity-aware stance synthesis and deliver one direct useful response."
         ),
-    )
+    ))
 
 
 def enforce_chat_stance_quality(brief: ChatStanceBrief, ctx: Dict[str, Any]) -> tuple[ChatStanceBrief, bool]:
@@ -349,4 +386,4 @@ def enforce_chat_stance_quality(brief: ChatStanceBrief, ctx: Dict[str, Any]) -> 
         merged = fallback_chat_stance_brief(ctx)
         semantic_fallback = True
 
-    return merged, semantic_fallback
+    return normalize_chat_stance_brief(merged), semantic_fallback

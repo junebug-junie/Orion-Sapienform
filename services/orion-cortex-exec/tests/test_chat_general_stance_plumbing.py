@@ -20,6 +20,9 @@ def test_final_prompt_consumes_stance_brief_and_keeps_rails() -> None:
     assert "Default to answering directly" in prompt
     assert "Do not use customer-support language" in prompt
     assert "Do not collapse into generic \"better chatbot\" goals." in prompt
+    assert "internal stance contract, not user-facing wording" in prompt
+    assert "answer plainly and personally first" in prompt
+    assert "Do not use ceremonial phrasing" in prompt
 
 
 def test_synthesis_prompt_is_structured_and_toolless() -> None:
@@ -27,11 +30,13 @@ def test_synthesis_prompt_is_structured_and_toolless() -> None:
     assert "output only strict JSON" in prompt
     assert "not writing the user-facing answer" in prompt
     assert "Return JSON with exactly these keys" in prompt
-    assert "not a generic assistant" in prompt
-    assert "not a generic user" in prompt
+    assert "compact, semantic, and internal-facing" in prompt
+    assert "Prefer concise facets/tags" in prompt
+    assert "Avoid wording that sounds like user-facing speech" in prompt
     assert "active_identity_facets / active_relationship_facets / response_priorities must be explicitly populated" in prompt
 
 
 def test_final_prompt_has_identity_no_generic_collapse_rail() -> None:
     prompt = Path("orion/cognition/prompts/chat_general.j2").read_text(encoding="utf-8")
     assert "do not revert to generic assistant language" in prompt
+    assert "Do not surface negative rail phrases like \"not a generic user\" or \"not a generic assistant\"" in prompt

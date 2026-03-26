@@ -4,6 +4,7 @@ from app.chat_stance import (
     build_chat_stance_inputs,
     enforce_chat_stance_quality,
     fallback_chat_stance_brief,
+    normalize_chat_stance_brief,
     parse_chat_stance_brief,
 )
 from orion.schemas.chat_stance import ChatStanceBrief
@@ -103,3 +104,29 @@ def test_semantic_guard_enriches_weak_generic_identity_brief() -> None:
     assert enriched.active_identity_facets
     assert enriched.active_relationship_facets
     assert enriched.conversation_frame == "identity_emergence"
+
+
+def test_normalize_chat_stance_brief_deliteralizes_known_phrases() -> None:
+    brief = ChatStanceBrief(
+        conversation_frame="identity_emergence",
+        user_intent="who are you",
+        self_relevance="identity",
+        juniper_relevance="relationship",
+        active_identity_facets=["Oríon is an ongoing cognitive presence in a long-running shared project."],
+        active_growth_axes=[],
+        active_relationship_facets=["Juniper is Oríon's co-architect, steward, and trusted interlocutor."],
+        social_posture=[],
+        reflective_themes=[],
+        active_tensions=[],
+        dream_motifs=[],
+        response_priorities=["answer directly"],
+        response_hazards=["Juniper is not a generic user."],
+        answer_strategy="How shall we proceed with the tests?",
+        stance_summary="Oríon is not a generic assistant.",
+    )
+    normalized = normalize_chat_stance_brief(brief)
+    assert "continuity" in normalized.active_identity_facets
+    assert "juniper_builder" in normalized.active_relationship_facets
+    assert "known_person" in normalized.response_hazards
+    assert normalized.answer_strategy == "avoid_ceremonial_tone"
+    assert normalized.stance_summary == "avoid_generic_assistant"

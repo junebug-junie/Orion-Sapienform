@@ -124,6 +124,14 @@ def _workflow_summary_text(*, title: str, status: str, main_result: str, persist
     return "\n".join(lines)
 
 
+def _coerce_journal_title(*, raw_title: Any, fallback_summary: str, correlation_id: str) -> str:
+    title = str(raw_title or "").strip()
+    if title:
+        return title
+    seed = str(fallback_summary or "").strip() or "Journal Pass"
+    return f"Journal Pass · {seed[:64]} · {correlation_id[:8]}"
+
+
 def _should_notify(*, notify_on: str, ok: bool) -> bool:
     normalized = str(notify_on or "none").lower()
     if normalized == "none":
@@ -380,15 +388,21 @@ async def _execute_dream_cycle(
         options_patch={"workflow_execution": True},
     )
     final_text = payload.get("final_text") or "Dream cycle completed through the existing dream verb."
+    payload_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    dream_persisted = bool(payload_metadata.get("dream_result_published") or payload_metadata.get("dream_persisted"))
+    persisted = ["dream.result.v1"] if dream_persisted else []
+    if not dream_persisted:
+        final_text = f"{final_text} Dream persistence was not confirmed by the execution payload."
     metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "Dream Cycle",
         "status": "completed" if verb_result.ok else "failed",
         "subverb": "dream_cycle",
-        "persisted": ["dream.result.v1"] if verb_result.ok else [],
+        "persisted": persisted,
         "scheduled": [],
         "main_result": final_text,
+        "dream_persistence_confirmed": dream_persisted,
     }
     return CortexClientResult(
         ok=verb_result.ok,
@@ -399,7 +413,7 @@ async def _execute_dream_cycle(
             title="Dream Cycle",
             status="completed" if verb_result.ok else "failed",
             main_result=final_text,
-            persisted=metadata["workflow"]["persisted"],
+            persisted=persisted,
         ),
         memory_used=bool(payload.get("memory_used")),
         recall_debug=payload.get("recall_debug") or {},
@@ -445,6 +459,11 @@ async def _execute_journal_pass(
     )
     compose_payload = _extract_result_payload(verb_result)
     draft = draft_from_cortex_result(compose_payload)
+    title = _coerce_journal_title(raw_title=draft.title, fallback_summary=trigger.summary, correlation_id=correlation_id)
+    body = str(draft.body or "").strip()
+    if not body:
+        raise WorkflowExecutionError("journal_pass_empty_body")
+    draft = draft.model_copy(update={"title": title, "body": body}, deep=True)
     write = build_write_payload(
         draft,
         trigger=trigger,
@@ -611,18 +630,20 @@ async def _execute_concept_induction_pass(
                 "window_end": profile.window_end.isoformat(),
             }
         )
+    ok = bool(reviews)
+    status = "completed" if ok else "failed"
     if reviews:
         main_result = "; ".join(
             f"{item['subject']} rev {item['revision']} with {item['concept_count']} concepts / {item['cluster_count']} clusters"
             for item in reviews
         )
     else:
-        main_result = f"No concept induction profiles were available in {settings.store_path}."
-    metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
+        main_result = f"Concept induction profiles are not available in the configured store ({settings.store_path})."
+    metadata = _workflow_metadata_base(request=_workflow_request(req), status=status)
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "Concept Induction Pass",
-        "status": "completed",
+        "status": status,
         "subverb": None,
         "persisted": [],
         "scheduled": [],
@@ -631,20 +652,20 @@ async def _execute_concept_induction_pass(
         "profiles_reviewed": reviews,
     }
     return CortexClientResult(
-        ok=True,
+        ok=ok,
         mode="brain",
         verb=workflow_id,
-        status="success",
+        status="success" if ok else "fail",
         final_text=_workflow_summary_text(
             title="Concept Induction Pass",
-            status="completed",
+            status=status,
             main_result=main_result,
             persisted=[],
         ),
         memory_used=False,
         recall_debug={},
         steps=[],
-        error=None,
+        error=None if ok else {"message": main_result, "code": "concept_profiles_unavailable"},
         correlation_id=correlation_id,
         metadata=metadata,
     )

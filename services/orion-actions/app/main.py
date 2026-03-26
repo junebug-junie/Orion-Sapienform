@@ -55,6 +55,7 @@ from .logic import (
 from .settings import settings
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 
+from .workflow_schedule_metrics import WorkflowScheduleMetrics
 from .workflow_schedule_store import ClaimedSchedule, ScheduleAttentionSignal, WorkflowScheduleStore
 
 logger = logging.getLogger("orion-actions")
@@ -89,6 +90,7 @@ def _ensure_logging() -> None:
 
 
 _ensure_logging()
+workflow_schedule_metrics = WorkflowScheduleMetrics()
 
 
 def _cfg() -> ChassisConfig:
@@ -293,6 +295,20 @@ def _journal_daily_dedupe_key(window: DailyWindow) -> str:
     return f"actions:journal:daily:{window.request_date}:{settings.node_name}"
 
 
+async def _publish_workflow_attention_signal(*, signal: ScheduleAttentionSignal, notify) -> None:
+    req = _schedule_attention_notify_request(signal=signal, correlation_id=str(uuid4()))
+    accepted = await asyncio.to_thread(notify.send, req)
+    workflow_schedule_metrics.incr_attention(signal.transition)
+    if not accepted.ok:
+        logger.warning(
+            "workflow attention notify failed schedule_id=%s transition=%s condition=%s detail=%s",
+            signal.schedule.schedule_id,
+            signal.transition,
+            signal.kind,
+            accepted.detail,
+        )
+
+
 def should_journal_from_collapse(is_causally_dense: bool, *, dense_only: bool) -> bool:
     return bool(is_causally_dense) or not dense_only
 
@@ -365,7 +381,10 @@ async def lifespan(app: FastAPI):
     last_daily_run: dict[str, str] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
-    workflow_schedule_store = WorkflowScheduleStore(settings.actions_workflow_schedule_store_path)
+    workflow_schedule_store = WorkflowScheduleStore(
+        settings.actions_workflow_schedule_store_path,
+        metrics=workflow_schedule_metrics,
+    )
 
     async def _audit(
         parent: BaseEnvelope,
@@ -991,16 +1010,7 @@ async def lifespan(app: FastAPI):
                     reminder_cooldown_seconds=settings.actions_workflow_attention_reminder_cooldown_seconds,
                 )
                 for signal in signals:
-                    req = _schedule_attention_notify_request(signal=signal, correlation_id=str(uuid4()))
-                    accepted = await asyncio.to_thread(notify.send, req)
-                    if not accepted.ok:
-                        logger.warning(
-                            "workflow attention notify failed schedule_id=%s transition=%s condition=%s detail=%s",
-                            signal.schedule.schedule_id,
-                            signal.transition,
-                            signal.kind,
-                            accepted.detail,
-                        )
+                    await _publish_workflow_attention_signal(signal=signal, notify=notify)
             except asyncio.CancelledError:
                 raise
             except Exception:

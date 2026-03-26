@@ -174,7 +174,7 @@ def _delivery_override_for_plan_action_repeat(
 
 
 def _select_non_triage_tool(tools: List[ToolDef], preferred_order: List[str] | None = None) -> str | None:
-    preferred = preferred_order or ["plan_action", "analyze_text"]
+    preferred = preferred_order or ["plan_action", "evaluate", "analyze_text"]
     tool_ids = [t.tool_id for t in tools if t.tool_id != "triage"]
     for candidate in preferred:
         if candidate in tool_ids:
@@ -237,6 +237,7 @@ async def execute_agent_chain(
         tool_ids[:25],
     )
 
+    base_toolset = [t.model_dump() for t in tools]
     planner_payload: dict[str, Any] = {
         "request_id": str(uuid.uuid4()),
         "parent_correlation_id": parent_corr_id,
@@ -256,7 +257,7 @@ async def execute_agent_chain(
                 **grounding,
             },
         },
-        "toolset": [t.model_dump() for t in tools],
+        "toolset": base_toolset,
         "trace": [],
         "limits": {
             "max_steps": settings.default_max_steps,
@@ -278,6 +279,10 @@ async def execute_agent_chain(
     tools_called: list[str] = []
     try:
         for step_idx in range(settings.default_max_steps):
+            if step_idx > 0:
+                planner_payload["toolset"] = [t for t in base_toolset if t.get("tool_id") != "triage"]
+            else:
+                planner_payload["toolset"] = list(base_toolset)
             logger.info("[agent-chain] planner step=%s parent_corr=%s", step_idx, parent_corr_id)
             raw_resp = await call_planner_react(
                 planner_payload,
@@ -346,17 +351,23 @@ async def execute_agent_chain(
             prior_trace_len = len(planner_payload.get("trace") or [])
             if triage_must_finalize(tool_id=str(tool_id or ""), step_idx=step_idx, prior_trace_len=prior_trace_len):
                 logger.info(
-                    "[agent-chain] triage_blocked_post_step0=1 step=%s prior_trace_len=%s -> finalize_response",
+                    "[agent-chain] triage_blocked_post_step0=1 step=%s prior_trace_len=%s -> remap_non_triage",
                     step_idx,
                     prior_trace_len,
                 )
                 dbg["triage_blocked_post_step0"] = True
-                tool_id = "finalize_response"
-                trace_snapshot = planner_payload.get("trace") or []
-                tool_input = _finalize_tool_input(
-                    body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
-                )
-                dbg["finalize_response_invoked"] = True
+                remap = _select_non_triage_tool(tools)
+                if remap:
+                    tool_id = remap
+                    if remap in {"plan_action", "evaluate", "analyze_text"}:
+                        tool_input = {"text": body.text, "request": body.text, "goal": body.text}
+                else:
+                    tool_id = "finalize_response"
+                    trace_snapshot = planner_payload.get("trace") or []
+                    tool_input = _finalize_tool_input(
+                        body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
+                    )
+                    dbg["finalize_response_invoked"] = True
 
             if not tool_id:
                 stop_reason = str(raw_resp.get("stop_reason") or "")
@@ -532,7 +543,7 @@ async def execute_agent_chain(
         return AgentChainResult(
             mode=body.mode,
             text=final_text,
-            structured={},
+            structured={"finalization_reason": "step_cap_best_effort"},
             planner_raw={"runtime_debug": dbg},
             runtime_debug=dbg,
         )

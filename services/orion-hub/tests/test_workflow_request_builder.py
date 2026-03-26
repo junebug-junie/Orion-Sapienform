@@ -73,6 +73,45 @@ def test_named_workflow_prompt_with_schedule_and_notify_parses_execution_policy(
     assert debug['workflow_execution_policy']['notify_on'] == 'completion'
 
 
+def test_schedule_phrase_with_clock_time_routes_to_scheduled_policy() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={'mode': 'auto'},
+        session_id='sid-workflow',
+        user_id='user-1',
+        trace_id='trace-workflow',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='Orion, would you schedule a self review for 2:46 PM?',
+    )
+
+    policy = req.metadata['workflow_request']['execution_policy']
+    assert req.metadata['workflow_request']['workflow_id'] == 'self_review'
+    assert policy['invocation_mode'] == 'scheduled'
+    assert policy['schedule']['kind'] == 'one_shot'
+    assert policy['schedule']['label'] == 'for 14:46'
+    assert debug['workflow_execution_policy']['invocation_mode'] == 'scheduled'
+
+
+def test_relative_schedule_phrase_in_one_minute_is_scheduled() -> None:
+    req, _, _ = hub_builder.build_chat_request(
+        payload={'mode': 'auto'},
+        session_id='sid-workflow',
+        user_id='user-1',
+        trace_id='trace-workflow',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='Run a dream cycle in one minute',
+    )
+
+    policy = req.metadata['workflow_request']['execution_policy']
+    assert req.metadata['workflow_request']['workflow_id'] == 'dream_cycle'
+    assert policy['invocation_mode'] == 'scheduled'
+    assert policy['schedule']['kind'] == 'one_shot'
+    assert policy['schedule']['label'] == 'in one minute'
+
+
 def test_management_prompt_routes_to_schedule_management_request() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={'mode': 'auto'},

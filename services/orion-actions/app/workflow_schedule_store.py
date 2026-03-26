@@ -18,6 +18,7 @@ from orion.schemas.workflow_execution import (
     WorkflowScheduleRecordV1,
     WorkflowScheduleRunRecordV1,
 )
+from .workflow_schedule_metrics import WorkflowScheduleMetrics
 
 
 def _utc_now(now_utc: datetime | None = None) -> datetime:
@@ -40,7 +41,14 @@ class ScheduleAttentionSignal:
 
 
 class WorkflowScheduleStore:
-    def __init__(self, path: str, *, claim_ttl_seconds: int = 300, history_limit: int = 200) -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        claim_ttl_seconds: int = 300,
+        history_limit: int = 200,
+        metrics: WorkflowScheduleMetrics | None = None,
+    ) -> None:
         self._path = self._resolve_path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
@@ -49,7 +57,28 @@ class WorkflowScheduleStore:
         self._schedules: Dict[str, WorkflowScheduleRecordV1] = {}
         self._runs: List[WorkflowScheduleRunRecordV1] = []
         self._events: List[WorkflowScheduleEventRecordV1] = []
+        self._metrics = metrics
         self._load()
+
+    def _error_response(
+        self,
+        *,
+        operation: str,
+        request_id: str | None,
+        message: str,
+        error_code: str,
+        **kwargs: Any,
+    ) -> WorkflowScheduleManageResponseV1:
+        if self._metrics is not None:
+            self._metrics.incr_error(error_code)
+        return WorkflowScheduleManageResponseV1(
+            ok=False,
+            operation=operation,
+            request_id=request_id,
+            message=message,
+            error_code=error_code,
+            **kwargs,
+        )
 
     @staticmethod
     def _resolve_path(path: str) -> Path:
@@ -307,8 +336,7 @@ class WorkflowScheduleStore:
             schedule, ambiguous = self._resolve_schedule(req)
             if schedule is None:
                 err_code = "ambiguous_selection" if ambiguous else "schedule_not_found"
-                return WorkflowScheduleManageResponseV1(
-                    ok=False,
+                return self._error_response(
                     operation=req.operation,
                     request_id=req.request_id,
                     message="Ambiguous schedule selection." if ambiguous else "Schedule not found.",
@@ -319,8 +347,7 @@ class WorkflowScheduleStore:
 
             if req.operation == "cancel":
                 if schedule.state == "cancelled":
-                    return WorkflowScheduleManageResponseV1(
-                        ok=False,
+                    return self._error_response(
                         operation=req.operation,
                         request_id=req.request_id,
                         message="Schedule already cancelled.",
@@ -334,8 +361,7 @@ class WorkflowScheduleStore:
                 self._event(kind="schedule_cancelled", schedule_id=schedule.schedule_id)
             elif req.operation == "pause":
                 if schedule.state == "paused":
-                    return WorkflowScheduleManageResponseV1(
-                        ok=False,
+                    return self._error_response(
                         operation=req.operation,
                         request_id=req.request_id,
                         message="Schedule already paused.",
@@ -343,8 +369,7 @@ class WorkflowScheduleStore:
                         error_code="already_paused",
                     )
                 if schedule.state == "cancelled":
-                    return WorkflowScheduleManageResponseV1(
-                        ok=False,
+                    return self._error_response(
                         operation=req.operation,
                         request_id=req.request_id,
                         message="Cannot pause a cancelled schedule.",
@@ -357,8 +382,7 @@ class WorkflowScheduleStore:
                 self._event(kind="schedule_paused", schedule_id=schedule.schedule_id)
             elif req.operation == "resume":
                 if schedule.state == "cancelled":
-                    return WorkflowScheduleManageResponseV1(
-                        ok=False,
+                    return self._error_response(
                         operation=req.operation,
                         request_id=req.request_id,
                         message="Cannot resume a cancelled schedule.",
@@ -366,8 +390,7 @@ class WorkflowScheduleStore:
                         error_code="unsupported_transition",
                     )
                 if schedule.state != "paused":
-                    return WorkflowScheduleManageResponseV1(
-                        ok=False,
+                    return self._error_response(
                         operation=req.operation,
                         request_id=req.request_id,
                         message=f"Cannot resume schedule in state={schedule.state}.",
@@ -381,10 +404,9 @@ class WorkflowScheduleStore:
             elif req.operation == "update":
                 patch = req.patch
                 if patch is None:
-                    return WorkflowScheduleManageResponseV1(ok=False, operation=req.operation, request_id=req.request_id, message="Missing update patch.", error_code="missing_patch")
+                    return self._error_response(operation=req.operation, request_id=req.request_id, message="Missing update patch.", error_code="missing_patch")
                 if patch.expected_revision is not None and int(patch.expected_revision) != int(schedule.revision):
-                    return WorkflowScheduleManageResponseV1(
-                        ok=False,
+                    return self._error_response(
                         operation=req.operation,
                         request_id=req.request_id,
                         message=f"Schedule revision conflict: expected {patch.expected_revision}, current {schedule.revision}.",
@@ -394,7 +416,7 @@ class WorkflowScheduleStore:
                     )
                 spec = schedule.execution_policy.schedule
                 if spec is None:
-                    return WorkflowScheduleManageResponseV1(ok=False, operation=req.operation, request_id=req.request_id, message="Schedule has no policy.", error_code="schedule_policy_missing")
+                    return self._error_response(operation=req.operation, request_id=req.request_id, message="Schedule has no policy.", error_code="schedule_policy_missing")
                 changed = spec.model_dump(mode="json")
                 for field in ("run_at_utc", "cadence", "day_of_week", "hour_local", "minute_local", "timezone"):
                     value = getattr(patch, field)
@@ -403,8 +425,7 @@ class WorkflowScheduleStore:
                 try:
                     schedule.execution_policy.schedule = spec.model_validate(changed)
                 except Exception as exc:
-                    return WorkflowScheduleManageResponseV1(
-                        ok=False,
+                    return self._error_response(
                         operation=req.operation,
                         request_id=req.request_id,
                         message="Invalid schedule update patch.",

@@ -43,6 +43,26 @@ def _hour_from_token(token: str) -> Optional[int]:
     return None
 
 
+def _parse_time_for_schedule(normalized_prompt: str) -> tuple[int, int] | None:
+    m = re.search(r"(?:for|at)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", normalized_prompt)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or "0")
+    meridiem = (m.group(3) or "").lower()
+    if hour > 12 or minute > 59:
+        return None
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    if meridiem == "am" and hour == 12:
+        hour = 0
+    return hour, minute
+
+
+def _has_explicit_schedule_intent(normalized_prompt: str) -> bool:
+    return any(token in normalized_prompt for token in ("schedule ", "scheduled ", "every ", "tomorrow", "tonight", "in one minute"))
+
+
 def _parse_notify_on(normalized_prompt: str) -> WorkflowNotifyOn:
     if any(phrase in normalized_prompt for phrase in ("only on failure", "if it fails", "if it fail", "on failure")):
         return "failure"
@@ -85,7 +105,9 @@ def derive_workflow_execution_policy(
     schedule: WorkflowScheduleSpecV1 | None = None
     summary = "Runs immediately."
 
-    if "tomorrow morning" in normalized:
+    explicit_schedule_intent = _has_explicit_schedule_intent(normalized)
+
+    if "tomorrow morning" in normalized and explicit_schedule_intent:
         run_local = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
         schedule = WorkflowScheduleSpecV1(
             kind="one_shot",
@@ -94,11 +116,33 @@ def derive_workflow_execution_policy(
             label="tomorrow morning",
         )
         summary = f"Scheduled one-shot for {run_local.strftime('%Y-%m-%d %H:%M %Z')}."
+    elif "in one minute" in normalized and ("run " in normalized or "schedule " in normalized):
+        run_local = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+        schedule = WorkflowScheduleSpecV1(
+            kind="one_shot",
+            timezone=default_timezone,
+            run_at_utc=run_local.astimezone(timezone.utc),
+            label="in one minute",
+        )
+        summary = f"Scheduled one-shot for {run_local.strftime('%Y-%m-%d %H:%M %Z')}."
     else:
         nightly = re.search(r"every night(?: at (\d{1,2}))?", normalized)
         weekly = re.search(r"every (monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?: at (\d{1,2}))?", normalized)
         tonight = re.search(r"tonight at (\d{1,2})", normalized)
-        if nightly:
+        explicit_time = _parse_time_for_schedule(normalized) if explicit_schedule_intent else None
+        if explicit_time is not None:
+            hour, minute = explicit_time
+            run_local = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if run_local <= now:
+                run_local = run_local + timedelta(days=1)
+            schedule = WorkflowScheduleSpecV1(
+                kind="one_shot",
+                timezone=default_timezone,
+                run_at_utc=run_local.astimezone(timezone.utc),
+                label=f"for {hour:02d}:{minute:02d}",
+            )
+            summary = f"Scheduled one-shot for {run_local.strftime('%Y-%m-%d %H:%M %Z')}."
+        elif nightly:
             hour = _hour_from_token(nightly.group(1) or "23") or 23
             schedule = WorkflowScheduleSpecV1(
                 kind="recurring",

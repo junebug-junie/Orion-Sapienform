@@ -18,6 +18,10 @@ class ToolDef(BaseModel):
     description: Optional[str] = None
     input_schema: Dict[str, Any] = Field(default_factory=dict)
     output_schema: Dict[str, Any] = Field(default_factory=dict)
+    execution_mode: Optional[Literal["reasoning_only", "capability_backed", "mixed"]] = None
+    requires_capability_selector: bool = False
+    preferred_skill_families: List[str] = Field(default_factory=list)
+    side_effect_level: Optional[Literal["none", "low", "moderate", "high"]] = None
 
 
 # ─────────────────────────────────────────────

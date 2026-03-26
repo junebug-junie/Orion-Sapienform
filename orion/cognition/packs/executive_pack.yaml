@@ -11,4 +11,5 @@ verbs:
   - goal_formulate
   - evaluate
   - extract_facts
+  - assess_runtime_state
   #- chat_general # generalist function and used in general chat

@@ -22,6 +22,8 @@ def test_chat_stance_brief_schema_roundtrip() -> None:
     dumped = brief.model_dump(mode="json")
     reparsed = ChatStanceBrief.model_validate(dumped)
     assert reparsed.conversation_frame == "technical"
+    assert reparsed.task_mode == "direct_response"
+    assert reparsed.identity_salience == "medium"
     assert reparsed.answer_strategy == "DirectAnswer"
 
 
@@ -33,6 +35,20 @@ def test_build_chat_stance_inputs_maps_social_reflective_and_dream() -> None:
         "social_posture": ["warm", "direct"],
         "active_relationship_facets": ["collaborative build"],
         "social_hazards": ["over-softening"],
+        "social_turn_policy": {
+            "decision": "reply",
+            "should_speak": True,
+            "addressed": True,
+            "reasons": ["directly addressed by peer"],
+        },
+        "social_stance_snapshot": {
+            "recent_social_orientation_summary": "Warm, direct, technically collaborative.",
+        },
+        "social_context_window": {
+            "selected_candidates": [
+                {"candidate_kind": "peer_continuity", "inclusion_decision": "include", "summary": "Recurring technical collaborator."}
+            ]
+        },
         "recall_bundle": {
             "fragments": [
                 {"source": "orion_journal", "snippet": "Theme: continuity through memory integration."},
@@ -47,6 +63,9 @@ def test_build_chat_stance_inputs_maps_social_reflective_and_dream() -> None:
     assert built["identity"]["orion"] == ["Distributed self-model"]
     assert "collaborative build" in built["social"]["relationship_facets"]
     assert "warm" in built["social"]["social_posture"]
+    assert "technical" in built["social_bridge"]["posture"]
+    assert "engaged_turn" in built["social_bridge"]["posture"]
+    assert "peer_continuity:include" in built["social_bridge"]["framing"]
     assert built["reflective"]["themes"]
     assert built["reflective"]["dream_motifs"]
 
@@ -75,9 +94,25 @@ def test_build_chat_stance_inputs_falls_back_when_identity_missing() -> None:
 def test_fallback_chat_stance_brief_identity_turn_anchors_orion_and_juniper() -> None:
     fb = fallback_chat_stance_brief({"user_message": "Low ball first. Who are you and who am I?"})
     assert fb.conversation_frame == "identity_emergence"
+    assert fb.identity_salience == "high"
+    assert fb.task_mode == "identity_dialogue"
     assert fb.active_identity_facets
     assert fb.active_relationship_facets
     assert "generic assistant self-description" in fb.response_hazards
+
+
+def test_fallback_chat_stance_brief_technical_frustration_sets_triage_low_identity() -> None:
+    ctx = {
+        "user_message": "I'm super pissed; our V100 won't seat and workflows are offline.",
+        "chat_social_summary": {"social_posture": ["technical", "strained"], "relationship_facets": ["shared build"]},
+        "chat_social_bridge_summary": {"posture": ["operational_frustration", "technical"], "hazards": ["context_softened:repair"]},
+    }
+    fb = fallback_chat_stance_brief(ctx)
+    assert fb.task_mode == "triage"
+    assert fb.identity_salience == "low"
+    assert fb.answer_strategy == "TriageFirstOperationalReply"
+    assert "self_intro_on_operational_turn" in fb.response_hazards
+    assert "triage_operational_blockers_first" in fb.response_priorities
 
 
 def test_semantic_guard_enriches_weak_generic_identity_brief() -> None:
@@ -104,6 +139,33 @@ def test_semantic_guard_enriches_weak_generic_identity_brief() -> None:
     assert enriched.active_identity_facets
     assert enriched.active_relationship_facets
     assert enriched.conversation_frame == "identity_emergence"
+
+
+def test_semantic_guard_triage_adds_self_intro_suppression_hazard() -> None:
+    triage = ChatStanceBrief(
+        conversation_frame="technical",
+        task_mode="triage",
+        identity_salience="medium",
+        user_intent="gpu incident",
+        self_relevance="maintain continuity",
+        juniper_relevance="support incident handling",
+        active_identity_facets=[],
+        active_growth_axes=[],
+        active_relationship_facets=["shared_build"],
+        social_posture=["technical", "strained"],
+        reflective_themes=[],
+        active_tensions=[],
+        dream_motifs=[],
+        response_priorities=["answer_directly_first"],
+        response_hazards=[],
+        answer_strategy="DirectAnswer",
+        stance_summary="technical triage",
+    )
+    enriched, fired = enforce_chat_stance_quality(triage, {"user_message": "gpu is offline"})
+    assert fired is False
+    assert enriched.identity_salience == "low"
+    assert "self_intro_on_operational_turn" in enriched.response_hazards
+    assert "triage_operational_blockers_first" in enriched.response_priorities
 
 
 def test_normalize_chat_stance_brief_deliteralizes_known_phrases() -> None:

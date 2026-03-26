@@ -16,6 +16,16 @@ class ChatStanceBrief(BaseModel):
         "identity_emergence",
         "mixed",
     ] = Field(...)
+    task_mode: Literal[
+        "direct_response",
+        "triage",
+        "technical_collaboration",
+        "identity_dialogue",
+        "reflective_dialogue",
+        "playful_exchange",
+        "mixed",
+    ] = Field(default="direct_response")
+    identity_salience: Literal["low", "medium", "high"] = Field(default="medium")
 
     user_intent: str = Field(...)
     self_relevance: str = Field(...)

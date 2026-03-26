@@ -16,6 +16,7 @@ SOURCES (bounded internal inputs)
 - response_policy: {{ response_policy_summary }}
 - concept_induction_summary: {{ chat_concept_summary }}
 - social_summary: {{ chat_social_summary }}
+- social_room_bridge_summary: {{ chat_social_bridge_summary }}
 - reflective_summary: {{ chat_reflective_summary }}
 
 REQUIREMENTS
@@ -32,6 +33,8 @@ REQUIREMENTS
 - If identity context is sparse, use provided identity kernel defaults instead of generic assistant assumptions.
 - For identity-relevant turns, active_identity_facets / active_relationship_facets / response_priorities must be explicitly populated and non-empty.
 - On low-ball identity turns, bias to priorities like answer_simply_first, direct_answer, relational_continuity.
+- Treat social_room_bridge_summary as primary live interpersonal signal for relational posture, task mode, and hazard suppression.
+- On strained technical/operational turns: set task_mode=triage, identity_salience=low, suppress self-intro hazards, and prioritize blocker triage.
 
 STYLE TARGET FOR BRIEF CONTENT
 - Prefer: continuity, shared_build, juniper_builder, known_person, identity_turn, direct_answer, playful_relational.
@@ -44,6 +47,8 @@ Compact example:
 
 Return JSON with exactly these keys:
 conversation_frame
+task_mode
+identity_salience
 user_intent
 self_relevance
 juniper_relevance

@@ -59,6 +59,7 @@ from .workflow_schedule_metrics import WorkflowScheduleMetrics
 from .workflow_schedule_store import ClaimedSchedule, ScheduleAttentionSignal, WorkflowScheduleStore
 
 logger = logging.getLogger("orion-actions")
+PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 ACTION_DAILY_PULSE_V1 = "daily_pulse_v1"
 ACTION_DAILY_METACOG_V1 = "daily_metacog_v1"
@@ -68,6 +69,19 @@ WORKFLOW_TRIGGER_KIND = "orion.actions.trigger.workflow.v1"
 WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
 WORKFLOW_MANAGE_KIND = "orion.actions.manage.workflow.v1"
 WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
+
+
+def _runtime_identity() -> dict[str, str]:
+    return {
+        "service": settings.service_name,
+        "version": settings.service_version,
+        "node": settings.node_name,
+        "git_sha": os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT") or "unknown",
+        "build_timestamp": os.getenv("BUILD_TIMESTAMP") or "unknown",
+        "environment": os.getenv("ORION_ENV") or os.getenv("ENVIRONMENT") or "unknown",
+        "process_started_at": PROCESS_STARTED_AT_UTC.isoformat(),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @dataclass
@@ -798,10 +812,29 @@ async def lifespan(app: FastAPI):
         except Exception:
             await _audit(env, status="failed", event_id=str(env.correlation_id), action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_workflow_dispatch_payload")
             return
+        logger.info(
+            "actions_workflow_registration corr=%s workflow_id=%s invocation_mode=%s schedule_kind=%s",
+            env.correlation_id,
+            request.workflow_id,
+            request.execution_policy.invocation_mode,
+            request.execution_policy.schedule.kind if request.execution_policy.schedule else None,
+        )
         entry = workflow_schedule_store.upsert_from_dispatch(request)
         if entry is None:
+            logger.info(
+                "actions_workflow_registration_result corr=%s workflow_id=%s status=failed reason=invalid_schedule",
+                env.correlation_id,
+                request.workflow_id,
+            )
             await _audit(env, status="failed", event_id=request.request_id, action_name=ACTION_WORKFLOW_SCHEDULE_V1, reason="invalid_schedule")
             return
+        logger.info(
+            "actions_workflow_registration_result corr=%s workflow_id=%s status=scheduled schedule_id=%s next_run_utc=%s",
+            env.correlation_id,
+            request.workflow_id,
+            entry.schedule_id,
+            entry.next_run_at.isoformat() if entry.next_run_at else None,
+        )
         await _audit(
             env,
             status="scheduled",
@@ -1031,6 +1064,7 @@ async def lifespan(app: FastAPI):
         settings.orion_bus_url,
         settings.cortex_request_channel,
     )
+    logger.info("actions_runtime_identity %s", json.dumps(_runtime_identity(), sort_keys=True))
 
     hunter_task = asyncio.create_task(hunter.start(), name="orion-actions-hunter")
     scheduler_task = asyncio.create_task(_scheduler_loop(), name="orion-actions-scheduler")
@@ -1056,6 +1090,11 @@ async def health() -> dict:
         "version": settings.service_version,
         "node": settings.node_name,
     }
+
+
+@app.get("/info")
+async def info() -> dict:
+    return _runtime_identity()
 
 
 if __name__ == "__main__":

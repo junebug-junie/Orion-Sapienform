@@ -107,6 +107,20 @@ def test_orch_handle_routes_explicit_workflow_request_before_normal_verb_runtime
     assert res.payload.metadata['workflow']['workflow_id'] == 'dream_cycle'
 
 
+def test_orch_info_request_returns_runtime_identity() -> None:
+    env = BaseEnvelope(
+        kind='orion.cortex.orch.info.request.v1',
+        source=ServiceRef(name='cortex-gateway'),
+        correlation_id='00000000-0000-0000-0000-000000000000',
+        payload={},
+    )
+    res = asyncio.run(orch_main.handle(env))
+    assert res.kind == 'orion.cortex.orch.info.result.v1'
+    assert res.payload['service']
+    assert res.payload['version']
+    assert res.payload['process_started_at']
+
+
 def test_scheduled_workflow_requests_publish_actions_trigger_instead_of_running_verb_runtime(monkeypatch) -> None:
     async def _fake_call_verb_runtime(*args, **kwargs):
         raise AssertionError("scheduled workflow should not execute runtime immediately")
@@ -143,7 +157,11 @@ def test_scheduled_workflow_requests_publish_actions_trigger_instead_of_running_
     assert result.metadata["workflow"]["status"] == "scheduled"
     assert "Scheduled: none" not in result.final_text
     assert result.metadata["workflow"]["scheduled"]
-    assert any(channel == "orion:actions:trigger:workflow.v1" for channel, _ in bus.published)
+    trigger_envelopes = [env for channel, env in bus.published if channel == "orion:actions:trigger:workflow.v1"]
+    assert trigger_envelopes
+    dispatch_payload = trigger_envelopes[-1].payload
+    assert dispatch_payload["execution_policy"]["invocation_mode"] == "scheduled"
+    assert dispatch_payload["execution_policy"]["schedule"]["kind"] == "one_shot"
 
 
 def test_dream_cycle_workflow_uses_existing_dream_verb(monkeypatch) -> None:
@@ -171,6 +189,37 @@ def test_dream_cycle_workflow_uses_existing_dream_verb(monkeypatch) -> None:
     assert 'Dream synthesis complete.' in result.final_text
 
 
+def test_dream_cycle_reports_persisted_only_when_confirmed(monkeypatch) -> None:
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        return DummyVerbResult(
+            payload={
+                'result': {
+                    'status': 'success',
+                    'final_text': 'Dream synthesis complete.',
+                    'steps': [],
+                    'memory_used': True,
+                    'recall_debug': {'profile': 'dream.v1'},
+                    'metadata': {'dream_persisted': True},
+                }
+            }
+        )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('dream_cycle'),
+            correlation_id='00000000-0000-0000-0000-000000000099',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert result.ok is True
+    assert result.metadata['workflow']['persisted'] == ['dream.result.v1']
+    assert result.metadata['workflow']['dream_persistence_confirmed'] is True
+
+
 def test_journal_pass_workflow_reuses_journal_compose_and_append_only_write(monkeypatch) -> None:
     bus = DummyBus()
 
@@ -195,6 +244,8 @@ def test_journal_pass_workflow_reuses_journal_compose_and_append_only_write(monk
     assert result.metadata['workflow']['workflow_id'] == 'journal_pass'
     assert result.metadata['workflow']['main_result'] is not None
     assert result.metadata['workflow']['main_result'] != 'None'
+    assert result.metadata['workflow']['journal_entry']['title']
+    assert result.metadata['workflow']['journal_entry']['body'] == 'Meaningful Body'
     assert any(channel == 'orion:journal:write' for channel, _ in bus.published)
 
 
@@ -245,6 +296,7 @@ def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path)
 
     assert result.ok is True
     assert result.metadata['workflow']['workflow_id'] == 'concept_induction_pass'
+    assert result.metadata['workflow']['profile_store_path'] == str(tmp_path / 'concepts.json')
     assert result.metadata['workflow']['profiles_reviewed'][0]['subject'] == 'orion'
 
 
@@ -270,3 +322,27 @@ def test_concept_induction_pass_fails_honestly_when_profiles_missing(monkeypatch
     assert result.ok is False
     assert result.metadata['workflow']['status'] == 'failed'
     assert result.error['code'] == 'concept_profiles_unavailable'
+
+
+def test_concept_induction_pass_reports_placeholder_store_as_unconfigured(monkeypatch) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = '/tmp/concept-induction-state.json'
+        subjects = ['orion']
+
+    monkeypatch.setattr(workflow_runtime, 'get_concept_settings', lambda: FakeConceptSettings())
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('concept_induction_pass'),
+            correlation_id='00000000-0000-0000-0000-000000000007',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert result.ok is False
+    assert result.metadata['workflow']['profile_store_placeholder_path'] is True
+    assert 'not configured in this environment' in result.metadata['workflow']['main_result']

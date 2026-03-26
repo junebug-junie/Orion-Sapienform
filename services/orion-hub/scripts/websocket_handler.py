@@ -501,6 +501,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 source_label="hub_ws",
                 prompt=prompt_with_ctx,
             )
+            workflow_request = chat_req.metadata.get("workflow_request") if isinstance(chat_req.metadata, dict) else None
+            execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
+            logger.info(
+                "hub_workflow_request corr=%s sid=%s workflow_id=%s invocation_mode=%s schedule_kind=%s source=ws",
+                trace_id,
+                session_id,
+                (workflow_request or {}).get("workflow_id") if isinstance(workflow_request, dict) else None,
+                (execution_policy or {}).get("invocation_mode") if isinstance(execution_policy, dict) else None,
+                ((execution_policy or {}).get("schedule") or {}).get("kind") if isinstance(execution_policy, dict) else None,
+            )
             chat_req.metadata = dict(chat_req.metadata or {})
             chat_req.metadata["trace_verb"] = trace_verb
             mode = chat_req.mode
@@ -593,6 +603,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     memory_digest = recall_debug.get("memory_digest")
                 agent_trace = extract_agent_trace_payload(resp.cortex_result)
                 workflow = extract_workflow_payload(resp.cortex_result)
+                if isinstance(workflow, dict):
+                    logger.info(
+                        "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s source=ws",
+                        trace_id,
+                        workflow.get("workflow_id"),
+                        workflow.get("status"),
+                        len(workflow.get("scheduled") or []),
+                        len(workflow.get("persisted") or []),
+                        "scheduled_confirmation" if len(workflow.get("scheduled") or []) else "immediate_or_unscheduled",
+                    )
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):

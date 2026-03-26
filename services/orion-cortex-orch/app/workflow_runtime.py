@@ -19,7 +19,7 @@ from orion.journaler.worker import (
 )
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
-from orion.spark.concept_induction.settings import get_settings as get_concept_settings
+from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH, get_settings as get_concept_settings
 from orion.spark.concept_induction.store import LocalProfileStore
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1
@@ -609,6 +609,7 @@ async def _execute_concept_induction_pass(
     del bus, source, causality_chain, trace, call_verb_runtime
     workflow_id = "concept_induction_pass"
     settings = get_concept_settings()
+    using_placeholder_store = settings.store_path == DEFAULT_CONCEPT_STORE_PATH
     store = LocalProfileStore(settings.store_path)
     subjects = list(settings.subjects or ["orion", "juniper", "relationship"])
     reviews: List[Dict[str, Any]] = []
@@ -637,6 +638,11 @@ async def _execute_concept_induction_pass(
             f"{item['subject']} rev {item['revision']} with {item['concept_count']} concepts / {item['cluster_count']} clusters"
             for item in reviews
         )
+    elif using_placeholder_store:
+        main_result = (
+            "Concept induction profiles are not configured in this environment "
+            f"(CONCEPT_STORE_PATH still defaults to {DEFAULT_CONCEPT_STORE_PATH})."
+        )
     else:
         main_result = f"Concept induction profiles are not available in the configured store ({settings.store_path})."
     metadata = _workflow_metadata_base(request=_workflow_request(req), status=status)
@@ -649,6 +655,7 @@ async def _execute_concept_induction_pass(
         "scheduled": [],
         "main_result": main_result,
         "profile_store_path": settings.store_path,
+        "profile_store_placeholder_path": using_placeholder_store,
         "profiles_reviewed": reviews,
     }
     return CortexClientResult(
@@ -689,6 +696,13 @@ async def execute_chat_workflow(
 
     policy = _execution_policy(req, workflow_id)
     logger.info("workflow_requested corr=%s workflow_id=%s alias=%s session_id=%s mode=%s notify_on=%s", correlation_id, workflow_id, request.get("matched_alias"), req.context.session_id, policy.invocation_mode, policy.notify_on)
+    logger.info(
+        "workflow_path_decision corr=%s workflow_id=%s invocation_mode=%s schedule_kind=%s",
+        correlation_id,
+        workflow_id,
+        policy.invocation_mode,
+        policy.schedule.kind if policy.schedule else None,
+    )
     if policy.invocation_mode == "scheduled":
         logger.info("workflow_scheduled corr=%s workflow_id=%s schedule=%s", correlation_id, workflow_id, policy.schedule.model_dump(mode="json") if policy.schedule else {})
         return await _schedule_workflow_dispatch(
@@ -773,4 +787,12 @@ async def execute_chat_workflow(
         execution_source="immediate",
     )
     logger.info("workflow_completed corr=%s workflow_id=%s ok=%s", correlation_id, workflow_id, result.ok)
+    logger.info(
+        "workflow_response_shape corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s",
+        correlation_id,
+        workflow_id,
+        (result.metadata.get("workflow") or {}).get("status") if isinstance(result.metadata, dict) else None,
+        len(((result.metadata.get("workflow") or {}).get("scheduled") or [])) if isinstance(result.metadata, dict) else 0,
+        len(((result.metadata.get("workflow") or {}).get("persisted") or [])) if isinstance(result.metadata, dict) else 0,
+    )
     return result

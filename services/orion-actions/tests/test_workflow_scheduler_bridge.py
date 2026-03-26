@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.main import _publish_workflow_attention_signal, _schedule_attention_notify_request, workflow_schedule_metrics
+from app.main import info as actions_info
 from app.workflow_schedule_metrics import WorkflowScheduleMetrics
 from app.workflow_schedule_store import WorkflowScheduleStore
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
@@ -137,3 +138,10 @@ def test_attention_notify_integration_overdue_transition(tmp_path) -> None:
     assert req.context["transition"] == "entered"
     assert req.context["condition"] == "overdue"
     assert req.context["is_overdue"] is True
+
+
+def test_actions_info_surface_exposes_runtime_identity() -> None:
+    payload = asyncio.run(actions_info())
+    assert payload["service"]
+    assert payload["version"]
+    assert payload["process_started_at"]

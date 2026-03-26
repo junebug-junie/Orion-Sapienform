@@ -7,6 +7,8 @@ from typing import List
 from pydantic import Field, AliasChoices, field_validator
 from pydantic_settings import BaseSettings
 
+DEFAULT_CONCEPT_STORE_PATH = "/tmp/concept-induction-state.json"
+
 
 class ConceptSettings(BaseSettings):
     """Environment-driven settings for Concept Induction."""
@@ -108,7 +110,7 @@ class ConceptSettings(BaseSettings):
 
     # Storage / persistence
     store_path: str = Field(
-        "/tmp/concept-induction-state.json", alias="CONCEPT_STORE_PATH"
+        DEFAULT_CONCEPT_STORE_PATH, alias="CONCEPT_STORE_PATH"
     )
     drive_decay_tau_sec: float = Field(1800.0, alias="DRIVE_DECAY_TAU_SEC")
     drive_saturation_gain: float = Field(1.8, alias="DRIVE_SATURATION_GAIN")

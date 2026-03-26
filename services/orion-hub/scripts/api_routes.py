@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 import aiohttp
@@ -32,6 +34,7 @@ from orion.schemas.notify import (
 )
 
 logger = logging.getLogger("orion-hub.api")
+PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
 
@@ -234,6 +237,31 @@ async def root():
 def health():
     """Simple health check endpoint."""
     return {"status": "ok", "service": settings.SERVICE_NAME}
+
+
+def _runtime_identity() -> dict:
+    return {
+        "service": settings.SERVICE_NAME,
+        "version": settings.SERVICE_VERSION,
+        "node": settings.NODE_NAME,
+        "git_sha": os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT") or "unknown",
+        "build_timestamp": os.getenv("BUILD_TIMESTAMP") or "unknown",
+        "environment": os.getenv("ORION_ENV") or os.getenv("ENVIRONMENT") or "unknown",
+        "process_started_at": PROCESS_STARTED_AT_UTC.isoformat(),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/api/debug/build")
+def api_debug_build():
+    return {
+        "hub": _runtime_identity(),
+        "downstream": {
+            "cortex_gateway_request_channel": settings.CORTEX_GATEWAY_REQUEST_CHANNEL,
+            "notify_base_url": settings.NOTIFY_BASE_URL,
+            "landing_pad_url": settings.LANDING_PAD_URL,
+        },
+    }
 
 @router.get("/api/notifications")
 async def api_notifications(limit: int = 50):
@@ -577,6 +605,16 @@ async def handle_chat_request(
         source_label="hub_http",
         prompt=user_prompt,
     )
+    workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
+    execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
+    logger.info(
+        "hub_workflow_request corr=%s sid=%s workflow_id=%s invocation_mode=%s schedule_kind=%s",
+        corr_id,
+        session_id,
+        (workflow_request or {}).get("workflow_id") if isinstance(workflow_request, dict) else None,
+        (execution_policy or {}).get("invocation_mode") if isinstance(execution_policy, dict) else None,
+        ((execution_policy or {}).get("schedule") or {}).get("kind") if isinstance(execution_policy, dict) else None,
+    )
 
     recall_payload = req.recall or {"enabled": use_recall}
     mode = req.mode
@@ -636,6 +674,16 @@ async def handle_chat_request(
             memory_digest = recall_debug.get("memory_digest")
         agent_trace = extract_agent_trace_payload(resp.cortex_result)
         workflow = extract_workflow_payload(resp.cortex_result)
+        if isinstance(workflow, dict):
+            logger.info(
+                "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s",
+                correlation_id,
+                workflow.get("workflow_id"),
+                workflow.get("status"),
+                len(workflow.get("scheduled") or []),
+                len(workflow.get("persisted") or []),
+                "scheduled_confirmation" if len(workflow.get("scheduled") or []) else "immediate_or_unscheduled",
+            )
 
         recall_count = 0
         backend_counts = None

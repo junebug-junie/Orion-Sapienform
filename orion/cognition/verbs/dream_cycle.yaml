@@ -2,6 +2,7 @@
 # Legacy dream_preprocess / dream_simple use direct memory backends and remain denied.
 name: dream_cycle
 label: Dream Cycle
+personality_file: orion/cognition/personality/orion_identity.yaml
 description: >
   Recall-first dream cycle: gather memory via RecallService (profile dream.v1),
   then synthesize a structured dream artifact via LLMGatewayService.

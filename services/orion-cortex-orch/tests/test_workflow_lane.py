@@ -16,6 +16,7 @@ from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResu
 
 from app import main as orch_main
 from app.workflow_runtime import execute_chat_workflow
+from orion.spark.introspection_metadata import build_introspection_context
 
 
 class DummyBus:
@@ -249,6 +250,31 @@ def test_journal_pass_workflow_reuses_journal_compose_and_append_only_write(monk
     assert any(channel == 'orion:journal:write' for channel, _ in bus.published)
 
 
+def test_journal_pass_primary_metadata_continuity(monkeypatch) -> None:
+    seen_metadata: dict = {}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs['client_request']
+        seen_metadata.update(req.context.metadata or {})
+        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"mode":"manual","title":"Title","body":"Meaningful Body"}', 'steps': [], 'metadata': {}, 'recall_debug': {}}})
+
+    asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('journal_pass'),
+            correlation_id='00000000-0000-0000-0000-000000010001',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert seen_metadata.get("workflow_id") == "journal_pass"
+    assert seen_metadata.get("workflow_execution", {}).get("workflow_subverb") == "journal.compose"
+    assert seen_metadata.get("session_id") == "sid-1"
+    assert seen_metadata.get("user_id") == "user-1"
+
+
 def test_self_review_workflow_uses_existing_self_reflection_adapter(monkeypatch) -> None:
     async def _fake_call_verb_runtime(*args, **kwargs):
         req = kwargs['client_request']
@@ -270,6 +296,83 @@ def test_self_review_workflow_uses_existing_self_reflection_adapter(monkeypatch)
     assert result.ok is True
     assert result.metadata['workflow']['workflow_id'] == 'self_review'
     assert result.metadata['workflow']['finding_count'] == 1
+
+
+def test_self_review_primary_metadata_continuity(monkeypatch) -> None:
+    seen_metadata: dict = {}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs['client_request']
+        seen_metadata.update(req.context.metadata or {})
+        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"summary":"Reflective summary","findings":[]}', 'steps': [], 'metadata': {'skill_result': {'summary': 'Reflective summary', 'findings': []}}}})
+
+    asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('self_review'),
+            correlation_id='00000000-0000-0000-0000-000000010002',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert seen_metadata.get("workflow_id") == "self_review"
+    assert seen_metadata.get("workflow_execution", {}).get("workflow_subverb") == "self_concept_reflect"
+    assert seen_metadata.get("trace_id") == "trace-1"
+
+
+def test_introspection_parity_for_primary_workflow_metadata() -> None:
+    spark_meta = {
+        "session_id": "sid-1",
+        "user_id": "user-1",
+        "workflow_id": "self_review",
+        "trace_verb": "self_concept_reflect",
+        "personality_file": "orion/cognition/personality/orion_identity.yaml",
+    }
+    continuity = build_introspection_context(
+        spark_meta=spark_meta,
+        trace_id="trace-1",
+        correlation_id="corr-1",
+    )
+    assert continuity["session_id"] == "sid-1"
+    assert continuity["user_id"] == "user-1"
+    assert continuity["workflow_id"] == "self_review"
+    assert continuity["personality_file"] == "orion/cognition/personality/orion_identity.yaml"
+
+
+def test_self_review_usefulness_for_zero_and_nonzero_findings(monkeypatch) -> None:
+    async def _zero_findings(*args, **kwargs):
+        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"summary":"","findings":[]}', 'steps': [], 'metadata': {'skill_result': {'summary': '', 'findings': []}}}})
+
+    zero_result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('self_review'),
+            correlation_id='00000000-0000-0000-0000-000000010003',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_zero_findings,
+        )
+    )
+    assert "No notable self-review findings were identified" in (zero_result.final_text or "")
+
+    async def _with_findings(*args, **kwargs):
+        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"summary":"ignored","findings":[{"kind":"seam_risk"},{"kind":"alignment_gap"}]}', 'steps': [], 'metadata': {'skill_result': {'summary': 'ignored', 'findings': [{'kind': 'seam_risk'}, {'kind': 'alignment_gap'}]}}}})
+
+    findings_result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('self_review'),
+            correlation_id='00000000-0000-0000-0000-000000010004',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_with_findings,
+        )
+    )
+    assert "Self review completed with 2 findings" in (findings_result.final_text or "")
 
 
 def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path) -> None:
@@ -345,7 +448,7 @@ def test_concept_induction_pass_reports_placeholder_store_as_unconfigured(monkey
     )
     assert result.ok is False
     assert result.metadata['workflow']['profile_store_placeholder_path'] is True
-    assert 'not configured in this environment' in result.metadata['workflow']['main_result']
+    assert 'Set CONCEPT_STORE_PATH to a real profile store path' in result.metadata['workflow']['main_result']
 
 
 def test_orch_handle_workflow_failure_returns_explicit_failure_without_chat_fallback(monkeypatch) -> None:
@@ -396,3 +499,37 @@ def test_workflow_summary_never_claims_persisted_without_confirmed_write() -> No
     )
     assert "Persisted: none" in (result.final_text or "")
     assert result.metadata["workflow"]["persisted"] == []
+
+
+def test_dream_cycle_primary_metadata_continuity(monkeypatch) -> None:
+    seen_metadata: dict = {}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs['client_request']
+        seen_metadata.update(req.context.metadata or {})
+        return DummyVerbResult(
+            payload={
+                'result': {
+                    'status': 'success',
+                    'final_text': 'Dream synthesis complete.',
+                    'steps': [],
+                    'memory_used': True,
+                    'recall_debug': {'profile': 'dream.v1'},
+                    'metadata': {},
+                }
+            }
+        )
+
+    asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('dream_cycle'),
+            correlation_id='00000000-0000-0000-0000-000000010005',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert seen_metadata.get("workflow_id") == "dream_cycle"
+    assert seen_metadata.get("workflow_execution", {}).get("workflow_subverb") == "dream_cycle"

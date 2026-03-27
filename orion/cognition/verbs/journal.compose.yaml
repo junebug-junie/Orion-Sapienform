@@ -1,6 +1,7 @@
 name: journal.compose
 label: Journal Compose
 description: Given a normalized journal trigger, draft a reflective journal entry and return strict structured output.
+personality_file: orion/cognition/personality/orion_identity.yaml
 category: reflective
 priority: normal
 interruptible: true

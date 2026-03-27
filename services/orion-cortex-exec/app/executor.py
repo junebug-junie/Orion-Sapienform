@@ -137,6 +137,68 @@ def _truncate_text(value: Any, max_chars: int) -> Optional[str]:
     return text[:max_chars]
 
 
+def _prior_step_result_count(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        return len(value)
+    return 0
+
+
+def _detect_internal_scaffolding_markers(text: str) -> List[str]:
+    lowered = str(text or "").lower()
+    markers: List[str] = []
+    checks = {
+        "system_directive": ("you are ", "system prompt", "developer instruction"),
+        "policy_meta": ("do not reveal", "internal instruction", "non-goals"),
+        "planner_meta": ("delegate_tool_execution", "plan_only", "return_trace"),
+        "tool_scaffold": ("toolset summary", "return your normal council output contract"),
+    }
+    for key, needles in checks.items():
+        if any(needle in lowered for needle in needles):
+            markers.append(key)
+    return markers
+
+
+def _sanitize_final_input_blob(text: str) -> str:
+    cleaned_lines: List[str] = []
+    for line in str(text or "").splitlines():
+        lowered = line.strip().lower()
+        if lowered.startswith("you are "):
+            continue
+        if "return your normal council output contract" in lowered:
+            continue
+        if "developer instruction" in lowered:
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
+
+
+def _log_grounding_snapshot(
+    *,
+    component: str,
+    ctx: Dict[str, Any],
+    correlation_id: str,
+    text_source: str,
+    payload_text: str,
+    recall_included: bool,
+) -> None:
+    snippet = _truncate_text(payload_text or "", 220) or ""
+    scaffolding_markers = _detect_internal_scaffolding_markers(payload_text or "")
+    logger.info(
+        "grounding_snapshot component=%s corr_id=%s trace_id=%s session_id=%s text_source=%s text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+        component,
+        correlation_id,
+        ctx.get("trace_id"),
+        ctx.get("session_id"),
+        text_source,
+        snippet,
+        _prior_step_result_count(ctx.get("prior_step_results")),
+        recall_included,
+        scaffolding_markers,
+    )
+
+
 def _truncate_list(values: Any, max_items: int, max_chars: int) -> List[str]:
     if not isinstance(values, list):
         return []
@@ -968,6 +1030,14 @@ async def run_recall_step(
     recall_timeout = float(settings.step_timeout_ms) / 1000.0
 
     fragment = _last_user_message(ctx) or ""
+    _log_grounding_snapshot(
+        component=f"recall:{step_name}",
+        ctx=ctx,
+        correlation_id=correlation_id,
+        text_source="last_user_message",
+        payload_text=fragment,
+        recall_included=False,
+    )
     trace_val = ctx.get("trace_id") or recall_cfg.get("trace_id") or correlation_id
     req = RecallQueryV1(
         fragment=fragment,
@@ -1031,7 +1101,26 @@ async def run_recall_step(
             "citations": recall_citations,
             "rendered": memory_digest,
         }
+        debug["items"] = [
+            {
+                "id": frag.get("id"),
+                "source": frag.get("source"),
+                "score": frag.get("score"),
+                "snippet": _truncate_text(frag.get("snippet"), 180),
+                "title": _truncate_text((frag.get("source_ref") or frag.get("uri") or ""), 120),
+            }
+            for frag in recall_fragments[:8]
+        ]
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
+        logger.info(
+            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s items=%s summary=%s",
+            correlation_id,
+            trace_val,
+            ctx.get("session_id"),
+            req.profile,
+            len(recall_fragments),
+            debug["items"],
+        )
 
         return (
             StepExecutionResult(
@@ -1050,6 +1139,14 @@ async def run_recall_step(
     except Exception as e:
         logs.append(f"exception <- RecallService: {e}")
         debug["error"] = str(e)
+        logger.warning(
+            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s error=%s",
+            correlation_id,
+            trace_val,
+            ctx.get("session_id"),
+            req.profile,
+            e,
+        )
         return (
             StepExecutionResult(
                 status="fail",
@@ -1085,6 +1182,24 @@ async def call_step_services(
 
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     logger.info(f"Context Keys available: {list(ctx.keys())}")
+    run_scope = str(correlation_id)
+    current_scope = str(ctx.get("_run_scope_corr_id") or "")
+    if current_scope and current_scope != run_scope:
+        logger.warning(
+            "state_scope_reset corr_id=%s previous_scope=%s keys=%s",
+            correlation_id,
+            current_scope,
+            sorted(list((ctx.get("prior_step_results_by_corr") or {}).keys()))[:10],
+        )
+    ctx["_run_scope_corr_id"] = run_scope
+    scoped_results = ctx.get("prior_step_results_by_corr")
+    if not isinstance(scoped_results, dict):
+        scoped_results = {}
+        ctx["prior_step_results_by_corr"] = scoped_results
+    if run_scope not in scoped_results:
+        scoped_results[run_scope] = []
+    if not isinstance(ctx.get("prior_step_results"), list):
+        ctx["prior_step_results"] = list(scoped_results[run_scope])
 
     step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
     effective_timeout = step_timeout_sec
@@ -1092,6 +1207,25 @@ async def call_step_services(
     llm_client = LLMGatewayClient(bus)
     planner_client = PlannerReactClient(bus)
     agent_client = AgentChainClient(bus)
+
+    def _record_scoped_step(status: str, error: str | None = None) -> None:
+        scoped = ctx.get("prior_step_results_by_corr")
+        if not isinstance(scoped, dict):
+            return
+        scoped_list = scoped.get(run_scope)
+        if not isinstance(scoped_list, list):
+            scoped_list = []
+            scoped[run_scope] = scoped_list
+        scoped_list.append(
+            {
+                "step_name": step.step_name,
+                "verb_name": step.verb_name,
+                "status": status,
+                "error": error,
+                "services": list(step.services or []),
+            }
+        )
+        ctx["prior_step_results"] = list(scoped_list)
 
     _inject_identity_context(ctx)
     if step.verb_name == "chat_general":
@@ -1128,6 +1262,14 @@ async def call_step_services(
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
             debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
             logger.info(f"Rendered Prompt[{service}]: {debug_prompt!r}")
+        _log_grounding_snapshot(
+            component=f"service:{service}",
+            ctx=ctx,
+            correlation_id=correlation_id,
+            text_source="rendered_prompt",
+            payload_text=prompt,
+            recall_included=bool(ctx.get("memory_digest")),
+        )
 
         try:
             if service == "MetacogDraftService":
@@ -1839,6 +1981,7 @@ async def call_step_services(
                 )
                 merged_result["RecallService"] = recall_debug
                 logs.extend(recall_step.logs)
+                _record_scoped_step(recall_step.status, recall_step.error)
                 return recall_step
 
             if service == "LLMGatewayService":
@@ -2162,6 +2305,7 @@ async def call_step_services(
         except Exception as e:
             logs.append(f"exception <- {service}: {e}")
             logger.error(f"Service {service} failed: {e}")
+            _record_scoped_step("fail", f"{service}: {e}")
             return StepExecutionResult(
                 status="fail",
                 verb_name=step.verb_name,
@@ -2176,6 +2320,7 @@ async def call_step_services(
 
     if step_failed:
         logs.append(f"fail-fast <- {step_error}")
+        _record_scoped_step("fail", step_error)
         return StepExecutionResult(
             status="fail",
             verb_name=step.verb_name,
@@ -2189,6 +2334,7 @@ async def call_step_services(
             error=step_error,
         )
 
+    _record_scoped_step("success", None)
     return StepExecutionResult(
         status="success",
         verb_name=step.verb_name,

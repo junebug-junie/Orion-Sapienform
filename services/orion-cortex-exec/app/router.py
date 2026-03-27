@@ -99,6 +99,7 @@ class PlanRunner:
             plan.steps,
             output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
+            user_text=(ctx.get("raw_user_text") or ""),
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
@@ -142,6 +143,16 @@ class PlanRunner:
             ctx["diagnostic"] = True
 
         ctx["verb"] = plan.verb_name
+        existing_scope = str(ctx.get("_run_scope_corr_id") or "")
+        if existing_scope and existing_scope != correlation_id:
+            logger.warning(
+                "router_scope_reset corr_id=%s previous_scope=%s",
+                correlation_id,
+                existing_scope,
+            )
+        ctx["_run_scope_corr_id"] = correlation_id
+        ctx["prior_step_results"] = []
+        ctx.setdefault("prior_step_results_by_corr", {})[correlation_id] = []
         if mode == "brain" and plan.verb_name and not is_active(plan.verb_name, node_name=settings.node_name):
             logger.warning("Inactive verb blocked in router corr_id=%s verb=%s", correlation_id, plan.verb_name)
             return PlanExecutionResult(
@@ -277,6 +288,9 @@ class PlanRunner:
                 overall_status = "fail"
                 break
             ctx["prior_step_results"] = [res.model_dump(mode="json") for res in step_results]
+            scoped = ctx.setdefault("prior_step_results_by_corr", {})
+            if isinstance(scoped, dict):
+                scoped[correlation_id] = list(ctx["prior_step_results"])
             step_res = await call_step_services(
                 bus,
                 source=source,

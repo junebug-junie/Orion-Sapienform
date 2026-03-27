@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 from uuid import uuid4
 
@@ -109,6 +110,104 @@ def _ensure_trace(trace: dict | None, *, correlation_id: str, workflow_id: str) 
     base.setdefault("trace_id", correlation_id)
     base.setdefault("workflow_id", workflow_id)
     return base
+
+
+def _resolve_personality_file(metadata: Dict[str, Any] | None) -> str | None:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    direct = metadata.get("personality_file")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    plan_metadata = metadata.get("plan_metadata")
+    if isinstance(plan_metadata, dict):
+        nested = plan_metadata.get("personality_file")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return None
+
+
+def _workflow_execution_envelope(
+    *,
+    req: CortexClientRequest,
+    correlation_id: str,
+    workflow_id: str,
+    workflow_subverb: str | None,
+) -> Dict[str, Any]:
+    metadata = req.context.metadata if isinstance(req.context.metadata, dict) else {}
+    workflow_request = _workflow_request(req)
+    personality_file = _resolve_personality_file(metadata)
+    return {
+        "correlation_id": correlation_id,
+        "trace_id": req.context.trace_id or correlation_id,
+        "session_id": req.context.session_id,
+        "user_id": req.context.user_id,
+        "workflow_id": workflow_id,
+        "workflow_execution": {
+            "workflow_id": workflow_id,
+            "workflow_subverb": workflow_subverb,
+            "resolver": workflow_request.get("resolver"),
+            "matched_alias": workflow_request.get("matched_alias"),
+        },
+        "personality_file": personality_file,
+    }
+
+
+def _log_primary_metadata_status(
+    *,
+    correlation_id: str,
+    workflow_id: str,
+    verb: str,
+    metadata: Dict[str, Any] | None,
+) -> None:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    workflow_execution = metadata.get("workflow_execution")
+    personality_file = _resolve_personality_file(metadata)
+    missing = [
+        field
+        for field in ("trace_id", "session_id", "user_id")
+        if not metadata.get(field)
+    ]
+    if not isinstance(workflow_execution, dict):
+        missing.append("workflow_execution")
+    fallback_reason = "none"
+    if not personality_file:
+        fallback_reason = "missing_personality_file"
+        missing.append("personality_file")
+    logger.info(
+        "workflow_primary_metadata_status %s",
+        json.dumps(
+            {
+                "correlation_id": correlation_id,
+                "workflow_id": workflow_id,
+                "verb": verb,
+                "personality_file_present": bool(personality_file),
+                "workflow_metadata_present": isinstance(workflow_execution, dict),
+                "missing_fields": missing,
+                "fallback_reason": fallback_reason,
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
+
+
+def _shape_workflow_result_summary(*, workflow_meta: Dict[str, Any], result: CortexClientResult) -> Dict[str, Any]:
+    persisted = workflow_meta.get("persisted") if isinstance(workflow_meta, dict) else []
+    result_shape = "structured" if isinstance(workflow_meta.get("skill_result"), dict) else "summary"
+    low_value = False
+    reason = None
+    if workflow_meta.get("workflow_id") == "self_review":
+        finding_count = int(workflow_meta.get("finding_count") or 0)
+        summary = str(workflow_meta.get("main_result") or "").strip().lower()
+        if finding_count == 0:
+            low_value = "no notable self-review findings" not in summary
+            reason = "empty_finding_summary" if low_value else "no_findings"
+    return {
+        "executed": bool(workflow_meta.get("executed", result.ok)),
+        "persisted": bool(persisted),
+        "result_shape": result_shape,
+        "empty_or_low_value": low_value,
+        "reason": reason,
+    }
 
 
 def _workflow_summary_text(*, title: str, status: str, main_result: str, persisted: Iterable[str] | None = None, scheduled: Iterable[str] | None = None) -> str:
@@ -351,6 +450,20 @@ async def _run_workflow_subverb(
     subrequest.context.metadata.setdefault("workflow_request", _workflow_request(base_request))
     subrequest.context.metadata["workflow_subverb"] = verb
     subrequest.context.metadata["workflow_id"] = workflow_id
+    subrequest.context.metadata.update(
+        _workflow_execution_envelope(
+            req=base_request,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb=verb,
+        )
+    )
+    _log_primary_metadata_status(
+        correlation_id=correlation_id,
+        workflow_id=workflow_id,
+        verb=verb,
+        metadata=subrequest.context.metadata,
+    )
     result = await call_verb_runtime(
         bus,
         source=source,
@@ -449,6 +562,22 @@ async def _execute_journal_pass(
         options={"workflow_execution": True, "workflow_id": workflow_id},
     )
     compose_req.context.metadata = {**dict(req.context.metadata or {}), **dict(compose_req.context.metadata or {})}
+    compose_req.context.metadata.update(
+        _workflow_execution_envelope(
+            req=req,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb="journal.compose",
+        )
+    )
+    compose_req.context.metadata["workflow_subverb"] = "journal.compose"
+    compose_req.context.metadata["workflow_id"] = workflow_id
+    _log_primary_metadata_status(
+        correlation_id=correlation_id,
+        workflow_id=workflow_id,
+        verb="journal.compose",
+        metadata=compose_req.context.metadata,
+    )
     verb_result = await call_verb_runtime(
         bus,
         source=source,
@@ -540,7 +669,7 @@ async def _execute_self_review(
     )
     skill_result = ((payload.get("metadata") or {}).get("skill_result") or _parse_json_text(payload.get("final_text"))) or {}
     findings = list(skill_result.get("findings") or []) if isinstance(skill_result, dict) else []
-    summary = str((skill_result.get("summary") if isinstance(skill_result, dict) else None) or payload.get("final_text") or "Self review completed.")
+    summary = str((skill_result.get("summary") if isinstance(skill_result, dict) else None) or payload.get("final_text") or "Self review completed.").strip()
     persisted: List[str] = []
     if isinstance(skill_result, dict):
         graph_write = skill_result.get("graph_write") or {}
@@ -549,6 +678,19 @@ async def _execute_self_review(
             persisted.append(f"graph:{graph_write['graph']}")
         if journal_write.get("channel"):
             persisted.append(f"journal:{journal_write['channel']}")
+    if not summary:
+        summary = "Self review completed."
+    if not findings:
+        summary = "No notable self-review findings were identified from the available window/context."
+    else:
+        concise_findings = []
+        for item in findings[:3]:
+            if isinstance(item, dict):
+                concise_findings.append(str(item.get("kind") or item.get("summary") or "finding").strip())
+            else:
+                concise_findings.append(str(item).strip())
+        summary = f"Self review completed with {len(findings)} findings: {', '.join([f for f in concise_findings if f])}."
+
     metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
     metadata["workflow"] = {
         "workflow_id": workflow_id,
@@ -570,7 +712,7 @@ async def _execute_self_review(
         final_text=_workflow_summary_text(
             title="Self Review",
             status="completed" if verb_result.ok else "failed",
-            main_result=f"{summary} Findings: {len(findings)}.",
+            main_result=summary,
             persisted=persisted,
         ),
         memory_used=bool(payload.get("memory_used")),
@@ -614,6 +756,18 @@ async def _execute_concept_induction_pass(
     settings = get_concept_settings()
     using_placeholder_store = settings.store_path == DEFAULT_CONCEPT_STORE_PATH
     store = LocalProfileStore(settings.store_path)
+    logger.info(
+        "concept_induction_source_status %s",
+        json.dumps(
+            {
+                "configured_source_kind": "local_profile_store",
+                "placeholder_default_in_use": using_placeholder_store,
+                "source_path": settings.store_path,
+                "source_available": Path(settings.store_path).exists(),
+            },
+            sort_keys=True,
+        ),
+    )
     subjects = list(settings.subjects or ["orion", "juniper", "relationship"])
     reviews: List[Dict[str, Any]] = []
     for subject in subjects:
@@ -643,8 +797,8 @@ async def _execute_concept_induction_pass(
         )
     elif using_placeholder_store:
         main_result = (
-            "Concept induction profiles are not configured in this environment "
-            f"(CONCEPT_STORE_PATH still defaults to {DEFAULT_CONCEPT_STORE_PATH})."
+            "Concept induction profiles are not configured in this environment. "
+            f"Set CONCEPT_STORE_PATH to a real profile store path (current placeholder: {DEFAULT_CONCEPT_STORE_PATH})."
         )
     else:
         main_result = f"Concept induction profiles are not available in the configured store ({settings.store_path})."
@@ -660,6 +814,7 @@ async def _execute_concept_induction_pass(
         "main_result": main_result,
         "profile_store_path": settings.store_path,
         "profile_store_placeholder_path": using_placeholder_store,
+        "profile_store_env_var": "CONCEPT_STORE_PATH",
         "profiles_reviewed": reviews,
     }
     return CortexClientResult(
@@ -806,6 +961,19 @@ async def execute_chat_workflow(
     )
     logger.info("workflow_completed corr=%s workflow_id=%s ok=%s", correlation_id, workflow_id, result.ok)
     workflow_meta = (result.metadata or {}).get("workflow") if isinstance(result.metadata, dict) else {}
+    usefulness = _shape_workflow_result_summary(workflow_meta=workflow_meta if isinstance(workflow_meta, dict) else {}, result=result)
+    logger.info(
+        "workflow_result_usefulness %s",
+        json.dumps(
+            {
+                "correlation_id": correlation_id,
+                "workflow_id": workflow_id,
+                **usefulness,
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
     logger.info(
         "workflow_execution_truth %s",
         json.dumps(

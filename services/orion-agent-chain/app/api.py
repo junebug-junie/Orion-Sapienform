@@ -19,7 +19,11 @@ from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult, To
 from orion.cognition.output_mode_classifier import classify_output_mode
 from orion.cognition.quality_evaluator import detect_generic_delivery_drift, should_rewrite_for_instructional
 from orion.cognition.runtime_pack_merge import ensure_delivery_pack_in_packs
-from orion.cognition.agent_chain_guards import repeated_plan_action_needs_delivery, triage_must_finalize
+from orion.cognition.agent_chain_guards import (
+    consecutive_tool_count,
+    plan_action_saturated,
+    triage_must_finalize,
+)
 from orion.cognition.finalize_payload import build_finalize_tool_input
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
 
@@ -203,6 +207,35 @@ def _usable_finalized_text(observation: Any) -> str:
     return ""
 
 
+def _coverage_threshold_met(*, tools_called: list[str], trace_snapshot: list[dict[str, Any]]) -> bool:
+    seen = set(tools_called)
+    if "triage" in seen:
+        seen.add("triage_like")
+    if "plan_action" in seen:
+        seen.add("planning_like")
+    if {"evaluate", "summarize_context", "analyze_text"} & seen:
+        seen.add("analysis_like")
+    if {"write_recommendation", "write_guide", "compare_options", "finalize_response"} & seen:
+        seen.add("delivery_like")
+    if len({"triage_like", "planning_like", "analysis_like", "delivery_like"} & seen) >= 3:
+        return True
+    return len(trace_snapshot) >= 4 and len(seen) >= 3
+
+
+def _pick_finalization_tool(tool_ids: list[str]) -> str | None:
+    preferred = [
+        "finalize_response",
+        "write_recommendation",
+        "summarize_context",
+        "evaluate",
+        "write_guide",
+    ]
+    for tool_id in preferred:
+        if tool_id in tool_ids:
+            return tool_id
+    return None
+
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -227,6 +260,8 @@ async def execute_agent_chain(
         "quality_evaluator_rewrite": False,
         "generic_drift_detected": False,
         "finalization_source_trace_used": False,
+        "finalization_reason": None,
+        "suppressed_plan_action_count": 0,
     }
     logger.info(
         "[agent-chain] wiring corr=%s output_mode=%s profile=%s packs=%s tools=%s",
@@ -279,11 +314,22 @@ async def execute_agent_chain(
     tools_called: list[str] = []
     try:
         for step_idx in range(settings.default_max_steps):
+            consecutive_plan_actions = consecutive_tool_count(tools_called=tools_called, candidate="plan_action")
             if step_idx > 0:
-                planner_payload["toolset"] = [t for t in base_toolset if t.get("tool_id") != "triage"]
+                planner_visible_tools = [t for t in base_toolset if t.get("tool_id") != "triage"]
             else:
-                planner_payload["toolset"] = list(base_toolset)
-            logger.info("[agent-chain] planner step=%s parent_corr=%s", step_idx, parent_corr_id)
+                planner_visible_tools = list(base_toolset)
+            if consecutive_plan_actions >= 2:
+                planner_visible_tools = [t for t in planner_visible_tools if t.get("tool_id") != "plan_action"]
+            planner_payload["toolset"] = planner_visible_tools
+            visible_tool_ids = [t.get("tool_id") for t in planner_visible_tools][:12]
+            logger.info(
+                "[agent-chain] planner step=%s parent_corr=%s planner_visible_tools=%s repeated_plan_action_count=%s",
+                step_idx,
+                parent_corr_id,
+                visible_tool_ids,
+                consecutive_plan_actions,
+            )
             raw_resp = await call_planner_react(
                 planner_payload,
                 parent_correlation_id=parent_corr_id,
@@ -327,11 +373,12 @@ async def execute_agent_chain(
                 if pre_rewrite_drift or drifted:
                     logger.info("[agent-chain] generic_drift_detected=1 output_mode=%s", output_mode)
                 dbg["quality_evaluator_rewrite"] = rewrote
+                dbg["finalization_reason"] = dbg.get("finalization_reason") or "planner_finish"
                 raw_resp = {**raw_resp, "runtime_debug": dbg}
                 return AgentChainResult(
                     mode=body.mode,
                     text=text,
-                    structured=structured,
+                    structured={**structured, "finalization_reason": dbg["finalization_reason"]},
                     planner_raw=raw_resp,
                     runtime_debug=dbg,
                 )
@@ -349,6 +396,24 @@ async def execute_agent_chain(
 
             # Triage impossible once trace has prior completed steps (hard cap, not suggestive)
             prior_trace_len = len(planner_payload.get("trace") or [])
+            if _coverage_threshold_met(
+                tools_called=tools_called,
+                trace_snapshot=planner_payload.get("trace") or [],
+            ):
+                logger.info(
+                    "[agent-chain] finalization_trigger reason=coverage_threshold_met step=%s",
+                    step_idx,
+                )
+                dbg["finalization_reason"] = "coverage_threshold_met"
+                tool_id = _pick_finalization_tool(tool_ids) or "finalize_response"
+                tool_input = _finalize_tool_input(
+                    body,
+                    planner_payload.get("trace") or [],
+                    output_mode=output_mode,
+                    response_profile=response_profile,
+                )
+                if tool_id != "finalize_response":
+                    tool_input = {"request": body.text, "text": body.text, "goal": body.text, **tool_input}
             if triage_must_finalize(tool_id=str(tool_id or ""), step_idx=step_idx, prior_trace_len=prior_trace_len):
                 logger.info(
                     "[agent-chain] triage_blocked_post_step0=1 step=%s prior_trace_len=%s -> remap_non_triage",
@@ -421,30 +486,41 @@ async def execute_agent_chain(
                     dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
                     if rewrote:
                         dbg["finalize_response_invoked"] = True
+                    dbg["finalization_reason"] = dbg.get("finalization_reason") or "fallback_finalization"
                     raw_resp = {**raw_resp, "runtime_debug": dbg}
                     return AgentChainResult(
                         mode=body.mode,
                         text=fallback,
-                        structured={},
+                        structured={"finalization_reason": dbg["finalization_reason"]},
                         planner_raw=raw_resp,
                         runtime_debug=dbg,
                     )
                 raise RuntimeError("Planner delegate response missing action.tool_id")
 
-            # Second+ plan_action in chain -> delivery verb (not another shallow plan)
-            if repeated_plan_action_needs_delivery(tool_id=str(tool_id or ""), tools_called=tools_called):
-                override = _delivery_override_for_plan_action_repeat(output_mode)
+            # Allow up to two consecutive plan_action calls; suppress the third and force synthesis-capable tool.
+            if plan_action_saturated(tool_id=str(tool_id or ""), tools_called=tools_called):
+                override = _pick_finalization_tool(tool_ids) or _delivery_override_for_plan_action_repeat(output_mode)
                 logger.info(
-                    "[agent-chain] repeated_plan_action_escalation=1 -> tool_id=%s output_mode=%s",
+                    "[agent-chain] repeated_plan_action_suppressed=1 consecutive=%s -> tool_id=%s output_mode=%s",
+                    consecutive_tool_count(tools_called=tools_called, candidate="plan_action"),
                     override,
                     output_mode,
                 )
                 dbg["repeated_plan_action_escalation"] = True
+                dbg["suppressed_plan_action_count"] = int(dbg.get("suppressed_plan_action_count") or 0) + 1
+                dbg["finalization_reason"] = dbg.get("finalization_reason") or "repeated_plan_action"
                 tool_id = override
-                tool_input = {"request": body.text, "text": body.text, "goal": body.text}
+                tool_input = _finalize_tool_input(
+                    body,
+                    planner_payload.get("trace") or [],
+                    output_mode=output_mode,
+                    response_profile=response_profile,
+                )
+                if tool_id != "finalize_response":
+                    tool_input = {"request": body.text, "text": body.text, "goal": body.text, **tool_input}
 
             # Repeated same-tool loop breaker
-            if tools_called and tools_called[-1] == tool_id:
+            if tools_called and tools_called[-1] == tool_id and str(tool_id) != "plan_action":
                 logger.info("[agent-chain] repeated_tool_breaker=1 tool=%s -> finalize_response", tool_id)
                 dbg["repeated_tool_breaker"] = True
                 tool_id = "finalize_response"
@@ -504,7 +580,7 @@ async def execute_agent_chain(
                     return AgentChainResult(
                         mode=body.mode,
                         text=final_text,
-                        structured={},
+                        structured={"finalization_reason": dbg.get("finalization_reason") or "planner_finish"},
                         planner_raw={"runtime_debug": dbg, "trace": planner_payload.get("trace") or []},
                         runtime_debug=dbg,
                     )
@@ -516,6 +592,7 @@ async def execute_agent_chain(
         # Step cap: best-effort finalization instead of raw error
         logger.info("[agent-chain] step_cap finalize_response_invoked=1 corr=%s", parent_corr_id)
         dbg["finalize_response_invoked"] = True
+        dbg["finalization_reason"] = dbg.get("finalization_reason") or "step_cap_best_effort"
         try:
             trace_snapshot = planner_payload.get("trace") or []
             fin_result = await tool_executor.execute_llm_verb(
@@ -543,7 +620,7 @@ async def execute_agent_chain(
         return AgentChainResult(
             mode=body.mode,
             text=final_text,
-            structured={"finalization_reason": "step_cap_best_effort"},
+            structured={"finalization_reason": dbg["finalization_reason"]},
             planner_raw={"runtime_debug": dbg},
             runtime_debug=dbg,
         )

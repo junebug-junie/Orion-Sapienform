@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 from uuid import uuid4
 
@@ -20,8 +19,8 @@ from orion.journaler.worker import (
 )
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
+from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
 from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH, get_settings as get_concept_settings
-from orion.spark.concept_induction.store import LocalProfileStore
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1
 from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
@@ -754,24 +753,28 @@ async def _execute_concept_induction_pass(
     del bus, source, causality_chain, trace, call_verb_runtime
     workflow_id = "concept_induction_pass"
     settings = get_concept_settings()
-    using_placeholder_store = settings.store_path == DEFAULT_CONCEPT_STORE_PATH
-    store = LocalProfileStore(settings.store_path)
+    repository = build_concept_profile_repository(settings)
+    repository_status = repository.status()
+    using_placeholder_store = repository_status.placeholder_default_in_use
+    subjects = list(settings.subjects or ["orion", "juniper", "relationship"])
+    lookups = repository.list_latest(subjects)
     logger.info(
-        "concept_induction_source_status %s",
+        "concept_profile_repository_status %s",
         json.dumps(
             {
-                "configured_source_kind": "local_profile_store",
-                "placeholder_default_in_use": using_placeholder_store,
-                "source_path": settings.store_path,
-                "source_available": Path(settings.store_path).exists(),
+                "backend": repository_status.backend,
+                "source_path": repository_status.source_path,
+                "placeholder_default_in_use": repository_status.placeholder_default_in_use,
+                "subjects_requested": len(subjects),
+                "profiles_returned": sum(1 for lookup in lookups if lookup.profile is not None),
             },
             sort_keys=True,
         ),
     )
-    subjects = list(settings.subjects or ["orion", "juniper", "relationship"])
     reviews: List[Dict[str, Any]] = []
-    for subject in subjects:
-        profile = store.load(subject)
+    for lookup in lookups:
+        subject = lookup.subject
+        profile = lookup.profile
         if profile is None:
             continue
         reviews.append(

@@ -52,3 +52,17 @@ def test_reflective_modes_keep_normal_recall_behavior() -> None:
     assert decision["run_recall"] is True
     assert decision["profile"] == "reflect.v1"
     assert decision["reason"] == "enabled"
+
+
+def test_concrete_ops_query_disables_default_reflective_recall() -> None:
+    decision = delivery_safe_recall_decision(
+        {"enabled": True},
+        [_memory_step()],
+        output_mode="direct_answer",
+        verb_profile=None,
+        user_text="Need runtime estimate for V100 on APC UPS battery backup and power draw.",
+    )
+
+    assert decision["run_recall"] is False
+    assert decision["profile"] == "assist.light.v1"
+    assert decision["reason"] == "concrete_ops_default_disabled"

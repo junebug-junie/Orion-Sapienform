@@ -28,6 +28,27 @@ DELIVERY_SAFE_OUTPUT_MODES = frozenset(
 )
 
 
+def _is_concrete_ops_query(text: str | None) -> bool:
+    lowered = str(text or "").lower()
+    if not lowered.strip():
+        return False
+    needles = (
+        "v100",
+        "a100",
+        "h100",
+        "ups",
+        "apc",
+        "power",
+        "watt",
+        "runtime",
+        "battery",
+        "hardware",
+        "gpu",
+        "troubleshoot",
+    )
+    return any(needle in lowered for needle in needles)
+
+
 def resolve_mode_profile(mode: str | None) -> Tuple[str, str]:
     normalized = str(mode or "").lower()
     if normalized == "deep":
@@ -79,6 +100,7 @@ def delivery_safe_recall_decision(
     *,
     output_mode: str | None = None,
     verb_profile: Optional[str] = None,
+    user_text: str | None = None,
 ) -> Dict[str, Any]:
     recall_required = bool(recall_cfg.get("required", False))
     recall_enabled = recall_enabled_value(recall_cfg)
@@ -105,6 +127,16 @@ def delivery_safe_recall_decision(
                 "recall_gating_reason": "delivery_safe_default_disabled",
                 "effective_enabled": False,
             }
+
+    if _is_concrete_ops_query(user_text) and not explicit_profile and not recall_required:
+        return {
+            "run_recall": False,
+            "reason": "concrete_ops_default_disabled",
+            "profile": "assist.light.v1",
+            "profile_source": "concrete_ops_guardrail",
+            "recall_gating_reason": "concrete_ops_default_disabled",
+            "effective_enabled": False,
+        }
 
     return {
         "run_recall": base_should_run,

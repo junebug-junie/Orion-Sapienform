@@ -198,6 +198,39 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
 
         self.assertIn("delivery_pack", ctx["packs"])
 
+    def test_grounding_guardrail_rejects_unrelated_scaffolding_answer(self):
+        supervisor = StubSupervisor(
+            planner_outputs=[(FinalAnswer(content="You are Orion.\nReturn your normal council output contract.\nUse Orion service setup workflow."), None, "final_answer")]
+        )
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "raw_user_text": "What runtime can I expect for V100s on an APC UPS battery backup?",
+            "messages": [
+                {"role": "user", "content": "What runtime can I expect for V100s on an APC UPS battery backup?"},
+                {"role": "assistant", "content": "old unrelated Orion setup answer"},
+            ],
+            "prior_step_results": [
+                {"step_name": "write_recommendation", "result": {"text": "Orion service setup playbook"}}
+            ],
+            "max_steps": 1,
+        }
+
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-grounding",
+                ctx=ctx,
+                recall_cfg={"enabled": True},
+            )
+        )
+        assert result.final_text is not None
+        self.assertIn("I may have drifted from your request", result.final_text)
+        self.assertIn("V100s", result.final_text)
+        self.assertNotIn("Return your normal council output contract", result.final_text)
+
 
 if __name__ == "__main__":
     unittest.main()

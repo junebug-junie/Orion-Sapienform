@@ -114,6 +114,64 @@ def _compact_json(value: Any, limit: int = 220) -> str:
     return _truncate_text(rendered, limit=limit)
 
 
+def _detect_scaffolding_markers(text: Any) -> List[str]:
+    lowered = str(text or "").lower()
+    markers: List[str] = []
+    if any(k in lowered for k in ("you are ", "system prompt", "developer instruction")):
+        markers.append("system_directive")
+    if any(k in lowered for k in ("return your normal council output contract", "toolset summary", "recent trace:")):
+        markers.append("tool_scaffold")
+    if any(k in lowered for k in ("delegate_tool_execution", "plan_only", "non-goals", "important")):
+        markers.append("meta_instruction")
+    return markers
+
+
+def _sanitize_text_block(text: Any) -> str:
+    lines = []
+    for line in str(text or "").splitlines():
+        lowered = line.strip().lower()
+        if lowered.startswith("you are "):
+            continue
+        if "return your normal council output contract" in lowered:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _extract_key_terms(text: str) -> List[str]:
+    stop = {
+        "the", "and", "for", "with", "that", "this", "from", "have", "what", "your", "about", "into",
+        "when", "where", "which", "there", "would", "could", "should", "please", "help",
+    }
+    terms: List[str] = []
+    for raw in str(text or "").lower().split():
+        token = "".join(ch for ch in raw if ch.isalnum())
+        if len(token) < 4 or token in stop:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:12]
+
+
+def _grounding_verdict(user_text: str, answer_text: str) -> Dict[str, Any]:
+    ask_terms = _extract_key_terms(user_text)
+    answer_lower = str(answer_text or "").lower()
+    overlap = [term for term in ask_terms if term in answer_lower]
+    unrelated_markers = [m for m in ("orion service setup", "content workflow", "internal instructions") if m in answer_lower]
+    scaffolding_markers = _detect_scaffolding_markers(answer_text)
+    if not ask_terms:
+        anchored = not unrelated_markers and not scaffolding_markers
+    else:
+        anchored = bool(overlap) and not unrelated_markers and not scaffolding_markers
+    return {
+        "anchored": anchored,
+        "ask_terms": ask_terms,
+        "overlap_terms": overlap[:8],
+        "unrelated_markers": unrelated_markers,
+        "scaffolding_markers": scaffolding_markers,
+    }
+
+
 def _coerce_pack_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -355,6 +413,16 @@ class Supervisor:
         correlation_id: str,
         diagnostic: bool = False,
     ) -> Tuple[PlannerRequest, StepExecutionResult, FinalAnswer | None, Dict[str, Any] | None]:
+        logger.info(
+            "grounding_snapshot component=planner_react corr_id=%s trace_id=%s session_id=%s text_source=goal text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text(goal_text, 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(goal_text),
+        )
         ext_facts = {"text": ctx.get("memory_digest", "")}
         if ctx.get("output_mode"):
             ext_facts["output_mode"] = ctx["output_mode"]
@@ -393,6 +461,16 @@ class Supervisor:
             timeout_sec=planner_timeout,
         )
         logs.append(f"ok <- PlannerReactService status={planner_res.status}")
+        logger.info(
+            "grounding_snapshot component=planner_react_result corr_id=%s trace_id=%s session_id=%s text_source=planner_final text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text((planner_res.final_answer.content if planner_res.final_answer else ""), 220),
+            len(trace),
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(planner_res.final_answer.content if planner_res.final_answer else ""),
+        )
 
         step_res = StepExecutionResult(
             status="success" if planner_res.status == "ok" else "fail",
@@ -424,6 +502,17 @@ class Supervisor:
     ) -> StepExecutionResult:
         tool_id = action.get("tool_id")
         tool_input = action.get("input") or {}
+        logger.info(
+            "grounding_snapshot component=%s corr_id=%s trace_id=%s session_id=%s text_source=action_input text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            f"action:{tool_id}",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _compact_json(tool_input, 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(tool_input),
+        )
         if str(tool_id) == "agent_chain":
             logger.info("dispatch_action corr_id=%s mode=%s step=agent_chain route=AgentChainService", correlation_id, mode)
             chain_ctx = {**ctx, **tool_input}
@@ -535,6 +624,16 @@ class Supervisor:
         ctx: Dict[str, Any],
         packs: List[str],
     ) -> StepExecutionResult:
+        logger.info(
+            "grounding_snapshot component=agent_chain_entry corr_id=%s trace_id=%s session_id=%s text_source=last_user_message text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text(_last_user_message(ctx), 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(_last_user_message(ctx)),
+        )
         agent_req = {
             "text": _last_user_message(ctx),
             "mode": ctx.get("mode") or "agent",
@@ -556,6 +655,16 @@ class Supervisor:
             timeout_sec=float(settings.step_timeout_ms) / 1000.0,
         )
         logs.append("ok <- AgentChainService")
+        logger.info(
+            "grounding_snapshot component=agent_chain_exit corr_id=%s trace_id=%s session_id=%s text_source=agent_result text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text(agent_res.text, 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(agent_res.text),
+        )
         return StepExecutionResult(
             status="success",
             verb_name="agent_chain",
@@ -591,6 +700,7 @@ class Supervisor:
             req.steps,
             output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
+            user_text=_last_user_message(ctx),
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
@@ -947,19 +1057,29 @@ class Supervisor:
                 except Exception:
                     ser_trace = "[]"
                 goal_txt = _last_user_message(ctx)
+                ser_trace = _sanitize_text_block(ser_trace)
+                finalize_input_blob = {
+                    "original_request": goal_txt,
+                    "request": goal_txt,
+                    "text": goal_txt,
+                    "trace": ser_trace,
+                    "output_mode": ctx.get("output_mode") or "direct_answer",
+                    "response_profile": ctx.get("response_profile") or "direct_answer",
+                    **grounding,
+                }
+                scaffold_markers = _detect_scaffolding_markers(finalize_input_blob)
+                if scaffold_markers:
+                    logger.warning(
+                        "finalizer_sanitize corr_id=%s markers=%s",
+                        correlation_id,
+                        scaffold_markers,
+                    )
+                    finalize_input_blob["trace"] = _sanitize_text_block(str(finalize_input_blob.get("trace") or ""))
                 fin_step = await self._execute_action(
                     source=source,
                     action={
                         "tool_id": "finalize_response",
-                        "input": {
-                            "original_request": goal_txt,
-                            "request": goal_txt,
-                            "text": goal_txt,
-                            "trace": ser_trace,
-                            "output_mode": ctx.get("output_mode") or "direct_answer",
-                            "response_profile": ctx.get("response_profile") or "direct_answer",
-                            **grounding,
-                        },
+                        "input": finalize_input_blob,
                     },
                     ctx=ctx,
                     correlation_id=correlation_id,
@@ -981,6 +1101,29 @@ class Supervisor:
             packs,
             [s.step_name for s in step_results],
         )
+        user_text = _last_user_message(ctx)
+        verdict = _grounding_verdict(user_text, final_text or "")
+        logger.info(
+            "grounding_verdict corr_id=%s trace_id=%s session_id=%s anchored=%s overlap_terms=%s unrelated_markers=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            verdict["anchored"],
+            verdict["overlap_terms"],
+            verdict["unrelated_markers"],
+            verdict["scaffolding_markers"],
+        )
+        if not verdict["anchored"]:
+            logger.warning(
+                "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
+                correlation_id,
+                _truncate_text(user_text, 220),
+                _truncate_text(final_text, 220),
+            )
+            final_text = (
+                f"I may have drifted from your request. You asked: {user_text}\n\n"
+                "Could you restate the key constraint and I will answer directly from that prompt?"
+            )
 
         overall_status = "success" if step_results and all(s.status == "success" for s in step_results if s) else "partial"
         return PlanExecutionResult(

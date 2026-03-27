@@ -19,6 +19,24 @@ def _normalize_mode(value: Any) -> str:
     return default_mode()
 
 
+def _is_concrete_ops_prompt(prompt: str) -> bool:
+    lowered = str(prompt or "").lower()
+    needles = (
+        "v100",
+        "a100",
+        "h100",
+        "ups",
+        "apc",
+        "power",
+        "runtime",
+        "battery",
+        "watt",
+        "gpu",
+        "troubleshoot",
+    )
+    return any(needle in lowered for needle in needles)
+
+
 def build_cortex_chat_request(
     *,
     prompt: str,
@@ -49,7 +67,7 @@ def build_cortex_chat_request(
     if payload.get("recall_required"):
         recall_payload["required"] = True
     if use_recall and "profile" not in recall_payload:
-        recall_payload["profile"] = "reflect.v1"
+        recall_payload["profile"] = "assist.light.v1" if _is_concrete_ops_prompt(prompt) else "reflect.v1"
 
     options = payload.get("options")
     options = dict(options) if isinstance(options, dict) else {}

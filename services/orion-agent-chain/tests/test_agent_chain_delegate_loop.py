@@ -138,3 +138,76 @@ def test_agent_chain_stops_after_successful_finalize_response(monkeypatch):
     assert calls["planner"] == 1
     assert len(fake_exec.calls) == 1
     assert fake_exec.calls[0][0] == "finalize_response"
+
+
+def test_third_consecutive_plan_action_is_suppressed_and_finalized(monkeypatch):
+    calls = {"planner": 0, "toolsets": []}
+    fake_exec = _FakeToolExecutor()
+
+    async def _fake_planner(payload, *, parent_correlation_id=None, rpc_bus=None):
+        calls["planner"] += 1
+        calls["toolsets"].append([t.get("tool_id") for t in payload.get("toolset", [])])
+        if calls["planner"] <= 3:
+            return {
+                "status": "ok",
+                "trace": [
+                    {
+                        "step_index": calls["planner"] - 1,
+                        "thought": f"plan step {calls['planner']}",
+                        "action": {"tool_id": "plan_action", "input": {"goal": "ship"}},
+                        "observation": None,
+                    }
+                ],
+            }
+        return {"status": "ok", "final_answer": {"content": "should not get here", "structured": {}}}
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+    tools = [
+        ToolDef(tool_id="plan_action", description="plan", input_schema={}, output_schema={}),
+        ToolDef(tool_id="finalize_response", description="finalize", input_schema={}, output_schema={}),
+    ]
+    monkeypatch.setattr(
+        agent_api,
+        "_resolve_tools",
+        lambda body, output_mode=None: (tools, ["executive_pack", "delivery_pack"]),
+    )
+
+    req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
+    out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
+
+    executed_tools = [c[0] for c in fake_exec.calls]
+    assert executed_tools == ["plan_action", "plan_action", "finalize_response"]
+    # On the fourth planner turn (if reached), plan_action should no longer be visible.
+    assert "plan_action" not in calls["toolsets"][-1]
+    assert out.structured["finalization_reason"] == "repeated_plan_action"
+    assert out.runtime_debug["finalization_reason"] == "repeated_plan_action"
+
+
+def test_step_cap_sets_finalization_reason_and_returns_best_effort(monkeypatch):
+    fake_exec = _FakeToolExecutor()
+
+    async def _fake_planner(payload, *, parent_correlation_id=None, rpc_bus=None):
+        return {
+            "status": "ok",
+            "trace": [
+                {
+                    "step_index": 0,
+                    "thought": "keep planning",
+                    "action": {"tool_id": "analyze_text", "input": {"text": "x"}},
+                    "observation": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+    monkeypatch.setattr(agent_api.settings, "default_max_steps", 1)
+    tools = [ToolDef(tool_id="analyze_text", description="a", input_schema={}, output_schema={})]
+    monkeypatch.setattr(agent_api, "_resolve_tools", lambda body, output_mode=None: (tools, ["executive_pack"]))
+
+    req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
+    out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
+    assert out.structured["finalization_reason"] == "step_cap_best_effort"
+    assert out.runtime_debug["finalization_reason"] == "step_cap_best_effort"
+    assert "obs for finalize_response" in out.text or "Max steps reached" in out.text

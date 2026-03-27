@@ -89,7 +89,10 @@ def test_agent_chain_triage_runs_once_then_overrides_repeat(monkeypatch):
     monkeypatch.setattr(
         api,
         "_resolve_tools",
-        lambda _body: [api.ToolDef(tool_id="triage", description="t", input_schema={}), api.ToolDef(tool_id="analyze_text", description="a", input_schema={})],
+        lambda _body, output_mode=None: (
+            [api.ToolDef(tool_id="triage", description="t", input_schema={}), api.ToolDef(tool_id="analyze_text", description="a", input_schema={})],
+            [],
+        ),
     )
 
     req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
@@ -114,10 +117,10 @@ def test_agent_chain_returns_best_effort_at_step_cap(monkeypatch):
     monkeypatch.setattr(
         api,
         "_resolve_tools",
-        lambda _body: [api.ToolDef(tool_id="analyze_text", description="a", input_schema={})],
+        lambda _body, output_mode=None: ([api.ToolDef(tool_id="analyze_text", description="a", input_schema={})], []),
     )
 
     req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
     out = asyncio.run(api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
 
-    assert "obs for analyze_text" in out.text
+    assert "obs for finalize_response" in out.text or "obs for analyze_text" in out.text

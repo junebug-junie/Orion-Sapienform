@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, Iterable, List
 
 from orion.schemas.chat_stance import ChatStanceBrief
-from orion.spark.concept_induction.settings import get_settings as get_concept_settings
-from orion.spark.concept_induction.store import LocalProfileStore
+from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
 
 FALLBACK_ORION_IDENTITY_SUMMARY = [
     "Oríon is an ongoing cognitive presence in a long-running shared project.",
@@ -62,6 +62,8 @@ _LITERAL_TO_COMPACT = (
     ("not a generic user", "known_person"),
     ("how shall we proceed", "avoid_ceremonial_tone"),
 )
+
+logger = logging.getLogger("orion.cortex.exec.chat_stance")
 
 
 def _compact(value: Any, *, limit: int = 220) -> str:
@@ -181,18 +183,32 @@ def _is_identity_sensitive_turn(user_message: str) -> bool:
 
 def _concept_summary_from_store() -> dict[str, list[str]]:
     try:
-        cfg = get_concept_settings()
-        store = LocalProfileStore(cfg.store_path)
+        repository = build_concept_profile_repository()
     except Exception:
         return {"self": [], "relationship": [], "growth": [], "tension": []}
 
+    subjects = ("orion", "relationship", "juniper")
+    lookups = repository.list_latest(subjects)
+    status = repository.status()
+    logger.info(
+        "concept_profile_repository_status %s",
+        json.dumps(
+            {
+                "backend": status.backend,
+                "source_path": status.source_path,
+                "placeholder_default_in_use": status.placeholder_default_in_use,
+                "subjects_requested": len(subjects),
+                "profiles_returned": sum(1 for lookup in lookups if lookup.profile is not None),
+            },
+            sort_keys=True,
+        ),
+    )
+
     buckets: dict[str, list[str]] = {"self": [], "relationship": [], "growth": [], "tension": []}
 
-    for subject in ("orion", "relationship", "juniper"):
-        try:
-            profile = store.load(subject)
-        except Exception:
-            profile = None
+    for lookup in lookups:
+        subject = lookup.subject
+        profile = lookup.profile
         if not profile:
             continue
 

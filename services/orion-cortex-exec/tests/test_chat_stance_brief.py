@@ -91,6 +91,52 @@ def test_build_chat_stance_inputs_falls_back_when_identity_missing() -> None:
     assert any("not a generic assistant" in item.lower() for item in built["identity"]["orion"])
 
 
+def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
+    from app import chat_stance
+    from orion.core.schemas.concept_induction import ConceptProfile
+
+    profile = ConceptProfile.model_validate(
+        {
+            "profile_id": "profile-orion",
+            "subject": "orion",
+            "revision": 1,
+            "created_at": "2026-03-23T00:00:00+00:00",
+            "window_start": "2026-03-22T00:00:00+00:00",
+            "window_end": "2026-03-23T00:00:00+00:00",
+            "concepts": [
+                {
+                    "concept_id": "concept-1",
+                    "label": "continuity",
+                    "aliases": [],
+                    "type": "identity",
+                    "salience": 1.0,
+                    "confidence": 0.8,
+                    "embedding_ref": None,
+                    "evidence": [],
+                    "metadata": {},
+                }
+            ],
+            "clusters": [],
+            "state_estimate": None,
+            "metadata": {},
+        }
+    )
+
+    class FakeRepository:
+        def status(self):
+            return type("Status", (), {"backend": "local", "source_path": "/tmp/concepts.json", "placeholder_default_in_use": False})()
+
+        def list_latest(self, subjects):
+            return [
+                type("Lookup", (), {"subject": subject, "profile": profile if subject == "orion" else None})()
+                for subject in subjects
+            ]
+
+    monkeypatch.setattr(chat_stance, "build_concept_profile_repository", lambda: FakeRepository())
+    built = chat_stance.build_chat_stance_inputs({"user_message": "who are you"})
+    assert "continuity" in built["concept_induction"]["self"]
+
+
 def test_fallback_chat_stance_brief_identity_turn_anchors_orion_and_juniper() -> None:
     fb = fallback_chat_stance_brief({"user_message": "Low ball first. Who are you and who am I?"})
     assert fb.conversation_frame == "identity_emergence"

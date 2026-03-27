@@ -377,6 +377,7 @@ def test_self_review_usefulness_for_zero_and_nonzero_findings(monkeypatch) -> No
 
 def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path) -> None:
     from app import workflow_runtime
+    from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
 
     class FakeConceptSettings(SimpleNamespace):
         store_path = str(tmp_path / 'concepts.json')
@@ -401,6 +402,48 @@ def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path)
     assert result.metadata['workflow']['workflow_id'] == 'concept_induction_pass'
     assert result.metadata['workflow']['profile_store_path'] == str(tmp_path / 'concepts.json')
     assert result.metadata['workflow']['profiles_reviewed'][0]['subject'] == 'orion'
+    assert build_concept_profile_repository(FakeConceptSettings()).status().backend == 'local'
+
+
+def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / 'concepts.json')
+        subjects = ['orion']
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.list_latest_called = False
+
+        def status(self):
+            return SimpleNamespace(
+                backend='local',
+                source_path=str(tmp_path / 'concepts.json'),
+                placeholder_default_in_use=False,
+                source_available=True,
+            )
+
+        def list_latest(self, subjects):
+            self.list_latest_called = True
+            return []
+
+    fake_repository = FakeRepository()
+    monkeypatch.setattr(workflow_runtime, 'get_concept_settings', lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, 'build_concept_profile_repository', lambda settings: fake_repository)
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('concept_induction_pass'),
+            correlation_id='00000000-0000-0000-0000-000000000015',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert fake_repository.list_latest_called is True
+    assert result.ok is False
 
 
 def test_concept_induction_pass_fails_honestly_when_profiles_missing(monkeypatch, tmp_path) -> None:

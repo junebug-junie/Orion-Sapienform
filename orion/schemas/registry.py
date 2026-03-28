@@ -132,6 +132,7 @@ from orion.schemas.telemetry.dream import (
 )
 from orion.schemas.pad.v1 import PadEventV1, StateFrameV1, PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
+from orion.schemas.spark_concept_graph import SparkConceptProfileGraphMaterializationV1
 from orion.schemas.self_study import (
     SelfConceptEvidenceRefV1,
     SelfConceptInduceResultV1,
@@ -272,6 +273,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RdfWriteRequest": RdfWriteRequest,
     "RdfWriteResult": RdfWriteResult,
     "RdfBuildRequest": RdfBuildRequest,
+    "SparkConceptProfileGraphMaterializationV1": SparkConceptProfileGraphMaterializationV1,
     "SelfKnowledgeItemV1": SelfKnowledgeItemV1,
     "SelfKnowledgeSectionCountsV1": SelfKnowledgeSectionCountsV1,
     "SelfSnapshotV1": SelfSnapshotV1,

@@ -36,6 +36,29 @@ class FakeBus:
         self.published.append((channel, env))
 
 
+class FailOnKindBus(FakeBus):
+    def __init__(self, *, fail_channel: str, fail_kind: str):
+        super().__init__()
+        self.fail_channel = fail_channel
+        self.fail_kind = fail_kind
+
+    async def publish(self, channel, env):
+        self.published.append((channel, env))
+        if channel == self.fail_channel and env.kind == self.fail_kind:
+            raise RuntimeError("graph write unavailable")
+
+
+class StubInducer:
+    def __init__(self, *, profile, save_hook=None):
+        self.profile = profile
+        self.save_hook = save_hook
+
+    async def run(self, *, subject: str, window):
+        if self.save_hook:
+            self.save_hook(subject, self.profile)
+        return type("Result", (), {"profile": self.profile, "delta": None})()
+
+
 class ConceptInductionTests(unittest.TestCase):
     def test_spacy_extraction_basic(self):
         extractor = SpacyConceptExtractor(model_name="en_core_web_sm")
@@ -302,6 +325,77 @@ class ConceptInductionTests(unittest.TestCase):
             self.assertTrue(dossier_payloads[-1]["suppressed_goal_signatures"])
             cooldowns = worker.store.load_goal_cooldown(dossier_payloads[-1]["suppressed_goal_signatures"][0])
             self.assertGreaterEqual(cooldowns.get("suppressed_count", 0), 1)
+
+    def test_run_for_subject_invokes_graph_materialization(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            profile = asyncio.run(
+                ConceptInducer(ConceptSettings()).run(
+                    subject="orion",
+                    window=[
+                        WindowEvent(
+                            text="Orion keeps coherence.",
+                            timestamp=datetime.now(timezone.utc),
+                            envelope=_env_with_text("Orion keeps coherence."),
+                            intake_channel="orion:chat:history:log",
+                        )
+                    ],
+                )
+            ).profile
+            worker.inducer = StubInducer(profile=profile)
+            worker.bus = FakeBus()
+            worker.window["orion"] = [
+                WindowEvent(
+                    text="Orion keeps coherence.",
+                    timestamp=datetime.now(timezone.utc),
+                    envelope=_env_with_text("Orion keeps coherence."),
+                    intake_channel="orion:chat:history:log",
+                )
+            ]
+            asyncio.run(worker.run_for_subject("orion"))
+
+            published = worker.bus.published
+            assert any(channel == worker.cfg.forward_rdf_channel and env.kind == "rdf.write.request" for channel, env in published)
+            assert any(env.kind == "memory.concepts.profile.v1" for _, env in published)
+
+    def test_graph_materialization_failure_isolated_from_local_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            store_path = Path(td) / "state.json"
+            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(store_path)))
+            profile = asyncio.run(
+                ConceptInducer(ConceptSettings()).run(
+                    subject="orion",
+                    window=[
+                        WindowEvent(
+                            text="Orion forms concepts.",
+                            timestamp=datetime.now(timezone.utc),
+                            envelope=_env_with_text("Orion forms concepts."),
+                            intake_channel="orion:chat:history:log",
+                        )
+                    ],
+                )
+            ).profile
+
+            def _save_local(subject: str, p):
+                worker.store.save(subject, p, "hash-local-test")
+
+            worker.inducer = StubInducer(profile=profile, save_hook=_save_local)
+            worker.bus = FailOnKindBus(fail_channel=worker.cfg.forward_rdf_channel, fail_kind="rdf.write.request")
+            worker.window["orion"] = [
+                WindowEvent(
+                    text="Orion forms concepts.",
+                    timestamp=datetime.now(timezone.utc),
+                    envelope=_env_with_text("Orion forms concepts."),
+                    intake_channel="orion:chat:history:log",
+                )
+            ]
+
+            asyncio.run(worker.run_for_subject("orion"))
+
+            reloaded = worker.store.load("orion")
+            assert reloaded is not None
+            assert reloaded.subject == "orion"
+            assert any(env.kind == "memory.concepts.profile.v1" for _, env in worker.bus.published)
 
 
 if __name__ == "__main__":

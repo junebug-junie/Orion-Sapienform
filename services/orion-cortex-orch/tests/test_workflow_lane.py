@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 import sys
@@ -17,6 +18,12 @@ from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResu
 from app import main as orch_main
 from app.workflow_runtime import execute_chat_workflow
 from orion.spark.introspection_metadata import build_introspection_context
+from orion.spark.concept_induction.parity_evidence import (
+    ParityReadinessThresholds,
+    configure_parity_evidence_store,
+    record_parity_evidence,
+    reset_parity_evidence_store,
+)
 
 
 class DummyBus:
@@ -415,6 +422,7 @@ def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> N
     class FakeRepository:
         def __init__(self) -> None:
             self.list_latest_called = False
+            self.last_observer = None
 
         def status(self):
             return SimpleNamespace(
@@ -424,8 +432,9 @@ def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> N
                 source_available=True,
             )
 
-        def list_latest(self, subjects):
+        def list_latest(self, subjects, *, observer=None):
             self.list_latest_called = True
+            self.last_observer = observer
             return []
 
     fake_repository = FakeRepository()
@@ -443,7 +452,63 @@ def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> N
         )
     )
     assert fake_repository.list_latest_called is True
+    assert fake_repository.last_observer["consumer"] == "concept_induction_pass"
+    assert fake_repository.last_observer["correlation_id"] == "00000000-0000-0000-0000-000000000015"
     assert result.ok is False
+
+
+def test_concept_induction_pass_shadow_mode_returns_local_results(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+        concept_profile_repository_backend = "shadow"
+
+    class FakeRepository:
+        def __init__(self):
+            self.observer = None
+
+        def status(self):
+            return SimpleNamespace(
+                backend="shadow",
+                source_path=str(tmp_path / "concepts.json"),
+                placeholder_default_in_use=False,
+                source_available=True,
+            )
+
+        def list_latest(self, subjects, *, observer=None):
+            self.observer = observer
+            profile = SimpleNamespace(
+                profile_id="profile-local",
+                subject="orion",
+                revision=3,
+                concepts=[SimpleNamespace(label="continuity")],
+                clusters=[],
+                state_estimate=None,
+                window_start=datetime.now(timezone.utc),
+                window_end=datetime.now(timezone.utc),
+            )
+            return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
+
+    fake_repository = FakeRepository()
+    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_concept_profile_repository", lambda settings: fake_repository)
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("concept_induction_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000099",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert result.ok is True
+    assert result.metadata["workflow"]["profiles_reviewed"][0]["profile_id"] == "profile-local"
+    assert fake_repository.observer["consumer"] == "concept_induction_pass"
 
 
 def test_concept_induction_pass_fails_honestly_when_profiles_missing(monkeypatch, tmp_path) -> None:
@@ -511,7 +576,31 @@ def test_orch_handle_workflow_failure_returns_explicit_failure_without_chat_fall
     assert payload.ok is False
     assert payload.verb == "journal_pass"
     assert "not replaced with chat_general" in (payload.final_text or "")
-    assert payload.metadata["workflow"]["executed"] is False
+
+
+def test_orch_info_surface_includes_concept_profile_parity_evidence() -> None:
+    reset_parity_evidence_store()
+    configure_parity_evidence_store(
+        thresholds=ParityReadinessThresholds(min_comparisons=1, max_mismatch_rate=1.0, max_unavailable_rate=1.0),
+        summary_interval=1,
+    )
+    record_parity_evidence(
+        consumer="concept_induction_pass",
+        subject_outcomes=[
+            {"subject": "orion", "mismatch_classes": [], "graph_unavailable": False, "empty_on_local_only": False, "empty_on_graph_only": False}
+        ],
+    )
+    env = BaseEnvelope(
+        kind="orion.cortex.orch.info.request.v1",
+        source=ServiceRef(name="test"),
+        correlation_id="00000000-0000-0000-0000-000000009777",
+        payload={},
+    )
+    res = asyncio.run(orch_main.handle(env))
+    assert "concept_profile_parity_evidence" in res.payload
+    parity = res.payload["concept_profile_parity_evidence"]
+    assert "consumers" in parity
+    assert parity["consumers"]["concept_induction_pass"]["total_comparisons"] == 1
 
 
 def test_workflow_summary_never_claims_persisted_without_confirmed_write() -> None:

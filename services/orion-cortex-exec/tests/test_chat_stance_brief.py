@@ -126,7 +126,7 @@ def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
         def status(self):
             return type("Status", (), {"backend": "local", "source_path": "/tmp/concepts.json", "placeholder_default_in_use": False})()
 
-        def list_latest(self, subjects):
+        def list_latest(self, subjects, *, observer=None):
             return [
                 type("Lookup", (), {"subject": subject, "profile": profile if subject == "orion" else None})()
                 for subject in subjects
@@ -135,6 +135,69 @@ def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
     monkeypatch.setattr(chat_stance, "build_concept_profile_repository", lambda: FakeRepository())
     built = chat_stance.build_chat_stance_inputs({"user_message": "who are you"})
     assert "continuity" in built["concept_induction"]["self"]
+
+
+def test_chat_stance_shadow_mode_uses_local_result_and_passes_observer(monkeypatch) -> None:
+    from app import chat_stance
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.last_observer = None
+
+        def status(self):
+            return type(
+                "Status",
+                (),
+                {
+                    "backend": "shadow",
+                    "source_path": "/tmp/concepts.json",
+                    "placeholder_default_in_use": False,
+                },
+            )()
+
+        def list_latest(self, subjects, *, observer=None):
+            self.last_observer = observer
+            return [
+                type(
+                    "Lookup",
+                    (),
+                    {
+                        "subject": "orion",
+                        "profile": type(
+                            "Profile",
+                            (),
+                            {
+                                "concepts": [
+                                    type(
+                                        "Concept",
+                                        (),
+                                        {
+                                            "label": "continuity",
+                                            "type": "identity",
+                                            "salience": 1.0,
+                                            "confidence": 0.9,
+                                        },
+                                    )()
+                                ],
+                            },
+                        )(),
+                    },
+                )()
+            ]
+
+    fake_repository = FakeRepository()
+    monkeypatch.setattr(chat_stance, "build_concept_profile_repository", lambda: fake_repository)
+    built = chat_stance.build_chat_stance_inputs(
+        {
+            "user_message": "who are you",
+            "session_id": "sid-1",
+            "correlation_id": "corr-1",
+        }
+    )
+    assert "continuity" in built["concept_induction"]["self"]
+    assert fake_repository.last_observer["consumer"] == "chat_stance"
+    assert fake_repository.last_observer["session_id"] == "sid-1"
+    assert fake_repository.last_observer["correlation_id"] == "corr-1"
 
 
 def test_fallback_chat_stance_brief_identity_turn_anchors_orion_and_juniper() -> None:

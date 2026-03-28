@@ -181,14 +181,22 @@ def _is_identity_sensitive_turn(user_message: str) -> bool:
     return any(re.search(pattern, text) for pattern in _IDENTITY_QUESTION_PATTERNS)
 
 
-def _concept_summary_from_store() -> dict[str, list[str]]:
+def _concept_summary_from_store(ctx: Dict[str, Any] | None = None) -> dict[str, list[str]]:
+    ctx = ctx if isinstance(ctx, dict) else {}
     try:
         repository = build_concept_profile_repository()
     except Exception:
         return {"self": [], "relationship": [], "growth": [], "tension": []}
 
     subjects = ("orion", "relationship", "juniper")
-    lookups = repository.list_latest(subjects)
+    lookups = repository.list_latest(
+        subjects,
+        observer={
+            "consumer": "chat_stance",
+            "correlation_id": str(ctx.get("correlation_id") or ctx.get("trace_id") or ""),
+            "session_id": str(ctx.get("session_id") or ""),
+        },
+    )
     status = repository.status()
     logger.info(
         "concept_profile_repository_status %s",
@@ -398,7 +406,7 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(identity)
-    concept = _concept_summary_from_store()
+    concept = _concept_summary_from_store(ctx)
     social = _social_summary(ctx)
     social_bridge = _social_bridge_summary(ctx)
     social["social_posture"] = _unique((social.get("social_posture") or []) + (social_bridge.get("posture") or []), limit=8)

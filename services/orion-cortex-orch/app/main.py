@@ -24,6 +24,7 @@ from .workflow_runtime import (
     has_explicit_workflow_request,
     has_workflow_schedule_management_request,
 )
+from orion.spark.concept_induction.profile_repository import concept_profile_parity_evidence_snapshot
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
@@ -130,12 +131,14 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     logger.info(f"Handling Orch Request kind={env.kind} corr_id={env.correlation_id}")
 
     if env.kind == "orion.cortex.orch.info.request.v1":
+        runtime = _runtime_identity()
+        runtime["concept_profile_parity_evidence"] = concept_profile_parity_evidence_snapshot()
         return BaseEnvelope(
             kind="orion.cortex.orch.info.result.v1",
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=_runtime_identity(),
+            payload=runtime,
         )
 
     if env.kind not in ("cortex.orch.request", "legacy.message"):

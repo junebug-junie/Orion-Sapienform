@@ -454,7 +454,11 @@ def _log_parity(
         logger.info("concept_profile_parity_evidence %s", str(evidence_summary))
 
 
-def build_concept_profile_repository(settings: ConceptSettings | None = None) -> ConceptProfileRepository:
+def build_concept_profile_repository(
+    settings: ConceptSettings | None = None,
+    *,
+    backend_override: RepositoryBackendKind | None = None,
+) -> ConceptProfileRepository:
     cfg = settings or get_settings()
     configure_parity_evidence_store(
         thresholds=ParityReadinessThresholds(
@@ -477,7 +481,7 @@ def build_concept_profile_repository(settings: ConceptSettings | None = None) ->
     )
     local_repo = LocalConceptProfileRepository(store_path=cfg.store_path)
 
-    backend: RepositoryBackendKind = getattr(cfg, "concept_profile_repository_backend", "local")
+    backend: RepositoryBackendKind = backend_override or getattr(cfg, "concept_profile_repository_backend", "local")
     if backend == "local":
         return local_repo
 

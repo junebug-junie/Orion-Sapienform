@@ -439,7 +439,7 @@ def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> N
 
     fake_repository = FakeRepository()
     monkeypatch.setattr(workflow_runtime, 'get_concept_settings', lambda: FakeConceptSettings())
-    monkeypatch.setattr(workflow_runtime, 'build_concept_profile_repository', lambda settings: fake_repository)
+    monkeypatch.setattr(workflow_runtime, 'build_concept_profile_repository', lambda settings, backend_override=None: fake_repository)
     result = asyncio.run(
         execute_chat_workflow(
             bus=DummyBus(),
@@ -457,21 +457,26 @@ def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> N
     assert result.ok is False
 
 
-def test_concept_induction_pass_shadow_mode_returns_local_results(monkeypatch, tmp_path) -> None:
+def test_concept_induction_pass_graph_override_uses_graph_when_available(monkeypatch, tmp_path, caplog) -> None:
     from app import workflow_runtime
+
+    caplog.set_level("INFO")
 
     class FakeConceptSettings(SimpleNamespace):
         store_path = str(tmp_path / "concepts.json")
         subjects = ["orion"]
-        concept_profile_repository_backend = "shadow"
+        concept_profile_repository_backend = "local"
+        concept_profile_backend_concept_induction_pass = "graph"
+        concept_profile_graph_cutover_fallback_policy = "fail_open_local"
 
     class FakeRepository:
-        def __init__(self):
+        def __init__(self, backend: str):
+            self.backend = backend
             self.observer = None
 
         def status(self):
             return SimpleNamespace(
-                backend="shadow",
+                backend=self.backend,
                 source_path=str(tmp_path / "concepts.json"),
                 placeholder_default_in_use=False,
                 source_available=True,
@@ -480,7 +485,7 @@ def test_concept_induction_pass_shadow_mode_returns_local_results(monkeypatch, t
         def list_latest(self, subjects, *, observer=None):
             self.observer = observer
             profile = SimpleNamespace(
-                profile_id="profile-local",
+                profile_id="profile-graph",
                 subject="orion",
                 revision=3,
                 concepts=[SimpleNamespace(label="continuity")],
@@ -491,9 +496,13 @@ def test_concept_induction_pass_shadow_mode_returns_local_results(monkeypatch, t
             )
             return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
 
-    fake_repository = FakeRepository()
+    graph_repo = FakeRepository("graph")
     monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
-    monkeypatch.setattr(workflow_runtime, "build_concept_profile_repository", lambda settings: fake_repository)
+    monkeypatch.setattr(
+        workflow_runtime,
+        "build_concept_profile_repository",
+        lambda settings, backend_override=None: graph_repo,
+    )
 
     result = asyncio.run(
         execute_chat_workflow(
@@ -506,9 +515,291 @@ def test_concept_induction_pass_shadow_mode_returns_local_results(monkeypatch, t
             call_verb_runtime=lambda *args, **kwargs: None,
         )
     )
+
     assert result.ok is True
+    assert result.metadata["workflow"]["profiles_reviewed"][0]["profile_id"] == "profile-graph"
+    resolution = result.metadata["workflow"]["concept_profile_resolution"]
+    assert resolution["requested_backend"] == "graph"
+    assert resolution["resolved_backend"] == "graph"
+    assert resolution["fallback_used"] is False
+    assert graph_repo.observer["consumer"] == "concept_induction_pass"
+    assert "concept_profile_repository_resolution" in caplog.text
+
+
+def test_concept_induction_pass_graph_unavailable_fail_open_falls_back_to_local(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+        concept_profile_repository_backend = "local"
+        concept_profile_backend_concept_induction_pass = "graph"
+        concept_profile_graph_cutover_fallback_policy = "fail_open_local"
+
+    class FakeRepository:
+        def __init__(self, backend: str):
+            self.backend = backend
+
+        def status(self):
+            return SimpleNamespace(
+                backend=self.backend,
+                source_path=str(tmp_path / "concepts.json"),
+                placeholder_default_in_use=False,
+                source_available=True,
+            )
+
+        def list_latest(self, subjects, *, observer=None):
+            if self.backend == "graph":
+                return [SimpleNamespace(subject="orion", profile=None, availability="unavailable", unavailable_reason="query_error")]
+            profile = SimpleNamespace(
+                profile_id="profile-local",
+                subject="orion",
+                revision=2,
+                concepts=[SimpleNamespace(label="continuity")],
+                clusters=[],
+                state_estimate=None,
+                window_start=datetime.now(timezone.utc),
+                window_end=datetime.now(timezone.utc),
+            )
+            return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
+
+    build_calls: list[str] = []
+
+    def _build(settings, backend_override=None):
+        backend = backend_override or settings.concept_profile_repository_backend
+        build_calls.append(backend)
+        return FakeRepository(backend)
+
+    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_concept_profile_repository", _build)
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("concept_induction_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000100",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert result.ok is True
+    assert build_calls == ["graph", "local"]
     assert result.metadata["workflow"]["profiles_reviewed"][0]["profile_id"] == "profile-local"
-    assert fake_repository.observer["consumer"] == "concept_induction_pass"
+    resolution = result.metadata["workflow"]["concept_profile_resolution"]
+    assert resolution["requested_backend"] == "graph"
+    assert resolution["resolved_backend"] == "local"
+    assert resolution["fallback_used"] is True
+    assert resolution["unavailable_reason"] == "query_error"
+
+
+def test_concept_induction_pass_graph_unavailable_fail_closed_fails(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+        concept_profile_repository_backend = "local"
+        concept_profile_backend_concept_induction_pass = "graph"
+        concept_profile_graph_cutover_fallback_policy = "fail_closed"
+
+    class FakeGraphRepository:
+        def status(self):
+            return SimpleNamespace(
+                backend="graph",
+                source_path="graphdb://collapse",
+                placeholder_default_in_use=False,
+                source_available=True,
+            )
+
+        def list_latest(self, subjects, *, observer=None):
+            return [SimpleNamespace(subject="orion", profile=None, availability="unavailable", unavailable_reason="graph_not_configured")]
+
+    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(
+        workflow_runtime,
+        "build_concept_profile_repository",
+        lambda settings, backend_override=None: FakeGraphRepository(),
+    )
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("concept_induction_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000101",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert result.ok is False
+    assert result.error["code"] == "concept_profiles_graph_unavailable"
+    resolution = result.metadata["workflow"]["concept_profile_resolution"]
+    assert resolution["requested_backend"] == "graph"
+    assert resolution["resolved_backend"] == "graph"
+    assert resolution["fallback_used"] is False
+    assert resolution["unavailable_reason"] == "graph_not_configured"
+
+
+def test_concept_induction_pass_local_override_behaves_like_local(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+        concept_profile_repository_backend = "graph"
+        concept_profile_backend_concept_induction_pass = "local"
+        concept_profile_graph_cutover_fallback_policy = "fail_closed"
+
+    class FakeLocalRepository:
+        def status(self):
+            return SimpleNamespace(backend="local", source_path=str(tmp_path / "concepts.json"), placeholder_default_in_use=False, source_available=True)
+
+        def list_latest(self, subjects, *, observer=None):
+            profile = SimpleNamespace(
+                profile_id="profile-local",
+                subject="orion",
+                revision=1,
+                concepts=[SimpleNamespace(label="identity")],
+                clusters=[],
+                state_estimate=None,
+                window_start=datetime.now(timezone.utc),
+                window_end=datetime.now(timezone.utc),
+            )
+            return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
+
+    chosen_backends: list[str] = []
+    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(
+        workflow_runtime,
+        "build_concept_profile_repository",
+        lambda settings, backend_override=None: (chosen_backends.append(backend_override or settings.concept_profile_repository_backend), FakeLocalRepository())[1],
+    )
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("concept_induction_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000102",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert result.ok is True
+    assert chosen_backends == ["local"]
+    assert result.metadata["workflow"]["concept_profile_resolution"]["resolved_backend"] == "local"
+
+
+def test_concept_induction_pass_shadow_override_retains_shadow_behavior(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+        concept_profile_repository_backend = "local"
+        concept_profile_backend_concept_induction_pass = "shadow"
+        concept_profile_graph_cutover_fallback_policy = "fail_open_local"
+
+    class FakeShadowRepository:
+        def __init__(self):
+            self.observer = None
+
+        def status(self):
+            return SimpleNamespace(backend="shadow", source_path=str(tmp_path / "concepts.json"), placeholder_default_in_use=False, source_available=True)
+
+        def list_latest(self, subjects, *, observer=None):
+            self.observer = observer
+            profile = SimpleNamespace(
+                profile_id="profile-shadow-local",
+                subject="orion",
+                revision=4,
+                concepts=[SimpleNamespace(label="continuity")],
+                clusters=[],
+                state_estimate=None,
+                window_start=datetime.now(timezone.utc),
+                window_end=datetime.now(timezone.utc),
+            )
+            return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
+
+    fake_repo = FakeShadowRepository()
+    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_concept_profile_repository", lambda settings, backend_override=None: fake_repo)
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("concept_induction_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000103",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert result.ok is True
+    assert result.metadata["workflow"]["profiles_reviewed"][0]["profile_id"] == "profile-shadow-local"
+    assert result.metadata["workflow"]["concept_profile_resolution"]["resolved_backend"] == "shadow"
+    assert fake_repo.observer["consumer"] == "concept_induction_pass"
+
+
+def test_concept_profile_backend_override_does_not_change_chat_stance_resolution(monkeypatch) -> None:
+    from app import workflow_runtime
+
+    settings = SimpleNamespace(
+        concept_profile_repository_backend="shadow",
+        concept_profile_backend_concept_induction_pass="graph",
+    )
+    concept_backend = workflow_runtime._resolve_concept_profile_backend_for_consumer(
+        settings,
+        consumer="concept_induction_pass",
+    )
+    chat_backend = workflow_runtime._resolve_concept_profile_backend_for_consumer(
+        settings,
+        consumer="chat_stance",
+    )
+    assert concept_backend == "graph"
+    assert chat_backend == "shadow"
+
+
+def test_concept_induction_pass_rollback_from_graph_override_restores_global(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+        concept_profile_repository_backend = "local"
+        concept_profile_backend_concept_induction_pass = ""
+        concept_profile_graph_cutover_fallback_policy = "fail_open_local"
+
+    class FakeLocalRepository:
+        def status(self):
+            return SimpleNamespace(backend="local", source_path=str(tmp_path / "concepts.json"), placeholder_default_in_use=False, source_available=True)
+
+        def list_latest(self, subjects, *, observer=None):
+            return []
+
+    selected: list[str] = []
+    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(
+        workflow_runtime,
+        "build_concept_profile_repository",
+        lambda settings, backend_override=None: (selected.append(backend_override or settings.concept_profile_repository_backend), FakeLocalRepository())[1],
+    )
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("concept_induction_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000104",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert selected == ["local"]
+    assert result.metadata["workflow"]["concept_profile_resolution"]["requested_backend"] == "local"
+    assert result.metadata["workflow"]["concept_profile_resolution"]["fallback_used"] is False
 
 
 def test_concept_induction_pass_fails_honestly_when_profiles_missing(monkeypatch, tmp_path) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Tuple
 from uuid import uuid4
 
 from orion.cognition.workflows import get_workflow_definition, workflow_registry_payload
@@ -30,6 +30,8 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 ACTIONS_WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
 ACTIONS_WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
 NOTIFY_PERSISTENCE_REQUEST_CHANNEL = "orion:notify:persistence:request"
+ConceptProfileBackendKind = Literal["local", "graph", "shadow"]
+CutoverFallbackPolicyKind = Literal["fail_open_local", "fail_closed"]
 
 
 class WorkflowExecutionError(RuntimeError):
@@ -740,6 +742,58 @@ def _state_summary(snapshot: SparkStateSnapshotV1 | dict[str, Any] | None) -> st
     return ", ".join(parts) if parts else None
 
 
+def _resolve_concept_profile_backend_for_consumer(settings: Any, *, consumer: str) -> ConceptProfileBackendKind:
+    global_backend = str(getattr(settings, "concept_profile_repository_backend", "local") or "local").strip().lower()
+    if global_backend not in {"local", "graph", "shadow"}:
+        global_backend = "local"
+    if consumer == "concept_induction_pass":
+        override = str(getattr(settings, "concept_profile_backend_concept_induction_pass", "") or "").strip().lower()
+        if override in {"local", "graph", "shadow"}:
+            return override  # type: ignore[return-value]
+    return global_backend  # type: ignore[return-value]
+
+
+def _resolve_graph_cutover_fallback_policy(settings: Any) -> CutoverFallbackPolicyKind:
+    policy = str(getattr(settings, "concept_profile_graph_cutover_fallback_policy", "fail_open_local") or "fail_open_local")
+    policy = policy.strip().lower()
+    if policy not in {"fail_open_local", "fail_closed"}:
+        return "fail_open_local"
+    return policy  # type: ignore[return-value]
+
+
+def _log_concept_profile_resolution(
+    *,
+    consumer: str,
+    requested_backend: str,
+    resolved_backend: str,
+    fallback_policy: str,
+    fallback_used: bool,
+    unavailable_reason: str | None,
+    subjects_requested: list[str],
+    profiles_returned: int,
+    correlation_id: str,
+    session_id: str | None,
+) -> None:
+    logger.info(
+        "concept_profile_repository_resolution %s",
+        json.dumps(
+            {
+                "consumer": consumer,
+                "requested_backend": requested_backend,
+                "resolved_backend": resolved_backend,
+                "fallback_policy": fallback_policy,
+                "fallback_used": fallback_used,
+                "unavailable_reason": unavailable_reason,
+                "subjects_requested": len(subjects_requested),
+                "profiles_returned": profiles_returned,
+                "correlation_id": correlation_id,
+                "session_id": session_id or None,
+            },
+            sort_keys=True,
+        ),
+    )
+
+
 async def _execute_concept_induction_pass(
     *,
     bus: OrionBusAsync,
@@ -753,18 +807,98 @@ async def _execute_concept_induction_pass(
     del bus, source, causality_chain, trace, call_verb_runtime
     workflow_id = "concept_induction_pass"
     settings = get_concept_settings()
-    repository = build_concept_profile_repository(settings)
+    consumer = "concept_induction_pass"
+    requested_backend = _resolve_concept_profile_backend_for_consumer(settings, consumer=consumer)
+    fallback_policy = _resolve_graph_cutover_fallback_policy(settings)
+    repository = build_concept_profile_repository(settings, backend_override=requested_backend)
     repository_status = repository.status()
+    resolved_backend = repository_status.backend
+    fallback_used = False
+    fallback_reason: str | None = None
     using_placeholder_store = repository_status.placeholder_default_in_use
     subjects = list(settings.subjects or ["orion", "juniper", "relationship"])
+    session_id = str(req.context.session_id or "")
+    observer = {
+        "consumer": consumer,
+        "correlation_id": correlation_id,
+        "session_id": session_id,
+    }
     lookups = repository.list_latest(
         subjects,
-        observer={
-            "consumer": "concept_induction_pass",
-            "correlation_id": correlation_id,
-            "session_id": str(req.context.session_id or ""),
-        },
+        observer=observer,
     )
+    graph_unavailable = requested_backend == "graph" and any(lookup.availability == "unavailable" for lookup in lookups)
+    if graph_unavailable:
+        fallback_reason = next((lookup.unavailable_reason for lookup in lookups if lookup.availability == "unavailable"), None)
+        if fallback_policy == "fail_open_local":
+            fallback_repository = build_concept_profile_repository(settings, backend_override="local")
+            fallback_status = fallback_repository.status()
+            lookups = fallback_repository.list_latest(subjects, observer=observer)
+            repository_status = fallback_status
+            resolved_backend = fallback_status.backend
+            fallback_used = True
+            using_placeholder_store = fallback_status.placeholder_default_in_use
+        else:
+            status = "failed"
+            main_result = (
+                "Concept profile graph retrieval is unavailable and cutover policy is fail_closed "
+                f"(reason={fallback_reason or 'unknown'})."
+            )
+            metadata = _workflow_metadata_base(request=_workflow_request(req), status=status)
+            metadata["workflow"] = {
+                "workflow_id": workflow_id,
+                "display_name": "Concept Induction Pass",
+                "status": status,
+                "executed": True,
+                "subverb": None,
+                "persisted": [],
+                "scheduled": [],
+                "main_result": main_result,
+                "profile_store_path": settings.store_path,
+                "profile_store_placeholder_path": using_placeholder_store,
+                "profile_store_env_var": "CONCEPT_STORE_PATH",
+                "profiles_reviewed": [],
+                "concept_profile_resolution": {
+                    "consumer": consumer,
+                    "requested_backend": requested_backend,
+                    "resolved_backend": resolved_backend,
+                    "fallback_policy": fallback_policy,
+                    "fallback_used": False,
+                    "unavailable_reason": fallback_reason,
+                },
+            }
+            _log_concept_profile_resolution(
+                consumer=consumer,
+                requested_backend=requested_backend,
+                resolved_backend=resolved_backend,
+                fallback_policy=fallback_policy,
+                fallback_used=False,
+                unavailable_reason=fallback_reason,
+                subjects_requested=subjects,
+                profiles_returned=0,
+                correlation_id=correlation_id,
+                session_id=session_id,
+            )
+            return CortexClientResult(
+                ok=False,
+                mode="brain",
+                verb=workflow_id,
+                status="fail",
+                final_text=_workflow_summary_text(
+                    title="Concept Induction Pass",
+                    status=status,
+                    main_result=main_result,
+                    persisted=[],
+                ),
+                memory_used=False,
+                recall_debug={},
+                steps=[],
+                error={"message": main_result, "code": "concept_profiles_graph_unavailable"},
+                correlation_id=correlation_id,
+                metadata=metadata,
+            )
+
+    unavailable_reason = next((lookup.unavailable_reason for lookup in lookups if lookup.availability == "unavailable"), None)
     logger.info(
         "concept_profile_repository_status %s",
         json.dumps(
@@ -826,7 +960,27 @@ async def _execute_concept_induction_pass(
         "profile_store_placeholder_path": using_placeholder_store,
         "profile_store_env_var": "CONCEPT_STORE_PATH",
         "profiles_reviewed": reviews,
+        "concept_profile_resolution": {
+            "consumer": consumer,
+            "requested_backend": requested_backend,
+            "resolved_backend": resolved_backend,
+            "fallback_policy": fallback_policy,
+            "fallback_used": fallback_used,
+            "unavailable_reason": fallback_reason or unavailable_reason,
+        },
     }
+    _log_concept_profile_resolution(
+        consumer=consumer,
+        requested_backend=requested_backend,
+        resolved_backend=resolved_backend,
+        fallback_policy=fallback_policy,
+        fallback_used=fallback_used,
+        unavailable_reason=fallback_reason or unavailable_reason,
+        subjects_requested=subjects,
+        profiles_returned=len(reviews),
+        correlation_id=correlation_id,
+        session_id=session_id,
+    )
     return CortexClientResult(
         ok=ok,
         mode="brain",

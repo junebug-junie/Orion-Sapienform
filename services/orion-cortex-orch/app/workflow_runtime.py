@@ -757,7 +757,14 @@ async def _execute_concept_induction_pass(
     repository_status = repository.status()
     using_placeholder_store = repository_status.placeholder_default_in_use
     subjects = list(settings.subjects or ["orion", "juniper", "relationship"])
-    lookups = repository.list_latest(subjects)
+    lookups = repository.list_latest(
+        subjects,
+        observer={
+            "consumer": "concept_induction_pass",
+            "correlation_id": correlation_id,
+            "session_id": str(req.context.session_id or ""),
+        },
+    )
     logger.info(
         "concept_profile_repository_status %s",
         json.dumps(

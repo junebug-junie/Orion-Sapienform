@@ -27,6 +27,7 @@ from .settings import ConceptSettings
 from .store import LocalProfileStore
 from .summarizer import Summarizer
 from .tensions import extract_tensions
+from .rdf_materialization import build_concept_profile_rdf_request
 
 logger = logging.getLogger("orion.spark.concept.worker")
 
@@ -147,6 +148,61 @@ class ConceptWorker:
                 payload=req.model_dump(mode="json"),
             )
             await self.bus.publish(self.cfg.forward_vector_channel, env)
+
+    async def _materialize_profile_graph(self, profile: ConceptProfile, corr_id) -> None:
+        concept_count = len(profile.concepts)
+        cluster_count = len(profile.clusters)
+        graph_write_attempted = False
+        graph_write_succeeded = False
+        error_kind: str | None = None
+        try:
+            graph_request = build_concept_profile_rdf_request(
+                profile=profile,
+                correlation_id=str(corr_id) if corr_id else None,
+                writer_service=self.cfg.service_name,
+                writer_version=self.cfg.service_version,
+            )
+            graph_write_attempted = True
+            env = BaseEnvelope(
+                kind="rdf.write.request",
+                source=_service_ref(self.cfg),
+                correlation_id=corr_id,
+                payload=graph_request.model_dump(mode="json"),
+            )
+            await self.bus.publish(self.cfg.forward_rdf_channel, env)
+            graph_write_succeeded = True
+        except Exception as exc:  # noqa: BLE001
+            error_kind = type(exc).__name__
+            logger.warning(
+                "concept_profile_graph_materialization subject=%s revision=%s concept_count=%d "
+                "cluster_count=%d graph_write_attempted=%s graph_write_succeeded=%s "
+                "destination=%s schema_kind=%s error_kind=%s",
+                profile.subject,
+                profile.revision,
+                concept_count,
+                cluster_count,
+                graph_write_attempted,
+                graph_write_succeeded,
+                self.cfg.forward_rdf_channel,
+                "spark.concept_profile.graph.v1",
+                error_kind,
+            )
+            return
+
+        logger.info(
+            "concept_profile_graph_materialization subject=%s revision=%s concept_count=%d "
+            "cluster_count=%d graph_write_attempted=%s graph_write_succeeded=%s destination=%s "
+            "schema_kind=%s error_kind=%s",
+            profile.subject,
+            profile.revision,
+            concept_count,
+            cluster_count,
+            graph_write_attempted,
+            graph_write_succeeded,
+            self.cfg.forward_rdf_channel,
+            "spark.concept_profile.graph.v1",
+            error_kind,
+        )
 
     async def _publish_drive_state(self, payload, corr_id) -> None:
         env = BaseEnvelope(
@@ -306,6 +362,7 @@ class ConceptWorker:
             return
         result = await self.inducer.run(subject=subject, window=window)
         await self._publish_profile(result.profile, corr_id)
+        await self._materialize_profile_graph(result.profile, corr_id)
         if result.delta:
             await self._publish_delta(result.delta, corr_id)
         await self._forward_vector(result.profile, corr_id)

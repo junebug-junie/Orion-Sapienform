@@ -48,7 +48,7 @@ class ConceptSettings(BaseSettings):
         alias="BUS_VECTOR_OUT",
     )
     forward_rdf_channel: str = Field(
-        "orion:rdf:write",
+        "orion:rdf:enqueue",
         alias="BUS_RDF_OUT",
     )
     forward_sql_channel: str = Field(
@@ -118,6 +118,65 @@ class ConceptSettings(BaseSettings):
     drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
     goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
 
+    # Repository backend / Graph read model (Phase 2)
+    concept_profile_repository_backend: str = Field(
+        "local",
+        alias="CONCEPT_PROFILE_REPOSITORY_BACKEND",
+    )
+    concept_profile_backend_concept_induction_pass: str = Field(
+        "",
+        alias="CONCEPT_PROFILE_BACKEND_CONCEPT_INDUCTION_PASS",
+    )
+    concept_profile_graph_cutover_fallback_policy: str = Field(
+        "fail_open_local",
+        alias="CONCEPT_PROFILE_GRAPH_CUTOVER_FALLBACK_POLICY",
+    )
+    concept_profile_graphdb_endpoint: str = Field(
+        "",
+        validation_alias=AliasChoices("CONCEPT_PROFILE_GRAPHDB_ENDPOINT", "RECALL_RDF_ENDPOINT_URL"),
+    )
+    concept_profile_graphdb_url: str = Field(
+        "",
+        validation_alias=AliasChoices("CONCEPT_PROFILE_GRAPHDB_URL", "GRAPHDB_URL"),
+    )
+    concept_profile_graphdb_repo: str = Field(
+        "collapse",
+        validation_alias=AliasChoices("CONCEPT_PROFILE_GRAPHDB_REPO", "GRAPHDB_REPO"),
+    )
+    concept_profile_graphdb_user: str = Field(
+        "",
+        validation_alias=AliasChoices("CONCEPT_PROFILE_GRAPHDB_USER", "GRAPHDB_USER"),
+    )
+    concept_profile_graphdb_pass: str = Field(
+        "",
+        validation_alias=AliasChoices("CONCEPT_PROFILE_GRAPHDB_PASS", "GRAPHDB_PASS"),
+    )
+    concept_profile_graph_timeout_sec: float = Field(6.0, alias="CONCEPT_PROFILE_GRAPH_TIMEOUT_SEC")
+    concept_profile_graph_uri: str = Field(
+        "http://conjourney.net/graph/spark/concept-profile",
+        alias="CONCEPT_PROFILE_GRAPH_URI",
+    )
+    concept_profile_parity_min_comparisons: int = Field(
+        50,
+        alias="CONCEPT_PROFILE_PARITY_MIN_COMPARISONS",
+    )
+    concept_profile_parity_max_mismatch_rate: float = Field(
+        0.05,
+        alias="CONCEPT_PROFILE_PARITY_MAX_MISMATCH_RATE",
+    )
+    concept_profile_parity_max_unavailable_rate: float = Field(
+        0.02,
+        alias="CONCEPT_PROFILE_PARITY_MAX_UNAVAILABLE_RATE",
+    )
+    concept_profile_parity_critical_mismatch_classes: str = Field(
+        "profile_missing_on_graph,profile_missing_on_local,query_error",
+        alias="CONCEPT_PROFILE_PARITY_CRITICAL_MISMATCH_CLASSES",
+    )
+    concept_profile_parity_summary_interval: int = Field(
+        25,
+        alias="CONCEPT_PROFILE_PARITY_SUMMARY_INTERVAL",
+    )
+
     # Heartbeat
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
@@ -146,6 +205,45 @@ class ConceptSettings(BaseSettings):
                     pass
             return [item.strip() for item in raw.split(",") if item.strip()]
         return v
+
+    @field_validator("concept_profile_repository_backend", mode="before")
+    @classmethod
+    def _parse_repository_backend(cls, v):
+        raw = str(v or "local").strip().lower()
+        if raw not in {"local", "graph", "shadow"}:
+            return "local"
+        return raw
+
+    @field_validator("concept_profile_backend_concept_induction_pass", mode="before")
+    @classmethod
+    def _parse_concept_induction_backend_override(cls, v):
+        raw = str(v or "").strip().lower()
+        if not raw:
+            return ""
+        if raw not in {"local", "graph", "shadow"}:
+            return ""
+        return raw
+
+    @field_validator("concept_profile_graph_cutover_fallback_policy", mode="before")
+    @classmethod
+    def _parse_cutover_fallback_policy(cls, v):
+        raw = str(v or "fail_open_local").strip().lower()
+        if raw not in {"fail_open_local", "fail_closed"}:
+            return "fail_open_local"
+        return raw
+
+    @field_validator("concept_profile_graphdb_endpoint", mode="after")
+    @classmethod
+    def _resolve_graph_endpoint(cls, v, info):
+        if v:
+            return v.rstrip("/")
+        base = str(info.data.get("concept_profile_graphdb_url") or "").strip()
+        repo = str(info.data.get("concept_profile_graphdb_repo") or "").strip()
+        if not base:
+            return ""
+        if not repo:
+            repo = "collapse"
+        return f"{base.rstrip('/')}/repositories/{repo}"
 
 
 

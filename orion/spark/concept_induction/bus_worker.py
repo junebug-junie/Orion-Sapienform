@@ -120,10 +120,18 @@ class ConceptWorker:
             if isinstance(payload, str):
                 return payload
             return None
-        for key in ("content", "text", "message", "summary", "prompt"):
+        for key in ("content", "text", "message", "summary"):
             val = payload.get(key)
             if isinstance(val, str) and val.strip():
                 return val
+        prompt = payload.get("prompt")
+        response = payload.get("response")
+        if isinstance(prompt, str) and isinstance(response, str):
+            merged = f"{prompt}\n{response}".strip()
+            if merged:
+                return merged
+        if isinstance(response, str) and response.strip():
+            return response
         return None
 
     def _source_kind(self, env: BaseEnvelope, intake_channel: str) -> str:
@@ -446,6 +454,12 @@ class ConceptWorker:
 
         trigger = self._build_trigger(env, intake_channel, text)
         if trigger is None:
+            logger.info(
+                "concept_induction_trigger_rejected reason=no_subject_match kind=%s channel=%s correlation_id=%s",
+                env.kind,
+                intake_channel,
+                env.correlation_id,
+            )
             return
         logger.info(
             "concept_induction_trigger_received source_kind=%s source_event_id=%s correlation_id=%s subjects=%s",
@@ -552,7 +566,18 @@ class ConceptWorker:
         corr_id = corr_id or uuid4()
         window = list(self.window.get(subject, []))
         if not window:
+            logger.info(
+                "concept_induction_run_for_subject_skipped subject=%s correlation_id=%s reason=empty_window",
+                subject,
+                corr_id,
+            )
             return
+        logger.info(
+            "concept_induction_run_for_subject_invoked subject=%s correlation_id=%s window_events=%d",
+            subject,
+            corr_id,
+            len(window),
+        )
         result = await self.inducer.run(subject=subject, window=window)
         await self._publish_profile(result.profile, corr_id)
         await self._materialize_profile_graph(result.profile, corr_id)
@@ -578,7 +603,17 @@ class ConceptWorker:
         await self.bus.connect()
         patterns = list(self.cfg.intake_channels)
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in patterns)
-        logger.info("Concept worker started listening on %s", patterns)
+        logger.info(
+            "concept_induction_worker_startup autonomous_trigger_loop=%s bus_enabled=%s bus_enforce_catalog=%s "
+            "intake_channels=%s trigger_subjects=%s cooldown_sec=%d dedupe_sec=%d",
+            True,
+            self.cfg.orion_bus_enabled,
+            self.cfg.orion_bus_enforce_catalog,
+            patterns,
+            self.cfg.subjects,
+            self.cfg.concept_trigger_cooldown_sec,
+            self.cfg.concept_trigger_dedupe_sec,
+        )
         async with self.bus.subscribe(*patterns, patterns=uses_glob) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
                 if not isinstance(msg, dict):

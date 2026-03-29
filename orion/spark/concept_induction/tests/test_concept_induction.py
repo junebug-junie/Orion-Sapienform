@@ -403,8 +403,21 @@ class ConceptInductionTests(unittest.TestCase):
         env_dream = BaseEnvelope(kind="dream.result.v1", source=ServiceRef(name="dream", version="0.0.0"), payload={"summary": "dream"})
         env_journal = BaseEnvelope(kind="journal.entry.created.v1", source=ServiceRef(name="journal", version="0.0.0"), payload={"body": "entry"})
         self.assertEqual(worker._source_kind(env_chat, "orion:chat:history:log"), "chat_turn")
+        self.assertEqual(worker._source_kind(env_chat, "orion:chat:history:turn"), "chat_turn")
         self.assertEqual(worker._source_kind(env_dream, "orion:dream:complete"), "dream_result")
         self.assertEqual(worker._source_kind(env_journal, "orion:journal:created"), "journal_write")
+
+    def test_extract_text_includes_chat_turn_prompt_and_response(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env_turn = BaseEnvelope(
+            kind="chat.history",
+            source=ServiceRef(name="hub", version="0.0.0"),
+            payload={"prompt": "How are you, Orion?", "response": "I feel steady and curious."},
+        )
+        extracted = worker._extract_text(env_turn)
+        self.assertIsNotNone(extracted)
+        self.assertIn("How are you, Orion?", extracted)
+        self.assertIn("I feel steady and curious.", extracted)
 
     def test_deterministic_subject_selection(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
@@ -463,6 +476,35 @@ class ConceptInductionTests(unittest.TestCase):
             asyncio.run(worker.handle_envelope(env, "orion:metacognition:tick"))
             self.assertEqual(called[0][0], "orion")
 
+    def test_chat_turn_trigger_invokes_run_for_subject(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(
+                ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json"))
+            )
+            called = []
+
+            async def _fake_run(subject: str, corr_id=None):
+                called.append((subject, corr_id))
+
+            worker.run_for_subject = _fake_run  # type: ignore[method-assign]
+            corr_id = uuid4()
+            env = BaseEnvelope(
+                kind="chat.history",
+                source=ServiceRef(name="hub", version="0.0.0"),
+                correlation_id=corr_id,
+                payload={
+                    "prompt": "Juniper asks Orion for a reflection.",
+                    "response": "Orion reflects on Juniper and our relationship.",
+                    "user_id": "juniper",
+                    "session_id": "s1",
+                },
+            )
+            asyncio.run(worker.handle_envelope(env, "orion:chat:history:turn"))
+            subjects = [item[0] for item in called]
+            self.assertIn("orion", subjects)
+            self.assertIn("juniper", subjects)
+            self.assertIn("relationship", subjects)
+
     def test_observability_status_surface_contains_decisions(self):
         worker = ConceptWorker(
             ConceptSettings(
@@ -474,6 +516,7 @@ class ConceptInductionTests(unittest.TestCase):
         status = worker.trigger_status()
         self.assertEqual(status["cooldown_sec"], worker.cfg.concept_trigger_cooldown_sec)
         self.assertTrue(status["recent_decisions"])
+        self.assertIn("orion:chat:history:turn", status["intake_channels"])
 
 
 if __name__ == "__main__":

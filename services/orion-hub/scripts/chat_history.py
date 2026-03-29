@@ -265,19 +265,51 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
     try:
         turn_payload = env.payload
         explicit_reasoning_trace = getattr(turn_payload, "reasoning_trace", None)
+        spark_meta = getattr(turn_payload, "spark_meta", None)
         reasoning_content = getattr(turn_payload, "reasoning_content", None)
-        chosen_metacog_trace = None
+        if not isinstance(reasoning_content, str) and isinstance(spark_meta, dict):
+            maybe_reasoning_content = spark_meta.get("reasoning_content")
+            if isinstance(maybe_reasoning_content, str):
+                reasoning_content = maybe_reasoning_content
+        metacog_traces = getattr(turn_payload, "metacog_traces", None)
+        if not isinstance(metacog_traces, list) and isinstance(spark_meta, dict):
+            maybe_metacog_traces = spark_meta.get("metacog_traces")
+            if isinstance(maybe_metacog_traces, list):
+                metacog_traces = maybe_metacog_traces
         selected_source = "none"
-        selected_content = None
+        selected_content: Optional[str] = None
+        selected_trace: Optional[dict[str, Any]] = None
         if isinstance(explicit_reasoning_trace, dict) and explicit_reasoning_trace.get("content"):
             selected_source = "reasoning_trace.content"
-            selected_content = explicit_reasoning_trace.get("content")
-        elif reasoning_content:
+            selected_content = str(explicit_reasoning_trace.get("content")).strip()
+            selected_trace = dict(explicit_reasoning_trace)
+        elif isinstance(reasoning_content, str) and reasoning_content.strip():
             selected_source = "reasoning_content"
-            selected_content = reasoning_content
-        elif isinstance(chosen_metacog_trace, dict) and chosen_metacog_trace.get("content"):
-            selected_source = "metacog_traces.content"
-            selected_content = chosen_metacog_trace.get("content")
+            selected_content = reasoning_content.strip()
+            selected_trace = {
+                "correlation_id": str(env.correlation_id),
+                "session_id": getattr(turn_payload, "session_id", None),
+                "message_id": getattr(turn_payload, "id", None) or str(env.correlation_id),
+                "trace_role": "reasoning",
+                "trace_stage": "post_answer",
+                "content": selected_content,
+                "metadata": {"source": "chat_history_reasoning_content_fallback"},
+            }
+        elif isinstance(metacog_traces, list):
+            for idx, trace in enumerate(metacog_traces):
+                if not isinstance(trace, dict):
+                    continue
+                trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
+                if trace_role != "reasoning":
+                    continue
+                content = str(trace.get("content") or "").strip()
+                if content:
+                    selected_source = f"metacog_traces[{idx}].content"
+                    selected_content = content
+                    selected_trace = dict(trace)
+                    break
+        if selected_trace is not None and hasattr(turn_payload, "reasoning_trace"):
+            turn_payload.reasoning_trace = selected_trace
         print(
             "===THINK_HOP=== hop=chat_history_publish "
             f"corr={env.correlation_id} "

@@ -360,7 +360,7 @@ def _extract_thought_process(payload: dict[str, Any]) -> Optional[str]:
             if not isinstance(trace, dict):
                 continue
             trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
-            if trace_role and trace_role not in {"reasoning", "assistant"}:
+            if trace_role and trace_role != "reasoning":
                 continue
             candidate = _normalized_text(trace.get("content"))
             if candidate:
@@ -394,7 +394,7 @@ def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str
             if not isinstance(trace, dict):
                 continue
             trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
-            if trace_role and trace_role not in {"reasoning", "assistant"}:
+            if trace_role and trace_role != "reasoning":
                 continue
             candidate = _normalized_text(trace.get("content"))
             if candidate:

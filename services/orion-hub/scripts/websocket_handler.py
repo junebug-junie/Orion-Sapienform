@@ -692,8 +692,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "===THINK_HOP=== hop=hub_in "
                     f"corr={trace_id} "
                     f"keys={sorted(cortex_result_dump.keys()) if isinstance(cortex_result_dump, dict) else []} "
-                    f"reasoning_len={len(reasoning_content) if reasoning_content else 0} "
-                    f"trace_len={len(trace_content) if trace_content else 0} "
+                    f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+                    f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
                     f"metacog_count={len(metacog_traces) if metacog_traces else 0} "
                     f"preview={_preview_text(reasoning_content or trace_content)}",
                     flush=True,
@@ -811,6 +811,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write:
                 enriched_client_meta = dict(turn_client_meta)
+                selected_reasoning_trace = explicit_reasoning_trace
                 try:
                     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
@@ -966,6 +967,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     gateway_meta = {}
                     if hasattr(resp, "cortex_result") and resp.cortex_result:
                         gateway_meta = resp.cortex_result.metadata or {}
+                    selected_reasoning_trace, _ = select_reasoning_trace_for_history(
+                        correlation_id=trace_id,
+                        reasoning_trace=explicit_reasoning_trace,
+                        metacog_traces=metacog_traces,
+                        reasoning_content=reasoning_content,
+                        session_id=publish_session_id,
+                        message_id=f"{trace_id}:assistant",
+                        model=((gateway_meta or {}).get("model") if isinstance(gateway_meta, dict) else None),
+                    )
                     assistant_env = build_chat_history_envelope(
                         content=orion_response_text,
                         role="assistant",

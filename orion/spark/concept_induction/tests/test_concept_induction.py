@@ -397,6 +397,84 @@ class ConceptInductionTests(unittest.TestCase):
             assert reloaded.subject == "orion"
             assert any(env.kind == "memory.concepts.profile.v1" for _, env in worker.bus.published)
 
+    def test_trigger_source_mapping(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env_chat = BaseEnvelope(kind="chat.message", source=ServiceRef(name="test", version="0.0.0"), payload={"content": "hello"})
+        env_dream = BaseEnvelope(kind="dream.result.v1", source=ServiceRef(name="dream", version="0.0.0"), payload={"summary": "dream"})
+        env_journal = BaseEnvelope(kind="journal.entry.created.v1", source=ServiceRef(name="journal", version="0.0.0"), payload={"body": "entry"})
+        self.assertEqual(worker._source_kind(env_chat, "orion:chat:history:log"), "chat_turn")
+        self.assertEqual(worker._source_kind(env_dream, "orion:dream:complete"), "dream_result")
+        self.assertEqual(worker._source_kind(env_journal, "orion:journal:created"), "journal_write")
+
+    def test_deterministic_subject_selection(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        env = BaseEnvelope(
+            kind="chat.message",
+            source=ServiceRef(name="orion-cortex", version="0.0.0"),
+            payload={"role": "user", "user": "Juniper", "content": "Orion, let's reflect together"},
+        )
+        subjects = worker._select_trigger_subjects(
+            env,
+            "orion:chat:social:stored",
+            "chat_turn",
+            "Orion and Juniper reflected together",
+        )
+        self.assertEqual(subjects, ["orion", "juniper", "relationship"])
+
+    def test_cooldown_and_dedupe_suppression(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    store_path=str(Path(td) / "state.json"),
+                    concept_trigger_cooldown_sec=600,
+                    concept_trigger_dedupe_sec=120,
+                )
+            )
+            worker.bus = FakeBus()
+            env = BaseEnvelope(
+                kind="chat.message",
+                source=ServiceRef(name="test", version="0.0.0"),
+                payload={"content": "Orion and Juniper discussed plans.", "role": "assistant"},
+            )
+            asyncio.run(worker.handle_envelope(env, "orion:chat:history:log"))
+            asyncio.run(worker.handle_envelope(env, "orion:chat:history:log"))
+            decisions = [d["decision"] for d in worker.trigger_decisions]
+            self.assertIn("triggered", decisions)
+            self.assertIn("coalesced", decisions)
+
+    def test_trigger_invokes_existing_run_for_subject(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(
+                ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json"))
+            )
+            called = []
+
+            async def _fake_run(subject: str, corr_id=None):
+                called.append((subject, corr_id))
+
+            worker.run_for_subject = _fake_run  # type: ignore[method-assign]
+            env = BaseEnvelope(
+                kind="metacognition.tick.v1",
+                source=ServiceRef(name="test", version="0.0.0"),
+                correlation_id=uuid4(),
+                payload={"subject": "orion", "summary": "self check"},
+            )
+            asyncio.run(worker.handle_envelope(env, "orion:metacognition:tick"))
+            self.assertEqual(called[0][0], "orion")
+
+    def test_observability_status_surface_contains_decisions(self):
+        worker = ConceptWorker(
+            ConceptSettings(
+                orion_bus_enabled=False,
+                concept_trigger_recent_decisions=5,
+            )
+        )
+        worker._record_trigger_decision({"decision": "triggered", "subject": "orion"})
+        status = worker.trigger_status()
+        self.assertEqual(status["cooldown_sec"], worker.cfg.concept_trigger_cooldown_sec)
+        self.assertTrue(status["recent_decisions"])
+
 
 if __name__ == "__main__":
     unittest.main()

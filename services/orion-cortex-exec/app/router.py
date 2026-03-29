@@ -144,6 +144,25 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
     return traces
 
 
+def _extract_reasoning_payload(step_results: List[StepExecutionResult]) -> tuple[str | None, Dict[str, Any] | None]:
+    for step in step_results:
+        if not isinstance(step.result, dict):
+            continue
+        payload = step.result.get("LLMGatewayService")
+        if not isinstance(payload, dict):
+            continue
+        reasoning_content = payload.get("reasoning_content")
+        reasoning_trace = payload.get("reasoning_trace")
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            trace_dict = reasoning_trace if isinstance(reasoning_trace, dict) else None
+            return reasoning_content.strip(), trace_dict
+        if isinstance(reasoning_trace, dict):
+            trace_content = reasoning_trace.get("content")
+            if isinstance(trace_content, str) and trace_content.strip():
+                return trace_content.strip(), reasoning_trace
+    return None, None
+
+
 class PlanRunner:
     async def run_plan(
         self,
@@ -425,6 +444,12 @@ class PlanRunner:
             correlation_id=correlation_id,
             session_id=str(ctx.get("session_id")) if ctx.get("session_id") else None,
         )
+        reasoning_content, reasoning_trace = _extract_reasoning_payload(step_results)
+        if reasoning_trace is None and metacog_traces:
+            first_trace = metacog_traces[0]
+            reasoning_trace = first_trace.model_dump(mode="json")
+            if not reasoning_content:
+                reasoning_content = str(first_trace.content or "").strip() or None
         logger.info(
             "cortex_exec_metacog_attached corr_id=%s verb=%s traces=%s",
             correlation_id,
@@ -450,6 +475,8 @@ class PlanRunner:
             steps=step_results,
             mode=mode,
             final_text=final_text or None,
+            reasoning_content=reasoning_content,
+            reasoning_trace=reasoning_trace,
             memory_used=memory_used,
             recall_debug=recall_debug,
             metacog_traces=metacog_traces,

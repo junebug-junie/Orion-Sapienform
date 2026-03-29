@@ -31,6 +31,7 @@ from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResult
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
 from orion.schemas.social_chat import (
     SocialConceptEvidenceV1,
@@ -260,6 +261,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CollapseMirrorStoredV1": CollapseMirrorStoredV1,
     "CognitionTracePayload": CognitionTracePayload,
     "MetacognitionTickV1": MetacognitionTickV1,
+    "MetacognitiveTraceV1": MetacognitiveTraceV1,
     "MetacogTriggerV1": MetacogTriggerV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,

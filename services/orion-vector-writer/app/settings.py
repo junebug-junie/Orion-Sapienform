@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # Subscriptions
     # We accept a string (JSON or comma-separated) and convert it, or a list if passed directly
     VECTOR_WRITER_SUBSCRIBE_CHANNELS: Union[str, List[str]] = Field(
-        default='["orion:vector:semantic:upsert", "orion:vector:latent:upsert", "orion:vector:write", "orion:memory:vector:upsert"]',
+        default='["orion:vector:semantic:upsert", "orion:vector:latent:upsert", "orion:vector:write", "orion:memory:vector:upsert", "orion:metacog:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
     VECTOR_WRITER_CHAT_HISTORY_CHANNEL: str = Field(
@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     )
     VECTOR_WRITER_CHAT_COLLECTION: str = Field(
         default="orion_chat", alias="VECTOR_WRITER_CHAT_COLLECTION"
+    )
+    VECTOR_WRITER_METACOG_COLLECTION: str = Field(
+        default="orion_metacog_store", alias="VECTOR_WRITER_METACOG_COLLECTION"
+    )
+    VECTOR_WRITER_METACOG_SUMMARY_MAX_CHARS: int = Field(
+        default=512, alias="VECTOR_WRITER_METACOG_SUMMARY_MAX_CHARS"
     )
     VECTOR_WRITER_REQUIRE_EMBEDDINGS: bool = Field(
         default=False, alias="VECTOR_WRITER_REQUIRE_EMBEDDINGS"

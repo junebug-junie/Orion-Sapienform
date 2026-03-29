@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from orion.core.bus.bus_schemas import Envelope, ServiceRef
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
 CHAT_HISTORY_MESSAGE_KIND = "chat.history.message.v1"
 CHAT_HISTORY_TURN_KIND = "chat.history"
@@ -38,6 +39,7 @@ class ChatHistoryMessageV1(BaseModel):
         default=None, validation_alias=AliasChoices("speaker", "user", "author")
     )
     content: str
+    reasoning_trace: Optional[MetacognitiveTraceV1] = None
     timestamp: str = Field(default_factory=_now_iso)
 
     # Optional provenance
@@ -126,6 +128,7 @@ class ChatHistoryTurnV1(BaseModel):
     source: str = Field(..., description="Source label (e.g. hub_ws)")
     prompt: str = Field(..., description="User prompt")
     response: str = Field(..., description="Assistant response")
+    reasoning_trace: Optional[MetacognitiveTraceV1] = None
     user_id: Optional[str] = Field(default=None)
     session_id: Optional[str] = Field(default=None)
     spark_meta: Optional[Dict[str, Any]] = Field(default=None)

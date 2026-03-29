@@ -180,6 +180,44 @@ def _extract_text_from_openai_response(data: Dict[str, Any]) -> str:
     return ""
 
 
+def _extract_reasoning_from_openai_response(data: Dict[str, Any]) -> Optional[str]:
+    try:
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+        first = choices[0] or {}
+        msg = first.get("message")
+        if isinstance(msg, dict):
+            reasoning = msg.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return reasoning.strip()
+        reasoning = first.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning.strip()
+    except Exception:
+        return None
+    return None
+
+
+def _split_think_blocks(text: str) -> Tuple[str, Optional[str]]:
+    raw = str(text or "")
+    if "<think>" not in raw:
+        return raw.strip(), None
+    visible = raw
+    traces: List[str] = []
+    while "<think>" in visible and "</think>" in visible:
+        start = visible.find("<think>")
+        end = visible.find("</think>", start)
+        if end == -1:
+            break
+        block = visible[start + len("<think>") : end].strip()
+        if block:
+            traces.append(block)
+        visible = (visible[:start] + visible[end + len("</think>") :]).strip()
+    reasoning = "\n\n".join(traces).strip() if traces else None
+    return visible.strip(), (reasoning or None)
+
+
 def _extract_vector_from_openai_response(data: Dict[str, Any]) -> Optional[List[float]]:
     """
     Best-effort extraction of an embedding/state vector from OpenAI-compatible
@@ -716,6 +754,10 @@ def _execute_openai_chat(
             r.raise_for_status()
             raw_data = r.json()
             text = _extract_text_from_openai_response(raw_data)
+            reasoning_content = _extract_reasoning_from_openai_response(raw_data)
+            text, think_reasoning = _split_think_blocks(text)
+            if not reasoning_content:
+                reasoning_content = think_reasoning
 
             # 3b. Spark Post-Ingest (assistant reply)
             _spark_post_ingest_for_reply(body, spark_meta, text)
@@ -731,6 +773,7 @@ def _execute_openai_chat(
                 "spark_meta": spark_meta,
                 "spark_vector": spark_vector,
                 "raw": raw_data,
+                "reasoning_content": reasoning_content,
             }
 
     except httpx.TimeoutException:

@@ -608,6 +608,7 @@ async def websocket_endpoint(websocket: WebSocket):
             recall_debug = None
             agent_trace = None
             workflow = None
+            metacog_traces: List[Dict[str, Any]] = []
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = resp.final_text or ""
@@ -615,6 +616,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     recall_debug = resp.cortex_result.recall_debug
                     memory_digest = recall_debug.get("memory_digest")
                 agent_trace = extract_agent_trace_payload(resp.cortex_result)
+                raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
+                if isinstance(raw_traces, list):
+                    metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
                 workflow = extract_workflow_payload(resp.cortex_result)
                 if isinstance(workflow, dict):
                     logger.info(
@@ -682,6 +686,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "workflow": workflow,
                 "no_write": no_write,
                 "routing_debug": route_debug,
+                "metacog_traces": metacog_traces,
             }
             if mode == "council" or settings.HUB_DEBUG_COUNCIL:
                 council_debug = _extract_council_debug_from_result(resp)
@@ -742,9 +747,25 @@ async def websocket_endpoint(websocket: WebSocket):
                         memory_status="accepted",
                         memory_tier="ephemeral",
                         client_meta=enriched_client_meta,
+                        reasoning_trace=metacog_traces[0] if metacog_traces else None,
                     )
                     _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
                     logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
+                    if metacog_traces:
+                        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+                        for trace in metacog_traces:
+                            trace_env = BaseEnvelope(
+                                kind="metacognitive.trace.v1",
+                                source=ServiceRef(
+                                    name=settings.SERVICE_NAME,
+                                    node=settings.NODE_NAME,
+                                    version=settings.SERVICE_VERSION,
+                                ),
+                                correlation_id=trace_id,
+                                payload=trace,
+                            )
+                            _schedule_publish(bus.publish("orion:metacog:trace", trace_env), "metacog.trace")
                     if is_social_room_payload(data):
                         _schedule_publish(
                             publish_social_room_turn(
@@ -804,6 +825,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         memory_status="accepted",
                         memory_tier="ephemeral",
                         client_meta=enriched_client_meta,
+                        reasoning_trace=metacog_traces[0] if metacog_traces else None,
                     )
                     _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
                 except Exception as e:

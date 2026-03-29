@@ -183,6 +183,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     # which gateway instance handled the request.
     spark_meta = (result.get("spark_meta") if isinstance(result, dict) else None) or {}
     spark_vector = (result.get("spark_vector") if isinstance(result, dict) else None)
+    reasoning_content = (result.get("reasoning_content") if isinstance(result, dict) else None)
     backend = (result.get("backend") if isinstance(result, dict) else None)
     model_used = (result.get("model") if isinstance(result, dict) else None)
     route_used = (result.get("route") if isinstance(result, dict) else None)
@@ -203,6 +204,8 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         payload=ChatResultPayload(
             model_used=model_used,
             content=text or "",
+            reasoning_content=reasoning_content,
+            reasoning_trace={"role": "reasoning", "stage": "post_answer"} if reasoning_content else None,
             usage=(result.get("raw") or {}).get("usage", {}) if isinstance(result, dict) else {},
             raw=(result.get("raw") if isinstance(result, dict) else None) or {},
             spark_meta=spark_meta,

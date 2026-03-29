@@ -13,6 +13,7 @@ from orion.schemas.chat_history import (
     ChatRole,
 )
 from orion.schemas.social_chat import SocialRoomTurnV1
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
 from .social_room import build_social_room_turn
 
@@ -37,6 +38,7 @@ def build_chat_history_envelope(
     memory_tier: Optional[str] = None,
     memory_reason: Optional[str] = None,
     client_meta: Optional[dict] = None,
+    reasoning_trace: Optional[MetacognitiveTraceV1 | dict] = None,
 ) -> ChatHistoryMessageEnvelope:
     """
     Construct a versioned chat history envelope with Orion's canonical bus schema.
@@ -53,6 +55,7 @@ def build_chat_history_envelope(
         "memory_tier": memory_tier,
         "memory_reason": memory_reason,
         "client_meta": client_meta,
+        "reasoning_trace": reasoning_trace,
     }
     if message_id:
         payload_kwargs["message_id"] = message_id
@@ -102,6 +105,7 @@ def build_chat_turn_envelope(
     memory_tier: Optional[str] = None,
     memory_reason: Optional[str] = None,
     client_meta: Optional[dict] = None,
+    reasoning_trace: Optional[MetacognitiveTraceV1 | dict] = None,
 ) -> ChatHistoryTurnEnvelope:
     """Construct a turn-level chat history envelope (prompt + response)."""
     merged_spark_meta = dict(spark_meta or {})
@@ -120,6 +124,7 @@ def build_chat_turn_envelope(
         memory_tier=memory_tier,
         memory_reason=memory_reason,
         client_meta=client_meta,
+        reasoning_trace=reasoning_trace,
     )
     return ChatHistoryTurnEnvelope(
         correlation_id=correlation_id or uuid4(),

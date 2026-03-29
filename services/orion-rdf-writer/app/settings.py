@@ -77,6 +77,7 @@ class Settings(BaseSettings):
             self.CHANNEL_MEMORY_IDENTITY_SNAPSHOT,
             self.CHANNEL_MEMORY_DRIVES_AUDIT,
             self.CHANNEL_MEMORY_GOALS_PROPOSED,
+            "orion:metacog:trace",
         ]
         seen = set()
         ordered: List[str] = []

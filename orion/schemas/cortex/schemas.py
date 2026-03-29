@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from orion.schemas.cortex.types import ExecutionStep, StepExecutionResult, SystemState
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
 
 class ExecutionPlan(BaseModel):
@@ -58,4 +59,5 @@ class PlanExecutionResult(BaseModel):
     final_text: Optional[str] = None
     memory_used: bool = False
     recall_debug: Dict[str, Any] = Field(default_factory=dict)
+    metacog_traces: List[MetacognitiveTraceV1] = Field(default_factory=list)
     error: Optional[str] = None

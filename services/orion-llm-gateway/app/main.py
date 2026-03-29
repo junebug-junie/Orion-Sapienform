@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import httpx
@@ -23,6 +24,21 @@ from .settings import settings
 logger = logging.getLogger("orion-llm-gateway")
 bus_handle: Optional[Any] = None
 app = FastAPI()
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 
 @app.get("/health")
@@ -195,6 +211,17 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         "route": route_used,
     }
     meta = {k: v for k, v in meta.items() if v is not None}
+    if _thought_debug_enabled():
+        logger.info(
+            "THOUGHT_DEBUG_LLM stage=handle_chat_result corr=%s model=%s reasoning_exists=%s reasoning_len=%s content_len=%s reasoning_snippet=%r content_snippet=%r",
+            typed_req.correlation_id,
+            model_used,
+            bool(str(reasoning_content or "").strip()),
+            _debug_len(reasoning_content),
+            _debug_len(text),
+            _debug_snippet(reasoning_content),
+            _debug_snippet(text),
+        )
 
     out = Envelope[ChatResultPayload](
         kind="llm.chat.result",

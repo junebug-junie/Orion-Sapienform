@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Iterable, List, Optional
 from uuid import UUID, uuid4
 
@@ -21,6 +22,21 @@ from .settings import settings
 
 logger = logging.getLogger("orion-hub.chat_history")
 SOCIAL_ROOM_TURN_CHANNEL = "orion:chat:social:turn"
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: object) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: object, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 
 def build_chat_history_envelope(
@@ -87,6 +103,24 @@ async def publish_chat_history(
     channel = settings.chat_history_channel
     for env in envelopes:
         try:
+            if _thought_debug_enabled():
+                payload = env.payload
+                rt = getattr(payload, "reasoning_trace", None)
+                rc = getattr(payload, "reasoning_content", None)
+                thought_candidate = (
+                    (rt.content if hasattr(rt, "content") else (rt.get("content") if isinstance(rt, dict) else None))
+                    or rc
+                )
+                logger.info(
+                    "THOUGHT_DEBUG_HUB stage=publish_chat_history corr=%s channel=%s target=chat.history.message.v1 reasoning_trace_exists=%s reasoning_content_exists=%s thought_candidate_len=%s thought_candidate_snippet=%r content_len=%s",
+                    env.correlation_id,
+                    channel,
+                    bool(rt),
+                    bool(str(rc or "").strip()),
+                    _debug_len(thought_candidate),
+                    _debug_snippet(thought_candidate),
+                    _debug_len(getattr(payload, "content", None)),
+                )
             await bus.publish(channel, env)
         except Exception as e:
             logger.warning("Failed to publish chat history: %s", e, exc_info=True)
@@ -146,6 +180,25 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
 
     channel = settings.chat_history_turn_channel
     try:
+        if _thought_debug_enabled():
+            payload = env.payload
+            rt = getattr(payload, "reasoning_trace", None)
+            rc = getattr(payload, "reasoning_content", None)
+            thought_candidate = (
+                (rt.content if hasattr(rt, "content") else (rt.get("content") if isinstance(rt, dict) else None))
+                or rc
+            )
+            logger.info(
+                "THOUGHT_DEBUG_HUB stage=publish_chat_turn corr=%s channel=%s target=chat.history.turn reasoning_trace_exists=%s reasoning_content_exists=%s thought_candidate_len=%s thought_candidate_snippet=%r prompt_len=%s response_len=%s",
+                env.correlation_id,
+                channel,
+                bool(rt),
+                bool(str(rc or "").strip()),
+                _debug_len(thought_candidate),
+                _debug_snippet(thought_candidate),
+                _debug_len(getattr(payload, "prompt", None)),
+                _debug_len(getattr(payload, "response", None)),
+            )
         await bus.publish(channel, env)
     except Exception as e:
         logger.warning("Failed to publish chat turn history: %s", e, exc_info=True)

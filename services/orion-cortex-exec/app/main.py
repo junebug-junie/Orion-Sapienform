@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, Dict
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -36,6 +37,21 @@ from .collapse_verbs import (  # noqa: F401 - register collapse verbs
 )
 
 logger = logging.getLogger("orion.cortex.exec.main")
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 
 def _uuid_from_correlation_id(value: str) -> UUID:
@@ -244,6 +260,17 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 "fallback_from_final_text": reasoning_trace is None,
             },
         )
+        if _thought_debug_enabled():
+            logger.info(
+                "THOUGHT_DEBUG_METACOG_PUB stage=prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r fallback_from_final_text=%s",
+                corr_id,
+                metacog_payload.trace_role,
+                metacog_payload.trace_stage,
+                metacog_payload.model,
+                _debug_len(metacog_payload.content),
+                _debug_snippet(metacog_payload.content),
+                reasoning_trace is None,
+            )
         if metacog_payload.content:
             metacog_envelope = MetacognitiveTraceEnvelope(
                 source=_source(),
@@ -258,11 +285,29 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 corr_id,
                 reasoning_trace is None,
             )
+            if _thought_debug_enabled():
+                logger.info(
+                    "THOUGHT_DEBUG_METACOG_PUB stage=published corr=%s channel=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
+                    corr_id,
+                    settings.channel_metacog_trace_pub,
+                    metacog_payload.trace_role,
+                    metacog_payload.trace_stage,
+                    metacog_payload.model,
+                    _debug_len(metacog_payload.content),
+                    _debug_snippet(metacog_payload.content),
+                )
         else:
             logger.info(
                 "Skipped MetacognitiveTrace publish due to empty content correlation_id=%s",
                 corr_id,
             )
+            if _thought_debug_enabled():
+                logger.info(
+                    "THOUGHT_DEBUG_METACOG_PUB stage=skipped corr=%s reason=empty_content fallback_from_final_text=%s final_text_len=%s",
+                    corr_id,
+                    reasoning_trace is None,
+                    _debug_len(res.final_text),
+                )
 
     except Exception as e:
         logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)

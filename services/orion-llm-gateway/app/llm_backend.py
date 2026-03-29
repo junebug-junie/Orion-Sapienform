@@ -3,6 +3,7 @@ from functools import lru_cache
 from typing import Any, Dict, Optional, List, Coroutine, Sequence, Tuple
 import asyncio
 import logging
+import os
 import time
 import json
 
@@ -20,6 +21,21 @@ from orion.spark.integration import (
 )
 
 logger = logging.getLogger("orion-llm-gateway.backend")
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 
 @dataclass(frozen=True)
@@ -753,11 +769,42 @@ def _execute_openai_chat(
 
             r.raise_for_status()
             raw_data = r.json()
+            if _thought_debug_enabled():
+                choices = raw_data.get("choices") if isinstance(raw_data, dict) else None
+                first = choices[0] if isinstance(choices, list) and choices else {}
+                msg = first.get("message") if isinstance(first, dict) else {}
+                raw_reasoning = (msg.get("reasoning_content") if isinstance(msg, dict) else None) or (
+                    first.get("reasoning_content") if isinstance(first, dict) else None
+                )
+                logger.info(
+                    "THOUGHT_DEBUG_LLM stage=raw_response corr=%s model=%s keys=%s raw_reasoning_exists=%s raw_reasoning_len=%s raw_reasoning_snippet=%r raw_content_len=%s raw_content_snippet=%r",
+                    getattr(body, "trace_id", None),
+                    model,
+                    sorted(list(raw_data.keys())) if isinstance(raw_data, dict) else [],
+                    bool(str(raw_reasoning or "").strip()),
+                    _debug_len(raw_reasoning),
+                    _debug_snippet(raw_reasoning),
+                    _debug_len((msg or {}).get("content") if isinstance(msg, dict) else None),
+                    _debug_snippet((msg or {}).get("content") if isinstance(msg, dict) else None),
+                )
             text = _extract_text_from_openai_response(raw_data)
             reasoning_content = _extract_reasoning_from_openai_response(raw_data)
+            think_blocks_found = "<think>" in str(text or "") and "</think>" in str(text or "")
             text, think_reasoning = _split_think_blocks(text)
             if not reasoning_content:
                 reasoning_content = think_reasoning
+            if _thought_debug_enabled():
+                logger.info(
+                    "THOUGHT_DEBUG_LLM stage=extracted corr=%s model=%s reasoning_exists=%s reasoning_len=%s visible_len=%s think_blocks_found=%s reasoning_snippet=%r visible_snippet=%r",
+                    getattr(body, "trace_id", None),
+                    model,
+                    bool(str(reasoning_content or "").strip()),
+                    _debug_len(reasoning_content),
+                    _debug_len(text),
+                    think_blocks_found,
+                    _debug_snippet(reasoning_content),
+                    _debug_snippet(text),
+                )
             if reasoning_content:
                 logger.info(
                     "[LLM-GW] reasoning_trace_extracted corr=%s model=%s chars=%s",

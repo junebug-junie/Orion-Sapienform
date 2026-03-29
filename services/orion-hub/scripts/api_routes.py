@@ -39,6 +39,21 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
 
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
+
 class AttentionAckRequest(BaseModel):
     ack_type: str = Field("seen")
     note: Optional[str] = None
@@ -872,6 +887,16 @@ async def api_chat(
                 for trace in metacog_traces:
                     if not isinstance(trace, dict):
                         continue
+                    if _thought_debug_enabled():
+                        logger.info(
+                            "THOUGHT_DEBUG_METACOG_PUB stage=hub_http_prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
+                            final_corr_id,
+                            trace.get("trace_role") or trace.get("role"),
+                            trace.get("trace_stage") or trace.get("stage"),
+                            trace.get("model"),
+                            _debug_len(trace.get("content")),
+                            _debug_snippet(trace.get("content")),
+                        )
                     trace_env = BaseEnvelope(
                         kind="metacognitive.trace.v1",
                         source=ServiceRef(
@@ -883,6 +908,8 @@ async def api_chat(
                         payload=trace,
                     )
                     await bus.publish("orion:metacog:trace", trace_env)
+                if _thought_debug_enabled() and not any(isinstance(t, dict) for t in metacog_traces):
+                    logger.info("THOUGHT_DEBUG_METACOG_PUB stage=hub_http_skipped corr=%s reason=no_valid_trace_dicts", final_corr_id)
                 logger.info(
                     "hub_metacog_published corr=%s source=http channel=%s traces=%s",
                     final_corr_id,
@@ -903,6 +930,22 @@ async def api_chat(
                 "spark_meta": None,
                 "reasoning_trace": metacog_traces[0] if metacog_traces else None,
             }
+            if _thought_debug_enabled():
+                reasoning_trace = chat_log_payload.get("reasoning_trace")
+                reasoning_content = chat_log_payload.get("reasoning_content")
+                thought_candidate = (
+                    (reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None)
+                    or reasoning_content
+                )
+                logger.info(
+                    "THOUGHT_DEBUG_HUB stage=legacy_chat_history_publish corr=%s channel=%s target=chat.history.turn_payload reasoning_trace_exists=%s reasoning_content_exists=%s thought_candidate_len=%s thought_candidate_snippet=%r",
+                    final_corr_id,
+                    settings.chat_history_channel,
+                    isinstance(reasoning_trace, dict),
+                    bool(str(reasoning_content or "").strip()),
+                    _debug_len(thought_candidate),
+                    _debug_snippet(thought_candidate),
+                )
 
             await bus.publish(
                 settings.chat_history_channel,

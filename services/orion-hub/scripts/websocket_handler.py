@@ -47,6 +47,12 @@ def _debug_snippet(value: Any, max_len: int = 200) -> str:
     return f"{text[:max_len]}…"
 
 
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
+
+
 #________________________
 # store chat turns
 #________________________
@@ -664,14 +670,37 @@ async def websocket_endpoint(websocket: WebSocket):
                 if isinstance(raw_traces, list):
                     metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
                 gateway_meta = resp.cortex_result.metadata if resp.cortex_result and isinstance(resp.cortex_result.metadata, dict) else {}
+                explicit_reasoning_trace = (
+                    cortex_result_dump.get("reasoning_trace")
+                    if isinstance(cortex_result_dump, dict) and isinstance(cortex_result_dump.get("reasoning_trace"), dict)
+                    else None
+                )
                 reasoning_content = (
                     (gateway_meta or {}).get("reasoning_content")
                     or (cortex_result_dump.get("reasoning_content") if isinstance(cortex_result_dump, dict) else None)
                     or (((cortex_result_dump.get("raw") or {}).get("reasoning_content")) if isinstance(cortex_result_dump.get("raw"), dict) else None)
                 )
+                if reasoning_content and not (isinstance(explicit_reasoning_trace, dict) and str(explicit_reasoning_trace.get("content") or "").strip()):
+                    explicit_reasoning_trace = {
+                        "trace_role": "reasoning",
+                        "trace_stage": "post_answer",
+                        "content": str(reasoning_content).strip(),
+                        "metadata": {"source": "hub_reasoning_content_fallback"},
+                    }
+                trace_content = explicit_reasoning_trace.get("content") if isinstance(explicit_reasoning_trace, dict) else None
+                print(
+                    "===THINK_HOP=== hop=hub_in "
+                    f"corr={trace_id} "
+                    f"keys={sorted(cortex_result_dump.keys()) if isinstance(cortex_result_dump, dict) else []} "
+                    f"reasoning_len={len(reasoning_content) if reasoning_content else 0} "
+                    f"trace_len={len(trace_content) if trace_content else 0} "
+                    f"metacog_count={len(metacog_traces) if metacog_traces else 0} "
+                    f"preview={_preview_text(reasoning_content or trace_content)}",
+                    flush=True,
+                )
                 selected_reasoning_trace, selected_reasoning_source = select_reasoning_trace_for_history(
                     correlation_id=trace_id,
-                    reasoning_trace=None,
+                    reasoning_trace=explicit_reasoning_trace,
                     metacog_traces=metacog_traces,
                     reasoning_content=reasoning_content,
                     session_id=publish_session_id,

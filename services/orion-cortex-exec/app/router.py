@@ -41,6 +41,12 @@ def _debug_snippet(value: Any, max_len: int = 200) -> str:
     return f"{text[:max_len]}…"
 
 
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
+
+
 def _extract_final_text(steps: List[StepExecutionResult]) -> str:
     for step in reversed(steps):
         for payload in (step.result or {}).values():
@@ -71,15 +77,40 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
     for step in step_results:
         if not isinstance(step.result, dict):
             continue
-        llm_payload = step.result.get("LLMGatewayService")
-        if not isinstance(llm_payload, dict):
+        payload = step.result.get("LLMGatewayService")
+        if not isinstance(payload, dict):
             continue
-        reasoning = llm_payload.get("reasoning_content")
+        reasoning_content = None
+        reasoning_trace = None
+        payload_keys = []
+        if isinstance(payload, dict):
+            payload_keys = sorted(payload.keys())
+            reasoning_content = payload.get("reasoning_content")
+            reasoning_trace = payload.get("reasoning_trace")
+        else:
+            try:
+                dumped = payload.model_dump()
+                payload_keys = sorted(dumped.keys())
+                reasoning_content = dumped.get("reasoning_content")
+                reasoning_trace = dumped.get("reasoning_trace")
+            except Exception:
+                payload_keys = [type(payload).__name__]
+        trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+        print(
+            "===THINK_HOP=== hop=exec_in "
+            f"corr={correlation_id} "
+            f"keys={payload_keys} "
+            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+            f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+            f"preview={_preview_text((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content)}",
+            flush=True,
+        )
+        reasoning = reasoning_content
         if not isinstance(reasoning, str) or not reasoning.strip():
             continue
-        model_name = llm_payload.get("model_used") or llm_payload.get("model") or "unknown"
+        model_name = payload.get("model_used") or payload.get("model") or "unknown"
         token_count = None
-        usage = llm_payload.get("usage")
+        usage = payload.get("usage")
         if isinstance(usage, dict):
             token_count = usage.get("completion_tokens") or usage.get("total_tokens")
         traces.append(

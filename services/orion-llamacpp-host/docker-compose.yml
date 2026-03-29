@@ -6,6 +6,8 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
     env_file:
       - .env
     image: orion-llamacpp-host:0.1.0

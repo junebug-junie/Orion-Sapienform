@@ -75,18 +75,83 @@ class CortexExecClient:
 
         payload = decoded.envelope.payload
         if isinstance(payload, dict):
+            incoming_result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+            incoming_reasoning = incoming_result.get("reasoning_content") if isinstance(incoming_result, dict) else None
+            incoming_trace = incoming_result.get("reasoning_trace") if isinstance(incoming_result, dict) else None
+            incoming_trace_content = incoming_trace.get("content") if isinstance(incoming_trace, dict) else None
+            print(
+                "===THINK_HOP=== hop=orch_or_gateway_in "
+                f"corr={correlation_id} "
+                f"payload_keys={sorted(incoming_result.keys()) if isinstance(incoming_result, dict) else []} "
+                f"reasoning_len={len(incoming_reasoning) if isinstance(incoming_reasoning, str) else 0} "
+                f"trace_len={len(incoming_trace_content) if isinstance(incoming_trace_content, str) else 0} "
+                f"metacog_count={len(incoming_result.get('metacog_traces')) if isinstance(incoming_result, dict) and isinstance(incoming_result.get('metacog_traces'), list) else 0} "
+                f"preview={repr(str((incoming_reasoning if isinstance(incoming_reasoning, str) else None) or incoming_trace_content or '')[:220])}",
+                flush=True,
+            )
             try:
                 exec_payload = CortexExecResultPayload.model_validate(payload)
             except ValidationError:
-                return payload.get("result") or payload
+                normalized = payload.get("result") or payload
+                norm_reasoning = normalized.get("reasoning_content") if isinstance(normalized, dict) else None
+                norm_trace = normalized.get("reasoning_trace") if isinstance(normalized, dict) else None
+                norm_trace_content = norm_trace.get("content") if isinstance(norm_trace, dict) else None
+                print(
+                    "===THINK_HOP=== hop=orch_or_gateway_out "
+                    f"corr={correlation_id} "
+                    f"payload_keys={sorted(normalized.keys()) if isinstance(normalized, dict) else []} "
+                    f"reasoning_len={len(norm_reasoning) if isinstance(norm_reasoning, str) else 0} "
+                    f"trace_len={len(norm_trace_content) if isinstance(norm_trace_content, str) else 0} "
+                    f"metacog_count={len(normalized.get('metacog_traces')) if isinstance(normalized, dict) and isinstance(normalized.get('metacog_traces'), list) else 0} "
+                    f"preview={repr(str((norm_reasoning if isinstance(norm_reasoning, str) else None) or norm_trace_content or '')[:220])}",
+                    flush=True,
+                )
+                return normalized
             if exec_payload.result is not None:
-                return exec_payload.result.model_dump(mode="json")
+                normalized = exec_payload.result.model_dump(mode="json")
+                norm_reasoning = normalized.get("reasoning_content") if isinstance(normalized, dict) else None
+                norm_trace = normalized.get("reasoning_trace") if isinstance(normalized, dict) else None
+                norm_trace_content = norm_trace.get("content") if isinstance(norm_trace, dict) else None
+                print(
+                    "===THINK_HOP=== hop=orch_or_gateway_out "
+                    f"corr={correlation_id} "
+                    f"payload_keys={sorted(normalized.keys()) if isinstance(normalized, dict) else []} "
+                    f"reasoning_len={len(norm_reasoning) if isinstance(norm_reasoning, str) else 0} "
+                    f"trace_len={len(norm_trace_content) if isinstance(norm_trace_content, str) else 0} "
+                    f"metacog_count={len(normalized.get('metacog_traces')) if isinstance(normalized, dict) and isinstance(normalized.get('metacog_traces'), list) else 0} "
+                    f"preview={repr(str((norm_reasoning if isinstance(norm_reasoning, str) else None) or norm_trace_content or '')[:220])}",
+                    flush=True,
+                )
+                return normalized
             if exec_payload.error:
-                return {"ok": False, "error": exec_payload.error, "details": exec_payload.details}
+                normalized = {"ok": False, "error": exec_payload.error, "details": exec_payload.details}
+                print(
+                    "===THINK_HOP=== hop=orch_or_gateway_out "
+                    f"corr={correlation_id} "
+                    f"payload_keys={sorted(normalized.keys())} "
+                    "reasoning_len=0 trace_len=0 metacog_count=0 preview=''",
+                    flush=True,
+                )
+                return normalized
+            print(
+                "===THINK_HOP=== hop=orch_or_gateway_out "
+                f"corr={correlation_id} "
+                f"payload_keys={sorted(payload.keys())} "
+                "reasoning_len=0 trace_len=0 metacog_count=0 preview=''",
+                flush=True,
+            )
             return payload
 
         # Just in case Exec sends back something weird
-        return decoded.envelope.model_dump(mode="json")
+        normalized = decoded.envelope.model_dump(mode="json")
+        print(
+            "===THINK_HOP=== hop=orch_or_gateway_out "
+            f"corr={correlation_id} "
+            f"payload_keys={sorted(normalized.keys()) if isinstance(normalized, dict) else []} "
+            "reasoning_len=0 trace_len=0 metacog_count=0 preview=''",
+            flush=True,
+        )
+        return normalized
 
 
 class StateServiceClient:

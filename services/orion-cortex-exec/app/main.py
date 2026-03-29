@@ -345,6 +345,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             f"payload_keys={sorted(res_payload.keys()) if isinstance(res_payload, dict) else []} "
             f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
             f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+            f"metacog_count={len(res_payload.get('metacog_traces')) if isinstance(res_payload.get('metacog_traces'), list) else 0} "
             f"preview={preview_text}",
             flush=True,
         )

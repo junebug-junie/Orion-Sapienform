@@ -302,6 +302,51 @@ def _coerce_sql_timestamp(value: Any) -> Optional[datetime]:
     return None
 
 
+def _normalized_text(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _extract_thought_process(payload: dict[str, Any]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+
+    role = str(payload.get("role") or "").strip().lower()
+    has_assistant_response = bool(_normalized_text(payload.get("response")))
+    if role and role != "assistant" and not has_assistant_response:
+        return None
+
+    rt = payload.get("reasoning_trace")
+    if isinstance(rt, dict):
+        candidate = _normalized_text(rt.get("content"))
+        if candidate:
+            return candidate
+    elif isinstance(rt, str):
+        candidate = _normalized_text(rt)
+        if candidate:
+            return candidate
+
+    candidate = _normalized_text(payload.get("reasoning_content"))
+    if candidate:
+        return candidate
+
+    traces = payload.get("metacog_traces")
+    if isinstance(traces, list):
+        for trace in traces:
+            if not isinstance(trace, dict):
+                continue
+            trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
+            if trace_role and trace_role not in {"reasoning", "assistant"}:
+                continue
+            candidate = _normalized_text(trace.get("content"))
+            if candidate:
+                return candidate
+
+    return None
+
+
 def _map_spark_to_telemetry_row(
     kind: str,
     payload: Any,
@@ -726,6 +771,9 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     client_meta = payload.get("client_meta")
     if client_meta is not None:
         extra_sql_fields["client_meta"] = _json_sanitize(client_meta)
+    thought_process = _extract_thought_process(payload)
+    if thought_process:
+        extra_sql_fields["thought_process"] = thought_process
 
     if env.kind.startswith("spark."):
         try:

@@ -901,6 +901,7 @@ async def api_chat(
                 "recall": use_recall,
                 "user_id": None,
                 "spark_meta": None,
+                "reasoning_trace": metacog_traces[0] if metacog_traces else None,
             }
 
             await bus.publish(

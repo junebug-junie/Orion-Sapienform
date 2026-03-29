@@ -17,5 +17,6 @@ class ChatHistoryLogSQL(Base):
     memory_status = Column(String, index=True, nullable=True)
     memory_tier = Column(String, index=True, nullable=True)
     memory_reason = Column(String, nullable=True)
+    thought_process = Column(Text, nullable=True)
     client_meta = Column(JSONB, nullable=True)
     created_at = Column(DateTime, server_default=func.now())

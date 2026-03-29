@@ -58,6 +58,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS memory_reason TEXT;"
             )
             conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS thought_process TEXT;"
+            )
+            conn.exec_driver_sql(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS client_meta JSONB;"
             )
             conn.exec_driver_sql(

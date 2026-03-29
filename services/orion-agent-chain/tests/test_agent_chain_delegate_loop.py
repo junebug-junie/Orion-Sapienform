@@ -211,3 +211,79 @@ def test_step_cap_sets_finalization_reason_and_returns_best_effort(monkeypatch):
     assert out.structured["finalization_reason"] == "step_cap_best_effort"
     assert out.runtime_debug["finalization_reason"] == "step_cap_best_effort"
     assert "obs for finalize_response" in out.text or "Max steps reached" in out.text
+
+
+def test_invalid_analyze_conversation_tool_is_remapped_to_available_tool(monkeypatch):
+    calls = {"planner": 0}
+    fake_exec = _FakeToolExecutor()
+
+    async def _fake_planner(payload, *, parent_correlation_id=None, rpc_bus=None):
+        calls["planner"] += 1
+        if calls["planner"] == 1:
+            return {
+                "status": "ok",
+                "trace": [
+                    {
+                        "step_index": 0,
+                        "thought": "Need analysis first.",
+                        "action": {"tool_id": "analyze_conversation", "input": {"text": "hello"}},
+                        "observation": None,
+                    }
+                ],
+            }
+        return {"status": "ok", "final_answer": {"content": "done", "structured": {}}}
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+    tools = [
+        ToolDef(tool_id="analyze_text", description="analyze", input_schema={}, output_schema={}),
+        ToolDef(tool_id="finalize_response", description="finalize", input_schema={}, output_schema={}),
+    ]
+    monkeypatch.setattr(agent_api, "_resolve_tools", lambda body, output_mode=None: (tools, ["executive_pack"]))
+
+    req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
+    out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
+
+    assert out.text == "done"
+    assert fake_exec.calls[0][0] == "analyze_text"
+    assert out.runtime_debug["invalid_tool_remap_count"] == 1
+    assert out.runtime_debug["invalid_tool_last"]["requested"] == "analyze_conversation"
+    assert out.runtime_debug["invalid_tool_last"]["resolved"] == "analyze_text"
+
+
+def test_invalid_gather_info_tool_is_remapped_to_plan_action(monkeypatch):
+    calls = {"planner": 0}
+    fake_exec = _FakeToolExecutor()
+
+    async def _fake_planner(payload, *, parent_correlation_id=None, rpc_bus=None):
+        calls["planner"] += 1
+        if calls["planner"] == 1:
+            return {
+                "status": "ok",
+                "trace": [
+                    {
+                        "step_index": 0,
+                        "thought": "Gather missing facts.",
+                        "action": {"tool_id": "gather_info", "input": {"request": "hello"}},
+                        "observation": None,
+                    }
+                ],
+            }
+        return {"status": "ok", "final_answer": {"content": "done", "structured": {}}}
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+    tools = [
+        ToolDef(tool_id="plan_action", description="plan", input_schema={}, output_schema={}),
+        ToolDef(tool_id="finalize_response", description="finalize", input_schema={}, output_schema={}),
+    ]
+    monkeypatch.setattr(agent_api, "_resolve_tools", lambda body, output_mode=None: (tools, ["executive_pack"]))
+
+    req = AgentChainRequest(text="hello", mode="agent", messages=[{"role": "user", "content": "hello"}])
+    out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
+
+    assert out.text == "done"
+    assert fake_exec.calls[0][0] == "plan_action"
+    assert out.runtime_debug["invalid_tool_remap_count"] == 1
+    assert out.runtime_debug["invalid_tool_last"]["requested"] == "gather_info"
+    assert out.runtime_debug["invalid_tool_last"]["resolved"] == "plan_action"

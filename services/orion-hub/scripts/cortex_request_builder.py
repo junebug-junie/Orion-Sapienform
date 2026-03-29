@@ -113,13 +113,15 @@ def _normalize_flag(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _build_recall_payload(payload: Dict[str, Any], *, use_recall: bool) -> Dict[str, Any]:
+def _build_recall_payload(payload: Dict[str, Any], *, use_recall: bool, route_mode: str | None = None) -> Dict[str, Any]:
     recall_mode = str(payload.get("recall_mode") or "hybrid").strip() or "hybrid"
     recall_required = _normalize_flag(payload.get("recall_required"), default=False)
     recall_profile = payload.get("recall_profile")
     if isinstance(recall_profile, str):
         recall_profile = recall_profile.strip() or None
-    if use_recall and recall_profile is None:
+    # Agent-mode continuity should not inherit broad reflective recall unless the caller
+    # intentionally selected a profile.
+    if use_recall and recall_profile is None and str(route_mode or "").strip().lower() != "agent":
         recall_profile = "reflect.v1"
 
     return {
@@ -232,7 +234,7 @@ def build_cortex_chat_request(
     else:
         use_recall = str(raw_recall).strip().lower() in {"1", "true", "yes", "y", "on"}
 
-    recall_payload = _build_recall_payload(payload, use_recall=use_recall)
+    recall_payload = _build_recall_payload(payload, use_recall=use_recall, route_mode=selected_ui_route)
     if social_room:
         recall_payload["enabled"] = use_recall
         recall_payload["required"] = False

@@ -58,6 +58,13 @@ def resolve_mode_profile(mode: str | None) -> Tuple[str, str]:
     return "reflect.v1", "mode"
 
 
+def resolve_runtime_default_profile(runtime_mode: str | None) -> Tuple[str, str]:
+    normalized = str(runtime_mode or "").strip().lower()
+    if normalized in {"agent", "council"}:
+        return "chat.general.v1", "runtime_mode"
+    return "reflect.v1", "fallback"
+
+
 def _clean_profile(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
@@ -84,6 +91,7 @@ def resolve_profile(
     verb_profile: Optional[str] = None,
     step: Optional[ExecutionStep] = None,
     is_recall_step: bool = False,
+    runtime_mode: str | None = None,
 ) -> Tuple[str, str]:
     explicit_profile, explicit_source = _resolve_explicit_profile(recall_cfg)
     if explicit_profile and explicit_source == "explicit":
@@ -92,13 +100,16 @@ def resolve_profile(
         return step.recall_profile, "step"
     if isinstance(verb_profile, str) and verb_profile.strip():
         return verb_profile.strip(), "verb"
+    if explicit_profile and str(runtime_mode or "").strip().lower() in {"agent", "council"}:
+        runtime_profile, runtime_source = resolve_runtime_default_profile(runtime_mode)
+        return runtime_profile, runtime_source
     if explicit_profile:
         return explicit_profile, "inherited"
     mode = recall_cfg.get("mode")
     if mode:
         profile, source = resolve_mode_profile(str(mode))
         return profile, source
-    return "reflect.v1", "fallback"
+    return resolve_runtime_default_profile(runtime_mode)
 
 
 def should_run_recall(
@@ -123,11 +134,12 @@ def delivery_safe_recall_decision(
     output_mode: str | None = None,
     verb_profile: Optional[str] = None,
     user_text: str | None = None,
+    runtime_mode: str | None = None,
 ) -> Dict[str, Any]:
     recall_required = bool(recall_cfg.get("required", False))
     recall_enabled = recall_enabled_value(recall_cfg)
     explicit_profile, explicit_source = _resolve_explicit_profile(recall_cfg)
-    base_profile, profile_source = resolve_profile(recall_cfg, verb_profile=verb_profile)
+    base_profile, profile_source = resolve_profile(recall_cfg, verb_profile=verb_profile, runtime_mode=runtime_mode)
     base_should_run, base_reason = should_run_recall(recall_cfg, steps)
 
     if output_mode in DELIVERY_SAFE_OUTPUT_MODES and not explicit_profile:

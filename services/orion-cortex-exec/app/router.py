@@ -100,6 +100,7 @@ class PlanRunner:
             output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
             user_text=(ctx.get("raw_user_text") or ""),
+            runtime_mode=mode,
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]

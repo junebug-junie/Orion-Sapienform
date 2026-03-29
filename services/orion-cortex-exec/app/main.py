@@ -334,11 +334,25 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         logger.warning("dream.result.v1 publish skipped/failed corr=%s err=%s", corr_id, exc)
 
     if env.reply_to:
+        res_payload = res.model_dump(mode="json")
+        reasoning_content = res_payload.get("reasoning_content") if isinstance(res_payload, dict) else None
+        reasoning_trace = res_payload.get("reasoning_trace") if isinstance(res_payload, dict) else None
+        trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+        preview_text = repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content or "")[:220])
+        print(
+            "===THINK_HOP=== hop=exec_out "
+            f"corr={corr_id} "
+            f"payload_keys={sorted(res_payload.keys()) if isinstance(res_payload, dict) else []} "
+            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+            f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+            f"preview={preview_text}",
+            flush=True,
+        )
         manual_result = CortexExecResult(
             source=_source(),
             correlation_id=corr_id,
             causality_chain=env.causality_chain,
-            payload=CortexExecResultPayload(ok=True, result=res.model_dump(mode="json")),
+            payload=CortexExecResultPayload(ok=True, result=res_payload),
         )
         publish_started = time.perf_counter()
         try:

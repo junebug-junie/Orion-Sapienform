@@ -128,6 +128,45 @@ def test_agent_mode_preserves_explicit_recall_profile_override() -> None:
     assert debug["recall_profile"] == "reflect.v1"
 
 
+def test_agent_mode_preserves_bounded_prior_turns_in_messages() -> None:
+    history = [
+        {"role": "user", "content": "Let's define metacognition lanes for Orion."},
+        {"role": "assistant", "content": "Great. We can define perception, reflection, and action lanes."},
+        {"role": "user", "content": "well, lanes would you build?"},
+    ]
+    req, _, _ = hub_builder.build_chat_request(
+        payload={"mode": "agent"},
+        session_id="sid-agent-continuity",
+        user_id="user-1",
+        trace_id="trace-agent-continuity",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt=history[-1]["content"],
+        messages=history,
+    )
+
+    assert [m.role for m in req.messages] == ["user", "assistant", "user"]
+    assert req.messages[0].content == "Let's define metacognition lanes for Orion."
+    assert req.messages[-1].content == "well, lanes would you build?"
+
+
+def test_agent_mode_messages_are_turn_bounded() -> None:
+    history = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "u3"},
+    ]
+    bounded = hub_builder.build_continuity_messages(
+        history=history,
+        latest_user_prompt="u3",
+        turns=2,
+    )
+    assert [m["content"] for m in bounded] == ["a1", "u2", "a2", "u3"]
+
+
 def test_auto_mode_emits_auto_route_intent_without_forcing_supervisor() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={

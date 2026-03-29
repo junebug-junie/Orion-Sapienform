@@ -159,6 +159,10 @@ class CortexClientResult(BaseModel):
 class CortexChatRequest(BaseModel):
     """Simple chat request for Cortex Gateway."""
     prompt: str = Field(..., description="The user's prompt text")
+    messages: Optional[List[LLMMessage]] = Field(
+        default=None,
+        description="Optional bounded conversation turns (user/assistant/system) for continuity.",
+    )
     mode: Literal["brain", "agent", "council", "auto"] = Field(default="brain", description="Execution mode: brain, agent, council, auto")
     route_intent: Literal["none", "auto"] = Field(default="none", description="Explicit routing intent. Use 'auto' to enable Orch auto-routing.")
 

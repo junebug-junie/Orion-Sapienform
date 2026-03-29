@@ -391,7 +391,7 @@ def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path)
         subjects = ['orion']
 
     (tmp_path / 'concepts.json').write_text('{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 2, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "continuity", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [{"cluster_id": "cluster-1", "label": "core", "summary": "core cluster", "concept_ids": ["concept-1"], "cohesion_score": 0.8, "metadata": {}}], "state_estimate": null, "metadata": {}}}}')
-    monkeypatch.setattr(workflow_runtime, 'get_concept_settings', lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, 'build_orch_concept_profile_settings', lambda *_args, **_kwargs: FakeConceptSettings())
 
     result = asyncio.run(
         execute_chat_workflow(
@@ -438,7 +438,7 @@ def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> N
             return []
 
     fake_repository = FakeRepository()
-    monkeypatch.setattr(workflow_runtime, 'get_concept_settings', lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, 'build_orch_concept_profile_settings', lambda *_args, **_kwargs: FakeConceptSettings())
     monkeypatch.setattr(workflow_runtime, 'build_concept_profile_repository', lambda settings, backend_override=None: fake_repository)
     result = asyncio.run(
         execute_chat_workflow(
@@ -497,7 +497,7 @@ def test_concept_induction_pass_graph_override_uses_graph_when_available(monkeyp
             return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
 
     graph_repo = FakeRepository("graph")
-    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
     monkeypatch.setattr(
         workflow_runtime,
         "build_concept_profile_repository",
@@ -570,7 +570,7 @@ def test_concept_induction_pass_graph_unavailable_fail_open_falls_back_to_local(
         build_calls.append(backend)
         return FakeRepository(backend)
 
-    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
     monkeypatch.setattr(workflow_runtime, "build_concept_profile_repository", _build)
 
     result = asyncio.run(
@@ -616,7 +616,7 @@ def test_concept_induction_pass_graph_unavailable_fail_closed_fails(monkeypatch,
         def list_latest(self, subjects, *, observer=None):
             return [SimpleNamespace(subject="orion", profile=None, availability="unavailable", unavailable_reason="graph_not_configured")]
 
-    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
     monkeypatch.setattr(
         workflow_runtime,
         "build_concept_profile_repository",
@@ -670,7 +670,7 @@ def test_concept_induction_pass_local_override_behaves_like_local(monkeypatch, t
             return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
 
     chosen_backends: list[str] = []
-    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
     monkeypatch.setattr(
         workflow_runtime,
         "build_concept_profile_repository",
@@ -724,7 +724,7 @@ def test_concept_induction_pass_shadow_override_retains_shadow_behavior(monkeypa
             return [SimpleNamespace(subject="orion", profile=profile, availability="available", unavailable_reason=None)]
 
     fake_repo = FakeShadowRepository()
-    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
     monkeypatch.setattr(workflow_runtime, "build_concept_profile_repository", lambda settings, backend_override=None: fake_repo)
     result = asyncio.run(
         execute_chat_workflow(
@@ -780,7 +780,7 @@ def test_concept_induction_pass_rollback_from_graph_override_restores_global(mon
             return []
 
     selected: list[str] = []
-    monkeypatch.setattr(workflow_runtime, "get_concept_settings", lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
     monkeypatch.setattr(
         workflow_runtime,
         "build_concept_profile_repository",
@@ -809,7 +809,7 @@ def test_concept_induction_pass_fails_honestly_when_profiles_missing(monkeypatch
         store_path = str(tmp_path / 'concepts.json')
         subjects = ['orion']
 
-    monkeypatch.setattr(workflow_runtime, 'get_concept_settings', lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, 'build_orch_concept_profile_settings', lambda *_args, **_kwargs: FakeConceptSettings())
     result = asyncio.run(
         execute_chat_workflow(
             bus=DummyBus(),
@@ -833,7 +833,7 @@ def test_concept_induction_pass_reports_placeholder_store_as_unconfigured(monkey
         store_path = '/tmp/concept-induction-state.json'
         subjects = ['orion']
 
-    monkeypatch.setattr(workflow_runtime, 'get_concept_settings', lambda: FakeConceptSettings())
+    monkeypatch.setattr(workflow_runtime, 'build_orch_concept_profile_settings', lambda *_args, **_kwargs: FakeConceptSettings())
     result = asyncio.run(
         execute_chat_workflow(
             bus=DummyBus(),
@@ -956,3 +956,58 @@ def test_dream_cycle_primary_metadata_continuity(monkeypatch) -> None:
     )
     assert seen_metadata.get("workflow_id") == "dream_cycle"
     assert seen_metadata.get("workflow_execution", {}).get("workflow_subverb") == "dream_cycle"
+
+
+def test_concept_induction_pass_does_not_pass_generic_orch_settings_to_repository_builder(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+    from app.settings import Settings as OrchSettings
+
+    class FakeConceptProfileSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+        concept_profile_repository_backend = "graph"
+        concept_profile_backend_concept_induction_pass = "graph"
+        concept_profile_graph_cutover_fallback_policy = "fail_open_local"
+        concept_profile_graphdb_endpoint = "http://graphdb:7200/repositories/collapse"
+        concept_profile_graph_uri = "http://example.org/graph/concept-profile"
+        concept_profile_graph_timeout_sec = 1.0
+
+    class FakeRepository:
+        def status(self):
+            return SimpleNamespace(
+                backend="graph",
+                source_path="graphdb://collapse",
+                placeholder_default_in_use=False,
+                source_available=True,
+            )
+
+        def list_latest(self, subjects, *, observer=None):
+            return [SimpleNamespace(subject="orion", profile=None, availability="unavailable", unavailable_reason="query_error")]
+
+    orch_settings = OrchSettings()
+    captured_settings_types: list[type] = []
+
+    def _build(settings, backend_override=None):
+        captured_settings_types.append(type(settings))
+        assert not isinstance(settings, OrchSettings)
+        assert hasattr(settings, "store_path")
+        return FakeRepository()
+
+    monkeypatch.setattr(workflow_runtime, "get_settings", lambda: orch_settings)
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda orch: FakeConceptProfileSettings())
+    monkeypatch.setattr(workflow_runtime, "build_concept_profile_repository", _build)
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("concept_induction_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000105",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+
+    assert captured_settings_types
+    assert result.ok is False

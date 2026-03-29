@@ -234,6 +234,40 @@ class Rabbit(BaseChassis):
                 try:
                     out = await self.handler(env)
                     if out is not None and env.reply_to:
+                        payload_obj = getattr(out, "payload", None)
+                        payload_keys = []
+                        reasoning_content = None
+                        trace_content = None
+                        if isinstance(payload_obj, dict):
+                            payload_keys = sorted(payload_obj.keys())
+                            reasoning_content = payload_obj.get("reasoning_content")
+                            rt = payload_obj.get("reasoning_trace")
+                            trace_content = rt.get("content") if isinstance(rt, dict) else None
+                        elif hasattr(payload_obj, "model_dump"):
+                            try:
+                                dumped = payload_obj.model_dump(mode="json")
+                            except Exception:
+                                dumped = payload_obj.model_dump()
+                            if isinstance(dumped, dict):
+                                payload_keys = sorted(dumped.keys())
+                                reasoning_content = dumped.get("reasoning_content")
+                                rt = dumped.get("reasoning_trace")
+                                trace_content = rt.get("content") if isinstance(rt, dict) else None
+                            else:
+                                payload_keys = [type(payload_obj).__name__]
+                        else:
+                            payload_keys = [type(payload_obj).__name__ if payload_obj is not None else "NoneType"]
+                        preview_text = str(reasoning_content or trace_content or "")[:220]
+                        print(
+                            "===THINK_HOP=== hop=llm_gateway_bus_reply "
+                            f"corr={getattr(out, 'correlation_id', None) or env.correlation_id} "
+                            f"kind={getattr(out, 'kind', None)} "
+                            f"payload_keys={payload_keys} "
+                            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+                            f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+                            f"preview={repr(preview_text)}",
+                            flush=True,
+                        )
                         await self.bus.publish(env.reply_to, out)
                 except Exception as e:
                     await self._publish_error(e, when="rabbit.handle", env=env)

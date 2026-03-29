@@ -25,6 +25,13 @@ from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.clients")
 
+
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
+
+
 class LLMGatewayClient:
     """
     Strict, typed client for the LLM Gateway.
@@ -98,8 +105,20 @@ class LLMGatewayClient:
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
             raise RuntimeError(f"Decode failed: {decoded.error}")
-
-        return ChatResponsePayload.model_validate(decoded.envelope.payload)
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        reasoning_content = payload.get("reasoning_content")
+        reasoning_trace = payload.get("reasoning_trace")
+        trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+        print(
+            "===THINK_HOP=== hop=exec_llm_reply_in "
+            f"corr={correlation_id} "
+            f"payload_keys={sorted(payload.keys()) if isinstance(payload, dict) else []} "
+            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+            f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+            f"preview={_preview_text((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content)}",
+            flush=True,
+        )
+        return ChatResponsePayload.model_validate(payload)
 
 
 class RecallClient:

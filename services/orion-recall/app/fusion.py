@@ -268,6 +268,53 @@ def _denial_patterns() -> List[re.Pattern[str]]:
     ]
 
 
+def _is_low_info_social_candidate(snippet: str) -> bool:
+    text = _normalize_whitespace(snippet).lower()
+    if not text:
+        return True
+    user, assistant = _extract_transcript_parts(text)
+    candidate = _normalize_whitespace(f"{user} {assistant}" if (user or assistant) else text)
+    if not candidate:
+        return True
+    normalized_candidate = re.sub(r"[^a-z0-9' ]+", " ", candidate)
+    tokens = re.findall(r"[a-z']{2,}", normalized_candidate)
+    if len(tokens) > 18:
+        return False
+    courtesy_patterns = [
+        r"^(hi|hey|hello|yo|sup|hiya|good (morning|afternoon|evening))( there| friend| orion| juniper)?[!. ]*$",
+        r"^(thanks|thank you|awesome|cool|nice|sounds good|all good|doing good|doing well|glad to hear)[!. ]*$",
+        r"^(how are you|how's it going|hope you're well|hope you are well)[?.! ]*$",
+    ]
+    if any(re.match(pattern, candidate, flags=re.I) for pattern in courtesy_patterns):
+        return True
+    if len(tokens) <= 6:
+        low_info_terms = {
+            "hi",
+            "hey",
+            "hello",
+            "thanks",
+            "thank",
+            "good",
+            "great",
+            "cool",
+            "nice",
+            "fine",
+            "well",
+            "friend",
+            "orion",
+            "juniper",
+            "all",
+            "doing",
+            "okay",
+            "ok",
+            "for",
+            "now",
+        }
+        if all(token in low_info_terms for token in tokens):
+            return True
+    return False
+
+
 def fuse_candidates(
     *,
     candidates: Iterable[Dict[str, Any]],
@@ -277,6 +324,7 @@ def fuse_candidates(
     session_id: str | None = None,
     diagnostic: bool = False,
     browse_mode: bool = False,
+    substantive_query: bool = False,
 ) -> Tuple[MemoryBundleV1, List[Dict[str, Any]]]:
     max_per_source = int(profile.get("max_per_source", 3))
     max_total = int(profile.get("max_total_items", 12))
@@ -301,9 +349,29 @@ def fuse_candidates(
         if not _candidate_allowed(cand, profile):
             continue
         source = str(cand.get("source") or "unknown")
+        snippet = str(cand.get("text") or cand.get("snippet") or "")
+        if substantive_query and _is_low_info_social_candidate(snippet):
+            drop_counts["low_info_social"] = drop_counts.get("low_info_social", 0) + 1
+            if diagnostic:
+                ranking_debug.append(
+                    {
+                        "id": str(cand.get("id") or ""),
+                        "source": source,
+                        "rank": None,
+                        "selected": False,
+                        "composite_score": None,
+                        "backend_weight": None,
+                        "overlap": None,
+                        "exact_boost": None,
+                        "text_similarity": None,
+                        "recency": None,
+                        "drop_reason": "low_info_social",
+                        "key_type": None,
+                    }
+                )
+            continue
         backend_counts[source] = backend_counts.get(source, 0) + 1
         key, key_type = _key_for(cand)
-        snippet = str(cand.get("text") or cand.get("snippet") or "")
         exact_boost = _exact_match_boost(query_text, snippet) if query_text else 0.0
         if query_text and not browse_mode:
             denial_hit = any(pattern.search(snippet) for pattern in denial_patterns)

@@ -124,6 +124,122 @@ def _is_memory_browse(text: str) -> bool:
     )
 
 
+_SOCIAL_TOKENS = {
+    "hi",
+    "hey",
+    "hello",
+    "thanks",
+    "thank",
+    "good",
+    "great",
+    "cool",
+    "nice",
+    "fine",
+    "well",
+    "friend",
+    "orion",
+    "juniper",
+    "morning",
+    "afternoon",
+    "evening",
+    "awesome",
+    "okay",
+    "ok",
+}
+
+_STOPWORDS = {
+    "the",
+    "and",
+    "that",
+    "this",
+    "with",
+    "from",
+    "have",
+    "been",
+    "just",
+    "your",
+    "about",
+    "into",
+    "over",
+    "mostly",
+    "very",
+    "really",
+    "still",
+    "will",
+    "would",
+    "should",
+    "could",
+}
+
+
+def _strip_recall_instruction_tail(text: str) -> Tuple[str, bool]:
+    raw = str(text or "").strip()
+    if not raw:
+        return "", False
+    parts = [part.strip(" -:\t") for part in re.split(r"[\n;]+", raw) if part.strip()]
+    if len(parts) < 2:
+        return raw, False
+    tail = parts[-1].lower()
+    instruction_markers = (
+        "use recall",
+        "based on recall",
+        "remain based on recall",
+        "stay based on recall",
+        "process injection",
+    )
+    if any(marker in tail for marker in instruction_markers):
+        return " ".join(parts[:-1]).strip(), True
+    return raw, False
+
+
+def _social_clause(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not normalized:
+        return True
+    if re.match(r"^(hi|hey|hello|yo|how are you|how's it going)[!.? ]*$", normalized):
+        return True
+    tokens = re.findall(r"[a-z']{2,}", normalized)
+    if len(tokens) <= 7 and tokens and all(token in _SOCIAL_TOKENS for token in tokens):
+        return True
+    return False
+
+
+def _informative_score(text: str) -> int:
+    tokens = re.findall(r"[a-z0-9']{3,}", text.lower())
+    informative = [tok for tok in tokens if tok not in _STOPWORDS]
+    long_terms = [tok for tok in informative if len(tok) >= 6 or any(ch.isdigit() for ch in tok)]
+    return len(informative) + len(long_terms)
+
+
+def _derive_chat_general_query(fragment: str, *, verb: str | None, profile_name: str) -> Dict[str, Any]:
+    raw = str(fragment or "").strip()
+    applies = str(verb or "") == "chat_general" or profile_name.startswith("chat.general")
+    if not applies:
+        return {
+            "query_fragment": raw,
+            "tail_stripped": False,
+            "query_changed": False,
+            "turn_type": "default",
+            "dropped_clauses": 0,
+        }
+    trimmed, tail_stripped = _strip_recall_instruction_tail(raw)
+    clauses = [c.strip() for c in re.split(r"[.!?\n]+", trimmed) if c.strip()]
+    substantive = [c for c in clauses if not _social_clause(c)]
+    dropped = max(0, len(clauses) - len(substantive))
+    ranked = sorted(substantive, key=_informative_score, reverse=True)
+    query_fragment = ". ".join(ranked[:2]).strip() if ranked else trimmed
+    if not query_fragment:
+        query_fragment = raw
+    turn_type = "substantive" if substantive else "social"
+    return {
+        "query_fragment": query_fragment,
+        "tail_stripped": tail_stripped,
+        "query_changed": query_fragment != raw,
+        "turn_type": turn_type,
+        "dropped_clauses": dropped,
+    }
+
+
 def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     return " ".join(text.split())
@@ -747,9 +863,21 @@ async def process_recall(
     diagnostic: bool = False,
 ) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
     profile = get_profile(q.profile)
-    enable_qe = bool(profile.get("enable_query_expansion", True))
-    signals = _expand_query(q.fragment, verb=q.verb, intent=q.intent, enable=enable_qe)
     profile_name = str(profile.get("profile") or "")
+    query_targeting = _derive_chat_general_query(q.fragment, verb=q.verb, profile_name=profile_name)
+    query_fragment = str(query_targeting.get("query_fragment") or q.fragment or "")
+    if diagnostic and query_targeting.get("query_changed"):
+        logger.info(
+            "recall query_targeting adjusted profile=%s verb=%s raw=%r targeted=%r turn_type=%s tail_stripped=%s",
+            profile_name,
+            q.verb,
+            (q.fragment or "")[:220],
+            query_fragment[:220],
+            query_targeting.get("turn_type"),
+            query_targeting.get("tail_stripped"),
+        )
+    enable_qe = bool(profile.get("enable_query_expansion", True))
+    signals = _expand_query(query_fragment, verb=q.verb, intent=q.intent, enable=enable_qe)
     ignored_session_id = q.session_id
     effective_session_id: str | None = None
     exclusion = _parse_exclusion(q)
@@ -762,7 +890,7 @@ async def process_recall(
     candidates: List[Dict[str, Any]] = []
     backend_counts_total: Dict[str, int] = {}
 
-    if _is_memory_browse(q.fragment):
+    if _is_memory_browse(query_fragment):
         since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
         browse_limit = max(10, min(20, int(profile.get("max_total_items", 12))))
         if _sql_timeline_enabled_for_profile(profile):
@@ -834,6 +962,10 @@ async def process_recall(
                     "profile_selected": str(profile.get("profile") or q.profile),
                     "profile_requested": q.profile,
                     "query_expansion_enabled": enable_qe,
+                    "query_targeting": {
+                        **query_targeting,
+                        "raw_fragment": q.fragment,
+                    },
                     "source_gating": source_gating,
                     "active_turn": {
                         "ids_count": len(list(exclusion.get("active_turn_ids") or [])),
@@ -857,7 +989,7 @@ async def process_recall(
         return bundle, decision
 
     anchor_candidates, anchor_counts = await _fetch_anchor_candidates(
-        query_text=q.fragment,
+        query_text=query_fragment,
         session_id=effective_session_id,
         node_id=q.node_id,
         profile=profile,
@@ -876,8 +1008,8 @@ async def process_recall(
             profile=profile,
         )
         anchor_terms = anchor_set.get("related_terms") or []
-        vector_queries = [q.fragment]
-        vector_queries.extend([f"{q.fragment} {term}" for term in anchor_terms[:8]])
+        vector_queries = [query_fragment]
+        vector_queries.extend([f"{query_fragment} {term}" for term in anchor_terms[:8]])
         sql_filters = anchor_terms[:6]
         query_plan = {
             "vector_queries": vector_queries,
@@ -892,12 +1024,12 @@ async def process_recall(
         if rdf_enabled:
             try:
                 rdf_items = fetch_rdf_graphtri_fragments(
-                    query_text=q.fragment,
+                    query_text=query_fragment,
                     session_id=effective_session_id,
                     max_items=rdf_top_k,
                 )
                 if not rdf_items:
-                    rdf_items = fetch_rdf_fragments(query_text=q.fragment, max_items=rdf_top_k)
+                    rdf_items = fetch_rdf_fragments(query_text=query_fragment, max_items=rdf_top_k)
                 backend_counts_total["rdf"] = len(rdf_items)
                 candidates.extend(rdf_items)
 
@@ -1062,7 +1194,7 @@ async def process_recall(
                 profile,
                 session_id=effective_session_id,
                 node_id=q.node_id,
-                entities=_extract_entities(q.fragment),
+                entities=_extract_entities(query_fragment),
                 diagnostic=diagnostic,
                 exclusion=exclusion,
             )
@@ -1087,9 +1219,10 @@ async def process_recall(
         candidates=candidates,
         profile=profile,
         latency_ms=latency_ms,
-        query_text=q.fragment,
+        query_text=query_fragment,
         session_id=effective_session_id,
         diagnostic=diagnostic,
+        substantive_query=str(query_targeting.get("turn_type")) == "substantive",
     )
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),
@@ -1097,7 +1230,7 @@ async def process_recall(
         node_id=q.node_id,
         verb=q.verb,
         profile=str(profile.get("profile") or q.profile),
-        query=q.fragment,
+        query=query_fragment,
         selected_ids=[i.id for i in bundle.items],
         backend_counts=backend_counts_total or bundle.stats.backend_counts,
         latency_ms=latency_ms,
@@ -1108,6 +1241,10 @@ async def process_recall(
                 "profile_selected": str(profile.get("profile") or q.profile),
                 "profile_requested": q.profile,
                 "query_expansion_enabled": enable_qe,
+                "query_targeting": {
+                    **query_targeting,
+                    "raw_fragment": q.fragment,
+                },
                 "source_gating": source_gating,
                 "active_turn": {
                     "ids_count": len(list(exclusion.get("active_turn_ids") or [])),

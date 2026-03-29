@@ -21,6 +21,7 @@ from .cognition_trace import CognitionTraceSQL
 from .metacognition_tick import MetacognitionTickSQL
 from . metacognition_enriched import MetacognitionEnrichedSQL
 from .metacog_trigger import MetacogTriggerSQL
+from .metacognitive_trace import MetacognitiveTraceSQL
 from .journal_entry import JournalEntrySQL
 from .social_room_turn import SocialRoomTurnSQL
 from .external_room_message import ExternalRoomMessageSQL
@@ -44,6 +45,7 @@ __all__ = [
     "MetacognitionTickSQL",
     "MetacognitionEnrichedSQL",
     "MetacogTriggerSQL",
+    "MetacognitiveTraceSQL",
     "JournalEntrySQL",
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",

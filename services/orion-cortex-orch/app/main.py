@@ -413,6 +413,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             error=error_payload,
             correlation_id=str(env.correlation_id),
             agent_trace=agent_trace,
+            metacog_traces=result_payload.get("metacog_traces") or [],
             metadata=final_meta,
         )
 

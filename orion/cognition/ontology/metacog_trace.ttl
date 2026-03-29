@@ -1,0 +1,14 @@
+@prefix orion: <http://conjourney.net/orion#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+orion:CognitiveTrace a rdfs:Class .
+orion:ReasoningTrace a rdfs:Class ; rdfs:subClassOf orion:CognitiveTrace .
+orion:PlanTrace a rdfs:Class ; rdfs:subClassOf orion:CognitiveTrace .
+orion:ReflectionTrace a rdfs:Class ; rdfs:subClassOf orion:CognitiveTrace .
+orion:SelfCritique a rdfs:Class ; rdfs:subClassOf orion:CognitiveTrace .
+
+orion:traceOfTurn a rdf:Property .
+orion:traceInfluences a rdf:Property .
+orion:generatedByModel a rdf:Property .
+orion:traceStage a rdf:Property .

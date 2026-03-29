@@ -187,6 +187,17 @@ def _extract_markdown_code_block(text: str) -> Optional[Tuple[str, str]]:
     return language, body_text
 
 
+def _strip_think_blocks(text: str) -> str:
+    cleaned = str(text or "")
+    while "<think>" in cleaned and "</think>" in cleaned:
+        start = cleaned.find("<think>")
+        end = cleaned.find("</think>", start)
+        if end == -1:
+            break
+        cleaned = (cleaned[:start] + cleaned[end + len("</think>") :]).strip()
+    return cleaned.strip()
+
+
 def _salvage_final_answer_text(raw_text: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     stripped = raw_text.strip()
     if not stripped:
@@ -720,11 +731,11 @@ NEXT STEP (JSON ONLY):
     try:
         chat_res = ChatResultPayload(**resp_payload)
         text = chat_res.text
+        if chat_res.reasoning_content:
+            text = _strip_think_blocks(text)
     except Exception:
         text = resp_payload.get("content") or resp_payload.get("text") or ""
-
-    if "<think>" in text:
-        text = text.split("</think>")[-1].strip()
+    text = _strip_think_blocks(text)
 
     if text.strip().startswith("[Error:"):
         raise PlannerTransportError(f"LLM Gateway error: {text.strip()}")

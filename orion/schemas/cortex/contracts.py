@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orion.core.bus.bus_schemas import LLMMessage
 from orion.schemas.cortex.types import StepExecutionResult
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
 
 class RecallDirective(BaseModel):
@@ -151,6 +152,7 @@ class CortexClientResult(BaseModel):
     error: Optional[Dict[str, Any]] = None
     correlation_id: Optional[str] = None
     agent_trace: Optional[AgentTraceSummaryV1] = None
+    metacog_traces: List[MetacognitiveTraceV1] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

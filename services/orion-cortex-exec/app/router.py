@@ -16,8 +16,10 @@ from .recall_utils import (
     should_run_recall,
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, PlanExecutionResult, StepExecutionResult
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from .supervisor import Supervisor
 from .settings import settings
+from .metacog_enrichment import extract_reasoning_features
 from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion.cortex.router")
@@ -46,6 +48,42 @@ def _normalize_execution_depth(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlation_id: str, session_id: str | None) -> List[MetacognitiveTraceV1]:
+    traces: List[MetacognitiveTraceV1] = []
+    for step in step_results:
+        if not isinstance(step.result, dict):
+            continue
+        llm_payload = step.result.get("LLMGatewayService")
+        if not isinstance(llm_payload, dict):
+            continue
+        reasoning = llm_payload.get("reasoning_content")
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            continue
+        model_name = llm_payload.get("model_used") or llm_payload.get("model") or "unknown"
+        token_count = None
+        usage = llm_payload.get("usage")
+        if isinstance(usage, dict):
+            token_count = usage.get("completion_tokens") or usage.get("total_tokens")
+        traces.append(
+            MetacognitiveTraceV1(
+                correlation_id=str(correlation_id),
+                session_id=session_id,
+                message_id=str(correlation_id),
+                trace_role="reasoning" if step.step_name != "synthesize_chat_stance_brief" else "stance",
+                trace_stage="post_answer",
+                content=reasoning.strip(),
+                model=str(model_name),
+                token_count=int(token_count) if isinstance(token_count, (int, float)) else None,
+                metadata={
+                    "step_name": step.step_name,
+                    "verb_name": step.verb_name,
+                    **extract_reasoning_features(reasoning),
+                },
+            )
+        )
+    return traces
 
 
 class PlanRunner:
@@ -324,6 +362,11 @@ class PlanRunner:
 
         if depth == 1:
             logger.info("depth1_complete corr_id=%s verb=%s elapsed=%s", correlation_id, plan.verb_name, sum([s.latency_ms for s in step_results]))
+        metacog_traces = _collect_metacog_traces(
+            step_results,
+            correlation_id=correlation_id,
+            session_id=str(ctx.get("session_id")) if ctx.get("session_id") else None,
+        )
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,
@@ -336,6 +379,7 @@ class PlanRunner:
             final_text=final_text or None,
             memory_used=memory_used,
             recall_debug=recall_debug,
+            metacog_traces=metacog_traces,
             error=None if overall_status == "success" else step_results[-1].error,
         )
 

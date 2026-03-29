@@ -185,6 +185,23 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
             "mode": mode,
             "source": "cognition.trace"
         })
+    elif kind == "metacognitive.trace.v1":
+        collection = settings.VECTOR_WRITER_METACOG_COLLECTION
+        raw_trace = str(payload.get("content") or "").strip()
+        if not raw_trace:
+            return None
+        summary = raw_trace[: settings.VECTOR_WRITER_METACOG_SUMMARY_MAX_CHARS]
+        content = summary
+        meta.update(
+            {
+                "correlation_id": str(payload.get("correlation_id") or env.correlation_id),
+                "session_id": payload.get("session_id"),
+                "trace_role": payload.get("trace_role"),
+                "model": payload.get("model"),
+                "summary": summary,
+                "raw_trace": raw_trace,
+            }
+        )
     else:
         # Fallback for generic text/event
         content = payload.get("text") or payload.get("summary") or ""

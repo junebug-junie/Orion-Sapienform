@@ -234,6 +234,27 @@ def _split_think_blocks(text: str) -> Tuple[str, Optional[str]]:
     return visible.strip(), (reasoning or None)
 
 
+def _debug_think_capture(raw_text: str, label: str) -> None:
+    if not raw_text:
+        logger.warning("think_debug label=%s raw_text empty", label)
+        return
+    start = raw_text.find("<think>")
+    end = raw_text.find("</think>")
+    excerpt_start = max(0, (start if start >= 0 else 0) - 200)
+    excerpt_end = min(len(raw_text), ((end + len("</think>")) if end >= 0 else min(len(raw_text), 400)) + 200)
+    excerpt = raw_text[excerpt_start:excerpt_end]
+    logger.warning(
+        "think_debug label=%s has_open=%s has_close=%s start=%s end=%s excerpt=%r raw_len=%s",
+        label,
+        start >= 0,
+        end >= 0,
+        start,
+        end,
+        excerpt,
+        len(raw_text),
+    )
+
+
 def _extract_vector_from_openai_response(data: Dict[str, Any]) -> Optional[List[float]]:
     """
     Best-effort extraction of an embedding/state vector from OpenAI-compatible
@@ -789,8 +810,22 @@ def _execute_openai_chat(
                 )
             text = _extract_text_from_openai_response(raw_data)
             reasoning_content = _extract_reasoning_from_openai_response(raw_data)
+            if _thought_debug_enabled():
+                _debug_think_capture(str(text or ""), "raw_provider_text")
+                logger.warning(
+                    "think_debug label=pre_split structured_reasoning_exists=%s structured_reasoning_len=%s",
+                    bool(str(reasoning_content or "").strip()),
+                    _debug_len(reasoning_content),
+                )
             think_blocks_found = "<think>" in str(text or "") and "</think>" in str(text or "")
             text, think_reasoning = _split_think_blocks(text)
+            if _thought_debug_enabled():
+                logger.warning(
+                    "think_debug label=post_split visible_len=%s extracted_think_len=%s extracted_think_snippet=%r",
+                    _debug_len(text),
+                    _debug_len(think_reasoning),
+                    _debug_snippet(think_reasoning),
+                )
             if not reasoning_content:
                 reasoning_content = think_reasoning
             if _thought_debug_enabled():

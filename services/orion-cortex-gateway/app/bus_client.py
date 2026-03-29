@@ -48,6 +48,12 @@ def _request_summary(
         "response_profile": options.get("response_profile") or metadata.get("response_profile"),
     }
 
+
+def _context_messages_from_chat_request(req: CortexChatRequest) -> list[LLMMessage]:
+    if isinstance(req.messages, list) and req.messages:
+        return [m if isinstance(m, LLMMessage) else LLMMessage(**m) for m in req.messages]
+    return [LLMMessage(role="user", content=req.prompt)]
+
 class BusClient:
     def __init__(self):
         self.settings = get_settings()
@@ -263,7 +269,7 @@ class BusClient:
             else:
                 verb = req.verb or "chat_general"
             packs = req.packs if req.packs is not None else ["executive_pack"]
-            messages = [LLMMessage(role="user", content=req.prompt)]
+            messages = _context_messages_from_chat_request(req)
 
             context = CortexClientContext(
                 messages=messages,
@@ -273,6 +279,13 @@ class BusClient:
                 user_id=req.user_id or "gateway-user",
                 trace_id=req.trace_id,
                 metadata=req.metadata or {}
+            )
+            logger.info(
+                "gateway_context_messages corr=%s mode=%s count=%s roles=%s",
+                env.correlation_id,
+                req.mode,
+                len(messages),
+                [m.role for m in messages[:12]],
             )
 
             if req.recall:

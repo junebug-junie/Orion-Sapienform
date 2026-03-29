@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
-from scripts.cortex_request_builder import build_chat_request, validate_single_verb_override
+from scripts.cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
@@ -491,6 +491,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json(await _with_biometrics({"error": inactive.get("message") or inactive.get("error")}, cache=biometrics_cache))
                 continue
 
+            continuity_messages = build_continuity_messages(
+                history=history,
+                latest_user_prompt=transcript,
+                turns=turns,
+            )
             chat_req, route_debug, use_recall = build_chat_request(
                 payload=data,
                 session_id=session_id,
@@ -500,6 +505,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
                 source_label="hub_ws",
                 prompt=prompt_with_ctx,
+                messages=continuity_messages,
             )
             workflow_request = chat_req.metadata.get("workflow_request") if isinstance(chat_req.metadata, dict) else None
             execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
@@ -568,6 +574,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 (chat_req.options or {}).get("route_intent") or "none",
                 len(((chat_req.options or {}).get("allowed_verbs") or [])),
                 chat_req.packs or [],
+            )
+            logger.info(
+                "hub_context_messages corr=%s sid=%s mode=%s count=%s roles=%s",
+                trace_id,
+                session_id,
+                chat_req.mode,
+                len(chat_req.messages or []),
+                [m.role if hasattr(m, "role") else m.get("role") for m in (chat_req.messages or [])][:12],
             )
             _log_hub_route_decision(
                 corr_id=trace_id,

@@ -19,7 +19,7 @@ from .chat_history import build_chat_history_envelope, publish_chat_history, pub
 from .library import scan_cognition_library
 from .trace_payloads import extract_agent_trace_payload
 from .workflow_payloads import extract_workflow_payload
-from .cortex_request_builder import build_chat_request, validate_single_verb_override
+from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .social_room import is_social_room_payload, social_room_client_meta
 from orion.cognition.verb_activation import build_verb_list
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
@@ -595,6 +595,12 @@ async def handle_chat_request(
         return inactive
 
     corr_id = str(uuid4())
+    context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+    continuity_messages = build_continuity_messages(
+        history=user_messages,
+        latest_user_prompt=user_prompt,
+        turns=context_turns,
+    )
     req, route_debug, _ = build_chat_request(
         payload=payload,
         session_id=session_id,
@@ -604,6 +610,7 @@ async def handle_chat_request(
         auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
         source_label="hub_http",
         prompt=user_prompt,
+        messages=continuity_messages,
     )
     workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
     execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
@@ -646,6 +653,14 @@ async def handle_chat_request(
         (req.options or {}).get("route_intent") or "none",
         len(((req.options or {}).get("allowed_verbs") or [])),
         req.packs or [],
+    )
+    logger.info(
+        "hub_context_messages corr=%s sid=%s mode=%s count=%s roles=%s",
+        corr_id,
+        session_id,
+        req.mode,
+        len(req.messages or []),
+        [m.role if hasattr(m, "role") else m.get("role") for m in (req.messages or [])][:12],
     )
     _log_hub_route_decision(
         corr_id=corr_id,

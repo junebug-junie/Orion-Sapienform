@@ -9,12 +9,11 @@ from orion.schemas.cortex.contracts import (
     CortexClientRequest,
     CortexClientContext,
     RecallDirective,
-    LLMMessage
 )
 from orion.schemas.cortex.gateway import CortexChatRequest
 
 from .settings import get_settings
-from .bus_client import BusClient
+from .bus_client import BusClient, _context_messages_from_chat_request
 
 # Ensure logs show up in container
 logging.basicConfig(level=logging.INFO)
@@ -58,7 +57,13 @@ async def chat(req: CortexChatRequest, response: Response):
     packs = req.packs if req.packs is not None else ["executive_pack"]
 
     # Messages
-    messages = [LLMMessage(role="user", content=req.prompt)]
+    messages = _context_messages_from_chat_request(req)
+    logging.getLogger("orion.cortex.gateway").info(
+        "gateway_context_messages mode=%s count=%s roles=%s",
+        req.mode,
+        len(messages),
+        [m.role for m in messages[:12]],
+    )
 
     # Context
     context = CortexClientContext(

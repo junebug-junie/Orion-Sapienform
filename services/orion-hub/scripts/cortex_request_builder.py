@@ -113,6 +113,40 @@ def _normalize_flag(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def build_continuity_messages(
+    *,
+    history: Any,
+    latest_user_prompt: str,
+    turns: int = 10,
+) -> List[Dict[str, str]]:
+    """Build bounded user/assistant/system turns for CortexChatRequest.messages."""
+    max_turns = max(0, int(turns or 0))
+    max_msgs = 2 * max_turns if max_turns else 0
+    normalized: List[Dict[str, str]] = []
+
+    if isinstance(history, list):
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"user", "assistant", "system"}:
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            normalized.append({"role": role, "content": content})
+
+    if max_msgs > 0 and len(normalized) > max_msgs:
+        normalized = normalized[-max_msgs:]
+
+    if not normalized:
+        prompt = str(latest_user_prompt or "").strip()
+        if prompt:
+            normalized = [{"role": "user", "content": prompt}]
+
+    return normalized
+
+
 def _build_recall_payload(payload: Dict[str, Any], *, use_recall: bool, route_mode: str | None = None) -> Dict[str, Any]:
     recall_mode = str(payload.get("recall_mode") or "hybrid").strip() or "hybrid"
     recall_required = _normalize_flag(payload.get("recall_required"), default=False)
@@ -213,6 +247,7 @@ def build_cortex_chat_request(
     auto_default_enabled: bool,
     source_label: str,
     prompt: str,
+    messages: List[Dict[str, Any]] | None = None,
 ) -> Tuple[CortexChatRequest, Dict[str, Any], bool]:
     selected_ui_route = _normalize_mode(
         payload.get("mode"),
@@ -449,6 +484,7 @@ def build_cortex_chat_request(
 
     req = CortexChatRequest(
         prompt=prompt,
+        messages=messages,
         mode=mode,
         route_intent=route_intent,
         session_id=session_id,
@@ -525,6 +561,7 @@ def build_chat_request(
     auto_default_enabled: bool,
     source_label: str,
     prompt: str,
+    messages: List[Dict[str, Any]] | None = None,
 ) -> Tuple[CortexChatRequest, Dict[str, Any], bool]:
     """Compatibility wrapper: canonical Hub chat request builder for HTTP + WS."""
     return build_cortex_chat_request(
@@ -536,4 +573,5 @@ def build_chat_request(
         auto_default_enabled=auto_default_enabled,
         source_label=source_label,
         prompt=prompt,
+        messages=messages,
     )

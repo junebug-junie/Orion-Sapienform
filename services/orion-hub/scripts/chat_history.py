@@ -42,6 +42,7 @@ def _debug_snippet(value: object, max_len: int = 200) -> str:
 def select_reasoning_trace_for_history(
     *,
     correlation_id: UUID | str | None,
+    reasoning_trace: Optional[MetacognitiveTraceV1 | dict[str, Any]],
     metacog_traces: Optional[List[dict[str, Any]]],
     reasoning_content: Optional[str],
     session_id: Optional[str],
@@ -49,22 +50,25 @@ def select_reasoning_trace_for_history(
     model: Optional[str] = None,
 ) -> Tuple[Optional[dict[str, Any]], str]:
     traces_exist = isinstance(metacog_traces, list) and len(metacog_traces) > 0
+    explicit_trace_exists = bool(reasoning_trace)
     content_exists = bool(str(reasoning_content or "").strip())
     selected_source = "none"
     selected_trace: Optional[dict[str, Any]] = None
 
-    if isinstance(metacog_traces, list):
-        for idx, trace in enumerate(metacog_traces):
-            if not isinstance(trace, dict):
-                continue
-            trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
-            if trace_role != "reasoning":
-                continue
-            content = str(trace.get("content") or "").strip()
-            if content:
-                selected_trace = trace
-                selected_source = f"metacog_traces[{idx}]"
-                break
+    explicit_candidate: Optional[dict[str, Any]] = None
+    if hasattr(reasoning_trace, "model_dump"):
+        try:
+            explicit_candidate = reasoning_trace.model_dump(mode="json")
+        except Exception:
+            explicit_candidate = None
+    elif isinstance(reasoning_trace, dict):
+        explicit_candidate = dict(reasoning_trace)
+
+    if isinstance(explicit_candidate, dict):
+        content = str(explicit_candidate.get("content") or "").strip()
+        if content:
+            selected_trace = explicit_candidate
+            selected_source = "reasoning_trace"
 
     if selected_trace is None and content_exists:
         selected_trace = {
@@ -79,15 +83,31 @@ def select_reasoning_trace_for_history(
         }
         selected_source = "reasoning_content"
 
+    if selected_trace is None and isinstance(metacog_traces, list):
+        for idx, trace in enumerate(metacog_traces):
+            if not isinstance(trace, dict):
+                continue
+            trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
+            if trace_role != "reasoning":
+                continue
+            content = str(trace.get("content") or "").strip()
+            if content:
+                selected_trace = trace
+                selected_source = f"metacog_traces[{idx}]"
+                break
+
     if _thought_debug_enabled():
         selected_content = (
             selected_trace.get("content") if isinstance(selected_trace, dict) else None
         )
         logger.info(
-            "THOUGHT_DEBUG_HUB stage=reasoning_trace_select corr=%s metacog_traces_exists=%s reasoning_content_exists=%s selected_source=%s selected_content_len=%s selected_content_snippet=%r",
+            "THOUGHT_DEBUG_HUB stage=reasoning_trace_select corr=%s shape=%s selected_source=%s selected_content_len=%s selected_content_snippet=%r",
             correlation_id,
-            traces_exist,
-            content_exists,
+            {
+                "explicit_reasoning_trace_exists": explicit_trace_exists,
+                "metacog_traces_exists": traces_exist,
+                "reasoning_content_exists": content_exists,
+            },
             selected_source,
             _debug_len(selected_content),
             _debug_snippet(selected_content),
@@ -255,6 +275,16 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
                 _debug_snippet(thought_candidate),
                 _debug_len(getattr(payload, "prompt", None)),
                 _debug_len(getattr(payload, "response", None)),
+            )
+            logger.info(
+                "THOUGHT_DEBUG_HUB stage=publish_chat_turn_shape corr=%s shape=%s",
+                env.correlation_id,
+                {
+                    "payload_keys": sorted(list(payload.model_dump(mode="json").keys())) if hasattr(payload, "model_dump") else [],
+                    "reasoning_trace_keys": sorted(list(rt.keys())) if isinstance(rt, dict) else (sorted(list(rt.model_dump(mode="json").keys())) if hasattr(rt, "model_dump") else []),
+                    "reasoning_trace_content_len": _debug_len((rt.get("content") if isinstance(rt, dict) else getattr(rt, "content", None))),
+                    "reasoning_content_len": _debug_len(rc),
+                },
             )
         await bus.publish(channel, env)
     except Exception as e:

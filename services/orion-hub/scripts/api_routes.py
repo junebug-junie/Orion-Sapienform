@@ -184,12 +184,18 @@ def _log_hub_route_decision(
     route_debug: Dict[str, Any],
     user_prompt: str,
 ) -> None:
+    emitted_mode = route_debug.get("mode")
+    emitted_verb = route_debug.get("verb")
+    effective_verb = emitted_verb
+    if not effective_verb and emitted_mode not in {"agent", "council"}:
+        effective_verb = "chat_general"
     summary = {
         "corr_id": corr_id,
         "session_id": session_id,
         "selected_ui_route": route_debug.get("selected_ui_route"),
-        "emitted_mode": route_debug.get("mode"),
-        "emitted_verb": route_debug.get("verb"),
+        "emitted_mode": emitted_mode,
+        "emitted_verb": emitted_verb,
+        "effective_verb": effective_verb,
         "emitted_options": route_debug.get("options") or {},
         "packs": route_debug.get("packs") or [],
         "force_agent_chain": bool(route_debug.get("force_agent_chain")),
@@ -847,6 +853,7 @@ async def api_chat(
             )
             selected_reasoning_trace, _ = select_reasoning_trace_for_history(
                 correlation_id=final_corr_id,
+                reasoning_trace=result.get("reasoning_trace"),
                 metacog_traces=metacog_traces if isinstance(metacog_traces, list) else None,
                 reasoning_content=reasoning_content,
                 session_id=session_id,

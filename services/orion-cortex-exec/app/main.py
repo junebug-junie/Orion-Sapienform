@@ -9,6 +9,7 @@ import asyncio
 import logging
 import time
 from typing import Any, Dict
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, ValidationError
 
@@ -21,6 +22,7 @@ from orion.schemas.cortex.exec import CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.schemas.metacognitive_trace import MetacognitiveTraceEnvelope, MetacognitiveTraceV1
 from .router import PlanRouter
 from .settings import settings
 from .dream_publish import build_dream_publish_envelope
@@ -34,6 +36,13 @@ from .collapse_verbs import (  # noqa: F401 - register collapse verbs
 )
 
 logger = logging.getLogger("orion.cortex.exec.main")
+
+
+def _uuid_from_correlation_id(value: str) -> UUID:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return uuid5(NAMESPACE_URL, str(value))
 
 
 class CortexExecRequest(BaseEnvelope):
@@ -198,6 +207,55 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
         await svc.bus.publish(settings.channel_cognition_trace_pub, trace_envelope)
         logger.info(f"Published CognitionTrace to {settings.channel_cognition_trace_pub}")
+
+        reasoning_trace = next(
+            (
+                trace
+                for trace in (res.metacog_traces or [])
+                if isinstance(trace, MetacognitiveTraceV1) and str(trace.content or "").strip()
+            ),
+            None,
+        )
+        if reasoning_trace is not None:
+            extra = req_env.payload.args.extra if req_env.payload.args else {}
+            session_id = None
+            message_id = None
+            if isinstance(extra, dict):
+                session_id = extra.get("session_id")
+                message_id = extra.get("message_id")
+            if not session_id:
+                session_id = ctx.get("session_id")
+            if not message_id:
+                message_id = ctx.get("message_id")
+
+            metacog_payload = MetacognitiveTraceV1(
+                correlation_id=corr_id,
+                session_id=str(session_id) if session_id is not None else None,
+                message_id=str(message_id) if message_id is not None else None,
+                trace_role="reasoning",
+                trace_stage="pre_answer",
+                content=reasoning_trace.content,
+                model=reasoning_trace.model,
+                token_count=reasoning_trace.token_count,
+                confidence=reasoning_trace.confidence,
+                metadata={
+                    **(reasoning_trace.metadata or {}),
+                    "request_id": res.request_id,
+                    "status": res.status,
+                },
+            )
+            metacog_envelope = MetacognitiveTraceEnvelope(
+                source=_source(),
+                correlation_id=_uuid_from_correlation_id(corr_id),
+                causality_chain=env.causality_chain,
+                payload=metacog_payload,
+            )
+            await svc.bus.publish(settings.channel_metacog_trace_pub, metacog_envelope)
+            logger.info(
+                "Published MetacognitiveTrace to %s correlation_id=%s",
+                settings.channel_metacog_trace_pub,
+                corr_id,
+            )
 
     except Exception as e:
         logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)

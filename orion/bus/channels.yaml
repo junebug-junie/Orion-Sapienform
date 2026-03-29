@@ -773,7 +773,7 @@ channels:
     kind: "event"
     schema_id: "ChatHistoryMessageV1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host", "orion-spark-concept-induction"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -781,7 +781,7 @@ channels:
     kind: "event"
     schema_id: "ChatHistoryTurnV1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host", "orion-spark-concept-induction"]
     stability: "experimental"
     since: "2026-01-10"
 

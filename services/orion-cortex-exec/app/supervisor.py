@@ -172,6 +172,36 @@ def _grounding_verdict(user_text: str, answer_text: str) -> Dict[str, Any]:
     }
 
 
+def _has_recent_followup_continuity(messages: Any, answer_text: str) -> bool:
+    if not isinstance(messages, list) or len(messages) < 2:
+        return False
+    last_user = None
+    last_assistant = None
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        if last_user is None and role == "user":
+            last_user = content
+            continue
+        if last_user is not None and role == "assistant":
+            last_assistant = content
+            break
+    if not last_user or not last_assistant:
+        return False
+    user_tokens = _extract_key_terms(last_user)
+    if len(user_tokens) > 2:
+        return False
+    assistant_tokens = _extract_key_terms(last_assistant)
+    if not assistant_tokens:
+        return False
+    answer_lower = str(answer_text or "").lower()
+    return any(token in answer_lower for token in assistant_tokens[:8])
+
+
 def _coerce_pack_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -701,6 +731,7 @@ class Supervisor:
             output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
             user_text=_last_user_message(ctx),
+            runtime_mode=ctx.get("mode") or req.metadata.get("mode") or "agent",
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
@@ -1106,17 +1137,19 @@ class Supervisor:
         )
         user_text = _last_user_message(ctx)
         verdict = _grounding_verdict(user_text, final_text or "")
+        recent_followup_continuity = _has_recent_followup_continuity(ctx.get("messages"), final_text or "")
         logger.info(
-            "grounding_verdict corr_id=%s trace_id=%s session_id=%s anchored=%s overlap_terms=%s unrelated_markers=%s scaffolding_markers=%s",
+            "grounding_verdict corr_id=%s trace_id=%s session_id=%s anchored=%s recent_followup_continuity=%s overlap_terms=%s unrelated_markers=%s scaffolding_markers=%s",
             correlation_id,
             ctx.get("trace_id"),
             ctx.get("session_id"),
             verdict["anchored"],
+            recent_followup_continuity,
             verdict["overlap_terms"],
             verdict["unrelated_markers"],
             verdict["scaffolding_markers"],
         )
-        if not verdict["anchored"]:
+        if not verdict["anchored"] and not recent_followup_continuity:
             logger.warning(
                 "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
                 correlation_id,

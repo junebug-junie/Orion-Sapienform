@@ -1999,6 +1999,7 @@ async def call_step_services(
                     verb_profile=ctx.get("plan_recall_profile"),
                     step=step,
                     is_recall_step=True,
+                    runtime_mode=ctx.get("mode"),
                 )
                 logs.append(
                     f"rpc -> RecallService (reply={reply_channel}, profile={resolved_profile}, source={profile_source})"

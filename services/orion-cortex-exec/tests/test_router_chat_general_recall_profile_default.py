@@ -154,3 +154,4 @@ def test_router_allows_intentional_explicit_override(monkeypatch):
     assert result.status == "success"
     assert captured["profile"] == "reflect.v1"
     assert result.recall_debug.get("profile_override_source") == "explicit"
+

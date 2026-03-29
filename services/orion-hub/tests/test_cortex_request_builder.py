@@ -38,7 +38,7 @@ def test_agent_mode_emits_supervised_delivery_ready_request() -> None:
         "enabled": True,
         "required": False,
         "mode": "hybrid",
-        "profile": "reflect.v1",
+        "profile": None,
     }
     assert debug["selected_ui_route"] == "agent"
     assert debug["supervised"] is True
@@ -108,6 +108,24 @@ def test_agent_mode_recall_toggle_preserves_supervised_routing_intent() -> None:
     assert disabled_req.options["supervised"] is True
     assert enabled_debug["supervised"] is True
     assert disabled_debug["supervised"] is True
+
+
+def test_agent_mode_preserves_explicit_recall_profile_override() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={"mode": "agent", "use_recall": True, "recall_profile": "reflect.v1"},
+        session_id="sid-agent-explicit-profile",
+        user_id="user-1",
+        trace_id="trace-agent-explicit-profile",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Continue from my previous answer.",
+    )
+
+    assert req.mode == "agent"
+    assert req.recall["enabled"] is True
+    assert req.recall["profile"] == "reflect.v1"
+    assert debug["recall_profile"] == "reflect.v1"
 
 
 def test_auto_mode_emits_auto_route_intent_without_forcing_supervisor() -> None:

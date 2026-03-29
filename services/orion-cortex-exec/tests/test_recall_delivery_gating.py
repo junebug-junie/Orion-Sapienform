@@ -66,3 +66,18 @@ def test_concrete_ops_query_disables_default_reflective_recall() -> None:
     assert decision["run_recall"] is False
     assert decision["profile"] == "assist.light.v1"
     assert decision["reason"] == "concrete_ops_default_disabled"
+
+
+def test_agent_mode_uses_chat_general_profile_when_inherited_reflect_arrives() -> None:
+    decision = delivery_safe_recall_decision(
+        {"enabled": True, "profile": "reflect.v1", "mode": "hybrid"},
+        [_memory_step()],
+        output_mode="direct_answer",
+        verb_profile=None,
+        runtime_mode="agent",
+        user_text="yep",
+    )
+
+    assert decision["run_recall"] is True
+    assert decision["profile"] == "chat.general.v1"
+    assert decision["profile_source"] == "runtime_mode"

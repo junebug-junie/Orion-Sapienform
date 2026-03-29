@@ -62,3 +62,14 @@ def test_precedence_fallback_when_nothing_else() -> None:
     profile, source = resolve_profile({}, verb_profile=None, is_recall_step=False)
     assert profile == "reflect.v1"
     assert source == "fallback"
+
+
+def test_agent_runtime_ignores_inherited_reflect_profile_by_default() -> None:
+    profile, source = resolve_profile(
+        {"profile": "reflect.v1", "mode": "hybrid"},
+        verb_profile=None,
+        is_recall_step=False,
+        runtime_mode="agent",
+    )
+    assert profile == "chat.general.v1"
+    assert source == "runtime_mode"

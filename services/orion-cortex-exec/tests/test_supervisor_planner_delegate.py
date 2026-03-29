@@ -2,7 +2,7 @@ import asyncio
 import unittest
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.agents.schemas import FinalAnswer, ToolDef
@@ -230,6 +230,80 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         self.assertIn("I may have drifted from your request", result.final_text)
         self.assertIn("V100s", result.final_text)
         self.assertNotIn("Return your normal council output contract", result.final_text)
+
+    def test_grounding_guardrail_allows_direct_followup_answer_when_recent_thread_is_coherent(self):
+        supervisor = StubSupervisor(
+            planner_outputs=[(FinalAnswer(content="Given your Docker compose setup, start with 2 replicas and raise CPU limits."), None, "final_answer")]
+        )
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "raw_user_text": "yes",
+            "messages": [
+                {"role": "assistant", "content": "Do you want me to tune Docker compose replica counts or CPU limits first?"},
+                {"role": "user", "content": "yes"},
+            ],
+            "prior_step_results": [
+                {"step_name": "recall", "result": {"text": "hello Orion, good morning"}}
+            ],
+            "max_steps": 1,
+        }
+
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-followup",
+                ctx=ctx,
+                recall_cfg={"enabled": True},
+            )
+        )
+        assert result.final_text is not None
+        self.assertNotIn("I may have drifted from your request", result.final_text)
+
+    def test_agent_mode_recall_defaults_to_chat_general_when_profile_is_inherited(self):
+        supervisor = StubSupervisor(planner_outputs=[(FinalAnswer(content="ok"), None, "final_answer")])
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(
+            verb_name="chat",
+            steps=[],
+            metadata={"mode": "agent"},
+        )
+        captured = {}
+
+        async def _fake_recall_step(*args, **kwargs):
+            captured["profile"] = kwargs.get("recall_profile")
+            step = StepExecutionResult(
+                status="success",
+                verb_name="chat",
+                step_name="recall",
+                order=-1,
+                result={"RecallService": {"count": 1}},
+                latency_ms=1,
+                node="test",
+                logs=[],
+                error=None,
+            )
+            return step, {"count": 1}, ""
+
+        with patch("app.supervisor.run_recall_step", new=AsyncMock(side_effect=_fake_recall_step)):
+            asyncio.run(
+                supervisor.execute(
+                    source=source,
+                    req=req,
+                    correlation_id="corr-agent-recall-default",
+                    ctx={
+                        "mode": "agent",
+                        "messages": [{"role": "user", "content": "yes"}],
+                        "raw_user_text": "yes",
+                        "max_steps": 1,
+                    },
+                    recall_cfg={"enabled": True, "required": True, "profile": "reflect.v1", "mode": "hybrid"},
+                )
+            )
+
+        self.assertEqual(captured["profile"], "chat.general.v1")
 
 
 if __name__ == "__main__":

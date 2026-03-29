@@ -404,8 +404,17 @@ class ConceptInductionTests(unittest.TestCase):
         env_journal = BaseEnvelope(kind="journal.entry.created.v1", source=ServiceRef(name="journal", version="0.0.0"), payload={"body": "entry"})
         self.assertEqual(worker._source_kind(env_chat, "orion:chat:history:log"), "chat_turn")
         self.assertEqual(worker._source_kind(env_chat, "orion:chat:history:turn"), "chat_turn")
+        self.assertEqual(worker._source_kind(env_chat, "orion:chat:gpt:turn"), "chat_turn")
+        self.assertEqual(worker._source_kind(env_chat, "orion:chat:gpt:message:log"), "chat_turn")
         self.assertEqual(worker._source_kind(env_dream, "orion:dream:complete"), "dream_result")
         self.assertEqual(worker._source_kind(env_journal, "orion:journal:created"), "journal_write")
+
+    def test_worker_subscriptions_include_real_chat_turn_channels(self):
+        cfg = ConceptSettings(orion_bus_enabled=False)
+        self.assertIn("orion:chat:history:turn", cfg.intake_channels)
+        self.assertIn("orion:chat:social:turn", cfg.intake_channels)
+        self.assertIn("orion:chat:gpt:turn", cfg.intake_channels)
+        self.assertIn("orion:chat:gpt:message:log", cfg.intake_channels)
 
     def test_extract_text_includes_chat_turn_prompt_and_response(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
@@ -517,6 +526,70 @@ class ConceptInductionTests(unittest.TestCase):
         self.assertEqual(status["cooldown_sec"], worker.cfg.concept_trigger_cooldown_sec)
         self.assertTrue(status["recent_decisions"])
         self.assertIn("orion:chat:history:turn", status["intake_channels"])
+        self.assertIn("chat_turn", status["source_kind_mapping"])
+
+    def test_chat_turn_cooldown_suppression_records_decision(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(
+                ConceptSettings(
+                    orion_bus_enabled=False,
+                    store_path=str(Path(td) / "state.json"),
+                    concept_trigger_cooldown_sec=600,
+                    concept_trigger_dedupe_sec=0,
+                )
+            )
+            called = []
+
+            async def _fake_run(subject: str, corr_id=None):
+                called.append(subject)
+                worker.last_run[subject] = datetime.now(timezone.utc)
+
+            worker.run_for_subject = _fake_run  # type: ignore[method-assign]
+            env = BaseEnvelope(
+                kind="chat.history",
+                source=ServiceRef(name="hub", version="0.0.0"),
+                correlation_id=uuid4(),
+                payload={"prompt": "Hi", "response": "Hello", "user_id": "juniper"},
+            )
+            asyncio.run(worker.handle_envelope(env, "orion:chat:history:turn"))
+            asyncio.run(worker.handle_envelope(BaseEnvelope.model_validate(env.model_dump()), "orion:chat:history:turn"))
+            self.assertTrue(called)
+            decisions = [d["decision"] for d in worker.trigger_decisions]
+            self.assertIn("skipped_due_to_cooldown", decisions)
+
+    def test_chat_turn_trigger_local_save_and_rdf_materialization(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            profile = asyncio.run(
+                ConceptInducer(ConceptSettings()).run(
+                    subject="orion",
+                    window=[
+                        WindowEvent(
+                            text="Orion keeps coherence.",
+                            timestamp=datetime.now(timezone.utc),
+                            envelope=_env_with_text("Orion keeps coherence."),
+                            intake_channel="orion:chat:history:log",
+                        )
+                    ],
+                )
+            ).profile
+
+            def _save_local(subject: str, p):
+                worker.store.save(subject, p, "hash-chat-trigger")
+
+            worker.inducer = StubInducer(profile=profile, save_hook=_save_local)
+            worker.bus = FakeBus()
+            env = BaseEnvelope(
+                kind="chat.history",
+                source=ServiceRef(name="hub", version="0.0.0"),
+                correlation_id=uuid4(),
+                payload={"prompt": "Hi Orion", "response": "Hi Juniper"},
+            )
+            asyncio.run(worker.handle_envelope(env, "orion:chat:history:turn"))
+            reloaded = worker.store.load("orion")
+            self.assertIsNotNone(reloaded)
+            published = worker.bus.published
+            self.assertTrue(any(channel == worker.cfg.forward_rdf_channel and out.kind == "rdf.write.request" for channel, out in published))
 
 
 if __name__ == "__main__":

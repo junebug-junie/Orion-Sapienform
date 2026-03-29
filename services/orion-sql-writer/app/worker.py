@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from copy import deepcopy
 from datetime import date, datetime, timezone
@@ -81,6 +82,21 @@ _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL}
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 
 def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
@@ -347,6 +363,39 @@ def _extract_thought_process(payload: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str], str]:
+    if not isinstance(payload, dict):
+        return None, "payload_not_dict"
+    role = str(payload.get("role") or "").strip().lower()
+    has_assistant_response = bool(_normalized_text(payload.get("response")))
+    if role and role != "assistant" and not has_assistant_response:
+        return None, f"role_filtered:{role}"
+    rt = payload.get("reasoning_trace")
+    if isinstance(rt, dict):
+        candidate = _normalized_text(rt.get("content"))
+        if candidate:
+            return candidate, "reasoning_trace.content"
+    elif isinstance(rt, str):
+        candidate = _normalized_text(rt)
+        if candidate:
+            return candidate, "reasoning_trace.string"
+    candidate = _normalized_text(payload.get("reasoning_content"))
+    if candidate:
+        return candidate, "reasoning_content"
+    traces = payload.get("metacog_traces")
+    if isinstance(traces, list):
+        for idx, trace in enumerate(traces):
+            if not isinstance(trace, dict):
+                continue
+            trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
+            if trace_role and trace_role not in {"reasoning", "assistant"}:
+                continue
+            candidate = _normalized_text(trace.get("content"))
+            if candidate:
+                return candidate, f"metacog_traces[{idx}].content"
+    return None, "no_reasoning_candidate"
+
+
 def _map_spark_to_telemetry_row(
     kind: str,
     payload: Any,
@@ -493,6 +542,16 @@ def _write_row(sql_model_cls, data: dict) -> bool:
 
         if sql_model_cls in (ChatHistoryLogSQL, ChatGptLogSQL) and ("id" in valid_keys) and not filtered_data.get("id"):
             filtered_data["id"] = filtered_data.get("correlation_id") or str(uuid.uuid4())
+        if _thought_debug_enabled() and sql_model_cls is ChatHistoryLogSQL:
+            logger.info(
+                "THOUGHT_DEBUG_SQL_WRITE stage=pre_merge corr=%s id=%s prompt_len=%s response_len=%s thought_process_len=%s thought_process_snippet=%r",
+                filtered_data.get("correlation_id") or data.get("correlation_id"),
+                filtered_data.get("id"),
+                _debug_len(filtered_data.get("prompt")),
+                _debug_len(filtered_data.get("response")),
+                _debug_len(filtered_data.get("thought_process")),
+                _debug_snippet(filtered_data.get("thought_process")),
+            )
 
         # Standard coercion
         for col in mapper.columns:
@@ -771,9 +830,27 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     client_meta = payload.get("client_meta")
     if client_meta is not None:
         extra_sql_fields["client_meta"] = _json_sanitize(client_meta)
-    thought_process = _extract_thought_process(payload)
+    thought_process, thought_source = _thought_candidate_and_reason(payload)
+    if _thought_debug_enabled() and env.kind == "chat.history":
+        logger.info(
+            "THOUGHT_DEBUG_SQL_INTAKE stage=chat_history_intake corr=%s payload_keys=%s reasoning_trace_exists=%s reasoning_content_exists=%s candidate_source=%s candidate_len=%s candidate_snippet=%r discarded=%s",
+            env.correlation_id,
+            sorted(list(payload.keys())) if isinstance(payload, dict) else [],
+            isinstance(payload.get("reasoning_trace"), dict) or isinstance(payload.get("reasoning_trace"), str),
+            bool(str(payload.get("reasoning_content") or "").strip()),
+            thought_source,
+            _debug_len(thought_process),
+            _debug_snippet(thought_process),
+            thought_process is None,
+        )
     if thought_process:
         extra_sql_fields["thought_process"] = thought_process
+    elif _thought_debug_enabled() and env.kind == "chat.history":
+        logger.info(
+            "THOUGHT_DEBUG_SQL_INTAKE stage=chat_history_intake_discarded corr=%s reason=%s",
+            env.correlation_id,
+            thought_source,
+        )
 
     if env.kind.startswith("spark."):
         try:
@@ -844,6 +921,16 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
 
             if isinstance(data_to_process, dict):
                 data_to_process = data_to_process.copy()
+                if _thought_debug_enabled() and sql_model is ChatHistoryLogSQL:
+                    pending_thought = extra_sql_fields.get("thought_process")
+                    logger.info(
+                        "THOUGHT_DEBUG_SQL_INTAKE stage=pre_write_chat_history corr=%s prompt_len=%s response_len=%s thought_process_len=%s thought_process_state=%s",
+                        env.correlation_id,
+                        _debug_len(data_to_process.get("prompt")),
+                        _debug_len(data_to_process.get("response")),
+                        _debug_len(pending_thought),
+                        "non_null" if pending_thought else "null",
+                    )
                 if "node" not in data_to_process and env.source and env.source.node:
                     extra_sql_fields.setdefault("node", env.source.node)
                 if "source_message_id" not in data_to_process and env.id:

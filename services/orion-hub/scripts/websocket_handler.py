@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,21 @@ from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPay
 from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion-hub.ws")
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 
 #________________________
@@ -774,6 +790,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
                         for trace in metacog_traces:
+                            if _thought_debug_enabled() and isinstance(trace, dict):
+                                logger.info(
+                                    "THOUGHT_DEBUG_METACOG_PUB stage=hub_ws_prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
+                                    trace_id,
+                                    trace.get("trace_role") or trace.get("role"),
+                                    trace.get("trace_stage") or trace.get("stage"),
+                                    trace.get("model"),
+                                    _debug_len(trace.get("content")),
+                                    _debug_snippet(trace.get("content")),
+                                )
                             trace_env = BaseEnvelope(
                                 kind="metacognitive.trace.v1",
                                 source=ServiceRef(
@@ -785,6 +811,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 payload=trace,
                             )
                             _schedule_publish(bus.publish("orion:metacog:trace", trace_env), "metacog.trace")
+                        if _thought_debug_enabled() and not any(isinstance(t, dict) for t in metacog_traces):
+                            logger.info("THOUGHT_DEBUG_METACOG_PUB stage=hub_ws_skipped corr=%s reason=no_valid_trace_dicts", trace_id)
                         logger.info(
                             "hub_metacog_published corr=%s source=ws channel=%s traces=%s",
                             trace_id,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -23,6 +24,21 @@ from .metacog_enrichment import extract_reasoning_features
 from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion.cortex.router")
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 
 def _extract_final_text(steps: List[StepExecutionResult]) -> str:
@@ -83,6 +99,17 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
                 },
             )
         )
+        if _thought_debug_enabled():
+            logger.info(
+                "THOUGHT_DEBUG_EXEC stage=trace_collected corr=%s verb=%s step=%s trace_role=%s trace_stage=%s content_len=%s content_snippet=%r",
+                correlation_id,
+                step.verb_name,
+                step.step_name,
+                "reasoning" if step.step_name != "synthesize_chat_stance_brief" else "stance",
+                "post_answer",
+                _debug_len(reasoning),
+                _debug_snippet(reasoning),
+            )
     return traces
 
 
@@ -373,6 +400,15 @@ class PlanRunner:
             plan.verb_name,
             len(metacog_traces),
         )
+        if _thought_debug_enabled():
+            logger.info(
+                "THOUGHT_DEBUG_EXEC stage=metacog_attached corr=%s verb=%s traces=%s final_text_len=%s fallback_to_final_text=%s",
+                correlation_id,
+                plan.verb_name,
+                len(metacog_traces),
+                _debug_len(final_text),
+                len(metacog_traces) == 0,
+            )
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,

@@ -28,7 +28,10 @@ class ConceptSettings(BaseSettings):
         default_factory=lambda: [
             "orion:chat:history:log",
             "orion:chat:history:turn",
+            "orion:chat:social:turn",
             "orion:chat:social:stored",
+            "orion:chat:gpt:turn",
+            "orion:chat:gpt:message:log",
             "orion:collapse:sql-write",
             "orion:spark:telemetry",
             "orion:metacognition:tick",
@@ -36,6 +39,7 @@ class ConceptSettings(BaseSettings):
         ],
         validation_alias=AliasChoices("BUS_INTAKE_CHANNELS", "CONCEPT_INTAKE_CHANNELS"),
     )
+    concept_autonomous_trigger_enabled: bool = Field(True, alias="CONCEPT_AUTONOMOUS_TRIGGER_ENABLED")
     profile_channel: str = Field(
         "orion:spark:concepts:profile",
         alias="BUS_PROFILE_OUT",

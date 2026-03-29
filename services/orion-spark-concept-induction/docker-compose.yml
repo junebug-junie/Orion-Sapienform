@@ -15,7 +15,7 @@ services:
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
-      - BUS_INTAKE_CHANNELS=${BUS_INTAKE_CHANNELS:-["orion:chat:history:log","orion:chat:history:turn","orion:chat:social:stored","orion:collapse:sql-write","orion:spark:telemetry","orion:metacognition:tick","orion:cognition:trace"]}
+      - BUS_INTAKE_CHANNELS=${BUS_INTAKE_CHANNELS:-["orion:chat:history:log","orion:chat:history:turn","orion:chat:social:turn","orion:chat:social:stored","orion:chat:gpt:turn","orion:chat:gpt:message:log","orion:collapse:sql-write","orion:spark:telemetry","orion:metacognition:tick","orion:cognition:trace"]}
       - BUS_PROFILE_OUT=${BUS_PROFILE_OUT}
       - BUS_DELTA_OUT=${BUS_DELTA_OUT}
       - BUS_VECTOR_OUT=${BUS_VECTOR_OUT}
@@ -32,6 +32,7 @@ services:
       - CONCEPT_TRIGGER_COOLDOWN_SEC=${CONCEPT_TRIGGER_COOLDOWN_SEC}
       - CONCEPT_TRIGGER_DEDUPE_SEC=${CONCEPT_TRIGGER_DEDUPE_SEC}
       - CONCEPT_TRIGGER_RECENT_DECISIONS=${CONCEPT_TRIGGER_RECENT_DECISIONS}
+      - CONCEPT_AUTONOMOUS_TRIGGER_ENABLED=${CONCEPT_AUTONOMOUS_TRIGGER_ENABLED}
       - CONCEPT_SUBJECTS=${CONCEPT_SUBJECTS}
       - SPACY_MODEL=${SPACY_MODEL}
       - CONCEPT_MAX_CANDIDATES=${CONCEPT_MAX_CANDIDATES}

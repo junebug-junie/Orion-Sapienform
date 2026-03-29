@@ -95,6 +95,35 @@ class ConceptWorker:
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
 
+    def _accepted_source_mapping(self) -> dict:
+        return {
+            "chat_turn": [
+                "channel contains chat:history",
+                "channel contains chat:social",
+                "channel contains chat:gpt",
+            ],
+            "journal_write": [
+                "kind=journal.entry.created.v1",
+                "kind=journal.entry.write.v1",
+                "kind startswith journal",
+            ],
+            "dream_result": [
+                "kind=dream.result.v1",
+                "kind startswith dream.",
+            ],
+            "self_review_result": [
+                "kind startswith self.review",
+                "kind startswith self_review",
+            ],
+            "metacog_tick": [
+                "channel contains metacognition:tick",
+                "kind startswith metacognition.tick",
+            ],
+            "cognition_trace": ["channel contains cognition:trace"],
+            "collapse_event": ["channel contains collapse"],
+            "generic_activity": ["fallback"],
+        }
+
     def _prune_window(self, subject: str) -> None:
         window = self.window.get(subject, [])
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.cfg.window_max_minutes)
@@ -137,7 +166,11 @@ class ConceptWorker:
     def _source_kind(self, env: BaseEnvelope, intake_channel: str) -> str:
         lowered_kind = (env.kind or "").lower()
         lowered_channel = (intake_channel or "").lower()
-        if "chat:history" in lowered_channel or "chat:social" in lowered_channel:
+        if (
+            "chat:history" in lowered_channel
+            or "chat:social" in lowered_channel
+            or "chat:gpt" in lowered_channel
+        ):
             return "chat_turn"
         if lowered_kind in {"journal.entry.created.v1", "journal.entry.write.v1"} or "journal" in lowered_kind:
             return "journal_write"
@@ -452,21 +485,60 @@ class ConceptWorker:
         )
         await self._publish_dossier(dossier, env.correlation_id)
 
-        trigger = self._build_trigger(env, intake_channel, text)
-        if trigger is None:
+        source_kind = self._source_kind(env, intake_channel)
+        subjects = self._select_trigger_subjects(env, intake_channel, source_kind, text)
+        source_event_id = str(getattr(env, "id", None) or env.correlation_id or uuid4())
+        corr_id = str(env.correlation_id) if env.correlation_id else None
+        logger.info(
+            "concept_induction_trigger_received source_kind=%s source_event_id=%s correlation_id=%s subjects=%s",
+            source_kind,
+            source_event_id,
+            corr_id,
+            ",".join(subjects),
+        )
+        if not self.cfg.concept_autonomous_trigger_enabled:
             logger.info(
-                "concept_induction_trigger_rejected reason=no_subject_match kind=%s channel=%s correlation_id=%s",
+                "concept_induction_trigger_decision decision=disabled source_kind=%s source_event_id=%s correlation_id=%s",
+                source_kind,
+                source_event_id,
+                corr_id,
+            )
+            self._record_trigger_decision({
+                "decision": "disabled",
+                "reason": "autonomous_trigger_disabled",
+                "source_kind": source_kind,
+                "source_event_id": source_event_id,
+                "correlation_id": corr_id,
+                "subjects": subjects,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            })
+            return
+
+        if not subjects:
+            logger.info(
+                "concept_induction_trigger_rejected reason=no_subject_match source_kind=%s kind=%s channel=%s correlation_id=%s",
+                source_kind,
                 env.kind,
                 intake_channel,
                 env.correlation_id,
             )
+            self._record_trigger_decision({
+                "decision": "rejected",
+                "reason": "no_subject_match",
+                "source_kind": source_kind,
+                "source_event_id": source_event_id,
+                "correlation_id": corr_id,
+                "subjects": [],
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            })
             return
-        logger.info(
-            "concept_induction_trigger_received source_kind=%s source_event_id=%s correlation_id=%s subjects=%s",
-            trigger.source_kind,
-            trigger.source_event_id,
-            trigger.correlation_id,
-            ",".join(trigger.subjects),
+        trigger = ConceptInductionTrigger(
+            source_kind=source_kind,
+            source_event_id=source_event_id,
+            correlation_id=corr_id,
+            subjects=subjects,
+            trigger_reason=f"{source_kind}:subject-selection",
+            event_timestamp=env.created_at,
         )
         if self._should_skip_due_to_dedupe(trigger):
             logger.info(
@@ -589,6 +661,8 @@ class ConceptWorker:
     def trigger_status(self) -> dict:
         return {
             "intake_channels": list(self.cfg.intake_channels),
+            "autonomous_trigger_enabled": self.cfg.concept_autonomous_trigger_enabled,
+            "source_kind_mapping": self._accepted_source_mapping(),
             "subjects": list(self.cfg.subjects),
             "cooldown_sec": self.cfg.concept_trigger_cooldown_sec,
             "dedupe_sec": self.cfg.concept_trigger_dedupe_sec,
@@ -605,14 +679,19 @@ class ConceptWorker:
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in patterns)
         logger.info(
             "concept_induction_worker_startup autonomous_trigger_loop=%s bus_enabled=%s bus_enforce_catalog=%s "
-            "intake_channels=%s trigger_subjects=%s cooldown_sec=%d dedupe_sec=%d",
-            True,
+            "intake_channels=%s source_kind_mapping=%s trigger_subjects=%s cooldown_sec=%d dedupe_sec=%d "
+            "window_max_events=%d window_max_minutes=%d recent_decisions=%d",
+            self.cfg.concept_autonomous_trigger_enabled,
             self.cfg.orion_bus_enabled,
             self.cfg.orion_bus_enforce_catalog,
             patterns,
+            self._accepted_source_mapping(),
             self.cfg.subjects,
             self.cfg.concept_trigger_cooldown_sec,
             self.cfg.concept_trigger_dedupe_sec,
+            self.cfg.window_max_events,
+            self.cfg.window_max_minutes,
+            self.cfg.concept_trigger_recent_decisions,
         )
         async with self.bus.subscribe(*patterns, patterns=uses_glob) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):

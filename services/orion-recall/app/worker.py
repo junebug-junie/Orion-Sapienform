@@ -123,6 +123,66 @@ def _is_memory_browse(text: str) -> bool:
         and re.search(r"\\b(memory|memories|recent|context)\\b", lowered)
     )
 
+
+def _normalize_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return " ".join(text.split())
+
+
+def _parse_exclusion(q: RecallQueryV1) -> Dict[str, Any]:
+    raw = q.exclude if isinstance(q.exclude, dict) else {}
+    active_turn_text = str(raw.get("active_turn_text") or q.fragment or "").strip()
+    active_turn_ids: List[str] = []
+    for value in raw.get("active_turn_ids", []):
+        text = str(value or "").strip()
+        if text and text not in active_turn_ids:
+            active_turn_ids.append(text)
+    try:
+        active_turn_ts = float(raw.get("active_turn_ts")) if raw.get("active_turn_ts") is not None else None
+    except Exception:
+        active_turn_ts = None
+    return {
+        "active_turn_text": active_turn_text,
+        "active_turn_ids": active_turn_ids,
+        "active_turn_ts": active_turn_ts,
+    }
+
+
+def _suppress_self_hits(
+    candidates: List[Dict[str, Any]],
+    *,
+    active_turn_text: str,
+    active_turn_ids: List[str],
+    active_turn_ts: float | None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    if not candidates:
+        return [], {}
+    normalized_active = _normalize_text(active_turn_text)
+    id_set = {str(v).strip() for v in active_turn_ids if str(v).strip()}
+    suppression_counts: Dict[str, int] = {}
+    filtered: List[Dict[str, Any]] = []
+    for cand in candidates:
+        source = str(cand.get("source") or "unknown")
+        cand_id = str(cand.get("id") or "").strip()
+        cand_text = _normalize_text(cand.get("text") or cand.get("snippet") or "")
+        remove = False
+        if cand_id and cand_id in id_set:
+            remove = True
+        elif normalized_active and normalized_active in cand_text:
+            age_ok = True
+            if active_turn_ts is not None and cand.get("ts") is not None:
+                try:
+                    age_ok = abs(float(cand.get("ts")) - active_turn_ts) <= 180.0
+                except Exception:
+                    age_ok = True
+            if age_ok:
+                remove = True
+        if remove:
+            suppression_counts[source] = suppression_counts.get(source, 0) + 1
+            continue
+        filtered.append(cand)
+    return filtered, suppression_counts
+
 def _anchor_overlap(text: str, anchors: List[str]) -> int:
     if not text or not anchors:
         return 0
@@ -225,6 +285,21 @@ def _rdf_enabled(profile: Dict[str, Any]) -> bool:
     ) and int(profile.get("rdf_top_k", 0)) > 0
 
 
+def _vector_enabled_for_profile(profile: Dict[str, Any]) -> bool:
+    if not settings.RECALL_ENABLE_VECTOR:
+        return False
+    try:
+        return int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)) > 0
+    except Exception:
+        return False
+
+
+def _sql_timeline_enabled_for_profile(profile: Dict[str, Any]) -> bool:
+    if not settings.RECALL_ENABLE_SQL_TIMELINE:
+        return False
+    return bool(profile.get("enable_sql_timeline", True))
+
+
 async def _fetch_anchor_candidates(
     *,
     query_text: str,
@@ -232,6 +307,7 @@ async def _fetch_anchor_candidates(
     node_id: str | None,
     profile: Dict[str, Any],
     diagnostic: bool = False,
+    exclusion: Dict[str, Any] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     tokens = _anchor_tokens(query_text)
     if not tokens:
@@ -240,6 +316,7 @@ async def _fetch_anchor_candidates(
     candidates: List[Dict[str, Any]] = []
     counts: Dict[str, int] = {}
     limit = max(3, min(10, int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))))
+    exclusion = exclusion or {}
 
     try:
         sql_items = await fetch_exact_fragments(
@@ -247,6 +324,8 @@ async def _fetch_anchor_candidates(
             session_id=session_id,
             node_id=node_id,
             limit=limit,
+            exclude_ids=exclusion.get("active_turn_ids"),
+            exclude_text=exclusion.get("active_turn_text"),
         )
         counts["sql_timeline_anchor"] = len(sql_items)
         for item in sql_items:
@@ -266,7 +345,7 @@ async def _fetch_anchor_candidates(
     except Exception as exc:
         logger.debug(f"sql anchor fetch skipped: {exc}")
 
-    if settings.RECALL_ENABLE_VECTOR:
+    if _vector_enabled_for_profile(profile):
         try:
             vec = fetch_vector_exact_matches(
                 tokens=tokens,
@@ -274,6 +353,8 @@ async def _fetch_anchor_candidates(
                 session_id=session_id,
                 profile_name=profile.get("profile"),
                 node_id=node_id,
+                exclude_ids=exclusion.get("active_turn_ids"),
+                exclude_text=exclusion.get("active_turn_text"),
             )
             counts["vector_anchor"] = len(vec)
             for item in vec:
@@ -283,6 +364,14 @@ async def _fetch_anchor_candidates(
                 candidates.append(item)
         except Exception as exc:
             logger.debug(f"vector anchor fetch skipped: {exc}")
+
+    elif diagnostic:
+        logger.info(
+            "anchor rail vector skipped profile=%s vector_top_k=%s global_vector_enabled=%s",
+            profile.get("profile"),
+            profile.get("vector_top_k"),
+            settings.RECALL_ENABLE_VECTOR,
+        )
 
     if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
         try:
@@ -318,9 +407,11 @@ async def _query_backends(
     node_id: str | None,
     entities: List[str],
     diagnostic: bool = False,
+    exclusion: Dict[str, Any] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     candidates: List[Dict[str, Any]] = []
     backend_counts: Dict[str, int] = {}
+    exclusion = exclusion or {}
 
     rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
     rdf_top_k = int(profile.get("rdf_top_k", 0))
@@ -366,7 +457,7 @@ async def _query_backends(
             logger.debug(f"rdf backend skipped: {exc}")
 
 
-    if settings.RECALL_ENABLE_VECTOR:
+    if _vector_enabled_for_profile(profile):
         seeds = [fragment, *entities]
         expansions = expansion_terms[:6]
         vector_queries: List[str] = []
@@ -395,6 +486,8 @@ async def _query_backends(
                     profile_name=profile.get("profile"),
                     node_id=node_id,
                     metadata_filters=vector_filters,
+                    exclude_ids=exclusion.get("active_turn_ids"),
+                    exclude_text=exclusion.get("active_turn_text"),
                 )
                 vec_count += len(vec)
                 candidates.extend(vec)
@@ -412,6 +505,14 @@ async def _query_backends(
                 vec_count,
             )
 
+    elif diagnostic:
+        logger.info(
+            "recall vector skipped profile=%s vector_top_k=%s global_vector_enabled=%s",
+            profile.get("profile"),
+            profile.get("vector_top_k"),
+            settings.RECALL_ENABLE_VECTOR,
+        )
+
     if diagnostic:
         logger.info(
             "recall rdf_enabled=%s rdf_top_k=%s rdf_candidates=%s expansion_terms=%s",
@@ -426,6 +527,8 @@ async def _query_backends(
             chat_pairs = await fetch_chat_history_pairs(
                 limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
                 since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+                exclude_text=exclusion.get("active_turn_text"),
+                exclude_ids=exclusion.get("active_turn_ids"),
             )
             backend_counts["sql_chat_pairs"] = len(chat_pairs)
             for item in chat_pairs:
@@ -444,6 +547,8 @@ async def _query_backends(
             chat_msgs = await fetch_chat_messages(
                 limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
                 since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
+                exclude_text=exclusion.get("active_turn_text"),
+                exclude_ids=exclusion.get("active_turn_ids"),
             )
             backend_counts["sql_chat_msgs"] = len(chat_msgs)
             for item in chat_msgs:
@@ -461,7 +566,7 @@ async def _query_backends(
         except Exception as exc:
             logger.debug(f"sql chat backend skipped: {exc}")
 
-    if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
+    if _sql_timeline_enabled_for_profile(profile):
         try:
 
             since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
@@ -473,12 +578,16 @@ async def _query_backends(
                 node_id,
                 since_minutes_effective,
                 sql_top_k,
+                exclude_ids=exclusion.get("active_turn_ids"),
+                exclude_text=exclusion.get("active_turn_text"),
             )
             related_items = await fetch_related_by_entities(
                 entities,
                 since_hours_effective,
                 sql_top_k,
                 session_id=session_id,
+                exclude_ids=exclusion.get("active_turn_ids"),
+                exclude_text=exclusion.get("active_turn_text"),
             )
 
             recent_items = list(recent_items) + list(related_items)
@@ -499,6 +608,13 @@ async def _query_backends(
                 )
         except Exception as exc:
             logger.debug(f"sql timeline backend skipped: {exc}")
+    elif diagnostic:
+        logger.info(
+            "recall sql_timeline skipped profile=%s enable_sql_timeline=%s global_sql_timeline_enabled=%s",
+            profile.get("profile"),
+            profile.get("enable_sql_timeline"),
+            settings.RECALL_ENABLE_SQL_TIMELINE,
+        )
 
     return candidates, backend_counts
 
@@ -606,6 +722,24 @@ def _log_debug_dump(
         )
 
 
+def _bounded_selected_summary(items: List[Any], *, limit: int = 8) -> List[Dict[str, Any]]:
+    summary: List[Dict[str, Any]] = []
+    for item in items[: max(1, limit)]:
+        source = getattr(item, "source", None) or (item.get("source") if isinstance(item, dict) else None)
+        item_id = getattr(item, "id", None) or (item.get("id") if isinstance(item, dict) else None)
+        score = getattr(item, "score", None) if hasattr(item, "score") else (item.get("score") if isinstance(item, dict) else None)
+        source_ref = getattr(item, "source_ref", None) or (item.get("source_ref") if isinstance(item, dict) else None)
+        summary.append(
+            {
+                "id": str(item_id or ""),
+                "source": str(source or "unknown"),
+                "score": float(score or 0.0),
+                "source_ref": str(source_ref or "")[:120] or None,
+            }
+        )
+    return summary
+
+
 async def process_recall(
     q: RecallQueryV1,
     *,
@@ -618,6 +752,11 @@ async def process_recall(
     profile_name = str(profile.get("profile") or "")
     ignored_session_id = q.session_id
     effective_session_id: str | None = None
+    exclusion = _parse_exclusion(q)
+    source_gating: Dict[str, str] = {}
+    source_gating["vector"] = "enabled" if _vector_enabled_for_profile(profile) else "disabled_by_profile_or_global"
+    source_gating["sql_timeline"] = "enabled" if _sql_timeline_enabled_for_profile(profile) else "disabled_by_profile_or_global"
+    source_gating["rdf"] = "enabled" if _rdf_enabled(profile) else "disabled_by_profile_or_global"
 
     t0 = time.time()
     candidates: List[Dict[str, Any]] = []
@@ -626,15 +765,28 @@ async def process_recall(
     if _is_memory_browse(q.fragment):
         since_minutes_effective = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
         browse_limit = max(10, min(20, int(profile.get("max_total_items", 12))))
-        try:
-            recent_items = await fetch_recent_fragments(
-                effective_session_id,
-                q.node_id,
-                since_minutes_effective,
-                browse_limit,
+        if _sql_timeline_enabled_for_profile(profile):
+            source_gating["sql_timeline"] = "enabled"
+            try:
+                recent_items = await fetch_recent_fragments(
+                    effective_session_id,
+                    q.node_id,
+                    since_minutes_effective,
+                    browse_limit,
+                    exclude_ids=exclusion.get("active_turn_ids"),
+                    exclude_text=exclusion.get("active_turn_text"),
+                )
+            except Exception as exc:
+                logger.debug(f"browse timeline fetch skipped: {exc}")
+                recent_items = []
+        else:
+            source_gating["sql_timeline"] = "disabled_by_profile_or_global"
+            logger.info(
+                "browse sql_timeline skipped profile=%s enable_sql_timeline=%s global_sql_timeline_enabled=%s",
+                profile.get("profile"),
+                profile.get("enable_sql_timeline"),
+                settings.RECALL_ENABLE_SQL_TIMELINE,
             )
-        except Exception as exc:
-            logger.debug(f"browse timeline fetch skipped: {exc}")
             recent_items = []
         backend_counts_total["sql_timeline"] = len(recent_items)
         for item in recent_items:
@@ -670,13 +822,31 @@ async def process_recall(
             session_id=ignored_session_id,
             node_id=q.node_id,
             verb=q.verb,
-            profile=q.profile,
+            profile=str(profile.get("profile") or q.profile),
             query=q.fragment,
             selected_ids=[i.id for i in bundle.items],
             backend_counts=backend_counts_total or bundle.stats.backend_counts,
             latency_ms=latency_ms,
-            dropped={},  # placeholder for future detailed drop reasons
+            dropped=dict((bundle.stats.diagnostic or {}).get("drop_counts") or {}),
             ranking_debug=ranking_debug if diagnostic else [],
+            recall_debug=(
+                {
+                    "profile_selected": str(profile.get("profile") or q.profile),
+                    "profile_requested": q.profile,
+                    "query_expansion_enabled": enable_qe,
+                    "source_gating": source_gating,
+                    "active_turn": {
+                        "ids_count": len(list(exclusion.get("active_turn_ids") or [])),
+                        "text_present": bool(str(exclusion.get("active_turn_text") or "").strip()),
+                        "ts_present": exclusion.get("active_turn_ts") is not None,
+                        "self_hit_suppressed": 0,
+                    },
+                    "fusion": bundle.stats.diagnostic or {},
+                    "selected_summary": _bounded_selected_summary(list(bundle.items)),
+                }
+                if diagnostic
+                else {}
+            ),
         )
         _log_debug_dump(
             corr_id=decision.corr_id,
@@ -692,6 +862,7 @@ async def process_recall(
         node_id=q.node_id,
         profile=profile,
         diagnostic=diagnostic,
+        exclusion=exclusion,
     )
     if anchor_candidates:
         candidates.extend(anchor_candidates)
@@ -739,7 +910,8 @@ async def process_recall(
                     candidates.extend(rdf_connected)
             except Exception as exc:
                 logger.debug(f"rdf backend skipped: {exc}")
-        if settings.RECALL_ENABLE_VECTOR:
+        if _vector_enabled_for_profile(profile):
+            source_gating["vector"] = "enabled"
             vector_top_k = int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS))
             per_query = max(1, vector_top_k // max(1, len(vector_queries)))
             seen_vec = set()
@@ -757,6 +929,8 @@ async def process_recall(
                         profile_name=profile.get("profile"),
                         node_id=q.node_id,
                         metadata_filters=vector_filters,
+                        exclude_ids=exclusion.get("active_turn_ids"),
+                        exclude_text=exclusion.get("active_turn_text"),
                     )
                 except Exception as exc:
                     logger.debug(f"vector backend skipped: {exc}")
@@ -800,10 +974,20 @@ async def process_recall(
                     rerank_weights,
                 )
 
+        elif diagnostic:
+            source_gating["vector"] = "disabled_by_profile_or_global"
+            logger.info(
+                "graphtri vector skipped profile=%s vector_top_k=%s global_vector_enabled=%s",
+                profile.get("profile"),
+                profile.get("vector_top_k"),
+                settings.RECALL_ENABLE_VECTOR,
+            )
+
         sql_attempted = False
         sql_session_id = effective_session_id
         sql_filters_used: List[str] = []
-        if settings.RECALL_ENABLE_SQL_TIMELINE or profile.get("enable_sql_timeline"):
+        if _sql_timeline_enabled_for_profile(profile):
+            source_gating["sql_timeline"] = "enabled"
             try:
                 sql_attempted = True
                 sql_filters_used = sql_filters
@@ -817,12 +1001,16 @@ async def process_recall(
                     q.node_id,
                     since_minutes_effective,
                     sql_top_k,
+                    exclude_ids=exclusion.get("active_turn_ids"),
+                    exclude_text=exclusion.get("active_turn_text"),
                 )
                 related_items = await fetch_related_by_entities(
                     sql_filters_used or [],
                     since_hours_effective,
                     sql_top_k,
                     session_id=effective_session_id,
+                    exclude_ids=exclusion.get("active_turn_ids"),
+                    exclude_text=exclusion.get("active_turn_text"),
                 )
 
                 recent_items = list(recent_items) + list(related_items)
@@ -842,6 +1030,14 @@ async def process_recall(
                     )
             except Exception as exc:
                 logger.debug(f"sql timeline backend skipped: {exc}")
+        elif diagnostic:
+            source_gating["sql_timeline"] = "disabled_by_profile_or_global"
+            logger.info(
+                "graphtri sql_timeline skipped profile=%s enable_sql_timeline=%s global_sql_timeline_enabled=%s",
+                profile.get("profile"),
+                profile.get("enable_sql_timeline"),
+                settings.RECALL_ENABLE_SQL_TIMELINE,
+            )
 
         if diagnostic:
             logger.info(
@@ -868,11 +1064,24 @@ async def process_recall(
                 node_id=q.node_id,
                 entities=_extract_entities(q.fragment),
                 diagnostic=diagnostic,
+                exclusion=exclusion,
             )
             candidates.extend(cand)
             for k, v in counts.items():
                 backend_counts_total[k] = backend_counts_total.get(k, 0) + v
 
+    candidates, suppressed = _suppress_self_hits(
+        candidates,
+        active_turn_text=str(exclusion.get("active_turn_text") or ""),
+        active_turn_ids=list(exclusion.get("active_turn_ids") or []),
+        active_turn_ts=exclusion.get("active_turn_ts"),
+    )
+    if suppressed:
+        logger.info(
+            "recall self-hit suppression active_turn_ids=%s suppressed=%s",
+            exclusion.get("active_turn_ids"),
+            suppressed,
+        )
     latency_ms = int((time.time() - t0) * 1000)
     bundle, ranking_debug = fuse_candidates(
         candidates=candidates,
@@ -887,14 +1096,44 @@ async def process_recall(
         session_id=ignored_session_id,
         node_id=q.node_id,
         verb=q.verb,
-        profile=q.profile,
+        profile=str(profile.get("profile") or q.profile),
         query=q.fragment,
         selected_ids=[i.id for i in bundle.items],
         backend_counts=backend_counts_total or bundle.stats.backend_counts,
         latency_ms=latency_ms,
-        dropped={},  # placeholder for future detailed drop reasons
+        dropped=dict((bundle.stats.diagnostic or {}).get("drop_counts") or {}),
         ranking_debug=ranking_debug if diagnostic else [],
+        recall_debug=(
+            {
+                "profile_selected": str(profile.get("profile") or q.profile),
+                "profile_requested": q.profile,
+                "query_expansion_enabled": enable_qe,
+                "source_gating": source_gating,
+                "active_turn": {
+                    "ids_count": len(list(exclusion.get("active_turn_ids") or [])),
+                    "text_present": bool(str(exclusion.get("active_turn_text") or "").strip()),
+                    "ts_present": exclusion.get("active_turn_ts") is not None,
+                    "self_hit_suppressed": suppressed,
+                },
+                "fusion": bundle.stats.diagnostic or {},
+                "selected_summary": _bounded_selected_summary(list(bundle.items)),
+            }
+            if diagnostic
+            else {}
+        ),
     )
+    if diagnostic:
+        logger.info(
+            "recall_diagnostic_summary corr_id=%s profile=%s requested_profile=%s gating=%s drop_counts=%s selected_counts=%s suppressed=%s selected=%s",
+            decision.corr_id,
+            profile.get("profile"),
+            q.profile,
+            source_gating,
+            decision.dropped,
+            (bundle.stats.diagnostic or {}).get("source_selected_counts", {}),
+            suppressed,
+            decision.selected_ids[:8],
+        )
     _log_debug_dump(
         corr_id=decision.corr_id,
         profile=profile,
@@ -904,13 +1143,16 @@ async def process_recall(
     return bundle, decision
 
 
-def build_reply_envelope(bundle: MemoryBundleV1, env: BaseEnvelope) -> BaseEnvelope:
+def build_reply_envelope(bundle: MemoryBundleV1, env: BaseEnvelope, *, debug: Dict[str, Any] | None = None) -> BaseEnvelope:
+    payload: Dict[str, Any] = {"bundle": bundle.model_dump(mode="json")}
+    if debug:
+        payload["debug"] = debug
     return BaseEnvelope(
         kind=RECALL_REPLY_KIND,
         source=_source(),
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain,
-        payload={"bundle": bundle.model_dump(mode="json")},
+        payload=payload,
         reply_to=None,
     )
 
@@ -958,4 +1200,16 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
 
     _persist_decision(decision)
 
-    return build_reply_envelope(bundle, env)
+    debug_payload: Dict[str, Any] | None = None
+    if diagnostic:
+        debug_payload = {
+            "decision": {
+                "corr_id": decision.corr_id,
+                "profile": decision.profile,
+                "selected_ids": decision.selected_ids[:8],
+                "backend_counts": decision.backend_counts,
+                "dropped": decision.dropped,
+                "recall_debug": decision.recall_debug,
+            }
+        }
+    return build_reply_envelope(bundle, env, debug=debug_payload)

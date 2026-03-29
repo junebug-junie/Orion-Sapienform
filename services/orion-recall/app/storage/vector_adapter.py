@@ -106,6 +106,34 @@ def _parse_collections(val: str) -> List[str]:
     return [c.strip() for c in str(val).split(",") if c.strip()]
 
 
+def _normalize_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return " ".join(text.split())
+
+
+def _is_self_hit(
+    *,
+    text: str,
+    canonical_id: str,
+    raw_id: str,
+    meta: Dict[str, Any],
+    exclude_ids: Optional[List[str]],
+    exclude_text: Optional[str],
+) -> bool:
+    excluded = {str(v).strip() for v in (exclude_ids or []) if str(v).strip()}
+    if canonical_id and canonical_id in excluded:
+        return True
+    if raw_id and raw_id in excluded:
+        return True
+    corr = str(meta.get("correlation_id") or "").strip()
+    if corr and corr in excluded:
+        return True
+    active = _normalize_text(exclude_text)
+    if active and active in _normalize_text(text):
+        return True
+    return False
+
+
 def fetch_vector_fragments(
     *,
     query_text: str,
@@ -115,6 +143,8 @@ def fetch_vector_fragments(
     profile_name: Optional[str] = None,
     node_id: Optional[str] = None,
     metadata_filters: Optional[Dict[str, Any]] = None,
+    exclude_ids: Optional[List[str]] = None,
+    exclude_text: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Lightweight wrapper around the existing Chroma client used by the legacy recall pipeline.
@@ -136,6 +166,7 @@ def fetch_vector_fragments(
 
     since_ts = (datetime.utcnow() - timedelta(days=max(1, time_window_days))).timestamp()
     frags: List[Dict[str, Any]] = []
+    suppressed = 0
 
     query_embedding = _embed_query_text(query_text)
     if not query_embedding:
@@ -174,6 +205,7 @@ def fetch_vector_fragments(
             score_multiplier: float = 1.0,
             skip_ids: Optional[set[str]] = None,
         ) -> int:
+            nonlocal suppressed
             ids = (result.get("ids") or [[]])[0]
             docs = (result.get("documents") or [[]])[0]
             metas = (result.get("metadatas") or [[]])[0]
@@ -204,6 +236,16 @@ def fetch_vector_fragments(
                     sim = max(0.0, 1.0 - float(dist)) * score_multiplier
 
                 canonical_id = str(meta.get("correlation_id") or nid_str)
+                if _is_self_hit(
+                    text=ntext,
+                    canonical_id=canonical_id,
+                    raw_id=nid_str,
+                    meta=meta,
+                    exclude_ids=exclude_ids,
+                    exclude_text=exclude_text,
+                ):
+                    suppressed += 1
+                    continue
                 tags = [
                     "vector-assoc",
                     f"collection:{coll_name}",
@@ -234,6 +276,8 @@ def fetch_vector_fragments(
 
     frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     logger.debug("vector recall: collections=%s hits=%s", collections, len(frags))
+    if suppressed:
+        logger.info("vector self-hit suppression backend=semantic suppressed=%s", suppressed)
     return frags[:max_items]
 
 
@@ -245,6 +289,8 @@ def fetch_vector_exact_matches(
     profile_name: Optional[str] = None,
     node_id: Optional[str] = None,
     metadata_filters: Optional[Dict[str, Any]] = None,
+    exclude_ids: Optional[List[str]] = None,
+    exclude_text: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if not tokens:
         return []
@@ -256,6 +302,7 @@ def fetch_vector_exact_matches(
         return []
 
     results: List[Dict[str, Any]] = []
+    suppressed = 0
     for coll_name in collections:
         try:
             coll = client.get_or_create_collection(name=coll_name)
@@ -301,6 +348,16 @@ def fetch_vector_exact_matches(
                 if meta.get("source"):
                     tags.append(str(meta.get("source")))
                 canonical_id = str(meta.get("correlation_id") or nid_str)
+                if _is_self_hit(
+                    text=str(doc),
+                    canonical_id=canonical_id,
+                    raw_id=nid_str,
+                    meta=meta,
+                    exclude_ids=exclude_ids,
+                    exclude_text=exclude_text,
+                ):
+                    suppressed += 1
+                    continue
                 if canonical_id != nid_str:
                     meta = dict(meta)
                     meta["vector_doc_id"] = nid_str
@@ -317,4 +374,9 @@ def fetch_vector_exact_matches(
                         "meta": meta,
                     }
                 )
+    if suppressed:
+        logging.getLogger("orion-recall.vector").info(
+            "vector self-hit suppression backend=exact suppressed=%s",
+            suppressed,
+        )
     return results[:max_items]

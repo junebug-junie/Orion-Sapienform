@@ -67,3 +67,15 @@ def test_dream_v1_profile_loads():
     assert prof["profile"] == "dream.v1"
     assert prof["max_total_items"] >= 24
     assert int(prof.get("render_budget_tokens") or 0) >= 256
+
+
+def test_chat_general_profile_is_narrower_than_reflect_profile():
+    chat = get_profile("chat.general.v1")
+    reflect = get_profile("reflect.v1")
+
+    assert chat["enable_sql_timeline"] is False
+    assert reflect["enable_sql_timeline"] is True
+    assert chat["max_total_items"] < reflect["max_total_items"]
+    assert chat["vector_top_k"] < reflect["vector_top_k"]
+    assert chat["rdf_top_k"] < reflect["rdf_top_k"]
+    assert chat["sql_top_k"] < reflect["sql_top_k"]

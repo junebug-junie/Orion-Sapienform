@@ -216,34 +216,35 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             ),
             None,
         )
-        if reasoning_trace is not None:
-            extra = req_env.payload.args.extra if req_env.payload.args else {}
-            session_id = None
-            message_id = None
-            if isinstance(extra, dict):
-                session_id = extra.get("session_id")
-                message_id = extra.get("message_id")
-            if not session_id:
-                session_id = ctx.get("session_id")
-            if not message_id:
-                message_id = ctx.get("message_id")
+        extra = req_env.payload.args.extra if req_env.payload.args else {}
+        session_id = None
+        message_id = None
+        if isinstance(extra, dict):
+            session_id = extra.get("session_id")
+            message_id = extra.get("message_id")
+        if not session_id:
+            session_id = ctx.get("session_id")
+        if not message_id:
+            message_id = ctx.get("message_id")
 
-            metacog_payload = MetacognitiveTraceV1(
-                correlation_id=corr_id,
-                session_id=str(session_id) if session_id is not None else None,
-                message_id=str(message_id) if message_id is not None else None,
-                trace_role="reasoning",
-                trace_stage="pre_answer",
-                content=reasoning_trace.content,
-                model=reasoning_trace.model,
-                token_count=reasoning_trace.token_count,
-                confidence=reasoning_trace.confidence,
-                metadata={
-                    **(reasoning_trace.metadata or {}),
-                    "request_id": res.request_id,
-                    "status": res.status,
-                },
-            )
+        metacog_payload = MetacognitiveTraceV1(
+            correlation_id=corr_id,
+            session_id=str(session_id) if session_id is not None else None,
+            message_id=str(message_id) if message_id is not None else None,
+            trace_role="reasoning",
+            trace_stage="pre_answer",
+            content=(reasoning_trace.content if reasoning_trace is not None else (res.final_text or "")).strip(),
+            model=(reasoning_trace.model if reasoning_trace is not None else "unknown"),
+            token_count=reasoning_trace.token_count if reasoning_trace is not None else None,
+            confidence=reasoning_trace.confidence if reasoning_trace is not None else None,
+            metadata={
+                **((reasoning_trace.metadata or {}) if reasoning_trace is not None else {}),
+                "request_id": res.request_id,
+                "status": res.status,
+                "fallback_from_final_text": reasoning_trace is None,
+            },
+        )
+        if metacog_payload.content:
             metacog_envelope = MetacognitiveTraceEnvelope(
                 source=_source(),
                 correlation_id=_uuid_from_correlation_id(corr_id),
@@ -252,8 +253,14 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             )
             await svc.bus.publish(settings.channel_metacog_trace_pub, metacog_envelope)
             logger.info(
-                "Published MetacognitiveTrace to %s correlation_id=%s",
+                "Published MetacognitiveTrace to %s correlation_id=%s fallback=%s",
                 settings.channel_metacog_trace_pub,
+                corr_id,
+                reasoning_trace is None,
+            )
+        else:
+            logger.info(
+                "Skipped MetacognitiveTrace publish due to empty content correlation_id=%s",
                 corr_id,
             )
 

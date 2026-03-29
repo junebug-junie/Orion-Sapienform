@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 from unittest.mock import patch
+from contextlib import asynccontextmanager
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.spark.concept_induction.clusterer import ConceptClusterer
@@ -57,6 +58,37 @@ class StubInducer:
         if self.save_hook:
             self.save_hook(subject, self.profile)
         return type("Result", (), {"profile": self.profile, "delta": None})()
+
+
+class FakeStreamingBus(FakeBus):
+    def __init__(self, messages=None):
+        super().__init__()
+        self.messages = messages or []
+        self.connect_calls = 0
+        self.close_calls = 0
+        self.subscribe_calls = []
+
+        class _Codec:
+            @staticmethod
+            def decode(data):
+                return data
+
+        self.codec = _Codec()
+
+    async def connect(self):
+        self.connect_calls += 1
+
+    async def close(self):
+        self.close_calls += 1
+
+    @asynccontextmanager
+    async def subscribe(self, *channels, patterns=False):
+        self.subscribe_calls.append((list(channels), patterns))
+        yield object()
+
+    async def iter_messages(self, _pubsub):
+        for msg in self.messages:
+            yield msg
 
 
 class ConceptInductionTests(unittest.TestCase):
@@ -590,6 +622,55 @@ class ConceptInductionTests(unittest.TestCase):
             self.assertIsNotNone(reloaded)
             published = worker.bus.published
             self.assertTrue(any(channel == worker.cfg.forward_rdf_channel and out.kind == "rdf.write.request" for channel, out in published))
+
+    def test_worker_start_enters_consume_loop_and_tracks_counters(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        accepted_env = BaseEnvelope(
+            kind="metacognition.tick.v1",
+            source=ServiceRef(name="test", version="0.0.0"),
+            correlation_id=uuid4(),
+            payload={"subject": "orion", "summary": "tick"},
+        )
+        worker.bus = FakeStreamingBus(
+            messages=[
+                {"type": "message", "channel": b"orion:metacognition:tick", "data": type("Decoded", (), {"ok": True, "envelope": accepted_env})()},
+                {"type": "message", "channel": b"orion:metacognition:tick", "data": type("Decoded", (), {"ok": False, "envelope": None, "error": "bad"})()},
+            ]
+        )
+        asyncio.run(worker.start())
+        status = worker.worker_liveness_status()
+        self.assertTrue(status["bus_consumer_started"])
+        self.assertEqual(status["total_events_seen"], 2)
+        self.assertEqual(status["total_events_accepted"], 1)
+        self.assertEqual(status["total_events_rejected"], 1)
+        self.assertIsNotNone(status["last_event_received_at"])
+        self.assertTrue(worker.bus.subscribe_calls)
+
+    def test_worker_done_callback_captures_exception(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        loop = asyncio.new_event_loop()
+        try:
+            task = loop.create_future()
+            task.set_exception(RuntimeError("boom"))
+            worker.record_task_exit(task)  # type: ignore[arg-type]
+        finally:
+            loop.close()
+        status = worker.worker_liveness_status()
+        self.assertTrue(status["worker_task_done"])
+        self.assertEqual(status["stop_reason"], "failed")
+        self.assertIn("RuntimeError", status["worker_last_exception"])
+
+    def test_worker_liveness_exposes_crash_state(self):
+        worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
+        worker._liveness.worker_task_created = True
+        worker._liveness.worker_task_done = True
+        worker._liveness.worker_last_exception = "RuntimeError('crash')"
+        worker._liveness.stop_reason = "failed"
+        status = worker.worker_liveness_status()
+        self.assertTrue(status["worker_task_created"])
+        self.assertTrue(status["worker_task_done"])
+        self.assertEqual(status["stop_reason"], "failed")
+        self.assertIn("crash", status["worker_last_exception"])
 
 
 if __name__ == "__main__":

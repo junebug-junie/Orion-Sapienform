@@ -15,7 +15,10 @@ async def lifespan(app: FastAPI):
     worker = ConceptWorker(settings)
     app.state.worker = worker
     app.state.concept_worker = worker
+    logger.info("concept_induction_worker_starting")
     task = asyncio.create_task(worker.start(), name="concept-induction-worker")
+    worker.mark_task_created()
+    task.add_done_callback(worker.record_task_exit)
     app.state.worker_task = task
     await asyncio.sleep(0)
     if task.done():
@@ -23,7 +26,7 @@ async def lifespan(app: FastAPI):
         if exc is not None:
             logger.exception("concept_induction_worker_startup_failed", exc_info=exc)
             raise exc
-    logger.info("concept_induction_worker_startup worker_task=%s", task.get_name())
+    logger.info("concept_induction_worker_started worker_task=%s", task.get_name())
     yield
     task.cancel()
     try:
@@ -48,11 +51,19 @@ async def concept_induction_debug():
     worker = getattr(app.state, "worker", None) or getattr(app.state, "concept_worker", None)
     if worker is None:
         return {"ok": False, "error": "worker_not_initialized"}
+    worker_task = getattr(app.state, "worker_task", None)
+    task_state = {
+        "worker_task_present": worker_task is not None,
+        "worker_task_done": worker_task.done() if worker_task else None,
+        "worker_task_cancelled": worker_task.cancelled() if worker_task else None,
+    }
     return {
         "ok": True,
         "service": settings.service_name,
         "version": settings.service_version,
         "worker_attached": True,
+        "worker_liveness": worker.worker_liveness_status(),
+        "worker_task": task_state,
         "status": worker.trigger_status(),
     }
 

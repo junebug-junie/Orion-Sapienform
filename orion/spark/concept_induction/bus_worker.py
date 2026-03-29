@@ -94,6 +94,7 @@ class ConceptWorker:
         self.inflight_subjects: Set[str] = set()
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
+        self._stopped = False
 
     def _accepted_source_mapping(self) -> dict:
         return {
@@ -693,18 +694,27 @@ class ConceptWorker:
             self.cfg.window_max_minutes,
             self.cfg.concept_trigger_recent_decisions,
         )
-        async with self.bus.subscribe(*patterns, patterns=uses_glob) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if not isinstance(msg, dict):
-                    continue
-                data = msg.get("data")
-                if data is None:
-                    continue
-                channel = msg.get("channel")
-                if hasattr(channel, "decode"):
-                    channel = channel.decode("utf-8")
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok or decoded.envelope is None:
-                    logger.warning("Concept intake decode failed channel=%s error=%s", channel, decoded.error)
-                    continue
-                await self.handle_envelope(decoded.envelope, str(channel or "unknown"))
+        try:
+            async with self.bus.subscribe(*patterns, patterns=uses_glob) as pubsub:
+                async for msg in self.bus.iter_messages(pubsub):
+                    if not isinstance(msg, dict):
+                        continue
+                    data = msg.get("data")
+                    if data is None:
+                        continue
+                    channel = msg.get("channel")
+                    if hasattr(channel, "decode"):
+                        channel = channel.decode("utf-8")
+                    decoded = self.bus.codec.decode(data)
+                    if not decoded.ok or decoded.envelope is None:
+                        logger.warning("Concept intake decode failed channel=%s error=%s", channel, decoded.error)
+                        continue
+                    await self.handle_envelope(decoded.envelope, str(channel or "unknown"))
+        finally:
+            await self.stop()
+
+    async def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+        await self.bus.close()

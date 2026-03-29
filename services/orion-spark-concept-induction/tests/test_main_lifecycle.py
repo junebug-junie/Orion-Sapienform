@@ -41,6 +41,15 @@ class FakeWorker:
     def trigger_status(self) -> dict:
         return {"trigger": "active", "start_calls": self.start_calls}
 
+    def worker_liveness_status(self) -> dict:
+        return {"worker_initialized": True, "worker_task_created": True, "bus_consumer_started": True}
+
+    def mark_task_created(self) -> None:
+        return None
+
+    def record_task_exit(self, _task) -> None:
+        return None
+
 
 def test_lifespan_attaches_worker_and_starts_task(monkeypatch) -> None:
     FakeWorker.instances = []
@@ -66,6 +75,8 @@ def test_debug_endpoint_returns_structured_json_when_worker_present(monkeypatch)
     payload = response.json()
     assert payload["ok"] is True
     assert payload["worker_attached"] is True
+    assert payload["worker_liveness"]["worker_initialized"] is True
+    assert payload["worker_task"]["worker_task_present"] is True
     assert payload["status"]["trigger"] == "active"
 
 

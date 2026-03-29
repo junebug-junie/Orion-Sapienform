@@ -44,6 +44,22 @@ class ConceptInductionTrigger:
     salience: float | None = None
 
 
+@dataclass
+class WorkerLivenessState:
+    worker_initialized: bool = False
+    worker_task_created: bool = False
+    worker_task_done: bool = False
+    worker_task_cancelled: bool = False
+    worker_last_exception: str | None = None
+    bus_consumer_started: bool = False
+    subscribed_channels: List[str] | None = None
+    last_event_received_at: str | None = None
+    total_events_seen: int = 0
+    total_events_accepted: int = 0
+    total_events_rejected: int = 0
+    stop_reason: str | None = None
+
+
 def _service_ref(cfg: ConceptSettings) -> ServiceRef:
     return ServiceRef(
         name=cfg.service_name,
@@ -95,6 +111,10 @@ class ConceptWorker:
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
         self._stopped = False
+        self._liveness = WorkerLivenessState(
+            worker_initialized=True,
+            subscribed_channels=list(cfg.intake_channels),
+        )
 
     def _accepted_source_mapping(self) -> dict:
         return {
@@ -674,12 +694,51 @@ class ConceptWorker:
             "recent_decisions": list(self.trigger_decisions),
         }
 
+    def worker_liveness_status(self) -> dict:
+        return asdict(self._liveness)
+
+    def mark_task_created(self) -> None:
+        self._liveness.worker_task_created = True
+        self._liveness.worker_task_done = False
+        self._liveness.worker_task_cancelled = False
+        self._liveness.worker_last_exception = None
+        self._liveness.stop_reason = None
+
+    def record_task_exit(self, task: asyncio.Task) -> None:
+        self._liveness.worker_task_done = task.done()
+        self._liveness.worker_task_cancelled = task.cancelled()
+        if task.cancelled():
+            self._liveness.stop_reason = "cancelled"
+            logger.info("concept_induction_worker_task_stopped reason=cancelled")
+            return
+        try:
+            exc = task.exception()
+        except Exception as callback_exc:  # noqa: BLE001
+            self._liveness.worker_last_exception = repr(callback_exc)
+            self._liveness.stop_reason = "done_callback_error"
+            logger.exception("concept_induction_worker_task_failed error=%s", callback_exc)
+            return
+        if exc is not None:
+            self._liveness.worker_last_exception = repr(exc)
+            self._liveness.stop_reason = "failed"
+            logger.exception("concept_induction_worker_task_failed error=%s", exc)
+        else:
+            self._liveness.stop_reason = "completed"
+            logger.info("concept_induction_worker_task_stopped reason=completed")
+
     async def start(self) -> None:
+        logger.info("concept_induction_worker_starting")
         await self.bus.connect()
         patterns = list(self.cfg.intake_channels)
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in patterns)
+        self._liveness.subscribed_channels = list(patterns)
+        self._liveness.bus_consumer_started = False
+        self._liveness.worker_task_done = False
+        self._liveness.worker_task_cancelled = False
+        self._liveness.worker_last_exception = None
+        self._liveness.stop_reason = None
         logger.info(
-            "concept_induction_worker_startup autonomous_trigger_loop=%s bus_enabled=%s bus_enforce_catalog=%s "
+            "concept_induction_worker_started autonomous_trigger_loop=%s bus_enabled=%s bus_enforce_catalog=%s "
             "intake_channels=%s source_kind_mapping=%s trigger_subjects=%s cooldown_sec=%d dedupe_sec=%d "
             "window_max_events=%d window_max_minutes=%d recent_decisions=%d",
             self.cfg.concept_autonomous_trigger_enabled,
@@ -696,21 +755,46 @@ class ConceptWorker:
         )
         try:
             async with self.bus.subscribe(*patterns, patterns=uses_glob) as pubsub:
+                self._liveness.bus_consumer_started = True
+                logger.info("concept_induction_worker_subscribed channels=%s", patterns)
                 async for msg in self.bus.iter_messages(pubsub):
+                    self._liveness.total_events_seen += 1
+                    self._liveness.last_event_received_at = datetime.now(timezone.utc).isoformat()
                     if not isinstance(msg, dict):
+                        self._liveness.total_events_rejected += 1
                         continue
                     data = msg.get("data")
                     if data is None:
+                        self._liveness.total_events_rejected += 1
                         continue
                     channel = msg.get("channel")
                     if hasattr(channel, "decode"):
                         channel = channel.decode("utf-8")
                     decoded = self.bus.codec.decode(data)
                     if not decoded.ok or decoded.envelope is None:
+                        self._liveness.total_events_rejected += 1
                         logger.warning("Concept intake decode failed channel=%s error=%s", channel, decoded.error)
                         continue
+                    logger.info(
+                        "concept_induction_worker_event_received channel=%s kind=%s",
+                        str(channel or "unknown"),
+                        decoded.envelope.kind,
+                    )
+                    self._liveness.total_events_accepted += 1
                     await self.handle_envelope(decoded.envelope, str(channel or "unknown"))
+        except asyncio.CancelledError:
+            self._liveness.stop_reason = "cancelled"
+            logger.info("concept_induction_worker_task_stopped reason=cancelled")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._liveness.worker_last_exception = repr(exc)
+            self._liveness.stop_reason = "failed"
+            logger.exception("concept_induction_worker_task_failed error=%s", exc)
+            raise
         finally:
+            if self._liveness.stop_reason is None:
+                self._liveness.stop_reason = "stopped"
+                logger.info("concept_induction_worker_task_stopped reason=stopped")
             await self.stop()
 
     async def stop(self) -> None:

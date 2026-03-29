@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -37,6 +37,63 @@ def _debug_snippet(value: object, max_len: int = 200) -> str:
     if len(text) <= max_len:
         return text
     return f"{text[:max_len]}…"
+
+
+def select_reasoning_trace_for_history(
+    *,
+    correlation_id: UUID | str | None,
+    metacog_traces: Optional[List[dict[str, Any]]],
+    reasoning_content: Optional[str],
+    session_id: Optional[str],
+    message_id: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Tuple[Optional[dict[str, Any]], str]:
+    traces_exist = isinstance(metacog_traces, list) and len(metacog_traces) > 0
+    content_exists = bool(str(reasoning_content or "").strip())
+    selected_source = "none"
+    selected_trace: Optional[dict[str, Any]] = None
+
+    if isinstance(metacog_traces, list):
+        for idx, trace in enumerate(metacog_traces):
+            if not isinstance(trace, dict):
+                continue
+            trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
+            if trace_role != "reasoning":
+                continue
+            content = str(trace.get("content") or "").strip()
+            if content:
+                selected_trace = trace
+                selected_source = f"metacog_traces[{idx}]"
+                break
+
+    if selected_trace is None and content_exists:
+        selected_trace = {
+            "correlation_id": str(correlation_id) if correlation_id is not None else "",
+            "session_id": session_id,
+            "message_id": message_id,
+            "trace_role": "reasoning",
+            "trace_stage": "post_answer",
+            "content": str(reasoning_content or "").strip(),
+            "model": str(model or "unknown"),
+            "metadata": {"source": "hub_reasoning_content_fallback"},
+        }
+        selected_source = "reasoning_content"
+
+    if _thought_debug_enabled():
+        selected_content = (
+            selected_trace.get("content") if isinstance(selected_trace, dict) else None
+        )
+        logger.info(
+            "THOUGHT_DEBUG_HUB stage=reasoning_trace_select corr=%s metacog_traces_exists=%s reasoning_content_exists=%s selected_source=%s selected_content_len=%s selected_content_snippet=%r",
+            correlation_id,
+            traces_exist,
+            content_exists,
+            selected_source,
+            _debug_len(selected_content),
+            _debug_snippet(selected_content),
+        )
+
+    return selected_trace, selected_source
 
 
 def build_chat_history_envelope(

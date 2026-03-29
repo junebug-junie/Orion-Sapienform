@@ -15,7 +15,12 @@ import requests
 
 from .settings import settings
 from .session import ensure_session
-from .chat_history import build_chat_history_envelope, publish_chat_history, publish_social_room_turn
+from .chat_history import (
+    build_chat_history_envelope,
+    publish_chat_history,
+    publish_social_room_turn,
+    select_reasoning_trace_for_history,
+)
 from .library import scan_cognition_library
 from .trace_payloads import extract_agent_trace_payload
 from .workflow_payloads import extract_workflow_payload
@@ -835,6 +840,20 @@ async def api_chat(
             # (but ideally we got it).
             final_corr_id = correlation_id or str(uuid4())
 
+            metacog_traces = result.get("metacog_traces") or []
+            reasoning_content = (
+                result.get("reasoning_content")
+                or ((result.get("raw") or {}).get("reasoning_content") if isinstance(result.get("raw"), dict) else None)
+            )
+            selected_reasoning_trace, _ = select_reasoning_trace_for_history(
+                correlation_id=final_corr_id,
+                metacog_traces=metacog_traces if isinstance(metacog_traces, list) else None,
+                reasoning_content=reasoning_content,
+                session_id=session_id,
+                message_id=f"{final_corr_id}:assistant",
+                model=(settings.GATEWAY_MODEL if hasattr(settings, "GATEWAY_MODEL") else None),
+            )
+
             envelopes = []
             social_meta = {}
             if is_social_room_payload(payload):
@@ -865,6 +884,7 @@ async def api_chat(
                     speaker=settings.SERVICE_NAME,
                     tags=[result.get("mode", "brain")],
                     client_meta=social_meta or None,
+                    reasoning_trace=selected_reasoning_trace,
                 )
             )
             await publish_chat_history(bus, envelopes)
@@ -882,7 +902,6 @@ async def api_chat(
                     client_meta=social_meta,
                     memory_digest=result.get("memory_digest"),
                 )
-            metacog_traces = result.get("metacog_traces") or []
             if isinstance(metacog_traces, list):
                 for trace in metacog_traces:
                     if not isinstance(trace, dict):
@@ -928,7 +947,7 @@ async def api_chat(
                 "recall": use_recall,
                 "user_id": None,
                 "spark_meta": None,
-                "reasoning_trace": metacog_traces[0] if metacog_traces else None,
+                "reasoning_trace": selected_reasoning_trace,
             }
             if _thought_debug_enabled():
                 reasoning_trace = chat_log_payload.get("reasoning_trace")

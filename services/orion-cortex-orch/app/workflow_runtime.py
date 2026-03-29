@@ -20,7 +20,9 @@ from orion.journaler.worker import (
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
 from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
-from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH, get_settings as get_concept_settings
+from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH
+from .concept_profile_config import build_orch_concept_profile_settings
+from .settings import get_settings
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1
 from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
@@ -806,7 +808,7 @@ async def _execute_concept_induction_pass(
 ) -> CortexClientResult:
     del bus, source, causality_chain, trace, call_verb_runtime
     workflow_id = "concept_induction_pass"
-    settings = get_concept_settings()
+    settings = build_orch_concept_profile_settings(get_settings())
     consumer = "concept_induction_pass"
     requested_backend = _resolve_concept_profile_backend_for_consumer(settings, consumer=consumer)
     fallback_policy = _resolve_graph_cutover_fallback_policy(settings)

@@ -393,7 +393,7 @@ def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str
             candidate = _normalized_text(trace.get("content"))
             if candidate:
                 return candidate, f"metacog_traces[{idx}].content"
-    return None, "no_reasoning_candidate"
+    return None, "none"
 
 
 def _map_spark_to_telemetry_row(

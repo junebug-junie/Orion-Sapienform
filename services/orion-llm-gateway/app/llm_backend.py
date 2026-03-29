@@ -38,6 +38,12 @@ def _debug_snippet(value: Any, max_len: int = 200) -> str:
     return f"{text[:max_len]}…"
 
 
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
+
+
 @dataclass(frozen=True)
 class RouteTarget:
     url: str
@@ -863,12 +869,32 @@ def _execute_openai_chat(
             # Post-processing: Spark Introspect
             _maybe_publish_spark_introspect(body, spark_meta, text)
 
+            reasoning_trace = (
+                {
+                    "role": "reasoning",
+                    "stage": "post_answer",
+                    "content": reasoning_content,
+                }
+                if reasoning_content
+                else None
+            )
+            trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+            print(
+                "===THINK_HOP=== hop=llm_gateway_out "
+                f"corr={getattr(body, 'trace_id', None)} "
+                f"has_reasoning_content={bool(reasoning_content)} "
+                f"reasoning_len={len(reasoning_content) if reasoning_content else 0} "
+                f"trace_len={len(trace_content) if trace_content else 0} "
+                f"preview={_preview_text(reasoning_content)}",
+                flush=True,
+            )
             return {
                 "text": text,
                 "spark_meta": spark_meta,
                 "spark_vector": spark_vector,
                 "raw": raw_data,
                 "reasoning_content": reasoning_content,
+                "reasoning_trace": reasoning_trace,
             }
 
     except httpx.TimeoutException:

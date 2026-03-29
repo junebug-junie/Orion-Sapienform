@@ -99,6 +99,12 @@ def _debug_snippet(value: Any, max_len: int = 200) -> str:
     return f"{text[:max_len]}…"
 
 
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
+
+
 def _legacy_action(kind: str, mode: str, legacy_kinds: set[str]) -> str:
     if kind not in legacy_kinds:
         return "noop"
@@ -552,6 +558,15 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 _debug_len(filtered_data.get("thought_process")),
                 _debug_snippet(filtered_data.get("thought_process")),
             )
+        if sql_model_cls is ChatHistoryLogSQL:
+            persisted_value = filtered_data.get("thought_process")
+            print(
+                "===THINK_HOP=== hop=sql_row_ready "
+                f"corr={filtered_data.get('correlation_id') or data.get('correlation_id')} "
+                f"thought_process_len={len(persisted_value) if persisted_value else 0} "
+                f"preview={_preview_text(persisted_value)}",
+                flush=True,
+            )
 
         # Standard coercion
         for col in mapper.columns:
@@ -831,6 +846,16 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     if client_meta is not None:
         extra_sql_fields["client_meta"] = _json_sanitize(client_meta)
     thought_process, thought_source = _thought_candidate_and_reason(payload)
+    if env.kind == "chat.history":
+        print(
+            "===THINK_HOP=== hop=sql_before_assign "
+            f"corr={env.correlation_id} "
+            f"source={thought_source or 'none'} "
+            f"len={len(thought_process) if thought_process else 0} "
+            f"preview={_preview_text(thought_process)} "
+            f"payload_keys={sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}",
+            flush=True,
+        )
     if _thought_debug_enabled() and env.kind == "chat.history":
         logger.info(
             "THOUGHT_DEBUG_SQL_INTAKE stage=chat_history_intake corr=%s payload_keys=%s reasoning_trace_exists=%s reasoning_content_exists=%s candidate_source=%s candidate_len=%s candidate_snippet=%r discarded=%s",

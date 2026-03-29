@@ -39,6 +39,12 @@ def _debug_snippet(value: object, max_len: int = 200) -> str:
     return f"{text[:max_len]}…"
 
 
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
+
+
 def select_reasoning_trace_for_history(
     *,
     correlation_id: UUID | str | None,
@@ -257,6 +263,36 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
 
     channel = settings.chat_history_turn_channel
     try:
+        turn_payload = env.payload
+        explicit_reasoning_trace = getattr(turn_payload, "reasoning_trace", None)
+        reasoning_content = getattr(turn_payload, "reasoning_content", None)
+        chosen_metacog_trace = None
+        selected_source = "none"
+        selected_content = None
+        if isinstance(explicit_reasoning_trace, dict) and explicit_reasoning_trace.get("content"):
+            selected_source = "reasoning_trace.content"
+            selected_content = explicit_reasoning_trace.get("content")
+        elif reasoning_content:
+            selected_source = "reasoning_content"
+            selected_content = reasoning_content
+        elif isinstance(chosen_metacog_trace, dict) and chosen_metacog_trace.get("content"):
+            selected_source = "metacog_traces.content"
+            selected_content = chosen_metacog_trace.get("content")
+        print(
+            "===THINK_HOP=== hop=chat_history_publish "
+            f"corr={env.correlation_id} "
+            f"source={selected_source} "
+            f"len={len(selected_content) if selected_content else 0} "
+            f"preview={_preview_text(selected_content)}",
+            flush=True,
+        )
+        payload_dump = turn_payload.model_dump() if hasattr(turn_payload, "model_dump") else turn_payload
+        print(
+            "===THINK_HOP=== hop=chat_history_payload "
+            f"corr={env.correlation_id} "
+            f"keys={sorted(payload_dump.keys()) if isinstance(payload_dump, dict) else type(payload_dump).__name__}",
+            flush=True,
+        )
         if _thought_debug_enabled():
             payload = env.payload
             rt = getattr(payload, "reasoning_trace", None)

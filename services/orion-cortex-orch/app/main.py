@@ -400,6 +400,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
         if isinstance(final_meta, dict) and agent_trace is not None:
             final_meta["agent_trace_available"] = True
+        metacog_traces = result_payload.get("metacog_traces") or []
+        logger.info(
+            "cortex_orch_metacog_forwarded corr=%s verb=%s traces=%s",
+            env.correlation_id,
+            req.verb,
+            len(metacog_traces) if isinstance(metacog_traces, list) else 0,
+        )
 
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),
@@ -413,7 +420,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             error=error_payload,
             correlation_id=str(env.correlation_id),
             agent_trace=agent_trace,
-            metacog_traces=result_payload.get("metacog_traces") or [],
+            metacog_traces=metacog_traces,
             metadata=final_meta,
         )
 

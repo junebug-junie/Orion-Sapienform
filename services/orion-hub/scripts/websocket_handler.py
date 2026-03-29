@@ -633,6 +633,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
                 if isinstance(raw_traces, list):
                     metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
+                logger.info(
+                    "hub_metacog_received corr=%s source=ws traces=%s",
+                    trace_id,
+                    len(metacog_traces),
+                )
                 workflow = extract_workflow_payload(resp.cortex_result)
                 if isinstance(workflow, dict):
                     logger.info(
@@ -780,6 +785,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                 payload=trace,
                             )
                             _schedule_publish(bus.publish("orion:metacog:trace", trace_env), "metacog.trace")
+                        logger.info(
+                            "hub_metacog_published corr=%s source=ws channel=%s traces=%s",
+                            trace_id,
+                            "orion:metacog:trace",
+                            len(metacog_traces),
+                        )
                     if is_social_room_payload(data):
                         _schedule_publish(
                             publish_social_room_turn(

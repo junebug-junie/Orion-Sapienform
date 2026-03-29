@@ -682,6 +682,13 @@ async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str
 
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     route_key = settings.route_map.get(env.kind)
+    if env.kind == "metacognitive.trace.v1":
+        logger.info(
+            "sql_writer_metacog_consumed kind=%s corr=%s route=%s",
+            env.kind,
+            env.correlation_id,
+            route_key,
+        )
 
     # -------------------------------------------------------------------------
     # GLOBAL PRE-PROCESSING: Extract Correlation ID

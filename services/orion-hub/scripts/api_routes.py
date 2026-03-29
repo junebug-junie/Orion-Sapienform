@@ -22,6 +22,7 @@ from .workflow_payloads import extract_workflow_payload
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .social_room import is_social_room_payload, social_room_client_meta
 from orion.cognition.verb_activation import build_verb_list
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
@@ -697,10 +698,19 @@ async def handle_chat_request(
         recall_debug = None
         agent_trace = None
         workflow = None
+        metacog_traces = []
         if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
             recall_debug = resp.cortex_result.recall_debug
             memory_digest = recall_debug.get("memory_digest")
         agent_trace = extract_agent_trace_payload(resp.cortex_result)
+        raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
+        if isinstance(raw_traces, list):
+            metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
+        logger.info(
+            "hub_metacog_received corr=%s source=http traces=%s",
+            correlation_id,
+            len(metacog_traces),
+        )
         workflow = extract_workflow_payload(resp.cortex_result)
         if isinstance(workflow, dict):
             logger.info(
@@ -757,6 +767,7 @@ async def handle_chat_request(
             "spark_meta": None,
             "correlation_id": correlation_id,
             "routing_debug": route_debug,
+            "metacog_traces": metacog_traces,
         }
 
     except Exception as e:
@@ -855,6 +866,28 @@ async def api_chat(
                     trace_verb=(result.get("routing_debug") or {}).get("verb"),
                     client_meta=social_meta,
                     memory_digest=result.get("memory_digest"),
+                )
+            metacog_traces = result.get("metacog_traces") or []
+            if isinstance(metacog_traces, list):
+                for trace in metacog_traces:
+                    if not isinstance(trace, dict):
+                        continue
+                    trace_env = BaseEnvelope(
+                        kind="metacognitive.trace.v1",
+                        source=ServiceRef(
+                            name=settings.SERVICE_NAME,
+                            node=settings.NODE_NAME,
+                            version=settings.SERVICE_VERSION,
+                        ),
+                        correlation_id=final_corr_id,
+                        payload=trace,
+                    )
+                    await bus.publish("orion:metacog:trace", trace_env)
+                logger.info(
+                    "hub_metacog_published corr=%s source=http channel=%s traces=%s",
+                    final_corr_id,
+                    "orion:metacog:trace",
+                    len([t for t in metacog_traces if isinstance(t, dict)]),
                 )
 
             # Legacy log for downstream SQL-writer compatibility

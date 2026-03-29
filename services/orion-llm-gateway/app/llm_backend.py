@@ -758,6 +758,19 @@ def _execute_openai_chat(
             text, think_reasoning = _split_think_blocks(text)
             if not reasoning_content:
                 reasoning_content = think_reasoning
+            if reasoning_content:
+                logger.info(
+                    "[LLM-GW] reasoning_trace_extracted corr=%s model=%s chars=%s",
+                    getattr(body, "trace_id", None),
+                    model,
+                    len(reasoning_content.strip()),
+                )
+            else:
+                logger.info(
+                    "[LLM-GW] reasoning_trace_extracted corr=%s model=%s chars=0",
+                    getattr(body, "trace_id", None),
+                    model,
+                )
 
             # 3b. Spark Post-Ingest (assistant reply)
             _spark_post_ingest_for_reply(body, spark_meta, text)

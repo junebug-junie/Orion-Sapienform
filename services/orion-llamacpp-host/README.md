@@ -387,3 +387,57 @@ watch -n 1 nvidia-smi
 - switch workers by changing `LLM_PROFILE_NAME`, not by rewriting runtime flags
 - keep Atlas isolation explicit with route -> URL mapping, unique worker identity, unique host port, and unique GPU binding
 - use `../../postflight.md` when handing the procedure to another operator or another GPT session
+
+---
+
+## Pinned llama.cpp CUDA base image
+
+`services/orion-llamacpp-host/Dockerfile` now pins to:
+
+- `ghcr.io/ggerganov/llama.cpp:server-cuda-b5401` (via `LLAMACPP_IMAGE_TAG` build arg)
+
+Why this pin:
+
+- Qwen docs list `b5092` as the minimum for Qwen3/Qwen3MoE support.
+- `b5401` is above that floor while remaining a fixed non-HEAD build.
+- Existing Qwen2/Qwen2.5 GGUF workflows remain in the same llama.cpp runtime family and OpenAI-compatible `llama-server` surface.
+
+### Build with the pinned target
+
+```bash
+docker compose \
+  --env-file services/orion-llamacpp-host/.env_example \
+  -f services/orion-llamacpp-host/docker-compose.yml \
+  build orion-llamacpp-host
+```
+
+### Optional explicit build tag override
+
+```bash
+LLAMACPP_IMAGE_TAG=server-cuda-b5401 docker compose \
+  --env-file services/orion-llamacpp-host/.env_example \
+  -f services/orion-llamacpp-host/docker-compose.yml \
+  build orion-llamacpp-host
+```
+
+### Rollback
+
+If regression appears, rollback to prior known-good image tag:
+
+```bash
+LLAMACPP_IMAGE_TAG=server-cuda-b4719 docker compose \
+  --env-file services/orion-llamacpp-host/.env_example \
+  -f services/orion-llamacpp-host/docker-compose.yml \
+  build --no-cache orion-llamacpp-host
+```
+
+### Validation harness
+
+Run the repo-local validator:
+
+```bash
+MODEL_QWEN25_PATH=/mnt/telemetry/llm-cache/gguf/Qwen2.5-32B-Instruct-abliterated.Q6_K.gguf \
+MODEL_QWEN3_PATH=/mnt/telemetry/llm-cache/gguf/Qwen3-30B-A3B-Q4_K_M.gguf \
+IMAGE=orion-llamacpp-host:0.1.0 \
+services/orion-llamacpp-host/scripts/validate_llamacpp_upgrade.sh
+```

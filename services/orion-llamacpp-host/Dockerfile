@@ -1,6 +1,10 @@
 # services/orion-llamacpp-host/Dockerfile
 
-FROM ghcr.io/ggerganov/llama.cpp:server-cuda-b4719
+# Pinned target for Qwen3 GGUF support + CUDA image stability.
+# Qwen docs indicate llama.cpp b5092 as minimum for Qwen3/Qwen3MoE support.
+# We pin above that floor (b5401) rather than tracking HEAD.
+ARG LLAMACPP_IMAGE_TAG=server-cuda-b5401
+FROM ghcr.io/ggerganov/llama.cpp:${LLAMACPP_IMAGE_TAG}
 
 # Install Python + pip (base image is minimal)
 # Added curl for healthcheck

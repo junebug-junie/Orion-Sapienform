@@ -236,6 +236,45 @@ def _pick_finalization_tool(tool_ids: list[str]) -> str | None:
     return None
 
 
+def _resolve_delegate_tool_id(
+    requested_tool_id: str | None,
+    *,
+    available_tools: List[ToolDef],
+    output_mode: str | None,
+) -> tuple[str | None, str]:
+    requested = str(requested_tool_id or "").strip()
+    if not requested:
+        return None, "missing"
+
+    available_ids = [t.tool_id for t in available_tools]
+    if requested in set(available_ids):
+        return requested, "exact"
+
+    alias_map = {
+        "analyze_conversation": "analyze_text",
+        "gather_info": "plan_action",
+    }
+    alias_target = alias_map.get(requested)
+    if alias_target and alias_target in set(available_ids):
+        return alias_target, "alias"
+
+    lowered = requested.lower()
+    for tool_id in available_ids:
+        tid = str(tool_id or "").lower()
+        if tid == lowered:
+            return tool_id, "casefold"
+        if lowered in tid or tid in lowered:
+            return tool_id, "fuzzy"
+
+    fallback = _select_non_triage_tool(
+        available_tools,
+        preferred_order=["analyze_text", "plan_action", "evaluate"],
+    )
+    if fallback:
+        return fallback, "fallback_non_triage"
+    return _pick_finalization_tool(available_ids) or _delivery_override_for_plan_action_repeat(output_mode), "fallback_finalize"
+
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -262,6 +301,8 @@ async def execute_agent_chain(
         "finalization_source_trace_used": False,
         "finalization_reason": None,
         "suppressed_plan_action_count": 0,
+        "invalid_tool_remap_count": 0,
+        "invalid_tool_last": None,
     }
     logger.info(
         "[agent-chain] wiring corr=%s output_mode=%s profile=%s packs=%s tools=%s",
@@ -532,6 +573,27 @@ async def execute_agent_chain(
 
             if tool_id == "finalize_response":
                 dbg["finalize_response_invoked"] = True
+            resolved_tool_id, resolution_source = _resolve_delegate_tool_id(
+                tool_id,
+                available_tools=tools,
+                output_mode=output_mode,
+            )
+            if resolved_tool_id != tool_id:
+                logger.warning(
+                    "[agent-chain] invalid_delegate_tool remapped requested=%s resolved=%s source=%s",
+                    tool_id,
+                    resolved_tool_id,
+                    resolution_source,
+                )
+                dbg["invalid_tool_remap_count"] = int(dbg.get("invalid_tool_remap_count") or 0) + 1
+                dbg["invalid_tool_last"] = {
+                    "requested": str(tool_id or ""),
+                    "resolved": str(resolved_tool_id or ""),
+                    "source": resolution_source,
+                }
+            tool_id = resolved_tool_id
+            if not tool_id:
+                raise RuntimeError("Planner selected invalid delegate tool and no fallback tool is available")
             tool_input = _ground_tool_input(
                 tool_id=str(tool_id),
                 tool_input=tool_input if isinstance(tool_input, dict) else {},

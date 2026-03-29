@@ -15,6 +15,7 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.rdf import RdfWriteRequest, RdfBuildRequest
 from orion.schemas.social_chat import SocialRoomTurnStoredV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
 from app.autonomy import build_autonomy_triples
 from app.provenance import attach_provenance
@@ -157,6 +158,10 @@ def build_triples_from_envelope(env_kind: str, payload: Any) -> Tuple[Optional[s
             else:
                 trace = payload
             return _handle_cognition_trace(g, trace)
+
+        elif env_kind == "metacognitive.trace.v1":
+            trace = MetacognitiveTraceV1.model_validate(payload if isinstance(payload, dict) else payload.model_dump())
+            return _handle_metacognitive_trace(g, trace)
 
         # 7. Core Events (Legacy Fallback or "targets": ["rdf"])
         elif env_kind == "orion.event" or "targets" in str(payload):
@@ -308,6 +313,33 @@ def _handle_social_room_turn(g: Graph, payload: dict[str, Any]) -> Tuple[str, st
         g.add((turn_uri, ORION.supportedByEvidence, evidence_uri))
     attach_provenance(g, turn_uri, turn.source)
     return g.serialize(format="nt"), "orion:chat:social"
+
+
+def _handle_metacognitive_trace(g: Graph, trace: MetacognitiveTraceV1) -> Tuple[str, str]:
+    trace_uri = ORION[f"trace_{_sanitize_fragment(trace.trace_id)}"]
+    turn_ref = _sanitize_fragment(trace.message_id or trace.correlation_id)
+    turn_uri = ORION[f"turn_{turn_ref}"]
+
+    g.add((trace_uri, RDF.type, ORION.CognitiveTrace))
+    role_map = {
+        "reasoning": ORION.ReasoningTrace,
+        "planning": ORION.PlanTrace,
+        "reflection": ORION.ReflectionTrace,
+        "self_check": ORION.SelfCritique,
+        "critique": ORION.SelfCritique,
+    }
+    g.add((trace_uri, RDF.type, role_map.get(trace.trace_role, ORION.CognitiveTrace)))
+    g.add((trace_uri, ORION.traceOfTurn, turn_uri))
+    g.add((trace_uri, ORION.generatedByModel, Literal(trace.model, datatype=XSD.string)))
+    g.add((trace_uri, ORION.traceStage, Literal(trace.trace_stage, datatype=XSD.string)))
+    g.add((trace_uri, ORION.traceRole, Literal(trace.trace_role, datatype=XSD.string)))
+    g.add((trace_uri, ORION.traceText, Literal(trace.content)))
+    g.add((trace_uri, ORION.correlationId, Literal(trace.correlation_id, datatype=XSD.string)))
+    if trace.session_id:
+        g.add((trace_uri, ORION.sessionId, Literal(trace.session_id, datatype=XSD.string)))
+    if trace.token_count is not None:
+        g.add((trace_uri, ORION.tokenCount, Literal(trace.token_count, datatype=XSD.integer)))
+    return g.serialize(format="nt"), "orion:metacog"
 
 
 # === Chat History ===

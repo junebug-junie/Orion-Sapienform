@@ -616,6 +616,14 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:metacog:trace"
+    kind: "event"
+    schema_id: "MetacognitiveTraceV1"
+    producer_services: ["orion-cortex-exec", "orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-rdf-writer"]
+    stability: "experimental"
+    since: "2026-03-29"
+
   - name: "orion:equilibrium:metacog:trigger"
     kind: "event"
     schema_id: "MetacogTriggerV1"
@@ -773,7 +781,7 @@ channels:
     kind: "event"
     schema_id: "ChatHistoryMessageV1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host", "orion-spark-concept-induction"]
     stability: "experimental"
     since: "2026-01-10"
 
@@ -781,7 +789,7 @@ channels:
     kind: "event"
     schema_id: "ChatHistoryTurnV1"
     producer_services: ["orion-hub"]
-    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host"]
+    consumer_services: ["orion-sql-writer", "orion-vector-writer", "orion-vector-host", "orion-spark-concept-induction"]
     stability: "experimental"
     since: "2026-01-10"
 

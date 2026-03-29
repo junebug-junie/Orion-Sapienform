@@ -202,6 +202,8 @@ class ChatResultPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True, protected_namespaces=())
 
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    reasoning_trace: Optional[Dict[str, Any]] = None
     model_used: Optional[str] = None
     spark_meta: Optional[Dict[str, Any]] = None
     spark_vector: Optional[List[float]] = None

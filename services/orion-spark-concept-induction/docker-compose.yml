@@ -15,7 +15,7 @@ services:
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
-      - BUS_INTAKE_CHANNELS=${BUS_INTAKE_CHANNELS}
+      - BUS_INTAKE_CHANNELS=${BUS_INTAKE_CHANNELS:-["orion:chat:history:log","orion:chat:history:turn","orion:chat:social:stored","orion:collapse:sql-write","orion:spark:telemetry","orion:metacognition:tick","orion:cognition:trace"]}
       - BUS_PROFILE_OUT=${BUS_PROFILE_OUT}
       - BUS_DELTA_OUT=${BUS_DELTA_OUT}
       - BUS_VECTOR_OUT=${BUS_VECTOR_OUT}

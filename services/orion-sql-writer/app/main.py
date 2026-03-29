@@ -65,6 +65,28 @@ async def lifespan(app: FastAPI):
             )
             conn.exec_driver_sql(
                 """
+                CREATE TABLE IF NOT EXISTS orion_metacognitive_trace (
+                    trace_id TEXT PRIMARY KEY,
+                    correlation_id TEXT NOT NULL,
+                    session_id TEXT NULL,
+                    message_id TEXT NULL,
+                    trace_role TEXT NOT NULL,
+                    trace_stage TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    token_count INT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_orion_metacog_trace_corr ON orion_metacognitive_trace (correlation_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_orion_metacog_trace_created_at ON orion_metacognitive_trace (created_at);"
+            )
+            conn.exec_driver_sql(
+                """
                 CREATE TABLE IF NOT EXISTS social_room_turns (
                     turn_id TEXT PRIMARY KEY,
                     correlation_id TEXT NULL,
@@ -174,6 +196,14 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS idx_journal_entries_correlation_id ON journal_entries (correlation_id);"
             )
         logger.info("🧬 chat_message correlation/trace columns ensured")
+        retention_days = int(getattr(settings, "metacog_trace_retention_days", 0) or 0)
+        if retention_days > 0:
+            with engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "DELETE FROM orion_metacognitive_trace WHERE created_at < (NOW() - (%s || ' days')::INTERVAL);",
+                    (str(retention_days),),
+                )
+            logger.info("🧹 Applied metacog trace retention window=%s days", retention_days)
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
 

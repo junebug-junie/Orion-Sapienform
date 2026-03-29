@@ -3143,6 +3143,8 @@ loadDismissedIds();
     if (sender === 'Orion') {
       const tracePanel = createAgentTracePanel(meta.agentTrace, meta);
       if (tracePanel) div.appendChild(tracePanel);
+      const metacogPanel = createMetacogTracePanel(meta.metacogTraces || meta.metacog_traces || []);
+      if (metacogPanel) div.appendChild(metacogPanel);
     }
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
@@ -3431,6 +3433,36 @@ loadDismissedIds();
 
     panel.appendChild(header);
     panel.appendChild(body);
+    return panel;
+  }
+
+  function createMetacogTracePanel(traces) {
+    const list = Array.isArray(traces) ? traces.filter((item) => item && typeof item === 'object') : [];
+    if (!list.length) return null;
+    const top = list[0];
+
+    const panel = document.createElement('div');
+    panel.className = 'mt-3 rounded-xl border border-purple-700/60 bg-purple-900/10 p-3 space-y-2';
+
+    const header = document.createElement('div');
+    header.className = 'text-xs uppercase tracking-wide text-purple-300';
+    header.textContent = 'METACOG TRACE';
+
+    const summary = document.createElement('div');
+    summary.className = 'text-xs text-gray-200 whitespace-pre-wrap';
+    const raw = String(top.content || '').trim();
+    summary.textContent = raw.length > 280 ? `${raw.slice(0, 280)}…` : raw || 'No trace content.';
+
+    const meta = document.createElement('div');
+    meta.className = 'text-[10px] text-purple-200/80';
+    const md = top.metadata && typeof top.metadata === 'object' ? top.metadata : {};
+    const reasoningDepth = md.reasoning_depth != null ? md.reasoning_depth : '--';
+    const tokenCount = top.token_count != null ? top.token_count : '--';
+    meta.textContent = `role ${top.trace_role || '--'} · tokens ${tokenCount} · reasoning depth ${reasoningDepth}`;
+
+    panel.appendChild(header);
+    panel.appendChild(summary);
+    panel.appendChild(meta);
     return panel;
   }
 
@@ -4268,6 +4300,7 @@ loadDismissedIds();
           if (d.llm_response) {
             appendMessage('Orion', d.llm_response, 'text-white', {
               agentTrace: d.agent_trace,
+              metacogTraces: d.metacog_traces,
               correlationId: d.correlation_id,
               routingDebug: d.routing_debug,
               workflow: d.workflow,
@@ -4347,6 +4380,7 @@ loadDismissedIds();
             if(d.text) {
               appendMessage('Orion', d.text, 'text-white', {
                 agentTrace: d.agent_trace,
+                metacogTraces: d.metacog_traces,
                 correlationId: d.correlation_id,
                 routingDebug: d.routing_debug,
                 workflow: d.workflow,

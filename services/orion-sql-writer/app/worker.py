@@ -32,6 +32,7 @@ from app.models import (
     CognitionTraceSQL,
     MetacognitionTickSQL,
     MetacogTriggerSQL,
+    MetacognitiveTraceSQL,
     NotificationRequestDB,
     NotificationReceiptDB,
     JournalEntrySQL,
@@ -61,6 +62,7 @@ from orion.schemas.social_bridge import (
 )
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
 from app.spark_contract_metrics import SparkContractMetrics, LEGACY_KINDS
 
@@ -107,6 +109,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SparkTelemetrySQL": (SparkTelemetrySQL, SparkTelemetryPayload),
     "MetacognitionTickSQL": (MetacognitionTickSQL, MetacognitionTickV1),
     "MetacogTriggerSQL": (MetacogTriggerSQL, MetacogTriggerV1),
+    "MetacognitiveTraceSQL": (MetacognitiveTraceSQL, MetacognitiveTraceV1),
     "NotificationRequestDB": (NotificationRequestDB, None),
     "NotificationReceiptDB": (NotificationReceiptDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
@@ -687,6 +690,20 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     if getattr(env, "correlation_id", None):
         extra_sql_fields["correlation_id"] = str(env.correlation_id)
     payload = env.payload if isinstance(env.payload, dict) else {}
+    if env.kind == "chat.history":
+        rt = payload.get("reasoning_trace")
+        if isinstance(rt, dict):
+            trace_payload = dict(rt)
+            trace_payload.setdefault("correlation_id", str(env.correlation_id))
+            trace_payload.setdefault("session_id", payload.get("session_id"))
+            trace_payload.setdefault("message_id", payload.get("id") or payload.get("correlation_id"))
+            trace_payload.setdefault("trace_role", "reasoning")
+            trace_payload.setdefault("trace_stage", "post_answer")
+            trace_payload.setdefault("model", (payload.get("spark_meta") or {}).get("model") or "unknown")
+            try:
+                await _write(MetacognitiveTraceSQL, MetacognitiveTraceV1, trace_payload, {})
+            except Exception as exc:
+                logger.warning("Failed to persist reasoning_trace from chat.history corr=%s err=%s", env.correlation_id, exc)
     trace_id = payload.get("trace_id") or payload.get("traceId")
     if trace_id:
         extra_sql_fields["trace_id"] = str(trace_id)

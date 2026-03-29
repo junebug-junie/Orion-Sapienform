@@ -31,6 +31,7 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "cognition.trace": "CognitionTraceSQL",
     "metacognition.tick.v1": "MetacognitionTickSQL",
     "orion.metacog.trigger.v1": "MetacogTriggerSQL",
+    "metacognitive.trace.v1": "MetacognitiveTraceSQL",
     "notify.notification.request.v1": "NotificationRequestDB",
     "notify.notification.receipt.v1": "NotificationReceiptDB",
     "notify.recipient.update.v1": "RecipientProfileDB",
@@ -87,6 +88,7 @@ class Settings(BaseSettings):
             "orion:cognition:trace",
             "orion:metacognition:tick",
             "orion:equilibrium:metacog:trigger",
+            "orion:metacog:trace",
             "orion:notify:persistence:request",
             "orion:notify:persistence:receipt",
             "orion:journal:write",
@@ -112,6 +114,7 @@ class Settings(BaseSettings):
         "orion:chat:social:stored",
         alias="SQL_WRITER_SOCIAL_TURN_STORED_CHANNEL",
     )
+    metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
 
     @property
     def route_map(self) -> Dict[str, str]:

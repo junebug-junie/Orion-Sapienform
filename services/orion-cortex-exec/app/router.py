@@ -367,6 +367,12 @@ class PlanRunner:
             correlation_id=correlation_id,
             session_id=str(ctx.get("session_id")) if ctx.get("session_id") else None,
         )
+        logger.info(
+            "cortex_exec_metacog_attached corr_id=%s verb=%s traces=%s",
+            correlation_id,
+            plan.verb_name,
+            len(metacog_traces),
+        )
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,

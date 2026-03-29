@@ -48,6 +48,13 @@ class _FakeBus:
         }
 
 
+class _FailingRecallBus(_FakeBus):
+    async def rpc_request(self, channel: str, envelope: BaseEnvelope, *, reply_channel: str, timeout_sec: float):
+        if "RecallService" in channel:
+            raise TimeoutError("recall timeout")
+        return await super().rpc_request(channel, envelope, reply_channel=reply_channel, timeout_sec=timeout_sec)
+
+
 @pytest.fixture
 def collapse_request() -> PlanExecutionRequest:
     entry = CollapseMirrorEntryV2(
@@ -222,3 +229,25 @@ def test_actions_verb_reflective_self_study_is_explicit_and_preserves_metadata(m
         "induced",
         "reflective",
     ]
+
+
+def test_actions_verb_recall_failure_triggers_fallback_notification(monkeypatch, collapse_request):
+    sent = []
+
+    def _send(self, request):
+        sent.append(request)
+        return SimpleNamespace(ok=True, status="accepted", detail=None, notification_id=f"notif-{len(sent)}")
+
+    monkeypatch.setattr("app.verb_adapters.NotifyClient.send", _send)
+    bus = _FailingRecallBus(
+        recall_payload={"bundle": {"rendered": "memory block", "items": []}},
+        llm_payload={"content": "[MESSAGE]\nhello Juniper\n[/MESSAGE]"},
+    )
+    ctx = VerbContext(meta={"bus": bus, "source": ServiceRef(name="orion-cortex-exec"), "correlation_id": str(uuid4())})
+
+    output, _effects = asyncio.run(RespondToJuniperCollapseMirrorVerb().execute(ctx, collapse_request))
+
+    assert output.status == "fail"
+    assert len(sent) == 1
+    assert sent[0].context.get("fallback") is True
+    assert "I saw your collapse mirror" in (sent[0].body_text or "")

@@ -105,6 +105,8 @@ class PlanRunner:
         profile_source = recall_policy["profile_source"]
         ctx.setdefault("debug", {})["recall_gating_reason"] = recall_policy["recall_gating_reason"]
         ctx.setdefault("debug", {})["recall_profile"] = selected_profile
+        ctx.setdefault("debug", {})["recall_profile_source"] = profile_source
+        ctx.setdefault("debug", {})["recall_profile_override_source"] = recall_policy.get("profile_override_source")
 
         if diagnostic:
             logger.info("Diagnostic PlanExecutionRequest json=%s", req.model_dump_json())
@@ -116,9 +118,10 @@ class PlanRunner:
                 recall_cfg,
             )
             logger.info(
-                "Recall selected profile=%s source=%s gating_reason=%s",
+                "Recall selected profile=%s source=%s override_source=%s gating_reason=%s",
                 selected_profile,
                 profile_source,
+                recall_policy.get("profile_override_source"),
                 recall_policy["recall_gating_reason"],
             )
 
@@ -208,6 +211,11 @@ class PlanRunner:
                 if isinstance(recall_payload, dict):
                     recall_count = int(recall_payload.get("count") or 0)
                     recall_debug = recall_payload
+            if isinstance(recall_debug, dict):
+                recall_debug.setdefault("profile", selected_profile)
+                recall_debug.setdefault("profile_source", profile_source)
+                recall_debug.setdefault("profile_override_source", recall_policy.get("profile_override_source"))
+                recall_debug.setdefault("recall_gating_reason", recall_policy.get("recall_gating_reason"))
             if recall_required and recall_count == 0:
                 if diagnostic:
                     logger.info(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -29,6 +29,7 @@ class MemoryBundleStatsV1(BaseModel):
     backend_counts: Dict[str, int] = Field(default_factory=dict)
     latency_ms: int = 0
     profile: Optional[str] = None
+    diagnostic: Optional[Dict[str, Any]] = None
 
 
 class MemoryBundleV1(BaseModel):
@@ -50,6 +51,10 @@ class RecallQueryV1(BaseModel):
     session_id: Optional[str] = None
     node_id: Optional[str] = None
     profile: str = Field("reflect.v1", description="Recall profile name")
+    exclude: Optional[Dict[str, object]] = Field(
+        default=None,
+        description="Optional current-turn exclusion hints (ids/text/timestamps).",
+    )
     reply_to: Optional[str] = None
 
 
@@ -58,6 +63,7 @@ class RecallReplyV1(BaseModel):
 
     bundle: MemoryBundleV1
     correlation_id: Optional[str] = None
+    debug: Optional[Dict[str, Any]] = None
 
 
 class RecallDecisionV1(BaseModel):
@@ -73,9 +79,13 @@ class RecallDecisionV1(BaseModel):
     profile: Optional[str] = None
     query: str
     selected_ids: List[str] = Field(default_factory=list)
-    dropped: Dict[str, str] = Field(default_factory=dict)
+    dropped: Dict[str, int] = Field(default_factory=dict)
     backend_counts: Dict[str, int] = Field(default_factory=dict)
     latency_ms: int = 0
+    recall_debug: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Bounded, structured diagnostics for recall decision explainability.",
+    )
     ranking_debug: List[Dict[str, Optional[float | int | str | bool]]] = Field(
         default_factory=list,
         description="Optional relevance diagnostics for ranked candidates.",

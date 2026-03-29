@@ -1039,6 +1039,19 @@ async def run_recall_step(
         recall_included=False,
     )
     trace_val = ctx.get("trace_id") or recall_cfg.get("trace_id") or correlation_id
+    active_turn_ids = []
+    for candidate in (
+        correlation_id,
+        trace_val,
+        ctx.get("chat_correlation_id"),
+        ctx.get("trigger_correlation_id"),
+        ctx.get("request_id"),
+    ):
+        if candidate is None:
+            continue
+        value = str(candidate).strip()
+        if value and value not in active_turn_ids:
+            active_turn_ids.append(value)
     req = RecallQueryV1(
         fragment=fragment,
         verb=str(ctx.get("verb") or recall_cfg.get("verb") or "unknown"),
@@ -1046,11 +1059,18 @@ async def run_recall_step(
         session_id=ctx.get("session_id"),
         node_id=ctx.get("node_id"),
         profile=recall_profile or recall_cfg.get("profile") or "reflect.v1",
+        exclude={
+            "active_turn_ids": active_turn_ids,
+            "active_turn_text": fragment,
+            "active_turn_ts": time.time(),
+        },
         reply_to=reply_channel,
     )
 
     logs: List[str] = [f"rpc -> RecallService (profile={req.profile})"]
     debug: Dict[str, Any] = {}
+    profile_source = (ctx.get("debug") or {}).get("recall_profile_source")
+    override_source = (ctx.get("debug") or {}).get("recall_profile_override_source")
     try:
         res = await recall_client.query(
             source=source,
@@ -1063,8 +1083,19 @@ async def run_recall_step(
         debug = {
             "count": len(bundle.items),
             "profile": req.profile,
+            "profile_source": profile_source,
+            "profile_override_source": override_source,
             "error": None,
         }
+        if isinstance(getattr(res, "debug", None), dict):
+            decision_dbg = res.debug.get("decision")
+            if isinstance(decision_dbg, dict):
+                debug["decision"] = decision_dbg
+                recall_dbg = decision_dbg.get("recall_debug")
+                if isinstance(recall_dbg, dict):
+                    debug["source_gating"] = recall_dbg.get("source_gating") or {}
+                    debug["drop_counts"] = (decision_dbg.get("dropped") or {})
+                    debug["selected_summary"] = recall_dbg.get("selected_summary") or []
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         debug["memory_digest"] = memory_digest
         debug["memory_digest_chars"] = len(memory_digest or "")
@@ -1113,12 +1144,16 @@ async def run_recall_step(
         ]
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
         logger.info(
-            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s items=%s summary=%s",
+            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s profile_source=%s override_source=%s items=%s source_gating=%s drop_counts=%s summary=%s",
             correlation_id,
             trace_val,
             ctx.get("session_id"),
             req.profile,
+            profile_source,
+            override_source,
             len(recall_fragments),
+            debug.get("source_gating", {}),
+            debug.get("drop_counts", {}),
             debug["items"],
         )
 

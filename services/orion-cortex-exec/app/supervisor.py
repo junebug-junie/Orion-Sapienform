@@ -705,15 +705,18 @@ class Supervisor:
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
         ctx.setdefault("debug", {})["recall_gating_reason"] = recall_policy["recall_gating_reason"]
+        ctx.setdefault("debug", {})["recall_profile_source"] = profile_source
+        ctx.setdefault("debug", {})["recall_profile_override_source"] = recall_policy.get("profile_override_source")
         inline_recall = has_inline_recall(req.steps)
         should_recall = bool(recall_policy["run_recall"])
         recall_reason = str(recall_policy["reason"])
 
         if should_recall and not inline_recall:
             logger.info(
-                "Supervisor recall resolved profile=%s source=%s gating=%s recall_gating_reason=%s",
+                "Supervisor recall resolved profile=%s source=%s override_source=%s gating=%s recall_gating_reason=%s",
                 selected_profile,
                 profile_source,
+                recall_policy.get("profile_override_source"),
                 recall_reason,
                 recall_policy["recall_gating_reason"],
             )

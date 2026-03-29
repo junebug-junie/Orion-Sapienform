@@ -115,6 +115,46 @@ def _parse_row(row: Dict[str, Any]) -> TimelineItem:
 def _epoch(ts_val: Any, default: Optional[float] = None) -> float:
     if ts_val is None:
         return default or datetime.utcnow().timestamp()
+
+
+def _normalize_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return " ".join(text.split())
+
+
+def _is_current_turn_echo(text: Any, active_turn_text: Optional[str]) -> bool:
+    active = _normalize_text(active_turn_text)
+    if not active:
+        return False
+    candidate = _normalize_text(text)
+    if not candidate:
+        return False
+    return active in candidate
+
+
+def _filter_excluded_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    exclude_ids: Optional[List[str]],
+    exclude_text: Optional[str],
+) -> List[Dict[str, Any]]:
+    excluded = {str(v).strip() for v in (exclude_ids or []) if str(v).strip()}
+    if not excluded and not exclude_text:
+        return rows
+    filtered: List[Dict[str, Any]] = []
+    suppressed = 0
+    for row in rows:
+        row_id = str(row.get("id") or "").strip()
+        if row_id and row_id in excluded:
+            suppressed += 1
+            continue
+        if _is_current_turn_echo(row.get("text"), exclude_text):
+            suppressed += 1
+            continue
+        filtered.append(row)
+    if suppressed:
+        logger.info("sql_timeline self-hit suppression suppressed=%s", suppressed)
+    return filtered
     if isinstance(ts_val, datetime):
         return ts_val.timestamp()
     try:
@@ -197,6 +237,9 @@ async def fetch_recent_fragments(
     node_id: Optional[str],
     since_minutes: int,
     limit: int,
+    *,
+    exclude_ids: Optional[List[str]] = None,
+    exclude_text: Optional[str] = None,
 ) -> List[TimelineItem]:
     """
     Fetch recent fragments from the configured SQL timeline source.
@@ -267,7 +310,12 @@ async def fetch_recent_fragments(
                         "turn_effect_delta": turn_effect_delta,
                     }
                     formatted.append(_parse_row(row_data))
-                return formatted
+                filtered = _filter_excluded_rows(
+                    [item.__dict__ for item in formatted],
+                    exclude_ids=exclude_ids,
+                    exclude_text=exclude_text,
+                )
+                return [TimelineItem(**row) for row in filtered]
 
             logger.debug("sql_timeline: using generic timeline source=%s", timeline_table)
             juniper_clause = ""
@@ -295,7 +343,13 @@ async def fetch_recent_fragments(
             rows = [dict(zip(cols, r)) for r in cur.fetchall()]
             for r in rows:
                 r["source_ref"] = timeline_table
-            return [_parse_row(r) for r in rows]
+            parsed = [_parse_row(r) for r in rows]
+            filtered = _filter_excluded_rows(
+                [item.__dict__ for item in parsed],
+                exclude_ids=exclude_ids,
+                exclude_text=exclude_text,
+            )
+            return [TimelineItem(**row) for row in filtered]
         finally:
             conn.close()
 
@@ -308,6 +362,8 @@ async def fetch_related_by_entities(
     limit: int,
     *,
     session_id: Optional[str] = None,
+    exclude_ids: Optional[List[str]] = None,
+    exclude_text: Optional[str] = None,
 ) -> List[TimelineItem]:
     """
     Fetch fragments mentioning any of the provided entities.
@@ -380,7 +436,12 @@ async def fetch_related_by_entities(
                         "source_ref": timeline_table,
                     }
                     formatted.append(_parse_row(row_data))
-                return formatted
+                filtered = _filter_excluded_rows(
+                    [item.__dict__ for item in formatted],
+                    exclude_ids=exclude_ids,
+                    exclude_text=exclude_text,
+                )
+                return [TimelineItem(**row) for row in filtered]
 
             logger.debug("sql_timeline: using generic entity search source=%s", timeline_table)
             placeholders = ", ".join(["%s"] * len(entities))
@@ -410,7 +471,13 @@ async def fetch_related_by_entities(
             rows = [dict(zip(cols, r)) for r in cur.fetchall()]
             for r in rows:
                 r["source_ref"] = timeline_table
-            return [_parse_row(r) for r in rows]
+            parsed = [_parse_row(r) for r in rows]
+            filtered = _filter_excluded_rows(
+                [item.__dict__ for item in parsed],
+                exclude_ids=exclude_ids,
+                exclude_text=exclude_text,
+            )
+            return [TimelineItem(**row) for row in filtered]
         finally:
             conn.close()
 
@@ -422,6 +489,9 @@ async def fetch_exact_fragments(
     session_id: Optional[str],
     node_id: Optional[str],
     limit: int,
+    *,
+    exclude_ids: Optional[List[str]] = None,
+    exclude_text: Optional[str] = None,
 ) -> List[TimelineItem]:
     if not tokens:
         return []
@@ -492,7 +562,12 @@ async def fetch_exact_fragments(
                             "source_ref": timeline_table,
                         }
                         formatted.append(_parse_row(row_data))
-                    return formatted
+                    filtered = _filter_excluded_rows(
+                        [item.__dict__ for item in formatted],
+                        exclude_ids=exclude_ids,
+                        exclude_text=exclude_text,
+                    )
+                    return [TimelineItem(**row) for row in filtered]
 
                 logger.debug("sql_timeline: using generic exact-match source=%s", timeline_table)
                 term_filters = []
@@ -528,7 +603,13 @@ async def fetch_exact_fragments(
                 rows = [dict(zip(cols, r)) for r in cur.fetchall()]
                 for r in rows:
                     r["source_ref"] = timeline_table
-                return [_parse_row(r) for r in rows]
+                parsed = [_parse_row(r) for r in rows]
+                filtered = _filter_excluded_rows(
+                    [item.__dict__ for item in parsed],
+                    exclude_ids=exclude_ids,
+                    exclude_text=exclude_text,
+                )
+                return [TimelineItem(**row) for row in filtered]
         finally:
             conn.close()
 

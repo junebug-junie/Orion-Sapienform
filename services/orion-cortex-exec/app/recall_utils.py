@@ -58,6 +58,26 @@ def resolve_mode_profile(mode: str | None) -> Tuple[str, str]:
     return "reflect.v1", "mode"
 
 
+def _clean_profile(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _resolve_explicit_profile(recall_cfg: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    profile = _clean_profile(recall_cfg.get("profile"))
+    if not profile:
+        return None, None
+    marker = str(recall_cfg.get("profile_source") or "").strip().lower()
+    explicit_flag = _normalize_bool(recall_cfg.get("profile_explicit"), default=False) or _normalize_bool(
+        recall_cfg.get("profile_override"), default=False
+    )
+    if marker in {"explicit", "caller", "request", "user_override", "api"} or explicit_flag:
+        return profile, "explicit"
+    return profile, "inherited"
+
+
 def resolve_profile(
     recall_cfg: Dict[str, Any],
     *,
@@ -65,13 +85,15 @@ def resolve_profile(
     step: Optional[ExecutionStep] = None,
     is_recall_step: bool = False,
 ) -> Tuple[str, str]:
-    explicit = recall_cfg.get("profile")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip(), "explicit"
+    explicit_profile, explicit_source = _resolve_explicit_profile(recall_cfg)
+    if explicit_profile and explicit_source == "explicit":
+        return explicit_profile, "explicit"
     if is_recall_step and step and step.recall_profile:
         return step.recall_profile, "step"
     if isinstance(verb_profile, str) and verb_profile.strip():
         return verb_profile.strip(), "verb"
+    if explicit_profile:
+        return explicit_profile, "inherited"
     mode = recall_cfg.get("mode")
     if mode:
         profile, source = resolve_mode_profile(str(mode))
@@ -104,7 +126,7 @@ def delivery_safe_recall_decision(
 ) -> Dict[str, Any]:
     recall_required = bool(recall_cfg.get("required", False))
     recall_enabled = recall_enabled_value(recall_cfg)
-    explicit_profile = recall_cfg.get("profile")
+    explicit_profile, explicit_source = _resolve_explicit_profile(recall_cfg)
     base_profile, profile_source = resolve_profile(recall_cfg, verb_profile=verb_profile)
     base_should_run, base_reason = should_run_recall(recall_cfg, steps)
 
@@ -143,6 +165,7 @@ def delivery_safe_recall_decision(
         "reason": base_reason,
         "profile": base_profile,
         "profile_source": profile_source,
+        "profile_override_source": explicit_source,
         "recall_gating_reason": base_reason,
         "effective_enabled": recall_enabled or recall_required,
     }

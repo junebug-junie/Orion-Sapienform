@@ -19,6 +19,7 @@ from scripts.chat_history import (
     build_chat_turn_envelope,
     publish_social_room_turn,
     publish_chat_turn,
+    select_reasoning_trace_for_history,
 )
 from scripts.social_room import is_social_room_payload, social_room_client_meta
 from scripts.trace_payloads import extract_agent_trace_payload
@@ -768,6 +769,14 @@ async def websocket_endpoint(websocket: WebSocket):
                         "session_id": data.get("session_id"),
                         "spark_meta": spark_meta,
                     }
+                    selected_reasoning_trace, _ = select_reasoning_trace_for_history(
+                        correlation_id=trace_id,
+                        metacog_traces=metacog_traces,
+                        reasoning_content=((gateway_meta or {}).get("reasoning_content") if isinstance(gateway_meta, dict) else None),
+                        session_id=publish_session_id,
+                        message_id=f"{trace_id}:assistant",
+                        model=((gateway_meta or {}).get("model") if isinstance(gateway_meta, dict) else None),
+                    )
 
                     # 1. SQL Log (turn-level row: prompt + response)
                     env_turn = build_chat_turn_envelope(
@@ -782,7 +791,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         memory_status="accepted",
                         memory_tier="ephemeral",
                         client_meta=enriched_client_meta,
-                        reasoning_trace=metacog_traces[0] if metacog_traces else None,
+                        reasoning_trace=selected_reasoning_trace,
                     )
                     _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
                     logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
@@ -878,7 +887,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         memory_status="accepted",
                         memory_tier="ephemeral",
                         client_meta=enriched_client_meta,
-                        reasoning_trace=metacog_traces[0] if metacog_traces else None,
+                        reasoning_trace=selected_reasoning_trace,
                     )
                     _schedule_publish(publish_chat_history(bus, [assistant_env]), "chat.history assistant")
                 except Exception as e:

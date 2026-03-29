@@ -571,7 +571,7 @@ channels:
   - name: "orion:rdf:enqueue"
     kind: "request"
     schema_id: "RdfWriteRequest"
-    producer_services: ["orion-cortex-exec", "orion-vision-scribe"]
+    producer_services: ["orion-cortex-exec", "orion-vision-scribe", "orion-spark-concept-induction"]
     consumer_services: ["orion-rdf-writer"]
     stability: "experimental"
     since: "2026-01-08"

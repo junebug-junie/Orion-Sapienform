@@ -312,7 +312,7 @@ class ConceptWorker:
             )
             await self.bus.publish(self.cfg.forward_vector_channel, env)
 
-    async def _materialize_profile_graph(self, profile: ConceptProfile, corr_id) -> None:
+    async def _materialize_profile_graph(self, profile: ConceptProfile, corr_id) -> bool:
         concept_count = len(profile.concepts)
         cluster_count = len(profile.clusters)
         graph_write_attempted = False
@@ -337,6 +337,15 @@ class ConceptWorker:
         except Exception as exc:  # noqa: BLE001
             error_kind = type(exc).__name__
             logger.warning(
+                "concept_profile_postsave stage=graph_materialization_failed subject=%s revision=%s "
+                "correlation_id=%s destination=%s error=%s",
+                profile.subject,
+                profile.revision,
+                corr_id,
+                self.cfg.forward_rdf_channel,
+                error_kind,
+            )
+            logger.warning(
                 "concept_profile_graph_materialization subject=%s revision=%s concept_count=%d "
                 "cluster_count=%d graph_write_attempted=%s graph_write_succeeded=%s "
                 "destination=%s schema_kind=%s error_kind=%s",
@@ -350,7 +359,7 @@ class ConceptWorker:
                 "spark.concept_profile.graph.v1",
                 error_kind,
             )
-            return
+            return False
 
         logger.info(
             "concept_profile_graph_materialization subject=%s revision=%s concept_count=%d "
@@ -366,6 +375,7 @@ class ConceptWorker:
             "spark.concept_profile.graph.v1",
             error_kind,
         )
+        return True
 
     async def _publish_drive_state(self, payload, corr_id) -> None:
         env = BaseEnvelope(
@@ -672,11 +682,50 @@ class ConceptWorker:
             len(window),
         )
         result = await self.inducer.run(subject=subject, window=window)
+        logger.info(
+            "concept_profile_postsave stage=profile_saved subject=%s revision=%s correlation_id=%s",
+            result.profile.subject,
+            result.profile.revision,
+            corr_id,
+        )
         await self._publish_profile(result.profile, corr_id)
-        await self._materialize_profile_graph(result.profile, corr_id)
+        logger.info(
+            "concept_profile_postsave stage=profile_published subject=%s revision=%s correlation_id=%s",
+            result.profile.subject,
+            result.profile.revision,
+            corr_id,
+        )
+        logger.info(
+            "concept_profile_postsave stage=graph_materialization_attempted subject=%s revision=%s correlation_id=%s destination=%s",
+            result.profile.subject,
+            result.profile.revision,
+            corr_id,
+            self.cfg.forward_rdf_channel,
+        )
+        materialized = await self._materialize_profile_graph(result.profile, corr_id)
+        if materialized:
+            logger.info(
+                "concept_profile_postsave stage=graph_materialization_published subject=%s revision=%s correlation_id=%s destination=%s",
+                result.profile.subject,
+                result.profile.revision,
+                corr_id,
+                self.cfg.forward_rdf_channel,
+            )
         if result.delta:
             await self._publish_delta(result.delta, corr_id)
+            logger.info(
+                "concept_profile_postsave stage=delta_published subject=%s revision=%s correlation_id=%s",
+                result.profile.subject,
+                result.profile.revision,
+                corr_id,
+            )
         await self._forward_vector(result.profile, corr_id)
+        logger.info(
+            "concept_profile_postsave stage=vector_forwarded subject=%s revision=%s correlation_id=%s",
+            result.profile.subject,
+            result.profile.revision,
+            corr_id,
+        )
         self.last_run[subject] = datetime.now(timezone.utc)
 
     def trigger_status(self) -> dict:

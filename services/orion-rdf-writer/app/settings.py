@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # === LISTENER CHANNELS ===
     # Enqueue (Direct writes)
-    CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf-collapse:enqueue", env="CHANNEL_RDF_ENQUEUE")
+    CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf:enqueue", env="CHANNEL_RDF_ENQUEUE")
     # Collapse (Raw)
     CHANNEL_EVENTS_COLLAPSE: str = Field(default="orion:collapse:intake", env="CHANNEL_EVENTS_COLLAPSE")
     # Tagged/Enriched
@@ -64,6 +64,7 @@ class Settings(BaseSettings):
         """Returns a list of all channels this service should subscribe to."""
         channels = [
             self.CHANNEL_RDF_ENQUEUE,
+            "orion:rdf-collapse:enqueue",
             self.CHANNEL_EVENTS_COLLAPSE,
             self.CHANNEL_EVENTS_TAGGED,
             self.CHANNEL_EVENTS_TAGGED_CHAT,

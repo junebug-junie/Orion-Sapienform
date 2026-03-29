@@ -623,6 +623,72 @@ class ConceptInductionTests(unittest.TestCase):
             published = worker.bus.published
             self.assertTrue(any(channel == worker.cfg.forward_rdf_channel and out.kind == "rdf.write.request" for channel, out in published))
 
+    def test_run_for_subject_postsave_fanout_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            profile = asyncio.run(
+                ConceptInducer(ConceptSettings()).run(
+                    subject="orion",
+                    window=[
+                        WindowEvent(
+                            text="Orion keeps coherence.",
+                            timestamp=datetime.now(timezone.utc),
+                            envelope=_env_with_text("Orion keeps coherence."),
+                            intake_channel="orion:chat:history:log",
+                        )
+                    ],
+                )
+            ).profile
+            worker.inducer = StubInducer(profile=profile)
+            worker.bus = FakeBus()
+            worker.window["orion"] = [
+                WindowEvent(
+                    text="Orion keeps coherence.",
+                    timestamp=datetime.now(timezone.utc),
+                    envelope=_env_with_text("Orion keeps coherence."),
+                    intake_channel="orion:chat:history:log",
+                )
+            ]
+            asyncio.run(worker.run_for_subject("orion"))
+            published_kinds = [env.kind for _, env in worker.bus.published]
+            self.assertGreaterEqual(len(published_kinds), 3)
+            self.assertEqual(published_kinds[0], "memory.concepts.profile.v1")
+            self.assertEqual(published_kinds[1], "rdf.write.request")
+            self.assertTrue(all(kind == "vector.write" for kind in published_kinds[2:]))
+
+    def test_graph_materialization_failure_logs_postsave_stage(self):
+        with tempfile.TemporaryDirectory() as td:
+            worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False, store_path=str(Path(td) / "state.json")))
+            profile = asyncio.run(
+                ConceptInducer(ConceptSettings()).run(
+                    subject="orion",
+                    window=[
+                        WindowEvent(
+                            text="Orion forms concepts.",
+                            timestamp=datetime.now(timezone.utc),
+                            envelope=_env_with_text("Orion forms concepts."),
+                            intake_channel="orion:chat:history:log",
+                        )
+                    ],
+                )
+            ).profile
+            worker.inducer = StubInducer(profile=profile)
+            worker.bus = FailOnKindBus(fail_channel=worker.cfg.forward_rdf_channel, fail_kind="rdf.write.request")
+            worker.window["orion"] = [
+                WindowEvent(
+                    text="Orion forms concepts.",
+                    timestamp=datetime.now(timezone.utc),
+                    envelope=_env_with_text("Orion forms concepts."),
+                    intake_channel="orion:chat:history:log",
+                )
+            ]
+            with self.assertLogs("orion.spark.concept.worker", level="INFO") as captured:
+                asyncio.run(worker.run_for_subject("orion"))
+            combined_logs = "\n".join(captured.output)
+            self.assertIn("concept_profile_postsave stage=profile_saved", combined_logs)
+            self.assertIn("concept_profile_postsave stage=graph_materialization_attempted", combined_logs)
+            self.assertIn("concept_profile_postsave stage=graph_materialization_failed", combined_logs)
+
     def test_worker_start_enters_consume_loop_and_tracks_counters(self):
         worker = ConceptWorker(ConceptSettings(orion_bus_enabled=False))
         accepted_env = BaseEnvelope(

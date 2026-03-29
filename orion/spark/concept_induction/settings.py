@@ -83,6 +83,9 @@ class ConceptSettings(BaseSettings):
     # Windowing
     window_max_events: int = Field(200, alias="CONCEPT_WINDOW_MAX_EVENTS")
     window_max_minutes: int = Field(360, alias="CONCEPT_WINDOW_MAX_MINUTES")
+    concept_trigger_cooldown_sec: int = Field(300, alias="CONCEPT_TRIGGER_COOLDOWN_SEC")
+    concept_trigger_dedupe_sec: int = Field(45, alias="CONCEPT_TRIGGER_DEDUPE_SEC")
+    concept_trigger_recent_decisions: int = Field(200, alias="CONCEPT_TRIGGER_RECENT_DECISIONS")
     subjects: List[str] | str = Field(
         default_factory=lambda: ["orion", "juniper", "relationship"],
         alias="CONCEPT_SUBJECTS",

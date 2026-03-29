@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -30,6 +31,17 @@ from .tensions import extract_tensions
 from .rdf_materialization import build_concept_profile_rdf_request
 
 logger = logging.getLogger("orion.spark.concept.worker")
+
+
+@dataclass
+class ConceptInductionTrigger:
+    source_kind: str
+    source_event_id: str
+    correlation_id: str | None
+    subjects: List[str]
+    trigger_reason: str
+    event_timestamp: datetime
+    salience: float | None = None
 
 
 def _service_ref(cfg: ConceptSettings) -> ServiceRef:
@@ -79,6 +91,9 @@ class ConceptWorker:
             service_ref=service_ref,
         )
         self.window: Dict[str, List[WindowEvent]] = {s: [] for s in cfg.subjects}
+        self.inflight_subjects: Set[str] = set()
+        self.recent_event_seen: Dict[str, datetime] = {}
+        self.trigger_decisions: List[dict] = []
 
     def _prune_window(self, subject: str) -> None:
         window = self.window.get(subject, [])
@@ -110,6 +125,92 @@ class ConceptWorker:
             if isinstance(val, str) and val.strip():
                 return val
         return None
+
+    def _source_kind(self, env: BaseEnvelope, intake_channel: str) -> str:
+        lowered_kind = (env.kind or "").lower()
+        lowered_channel = (intake_channel or "").lower()
+        if "chat:history" in lowered_channel or "chat:social" in lowered_channel:
+            return "chat_turn"
+        if lowered_kind in {"journal.entry.created.v1", "journal.entry.write.v1"} or "journal" in lowered_kind:
+            return "journal_write"
+        if lowered_kind == "dream.result.v1" or lowered_kind.startswith("dream."):
+            return "dream_result"
+        if lowered_kind.startswith("self.review") or lowered_kind.startswith("self_review"):
+            return "self_review_result"
+        if "metacognition:tick" in lowered_channel or lowered_kind.startswith("metacognition.tick"):
+            return "metacog_tick"
+        if "cognition:trace" in lowered_channel:
+            return "cognition_trace"
+        if "collapse" in lowered_channel:
+            return "collapse_event"
+        return "generic_activity"
+
+    def _select_trigger_subjects(
+        self,
+        env: BaseEnvelope,
+        intake_channel: str,
+        source_kind: str,
+        text: Optional[str],
+    ) -> List[str]:
+        payload = env.payload.model_dump() if hasattr(env.payload, "model_dump") else env.payload
+        payload = payload if isinstance(payload, dict) else {}
+        selected: Set[str] = set()
+        detected = self._detect_subject(env, intake_channel)
+        if detected in {"orion", "juniper", "relationship"}:
+            selected.add(detected)
+        role = str(payload.get("role") or "").strip().lower()
+        user = str(payload.get("user") or payload.get("speaker") or "").strip().lower()
+        lowered_text = (text or "").lower()
+
+        if source_kind in {"metacog_tick", "self_review_result", "cognition_trace"}:
+            selected.add("orion")
+        if source_kind in {"chat_turn", "journal_write", "dream_result"}:
+            if role == "assistant" or "orion" in lowered_text:
+                selected.add("orion")
+            if role == "user" or user.startswith("juniper") or "juniper" in lowered_text:
+                selected.add("juniper")
+                selected.add("relationship")
+        if source_kind == "collapse_event":
+            selected.add("relationship")
+        ordered = [subject for subject in self.cfg.subjects if subject in selected]
+        return ordered
+
+    def _record_trigger_decision(self, record: dict) -> None:
+        self.trigger_decisions.append(record)
+        max_records = max(1, int(self.cfg.concept_trigger_recent_decisions))
+        self.trigger_decisions = self.trigger_decisions[-max_records:]
+
+    def _should_skip_due_to_dedupe(self, trigger: ConceptInductionTrigger) -> bool:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=self.cfg.concept_trigger_dedupe_sec)
+        self.recent_event_seen = {
+            key: seen_at for key, seen_at in self.recent_event_seen.items() if seen_at >= cutoff
+        }
+        if trigger.source_event_id in self.recent_event_seen:
+            return True
+        self.recent_event_seen[trigger.source_event_id] = now
+        return False
+
+    def _build_trigger(
+        self,
+        env: BaseEnvelope,
+        intake_channel: str,
+        text: Optional[str],
+    ) -> ConceptInductionTrigger | None:
+        source_kind = self._source_kind(env, intake_channel)
+        subjects = self._select_trigger_subjects(env, intake_channel, source_kind, text)
+        if not subjects:
+            return None
+        source_event_id = str(getattr(env, "id", None) or env.correlation_id or uuid4())
+        corr_id = str(env.correlation_id) if env.correlation_id else None
+        return ConceptInductionTrigger(
+            source_kind=source_kind,
+            source_event_id=source_event_id,
+            correlation_id=corr_id,
+            subjects=subjects,
+            trigger_reason=f"{source_kind}:subject-selection",
+            event_timestamp=env.created_at,
+        )
 
     async def _publish_profile(self, profile: ConceptProfile, corr_id) -> None:
         env = BaseEnvelope(
@@ -343,17 +444,109 @@ class ConceptWorker:
         )
         await self._publish_dossier(dossier, env.correlation_id)
 
-        if text:
-            event = WindowEvent(text=text, timestamp=env.created_at, envelope=env, intake_channel=intake_channel)
-            self.window.setdefault(subject, []).append(event)
-            self._prune_window(subject)
-            last = self.last_run.get(subject)
-            if (
-                last is None
-                or len(self.window[subject]) >= self.cfg.window_max_events
-                or (last and (now - last) > timedelta(minutes=self.cfg.window_max_minutes))
-            ):
-                await self.run_for_subject(subject, corr_id=env.correlation_id)
+        trigger = self._build_trigger(env, intake_channel, text)
+        if trigger is None:
+            return
+        logger.info(
+            "concept_induction_trigger_received source_kind=%s source_event_id=%s correlation_id=%s subjects=%s",
+            trigger.source_kind,
+            trigger.source_event_id,
+            trigger.correlation_id,
+            ",".join(trigger.subjects),
+        )
+        if self._should_skip_due_to_dedupe(trigger):
+            logger.info(
+                "concept_induction_trigger_decision decision=coalesced source_kind=%s source_event_id=%s subjects=%s",
+                trigger.source_kind,
+                trigger.source_event_id,
+                ",".join(trigger.subjects),
+            )
+            self._record_trigger_decision({
+                "decision": "coalesced",
+                "reason": "dedupe_window",
+                "trigger": asdict(trigger),
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            })
+            return
+
+        logger.info(
+            "concept_induction_subject_selected source_kind=%s source_event_id=%s subjects=%s",
+            trigger.source_kind,
+            trigger.source_event_id,
+            ",".join(trigger.subjects),
+        )
+        for selected_subject in trigger.subjects:
+            if text:
+                event = WindowEvent(text=text, timestamp=env.created_at, envelope=env, intake_channel=intake_channel)
+                self.window.setdefault(selected_subject, []).append(event)
+                self._prune_window(selected_subject)
+            if selected_subject in self.inflight_subjects:
+                logger.info(
+                    "concept_induction_generation_skipped decision=queued source_kind=%s subject=%s correlation_id=%s reason=inflight",
+                    trigger.source_kind,
+                    selected_subject,
+                    trigger.correlation_id,
+                )
+                self._record_trigger_decision({
+                    "decision": "queued",
+                    "reason": "subject_inflight",
+                    "subject": selected_subject,
+                    "trigger": asdict(trigger),
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
+            last = self.last_run.get(selected_subject)
+            cooldown = timedelta(seconds=self.cfg.concept_trigger_cooldown_sec)
+            if last and (now - last) < cooldown:
+                remaining = int((cooldown - (now - last)).total_seconds())
+                logger.info(
+                    "concept_induction_generation_skipped decision=skipped_due_to_cooldown source_kind=%s subject=%s correlation_id=%s cooldown_remaining_sec=%d",
+                    trigger.source_kind,
+                    selected_subject,
+                    trigger.correlation_id,
+                    remaining,
+                )
+                self._record_trigger_decision({
+                    "decision": "skipped_due_to_cooldown",
+                    "reason": f"cooldown_remaining_sec={remaining}",
+                    "subject": selected_subject,
+                    "trigger": asdict(trigger),
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
+            if not self.window.get(selected_subject):
+                logger.info(
+                    "concept_induction_generation_skipped decision=skipped_no_window source_kind=%s subject=%s correlation_id=%s",
+                    trigger.source_kind,
+                    selected_subject,
+                    trigger.correlation_id,
+                )
+                self._record_trigger_decision({
+                    "decision": "skipped_no_window",
+                    "reason": "empty_window",
+                    "subject": selected_subject,
+                    "trigger": asdict(trigger),
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
+            logger.info(
+                "concept_induction_generation_enqueued source_kind=%s subject=%s correlation_id=%s source_event_id=%s",
+                trigger.source_kind,
+                selected_subject,
+                trigger.correlation_id,
+                trigger.source_event_id,
+            )
+            self._record_trigger_decision({
+                "decision": "triggered",
+                "subject": selected_subject,
+                "trigger": asdict(trigger),
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            })
+            self.inflight_subjects.add(selected_subject)
+            try:
+                await self.run_for_subject(selected_subject, corr_id=env.correlation_id)
+            finally:
+                self.inflight_subjects.discard(selected_subject)
 
     async def run_for_subject(self, subject: str, corr_id=None) -> None:
         corr_id = corr_id or uuid4()
@@ -367,6 +560,19 @@ class ConceptWorker:
             await self._publish_delta(result.delta, corr_id)
         await self._forward_vector(result.profile, corr_id)
         self.last_run[subject] = datetime.now(timezone.utc)
+
+    def trigger_status(self) -> dict:
+        return {
+            "intake_channels": list(self.cfg.intake_channels),
+            "subjects": list(self.cfg.subjects),
+            "cooldown_sec": self.cfg.concept_trigger_cooldown_sec,
+            "dedupe_sec": self.cfg.concept_trigger_dedupe_sec,
+            "last_induced_at": {
+                subject: timestamp.isoformat() for subject, timestamp in self.last_run.items()
+            },
+            "inflight_subjects": sorted(self.inflight_subjects),
+            "recent_decisions": list(self.trigger_decisions),
+        }
 
     async def start(self) -> None:
         await self.bus.connect()

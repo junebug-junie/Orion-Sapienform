@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -16,6 +18,7 @@ from .schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalMode, Jour
 JOURNAL_COMPOSE_VERB = "journal.compose"
 JOURNAL_WRITE_KIND = "journal.entry.write.v1"
 JOURNAL_CREATED_KIND = "journal.entry.created.v1"
+logger = logging.getLogger("orion.journaler.worker")
 
 
 _TRIGGER_TO_MODE: dict[str, JournalMode] = {
@@ -172,14 +175,72 @@ def build_compose_request(
     )
 
 
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
+
+
+def _try_parse_object(text: str) -> dict[str, Any] | None:
+    candidate = (text or "").strip()
+    if not candidate:
+        return None
+
+    try:
+        direct = json.loads(candidate)
+        if isinstance(direct, dict):
+            return direct
+    except Exception:
+        pass
+
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(candidate):
+        if ch != "{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(candidate[idx:])
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _parse_journal_draft_json(final_text: str) -> dict[str, Any]:
+    attempts: list[str] = []
+    base = (final_text or "").strip()
+    attempts.append(base)
+    for match in _FENCED_JSON_RE.finditer(base):
+        fenced = (match.group(1) or "").strip()
+        if fenced:
+            attempts.append(fenced)
+
+    for text in attempts:
+        parsed = _try_parse_object(text)
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise ValueError("journal_draft_parse_failed")
+
+
 def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
     final_text = payload.get("final_text")
     if not isinstance(final_text, str) or not final_text.strip():
         raise ValueError("cortex_orch_missing_final_text")
-    parsed = json.loads(final_text)
-    if not isinstance(parsed, dict):
-        raise ValueError("journal_draft_not_object")
-    return JournalEntryDraftV1.model_validate(parsed)
+    try:
+        parsed = _parse_journal_draft_json(final_text)
+        return JournalEntryDraftV1.model_validate(parsed)
+    except Exception as exc:
+        parse_context = {
+            "error": type(exc).__name__,
+            "message": str(exc),
+            "correlation_id": payload.get("correlation_id"),
+            "verb": payload.get("verb"),
+            "status": payload.get("status"),
+        }
+        logger.error(
+            "journal_draft_parse_failed context=%s final_text_preview=%r",
+            parse_context,
+            final_text[:4000],
+        )
+        raise ValueError(f"journal_draft_parse_failed:{json.dumps(parse_context, default=str, sort_keys=True)}") from exc
 
 
 def build_write_payload(

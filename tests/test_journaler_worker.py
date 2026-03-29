@@ -11,6 +11,7 @@ from orion.journaler.worker import (
     build_scheduler_trigger,
     build_write_payload,
     cooldown_key_for_trigger,
+    draft_from_cortex_result,
     journal_mode_for_trigger,
 )
 from orion.schemas.collapse_mirror import CollapseMirrorStoredV1
@@ -140,6 +141,42 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         self.assertNotEqual(cooldown_key_for_trigger(manual), cooldown_key_for_trigger(metacog))
         self.assertNotEqual(cooldown_key_for_trigger(collapse_a), cooldown_key_for_trigger(collapse_b))
         self.assertEqual(cooldown_key_for_trigger(collapse_a), cooldown_key_for_trigger(collapse_a))
+
+    def test_draft_from_cortex_result_accepts_fenced_json(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": """Here is the draft:
+```json
+{"mode":"manual","title":"Arc","body":"Kept going."}
+```""",
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.title, "Arc")
+        self.assertEqual(draft.body, "Kept going.")
+
+    def test_draft_from_cortex_result_accepts_preface_and_trailing_text(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": 'Draft: {"mode":"manual","title":"Arc","body":"Kept going."}\n(complete)',
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.mode, "manual")
+        self.assertEqual(draft.body, "Kept going.")
+
+    def test_draft_from_cortex_result_raises_structured_parse_error(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "verb": "journal.compose",
+            "correlation_id": "corr-parse",
+            "final_text": '{"mode":"manual","title":"Arc","body":"unterminated}',
+        }
+        with self.assertRaises(ValueError) as ctx:
+            draft_from_cortex_result(payload)
+        self.assertIn("journal_draft_parse_failed", str(ctx.exception))
+        self.assertIn("corr-parse", str(ctx.exception))
 
 
 if __name__ == "__main__":

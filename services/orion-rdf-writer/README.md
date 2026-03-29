@@ -7,7 +7,7 @@ The **RDF Writer** service constructs the Knowledge Graph by converting incoming
 ### Consumed Channels
 | Channel | Env Var | Kind(s) | Description |
 | :--- | :--- | :--- | :--- |
-| `orion:rdf-collapse:enqueue` | `CHANNEL_RDF_ENQUEUE` | `rdf.write.request` | Direct write requests. |
+| `orion:rdf:enqueue` | `CHANNEL_RDF_ENQUEUE` | `rdf.write.request` | Direct write requests. |
 | `orion:collapse:intake` | `CHANNEL_EVENTS_COLLAPSE` | `collapse.mirror.entry` | Collapse entries (raw). |
 | `orion:tags:enriched` | `CHANNEL_EVENTS_TAGGED` | `tags.enriched`, `telemetry.meta_tags` | Enriched metadata tags. |
 | `orion:core:events` | `CHANNEL_CORE_EVENTS` | `orion.event` | Legacy events targeted for RDF. |
@@ -26,7 +26,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 | Variable | Default (Settings) | Description |
 | :--- | :--- | :--- |
-| `CHANNEL_RDF_ENQUEUE` | `orion:rdf-collapse:enqueue` | Direct enqueue channel. |
+| `CHANNEL_RDF_ENQUEUE` | `orion:rdf:enqueue` | Direct enqueue channel. |
 | `CHANNEL_EVENTS_COLLAPSE` | `orion:collapse:intake` | Collapse event source. |
 | `CHANNEL_EVENTS_TAGGED` | `orion:tags:enriched` | Tagged event source. |
 | `CHANNEL_CHAT_HISTORY_TURN` | `orion:chat:history:turn` | Chat turn history intake. |

@@ -145,6 +145,8 @@ class CortexClientResult(BaseModel):
     verb: str
     status: str
     final_text: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    reasoning_trace: Optional[Dict[str, Any]] = None
     spark_vector: Optional[List[float]] = None
     memory_used: bool = False
     recall_debug: Dict[str, Any] = Field(default_factory=dict)

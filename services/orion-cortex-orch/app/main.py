@@ -401,6 +401,19 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if isinstance(final_meta, dict) and agent_trace is not None:
             final_meta["agent_trace_available"] = True
         metacog_traces = result_payload.get("metacog_traces") or []
+        reasoning_content = result_payload.get("reasoning_content")
+        reasoning_trace = result_payload.get("reasoning_trace")
+        reasoning_trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+        print(
+            "===THINK_HOP=== hop=gateway_in "
+            f"corr={env.correlation_id} "
+            f"payload_keys={sorted(result_payload.keys()) if isinstance(result_payload, dict) else []} "
+            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+            f"trace_len={len(reasoning_trace_content) if isinstance(reasoning_trace_content, str) else 0} "
+            f"metacog_count={len(metacog_traces) if isinstance(metacog_traces, list) else 0} "
+            f"preview={repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or reasoning_trace_content or '')[:220])}",
+            flush=True,
+        )
         logger.info(
             "cortex_orch_metacog_forwarded corr=%s verb=%s traces=%s",
             env.correlation_id,
@@ -414,6 +427,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             verb=req.verb or "unknown",
             status=result_payload.get("status") or "fail",
             final_text=result_payload.get("final_text"),
+            reasoning_content=reasoning_content if isinstance(reasoning_content, str) else None,
+            reasoning_trace=reasoning_trace if isinstance(reasoning_trace, dict) else None,
             memory_used=bool(result_payload.get("memory_used")),
             recall_debug=result_payload.get("recall_debug") or {},
             steps=steps,
@@ -423,12 +438,26 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             metacog_traces=metacog_traces,
             metadata=final_meta,
         )
+        client_payload = client_result.model_dump(mode="json")
+        client_reasoning = client_payload.get("reasoning_content") if isinstance(client_payload, dict) else None
+        client_trace = client_payload.get("reasoning_trace") if isinstance(client_payload, dict) else None
+        client_trace_content = client_trace.get("content") if isinstance(client_trace, dict) else None
+        print(
+            "===THINK_HOP=== hop=gateway_out "
+            f"corr={env.correlation_id} "
+            f"payload_keys={sorted(client_payload.keys()) if isinstance(client_payload, dict) else []} "
+            f"reasoning_len={len(client_reasoning) if isinstance(client_reasoning, str) else 0} "
+            f"trace_len={len(client_trace_content) if isinstance(client_trace_content, str) else 0} "
+            f"metacog_count={len(client_payload.get('metacog_traces')) if isinstance(client_payload.get('metacog_traces'), list) else 0} "
+            f"preview={repr(str((client_reasoning if isinstance(client_reasoning, str) else None) or client_trace_content or '')[:220])}",
+            flush=True,
+        )
 
         return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=client_result.model_dump(mode="json"),
+            payload=client_payload,
         )
 
     except Exception as e:

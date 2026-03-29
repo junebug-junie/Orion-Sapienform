@@ -57,6 +57,8 @@ class PlanExecutionResult(BaseModel):
     steps: List[StepExecutionResult] = Field(default_factory=list)
     mode: Optional[str] = None
     final_text: Optional[str] = None
+    reasoning_content: Optional[str] = None
+    reasoning_trace: Optional[Dict[str, Any]] = None
     memory_used: bool = False
     recall_debug: Dict[str, Any] = Field(default_factory=dict)
     metacog_traces: List[MetacognitiveTraceV1] = Field(default_factory=list)

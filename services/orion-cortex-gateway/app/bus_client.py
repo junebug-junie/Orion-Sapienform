@@ -19,6 +19,25 @@ from .settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _think_hop_print(*, hop: str, corr: Any, payload: Any) -> None:
+    payload_dict: Dict[str, Any] = payload if isinstance(payload, dict) else {}
+    reasoning_content = payload_dict.get("reasoning_content")
+    reasoning_trace = payload_dict.get("reasoning_trace")
+    trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+    preview = repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content or "")[:220])
+    print(
+        "===THINK_HOP=== "
+        f"hop={hop} "
+        f"corr={corr} "
+        f"payload_keys={sorted(payload_dict.keys()) if isinstance(payload_dict, dict) else []} "
+        f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+        f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+        f"metacog_count={len(payload_dict.get('metacog_traces')) if isinstance(payload_dict.get('metacog_traces'), list) else 0} "
+        f"preview={preview}",
+        flush=True,
+    )
+
+
 def _request_summary(
     *,
     corr_id: Any,
@@ -188,6 +207,11 @@ class BusClient:
             causality_chain=causality_chain or [],
             payload=payload.model_dump(mode="json"),
         )
+        _think_hop_print(
+            hop="gateway_out",
+            corr=correlation_id,
+            payload=((reply_env.payload or {}).get("cortex_result") if isinstance(reply_env.payload, dict) else {}),
+        )
         await self.bus.publish(reply_to, reply_env)
         recall_debug = payload.cortex_result.recall_debug if payload.cortex_result else {}
         recall_enabled = None
@@ -326,6 +350,7 @@ class BusClient:
                 correlation_id=env.correlation_id,
                 causality_chain=chain
             )
+            _think_hop_print(hop="gateway_in", corr=env.correlation_id, payload=orch_result_dict)
 
             # Wrap result
             try:
@@ -351,6 +376,11 @@ class BusClient:
                 )
                 logger.info("gateway_early_exit corr=%s reason=invalid_cortex_result reply=%s", env.correlation_id, env.reply_to)
                 return
+            _think_hop_print(
+                hop="gateway_normalized",
+                corr=env.correlation_id,
+                payload=cortex_res_obj.model_dump(mode="json"),
+            )
 
             executed_verbs: list[str] = []
             if isinstance(cortex_res_obj.metadata, dict):

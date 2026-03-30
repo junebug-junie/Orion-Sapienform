@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 from app.decision_router import DecisionRouter
@@ -179,6 +180,7 @@ def test_auto_router_treats_short_menu_followup_as_topic_selection_chat_general(
     assert routed.request.mode == "brain"
     assert routed.request.verb == "chat_general"
     assert routed.request.options["menu_topic_selection"]["enabled"] is True
+    assert routed.request.options["menu_topic_selection"]["selected_topic"] == "Mesh Continuity"
 
 
 def test_auto_router_menu_followup_variants_preserve_chat_lane():
@@ -221,3 +223,4 @@ def test_auto_router_menu_followup_variants_preserve_chat_lane():
         routed = asyncio.run(router.route(req, correlation_id=f"c-topic-followup-{idx}", source=ServiceRef(name="orch", version="0", node="n")))
         assert routed.request.verb == "chat_general"
         assert routed.decision.reason == "heuristic:menu_topic_selection_followup"
+        assert "hm_mesh_continuity" not in json.dumps(routed.request.model_dump(mode="json"))

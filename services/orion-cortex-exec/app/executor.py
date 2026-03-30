@@ -947,6 +947,18 @@ def _clean_raw_llm_content(text: str) -> str:
     return cleaned.strip()
 
 
+def _sanitize_menu_topic_selection_reply(text: str) -> str:
+    cleaned = str(text or "")
+    if not cleaned:
+        return cleaned
+    cleaned = re.sub(r"`[a-z][a-z0-9]*(?:_[a-z0-9]+){1,}`", "", cleaned)
+    cleaned = re.sub(r"\bhm_[a-z0-9_]+\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"https?://(?:www\.)?(?:example\.[a-z]{2,}|[^\s/]*placeholder[^\s/]*)[^\s]*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     """
     Fallback extraction when strict find_collapse_entry fails.
@@ -2119,7 +2131,19 @@ async def call_step_services(
                     timeout_sec=effective_timeout,
                 )
 
-                merged_result[service] = result_object.model_dump(mode="json")
+                result_payload = result_object.model_dump(mode="json")
+                menu_topic = ctx.get("menu_topic_selection")
+                if (
+                    step.verb_name == "chat_general"
+                    and step.step_name == "llm_chat_general"
+                    and isinstance(menu_topic, dict)
+                    and bool(menu_topic.get("enabled"))
+                ):
+                    sanitized_reply = _sanitize_menu_topic_selection_reply(_extract_llm_text(result_object))
+                    if sanitized_reply:
+                        result_payload["content"] = sanitized_reply
+                        result_payload["text"] = sanitized_reply
+                merged_result[service] = result_payload
                 if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
                     brief_text = _extract_llm_text(result_object)
                     parsed_brief = parse_chat_stance_brief(brief_text)

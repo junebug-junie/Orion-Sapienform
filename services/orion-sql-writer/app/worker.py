@@ -210,6 +210,42 @@ def _coerce_payload(model_cls, payload: Any):
     return payload
 
 
+_ENVELOPE_MARKER_KEYS = {
+    "schema_id",
+    "schema",
+    "schema_version",
+    "id",
+    "kind",
+    "causality_chain",
+    "source",
+    "ttl_ms",
+    "trace",
+    "reply_to",
+}
+
+
+def _looks_like_nested_envelope(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("payload"), dict):
+        return False
+    return bool(_ENVELOPE_MARKER_KEYS.intersection(payload.keys()))
+
+
+def _payload_for_schema_validation(payload: Any, schema_cls: Type[BaseModel] | None, *, kind: str | None = None) -> tuple[Any, str]:
+    if schema_cls is None:
+        return payload, "raw"
+    if _looks_like_nested_envelope(payload):
+        nested_payload = payload.get("payload")
+        logger.info(
+            "sql_writer_payload_boundary kind=%s schema=%s boundary=envelope_payload",
+            kind,
+            getattr(schema_cls, "__name__", str(schema_cls)),
+        )
+        return nested_payload, "envelope_payload"
+    return payload, "payload"
+
+
 def _json_sanitize(obj: Any, *, _seen: Optional[set[int]] = None, _depth: int = 0, _max_depth: int = 20) -> Any:
     if _seen is None:
         _seen = set()
@@ -782,9 +818,30 @@ def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = N
             remove_session()
 
 
-async def _write(sql_model_cls, schema_cls, payload: Any, extra_fields: Dict[str, Any] = None) -> bool:
+async def _write(
+    sql_model_cls,
+    schema_cls,
+    payload: Any,
+    extra_fields: Dict[str, Any] = None,
+    *,
+    kind: str | None = None,
+) -> bool:
     if schema_cls:
-        obj = _coerce_payload(schema_cls, payload)
+        validation_payload, validation_boundary = _payload_for_schema_validation(payload, schema_cls, kind=kind)
+        try:
+            obj = _coerce_payload(schema_cls, validation_payload)
+        except Exception as e:
+            payload_keys = sorted(validation_payload.keys()) if isinstance(validation_payload, dict) else []
+            logger.error(
+                "sql_writer_validation_failed kind=%s schema=%s boundary=%s payload_type=%s payload_keys=%s error=%s",
+                kind,
+                getattr(schema_cls, "__name__", str(schema_cls)),
+                validation_boundary,
+                type(validation_payload).__name__,
+                payload_keys,
+                e,
+            )
+            raise
         data = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
     else:
         data = payload if isinstance(payload, dict) else {}
@@ -996,19 +1053,20 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                         "spark telemetry normalization failed",
                     )
                     return
-                write_ok = await _write(sql_model, None, mapped, {})
-                await _write(sql_model, None, mapped, {})
+                write_ok = await _write(sql_model, None, mapped, {}, kind=env.kind)
+                await _write(sql_model, None, mapped, {}, kind=env.kind)
             elif sql_model is Dream:
                 normalized = _normalize_dream_envelope_payload(
                     env.kind, data_to_process, extra_sql_fields
                 )
-                await _write(sql_model, None, normalized, {})
+                await _write(sql_model, None, normalized, {}, kind=env.kind)
             else:
-                write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields)
+                write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             # Post-commit safety: emit only after _write() has returned success.
             if env.kind == JOURNAL_WRITE_KIND and write_ok and bus is not None and settings.sql_writer_emit_journal_created:
                 try:
-                    journal_payload = JournalEntryWriteV1.model_validate(env.payload)
+                    journal_input, _ = _payload_for_schema_validation(env.payload, JournalEntryWriteV1, kind=env.kind)
+                    journal_payload = JournalEntryWriteV1.model_validate(journal_input)
                     created_env = env.derive_child(
                         kind=JOURNAL_CREATED_KIND,
                         source=ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name),

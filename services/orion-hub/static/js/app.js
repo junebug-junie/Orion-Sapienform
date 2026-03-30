@@ -1612,15 +1612,14 @@ loadDismissedIds();
   }
 
   function clearAgentTraceDebugPanel() {
-    if (agentTraceDebugPanel) agentTraceDebugPanel.classList.add('hidden');
     if (agentTraceDebugBody) agentTraceDebugBody.classList.add('hidden');
     if (agentTraceDebugCaret) agentTraceDebugCaret.textContent = '▾';
-    if (agentTraceDebugMeta) agentTraceDebugMeta.textContent = '--';
+    if (agentTraceDebugMeta) agentTraceDebugMeta.textContent = 'No agent trace on this turn.';
     if (agentTraceDebugOverview) agentTraceDebugOverview.innerHTML = '';
-    if (agentTraceDebugSummary) agentTraceDebugSummary.textContent = '--';
+    if (agentTraceDebugSummary) agentTraceDebugSummary.textContent = 'No agent trace on this turn.';
     if (agentTraceDebugToolGroups) agentTraceDebugToolGroups.innerHTML = '';
     if (agentTraceDebugTimeline) agentTraceDebugTimeline.innerHTML = '';
-    if (agentTraceDebugRaw) agentTraceDebugRaw.innerHTML = '';
+    if (agentTraceDebugRaw) agentTraceDebugRaw.textContent = 'No agent trace on this turn.';
   }
 
   function updateAgentTraceDebugPanel(summary, meta = {}) {
@@ -1662,15 +1661,14 @@ loadDismissedIds();
   }
 
   function clearAutonomyDebugPanel() {
-    if (autonomyDebugPanel) autonomyDebugPanel.classList.add('hidden');
     if (autonomyDebugBody) autonomyDebugBody.classList.add('hidden');
     if (autonomyDebugCaret) autonomyDebugCaret.textContent = '▾';
-    if (autonomyDebugMeta) autonomyDebugMeta.textContent = '--';
-    if (autonomyDebugOverview) autonomyDebugOverview.textContent = '--';
-    if (autonomyDebugState) autonomyDebugState.textContent = '--';
-    if (autonomyDebugProposals) autonomyDebugProposals.textContent = '--';
-    if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = '--';
-    if (autonomyDebugRaw) autonomyDebugRaw.textContent = '--';
+    if (autonomyDebugMeta) autonomyDebugMeta.textContent = 'No autonomy payload on this turn.';
+    if (autonomyDebugOverview) autonomyDebugOverview.textContent = 'No autonomy payload on this turn.';
+    if (autonomyDebugState) autonomyDebugState.textContent = 'No meaningful autonomy signal for this turn.';
+    if (autonomyDebugProposals) autonomyDebugProposals.textContent = 'No autonomy payload on this turn.';
+    if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = 'No meaningful autonomy signal for this turn.';
+    if (autonomyDebugRaw) autonomyDebugRaw.textContent = 'No autonomy payload on this turn.';
   }
 
   function expectedPostureFromDrive(drive) {

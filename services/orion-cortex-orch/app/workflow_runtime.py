@@ -1249,22 +1249,84 @@ async def _execute_concept_induction_pass(
     persisted: list[str] = []
     synthesis_status: Dict[str, Any] | None = None
     if synthesize_requested and ok:
+        logger.info(
+            "concept_induction_journal_handoff %s",
+            json.dumps(
+                {
+                    "stage": "synth_result_requested",
+                    "workflow_id": workflow_id,
+                    "correlation_id": correlation_id,
+                },
+                sort_keys=True,
+            ),
+        )
         grounding_payload = _concept_induction_grounding_payload(
             details=concept_induction_details,
             workflow_id=workflow_id,
             resolved_backend=resolved_backend,
         )
-        synthesis_draft = await _run_concept_induction_grounded_journal_synthesis(
-            call_verb_runtime=call_verb_runtime,
-            bus=bus,
-            source=source,
-            correlation_id=correlation_id,
-            causality_chain=causality_chain,
-            trace=trace,
-            req=req,
-            workflow_id=workflow_id,
-            grounding_payload=grounding_payload,
-        )
+        try:
+            synthesis_draft = await _run_concept_induction_grounded_journal_synthesis(
+                call_verb_runtime=call_verb_runtime,
+                bus=bus,
+                source=source,
+                correlation_id=correlation_id,
+                causality_chain=causality_chain,
+                trace=trace,
+                req=req,
+                workflow_id=workflow_id,
+                grounding_payload=grounding_payload,
+            )
+            logger.info(
+                "concept_induction_journal_handoff %s",
+                json.dumps(
+                    {
+                        "stage": "synth_result_received",
+                        "workflow_id": workflow_id,
+                        "correlation_id": correlation_id,
+                    },
+                    sort_keys=True,
+                ),
+            )
+            logger.info(
+                "concept_induction_journal_handoff %s",
+                json.dumps(
+                    {
+                        "stage": "synth_result_parsed",
+                        "workflow_id": workflow_id,
+                        "correlation_id": correlation_id,
+                    },
+                    sort_keys=True,
+                ),
+            )
+            logger.info(
+                "concept_induction_journal_handoff %s",
+                json.dumps(
+                    {
+                        "stage": "grounding_check_passed",
+                        "workflow_id": workflow_id,
+                        "correlation_id": correlation_id,
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception as exc:
+            message = str(exc)
+            stage = "grounding_check_failed" if "grounding_violation" in message else "synth_result_parse_failed"
+            logger.warning(
+                "concept_induction_journal_handoff %s",
+                json.dumps(
+                    {
+                        "stage": stage,
+                        "workflow_id": workflow_id,
+                        "correlation_id": correlation_id,
+                        "error": message,
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+            )
+            raise
         reviewed_refs = [
             f"{item.get('subject')}:{item.get('profile_id')}@{item.get('revision')}"
             for item in (profile_details or [])
@@ -1287,10 +1349,60 @@ async def _execute_concept_induction_pass(
             causality_chain=list(causality_chain or []),
             trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
         )
-        await bus.publish(JOURNAL_WRITE_CHANNEL, envelope.model_dump(mode="json"))
+        logger.info(
+            "concept_induction_journal_handoff %s",
+            json.dumps(
+                {
+                    "stage": "journal_write_requested",
+                    "workflow_id": workflow_id,
+                    "correlation_id": correlation_id,
+                    "kind": JOURNAL_WRITE_KIND,
+                    "channel": JOURNAL_WRITE_CHANNEL,
+                    "entry_id": write.entry_id,
+                },
+                sort_keys=True,
+            ),
+        )
+        try:
+            await bus.publish(JOURNAL_WRITE_CHANNEL, envelope)
+        except Exception as exc:
+            logger.exception(
+                "concept_induction_journal_handoff %s",
+                json.dumps(
+                    {
+                        "stage": "journal_write_publish_failed",
+                        "workflow_id": workflow_id,
+                        "correlation_id": correlation_id,
+                        "kind": JOURNAL_WRITE_KIND,
+                        "channel": JOURNAL_WRITE_CHANNEL,
+                        "entry_id": write.entry_id,
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+            )
+            raise WorkflowExecutionError("concept_induction_journal_write_publish_failed") from exc
+        logger.info(
+            "concept_induction_journal_handoff %s",
+            json.dumps(
+                {
+                    "stage": "journal_write_published",
+                    "workflow_id": workflow_id,
+                    "correlation_id": correlation_id,
+                    "kind": JOURNAL_WRITE_KIND,
+                    "channel": JOURNAL_WRITE_CHANNEL,
+                    "entry_id": write.entry_id,
+                },
+                sort_keys=True,
+            ),
+        )
         persisted.append(f"journal.entry.write.v1:{write.entry_id}")
         synthesis_status = {
             "ok": True,
+            "synthesis_completed": True,
+            "journal_write_emitted": True,
+            "journal_write_confirmed": False,
             "journal_entry": write.model_dump(mode="json"),
             "provenance": {
                 "source_workflow_id": workflow_id,

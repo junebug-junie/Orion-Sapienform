@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 import sys
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -582,6 +584,209 @@ def test_concept_induction_synthesis_falls_back_to_missing_data_language(monkeyp
 
     journal_body = result.metadata["workflow"]["synthesis_to_journal"]["journal_entry"]["body"]
     assert "not available in reviewed profile data" in journal_body
+
+
+def test_concept_induction_synthesis_publish_uses_exact_journal_contract(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "continuity", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+    bus = DummyBus()
+
+    async def _runtime(*_args, **_kwargs):
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps(
+                        {
+                            "mode": "manual",
+                            "title": "Review",
+                            "body": "## Orion\nConcept continuity: grounded.\n\n## Grounding note\nThis synthesis is based only on reviewed concept-induction artifacts.",
+                        }
+                    ),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000120",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_runtime,
+        )
+    )
+    channel, env = bus.published[0]
+    assert channel == "orion:journal:write"
+    assert env.kind == "journal.entry.write.v1"
+
+
+def test_concept_induction_grounding_failure_blocks_publish_with_log(monkeypatch, tmp_path, caplog) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "continuity", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+    bus = DummyBus()
+
+    async def _runtime(*_args, **_kwargs):
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps(
+                        {
+                            "mode": "manual",
+                            "title": "Review",
+                            "body": "## Orion\nConcept invented: ungrounded.",
+                        }
+                    ),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    with pytest.raises(Exception, match="grounding_violation"):
+        asyncio.run(
+            execute_chat_workflow(
+                bus=bus,
+                source=ServiceRef(name="cortex-orch"),
+                req=req,
+                correlation_id="00000000-0000-0000-0000-000000000121",
+                causality_chain=[],
+                trace={},
+                call_verb_runtime=_runtime,
+            )
+        )
+    assert bus.published == []
+    assert any('"stage": "grounding_check_failed"' in rec.message for rec in caplog.records)
+
+
+def test_concept_induction_synth_success_without_publish_logs_failure(monkeypatch, tmp_path, caplog) -> None:
+    from app import workflow_runtime
+
+    class FailingBus(DummyBus):
+        async def publish(self, channel: str, envelope: BaseEnvelope) -> None:
+            raise RuntimeError("publish boom")
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "continuity", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+
+    async def _runtime(*_args, **_kwargs):
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps(
+                        {
+                            "mode": "manual",
+                            "title": "Review",
+                            "body": "## Orion\nConcept continuity: grounded.",
+                        }
+                    ),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    with pytest.raises(Exception, match="concept_induction_journal_write_publish_failed"):
+        asyncio.run(
+            execute_chat_workflow(
+                bus=FailingBus(),
+                source=ServiceRef(name="cortex-orch"),
+                req=req,
+                correlation_id="00000000-0000-0000-0000-000000000122",
+                causality_chain=[],
+                trace={},
+                call_verb_runtime=_runtime,
+            )
+        )
+    assert any('"stage": "journal_write_publish_failed"' in rec.message for rec in caplog.records)
+
+
+def test_concept_induction_regression_synth_then_journal_emit(monkeypatch, tmp_path, caplog) -> None:
+    from app import workflow_runtime
+    caplog.set_level(logging.INFO, logger="orion.cortex.orch.workflow_runtime")
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "continuity", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+    bus = DummyBus()
+    seen = {"verb": None}
+
+    async def _runtime(*_args, **kwargs):
+        seen["verb"] = kwargs["client_request"].verb
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps(
+                        {
+                            "mode": "manual",
+                            "title": "Review",
+                            "body": "## Orion\nConcept continuity: grounded.",
+                        }
+                    ),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000123",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_runtime,
+        )
+    )
+    assert result.metadata["workflow"]["synthesis_to_journal"]["synthesis_completed"] is True
+    assert result.metadata["workflow"]["synthesis_to_journal"]["journal_write_emitted"] is True
+    assert seen["verb"] == "concept_induction_journal_synthesize"
+    assert any(channel == "orion:journal:write" for channel, _ in bus.published)
+    assert any('"stage": "journal_write_published"' in rec.message for rec in caplog.records)
 
 
 def test_concept_induction_grounding_detector_flags_unsupported_artifacts() -> None:

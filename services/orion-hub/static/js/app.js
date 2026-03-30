@@ -2070,6 +2070,109 @@ loadDismissedIds();
     return card;
   }
 
+  function buildCodePre(value) {
+    const pre = document.createElement('pre');
+    pre.className = 'mt-2 overflow-x-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] text-gray-200';
+    pre.textContent = JSON.stringify(value, null, 2);
+    return pre;
+  }
+
+  function renderConceptInductionDetails(normalized) {
+    const details = workflowUiApi.normalizeConceptInductionDetails ? workflowUiApi.normalizeConceptInductionDetails(normalized) : null;
+    if (!details) return null;
+    const root = document.createElement('div');
+    root.className = 'space-y-4';
+    const sections = workflowUiApi.buildConceptInductionSections ? workflowUiApi.buildConceptInductionSections(normalized) : [];
+
+    const overview = document.createElement('section');
+    overview.className = 'rounded-xl border border-gray-800 bg-gray-900/30 p-3';
+    overview.innerHTML = `<div class="text-xs uppercase tracking-wide text-gray-500">${sections[0] || 'Overview'}</div>`;
+    const resolution = (details.trace && details.trace.repository_resolution) || {};
+    overview.appendChild(buildCodePre({
+      generated_at: details.generated_at,
+      reviewed_subjects: details.profiles.map((p) => p.subject),
+      backend: {
+        requested: resolution.requested_backend || null,
+        resolved: resolution.resolved_backend || null,
+        fallback_used: Boolean(resolution.fallback_used),
+      },
+    }));
+    root.appendChild(overview);
+
+    details.profiles.forEach((profile) => {
+      const profileSection = document.createElement('section');
+      profileSection.className = 'rounded-xl border border-gray-800 bg-gray-900/30 p-3';
+      profileSection.innerHTML = `<div class="text-xs uppercase tracking-wide text-gray-500">${sections[1] || 'Profiles'} · ${profile.subject || '--'}</div>`;
+      profileSection.appendChild(buildCodePre({
+        profile_id: profile.profile_id,
+        revision: profile.revision,
+        created_at: profile.created_at,
+        window_start: profile.window_start,
+        window_end: profile.window_end,
+        concept_count: profile.concept_count,
+        cluster_count: profile.cluster_count,
+      }));
+      root.appendChild(profileSection);
+      const concepts = document.createElement('section');
+      concepts.className = 'rounded-xl border border-gray-800 bg-gray-900/30 p-3';
+      concepts.innerHTML = `<div class="text-xs uppercase tracking-wide text-gray-500">${sections[2] || 'Concepts'} · ${profile.subject || '--'}</div>`;
+      concepts.appendChild(buildCodePre(profile.concepts));
+      root.appendChild(concepts);
+      const clusters = document.createElement('section');
+      clusters.className = 'rounded-xl border border-gray-800 bg-gray-900/30 p-3';
+      clusters.innerHTML = `<div class="text-xs uppercase tracking-wide text-gray-500">${sections[3] || 'Clusters'} · ${profile.subject || '--'}</div>`;
+      clusters.appendChild(buildCodePre(profile.clusters));
+      root.appendChild(clusters);
+      const state = document.createElement('section');
+      state.className = 'rounded-xl border border-gray-800 bg-gray-900/30 p-3';
+      state.innerHTML = `<div class="text-xs uppercase tracking-wide text-gray-500">${sections[4] || 'State estimate'} · ${profile.subject || '--'}</div>`;
+      state.appendChild(buildCodePre(profile.state_estimate || {}));
+      root.appendChild(state);
+    });
+
+    const traceSection = document.createElement('section');
+    traceSection.className = 'rounded-xl border border-gray-800 bg-gray-900/30 p-3';
+    traceSection.innerHTML = `<div class="text-xs uppercase tracking-wide text-gray-500">${sections[5] || 'Trace / Artifacts'}</div>`;
+    traceSection.appendChild(buildCodePre(details.trace));
+    root.appendChild(traceSection);
+    return root;
+  }
+
+  async function synthesizeConceptInductionToJournal(workflow, statusElement) {
+    const details = workflowUiApi.normalizeConceptInductionDetails ? workflowUiApi.normalizeConceptInductionDetails(workflow) : null;
+    if (!details) return;
+    if (statusElement) statusElement.textContent = 'Synthesizing concept induction learnings to journal…';
+    const payload = {
+      mode: 'brain',
+      session_id: orionSessionId,
+      use_recall: false,
+      no_write: false,
+      messages: [{ role: 'user', content: 'Synthesize concept induction review to journal.' }],
+      workflow_request_override: {
+        workflow_id: 'concept_induction_pass',
+        action: 'synthesize_to_journal',
+        concept_induction_details: details,
+      },
+    };
+    const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {}) },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (data.session_id && !orionSessionId) {
+      orionSessionId = data.session_id;
+      localStorage.setItem('orion_sid', orionSessionId);
+    }
+    if (data.text) {
+      appendMessage('Orion', data.text, 'text-white', {
+        workflow: data.workflow,
+        correlationId: data.correlation_id,
+      });
+    }
+    if (statusElement) statusElement.textContent = data.error ? `Synthesis failed: ${data.error}` : 'Synthesis persisted to journal.';
+  }
+
   function closeWorkflowModal() {
     if (!workflowModal) return;
     workflowModal.classList.add('hidden');
@@ -2095,23 +2198,48 @@ loadDismissedIds();
         ['Run again prompt', normalized.rerun_prompt || '--'],
       ];
       rows.forEach(([label, value]) => workflowModalSummary.appendChild(buildWorkflowModalSummaryCard(label, value)));
+      if (normalized.id === 'concept_induction_pass') {
+        const card = document.createElement('div');
+        card.className = 'rounded-xl border border-indigo-700/40 bg-indigo-900/20 p-3';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'rounded-full border border-indigo-500/50 bg-indigo-500/20 px-3 py-1 text-[11px] font-semibold text-indigo-100 hover:bg-indigo-500/30';
+        button.textContent = 'Synthesize to Journal';
+        const status = document.createElement('div');
+        status.className = 'mt-2 text-[11px] text-gray-300';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            await synthesizeConceptInductionToJournal(normalized, status);
+          } finally {
+            button.disabled = false;
+          }
+        });
+        card.appendChild(button);
+        card.appendChild(status);
+        workflowModalSummary.appendChild(card);
+      }
     }
     if (workflowModalDetailSurface) {
       workflowModalDetailSurface.innerHTML = '';
-      const rows = workflowUiApi.buildWorkflowDetailRows ? workflowUiApi.buildWorkflowDetailRows(normalized) : [];
-      rows.forEach(([label, value]) => {
-        const row = document.createElement('div');
-        row.className = 'grid grid-cols-1 gap-1 border-b border-gray-800 pb-3 last:border-b-0 last:pb-0 md:grid-cols-[160px_minmax(0,1fr)]';
-        const key = document.createElement('div');
-        key.className = 'text-[10px] uppercase tracking-wide text-gray-500';
-        key.textContent = label;
-        const val = document.createElement('div');
-        val.className = 'text-sm text-gray-200 whitespace-pre-wrap break-words';
-        val.textContent = String(value ?? '--');
-        row.appendChild(key);
-        row.appendChild(val);
-        workflowModalDetailSurface.appendChild(row);
-      });
+      const conceptSurface = normalized.id === 'concept_induction_pass' ? renderConceptInductionDetails(normalized) : null;
+      if (conceptSurface) workflowModalDetailSurface.appendChild(conceptSurface);
+      else {
+        const rows = workflowUiApi.buildWorkflowDetailRows ? workflowUiApi.buildWorkflowDetailRows(normalized) : [];
+        rows.forEach(([label, value]) => {
+          const row = document.createElement('div');
+          row.className = 'grid grid-cols-1 gap-1 border-b border-gray-800 pb-3 last:border-b-0 last:pb-0 md:grid-cols-[160px_minmax(0,1fr)]';
+          const key = document.createElement('div');
+          key.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+          key.textContent = label;
+          const val = document.createElement('div');
+          val.className = 'text-sm text-gray-200 whitespace-pre-wrap break-words';
+          val.textContent = String(value ?? '--');
+          row.appendChild(key);
+          row.appendChild(val);
+          workflowModalDetailSurface.appendChild(row);
+        });
+      }
     }
     if (workflowModalRaw) workflowModalRaw.textContent = JSON.stringify(normalized.raw_metadata || normalized, null, 2);
     workflowModal.classList.remove('hidden');
@@ -2135,7 +2263,7 @@ loadDismissedIds();
     const detailsButton = document.createElement('button');
     detailsButton.type = 'button';
     detailsButton.className = 'rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-200 hover:bg-violet-500/20';
-    detailsButton.textContent = 'Workflow details';
+    detailsButton.textContent = normalized.id === 'concept_induction_pass' ? 'Details' : 'Workflow details';
     detailsButton.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();

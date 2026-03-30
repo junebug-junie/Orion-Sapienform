@@ -287,20 +287,24 @@ def build_cortex_chat_request(
 
     workflow_match = None
     workflow_management = None
+    workflow_request_override = payload.get("workflow_request_override") if isinstance(payload.get("workflow_request_override"), dict) else None
     workflow_resolution_reason = "social_room_profile"
     if not social_room:
-        workflow_management = resolve_workflow_schedule_management(prompt, user_id=user_id, session_id=session_id)
-        if workflow_management is not None:
-            workflow_resolution_reason = "explicit_schedule_management_match"
+        if isinstance(workflow_request_override, dict) and str(workflow_request_override.get("workflow_id") or "").strip():
+            workflow_resolution_reason = "workflow_request_override"
         else:
-            workflow_match = resolve_user_workflow_invocation(prompt)
-            if workflow_match is not None:
-                workflow_resolution_reason = "explicit_named_workflow_match"
+            workflow_management = resolve_workflow_schedule_management(prompt, user_id=user_id, session_id=session_id)
+            if workflow_management is not None:
+                workflow_resolution_reason = "explicit_schedule_management_match"
             else:
-                workflow_resolution_reason = "no_workflow_match"
+                workflow_match = resolve_user_workflow_invocation(prompt)
+                if workflow_match is not None:
+                    workflow_resolution_reason = "explicit_named_workflow_match"
+                else:
+                    workflow_resolution_reason = "no_workflow_match"
 
     verb_override: str | None = None
-    if workflow_match is not None or workflow_management is not None:
+    if workflow_match is not None or workflow_management is not None or workflow_request_override is not None:
         mode = "brain"
         selected_ui_route = "brain" if selected_ui_route == "auto" else selected_ui_route
         options.pop("route_intent", None)
@@ -349,7 +353,22 @@ def build_cortex_chat_request(
         },
         "available_workflows": workflow_registry_payload(user_invocable_only=True),
     }
-    if workflow_match is not None:
+    if workflow_request_override is not None:
+        workflow_id = str(workflow_request_override.get("workflow_id") or "").strip()
+        if workflow_id:
+            metadata["workflow_request"] = dict(workflow_request_override)
+            metadata["workflow_request"]["workflow_id"] = workflow_id
+            metadata["workflow_request"]["invoked_from_chat"] = True
+            metadata["workflow_request"].setdefault(
+                "execution_policy",
+                derive_workflow_execution_policy(
+                    workflow_id=workflow_id,
+                    prompt=prompt,
+                    session_id=session_id,
+                    user_id=user_id,
+                ).model_dump(mode="json"),
+            )
+    elif workflow_match is not None:
         metadata["workflow_request"] = workflow_match.model_dump(mode="json")
         metadata["workflow_request"]["invoked_from_chat"] = True
         metadata["workflow_request"]["execution_policy"] = derive_workflow_execution_policy(

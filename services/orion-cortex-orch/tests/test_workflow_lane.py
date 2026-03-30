@@ -409,7 +409,44 @@ def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path)
     assert result.metadata['workflow']['workflow_id'] == 'concept_induction_pass'
     assert result.metadata['workflow']['profile_store_path'] == str(tmp_path / 'concepts.json')
     assert result.metadata['workflow']['profiles_reviewed'][0]['subject'] == 'orion'
+    details = result.metadata["workflow"]["concept_induction_details"]
+    assert details["profiles"][0]["profile_id"] == "profile-1"
+    assert details["profiles"][0]["concepts"][0]["label"] == "continuity"
+    assert "trace" in details
     assert build_concept_profile_repository(FakeConceptSettings()).status().backend == 'local'
+
+
+def test_concept_induction_pass_synthesize_to_journal_uses_append_only_write(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / 'concepts.json')
+        subjects = ['orion']
+
+    (tmp_path / 'concepts.json').write_text('{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "continuity", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [{"cluster_id": "cluster-1", "label": "core", "summary": "core cluster", "concept_ids": ["concept-1"], "cohesion_score": 0.8, "metadata": {}}], "state_estimate": null, "metadata": {}}}}')
+    monkeypatch.setattr(workflow_runtime, 'build_orch_concept_profile_settings', lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+    bus = DummyBus()
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name='cortex-orch'),
+            req=req,
+            correlation_id='00000000-0000-0000-0000-000000000095',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+    assert result.ok is True
+    assert result.metadata["workflow"]["persisted"]
+    assert result.metadata["workflow"]["synthesis_to_journal"]["ok"] is True
+    assert result.metadata["workflow"]["synthesis_to_journal"]["journal_entry"]["source_ref"].startswith("concept_induction_pass:")
+    assert any(channel == "orion:journal:write" for channel, _ in bus.published)
+    payload = result.metadata["workflow"]["synthesis_to_journal"]["provenance"]
+    assert payload["source_workflow_id"] == "concept_induction_pass"
+    assert payload["reviewed_profiles"][0]["profile_id"] == "profile-1"
 
 
 def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> None:

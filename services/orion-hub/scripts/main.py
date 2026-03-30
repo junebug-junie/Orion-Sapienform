@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -34,14 +35,32 @@ TEMPLATES_DIR = SERVICE_ROOT / "templates"
 STATIC_DIR = SERVICE_ROOT / "static"
 
 
+def _discover_git_sha() -> str:
+    """Best-effort git SHA discovery for cache-bust tokens when env vars are absent."""
+    repo_root = SERVICE_ROOT.parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return (result.stdout or "").strip()
+    except Exception:
+        return ""
+
+
 def build_hub_ui_asset_version() -> str:
     """Build an explicit cache-busting token for Hub static assets."""
     explicit = os.getenv("HUB_UI_BUILD")
+    build_id = os.getenv("BUILD_ID")
     git_sha = os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT")
+    discovered_git_sha = _discover_git_sha()
     build_ts = os.getenv("BUILD_TIMESTAMP")
     service_version = settings.SERVICE_VERSION
 
-    for candidate in (explicit, git_sha, build_ts, service_version):
+    for candidate in (explicit, build_id, git_sha, discovered_git_sha, build_ts, service_version):
         value = str(candidate or "").strip()
         if value:
             return value
@@ -89,6 +108,15 @@ class PresenceState:
             "active_connections": self.active_connections,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
         }
+
+
+class HubStaticFiles(StaticFiles):
+    """Static responses are revalidated to avoid stale Hub JS when operators refresh."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 # ───────────────────────────────────────────────────────────────
@@ -206,6 +234,6 @@ app.include_router(api_router)
 app.add_websocket_route("/ws", websocket_endpoint)
 
 # Static files for JS/CSS
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", HubStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 logger.info("Routes, WebSocket endpoint, and static mounts ready.")

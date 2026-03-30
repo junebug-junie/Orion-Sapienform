@@ -11,11 +11,12 @@ APP_JS_PATH = REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "app.js"
 def test_template_places_autonomy_runtime_panel_between_agent_trace_and_social_inspection() -> None:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
+    memory_idx = template.index('id="memoryPanelToggle"')
     agent_idx = template.index('id="agentTraceDebugPanel"')
     autonomy_idx = template.index('id="autonomyDebugPanel"')
     social_idx = template.index("Social Inspection")
 
-    assert agent_idx < autonomy_idx < social_idx
+    assert memory_idx < agent_idx < autonomy_idx < social_idx
     assert 'id="autonomyDebugToggle"' in template
     assert 'id="autonomyDebugOverview"' in template
     assert 'id="autonomyDebugState"' in template
@@ -49,6 +50,9 @@ def test_app_js_wires_autonomy_debug_panel_clear_update_and_toggle() -> None:
 def test_app_js_passes_autonomy_payload_through_orion_message_meta_ws_and_http() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
+    assert "agentTrace: d.agent_trace," in app_js
+    assert "workflow: d.workflow," in app_js
+    assert "routingDebug: d.routing_debug," in app_js
     assert "autonomySummary: d.autonomy_summary," in app_js
     assert "autonomyDebug: d.autonomy_debug," in app_js
     assert "autonomyStatePreview: d.autonomy_state_preview," in app_js

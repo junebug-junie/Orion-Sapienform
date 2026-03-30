@@ -8,6 +8,8 @@ import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
+from fastapi.testclient import TestClient
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HUB_ROOT = Path(__file__).resolve().parents[1]
 for candidate in (REPO_ROOT, HUB_ROOT):
@@ -121,6 +123,17 @@ def test_hub_ui_asset_version_helper_returns_non_empty_token(monkeypatch) -> Non
     assert hub_main.build_hub_ui_asset_version() == "build-20260330"
 
 
+def test_hub_ui_asset_version_prefers_build_id_when_explicit_build_absent(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    monkeypatch.delenv("HUB_UI_BUILD", raising=False)
+    monkeypatch.setenv("BUILD_ID", "ci-4821")
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    monkeypatch.delenv("SOURCE_COMMIT", raising=False)
+    monkeypatch.delenv("BUILD_TIMESTAMP", raising=False)
+    assert hub_main.build_hub_ui_asset_version() == "ci-4821"
+
+
 def test_root_response_disables_html_caching() -> None:
     from scripts.api_routes import root
 
@@ -128,6 +141,15 @@ def test_root_response_disables_html_caching() -> None:
     assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
     assert response.headers["pragma"] == "no-cache"
     assert response.headers["expires"] == "0"
+
+
+def test_static_assets_send_no_cache_header() -> None:
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        response = client.get("/static/js/app.js")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
 
 
 def test_websocket_chat_path_preserves_scheduled_workflow_policy(monkeypatch) -> None:

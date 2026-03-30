@@ -108,6 +108,16 @@ loadDismissedIds();
   const agentTraceDebugToolGroups = document.getElementById('agentTraceDebugToolGroups');
   const agentTraceDebugTimeline = document.getElementById('agentTraceDebugTimeline');
   const agentTraceDebugRaw = document.getElementById('agentTraceDebugRaw');
+  const autonomyDebugPanel = document.getElementById('autonomyDebugPanel');
+  const autonomyDebugToggle = document.getElementById('autonomyDebugToggle');
+  const autonomyDebugCaret = document.getElementById('autonomyDebugCaret');
+  const autonomyDebugBody = document.getElementById('autonomyDebugBody');
+  const autonomyDebugMeta = document.getElementById('autonomyDebugMeta');
+  const autonomyDebugOverview = document.getElementById('autonomyDebugOverview');
+  const autonomyDebugState = document.getElementById('autonomyDebugState');
+  const autonomyDebugProposals = document.getElementById('autonomyDebugProposals');
+  const autonomyDebugAlignment = document.getElementById('autonomyDebugAlignment');
+  const autonomyDebugRaw = document.getElementById('autonomyDebugRaw');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
@@ -1649,6 +1659,185 @@ loadDismissedIds();
     agentTraceDebugRaw.appendChild(buildAgentTraceRawPayloadsNode(summary));
   }
 
+  function clearAutonomyDebugPanel() {
+    if (autonomyDebugPanel) autonomyDebugPanel.classList.add('hidden');
+    if (autonomyDebugBody) autonomyDebugBody.classList.add('hidden');
+    if (autonomyDebugCaret) autonomyDebugCaret.textContent = '▾';
+    if (autonomyDebugMeta) autonomyDebugMeta.textContent = '--';
+    if (autonomyDebugOverview) autonomyDebugOverview.textContent = '--';
+    if (autonomyDebugState) autonomyDebugState.textContent = '--';
+    if (autonomyDebugProposals) autonomyDebugProposals.textContent = '--';
+    if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = '--';
+    if (autonomyDebugRaw) autonomyDebugRaw.textContent = '--';
+  }
+
+  function expectedPostureFromDrive(drive) {
+    const key = String(drive || '').trim().toLowerCase();
+    if (key === 'coherence') return 'synthesis/reduction';
+    if (key === 'continuity') return 'continuity-preserving';
+    if (key === 'relational_stability') return 'relationally steady';
+    if (key === 'capability_expansion') return 'forward-building';
+    if (key === 'predictive_mastery') return 'clarifying / forecasting';
+    return key ? 'neutral' : null;
+  }
+
+  function deriveVisibleAutonomyCues(replyText) {
+    const text = String(replyText || '').toLowerCase();
+    if (!text) return [];
+    const cues = [];
+    const cueRules = [
+      { label: 'continuity-preserving', patterns: ['continue', 'earlier', 'you said', 'as we were saying'] },
+      { label: 'synthesis/reduction', patterns: ['the key point', 'in short', 'this means', 'so the answer is'] },
+      { label: 'relationally steady', patterns: ['i hear you', 'that makes sense', 'you’re right', "you're right"] },
+    ];
+    cueRules.forEach((rule) => {
+      if (rule.patterns.some((pattern) => text.includes(pattern))) {
+        cues.push(rule.label);
+      }
+    });
+    return cues.slice(0, 3);
+  }
+
+  function computeAutonomyAlignment(model, replyText) {
+    const expectedPosture = expectedPostureFromDrive(model && model.dominantDrive);
+    const visibleCues = deriveVisibleAutonomyCues(replyText);
+    let alignmentNote = 'no strong posture expected';
+    if (expectedPosture) {
+      alignmentNote = visibleCues.includes(expectedPosture)
+        ? 'reply appears aligned'
+        : 'reply posture not clearly visible';
+    }
+    return {
+      expected_posture: expectedPosture,
+      visible_cues: visibleCues,
+      alignment_note: alignmentNote,
+    };
+  }
+
+  function normalizeAutonomyModel(summary, debug, meta = {}) {
+    const safeSummary = summary && typeof summary === 'object' ? summary : null;
+    const safeDebug = debug && typeof debug === 'object' ? debug : null;
+    if (!safeSummary && !safeDebug) return null;
+    const topDrives = Array.isArray(safeSummary && safeSummary.top_drives)
+      ? safeSummary.top_drives.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    const tensions = Array.isArray(safeSummary && safeSummary.active_tensions)
+      ? safeSummary.active_tensions.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    const proposals = Array.isArray(safeSummary && safeSummary.proposal_headlines)
+      ? safeSummary.proposal_headlines.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    const availabilityRows = safeDebug ? Object.entries(safeDebug).filter((entry) => entry[1] && typeof entry[1] === 'object') : [];
+    const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
+    const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
+    const subjectCount = availabilityRows.length;
+    const dominantDrive = String((safeSummary && safeSummary.dominant_drive) || '').trim();
+    const hasSemanticSignal = !!(dominantDrive || topDrives.length || tensions.length || proposals.length);
+    const hasDebugSignal = !!(safeDebug && typeof safeDebug === 'object' && Object.keys(safeDebug).length);
+    const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal || String((safeSummary && safeSummary.stance_hint) || '').trim());
+    if (!hasAnySignal) return null;
+
+    return {
+      dominantDrive,
+      topDrives,
+      tensions,
+      proposals,
+      stanceHint: String((safeSummary && safeSummary.stance_hint) || '').trim(),
+      hasSemanticSignal,
+      hasDebugSignal,
+      backend: String((meta.autonomyBackend || meta.backend || '')).trim() || '--',
+      selectedSubject: String((meta.autonomySelectedSubject || meta.selectedSubject || '')).trim() || '--',
+      availability: {
+        available: availableCount,
+        unavailable: unavailableCount,
+        subjects: subjectCount,
+      },
+      fallback: unavailableCount > 0 ? 'yes' : 'no',
+      alignment: computeAutonomyAlignment({ dominantDrive }, meta.replyText || meta.reply_text || ''),
+      raw: {
+        summary: safeSummary || {},
+        debug: safeDebug || {},
+      },
+    };
+  }
+
+  function shouldRenderAutonomyInline(model) {
+    if (!model || typeof model !== 'object') return false;
+    return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length);
+  }
+
+  function updateAutonomyDebugPanel(summary, debug, meta = {}) {
+    if (
+      !autonomyDebugPanel
+      || !autonomyDebugBody
+      || !autonomyDebugMeta
+      || !autonomyDebugOverview
+      || !autonomyDebugState
+      || !autonomyDebugProposals
+      || !autonomyDebugAlignment
+      || !autonomyDebugRaw
+    ) {
+      return;
+    }
+    const model = normalizeAutonomyModel(summary, debug, meta);
+    if (!model) {
+      clearAutonomyDebugPanel();
+      return;
+    }
+    autonomyDebugPanel.classList.remove('hidden');
+    if (autonomyDebugMeta) {
+      autonomyDebugMeta.textContent = `backend ${model.backend} · selected ${model.selectedSubject} · proposal-only`;
+    }
+
+    autonomyDebugOverview.innerHTML = '';
+    [
+      `backend: ${model.backend}`,
+      `selected subject: ${model.selectedSubject}`,
+      `availability: ${model.availability.available}/${model.availability.subjects} available`,
+      `fallback: ${model.fallback}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.textContent = line;
+      autonomyDebugOverview.appendChild(row);
+    });
+
+    autonomyDebugState.innerHTML = '';
+    [
+      `dominant drive: ${model.dominantDrive || '--'}`,
+      `top drives: ${model.topDrives.length ? model.topDrives.join(', ') : '--'}`,
+      `top tensions: ${model.tensions.length ? model.tensions.join(', ') : '--'}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.textContent = line;
+      autonomyDebugState.appendChild(row);
+    });
+
+    autonomyDebugProposals.innerHTML = '';
+    if (model.proposals.length) {
+      model.proposals.forEach((proposal) => {
+        const row = document.createElement('div');
+        row.className = 'rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1';
+        row.textContent = `proposal-only: ${proposal}`;
+        autonomyDebugProposals.appendChild(row);
+      });
+    } else {
+      autonomyDebugProposals.textContent = '--';
+    }
+
+    autonomyDebugAlignment.innerHTML = '';
+    [
+      `expected posture: ${model.alignment.expected_posture || '--'}`,
+      `visible cues: ${model.alignment.visible_cues.length ? model.alignment.visible_cues.join(', ') : '--'}`,
+      `alignment note: ${model.alignment.alignment_note}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.textContent = line;
+      autonomyDebugAlignment.appendChild(row);
+    });
+
+    autonomyDebugRaw.textContent = JSON.stringify(model.raw, null, 2);
+  }
+
   function renderSocialInspectionBadges(container, badges) {
     if (!container) return;
     container.innerHTML = '';
@@ -1900,6 +2089,13 @@ loadDismissedIds();
     const nextHidden = !agentTraceDebugBody.classList.contains('hidden');
     agentTraceDebugBody.classList.toggle('hidden', nextHidden);
     if (agentTraceDebugCaret) agentTraceDebugCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function toggleAutonomyDebugPanel() {
+    if (!autonomyDebugBody) return;
+    const nextHidden = !autonomyDebugBody.classList.contains('hidden');
+    autonomyDebugBody.classList.toggle('hidden', nextHidden);
+    if (autonomyDebugCaret) autonomyDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function isAttentionNotification(notification) {
@@ -3229,7 +3425,9 @@ loadDismissedIds();
     body.textContent = text || "";
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
     if (sender === 'Orion') {
+      const autonomyMeta = { ...meta, replyText: text || '' };
       updateAgentTraceDebugPanel(meta.agentTrace, meta);
+      updateAutonomyDebugPanel(meta.autonomySummary || meta.autonomy_summary, meta.autonomyDebug || meta.autonomy_debug, autonomyMeta);
       const actionRow = document.createElement('div');
       actionRow.className = 'flex items-center gap-2';
       if (agentTraceApi.shouldShowAgentTrace && agentTraceApi.shouldShowAgentTrace(meta.agentTrace)) {
@@ -3269,6 +3467,12 @@ loadDismissedIds();
     if (workflowPanel) div.appendChild(workflowPanel);
     div.appendChild(body);
     if (sender === 'Orion') {
+      const autonomyPanel = createAutonomyPanel(
+        meta.autonomySummary || meta.autonomy_summary,
+        meta.autonomyDebug || meta.autonomy_debug,
+        { ...meta, replyText: text || '' },
+      );
+      if (autonomyPanel) div.appendChild(autonomyPanel);
       const tracePanel = createAgentTracePanel(meta.agentTrace, meta);
       if (tracePanel) div.appendChild(tracePanel);
       const metacogPanel = createMetacogTracePanel(meta.metacogTraces || meta.metacog_traces || []);
@@ -3561,6 +3765,65 @@ loadDismissedIds();
 
     panel.appendChild(header);
     panel.appendChild(body);
+    return panel;
+  }
+
+  function createAutonomyPanel(summary, debug, meta = {}) {
+    const model = normalizeAutonomyModel(summary, debug, meta);
+    if (!model || !shouldRenderAutonomyInline(model)) return null;
+
+    const panel = document.createElement('div');
+    panel.className = 'mt-3 rounded-xl border border-violet-500/30 bg-violet-500/10 p-3 space-y-2';
+
+    const headerRow = document.createElement('div');
+    headerRow.className = 'flex flex-wrap items-center justify-between gap-2';
+    const title = document.createElement('div');
+    title.className = 'text-xs uppercase tracking-wide font-semibold text-violet-200';
+    title.textContent = 'Autonomy';
+    headerRow.appendChild(title);
+
+    const badges = document.createElement('div');
+    badges.className = 'flex flex-wrap gap-1';
+    [
+      `backend:${model.backend}`,
+      `availability:${model.availability.available}/${model.availability.subjects}`,
+      'proposal-only',
+    ].forEach((value) => {
+      const badge = document.createElement('span');
+      badge.className = 'rounded-full border border-violet-400/40 bg-violet-500/15 px-2 py-0.5 text-[10px] text-violet-100';
+      badge.textContent = value;
+      badges.appendChild(badge);
+    });
+    headerRow.appendChild(badges);
+    panel.appendChild(headerRow);
+
+    [
+      ['dominant drive', model.dominantDrive || '--'],
+      ['top drives', model.topDrives.length ? model.topDrives.join(', ') : '--'],
+      ['top tensions', model.tensions.length ? model.tensions.join(', ') : '--'],
+      ['proposal headlines', model.proposals.length ? model.proposals.join(' · ') : '--'],
+      ['alignment', model.alignment.alignment_note],
+    ].forEach(([label, value]) => {
+      const row = document.createElement('div');
+      row.className = 'text-xs text-violet-100/90';
+      const prefix = document.createElement('span');
+      prefix.className = 'uppercase tracking-wide text-[10px] text-violet-300 mr-1';
+      prefix.textContent = `${label}:`;
+      row.appendChild(prefix);
+      row.appendChild(document.createTextNode(` ${value}`));
+      panel.appendChild(row);
+    });
+
+    const debugButton = document.createElement('button');
+    debugButton.type = 'button';
+    debugButton.className = 'rounded-full border border-violet-400/40 bg-violet-500/20 px-2 py-1 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/30';
+    debugButton.textContent = 'Open debug';
+    debugButton.addEventListener('click', () => {
+      if (autonomyDebugPanel) autonomyDebugPanel.classList.remove('hidden');
+      if (autonomyDebugBody) autonomyDebugBody.classList.remove('hidden');
+      if (autonomyDebugCaret) autonomyDebugCaret.textContent = '▴';
+    });
+    panel.appendChild(debugButton);
     return panel;
   }
 
@@ -4135,6 +4398,7 @@ loadDismissedIds();
     clearButton.addEventListener('click', () => {
       conversationDiv.innerHTML = '';
       clearAgentTraceDebugPanel();
+      clearAutonomyDebugPanel();
     });
   }
   if (copyButton && conversationDiv) {
@@ -4309,6 +4573,9 @@ loadDismissedIds();
   if (agentTraceDebugToggle) {
     agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
   }
+  if (autonomyDebugToggle) {
+    autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);
+  }
   if (socialInspectionOpen) {
     socialInspectionOpen.addEventListener('click', () => openSocialInspectionModal());
   }
@@ -4432,6 +4699,11 @@ loadDismissedIds();
               correlationId: d.correlation_id,
               routingDebug: d.routing_debug,
               workflow: d.workflow,
+              autonomySummary: d.autonomy_summary,
+              autonomyDebug: d.autonomy_debug,
+              autonomyStatePreview: d.autonomy_state_preview,
+              autonomyBackend: d.autonomy_backend,
+              autonomySelectedSubject: d.autonomy_selected_subject,
             });
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
@@ -4512,6 +4784,11 @@ loadDismissedIds();
                 correlationId: d.correlation_id,
                 routingDebug: d.routing_debug,
                 workflow: d.workflow,
+                autonomySummary: d.autonomy_summary,
+                autonomyDebug: d.autonomy_debug,
+                autonomyStatePreview: d.autonomy_state_preview,
+                autonomyBackend: d.autonomy_backend,
+                autonomySelectedSubject: d.autonomy_selected_subject,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
             } else if(d.error) appendMessage('System', d.error, 'text-red-400');

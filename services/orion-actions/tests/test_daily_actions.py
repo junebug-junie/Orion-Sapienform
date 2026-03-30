@@ -9,8 +9,12 @@ from app.main import (
     _rpc_request_with_retry,
     _daily_metacog_dedupe_key,
     _daily_pulse_dedupe_key,
+    _extract_daily_llm_diagnostics,
     _extract_plan_final_text,
+    _is_likely_incomplete_json,
     _json_loads_strict,
+    _log_daily_json_parse_failure,
+    _should_retry_for_truncated_generation,
     build_daily_window,
     should_run_daily,
 )
@@ -121,6 +125,60 @@ Thanks."""
     parsed = _json_loads_strict(wrapped)
     model = DailyMetacogV1.model_validate(parsed)
     assert model.timezone == "America/Denver"
+
+
+def test_extract_daily_llm_diagnostics_reads_finish_reason():
+    payload = {
+        "result": {
+            "steps": [
+                {
+                    "result": {
+                        "LLMGatewayService": {
+                            "model_used": "llama3.1",
+                            "usage": {"total_tokens": 700},
+                            "raw": {
+                                "choices": [{"finish_reason": "length"}],
+                            },
+                        }
+                    }
+                }
+            ]
+        }
+    }
+    diag = _extract_daily_llm_diagnostics(payload)
+    assert diag["model"] == "llama3.1"
+    assert diag["finish_reason"] == "length"
+    assert diag["usage"]["total_tokens"] == 700
+
+
+def test_retry_classification_for_truncated_json():
+    partial = """{
+      "date": "2026-03-28",
+      "timezone": "America/Denver",
+      "thinking_patterns": ["a"]
+    """
+    assert _is_likely_incomplete_json(partial) is True
+    assert _should_retry_for_truncated_generation(text=partial, diagnostics={}) is True
+    assert _should_retry_for_truncated_generation(
+        text="{\"ok\": true}",
+        diagnostics={"finish_reason": "length"},
+    ) is True
+
+
+def test_log_daily_json_parse_failure_includes_tail_and_finish_reason(caplog: pytest.LogCaptureFixture):
+    caplog.set_level("ERROR")
+    text = "{\"date\":\"2026-03-28\",\"timezone\":\"America/Denver\",\"thinking_patterns\":[\"x\"]"
+    _log_daily_json_parse_failure(
+        action_name="daily_metacog_v1",
+        final_text=text,
+        diagnostics={"model": "llama3", "finish_reason": "length", "stop_reason": None},
+        timeout_sec=240.0,
+        requested_max_tokens=1024,
+        parse_error=ValueError("missing closing brace"),
+    )
+    msg = caplog.records[-1].getMessage()
+    assert "finish_reason=length" in msg
+    assert "tail='" in msg
 
 
 def test_rpc_request_with_retry_retries_once_after_timeout():

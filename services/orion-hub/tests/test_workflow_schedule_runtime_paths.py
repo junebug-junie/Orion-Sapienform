@@ -114,6 +114,22 @@ def test_hub_debug_build_identity_surface() -> None:
     assert "cortex_gateway_request_channel" in payload["downstream"]
 
 
+def test_hub_ui_asset_version_helper_returns_non_empty_token(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    monkeypatch.setenv("HUB_UI_BUILD", "build-20260330")
+    assert hub_main.build_hub_ui_asset_version() == "build-20260330"
+
+
+def test_root_response_disables_html_caching() -> None:
+    from scripts.api_routes import root
+
+    response = asyncio.run(root())
+    assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+    assert response.headers["pragma"] == "no-cache"
+    assert response.headers["expires"] == "0"
+
+
 def test_websocket_chat_path_preserves_scheduled_workflow_policy(monkeypatch) -> None:
     import scripts.main as hub_main
 

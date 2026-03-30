@@ -46,6 +46,8 @@ let selectedSchedule = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
+  const hubUiVersion = (window.__HUB_UI_VERSION__ || document.body?.dataset?.uiVersion || "unknown").trim() || "unknown";
+  console.log(`[HubUI] version=${hubUiVersion}`);
 
 // --- 0. Local persistence for message dismissals ---
 // Backend may not reflect receipts into /api/chat/messages yet; this prevents dismissed items from reappearing.

@@ -257,7 +257,15 @@ def _rec_tape_rsp(
 async def root():
     """Serves the main Hub UI (index.html)."""
     from .main import html_content
-    return HTMLResponse(content=html_content, status_code=200)
+    return HTMLResponse(
+        content=html_content,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @router.get("/health")

@@ -23,6 +23,14 @@ def test_template_places_autonomy_runtime_panel_between_agent_trace_and_social_i
     assert 'id="autonomyDebugAlignment"' in template
     assert 'id="autonomyDebugRaw"' in template
     assert "proposal-only" in template
+    assert 'id="hubUiBuildLabel"' in template
+    assert 'data-ui-version="{{HUB_UI_ASSET_VERSION}}"' in template
+
+
+def test_template_includes_cache_busted_app_js_asset_url() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '<script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>' in template
 
 
 def test_app_js_wires_autonomy_debug_panel_clear_update_and_toggle() -> None:
@@ -34,6 +42,8 @@ def test_app_js_wires_autonomy_debug_panel_clear_update_and_toggle() -> None:
     assert "autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);" in app_js
     assert "clearAutonomyDebugPanel();" in app_js
     assert "if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = '--';" in app_js
+    assert "const hubUiVersion = (window.__HUB_UI_VERSION__ || document.body?.dataset?.uiVersion || \"unknown\").trim() || \"unknown\";" in app_js
+    assert "console.log(`[HubUI] version=${hubUiVersion}`);" in app_js
 
 
 def test_app_js_passes_autonomy_payload_through_orion_message_meta_ws_and_http() -> None:
@@ -79,6 +89,14 @@ def test_inline_autonomy_rendering_uses_high_signal_gate() -> None:
     assert "function shouldRenderAutonomyInline(model)" in app_js
     assert "if (!model || !shouldRenderAutonomyInline(model)) return null;" in app_js
     assert "return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length);" in app_js
+
+
+def test_clear_flow_clears_autonomy_debug_state() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "if (clearButton && conversationDiv) {" in app_js
+    assert "clearButton.addEventListener('click', () => {" in app_js
+    assert "clearAutonomyDebugPanel();" in app_js
 
 
 def test_right_rail_can_render_from_debug_even_without_semantic_inline_signal() -> None:

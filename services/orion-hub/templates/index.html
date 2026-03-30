@@ -8,7 +8,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
 </head>
-<body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}">
+<body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}" data-ui-version="{{HUB_UI_ASSET_VERSION}}">
   <div
     id="hub-panel-host"
     style="position:fixed; inset:0; padding:80px 24px 24px 24px; overflow:auto; z-index:10; pointer-events:none;"
@@ -35,18 +35,21 @@
           >Topic Studio</a>
         </div>
       </div>
-      <button
-        id="settingsToggle"
-        class="bg-gray-900/80 hover:bg-gray-800 text-gray-200 rounded-full p-2 shadow-lg border border-gray-700"
-        aria-label="Open settings"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path
-            d="M12 1v2m0 18v2m11-11h-2M3 12H1m18.364-6.364-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0-1.414-1.414M7.05 7.05 5.636 5.636" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-      </button>
+      <div class="flex items-center gap-3">
+        <span id="hubUiBuildLabel" class="text-[10px] uppercase tracking-wide text-gray-500">UI {{HUB_UI_ASSET_VERSION}}</span>
+        <button
+          id="settingsToggle"
+          class="bg-gray-900/80 hover:bg-gray-800 text-gray-200 rounded-full p-2 shadow-lg border border-gray-700"
+          aria-label="Open settings"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path
+              d="M12 1v2m0 18v2m11-11h-2M3 12H1m18.364-6.364-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0-1.414-1.414M7.05 7.05 5.636 5.636" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div id="appPanels">
@@ -1977,11 +1980,12 @@
 
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
+    window.__HUB_UI_VERSION__ = "{{HUB_UI_ASSET_VERSION}}";
   </script>
-  <script src="/static/js/agent-trace.js?v=20260321.1" defer></script>
-  <script src="/static/js/workflow-ui.js?v=20260324.1" defer></script>
-  <script src="/static/js/workflow-schedule-ui.js?v=20260325.1" defer></script>
-  <script src="/static/js/social-inspection.js?v=20260323.1" defer></script>
-  <script src="/static/js/app.js?v=20260325.1" defer></script>
+  <script src="/static/js/agent-trace.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/workflow-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/workflow-schedule-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/social-inspection.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

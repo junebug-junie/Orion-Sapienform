@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI
@@ -27,6 +29,23 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("orion-hub")
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+TEMPLATES_DIR = SERVICE_ROOT / "templates"
+STATIC_DIR = SERVICE_ROOT / "static"
+
+
+def build_hub_ui_asset_version() -> str:
+    """Build an explicit cache-busting token for Hub static assets."""
+    explicit = os.getenv("HUB_UI_BUILD")
+    git_sha = os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT")
+    build_ts = os.getenv("BUILD_TIMESTAMP")
+    service_version = settings.SERVICE_VERSION
+
+    for candidate in (explicit, git_sha, build_ts, service_version):
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return "dev"
 
 
 # ───────────────────────────────────────────────────────────────
@@ -134,11 +153,16 @@ async def startup_event():
     # Load UI HTML Template
     # ------------------------------------------------------------
     try:
-        with open("templates/index.html", "r") as f:
+        with open(TEMPLATES_DIR / "index.html", "r", encoding="utf-8") as f:
             html_content = f.read()
+        ui_asset_version = build_hub_ui_asset_version()
         html_content = html_content.replace(
             "{{NOTIFY_TOAST_SECONDS}}",
             str(settings.NOTIFY_TOAST_SECONDS),
+        )
+        html_content = html_content.replace(
+            "{{HUB_UI_ASSET_VERSION}}",
+            ui_asset_version,
         )
         hub_cfg = {
             "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
@@ -149,7 +173,7 @@ async def startup_event():
             "{{HUB_CFG}}",
             json.dumps(hub_cfg),
         )
-        logger.info("UI template loaded successfully.")
+        logger.info("UI template loaded successfully (ui_asset_version=%s).", ui_asset_version)
     except FileNotFoundError:
         logger.error("CRITICAL: 'templates/index.html' not found.")
         html_content = "<html><body><h1>UI template missing</h1></body></html>"
@@ -182,6 +206,6 @@ app.include_router(api_router)
 app.add_websocket_route("/ws", websocket_endpoint)
 
 # Static files for JS/CSS
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 logger.info("Routes, WebSocket endpoint, and static mounts ready.")

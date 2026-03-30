@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -177,6 +178,65 @@ def build_compose_request(
 
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
 
+@dataclass(frozen=True)
+class _DraftParseDiagnostics:
+    raw_length: int
+    fences_stripped: bool
+    object_extraction_attempted: bool
+
+
+def _extract_first_json_object_text(text: str) -> str | None:
+    candidate = (text or "").strip()
+    if not candidate:
+        return None
+
+    start = candidate.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(candidate)):
+        ch = candidate[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return candidate[start : idx + 1]
+            continue
+
+    return None
+
+
+def _validate_journal_draft_payload(parsed: dict[str, Any]) -> None:
+    required = ("mode", "title", "body")
+    for key in required:
+        if key not in parsed:
+            raise ValueError(f"journal_draft_missing_required_key:{key}")
+
+    if not isinstance(parsed.get("mode"), str):
+        raise ValueError("journal_draft_invalid_type:mode")
+    title = parsed.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValueError("journal_draft_invalid_type:title")
+    if not isinstance(parsed.get("body"), str):
+        raise ValueError("journal_draft_invalid_type:body")
+
 
 def _try_parse_object(text: str) -> dict[str, Any] | None:
     candidate = (text or "").strip()
@@ -185,37 +245,52 @@ def _try_parse_object(text: str) -> dict[str, Any] | None:
 
     try:
         direct = json.loads(candidate)
-        if isinstance(direct, dict):
-            return direct
     except Exception:
-        pass
-
-    decoder = json.JSONDecoder()
-    for idx, ch in enumerate(candidate):
-        if ch != "{":
-            continue
-        try:
-            parsed, _end = decoder.raw_decode(candidate[idx:])
-        except Exception:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return None
+        return None
+    return direct if isinstance(direct, dict) else None
 
 
-def _parse_journal_draft_json(final_text: str) -> dict[str, Any]:
+def _missing_required_key_from_error(message: str) -> str | None:
+    prefix = "journal_draft_missing_required_key:"
+    if not isinstance(message, str) or not message.startswith(prefix):
+        return None
+    key = message[len(prefix) :].strip()
+    return key or None
+
+
+def _parse_journal_draft_json(final_text: str) -> tuple[dict[str, Any], _DraftParseDiagnostics]:
     attempts: list[str] = []
     base = (final_text or "").strip()
     attempts.append(base)
+    fences_stripped = False
     for match in _FENCED_JSON_RE.finditer(base):
         fenced = (match.group(1) or "").strip()
         if fenced:
             attempts.append(fenced)
+            fences_stripped = True
 
+    extraction_attempted = False
     for text in attempts:
         parsed = _try_parse_object(text)
         if isinstance(parsed, dict):
-            return parsed
+            _validate_journal_draft_payload(parsed)
+            return parsed, _DraftParseDiagnostics(
+                raw_length=len(final_text or ""),
+                fences_stripped=fences_stripped,
+                object_extraction_attempted=extraction_attempted,
+            )
+
+        extracted = _extract_first_json_object_text(text)
+        if extracted:
+            extraction_attempted = True
+            parsed = _try_parse_object(extracted)
+            if isinstance(parsed, dict):
+                _validate_journal_draft_payload(parsed)
+                return parsed, _DraftParseDiagnostics(
+                    raw_length=len(final_text or ""),
+                    fences_stripped=fences_stripped,
+                    object_extraction_attempted=extraction_attempted,
+                )
 
     raise ValueError("journal_draft_parse_failed")
 
@@ -224,8 +299,9 @@ def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
     final_text = payload.get("final_text")
     if not isinstance(final_text, str) or not final_text.strip():
         raise ValueError("cortex_orch_missing_final_text")
+    diagnostics = _DraftParseDiagnostics(raw_length=len(final_text), fences_stripped=False, object_extraction_attempted=False)
     try:
-        parsed = _parse_journal_draft_json(final_text)
+        parsed, diagnostics = _parse_journal_draft_json(final_text)
         return JournalEntryDraftV1.model_validate(parsed)
     except Exception as exc:
         parse_context = {
@@ -234,11 +310,15 @@ def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
             "correlation_id": payload.get("correlation_id"),
             "verb": payload.get("verb"),
             "status": payload.get("status"),
+            "raw_output_length": diagnostics.raw_length,
+            "fences_stripped": diagnostics.fences_stripped,
+            "json_object_extraction_attempted": diagnostics.object_extraction_attempted,
+            "missing_required_key": _missing_required_key_from_error(str(exc)),
         }
         logger.error(
             "journal_draft_parse_failed context=%s final_text_preview=%r",
             parse_context,
-            final_text[:4000],
+            final_text[:256],
         )
         raise ValueError(f"journal_draft_parse_failed:{json.dumps(parse_context, default=str, sort_keys=True)}") from exc
 

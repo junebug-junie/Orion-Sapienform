@@ -176,6 +176,54 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         self.assertEqual(draft.mode, "manual")
         self.assertEqual(draft.body, "Kept going.")
 
+    def test_draft_from_cortex_result_accepts_think_tag_preface(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": '<think>reasoning not for output</think>{"mode":"manual","title":"Arc","body":"Kept going."}',
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.mode, "manual")
+        self.assertEqual(draft.title, "Arc")
+
+    def test_draft_from_cortex_result_pure_reasoning_without_json_fails_clearly(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "correlation_id": "corr-think-only",
+            "final_text": "<think>no final answer emitted</think>",
+        }
+        with self.assertRaises(ValueError) as ctx:
+            draft_from_cortex_result(payload)
+        self.assertIn("journal_draft_parse_failed", str(ctx.exception))
+        self.assertIn('"think_tags_detected": true', str(ctx.exception))
+        self.assertIn("corr-think-only", str(ctx.exception))
+
+    def test_draft_from_cortex_result_observed_think_preview_pattern_recovers(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": (
+                "<think>I should check grounding and format.</think>\n"
+                "I will now return the requested JSON.\n"
+                '{"mode":"manual","title":"Grounded Arc","body":"Kept going."}'
+            ),
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.title, "Grounded Arc")
+        self.assertEqual(draft.body, "Kept going.")
+
+    def test_draft_from_cortex_result_uses_final_answer_not_reasoning_field(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": '{"mode":"manual","title":"Final","body":"Visible answer."}',
+            "reasoning_content": "<think>hidden chain of thought</think>",
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.title, "Final")
+        self.assertEqual(draft.body, "Visible answer.")
+
 
     def test_draft_from_cortex_result_missing_required_key_fails_clearly(self):
         payload = {

@@ -177,11 +177,17 @@ def build_compose_request(
 
 
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
+_THINK_BLOCK_RE = re.compile(r"<think>\s*.*?\s*</think>", flags=re.IGNORECASE | re.DOTALL)
 
 @dataclass(frozen=True)
 class _DraftParseDiagnostics:
     raw_length: int
+    response_text_source: str
+    reasoning_fields_present: bool
     fences_stripped: bool
+    think_tags_detected: bool
+    think_blocks_stripped: bool
+    leading_non_json_stripped: bool
     object_extraction_attempted: bool
 
 
@@ -263,11 +269,28 @@ def _parse_journal_draft_json(final_text: str) -> tuple[dict[str, Any], _DraftPa
     base = (final_text or "").strip()
     attempts.append(base)
     fences_stripped = False
+    think_tags_detected = "<think>" in base.lower()
+    think_blocks_stripped = False
+    leading_non_json_stripped = False
     for match in _FENCED_JSON_RE.finditer(base):
         fenced = (match.group(1) or "").strip()
         if fenced:
             attempts.append(fenced)
             fences_stripped = True
+
+    cleaned_attempts: list[str] = []
+    for text in attempts:
+        cleaned_attempts.append(text)
+        if think_tags_detected:
+            stripped = _THINK_BLOCK_RE.sub(" ", text).strip()
+            if stripped != text:
+                think_blocks_stripped = True
+                cleaned_attempts.append(stripped)
+            start = stripped.find("{")
+            if start > 0:
+                leading_non_json_stripped = True
+                cleaned_attempts.append(stripped[start:].strip())
+    attempts = cleaned_attempts
 
     extraction_attempted = False
     for text in attempts:
@@ -276,7 +299,12 @@ def _parse_journal_draft_json(final_text: str) -> tuple[dict[str, Any], _DraftPa
             _validate_journal_draft_payload(parsed)
             return parsed, _DraftParseDiagnostics(
                 raw_length=len(final_text or ""),
+                response_text_source="final_text",
+                reasoning_fields_present=False,
                 fences_stripped=fences_stripped,
+                think_tags_detected=think_tags_detected,
+                think_blocks_stripped=think_blocks_stripped,
+                leading_non_json_stripped=leading_non_json_stripped,
                 object_extraction_attempted=extraction_attempted,
             )
 
@@ -288,20 +316,61 @@ def _parse_journal_draft_json(final_text: str) -> tuple[dict[str, Any], _DraftPa
                 _validate_journal_draft_payload(parsed)
                 return parsed, _DraftParseDiagnostics(
                     raw_length=len(final_text or ""),
+                    response_text_source="final_text",
+                    reasoning_fields_present=False,
                     fences_stripped=fences_stripped,
+                    think_tags_detected=think_tags_detected,
+                    think_blocks_stripped=think_blocks_stripped,
+                    leading_non_json_stripped=leading_non_json_stripped,
                     object_extraction_attempted=extraction_attempted,
                 )
 
     raise ValueError("journal_draft_parse_failed")
 
 
-def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
+def _select_draft_text(payload: dict[str, Any]) -> tuple[str | None, str]:
     final_text = payload.get("final_text")
+    if isinstance(final_text, str) and final_text.strip():
+        return final_text, "final_text"
+    content = payload.get("content")
+    if isinstance(content, str) and content.strip():
+        return content, "content"
+    text = payload.get("text")
+    if isinstance(text, str) and text.strip():
+        return text, "text"
+    return None, "missing"
+
+
+def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
+    final_text, text_source = _select_draft_text(payload)
     if not isinstance(final_text, str) or not final_text.strip():
         raise ValueError("cortex_orch_missing_final_text")
-    diagnostics = _DraftParseDiagnostics(raw_length=len(final_text), fences_stripped=False, object_extraction_attempted=False)
+    reasoning_fields_present = bool(
+        (isinstance(payload.get("reasoning_content"), str) and payload.get("reasoning_content").strip())
+        or isinstance(payload.get("reasoning_trace"), dict)
+    )
+    diagnostics = _DraftParseDiagnostics(
+        raw_length=len(final_text),
+        response_text_source=text_source,
+        reasoning_fields_present=reasoning_fields_present,
+        fences_stripped=False,
+        think_tags_detected="<think>" in final_text.lower(),
+        think_blocks_stripped=False,
+        leading_non_json_stripped=False,
+        object_extraction_attempted=False,
+    )
     try:
         parsed, diagnostics = _parse_journal_draft_json(final_text)
+        diagnostics = _DraftParseDiagnostics(
+            raw_length=diagnostics.raw_length,
+            response_text_source=text_source,
+            reasoning_fields_present=reasoning_fields_present,
+            fences_stripped=diagnostics.fences_stripped,
+            think_tags_detected=diagnostics.think_tags_detected,
+            think_blocks_stripped=diagnostics.think_blocks_stripped,
+            leading_non_json_stripped=diagnostics.leading_non_json_stripped,
+            object_extraction_attempted=diagnostics.object_extraction_attempted,
+        )
         return JournalEntryDraftV1.model_validate(parsed)
     except Exception as exc:
         parse_context = {
@@ -311,7 +380,12 @@ def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
             "verb": payload.get("verb"),
             "status": payload.get("status"),
             "raw_output_length": diagnostics.raw_length,
+            "response_text_source": diagnostics.response_text_source,
+            "reasoning_fields_present": diagnostics.reasoning_fields_present,
             "fences_stripped": diagnostics.fences_stripped,
+            "think_tags_detected": diagnostics.think_tags_detected,
+            "think_blocks_stripped": diagnostics.think_blocks_stripped,
+            "leading_non_json_stripped": diagnostics.leading_non_json_stripped,
             "json_object_extraction_attempted": diagnostics.object_extraction_attempted,
             "missing_required_key": _missing_required_key_from_error(str(exc)),
         }

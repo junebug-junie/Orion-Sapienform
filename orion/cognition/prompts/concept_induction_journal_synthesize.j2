@@ -15,6 +15,8 @@ Return exactly one JSON object.
 - The response MUST begin with `{` and end with `}`.
 - Do NOT wrap the JSON in markdown fences.
 - Do NOT include any explanatory prose before or after the JSON.
+- Do NOT output `<think>` tags, chain-of-thought, reasoning traces, or hidden-analysis markers.
+- If the model/runtime supports reasoning controls, comply with no-reasoning / final-answer-only mode for this response.
 - Use exactly these keys at top level: `mode`, `title`, `body`.
 - Set `mode` to `"manual"`.
 - Set `title` to a concise reflective title.

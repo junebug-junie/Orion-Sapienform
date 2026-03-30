@@ -62,4 +62,5 @@ class PlanExecutionResult(BaseModel):
     memory_used: bool = False
     recall_debug: Dict[str, Any] = Field(default_factory=dict)
     metacog_traces: List[MetacognitiveTraceV1] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None

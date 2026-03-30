@@ -61,6 +61,24 @@ class _FakeCortexClient:
                     "main_result": summary,
                     "execution_policy": policy,
                 }
+            } if workflow_id else {
+                "autonomy_summary": {
+                    "stance_hint": "favor synthesis and reduction",
+                    "top_drives": ["coherence"],
+                    "active_tensions": ["scope_sprawl"],
+                    "proposal_headlines": ["stabilize triage sequence"],
+                },
+                "autonomy_debug": {
+                    "orion": {"availability": "available", "present": True, "unavailable_reason": None}
+                },
+                "autonomy_state_preview": {
+                    "dominant_drive": "coherence",
+                    "top_drives": ["coherence"],
+                    "active_tensions": ["scope_sprawl"],
+                    "proposal_headlines": ["stabilize triage sequence"],
+                },
+                "autonomy_backend": "graph",
+                "autonomy_selected_subject": "orion",
             },
         )
         return CortexChatResult(cortex_result=result, final_text=result.final_text)
@@ -181,3 +199,49 @@ def test_websocket_chat_path_preserves_scheduled_workflow_policy(monkeypatch) ->
     workflow_messages = [msg for msg in ws.sent if isinstance(msg, dict) and isinstance(msg.get("workflow"), dict)]
     assert workflow_messages
     assert workflow_messages[-1]["workflow"]["status"] == "scheduled"
+
+
+def test_http_chat_path_exports_autonomy_payload_for_brain_lane() -> None:
+    client = _FakeCortexClient()
+    payload = {
+        "mode": "brain",
+        "session_id": "sid-http-autonomy",
+        "messages": [{"role": "user", "content": "hey"}],
+    }
+    result = asyncio.run(handle_chat_request(client, payload, "sid-http-autonomy", no_write=True))
+    assert result["autonomy_summary"]["stance_hint"] == "favor synthesis and reduction"
+    assert result["autonomy_debug"]["orion"]["availability"] == "available"
+    assert result["autonomy_state_preview"]["dominant_drive"] == "coherence"
+    assert result["autonomy_backend"] == "graph"
+    assert result["autonomy_selected_subject"] == "orion"
+
+
+def test_websocket_chat_path_exports_autonomy_payload_for_brain_lane(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    client = _FakeCortexClient()
+    monkeypatch.setattr(hub_main, "bus", object())
+    monkeypatch.setattr(hub_main, "cortex_client", client)
+    monkeypatch.setattr(hub_main, "tts_client", None)
+    monkeypatch.setattr(hub_main, "biometrics_cache", None)
+    monkeypatch.setattr(hub_main, "notification_cache", None)
+    monkeypatch.setattr(hub_main, "presence_state", None)
+
+    ws = _FakeWebSocket(
+        {
+            "text_input": "hey",
+            "mode": "brain",
+            "session_id": "sid-ws-autonomy",
+            "no_write": True,
+        }
+    )
+    asyncio.run(websocket_endpoint(ws))
+
+    responses = [msg for msg in ws.sent if isinstance(msg, dict) and isinstance(msg.get("llm_response"), str)]
+    assert responses
+    latest = responses[-1]
+    assert latest["autonomy_summary"]["stance_hint"] == "favor synthesis and reduction"
+    assert latest["autonomy_debug"]["orion"]["availability"] == "available"
+    assert latest["autonomy_state_preview"]["dominant_drive"] == "coherence"
+    assert latest["autonomy_backend"] == "graph"
+    assert latest["autonomy_selected_subject"] == "orion"

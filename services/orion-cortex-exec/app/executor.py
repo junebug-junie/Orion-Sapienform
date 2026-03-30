@@ -2119,6 +2119,9 @@ async def call_step_services(
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),
                         "stream": False,
+                        "response_format": ctx.get("response_format") if isinstance(ctx.get("response_format"), dict) else None,
+                        "return_json": bool(ctx.get("return_json")) if ctx.get("return_json") is not None else None,
+                        "reasoning": ctx.get("reasoning") if isinstance(ctx.get("reasoning"), dict) else None,
                     },
                 )
 

@@ -1031,7 +1031,14 @@ async def _run_concept_induction_grounded_journal_synthesis(
     synth_req.recall.required = False
     synth_req.recall.max_items = 0
     synth_req.options = dict(synth_req.options or {})
-    synth_req.options.update({"workflow_execution": True})
+    synth_req.options.update(
+        {
+            "workflow_execution": True,
+            "response_format": {"type": "json_object"},
+            "return_json": True,
+            "reasoning": {"effort": "none"},
+        }
+    )
     verb_result = await call_verb_runtime(
         bus,
         source=source,

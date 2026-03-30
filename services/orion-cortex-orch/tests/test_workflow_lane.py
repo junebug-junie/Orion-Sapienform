@@ -429,6 +429,32 @@ def test_concept_induction_pass_synthesize_to_journal_uses_append_only_write(mon
     req = _req("concept_induction_pass")
     req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
     bus = DummyBus()
+
+    async def _grounded_synthesis_runtime(*_args, **kwargs):
+        client_request = kwargs.get("client_request")
+        assert client_request.verb == "concept_induction_journal_synthesize"
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps(
+                        {
+                            "mode": "manual",
+                            "title": "Concept Induction Review",
+                            "body": (
+                                "## Orion\nThe reviewed profile foregrounds continuity.\n\n"
+                                "## Juniper\nnot available in reviewed profile data.\n\n"
+                                "## Relationship\nnot available in reviewed profile data.\n\n"
+                                "## Grounding note\nThis synthesis is based only on reviewed concept-induction artifacts."
+                            ),
+                        }
+                    ),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
     result = asyncio.run(
         execute_chat_workflow(
             bus=bus,
@@ -437,7 +463,7 @@ def test_concept_induction_pass_synthesize_to_journal_uses_append_only_write(mon
             correlation_id='00000000-0000-0000-0000-000000000095',
             causality_chain=[],
             trace={},
-            call_verb_runtime=lambda *args, **kwargs: None,
+            call_verb_runtime=_grounded_synthesis_runtime,
         )
     )
     assert result.ok is True
@@ -448,6 +474,140 @@ def test_concept_induction_pass_synthesize_to_journal_uses_append_only_write(mon
     payload = result.metadata["workflow"]["synthesis_to_journal"]["provenance"]
     assert payload["source_workflow_id"] == "concept_induction_pass"
     assert payload["reviewed_profiles"][0]["profile_id"] == "profile-1"
+    assert payload["synthesis_mode"] == "brain_grounded"
+    assert payload["synthesis_prompt_version"] == "concept_induction_journal_grounded.v1"
+
+
+def test_concept_induction_synthesis_request_uses_payload_only_context(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion", "juniper", "relationship"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [], "clusters": [], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.messages = [{"role": "user", "content": "this should not leak"}]
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+    captured = {}
+
+    async def _runtime(*_args, **kwargs):
+        client_request = kwargs["client_request"]
+        captured["verb"] = client_request.verb
+        captured["messages"] = list(client_request.context.messages or [])
+        captured["recall_enabled"] = bool(client_request.recall.enabled)
+        captured["grounding_payload"] = dict(client_request.context.metadata.get("concept_induction_journal_grounding") or {})
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps(
+                        {
+                            "mode": "manual",
+                            "title": "Grounded Concept Review",
+                            "body": "## Orion\nnot available in reviewed profile data.\n\n## Grounding note\nThis synthesis is based only on reviewed concept-induction artifacts.",
+                        }
+                    ),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000097",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_runtime,
+        )
+    )
+
+    assert result.ok is True
+    assert captured["verb"] == "concept_induction_journal_synthesize"
+    assert captured["messages"] == []
+    assert captured["recall_enabled"] is False
+    assert "profiles" in captured["grounding_payload"]
+
+
+def test_concept_induction_synthesis_falls_back_to_missing_data_language(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [], "clusters": [], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+
+    async def _runtime(*_args, **_kwargs):
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps(
+                        {
+                            "mode": "manual",
+                            "title": "Sparse Review",
+                            "body": "## Orion\nnot available in reviewed profile data.\n\n## Grounding note\nThis synthesis is based only on reviewed concept-induction artifacts.",
+                        }
+                    ),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000098",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_runtime,
+        )
+    )
+
+    journal_body = result.metadata["workflow"]["synthesis_to_journal"]["journal_entry"]["body"]
+    assert "not available in reviewed profile data" in journal_body
+
+
+def test_concept_induction_grounding_detector_flags_unsupported_artifacts() -> None:
+    from app.workflow_runtime import _grounding_violations
+
+    payload = {
+        "reviewed_subjects": ["orion"],
+        "profiles": [
+            {
+                "subject": "orion",
+                "profile_id": "profile-1",
+                "concepts": [{"concept_id": "concept-1", "label": "continuity"}],
+                "clusters": [{"cluster_id": "cluster-1", "label": "core"}],
+            }
+        ],
+    }
+    safe = _grounding_violations(
+        text="Concept continuity: stays stable.\nCluster core: remains compact.",
+        grounding_payload=payload,
+    )
+    unsafe = _grounding_violations(
+        text="Concept fabricated: appears everywhere.\nCluster invented: broad trend.",
+        grounding_payload=payload,
+    )
+    assert safe == []
+    assert unsafe
 
 
 def test_concept_induction_pass_details_payload_is_bounded(monkeypatch, tmp_path) -> None:

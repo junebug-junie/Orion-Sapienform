@@ -28,7 +28,17 @@ That action sends a `workflow_request_override` with:
 - `action = synthesize_to_journal`
 - the reviewed `concept_induction_details`
 
-Orch then performs a bounded synthesis over reviewed subjects (orion/juniper/relationship), notable concepts/clusters/state-estimate patterns, and repository resolution context.
+Orch now routes this action through a dedicated **brain-lane LLM verb** (`concept_induction_journal_synthesize`) using a payload-only grounding contract:
+- reviewed subjects
+- reviewed profile slices (concepts, clusters, state estimates)
+- repository trace/back-end resolution metadata
+- explicit provenance metadata
+
+The synthesis request is deterministic:
+- no prompt matching heuristics
+- no agent mode
+- no open chat-history context
+- recall disabled
 
 ## Journal persistence + provenance
 
@@ -40,3 +50,15 @@ Workflow metadata includes synthesis provenance:
 - reviewed profile ids/revisions
 - repository backend used
 - synthesis timestamp
+- `synthesis_mode = brain_grounded`
+- `synthesis_prompt_version = concept_induction_journal_grounded.v1`
+
+## Anti-fabrication safeguards
+
+Grounding protections now include:
+- Prompt-level hard rules: only use provided payload, never invent missing details.
+- Required missing-data language: `"not available in reviewed profile data"` when evidence is absent.
+- Payload-only request construction in Orch (bounded metadata contract).
+- Lightweight post-check for explicit unsupported concept/cluster references before persistence.
+
+This differs from agent traces or open-ended reasoning: the LLM is used only for **faithful interpretation** of supplied artifacts, not discovery of new facts.

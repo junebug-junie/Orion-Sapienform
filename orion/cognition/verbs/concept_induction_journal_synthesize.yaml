@@ -1,0 +1,23 @@
+name: concept_induction_journal_synthesize
+label: Concept Induction Journal Synthesize
+description: >
+  Deterministic, payload-grounded journal synthesis for concept_induction_pass.
+  Uses only reviewed concept-induction artifacts passed in metadata.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: concept_induction_journal_synthesize.j2
+
+steps:
+  - name: concept_induction_journal_synthesize
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: concept_induction_journal_synthesize.j2

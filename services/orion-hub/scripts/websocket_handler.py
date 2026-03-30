@@ -23,6 +23,7 @@ from scripts.chat_history import (
 )
 from scripts.social_room import is_social_room_payload, social_room_client_meta
 from scripts.trace_payloads import extract_agent_trace_payload
+from scripts.autonomy_payloads import extract_autonomy_payload
 from scripts.workflow_payloads import extract_workflow_payload
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
@@ -732,6 +733,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     len(metacog_traces),
                 )
                 workflow = extract_workflow_payload(resp.cortex_result)
+                autonomy_payload = extract_autonomy_payload(resp.cortex_result)
                 if isinstance(workflow, dict):
                     logger.info(
                         "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s source=ws",
@@ -801,6 +803,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "metacog_traces": metacog_traces,
                 "reasoning_content": reasoning_content,
                 "reasoning_trace": explicit_reasoning_trace,
+                **autonomy_payload,
             }
             if mode == "council" or settings.HUB_DEBUG_COUNCIL:
                 council_debug = _extract_council_debug_from_result(resp)

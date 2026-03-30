@@ -23,6 +23,7 @@ from .chat_history import (
 )
 from .library import scan_cognition_library
 from .trace_payloads import extract_agent_trace_payload
+from .autonomy_payloads import extract_autonomy_payload
 from .workflow_payloads import extract_workflow_payload
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .social_room import is_social_room_payload, social_room_client_meta
@@ -732,6 +733,7 @@ async def handle_chat_request(
         recall_debug = None
         agent_trace = None
         workflow = None
+        autonomy_payload = {}
         metacog_traces = []
         if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
             recall_debug = resp.cortex_result.recall_debug
@@ -746,6 +748,7 @@ async def handle_chat_request(
             len(metacog_traces),
         )
         workflow = extract_workflow_payload(resp.cortex_result)
+        autonomy_payload = extract_autonomy_payload(resp.cortex_result)
         if isinstance(workflow, dict):
             logger.info(
                 "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s",
@@ -802,6 +805,7 @@ async def handle_chat_request(
             "correlation_id": correlation_id,
             "routing_debug": route_debug,
             "metacog_traces": metacog_traces,
+            **autonomy_payload,
         }
 
     except Exception as e:

@@ -61,6 +61,40 @@ def _extract_final_text(steps: List[StepExecutionResult]) -> str:
     return ""
 
 
+def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
+    summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
+    state = ctx.get("chat_autonomy_state") if isinstance(ctx.get("chat_autonomy_state"), dict) else {}
+    if not summary and not state:
+        return None
+    preview = {
+        "dominant_drive": state.get("dominant_drive"),
+        "top_drives": list(summary.get("top_drives") or state.get("active_drives") or [])[:3],
+        "active_tensions": list(summary.get("active_tensions") or state.get("tension_kinds") or [])[:3],
+        "proposal_headlines": list(summary.get("proposal_headlines") or [])[:3],
+    }
+    if not any(preview.values()):
+        return None
+    return preview
+
+
+def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else None
+    debug = ctx.get("chat_autonomy_debug") if isinstance(ctx.get("chat_autonomy_debug"), dict) else None
+    state = ctx.get("chat_autonomy_state") if isinstance(ctx.get("chat_autonomy_state"), dict) else None
+    payload: Dict[str, Any] = {}
+    if summary:
+        payload["autonomy_summary"] = summary
+    if debug:
+        payload["autonomy_debug"] = debug
+    preview = _autonomy_state_preview(ctx)
+    if preview:
+        payload["autonomy_state_preview"] = preview
+    if state:
+        payload["autonomy_backend"] = state.get("source")
+        payload["autonomy_selected_subject"] = state.get("subject")
+    return payload
+
+
 
 
 def _normalize_execution_depth(value: Any) -> int | None:
@@ -465,6 +499,7 @@ class PlanRunner:
                 _debug_len(final_text),
                 len(metacog_traces) == 0,
             )
+        metadata = _autonomy_payload_from_ctx(ctx)
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,
@@ -480,6 +515,7 @@ class PlanRunner:
             memory_used=memory_used,
             recall_debug=recall_debug,
             metacog_traces=metacog_traces,
+            metadata=metadata,
             error=None if overall_status == "success" else step_results[-1].error,
         )
 

@@ -18,6 +18,7 @@ def test_template_places_autonomy_runtime_panel_between_agent_trace_and_social_i
 
     assert memory_idx < agent_idx < autonomy_idx < social_idx
     assert 'id="autonomyDebugToggle"' in template
+    assert 'id="autonomyDebugPanel" class="hidden' not in template
     assert 'id="autonomyDebugOverview"' in template
     assert 'id="autonomyDebugState"' in template
     assert 'id="autonomyDebugProposals"' in template
@@ -42,7 +43,7 @@ def test_app_js_wires_autonomy_debug_panel_clear_update_and_toggle() -> None:
     assert "function toggleAutonomyDebugPanel()" in app_js
     assert "autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);" in app_js
     assert "clearAutonomyDebugPanel();" in app_js
-    assert "if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = '--';" in app_js
+    assert "if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = 'No meaningful autonomy signal for this turn.';" in app_js
     assert "const hubUiVersion = (window.__HUB_UI_VERSION__ || document.body?.dataset?.uiVersion || \"unknown\").trim() || \"unknown\";" in app_js
     assert "console.log(`[HubUI] version=${hubUiVersion}`);" in app_js
 
@@ -85,6 +86,10 @@ def test_autonomy_debug_panel_clears_when_payload_absent() -> None:
     assert "const model = normalizeAutonomyModel(summary, debug, meta);" in app_js
     assert "if (!model) {" in app_js
     assert "clearAutonomyDebugPanel();" in app_js
+    assert "if (autonomyDebugMeta) autonomyDebugMeta.textContent = 'No autonomy payload on this turn.';" in app_js
+    assert "if (autonomyDebugState) autonomyDebugState.textContent = 'No meaningful autonomy signal for this turn.';" in app_js
+    assert "if (autonomyDebugRaw) autonomyDebugRaw.textContent = 'No autonomy payload on this turn.';" in app_js
+    assert "if (autonomyDebugPanel) autonomyDebugPanel.classList.add('hidden');" not in app_js
 
 
 def test_inline_autonomy_rendering_uses_high_signal_gate() -> None:
@@ -108,6 +113,16 @@ def test_right_rail_can_render_from_debug_even_without_semantic_inline_signal() 
 
     assert "const hasDebugSignal = !!(safeDebug && typeof safeDebug === 'object' && Object.keys(safeDebug).length);" in app_js
     assert "const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal" in app_js
+
+
+def test_autonomy_populated_render_path_replaces_prior_turn_content() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "autonomyDebugOverview.innerHTML = '';" in app_js
+    assert "autonomyDebugState.innerHTML = '';" in app_js
+    assert "autonomyDebugProposals.innerHTML = '';" in app_js
+    assert "autonomyDebugAlignment.innerHTML = '';" in app_js
+    assert "autonomyDebugRaw.textContent = JSON.stringify(model.raw, null, 2);" in app_js
 
 
 def test_alignment_rules_are_deterministic_and_bounded() -> None:

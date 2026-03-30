@@ -214,3 +214,27 @@ def test_management_update_prompt_builds_bounded_patch() -> None:
     assert mgmt['operation'] == 'update'
     assert mgmt['workflow_id'] == 'journal_pass'
     assert mgmt['patch']['hour_local'] == 22
+
+
+def test_workflow_request_override_allows_bounded_modal_actions_without_prompt_matching() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            'mode': 'brain',
+            'workflow_request_override': {
+                'workflow_id': 'concept_induction_pass',
+                'action': 'synthesize_to_journal',
+            },
+        },
+        session_id='sid-workflow',
+        user_id='user-1',
+        trace_id='trace-workflow',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='irrelevant prompt text',
+    )
+    workflow_request = req.metadata['workflow_request']
+    assert workflow_request['workflow_id'] == 'concept_induction_pass'
+    assert workflow_request['action'] == 'synthesize_to_journal'
+    assert workflow_request['execution_policy']['invocation_mode'] == 'immediate'
+    assert debug['workflow_resolution_reason'] == 'workflow_request_override'

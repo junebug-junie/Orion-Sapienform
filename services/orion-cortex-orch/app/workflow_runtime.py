@@ -10,6 +10,7 @@ from orion.cognition.workflows import get_workflow_definition, workflow_registry
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs import VerbResultV1
+from orion.journaler.schemas import JournalEntryDraftV1
 from orion.journaler.worker import (
     JOURNAL_WRITE_KIND,
     build_compose_request,
@@ -796,6 +797,141 @@ def _log_concept_profile_resolution(
     )
 
 
+def _concept_item_payload(concept: Any) -> Dict[str, Any]:
+    evidence_count = len(getattr(concept, "evidence", []) or [])
+    return {
+        "concept_id": getattr(concept, "concept_id", None),
+        "label": getattr(concept, "label", None),
+        "type": getattr(concept, "type", None),
+        "aliases": list(getattr(concept, "aliases", []) or []),
+        "salience": getattr(concept, "salience", None),
+        "confidence": getattr(concept, "confidence", None),
+        "evidence_count": evidence_count,
+    }
+
+
+def _cluster_item_payload(cluster: Any, *, concepts: list[dict[str, Any]]) -> Dict[str, Any]:
+    concept_ids = list(getattr(cluster, "concept_ids", []) or [])
+    labels_by_id = {str(item.get("concept_id") or ""): item.get("label") for item in concepts}
+    representative_labels = [labels_by_id.get(cid) for cid in concept_ids[:5] if labels_by_id.get(cid)]
+    return {
+        "cluster_id": getattr(cluster, "cluster_id", None),
+        "label": getattr(cluster, "label", None),
+        "summary": getattr(cluster, "summary", None),
+        "concept_ids": concept_ids,
+        "representative_labels": representative_labels,
+        "cohesion_score": getattr(cluster, "cohesion_score", None),
+    }
+
+
+def _profile_detail_payload(lookup: Any) -> Dict[str, Any] | None:
+    profile = lookup.profile
+    if profile is None:
+        return None
+    concepts = [_concept_item_payload(item) for item in list(profile.concepts or [])[:25]]
+    clusters = [_cluster_item_payload(cluster, concepts=concepts) for cluster in list(profile.clusters or [])[:15]]
+    return {
+        "subject": lookup.subject,
+        "profile_id": profile.profile_id,
+        "revision": profile.revision,
+        "created_at": profile.created_at.isoformat(),
+        "window_start": profile.window_start.isoformat(),
+        "window_end": profile.window_end.isoformat(),
+        "concept_count": len(profile.concepts),
+        "cluster_count": len(profile.clusters),
+        "concepts": concepts,
+        "clusters": clusters,
+        "state_estimate": _state_summary(profile.state_estimate),
+        "provenance": {
+            "materialization_ref": str((profile.metadata or {}).get("materialization_ref") or ""),
+            "source_kind": str((profile.metadata or {}).get("source_kind") or ""),
+        },
+    }
+
+
+def _concept_induction_trace_payload(*, lookups: list[Any], observer: dict[str, str], repository_status: Any, requested_backend: str, resolved_backend: str, fallback_used: bool, fallback_policy: str, unavailable_reason: str | None) -> Dict[str, Any]:
+    profile_rows = []
+    for lookup in lookups[:8]:
+        row = {
+            "subject": lookup.subject,
+            "availability": lookup.availability,
+            "unavailable_reason": lookup.unavailable_reason,
+        }
+        if lookup.profile is not None:
+            row["profile_id"] = lookup.profile.profile_id
+            row["revision"] = lookup.profile.revision
+        profile_rows.append(row)
+    return {
+        "repository_resolution": {
+            "observer": dict(observer),
+            "requested_backend": requested_backend,
+            "resolved_backend": resolved_backend,
+            "fallback_used": fallback_used,
+            "fallback_policy": fallback_policy,
+            "unavailable_reason": unavailable_reason,
+            "source_path": repository_status.source_path,
+        },
+        "artifacts": {
+            "lookup_rows": profile_rows,
+        },
+    }
+
+
+def _build_concept_induction_synthesis_body(*, details: Dict[str, Any]) -> str:
+    by_subject = {str(item.get("subject") or ""): item for item in (details.get("profiles") or []) if isinstance(item, dict)}
+
+    def _subject_line(subject: str) -> str:
+        item = by_subject.get(subject) or {}
+        top_concepts = [str(c.get("label") or c.get("concept_id") or "").strip() for c in (item.get("concepts") or [])[:3] if isinstance(c, dict)]
+        top_clusters = [str(c.get("label") or c.get("cluster_id") or "").strip() for c in (item.get("clusters") or [])[:2] if isinstance(c, dict)]
+        state = item.get("state_estimate") if isinstance(item.get("state_estimate"), dict) else {}
+        return (
+            f"- {subject}: rev {item.get('revision', '--')} "
+            f"({item.get('concept_count', 0)} concepts / {item.get('cluster_count', 0)} clusters). "
+            f"Concepts: {', '.join([x for x in top_concepts if x]) or 'none'}. "
+            f"Clusters: {', '.join([x for x in top_clusters if x]) or 'none'}. "
+            f"State: {_state_summary(state) if state else 'n/a'}."
+        )
+
+    review_lines = [_subject_line(name) for name in ("orion", "juniper", "relationship")]
+    trace = details.get("trace") if isinstance(details.get("trace"), dict) else {}
+    resolution = trace.get("repository_resolution") if isinstance(trace.get("repository_resolution"), dict) else {}
+    backend_line = (
+        f"Backend resolution: requested={resolution.get('requested_backend') or '--'}, "
+        f"resolved={resolution.get('resolved_backend') or '--'}, "
+        f"fallback_used={bool(resolution.get('fallback_used'))}."
+    )
+    return "\n".join(
+        [
+            "Concept induction review synthesis",
+            "",
+            "Reviewed subjects:",
+            *review_lines,
+            "",
+            "Repository trace:",
+            f"- {backend_line}",
+            "",
+            "Reflection:",
+            "The current concept-profile revisions show what appears most salient across Orion, Juniper, and relationship context with bounded artifact-backed traceability.",
+        ]
+    ).strip()
+
+
+def _coerce_reviewed_concept_details(value: Any) -> Dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    profiles = value.get("profiles")
+    if not isinstance(profiles, list):
+        return None
+    bounded_profiles = [item for item in profiles if isinstance(item, dict)][:6]
+    trace = value.get("trace") if isinstance(value.get("trace"), dict) else {}
+    return {
+        "generated_at": value.get("generated_at"),
+        "profiles": bounded_profiles,
+        "trace": trace,
+    }
+
+
 async def _execute_concept_induction_pass(
     *,
     bus: OrionBusAsync,
@@ -806,7 +942,7 @@ async def _execute_concept_induction_pass(
     req: CortexClientRequest,
     call_verb_runtime,
 ) -> CortexClientResult:
-    del bus, source, causality_chain, trace, call_verb_runtime
+    del call_verb_runtime
     workflow_id = "concept_induction_pass"
     settings = build_orch_concept_profile_settings(get_settings())
     consumer = "concept_induction_pass"
@@ -915,11 +1051,15 @@ async def _execute_concept_induction_pass(
         ),
     )
     reviews: List[Dict[str, Any]] = []
+    profile_details: List[Dict[str, Any]] = []
     for lookup in lookups:
         subject = lookup.subject
         profile = lookup.profile
         if profile is None:
             continue
+        detail = _profile_detail_payload(lookup)
+        if detail is not None:
+            profile_details.append(detail)
         reviews.append(
             {
                 "subject": subject,
@@ -949,19 +1089,85 @@ async def _execute_concept_induction_pass(
     else:
         main_result = f"Concept induction profiles are not available in the configured store ({settings.store_path})."
     metadata = _workflow_metadata_base(request=_workflow_request(req), status=status)
+    computed_details = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "profiles": profile_details,
+        "trace": _concept_induction_trace_payload(
+            lookups=lookups,
+            observer=observer,
+            repository_status=repository_status,
+            requested_backend=requested_backend,
+            resolved_backend=resolved_backend,
+            fallback_used=fallback_used,
+            fallback_policy=fallback_policy,
+            unavailable_reason=fallback_reason or unavailable_reason,
+        ),
+    }
+    workflow_request = _workflow_request(req)
+    requested_details = _coerce_reviewed_concept_details(workflow_request.get("concept_induction_details"))
+    concept_induction_details = requested_details or computed_details
+    synthesize_requested = str(workflow_request.get("action") or "").strip().lower() == "synthesize_to_journal"
+    persisted: list[str] = []
+    synthesis_status: Dict[str, Any] | None = None
+    if synthesize_requested and ok:
+        synthesis_body = _build_concept_induction_synthesis_body(details=concept_induction_details)
+        synthesis_draft = JournalEntryDraftV1(mode="manual", title="Concept Induction Review", body=synthesis_body)
+        reviewed_refs = [
+            f"{item.get('subject')}:{item.get('profile_id')}@{item.get('revision')}"
+            for item in (profile_details or [])
+        ]
+        trigger = build_manual_trigger(
+            summary="Concept induction review synthesis",
+            source_ref=f"concept_induction_pass:{','.join(reviewed_refs[:6])}",
+        )
+        write = build_write_payload(
+            synthesis_draft,
+            trigger=trigger,
+            correlation_id=correlation_id,
+            author=req.context.user_id or "orion",
+        )
+        envelope = BaseEnvelope(
+            kind=JOURNAL_WRITE_KIND,
+            source=source,
+            payload=write.model_dump(mode="json"),
+            correlation_id=correlation_id,
+            causality_chain=list(causality_chain or []),
+            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        )
+        await bus.publish(JOURNAL_WRITE_CHANNEL, envelope.model_dump(mode="json"))
+        persisted.append(f"journal.entry.write.v1:{write.entry_id}")
+        synthesis_status = {
+            "ok": True,
+            "journal_entry": write.model_dump(mode="json"),
+            "provenance": {
+                "source_workflow_id": workflow_id,
+                "reviewed_subjects": [item.get("subject") for item in profile_details],
+                "reviewed_profiles": [
+                    {
+                        "subject": item.get("subject"),
+                        "profile_id": item.get("profile_id"),
+                        "revision": item.get("revision"),
+                    }
+                    for item in profile_details
+                ],
+                "repository_backend": resolved_backend,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        }
     metadata["workflow"] = {
         "workflow_id": workflow_id,
         "display_name": "Concept Induction Pass",
         "status": status,
         "executed": True,
         "subverb": None,
-        "persisted": [],
+        "persisted": persisted,
         "scheduled": [],
         "main_result": main_result,
         "profile_store_path": settings.store_path,
         "profile_store_placeholder_path": using_placeholder_store,
         "profile_store_env_var": "CONCEPT_STORE_PATH",
         "profiles_reviewed": reviews,
+        "concept_induction_details": concept_induction_details,
         "concept_profile_resolution": {
             "consumer": consumer,
             "requested_backend": requested_backend,
@@ -970,6 +1176,7 @@ async def _execute_concept_induction_pass(
             "fallback_used": fallback_used,
             "unavailable_reason": fallback_reason or unavailable_reason,
         },
+        "synthesis_to_journal": synthesis_status,
     }
     _log_concept_profile_resolution(
         consumer=consumer,

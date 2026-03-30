@@ -156,6 +156,47 @@
     return Boolean(workflow.rerun_prompt);
   }
 
+  function normalizeConceptInductionDetails(workflowLike) {
+    const workflow = normalizeWorkflow(workflowLike);
+    if (!workflow || workflow.id !== 'concept_induction_pass') return null;
+    const raw = toObject(workflow.raw_metadata) || {};
+    const details = toObject(raw.concept_induction_details);
+    if (!details) return null;
+    const profiles = Array.isArray(details.profiles) ? details.profiles.filter((item) => item && typeof item === 'object') : [];
+    const trace = toObject(details.trace) || {};
+    const boundedTraceRows = Array.isArray((trace.artifacts || {}).lookup_rows)
+      ? trace.artifacts.lookup_rows.filter((row) => row && typeof row === 'object').slice(0, 12)
+      : [];
+    return {
+      generated_at: typeof details.generated_at === 'string' ? details.generated_at : null,
+      profiles: profiles.slice(0, 6).map((profile) => ({
+        subject: String(profile.subject || '').trim() || null,
+        profile_id: String(profile.profile_id || '').trim() || null,
+        revision: Number.isFinite(Number(profile.revision)) ? Number(profile.revision) : null,
+        created_at: typeof profile.created_at === 'string' ? profile.created_at : null,
+        window_start: typeof profile.window_start === 'string' ? profile.window_start : null,
+        window_end: typeof profile.window_end === 'string' ? profile.window_end : null,
+        concept_count: Number.isFinite(Number(profile.concept_count)) ? Number(profile.concept_count) : 0,
+        cluster_count: Number.isFinite(Number(profile.cluster_count)) ? Number(profile.cluster_count) : 0,
+        concepts: Array.isArray(profile.concepts) ? profile.concepts.slice(0, 30) : [],
+        clusters: Array.isArray(profile.clusters) ? profile.clusters.slice(0, 20) : [],
+        state_estimate: toObject(profile.state_estimate) || null,
+      })),
+      trace: {
+        repository_resolution: toObject(trace.repository_resolution) || {},
+        artifacts: {
+          lookup_rows: boundedTraceRows,
+        },
+      },
+    };
+  }
+
+  function buildConceptInductionSections(workflowLike) {
+    const details = normalizeConceptInductionDetails(workflowLike);
+    if (!details) return [];
+    return ['Overview', 'Profiles', 'Concepts', 'Clusters', 'State estimate', 'Trace / Artifacts'];
+  }
+
   const api = {
     normalizeWorkflow,
     extractWorkflow,
@@ -165,6 +206,8 @@
     getWorkflowStatusLabel,
     buildWorkflowDetailRows,
     canRunAgain,
+    normalizeConceptInductionDetails,
+    buildConceptInductionSections,
   };
 
   global.OrionWorkflowUI = api;

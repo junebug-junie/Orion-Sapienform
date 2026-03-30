@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+from orion.core.llm_json import parse_json_object
 from orion.journaler import (
     JOURNAL_WRITE_KIND,
     JournalTriggerV1,
@@ -183,7 +184,7 @@ def _extract_plan_final_text(result_payload: dict[str, Any]) -> str:
 
 
 def _json_loads_strict(text: str) -> dict[str, Any]:
-    data = json.loads(text)
+    data = parse_json_object(text)
     if not isinstance(data, dict):
         raise ValueError("llm output must be a JSON object")
     return data

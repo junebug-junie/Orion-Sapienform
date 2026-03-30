@@ -104,6 +104,25 @@ def test_metacog_schema_and_json_parser():
         _json_loads_strict("[]")
 
 
+def test_json_loads_strict_accepts_wrapped_json():
+    wrapped = """Here you go:
+```json
+{
+  "date": "2026-02-14",
+  "timezone": "America/Denver",
+  "thinking_patterns": ["pattern"],
+  "blindspots": [],
+  "course_correction": "tighten retrieval grounding",
+  "tomorrow_experiment": "ask one clarifying question first",
+  "confidence": 0.6,
+}
+```
+Thanks."""
+    parsed = _json_loads_strict(wrapped)
+    model = DailyMetacogV1.model_validate(parsed)
+    assert model.timezone == "America/Denver"
+
+
 def test_rpc_request_with_retry_retries_once_after_timeout():
     class FakeBus:
         def __init__(self) -> None:

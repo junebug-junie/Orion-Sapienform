@@ -136,6 +136,27 @@ class DecisionRouter:
                 return True
         return False
 
+    def _normalize_menu_topic_selection(self, user_text: str, menu_options: list[str]) -> str | None:
+        text = " ".join(str(user_text or "").lower().split())
+        if not text:
+            return None
+        normalized = re.sub(r"^[^a-z0-9]+", "", text)
+        normalized = re.sub(r"^(hm+|uh+|um+)\b[\s,.:;-]*", "", normalized).strip()
+        for prefix in TOPIC_FILLER_PREFIXES:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):].strip()
+                break
+        for option in menu_options:
+            if option and option in normalized:
+                return option.title()
+        if "first one" in normalized and menu_options:
+            return menu_options[0].title()
+        if "second one" in normalized and len(menu_options) >= 2:
+            return menu_options[1].title()
+        if "third one" in normalized and len(menu_options) >= 3:
+            return menu_options[2].title()
+        return None
+
     def heuristic_router(self, req: CortexClientRequest, *, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:
         text = self._user_text(req).lower()
         if any(term in text for term in COUNCIL_TERMS):
@@ -175,6 +196,7 @@ class DecisionRouter:
         prior_assistant = self._last_assistant_message(req)
         menu_options = self._extract_menu_options(prior_assistant)
         if self._looks_like_menu_turn(prior_assistant) and self._looks_like_topic_selection_reply(self._user_text(req), menu_options):
+            selected_topic = self._normalize_menu_topic_selection(self._user_text(req), menu_options)
             decision = AutoDepthDecisionV1(
                 execution_depth=0,
                 primary_verb=None,
@@ -194,6 +216,7 @@ class DecisionRouter:
             rewritten.options["menu_topic_selection"] = {
                 "enabled": True,
                 "matched_options": menu_options[:6],
+                "selected_topic": selected_topic,
             }
             return RoutedRequest(request=rewritten, decision=decision, output_mode_decision=output_mode_decision)
 

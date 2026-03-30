@@ -142,6 +142,17 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         self.assertNotEqual(cooldown_key_for_trigger(collapse_a), cooldown_key_for_trigger(collapse_b))
         self.assertEqual(cooldown_key_for_trigger(collapse_a), cooldown_key_for_trigger(collapse_a))
 
+
+    def test_draft_from_cortex_result_accepts_clean_json(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": '{"mode":"manual","title":"Arc","body":"Kept going."}',
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.mode, "manual")
+        self.assertEqual(draft.title, "Arc")
+
     def test_draft_from_cortex_result_accepts_fenced_json(self):
         payload = {
             "ok": True,
@@ -164,6 +175,32 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         draft = draft_from_cortex_result(payload)
         self.assertEqual(draft.mode, "manual")
         self.assertEqual(draft.body, "Kept going.")
+
+
+    def test_draft_from_cortex_result_missing_required_key_fails_clearly(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "correlation_id": "corr-missing",
+            "final_text": '{"mode":"manual","title":"Arc"}',
+        }
+        with self.assertRaises(ValueError) as ctx:
+            draft_from_cortex_result(payload)
+        self.assertIn("journal_draft_missing_required_key:body", str(ctx.exception))
+        self.assertIn('"missing_required_key": "body"', str(ctx.exception))
+        self.assertIn("corr-missing", str(ctx.exception))
+
+    def test_draft_from_cortex_result_regression_starts_with_open_brace_but_incomplete(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "correlation_id": "corr-open-brace",
+            "final_text": "{",
+        }
+        with self.assertRaises(ValueError) as ctx:
+            draft_from_cortex_result(payload)
+        self.assertIn("journal_draft_parse_failed", str(ctx.exception))
+        self.assertIn("corr-open-brace", str(ctx.exception))
 
     def test_draft_from_cortex_result_raises_structured_parse_error(self):
         payload = {

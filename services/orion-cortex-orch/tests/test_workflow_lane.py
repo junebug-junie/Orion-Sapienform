@@ -635,6 +635,51 @@ def test_concept_induction_synthesis_publish_uses_exact_journal_contract(monkeyp
     assert env.kind == "journal.entry.write.v1"
 
 
+
+
+def test_concept_induction_synthesis_recovers_noisy_json_and_emits_write(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "continuity", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+    bus = DummyBus()
+
+    async def _runtime(*_args, **_kwargs):
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": "Draft follows\n```json\n{\"mode\":\"manual\",\"title\":\"Review\",\"body\":\"## Orion\\nConcept continuity: grounded.\"}\n```\nDone",
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000124",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_runtime,
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["workflow"]["synthesis_to_journal"]["journal_write_emitted"] is True
+    assert any(channel == "orion:journal:write" and env.kind == "journal.entry.write.v1" for channel, env in bus.published)
+
 def test_concept_induction_grounding_failure_blocks_publish_with_log(monkeypatch, tmp_path, caplog) -> None:
     from app import workflow_runtime
 

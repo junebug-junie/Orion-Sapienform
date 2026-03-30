@@ -10,12 +10,18 @@ GROUNDED PAYLOAD (authoritative)
 {{ metadata.get("concept_induction_journal_grounding", {}) | tojson(indent=2) }}
 
 TASK
-Return a JSON object with exactly these keys:
-{
-  "mode": "manual",
-  "title": "<concise reflective title>",
-  "body": "<markdown body with sections: Orion, Juniper, Relationship, Cross-subject pattern (only if supported), Grounding note>"
-}
+Return exactly one JSON object.
+- The response MUST be valid JSON.
+- The response MUST begin with `{` and end with `}`.
+- Do NOT wrap the JSON in markdown fences.
+- Do NOT include any explanatory prose before or after the JSON.
+- Use exactly these keys at top level: `mode`, `title`, `body`.
+- Set `mode` to `"manual"`.
+- Set `title` to a concise reflective title.
+- Set `body` to markdown with sections: Orion, Juniper, Relationship, Cross-subject pattern (only if supported), Grounding note.
+
+RESPONSE SHAPE (example)
+{"mode":"manual","title":"<concise reflective title>","body":"<markdown body>"}
 
 STYLE
 - Reflective and readable, but faithful to payload facts.

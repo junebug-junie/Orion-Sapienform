@@ -22,6 +22,8 @@ from .settings import settings
 
 logger = logging.getLogger("orion-hub.chat_history")
 SOCIAL_ROOM_TURN_CHANNEL = "orion:chat:social:turn"
+_VALID_TRACE_ROLES = {"reasoning", "planning", "self_check", "critique", "reflection", "stance"}
+_VALID_TRACE_STAGES = {"pre_answer", "mid_answer", "post_answer"}
 
 
 def _thought_debug_enabled() -> bool:
@@ -45,6 +47,76 @@ def _preview_text(value: str | None, limit: int = 220) -> str:
     return repr(value[:limit])
 
 
+def _best_model_name(*candidates: object) -> str:
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return "unknown"
+
+
+def _normalize_reasoning_trace(
+    *,
+    trace: Optional[MetacognitiveTraceV1 | dict[str, Any]],
+    correlation_id: UUID | str | None,
+    session_id: Optional[str],
+    message_id: Optional[str],
+    model: Optional[str],
+    metadata_source: str,
+) -> Optional[dict[str, Any]]:
+    if trace is None:
+        return None
+    candidate: Optional[dict[str, Any]] = None
+    if hasattr(trace, "model_dump"):
+        try:
+            candidate = trace.model_dump(mode="json")
+        except Exception:
+            candidate = None
+    elif isinstance(trace, dict):
+        candidate = dict(trace)
+    if not isinstance(candidate, dict):
+        return None
+
+    content = str(candidate.get("content") or "").strip()
+    if not content:
+        return None
+
+    trace_role = str(candidate.get("trace_role") or candidate.get("role") or "reasoning").strip().lower()
+    if trace_role not in _VALID_TRACE_ROLES:
+        trace_role = "reasoning"
+    trace_stage = str(candidate.get("trace_stage") or candidate.get("stage") or "post_answer").strip().lower()
+    if trace_stage not in _VALID_TRACE_STAGES:
+        trace_stage = "post_answer"
+
+    candidate_meta = candidate.get("metadata")
+    metadata = dict(candidate_meta) if isinstance(candidate_meta, dict) else {}
+    metadata.setdefault("source", metadata_source)
+
+    model_name = _best_model_name(
+        candidate.get("model"),
+        model,
+        metadata.get("model"),
+        metadata.get("model_name"),
+    )
+    corr = _best_model_name(candidate.get("correlation_id"), correlation_id, uuid4())
+
+    normalized: dict[str, Any] = {
+        "trace_id": str(candidate.get("trace_id") or uuid4()),
+        "correlation_id": str(corr),
+        "session_id": str(candidate.get("session_id") or session_id) if (candidate.get("session_id") or session_id) is not None else None,
+        "message_id": str(candidate.get("message_id") or message_id) if (candidate.get("message_id") or message_id) is not None else None,
+        "trace_role": trace_role,
+        "trace_stage": trace_stage,
+        "content": content,
+        "model": model_name,
+        "token_count": candidate.get("token_count"),
+        "confidence": candidate.get("confidence"),
+        "metadata": metadata,
+        "created_at": candidate.get("created_at"),
+    }
+    return {k: v for k, v in normalized.items() if v is not None}
+
+
 def select_reasoning_trace_for_history(
     *,
     correlation_id: UUID | str | None,
@@ -61,44 +133,50 @@ def select_reasoning_trace_for_history(
     selected_source = "none"
     selected_trace: Optional[dict[str, Any]] = None
 
-    explicit_candidate: Optional[dict[str, Any]] = None
-    if hasattr(reasoning_trace, "model_dump"):
-        try:
-            explicit_candidate = reasoning_trace.model_dump(mode="json")
-        except Exception:
-            explicit_candidate = None
-    elif isinstance(reasoning_trace, dict):
-        explicit_candidate = dict(reasoning_trace)
-
+    explicit_candidate = _normalize_reasoning_trace(
+        trace=reasoning_trace,
+        correlation_id=correlation_id,
+        session_id=session_id,
+        message_id=message_id,
+        model=model,
+        metadata_source="hub_reasoning_trace",
+    )
     if isinstance(explicit_candidate, dict):
-        content = str(explicit_candidate.get("content") or "").strip()
-        if content:
-            selected_trace = explicit_candidate
-            selected_source = "reasoning_trace"
+        selected_trace = explicit_candidate
+        selected_source = "reasoning_trace"
 
     if selected_trace is None and content_exists:
-        selected_trace = {
-            "correlation_id": str(correlation_id) if correlation_id is not None else "",
-            "session_id": session_id,
-            "message_id": message_id,
-            "trace_role": "reasoning",
-            "trace_stage": "post_answer",
-            "content": str(reasoning_content or "").strip(),
-            "model": str(model or "unknown"),
-            "metadata": {"source": "hub_reasoning_content_fallback"},
-        }
+        selected_trace = _normalize_reasoning_trace(
+            trace={
+                "correlation_id": str(correlation_id) if correlation_id is not None else "",
+                "session_id": session_id,
+                "message_id": message_id,
+                "trace_role": "reasoning",
+                "trace_stage": "post_answer",
+                "content": str(reasoning_content or "").strip(),
+                "model": str(model or "unknown"),
+                "metadata": {"source": "hub_reasoning_content_fallback"},
+            },
+            correlation_id=correlation_id,
+            session_id=session_id,
+            message_id=message_id,
+            model=model,
+            metadata_source="hub_reasoning_content_fallback",
+        )
         selected_source = "reasoning_content"
 
     if selected_trace is None and isinstance(metacog_traces, list):
         for idx, trace in enumerate(metacog_traces):
-            if not isinstance(trace, dict):
-                continue
-            trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
-            if trace_role != "reasoning":
-                continue
-            content = str(trace.get("content") or "").strip()
-            if content:
-                selected_trace = trace
+            normalized_trace = _normalize_reasoning_trace(
+                trace=trace if isinstance(trace, dict) else None,
+                correlation_id=correlation_id,
+                session_id=session_id,
+                message_id=message_id,
+                model=model,
+                metadata_source=f"hub_metacog_traces_{idx}",
+            )
+            if isinstance(normalized_trace, dict) and normalized_trace.get("trace_role") == "reasoning":
+                selected_trace = normalized_trace
                 selected_source = f"metacog_traces[{idx}]"
                 break
 
@@ -142,6 +220,14 @@ def build_chat_history_envelope(
     """
     Construct a versioned chat history envelope with Orion's canonical bus schema.
     """
+    normalized_reasoning_trace = _normalize_reasoning_trace(
+        trace=reasoning_trace,
+        correlation_id=correlation_id,
+        session_id=session_id,
+        message_id=message_id,
+        model=model,
+        metadata_source="chat_history_message",
+    )
     payload_kwargs = {
         "session_id": session_id,
         "role": role,
@@ -154,7 +240,7 @@ def build_chat_history_envelope(
         "memory_tier": memory_tier,
         "memory_reason": memory_reason,
         "client_meta": client_meta,
-        "reasoning_trace": reasoning_trace,
+        "reasoning_trace": normalized_reasoning_trace,
     }
     if message_id:
         payload_kwargs["message_id"] = message_id
@@ -228,6 +314,26 @@ def build_chat_turn_envelope(
     merged_spark_meta = dict(spark_meta or {})
     if client_meta:
         merged_spark_meta.setdefault("client_meta", client_meta)
+    normalized_reasoning_trace = _normalize_reasoning_trace(
+        trace=reasoning_trace,
+        correlation_id=correlation_id,
+        session_id=session_id,
+        message_id=turn_id,
+        model=(spark_meta or {}).get("model") if isinstance(spark_meta, dict) else None,
+        metadata_source="chat_turn_envelope",
+    )
+    normalized_preview = (
+        str((normalized_reasoning_trace or {}).get("content") or "").strip()
+        if isinstance(normalized_reasoning_trace, dict)
+        else ""
+    )
+    print(
+        "===THINK_HOP=== hop=chat_history_reasoning_trace_shape "
+        f"corr={correlation_id} "
+        f"keys={sorted(list((normalized_reasoning_trace or {}).keys())) if isinstance(normalized_reasoning_trace, dict) else []} "
+        f"preview={_preview_text(normalized_preview)}",
+        flush=True,
+    )
     payload = ChatHistoryTurnV1(
         id=turn_id,
         correlation_id=str(correlation_id) if correlation_id is not None else None,
@@ -241,7 +347,7 @@ def build_chat_turn_envelope(
         memory_tier=memory_tier,
         memory_reason=memory_reason,
         client_meta=client_meta,
-        reasoning_trace=reasoning_trace,
+        reasoning_trace=normalized_reasoning_trace,
     )
     return ChatHistoryTurnEnvelope(
         correlation_id=correlation_id or uuid4(),
@@ -279,34 +385,57 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
         selected_source = "none"
         selected_content: Optional[str] = None
         selected_trace: Optional[dict[str, Any]] = None
-        if isinstance(explicit_reasoning_trace, dict) and explicit_reasoning_trace.get("content"):
+        inferred_model = (
+            str((spark_meta or {}).get("model") or (spark_meta or {}).get("model_name") or "").strip()
+            if isinstance(spark_meta, dict)
+            else None
+        )
+        normalized_explicit = _normalize_reasoning_trace(
+            trace=explicit_reasoning_trace if isinstance(explicit_reasoning_trace, dict) else None,
+            correlation_id=env.correlation_id,
+            session_id=getattr(turn_payload, "session_id", None),
+            message_id=getattr(turn_payload, "id", None) or str(env.correlation_id),
+            model=inferred_model,
+            metadata_source="chat_turn_existing_reasoning_trace",
+        )
+        if isinstance(normalized_explicit, dict) and normalized_explicit.get("content"):
             selected_source = "reasoning_trace.content"
-            selected_content = str(explicit_reasoning_trace.get("content")).strip()
-            selected_trace = dict(explicit_reasoning_trace)
+            selected_content = str(normalized_explicit.get("content")).strip()
+            selected_trace = normalized_explicit
         elif isinstance(reasoning_content, str) and reasoning_content.strip():
             selected_source = "reasoning_content"
             selected_content = reasoning_content.strip()
-            selected_trace = {
-                "correlation_id": str(env.correlation_id),
-                "session_id": getattr(turn_payload, "session_id", None),
-                "message_id": getattr(turn_payload, "id", None) or str(env.correlation_id),
-                "trace_role": "reasoning",
-                "trace_stage": "post_answer",
-                "content": selected_content,
-                "metadata": {"source": "chat_history_reasoning_content_fallback"},
-            }
+            selected_trace = _normalize_reasoning_trace(
+                trace={
+                    "correlation_id": str(env.correlation_id),
+                    "session_id": getattr(turn_payload, "session_id", None),
+                    "message_id": getattr(turn_payload, "id", None) or str(env.correlation_id),
+                    "trace_role": "reasoning",
+                    "trace_stage": "post_answer",
+                    "content": selected_content,
+                    "model": inferred_model or "unknown",
+                    "metadata": {"source": "chat_history_reasoning_content_fallback"},
+                },
+                correlation_id=env.correlation_id,
+                session_id=getattr(turn_payload, "session_id", None),
+                message_id=getattr(turn_payload, "id", None) or str(env.correlation_id),
+                model=inferred_model,
+                metadata_source="chat_history_reasoning_content_fallback",
+            )
         elif isinstance(metacog_traces, list):
             for idx, trace in enumerate(metacog_traces):
-                if not isinstance(trace, dict):
-                    continue
-                trace_role = str(trace.get("trace_role") or trace.get("role") or "").strip().lower()
-                if trace_role != "reasoning":
-                    continue
-                content = str(trace.get("content") or "").strip()
-                if content:
+                normalized_metacog = _normalize_reasoning_trace(
+                    trace=trace if isinstance(trace, dict) else None,
+                    correlation_id=env.correlation_id,
+                    session_id=getattr(turn_payload, "session_id", None),
+                    message_id=getattr(turn_payload, "id", None) or str(env.correlation_id),
+                    model=inferred_model,
+                    metadata_source=f"chat_turn_metacog_traces_{idx}",
+                )
+                if isinstance(normalized_metacog, dict) and normalized_metacog.get("trace_role") == "reasoning":
                     selected_source = f"metacog_traces[{idx}].content"
-                    selected_content = content
-                    selected_trace = dict(trace)
+                    selected_content = str(normalized_metacog.get("content") or "").strip()
+                    selected_trace = normalized_metacog
                     break
         if selected_trace is not None and hasattr(turn_payload, "reasoning_trace"):
             turn_payload.reasoning_trace = selected_trace

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
@@ -448,6 +449,77 @@ def test_concept_induction_pass_synthesize_to_journal_uses_append_only_write(mon
     assert payload["source_workflow_id"] == "concept_induction_pass"
     assert payload["reviewed_profiles"][0]["profile_id"] == "profile-1"
 
+
+def test_concept_induction_pass_details_payload_is_bounded(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    concepts = [
+        {
+            "concept_id": f"concept-{idx}",
+            "label": f"label-{idx}",
+            "aliases": [],
+            "type": "identity",
+            "salience": 0.9,
+            "confidence": 0.7,
+            "embedding_ref": None,
+            "evidence": [],
+            "metadata": {},
+        }
+        for idx in range(40)
+    ]
+    clusters = [
+        {
+            "cluster_id": f"cluster-{idx}",
+            "label": f"cluster-label-{idx}",
+            "summary": "cluster summary",
+            "concept_ids": [f"concept-{idx}"],
+            "cohesion_score": 0.8,
+            "metadata": {},
+        }
+        for idx in range(30)
+    ]
+    profile_payload = {
+        "profile_id": "profile-bounded",
+        "subject": "orion",
+        "revision": 9,
+        "created_at": "2026-03-23T00:00:00+00:00",
+        "window_start": "2026-03-22T00:00:00+00:00",
+        "window_end": "2026-03-23T00:00:00+00:00",
+        "concepts": concepts,
+        "clusters": clusters,
+        "state_estimate": None,
+        "metadata": {},
+    }
+    (tmp_path / "concepts.json").write_text(json.dumps({"profiles": {"orion": profile_payload}}))
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["concept_induction_details"] = {
+        "generated_at": "2026-03-30T00:00:00Z",
+        "profiles": [{"subject": f"subject-{idx}", "profile_id": f"profile-{idx}", "revision": idx} for idx in range(12)],
+        "trace": {"artifacts": {"lookup_rows": [{"subject": f"s{idx}"} for idx in range(50)]}},
+    }
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000000096",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+
+    assert result.ok is True
+    details = result.metadata["workflow"]["concept_induction_details"]
+    assert len(details["profiles"]) == 6
+    computed_details = result.metadata["workflow"]["profiles_reviewed"][0]
+    assert computed_details["subject"] == "orion"
 
 def test_concept_induction_pass_uses_repository_seam(monkeypatch, tmp_path) -> None:
     from app import workflow_runtime

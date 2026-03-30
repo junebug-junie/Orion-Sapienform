@@ -828,23 +828,31 @@ def _profile_detail_payload(lookup: Any) -> Dict[str, Any] | None:
     profile = lookup.profile
     if profile is None:
         return None
+    created_at = getattr(profile, "created_at", None)
+    window_start = getattr(profile, "window_start", None)
+    window_end = getattr(profile, "window_end", None)
+    created_at_iso = created_at.isoformat() if hasattr(created_at, "isoformat") else (
+        window_end.isoformat() if hasattr(window_end, "isoformat") else None
+    )
+    window_start_iso = window_start.isoformat() if hasattr(window_start, "isoformat") else None
+    window_end_iso = window_end.isoformat() if hasattr(window_end, "isoformat") else None
     concepts = [_concept_item_payload(item) for item in list(profile.concepts or [])[:25]]
     clusters = [_cluster_item_payload(cluster, concepts=concepts) for cluster in list(profile.clusters or [])[:15]]
     return {
         "subject": lookup.subject,
         "profile_id": profile.profile_id,
         "revision": profile.revision,
-        "created_at": profile.created_at.isoformat(),
-        "window_start": profile.window_start.isoformat(),
-        "window_end": profile.window_end.isoformat(),
+        "created_at": created_at_iso,
+        "window_start": window_start_iso,
+        "window_end": window_end_iso,
         "concept_count": len(profile.concepts),
         "cluster_count": len(profile.clusters),
         "concepts": concepts,
         "clusters": clusters,
         "state_estimate": _state_summary(profile.state_estimate),
         "provenance": {
-            "materialization_ref": str((profile.metadata or {}).get("materialization_ref") or ""),
-            "source_kind": str((profile.metadata or {}).get("source_kind") or ""),
+            "materialization_ref": str((getattr(profile, "metadata", {}) or {}).get("materialization_ref") or ""),
+            "source_kind": str((getattr(profile, "metadata", {}) or {}).get("source_kind") or ""),
         },
     }
 

@@ -190,6 +190,83 @@ def _json_loads_strict(text: str) -> dict[str, Any]:
     return data
 
 
+def _extract_daily_llm_diagnostics(plan_result_payload: dict[str, Any] | None) -> dict[str, Any]:
+    result = plan_result_payload.get("result") if isinstance(plan_result_payload, dict) else None
+    if not isinstance(result, dict):
+        return {}
+
+    steps = result.get("steps")
+    if not isinstance(steps, list):
+        return {}
+
+    for step in reversed(steps):
+        if not isinstance(step, dict):
+            continue
+        step_result = step.get("result")
+        if not isinstance(step_result, dict):
+            continue
+        payload = step_result.get("LLMGatewayService")
+        if not isinstance(payload, dict):
+            continue
+
+        raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+        choices = raw.get("choices") if isinstance(raw, dict) else None
+        first_choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        if not usage and isinstance(raw.get("usage"), dict):
+            usage = raw.get("usage") or {}
+
+        return {
+            "model": payload.get("model_used") or payload.get("model"),
+            "finish_reason": first_choice.get("finish_reason") or raw.get("finish_reason"),
+            "stop_reason": first_choice.get("stop_reason") or raw.get("stop_reason"),
+            "usage": usage,
+        }
+    return {}
+
+
+def _is_likely_incomplete_json(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw or not raw.startswith("{"):
+        return False
+    if raw.endswith("}"):
+        return False
+    return True
+
+
+def _should_retry_for_truncated_generation(*, text: str, diagnostics: dict[str, Any]) -> bool:
+    finish_reason = str(diagnostics.get("finish_reason") or "").strip().lower()
+    stop_reason = str(diagnostics.get("stop_reason") or "").strip().lower()
+    if finish_reason in {"length", "max_tokens", "timeout"}:
+        return True
+    if stop_reason in {"length", "max_tokens", "timeout"}:
+        return True
+    return _is_likely_incomplete_json(text)
+
+
+def _log_daily_json_parse_failure(
+    *,
+    action_name: str,
+    final_text: str,
+    diagnostics: dict[str, Any],
+    timeout_sec: float,
+    requested_max_tokens: Any,
+    parse_error: Exception,
+) -> None:
+    logger.error(
+        "daily json parse failed action=%s len=%s tail=%r model=%s finish_reason=%s stop_reason=%s timeout_sec=%s requested_max_tokens=%s parse_error=%s",
+        action_name,
+        len(final_text),
+        final_text[-240:],
+        diagnostics.get("model"),
+        diagnostics.get("finish_reason"),
+        diagnostics.get("stop_reason"),
+        timeout_sec,
+        requested_max_tokens,
+        parse_error,
+    )
+
+
 async def _rpc_request_with_retry(
     *,
     bus: Any,
@@ -568,8 +645,53 @@ async def lifespan(app: FastAPI):
                 "session_id": settings.actions_session_id,
                 "trace_id": str(parent.correlation_id),
             }
-            final_text, plan_result_payload = await _run_plan(parent, verb_name=action_name, context=context)
-            parsed = _json_loads_strict(final_text)
+            parse_retry_used = False
+            plan_result_payload: dict[str, Any] = {}
+            daily_llm_diag: dict[str, Any] = {}
+            final_text = ""
+            parsed: dict[str, Any] | None = None
+            for attempt in (1, 2):
+                attempt_context = dict(context)
+                if attempt > 1:
+                    parse_retry_used = True
+                    attempt_context["max_tokens"] = int(attempt_context.get("max_tokens") or 1024)
+                    attempt_context["daily_parse_retry"] = "truncated_generation"
+
+                final_text, plan_result_payload = await _run_plan(parent, verb_name=action_name, context=attempt_context)
+                daily_llm_diag = _extract_daily_llm_diagnostics(plan_result_payload)
+
+                if _should_retry_for_truncated_generation(text=final_text, diagnostics=daily_llm_diag):
+                    if attempt == 1:
+                        logger.warning(
+                            "daily json looks truncated; retrying action=%s len=%s tail=%r model=%s finish_reason=%s stop_reason=%s",
+                            action_name,
+                            len(final_text),
+                            final_text[-240:],
+                            daily_llm_diag.get("model"),
+                            daily_llm_diag.get("finish_reason"),
+                            daily_llm_diag.get("stop_reason"),
+                        )
+                        continue
+                    raise RuntimeError("truncated_generation")
+
+                try:
+                    parsed = _json_loads_strict(final_text)
+                    break
+                except Exception as parse_exc:
+                    _log_daily_json_parse_failure(
+                        action_name=action_name,
+                        final_text=final_text,
+                        diagnostics=daily_llm_diag,
+                        timeout_sec=float(settings.actions_exec_timeout_seconds),
+                        requested_max_tokens=attempt_context.get("max_tokens"),
+                        parse_error=parse_exc,
+                    )
+                    if attempt == 1 and _should_retry_for_truncated_generation(text=final_text, diagnostics=daily_llm_diag):
+                        continue
+                    raise
+
+            if parsed is None:
+                raise RuntimeError("daily_json_parse_unavailable")
 
             if action_name == ACTION_DAILY_PULSE_V1:
                 model = DailyPulseV1.model_validate(parsed)
@@ -594,6 +716,10 @@ async def lifespan(app: FastAPI):
                 "notify_ok": accepted.ok,
                 "notify_status": accepted.status,
                 "notification_id": str(accepted.notification_id) if accepted.notification_id else None,
+                "parse_retry_used": parse_retry_used,
+                "llm_finish_reason": daily_llm_diag.get("finish_reason"),
+                "llm_stop_reason": daily_llm_diag.get("stop_reason"),
+                "llm_model": daily_llm_diag.get("model"),
                 "plan_result_status": (plan_result_payload.get("result") or {}).get("status")
                 if isinstance(plan_result_payload, dict)
                 else None,

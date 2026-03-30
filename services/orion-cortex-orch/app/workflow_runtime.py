@@ -925,6 +925,138 @@ def _build_concept_induction_synthesis_body(*, details: Dict[str, Any]) -> str:
     ).strip()
 
 
+def _concept_induction_grounding_payload(*, details: Dict[str, Any], workflow_id: str, resolved_backend: str) -> Dict[str, Any]:
+    profiles = [item for item in (details.get("profiles") or []) if isinstance(item, dict)]
+    trace = details.get("trace") if isinstance(details.get("trace"), dict) else {}
+    reviewed_subjects = [str(item.get("subject") or "").strip() for item in profiles if str(item.get("subject") or "").strip()]
+    return {
+        "workflow_id": workflow_id,
+        "reviewed_subjects": reviewed_subjects,
+        "generated_at": details.get("generated_at"),
+        "profiles": profiles,
+        "trace": trace,
+        "provenance": {
+            "repository_backend": resolved_backend,
+            "synthesis_mode": "brain_grounded",
+            "synthesis_prompt_version": "concept_induction_journal_grounded.v1",
+        },
+    }
+
+
+def _extract_concept_induction_artifact_terms(*, grounding_payload: Dict[str, Any]) -> set[str]:
+    allowed: set[str] = set()
+    for subject in grounding_payload.get("reviewed_subjects") or []:
+        normalized = str(subject or "").strip().lower()
+        if normalized:
+            allowed.add(normalized)
+    for profile in grounding_payload.get("profiles") or []:
+        if not isinstance(profile, dict):
+            continue
+        for key in ("subject", "profile_id"):
+            value = str(profile.get(key) or "").strip().lower()
+            if value:
+                allowed.add(value)
+        for concept in profile.get("concepts") or []:
+            if not isinstance(concept, dict):
+                continue
+            for key in ("concept_id", "label"):
+                value = str(concept.get(key) or "").strip().lower()
+                if value:
+                    allowed.add(value)
+        for cluster in profile.get("clusters") or []:
+            if not isinstance(cluster, dict):
+                continue
+            for key in ("cluster_id", "label"):
+                value = str(cluster.get(key) or "").strip().lower()
+                if value:
+                    allowed.add(value)
+    return allowed
+
+
+def _grounding_violations(*, text: str, grounding_payload: Dict[str, Any]) -> list[str]:
+    allowed = _extract_concept_induction_artifact_terms(grounding_payload=grounding_payload)
+    if not allowed:
+        return []
+    violations: list[str] = []
+    for line in (text or "").splitlines():
+        lower = line.strip().lower()
+        if "concept " in lower and ":" in lower:
+            token = lower.split("concept ", 1)[1].split(":", 1)[0].strip(" -_*`")
+            if token and token not in allowed:
+                violations.append(f"unsupported_concept:{token}")
+        if "cluster " in lower and ":" in lower:
+            token = lower.split("cluster ", 1)[1].split(":", 1)[0].strip(" -_*`")
+            if token and token not in allowed:
+                violations.append(f"unsupported_cluster:{token}")
+    return violations[:8]
+
+
+async def _run_concept_induction_grounded_journal_synthesis(
+    *,
+    call_verb_runtime,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    workflow_id: str,
+    grounding_payload: Dict[str, Any],
+) -> JournalEntryDraftV1:
+    synth_req = req.model_copy(deep=True)
+    synth_req.mode = "brain"
+    synth_req.route_intent = "none"
+    synth_req.verb = "concept_induction_journal_synthesize"
+    synth_req.packs = []
+    synth_req.context.messages = []
+    synth_req.context.raw_user_text = "Synthesize reviewed concept-induction payload into grounded journal entry."
+    synth_req.context.user_message = synth_req.context.raw_user_text
+    synth_req.context.metadata = dict(synth_req.context.metadata or {})
+    synth_req.context.metadata["workflow_subverb"] = "concept_induction_journal_synthesize"
+    synth_req.context.metadata["workflow_id"] = workflow_id
+    synth_req.context.metadata["concept_induction_journal_grounding"] = grounding_payload
+    synth_req.context.metadata.update(
+        _workflow_execution_envelope(
+            req=req,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb="concept_induction_journal_synthesize",
+        )
+    )
+    synth_req.context.metadata["workflow_request"] = {
+        "workflow_id": workflow_id,
+        "action": "synthesize_to_journal",
+    }
+    synth_req.recall.enabled = False
+    synth_req.recall.required = False
+    synth_req.recall.max_items = 0
+    synth_req.options = dict(synth_req.options or {})
+    synth_req.options.update({"workflow_execution": True})
+    verb_result = await call_verb_runtime(
+        bus,
+        source=source,
+        client_request=synth_req,
+        correlation_id=correlation_id,
+        causality_chain=causality_chain,
+        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        timeout_sec=float((synth_req.options or {}).get("timeout_sec", 120.0)),
+    )
+    payload = _extract_result_payload(verb_result)
+    draft = draft_from_cortex_result(payload)
+    title = _coerce_journal_title(
+        raw_title=draft.title,
+        fallback_summary="Concept Induction Review",
+        correlation_id=correlation_id,
+    )
+    body = str(draft.body or "").strip()
+    if not body:
+        raise WorkflowExecutionError("concept_induction_synthesis_empty_body")
+    violations = _grounding_violations(text=body, grounding_payload=grounding_payload)
+    if violations:
+        raise WorkflowExecutionError(f"concept_induction_synthesis_grounding_violation:{','.join(violations)}")
+    return draft.model_copy(update={"title": title, "body": body}, deep=True)
+
+
 def _coerce_reviewed_concept_details(value: Any) -> Dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -950,7 +1082,6 @@ async def _execute_concept_induction_pass(
     req: CortexClientRequest,
     call_verb_runtime,
 ) -> CortexClientResult:
-    del call_verb_runtime
     workflow_id = "concept_induction_pass"
     settings = build_orch_concept_profile_settings(get_settings())
     consumer = "concept_induction_pass"
@@ -1118,8 +1249,22 @@ async def _execute_concept_induction_pass(
     persisted: list[str] = []
     synthesis_status: Dict[str, Any] | None = None
     if synthesize_requested and ok:
-        synthesis_body = _build_concept_induction_synthesis_body(details=concept_induction_details)
-        synthesis_draft = JournalEntryDraftV1(mode="manual", title="Concept Induction Review", body=synthesis_body)
+        grounding_payload = _concept_induction_grounding_payload(
+            details=concept_induction_details,
+            workflow_id=workflow_id,
+            resolved_backend=resolved_backend,
+        )
+        synthesis_draft = await _run_concept_induction_grounded_journal_synthesis(
+            call_verb_runtime=call_verb_runtime,
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=trace,
+            req=req,
+            workflow_id=workflow_id,
+            grounding_payload=grounding_payload,
+        )
         reviewed_refs = [
             f"{item.get('subject')}:{item.get('profile_id')}@{item.get('revision')}"
             for item in (profile_details or [])
@@ -1160,6 +1305,8 @@ async def _execute_concept_induction_pass(
                 ],
                 "repository_backend": resolved_backend,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "synthesis_mode": "brain_grounded",
+                "synthesis_prompt_version": "concept_induction_journal_grounded.v1",
             },
         }
     metadata["workflow"] = {

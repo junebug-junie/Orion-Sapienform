@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -42,6 +43,19 @@ ENGINEERING_TERMS = {
 ANALYSIS_TERMS = {"analyze", "analysis", "summarize", "summary", "extract", "classify", "intent"}
 COUNCIL_TERMS = {"argue both sides", "deliberate", "debate", "multi-perspective", "deep deliberation", "council"}
 INSTRUCTION_TERMS = {"how do", "how to", "instructions", "deploy", "guide", "tutorial", "setup", "walkthrough"}
+MENU_HINT_TERMS = {"options", "choose", "proceed", "deep dive", "axes", "first one", "second one", "third one"}
+TOPIC_FILLER_PREFIXES = ("hm ", "hmm ", "uh ", "um ", "okay ", "ok ", "sure ", "let's do ", "lets do ", "deep dive on ")
+ORDINAL_SELECTION_TERMS = {
+    "the first one",
+    "first one",
+    "that first one",
+    "the second one",
+    "second one",
+    "that second one",
+    "the third one",
+    "third one",
+    "that third one",
+}
 
 
 @dataclass(frozen=True)
@@ -66,6 +80,61 @@ class DecisionRouter:
         catalog = filter_allowed(catalog, allow_categories={"cognition"}, denylist_names=ORCH_INTERNAL_DENY)
         shortlist = rank_verbs_for_query(catalog, self._user_text(req), k=k)
         return shortlist
+
+    def _last_assistant_message(self, req: CortexClientRequest) -> str:
+        for msg in reversed(req.context.messages or []):
+            if str(getattr(msg, "role", "") or "").strip().lower() != "assistant":
+                continue
+            content = str(getattr(msg, "content", "") or "").strip()
+            if content:
+                return content
+        return ""
+
+    def _extract_menu_options(self, assistant_text: str) -> list[str]:
+        text = str(assistant_text or "")
+        options: set[str] = set()
+        # Prefer explicit parenthetical lists like "(Adaptive Learning, Action System, or Mesh Continuity)".
+        for segment in re.findall(r"\(([^)]{8,240})\)", text):
+            parts = re.split(r",|\bor\b|\band\b|/|\|", segment, flags=re.IGNORECASE)
+            for part in parts:
+                candidate = " ".join(part.strip().lower().split())
+                if len(candidate) >= 4 and len(candidate.split()) <= 5 and re.search(r"[a-z]", candidate):
+                    options.add(candidate)
+        # Also pick title-like bullet items.
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith(("-", "*", "•")):
+                continue
+            candidate = re.sub(r"^[\-\*\•]\s*", "", line)
+            candidate = re.split(r"[:(]", candidate, maxsplit=1)[0].strip().lower()
+            if len(candidate) >= 4 and len(candidate.split()) <= 6:
+                options.add(candidate)
+        return sorted(options)
+
+    def _looks_like_menu_turn(self, assistant_text: str) -> bool:
+        text = str(assistant_text or "").lower()
+        if not text:
+            return False
+        has_bullets = any(mark in text for mark in ("\n- ", "\n* ", "\n• "))
+        has_hint = any(term in text for term in MENU_HINT_TERMS)
+        return has_bullets and has_hint
+
+    def _looks_like_topic_selection_reply(self, user_text: str, menu_options: list[str]) -> bool:
+        text = " ".join(str(user_text or "").lower().split())
+        if not text or len(text) > 80:
+            return False
+        normalized = re.sub(r"^[^a-z0-9]+", "", text)
+        normalized = re.sub(r"^(hm+|uh+|um+)\b[\s,.:;-]*", "", normalized).strip()
+        for prefix in TOPIC_FILLER_PREFIXES:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):].strip()
+                break
+        if any(term in normalized for term in ORDINAL_SELECTION_TERMS):
+            return True
+        for option in menu_options:
+            if option and option in normalized:
+                return True
+        return False
 
     def heuristic_router(self, req: CortexClientRequest, *, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:
         text = self._user_text(req).lower()
@@ -103,6 +172,31 @@ class DecisionRouter:
         )
 
     async def route(self, req: CortexClientRequest, *, correlation_id: str, source: ServiceRef) -> RoutedRequest:
+        prior_assistant = self._last_assistant_message(req)
+        menu_options = self._extract_menu_options(prior_assistant)
+        if self._looks_like_menu_turn(prior_assistant) and self._looks_like_topic_selection_reply(self._user_text(req), menu_options):
+            decision = AutoDepthDecisionV1(
+                execution_depth=0,
+                primary_verb=None,
+                confidence=0.99,
+                reason="heuristic:menu_topic_selection_followup",
+                source="heuristic",
+            )
+            rewritten = req.model_copy(deep=True)
+            rewritten.mode = "brain"
+            rewritten.verb = "chat_general"
+            rewritten.options["execution_depth"] = 0
+            rewritten.options["route_intent"] = "none"
+            output_mode_decision = classify_output_mode(self._user_text(req))
+            rewritten.options["output_mode"] = output_mode_decision.output_mode
+            rewritten.options["response_profile"] = output_mode_decision.response_profile
+            rewritten.options["output_mode_decision"] = output_mode_decision.model_dump()
+            rewritten.options["menu_topic_selection"] = {
+                "enabled": True,
+                "matched_options": menu_options[:6],
+            }
+            return RoutedRequest(request=rewritten, decision=decision, output_mode_decision=output_mode_decision)
+
         shortlist = self.build_shortlist(req)
         if self.settings.auto_router_llm_enabled:
             try:

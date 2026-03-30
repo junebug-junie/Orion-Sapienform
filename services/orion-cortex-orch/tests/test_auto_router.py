@@ -143,3 +143,81 @@ def test_chat_general_personality_file_survives_plan_request_serialization():
     serialized = plan_req.model_dump(mode="json")
     restored = PlanExecutionRequest.model_validate(serialized)
     assert restored.plan.metadata.get("personality_file") == "orion/cognition/personality/orion_identity.yaml"
+
+
+def test_auto_router_treats_short_menu_followup_as_topic_selection_chat_general():
+    router = DecisionRouter(_FakeBus())
+    assistant_menu = (
+        "Cool — let's align on a path. Here's how we might proceed:\n"
+        "- Deep dive into one of the three axes (Adaptive Learning, Action System, or Mesh Continuity)\n"
+        "- Explore a specific use case\n"
+        "- Shift to a new focus"
+    )
+    req = CortexClientRequest.model_validate(
+        {
+            "mode": "auto",
+            "route_intent": "auto",
+            "packs": [],
+            "options": {"route_intent": "auto"},
+            "recall": {"enabled": True, "required": False, "mode": "hybrid", "profile": None},
+            "context": {
+                "messages": [
+                    {"role": "assistant", "content": assistant_menu},
+                    {"role": "user", "content": "hm mesh continuity"},
+                ],
+                "raw_user_text": "hm mesh continuity",
+                "user_message": "hm mesh continuity",
+                "metadata": {},
+            },
+        }
+    )
+
+    routed = asyncio.run(router.route(req, correlation_id="c-topic-followup", source=ServiceRef(name="orch", version="0", node="n")))
+
+    assert routed.decision.execution_depth == 0
+    assert routed.decision.reason == "heuristic:menu_topic_selection_followup"
+    assert routed.request.mode == "brain"
+    assert routed.request.verb == "chat_general"
+    assert routed.request.options["menu_topic_selection"]["enabled"] is True
+
+
+def test_auto_router_menu_followup_variants_preserve_chat_lane():
+    router = DecisionRouter(_FakeBus())
+    assistant_menu = (
+        "Cool — let's align on a path. Here's how we might proceed:\n"
+        "- Deep dive into one of the three axes (Adaptive Learning, Action System, or Mesh Continuity)\n"
+        "- Explore a specific use case\n"
+        "- Shift to a new focus"
+    )
+    variants = [
+        "mesh continuity",
+        "hmm, mesh continuity",
+        "let's do mesh continuity",
+        "adaptive learning",
+        "action system",
+        "the first one",
+        "that second one",
+        "sure, deep dive on mesh continuity",
+    ]
+    for idx, user_text in enumerate(variants):
+        req = CortexClientRequest.model_validate(
+            {
+                "mode": "auto",
+                "route_intent": "auto",
+                "packs": [],
+                "options": {"route_intent": "auto"},
+                "recall": {"enabled": True, "required": False, "mode": "hybrid", "profile": None},
+                "context": {
+                    "messages": [
+                        {"role": "assistant", "content": assistant_menu},
+                        {"role": "user", "content": user_text},
+                    ],
+                    "raw_user_text": user_text,
+                    "user_message": user_text,
+                    "metadata": {},
+                },
+            }
+        )
+        routed = asyncio.run(router.route(req, correlation_id=f"c-topic-followup-{idx}", source=ServiceRef(name="orch", version="0", node="n")))
+        assert routed.request.verb == "chat_general"
+        assert routed.decision.reason == "heuristic:menu_topic_selection_followup"

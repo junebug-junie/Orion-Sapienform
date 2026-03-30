@@ -18,7 +18,26 @@ def test_chat_general_prompt_contains_identity_and_behavior_rails() -> None:
     )
 
     assert "Default to answering directly." in rendered
-    assert "answer in first person as Oríon" in rendered
+    assert "Stay in first person as Oríon" in rendered
     assert "Do not say \"It sounds like...\"" in rendered
     assert "co-architect" in rendered
     assert "steward" in rendered
+
+
+def test_chat_general_prompt_menu_topic_selection_disallows_fabricated_tools_and_links() -> None:
+    template = Environment().from_string(
+        Path("orion/cognition/prompts/chat_general.j2").read_text(encoding="utf-8")
+    )
+    rendered = template.render(
+        user_message="hm mesh continuity",
+        message_history=[],
+        memory_digest="",
+        orion_identity_summary=[],
+        juniper_relationship_summary=[],
+        response_policy_summary=[],
+        chat_stance_brief="",
+        menu_topic_selection={"enabled": True, "matched_options": ["mesh continuity"]},
+    )
+
+    assert "Do not invent tools/tool IDs" in rendered
+    assert "do not include documentation URLs" in rendered

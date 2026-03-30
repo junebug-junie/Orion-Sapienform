@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, Iterable, List
 
+from orion.autonomy.summary import summarize_autonomy_state
+from orion.autonomy.repository import SUBJECT_BINDINGS, build_autonomy_repository
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
 
@@ -64,6 +67,26 @@ _LITERAL_TO_COMPACT = (
 )
 
 logger = logging.getLogger("orion.cortex.exec.chat_stance")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 def _compact(value: Any, *, limit: int = 220) -> str:
@@ -403,6 +426,73 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
+def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    endpoint = os.getenv("GRAPHDB_QUERY_ENDPOINT") or os.getenv("GRAPHDB_URL")
+    if endpoint and endpoint.rstrip("/").endswith("/repositories"):
+        repo = os.getenv("GRAPHDB_REPO", "collapse").strip()
+        endpoint = f"{endpoint.rstrip('/')}/{repo}"
+    elif endpoint and "/repositories/" not in endpoint:
+        repo = os.getenv("GRAPHDB_REPO", "collapse").strip()
+        endpoint = f"{endpoint.rstrip('/')}/repositories/{repo}"
+
+    backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
+    if backend not in {"graph", "local", "shadow"}:
+        backend = "graph"
+
+    repository = build_autonomy_repository(
+        backend=backend,
+        endpoint=endpoint,
+        timeout_sec=_env_float("GRAPHDB_TIMEOUT_SEC", 4.5),
+        user=os.getenv("GRAPHDB_USER") or None,
+        password=os.getenv("GRAPHDB_PASS") or None,
+        goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
+    )
+    subjects = ["orion", "relationship", "juniper"]
+    observer = {
+        "consumer": "chat_stance",
+        "correlation_id": str(ctx.get("correlation_id") or ctx.get("trace_id") or ""),
+        "session_id": str(ctx.get("session_id") or ""),
+    }
+    lookups = repository.list_latest(subjects, observer=observer)
+    by_subject = {lookup.subject: lookup for lookup in lookups}
+    preferred = by_subject.get("orion")
+    if preferred is None or preferred.availability != "available":
+        preferred = by_subject.get("relationship")
+    selected_subject = preferred.subject if preferred is not None else None
+
+    summary = summarize_autonomy_state(preferred.state if preferred and preferred.availability == "available" else None)
+    debug = {
+        subject: {
+            "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
+            "present": bool(by_subject.get(subject) and by_subject.get(subject).state is not None),
+            "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
+        }
+        for subject in SUBJECT_BINDINGS
+    }
+    repo_status = repository.status()
+    logger.info(
+        "chat_autonomy_repository_status %s",
+        json.dumps(
+            {
+                "backend": repo_status.backend,
+                "source_path": repo_status.source_path,
+                "source_available": repo_status.source_available,
+                "subjects_requested": subjects,
+                "states_returned": sum(1 for item in lookups if item.availability == "available"),
+                "selected_subject": selected_subject,
+                "debug": debug,
+            },
+            sort_keys=True,
+        ),
+    )
+    return {
+        "lookups": lookups,
+        "state": preferred.state if preferred and preferred.availability == "available" else None,
+        "summary": summary,
+        "debug": debug,
+    }
+
+
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(identity)
@@ -413,6 +503,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     social["hazards"] = _unique((social.get("hazards") or []) + (social_bridge.get("hazards") or []), limit=8)
     social["relationship_facets"] = _unique((social.get("relationship_facets") or []) + (social_bridge.get("framing") or []), limit=8)
     reflective = _reflective_summary(ctx)
+    autonomy = _load_autonomy_state(ctx)
 
     inputs = {
         "identity": {
@@ -424,6 +515,11 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "social_bridge": social_bridge,
         "social": social,
         "reflective": reflective,
+        "autonomy": {
+            "state": autonomy["state"].model_dump(mode="json") if autonomy["state"] is not None else None,
+            "summary": autonomy["summary"].model_dump(mode="json"),
+            "debug": autonomy["debug"],
+        },
     }
 
     ctx["chat_stance_inputs"] = inputs
@@ -431,6 +527,9 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ctx["chat_social_summary"] = social
     ctx["chat_social_bridge_summary"] = social_bridge
     ctx["chat_reflective_summary"] = reflective
+    ctx["chat_autonomy_state"] = autonomy["state"].model_dump(mode="json") if autonomy["state"] is not None else None
+    ctx["chat_autonomy_summary"] = autonomy["summary"].model_dump(mode="json")
+    ctx["chat_autonomy_debug"] = autonomy["debug"]
     return inputs
 
 
@@ -451,6 +550,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     social = ctx.get("chat_social_summary") if isinstance(ctx.get("chat_social_summary"), dict) else {}
     social_bridge = ctx.get("chat_social_bridge_summary") if isinstance(ctx.get("chat_social_bridge_summary"), dict) else {}
     reflective = ctx.get("chat_reflective_summary") if isinstance(ctx.get("chat_reflective_summary"), dict) else {}
+    autonomy_summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
     identity_turn = _is_identity_sensitive_turn(user_message)
     social_posture = list(social.get("social_posture") or [])
     bridge_posture = list(social_bridge.get("posture") or [])
@@ -483,6 +583,9 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
             "avoid_generic_assistant_tone",
             "maintain_grounded_specificity",
         ]
+    autonomy_hint = _compact(autonomy_summary.get("stance_hint") or "", limit=90)
+    if autonomy_hint and task_mode != "triage":
+        response_priorities = _unique(response_priorities + [f"autonomy:{autonomy_hint}"], limit=8)
     response_hazards = [
         "generic assistant self-description",
         "describing Juniper as just the user",
@@ -491,6 +594,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     ]
     if task_mode == "triage":
         response_hazards.extend(["self_intro_on_operational_turn", "relationship_label_recital_during_triage"])
+    response_hazards = _unique(response_hazards + list(autonomy_summary.get("response_hazards") or []), limit=8)
     answer_strategy = (
         "DirectIdentityAnswer"
         if identity_turn

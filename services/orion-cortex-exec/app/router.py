@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
-from .executor import call_step_services, run_recall_step
+from .executor import call_step_services, prepare_brain_reply_context, run_recall_step
 from .recall_utils import (
     delivery_safe_recall_decision,
     has_inline_recall,
@@ -296,6 +296,7 @@ class PlanRunner:
             ctx["diagnostic"] = True
 
         ctx["verb"] = plan.verb_name
+        prepare_brain_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")
         if existing_scope and existing_scope != correlation_id:
             logger.warning(

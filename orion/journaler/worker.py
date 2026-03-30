@@ -176,6 +176,7 @@ def build_compose_request(
 
 
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
 
 
 def _try_parse_object(text: str) -> dict[str, Any] | None:
@@ -203,9 +204,31 @@ def _try_parse_object(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _parse_journal_draft_json(final_text: str) -> dict[str, Any]:
+def _sanitize_journal_draft_text(final_text: str) -> tuple[str, dict[str, Any]]:
+    original = str(final_text or "")
+    raw = original.strip()
+    think_tags_detected = "<think" in raw.lower()
+    stripped = _THINK_BLOCK_RE.sub("", raw).strip()
+    think_block_stripped = stripped != raw
+    object_extraction_attempted = False
+    if stripped and not stripped.lstrip().startswith("{"):
+        first_object = stripped.find("{")
+        if first_object > 0:
+            stripped = stripped[first_object:].strip()
+            object_extraction_attempted = True
+    diagnostics = {
+        "raw_output_len": len(original),
+        "think_tags_detected": think_tags_detected,
+        "think_block_stripped": think_block_stripped,
+        "object_extraction_attempted": object_extraction_attempted,
+    }
+    return stripped, diagnostics
+
+
+def _parse_journal_draft_json(final_text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     attempts: list[str] = []
-    base = (final_text or "").strip()
+    sanitized, diagnostics = _sanitize_journal_draft_text(final_text)
+    base = sanitized.strip()
     attempts.append(base)
     for match in _FENCED_JSON_RE.finditer(base):
         fenced = (match.group(1) or "").strip()
@@ -215,17 +238,29 @@ def _parse_journal_draft_json(final_text: str) -> dict[str, Any]:
     for text in attempts:
         parsed = _try_parse_object(text)
         if isinstance(parsed, dict):
-            return parsed
+            return parsed, diagnostics
 
-    raise ValueError("journal_draft_parse_failed")
+    raise ValueError(f"journal_draft_parse_failed:{json.dumps(diagnostics, default=str, sort_keys=True)}")
+
+
+def _draft_text_candidate(payload: dict[str, Any]) -> str:
+    for key in ("final_text", "content", "text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    raise ValueError("cortex_orch_missing_final_text")
 
 
 def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
-    final_text = payload.get("final_text")
-    if not isinstance(final_text, str) or not final_text.strip():
-        raise ValueError("cortex_orch_missing_final_text")
+    final_text = _draft_text_candidate(payload)
     try:
-        parsed = _parse_journal_draft_json(final_text)
+        parsed, parse_diag = _parse_journal_draft_json(final_text)
+        if parse_diag.get("think_block_stripped") or parse_diag.get("object_extraction_attempted"):
+            logger.info(
+                "journal_draft_parse_recovered diagnostics=%s final_text_preview=%r",
+                parse_diag,
+                final_text[:280],
+            )
         return JournalEntryDraftV1.model_validate(parsed)
     except Exception as exc:
         parse_context = {
@@ -234,11 +269,15 @@ def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
             "correlation_id": payload.get("correlation_id"),
             "verb": payload.get("verb"),
             "status": payload.get("status"),
+            "raw_output_len": len(final_text),
+            "think_tags_detected": "<think" in final_text.lower(),
+            "think_block_stripped": bool(_THINK_BLOCK_RE.search(final_text)),
+            "object_extraction_attempted": "{" in final_text and not final_text.strip().startswith("{"),
         }
         logger.error(
             "journal_draft_parse_failed context=%s final_text_preview=%r",
             parse_context,
-            final_text[:4000],
+            final_text[:280],
         )
         raise ValueError(f"journal_draft_parse_failed:{json.dumps(parse_context, default=str, sort_keys=True)}") from exc
 

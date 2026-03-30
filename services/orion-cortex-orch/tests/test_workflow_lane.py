@@ -750,15 +750,17 @@ def test_concept_induction_regression_synth_then_journal_emit(monkeypatch, tmp_p
     req = _req("concept_induction_pass")
     req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
     bus = DummyBus()
-    seen = {"verb": None}
+    seen = {"verb": None, "options": None}
 
     async def _runtime(*_args, **kwargs):
         seen["verb"] = kwargs["client_request"].verb
+        seen["options"] = dict(kwargs["client_request"].options or {})
         return DummyVerbResult(
             payload={
                 "result": {
                     "status": "success",
-                    "final_text": json.dumps(
+                    "final_text": "<think>I should reason first.</think>\n"
+                    + json.dumps(
                         {
                             "mode": "manual",
                             "title": "Review",
@@ -785,6 +787,8 @@ def test_concept_induction_regression_synth_then_journal_emit(monkeypatch, tmp_p
     assert result.metadata["workflow"]["synthesis_to_journal"]["synthesis_completed"] is True
     assert result.metadata["workflow"]["synthesis_to_journal"]["journal_write_emitted"] is True
     assert seen["verb"] == "concept_induction_journal_synthesize"
+    assert seen["options"]["response_format"] == {"type": "json_object"}
+    assert seen["options"]["return_json"] is True
     assert any(channel == "orion:journal:write" for channel, _ in bus.published)
     assert any('"stage": "journal_write_published"' in rec.message for rec in caplog.records)
 

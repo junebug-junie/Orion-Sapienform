@@ -165,6 +165,29 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         self.assertEqual(draft.mode, "manual")
         self.assertEqual(draft.body, "Kept going.")
 
+    def test_draft_from_cortex_result_strips_think_block_before_json(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": '<think>internal reasoning</think>{"mode":"manual","title":"Arc","body":"Kept going."}',
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.mode, "manual")
+        self.assertEqual(draft.title, "Arc")
+
+    def test_draft_from_cortex_result_rejects_pure_reasoning_without_json(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "verb": "concept_induction_journal_synthesize",
+            "correlation_id": "corr-reasoning-only",
+            "final_text": "<think>reasoning only with no object</think>",
+        }
+        with self.assertRaises(ValueError) as ctx:
+            draft_from_cortex_result(payload)
+        self.assertIn("journal_draft_parse_failed", str(ctx.exception))
+        self.assertIn("corr-reasoning-only", str(ctx.exception))
+
     def test_draft_from_cortex_result_raises_structured_parse_error(self):
         payload = {
             "ok": True,

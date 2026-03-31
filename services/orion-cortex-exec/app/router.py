@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Dict, List
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -47,18 +48,94 @@ def _preview_text(value: str | None, limit: int = 220) -> str:
     return repr(value[:limit])
 
 
-def _extract_final_text(steps: List[StepExecutionResult]) -> str:
+_THINK_BLOCK_RE = re.compile(r"<think>\s*.*?\s*</think>", flags=re.IGNORECASE | re.DOTALL)
+
+
+def _structured_output_expected(verb_name: str | None) -> bool:
+    return str(verb_name or "").strip().lower() in {
+        "journal.compose",
+        "concept_induction_journal_synthesize",
+    }
+
+
+def _strip_think_content(text: str) -> tuple[str, bool, bool]:
+    raw = str(text or "")
+    has_think_tags = "<think>" in raw.lower()
+    if not has_think_tags:
+        return raw.strip(), False, False
+    stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
+    if "<think>" in stripped.lower():
+        stripped = stripped[: stripped.lower().find("<think>")].strip()
+    return stripped, True, stripped != raw.strip()
+
+
+def _extract_first_json_object_text(text: str) -> str | None:
+    candidate = (text or "").strip()
+    if not candidate:
+        return None
+    start = candidate.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(candidate)):
+        ch = candidate[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return candidate[start : idx + 1]
+    return None
+
+
+def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | None) -> tuple[str, Dict[str, Any]]:
+    diagnostics: Dict[str, Any] = {
+        "source_field": None,
+        "source_service": None,
+        "think_tags_detected": False,
+        "think_stripping_applied": False,
+        "structured_output_sanitized": False,
+        "structured_output_rejected": False,
+        "result_len": 0,
+    }
+    structured_expected = _structured_output_expected(verb_name)
     for step in reversed(steps):
-        for payload in (step.result or {}).values():
+        for service_name, payload in (step.result or {}).items():
             if not isinstance(payload, dict):
                 continue
-            text = payload.get("content") or payload.get("text")
-            if text:
-                return str(text)
-            raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
-            if raw and raw.get("text"):
-                return str(raw.get("text"))
-    return ""
+            for field in ("content", "text"):
+                candidate = payload.get(field)
+                if not isinstance(candidate, str) or not candidate.strip():
+                    continue
+                cleaned, has_think_tags, think_stripped = _strip_think_content(candidate)
+                diagnostics["source_field"] = field
+                diagnostics["source_service"] = service_name
+                diagnostics["think_tags_detected"] = bool(has_think_tags)
+                diagnostics["think_stripping_applied"] = bool(think_stripped)
+                if structured_expected:
+                    json_text = _extract_first_json_object_text(cleaned)
+                    diagnostics["structured_output_sanitized"] = bool(json_text and json_text != cleaned)
+                    if json_text:
+                        diagnostics["result_len"] = len(json_text)
+                        return json_text, diagnostics
+                    diagnostics["structured_output_rejected"] = True
+                    diagnostics["result_len"] = 0
+                    return "", diagnostics
+                diagnostics["result_len"] = len(cleaned)
+                return cleaned, diagnostics
+    return "", diagnostics
 
 
 def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -468,7 +545,19 @@ class PlanRunner:
                 overall_status = "partial" if len(step_results) > 1 else "fail"
                 break
 
-        final_text = _extract_final_text(step_results)
+        final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
+        logger.info(
+            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_stripping_applied=%s structured_output_sanitized=%s structured_output_rejected=%s result_len=%s",
+            correlation_id,
+            plan.verb_name,
+            final_text_diag.get("source_service"),
+            final_text_diag.get("source_field"),
+            final_text_diag.get("think_tags_detected"),
+            final_text_diag.get("think_stripping_applied"),
+            final_text_diag.get("structured_output_sanitized"),
+            final_text_diag.get("structured_output_rejected"),
+            final_text_diag.get("result_len"),
+        )
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
 

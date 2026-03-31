@@ -136,74 +136,67 @@ profiles:
         - file: Qwen2.5-32B-Instruct-abliterated.Q6_K.gguf
 
 
+  qwen3-30b-a3b-q4km-atlas-agent-64k-think:
+    display_name: "Qwen3 30B A3B – Q4_K_M (llama.cpp, Atlas Agent Lane, 2x V100 32GB, 64k Think)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3-30b-a3b-q4_k_m"
 
-qwen3-30b-a3b-q4km-atlas-agent-64k-think:
-  display_name: "Qwen3 30B A3B – Q4_K_M (llama.cpp, Atlas Agent Lane, 2x V100 32GB, 64k Think)"
-  task_type: chat
-  backend: llamacpp
-  model_id: "qwen3-30b-a3b-q4_k_m"
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
 
-  supports_tools: true
-  supports_embeddings: false
-  supports_vision: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [1, 2]
+      max_model_len: 65536
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
 
-  gpu:
-    num_gpus: 2
-    tensor_parallel_size: 1
-    device_ids: [1, 2]
-    max_model_len: 65536
-    max_batch_tokens: 1024
-    max_concurrent_requests: 1
-    gpu_memory_fraction: 0.90
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "Qwen/Qwen3-30B-A3B-GGUF"
+      hf_filename: "Qwen3-30B-A3B-Q4_K_M.gguf"
+      host: "0.0.0.0"
+      port: 8080
 
-  llamacpp:
-    model_root: "/models/gguf"
-    hf_repo_id: "Qwen/Qwen3-30B-A3B-GGUF"
-    hf_filename: "Qwen3-30B-A3B-Q4_K_M.gguf"
-    host: "0.0.0.0"
-    port: 8080
+      ctx_size: 65536
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
 
-    ctx_size: 65536
-    n_gpu_layers: 99
-    threads: 16
-    n_parallel: 1
-    batch_size: 1024
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        enable_thinking: true
 
-    # Qwen3 thinking + long-context defaults
-    reasoning: "on"
-    reasoning_format: "deepseek"
-    chat_template_kwargs:
-      enable_thinking: true
+      rope_scaling: "yarn"
+      rope_scale: 2
+      yarn_orig_ctx: 40960
+      no_context_shift: true
 
-    # long context
-    rope_scaling: "yarn"
-    rope_scale: 2
-    yarn_orig_ctx: 32768
-    no_context_shift: true
+      split_mode: "row"
+      tensor_split: "1,1"
+      flash_attn: "on"
 
-    # multi-GPU / perf
-    split_mode: "row"
-    tensor_split: "1,1"
-    flash_attn: "on"
+      temperature: 0.6
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 1.5
 
-    # Qwen-recommended sampling for thinking mode
-    temperature: 0.6
-    top_k: 20
-    top_p: 0.95
-    min_p: 0.0
-    presence_penalty: 1.5
+      n_predict: 16384
 
-    # long answers by default
-    n_predict: 16384
-
-  notes: |
-    Sweet-spot profile for 2x V100 32GB:
-    - 64k context via YaRN factor 2
-    - thinking kept on
-    - deepseek reasoning parsing keeps thoughts structured instead of dumping raw <think> into visible content
-    - no context shift avoids rotating-context eviction behavior
-    - single-lane / single-parallel for stable long-context reasoning
-
+    notes: |
+      Sweet-spot profile for 2x V100 32GB:
+      - 64k context via YaRN factor 2
+      - thinking kept on
+      - deepseek reasoning parsing keeps thoughts structured instead of dumping raw <think> into visible content
+      - no context shift avoids rotating-context eviction behavior
+      - single-lane / single-parallel for stable long-context reasoning
 
 
   # ─────────────────────────────────────────────

@@ -1274,16 +1274,7 @@ async def call_step_services(
         )
         ctx["prior_step_results"] = list(scoped_list)
 
-    _inject_identity_context(ctx)
-    if step.verb_name == "chat_general":
-        stance_inputs = build_chat_stance_inputs(ctx)
-        logger.info(
-            "chat_stance_inputs_ready has_identity_keys=%s orion_count=%s juniper_count=%s policy_count=%s",
-            sorted(list((stance_inputs.get("identity") or {}).keys())),
-            len((stance_inputs.get("identity") or {}).get("orion") or []),
-            len((stance_inputs.get("identity") or {}).get("juniper") or []),
-            len((stance_inputs.get("identity") or {}).get("response_policy") or []),
-        )
+    prepare_brain_reply_context(ctx)
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
@@ -2408,3 +2399,27 @@ async def call_step_services(
         node=settings.node_name,
         logs=logs,
     )
+
+
+def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:
+    """
+    Canonical preparation hook for brain-lane reply context.
+    Ensures identity and stance/autonomy inputs are available for downstream reply verbs,
+    without coupling autonomy hydration to a single legacy verb name.
+    """
+    mode = str(ctx.get("mode") or "").strip().lower()
+    if mode != "brain":
+        return None
+    if not force_refresh and isinstance(ctx.get("chat_stance_inputs"), dict):
+        return ctx.get("chat_stance_inputs")
+
+    _inject_identity_context(ctx)
+    stance_inputs = build_chat_stance_inputs(ctx)
+    logger.info(
+        "chat_stance_inputs_ready has_identity_keys=%s orion_count=%s juniper_count=%s policy_count=%s",
+        sorted(list((stance_inputs.get("identity") or {}).keys())),
+        len((stance_inputs.get("identity") or {}).get("orion") or []),
+        len((stance_inputs.get("identity") or {}).get("juniper") or []),
+        len((stance_inputs.get("identity") or {}).get("response_policy") or []),
+    )
+    return stance_inputs

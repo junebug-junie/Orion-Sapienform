@@ -6,10 +6,13 @@ import logging
 import os
 import asyncio
 import json
+import re
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from functools import lru_cache
+from typing import Dict, List, Optional, Set, Tuple
 
 if os.environ.get("CUDA_VISIBLE_DEVICES_OVERRIDE"):
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES_OVERRIDE"]
@@ -27,6 +30,7 @@ logger = logging.getLogger("llamacpp-host")
 
 
 BOOT_ID = str(uuid.uuid4())
+_LLAMA_FLAG_PATTERN = re.compile(r"--([a-z0-9][a-z0-9-]*)")
 
 
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
@@ -117,6 +121,33 @@ def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str
     return model_path, cfg, env
 
 
+@lru_cache(maxsize=4)
+def _get_supported_llama_server_flags(server_bin: str) -> Optional[Set[str]]:
+    """
+    Detect supported CLI flags from `llama-server --help`.
+    Returns None when capability probing fails so caller can preserve legacy behavior.
+    """
+    try:
+        result = subprocess.run(
+            [server_bin, "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Could not inspect llama-server flags via --help: %s", exc)
+        return None
+
+    if result.returncode not in (0, 1):
+        logger.warning("llama-server --help returned unexpected code=%s", result.returncode)
+        return None
+
+    help_text = f"{result.stdout}\n{result.stderr}"
+    flags = {f"--{match.group(1)}" for match in _LLAMA_FLAG_PATTERN.finditer(help_text)}
+    return flags or None
+
+
 def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict[str, str]]:
     model_path, cfg, env = _resolve_runtime(profile)
 
@@ -148,40 +179,50 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         str(cfg.batch_size),
     ]
 
+    supported_flags = _get_supported_llama_server_flags(server_bin)
+
+    def append_flag(flag: str, value: Optional[str] = None) -> None:
+        if supported_flags is not None and flag not in supported_flags:
+            logger.warning("Skipping unsupported llama-server option for this binary: %s", flag)
+            return
+        cmd.append(flag)
+        if value is not None:
+            cmd.append(value)
+
     if cfg.reasoning is not None:
-        cmd.extend(["--reasoning", cfg.reasoning])
+        append_flag("--reasoning", cfg.reasoning)
     if cfg.reasoning_format is not None:
-        cmd.extend(["--reasoning-format", cfg.reasoning_format])
+        append_flag("--reasoning-format", cfg.reasoning_format)
     if cfg.chat_template_kwargs is not None:
-        cmd.extend(["--chat-template-kwargs", json.dumps(cfg.chat_template_kwargs, separators=(",", ":"))])
+        append_flag("--chat-template-kwargs", json.dumps(cfg.chat_template_kwargs, separators=(",", ":")))
 
     if cfg.flash_attn is not None:
-        cmd.extend(["--flash-attn", cfg.flash_attn])
+        append_flag("--flash-attn", cfg.flash_attn)
     if cfg.rope_scaling is not None:
-        cmd.extend(["--rope-scaling", cfg.rope_scaling])
+        append_flag("--rope-scaling", cfg.rope_scaling)
     if cfg.rope_scale is not None:
-        cmd.extend(["--rope-scale", str(cfg.rope_scale)])
+        append_flag("--rope-scale", str(cfg.rope_scale))
     if cfg.yarn_orig_ctx is not None:
-        cmd.extend(["--yarn-orig-ctx", str(cfg.yarn_orig_ctx)])
+        append_flag("--yarn-orig-ctx", str(cfg.yarn_orig_ctx))
     if cfg.no_context_shift is True:
-        cmd.append("--no-context-shift")
+        append_flag("--no-context-shift")
     if cfg.split_mode is not None:
-        cmd.extend(["--split-mode", cfg.split_mode])
+        append_flag("--split-mode", cfg.split_mode)
     if cfg.tensor_split is not None:
-        cmd.extend(["--tensor-split", cfg.tensor_split])
+        append_flag("--tensor-split", cfg.tensor_split)
 
     if cfg.n_predict is not None:
-        cmd.extend(["--n-predict", str(cfg.n_predict)])
+        append_flag("--n-predict", str(cfg.n_predict))
     if cfg.temperature is not None:
-        cmd.extend(["--temp", str(cfg.temperature)])
+        append_flag("--temp", str(cfg.temperature))
     if cfg.top_k is not None:
-        cmd.extend(["--top-k", str(cfg.top_k)])
+        append_flag("--top-k", str(cfg.top_k))
     if cfg.top_p is not None:
-        cmd.extend(["--top-p", str(cfg.top_p)])
+        append_flag("--top-p", str(cfg.top_p))
     if cfg.min_p is not None:
-        cmd.extend(["--min-p", str(cfg.min_p)])
+        append_flag("--min-p", str(cfg.min_p))
     if cfg.presence_penalty is not None:
-        cmd.extend(["--presence-penalty", str(cfg.presence_penalty)])
+        append_flag("--presence-penalty", str(cfg.presence_penalty))
 
     return cmd, env
 

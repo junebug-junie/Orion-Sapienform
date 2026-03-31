@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -146,6 +147,41 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         "--batch-size",
         str(cfg.batch_size),
     ]
+
+    if cfg.reasoning is not None:
+        cmd.extend(["--reasoning", cfg.reasoning])
+    if cfg.reasoning_format is not None:
+        cmd.extend(["--reasoning-format", cfg.reasoning_format])
+    if cfg.chat_template_kwargs is not None:
+        cmd.extend(["--chat-template-kwargs", json.dumps(cfg.chat_template_kwargs, separators=(",", ":"))])
+
+    if cfg.flash_attn is not None:
+        cmd.extend(["--flash-attn", cfg.flash_attn])
+    if cfg.rope_scaling is not None:
+        cmd.extend(["--rope-scaling", cfg.rope_scaling])
+    if cfg.rope_scale is not None:
+        cmd.extend(["--rope-scale", str(cfg.rope_scale)])
+    if cfg.yarn_orig_ctx is not None:
+        cmd.extend(["--yarn-orig-ctx", str(cfg.yarn_orig_ctx)])
+    if cfg.no_context_shift is True:
+        cmd.append("--no-context-shift")
+    if cfg.split_mode is not None:
+        cmd.extend(["--split-mode", cfg.split_mode])
+    if cfg.tensor_split is not None:
+        cmd.extend(["--tensor-split", cfg.tensor_split])
+
+    if cfg.n_predict is not None:
+        cmd.extend(["--n-predict", str(cfg.n_predict)])
+    if cfg.temperature is not None:
+        cmd.extend(["--temp", str(cfg.temperature)])
+    if cfg.top_k is not None:
+        cmd.extend(["--top-k", str(cfg.top_k)])
+    if cfg.top_p is not None:
+        cmd.extend(["--top-p", str(cfg.top_p)])
+    if cfg.min_p is not None:
+        cmd.extend(["--min-p", str(cfg.min_p)])
+    if cfg.presence_penalty is not None:
+        cmd.extend(["--presence-penalty", str(cfg.presence_penalty)])
 
     return cmd, env
 

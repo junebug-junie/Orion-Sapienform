@@ -31,6 +31,7 @@ logger = logging.getLogger("llamacpp-host")
 
 BOOT_ID = str(uuid.uuid4())
 _LLAMA_FLAG_PATTERN = re.compile(r"--([a-z0-9][a-z0-9-]*)")
+_LLAMA_BUILD_PATTERN = re.compile(r"version:\s*(\d+)")
 
 
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
@@ -148,6 +149,35 @@ def _get_supported_llama_server_flags(server_bin: str) -> Optional[Set[str]]:
     return flags or None
 
 
+@lru_cache(maxsize=4)
+def _get_llama_server_build(server_bin: str) -> Optional[int]:
+    """
+    Detect llama.cpp numeric build via `llama-server --version`.
+    Returns None if probing fails.
+    """
+    try:
+        result = subprocess.run(
+            [server_bin, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Could not inspect llama-server build via --version: %s", exc)
+        return None
+
+    if result.returncode != 0:
+        logger.warning("llama-server --version returned unexpected code=%s", result.returncode)
+        return None
+
+    version_text = f"{result.stdout}\n{result.stderr}"
+    match = _LLAMA_BUILD_PATTERN.search(version_text)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict[str, str]]:
     model_path, cfg, env = _resolve_runtime(profile)
 
@@ -180,6 +210,8 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
     ]
 
     supported_flags = _get_supported_llama_server_flags(server_bin)
+    detected_build = _get_llama_server_build(server_bin)
+    is_b5332_compatible = detected_build is not None and detected_build <= 5332
 
     def append_flag(flag: str, value: Optional[str] = None) -> None:
         if supported_flags is not None and flag not in supported_flags:
@@ -189,15 +221,39 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         if value is not None:
             cmd.append(value)
 
+    reasoning_format_emitted = False
     if cfg.reasoning is not None:
-        append_flag("--reasoning", cfg.reasoning)
+        if is_b5332_compatible:
+            logger.info("Skipping --reasoning for llama.cpp build %s (not supported)", detected_build)
+        else:
+            append_flag("--reasoning", cfg.reasoning)
     if cfg.reasoning_format is not None:
+        append_flag("--jinja")
         append_flag("--reasoning-format", cfg.reasoning_format)
-    if cfg.chat_template_kwargs is not None:
+        reasoning_format_emitted = "--reasoning-format" in cmd
+    if cfg.chat_template_kwargs is not None and not is_b5332_compatible:
         append_flag("--chat-template-kwargs", json.dumps(cfg.chat_template_kwargs, separators=(",", ":")))
+    elif cfg.chat_template_kwargs is not None and is_b5332_compatible:
+        logger.info(
+            "Skipping --chat-template-kwargs for llama.cpp build %s (not documented/supported)",
+            detected_build,
+        )
+
+    if reasoning_format_emitted and "--jinja" not in cmd:
+        logger.warning("--reasoning-format requested but --jinja could not be emitted")
 
     if cfg.flash_attn is not None:
-        append_flag("--flash-attn", cfg.flash_attn)
+        if is_b5332_compatible:
+            if cfg.flash_attn == "on":
+                append_flag("--flash-attn")
+            elif cfg.flash_attn != "off":
+                logger.warning(
+                    "Skipping --flash-attn value '%s' for llama.cpp build %s; build expects bare switch",
+                    cfg.flash_attn,
+                    detected_build,
+                )
+        else:
+            append_flag("--flash-attn", cfg.flash_attn)
     if cfg.rope_scaling is not None:
         append_flag("--rope-scaling", cfg.rope_scaling)
     if cfg.rope_scale is not None:
@@ -223,6 +279,8 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         append_flag("--min-p", str(cfg.min_p))
     if cfg.presence_penalty is not None:
         append_flag("--presence-penalty", str(cfg.presence_penalty))
+
+    logger.info("Effective llama-server argv: %s", " ".join(cmd))
 
     return cmd, env
 

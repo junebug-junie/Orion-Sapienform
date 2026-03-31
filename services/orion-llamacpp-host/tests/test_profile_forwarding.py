@@ -31,6 +31,7 @@ def test_qwen3_64k_profile_forwards_validated_flags(monkeypatch):
         main,
         "_get_supported_llama_server_flags",
         lambda _server_bin: {
+            "--jinja",
             "--reasoning",
             "--reasoning-format",
             "--chat-template-kwargs",
@@ -49,6 +50,7 @@ def test_qwen3_64k_profile_forwards_validated_flags(monkeypatch):
             "--presence-penalty",
         },
     )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 6000)
     monkeypatch.setattr(
         settings_mod.settings,
         "llamacpp_model_path_override",
@@ -60,6 +62,7 @@ def test_qwen3_64k_profile_forwards_validated_flags(monkeypatch):
 
     assert "--reasoning" in cmd
     assert _find_flag_value(cmd, "--reasoning") == "on"
+    assert "--jinja" in cmd
     assert _find_flag_value(cmd, "--reasoning-format") == "deepseek"
     assert _find_flag_value(cmd, "--chat-template-kwargs") == '{"enable_thinking":true}'
     assert _find_flag_value(cmd, "--flash-attn") == "on"
@@ -93,7 +96,28 @@ def test_qwen3_64k_profile_skips_unsupported_reasoning_flag(monkeypatch):
     profile = profiles_mod.LLMProfile(name="qwen3-30b-a3b-q4km-atlas-agent-64k-think", **profile_cfg)
 
     monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(main, "_get_supported_llama_server_flags", lambda _server_bin: {"--flash-attn"})
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--jinja",
+            "--reasoning-format",
+            "--flash-attn",
+            "--rope-scaling",
+            "--rope-scale",
+            "--yarn-orig-ctx",
+            "--no-context-shift",
+            "--split-mode",
+            "--tensor-split",
+            "--n-predict",
+            "--temp",
+            "--top-k",
+            "--top-p",
+            "--min-p",
+            "--presence-penalty",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 5332)
     monkeypatch.setattr(
         settings_mod.settings,
         "llamacpp_model_path_override",
@@ -102,6 +126,11 @@ def test_qwen3_64k_profile_skips_unsupported_reasoning_flag(monkeypatch):
 
     cmd, _env = main.build_llama_server_cmd_and_env(profile)
     assert "--reasoning" not in cmd
-    assert "--reasoning-format" not in cmd
+    assert "--jinja" in cmd
+    assert _find_flag_value(cmd, "--reasoning-format") == "deepseek"
     assert "--chat-template-kwargs" not in cmd
-    assert _find_flag_value(cmd, "--flash-attn") == "on"
+    flash_attn_idx = cmd.index("--flash-attn")
+    assert flash_attn_idx + 1 >= len(cmd) or cmd[flash_attn_idx + 1].startswith("-")
+    no_context_shift_idx = cmd.index("--no-context-shift")
+    assert no_context_shift_idx + 1 >= len(cmd) or cmd[no_context_shift_idx + 1].startswith("-")
+    print("effective argv (b5332):", " ".join(cmd))

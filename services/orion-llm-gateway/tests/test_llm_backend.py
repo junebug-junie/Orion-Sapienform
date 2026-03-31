@@ -10,6 +10,7 @@ from app.llm_backend import (  # noqa: E402
     _build_ollama_payload,
     _extract_text_from_ollama_response,
     _extract_vector_from_openai_response,
+    _split_think_blocks,
     _serialize_messages,
     _execute_openai_chat,
     _load_route_targets,
@@ -46,6 +47,16 @@ class TestLLMBackendHelpers(unittest.TestCase):
     def test_serialize_messages_accepts_dicts(self) -> None:
         serialized = _serialize_messages([{"role": "user", "content": "hello"}])
         self.assertEqual(serialized, [{"role": "user", "content": "hello"}])
+
+    def test_split_think_blocks_strips_closed_blocks_and_keeps_visible_text(self) -> None:
+        visible, reasoning = _split_think_blocks("<think>draft reasoning</think>Hi")
+        self.assertEqual(visible, "Hi")
+        self.assertEqual(reasoning, "draft reasoning")
+
+    def test_split_think_blocks_strips_unclosed_block_without_leaking_reasoning(self) -> None:
+        visible, reasoning = _split_think_blocks("Hi\n<think>long reasoning without close")
+        self.assertEqual(visible, "Hi")
+        self.assertEqual(reasoning, "long reasoning without close")
 
 
 class TestLLMBackendExecution(unittest.TestCase):

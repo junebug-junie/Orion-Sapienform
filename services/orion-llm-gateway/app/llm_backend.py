@@ -227,15 +227,21 @@ def _split_think_blocks(text: str) -> Tuple[str, Optional[str]]:
         return raw.strip(), None
     visible = raw
     traces: List[str] = []
-    while "<think>" in visible and "</think>" in visible:
+    while "<think>" in visible:
         start = visible.find("<think>")
-        end = visible.find("</think>", start)
-        if end == -1:
+        if start < 0:
             break
-        block = visible[start + len("<think>") : end].strip()
+        end = visible.find("</think>", start)
+        close_len = len("</think>") if end >= 0 else 0
+        block = visible[start + len("<think>") : (end if end >= 0 else len(visible))].strip()
         if block:
             traces.append(block)
-        visible = (visible[:start] + visible[end + len("</think>") :]).strip()
+        if end >= 0:
+            visible = (visible[:start] + visible[end + close_len :]).strip()
+        else:
+            # Unclosed think block: strip from open tag to end to avoid leaking reasoning.
+            visible = visible[:start].strip()
+            break
     reasoning = "\n\n".join(traces).strip() if traces else None
     return visible.strip(), (reasoning or None)
 

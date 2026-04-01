@@ -41,9 +41,9 @@ class SubjectBinding:
 
 
 SUBJECT_BINDINGS: dict[str, SubjectBinding] = {
-    "orion": SubjectBinding(model_layer="self-model", entity_id="orion"),
-    "juniper": SubjectBinding(model_layer="user-model", entity_id="juniper"),
-    "relationship": SubjectBinding(model_layer="relationship-model", entity_id="relationship"),
+    "orion": SubjectBinding(model_layer="self-model", entity_id="self:orion"),
+    "juniper": SubjectBinding(model_layer="user-model", entity_id="user:juniper"),
+    "relationship": SubjectBinding(model_layer="relationship-model", entity_id="relationship:orion|juniper"),
 }
 
 
@@ -148,7 +148,7 @@ class GraphAutonomyRepository:
             raise GraphQueryError("graph_not_configured")
         return self._query_client.select(sparql)
 
-    def _fetch_identity(self, *, subject: str, model_layer: str, entity_id: str) -> dict[str, str] | None:
+    def _fetch_identity(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[dict[str, str] | None, int]:
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
 SELECT ?artifact_id ?summary ?anchor_strategy ?created_at
@@ -169,16 +169,16 @@ LIMIT 1
 """.strip()
         rows = self._select_rows(sparql)
         if not rows:
-            return None
+            return None, 0
         row = rows[0]
-        return {
+        return ({
             "artifact_id": _literal(row, "artifact_id") or "",
             "summary": _literal(row, "summary") or "",
             "anchor_strategy": _literal(row, "anchor_strategy") or "",
             "created_at": _literal(row, "created_at") or "",
-        }
+        }, len(rows))
 
-    def _fetch_drive_audit(self, *, subject: str, model_layer: str, entity_id: str) -> dict[str, object] | None:
+    def _fetch_drive_audit(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[dict[str, object] | None, int]:
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
 SELECT ?artifact_id ?dominant_drive ?created_at ?active_drive ?drive_name ?drive_pressure ?tension_kind
@@ -206,11 +206,11 @@ LIMIT 200
 """.strip()
         rows = self._select_rows(sparql)
         if not rows:
-            return None
+            return None, 0
 
         latest_id = _literal(rows[0], "artifact_id")
         if not latest_id:
-            return None
+            return None, len(rows)
         filtered = [r for r in rows if _literal(r, "artifact_id") == latest_id]
         dominant_drive = _literal(filtered[0], "dominant_drive")
         created_at = _literal(filtered[0], "created_at")
@@ -233,16 +233,16 @@ LIMIT 200
             if tension_kind and tension_kind not in tensions:
                 tensions.append(tension_kind)
 
-        return {
+        return ({
             "artifact_id": latest_id,
             "dominant_drive": dominant_drive,
             "created_at": created_at,
             "active_drives": active_drives,
             "drive_pressures": drive_pressures,
             "tension_kinds": tensions,
-        }
+        }, len(rows))
 
-    def _fetch_goals(self, *, subject: str, model_layer: str, entity_id: str) -> list[AutonomyGoalHeadlineV1]:
+    def _fetch_goals(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[list[AutonomyGoalHeadlineV1], int]:
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
 SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at
@@ -280,7 +280,7 @@ LIMIT {self._goals_limit}
                 )
             except Exception:
                 continue
-        return out
+        return out, len(rows)
 
     def _query_subject(self, subject: str) -> AutonomyLookupV1:
         binding = SUBJECT_BINDINGS.get(subject)
@@ -288,16 +288,43 @@ LIMIT {self._goals_limit}
             return AutonomyLookupV1(subject=subject, state=None, availability="empty")
 
         if self._query_client is None:
+            logger.warning(
+                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false identity_rows=0 drives_rows=0 goals_rows=0 availability=unavailable unavailable_reason=graph_not_configured",
+                subject,
+                binding.model_layer,
+                binding.entity_id,
+            )
             return AutonomyLookupV1(subject=subject, state=None, availability="unavailable", unavailable_reason="graph_not_configured")
 
+        identity_rows = 0
+        drives_rows = 0
+        goals_rows = 0
         try:
-            identity = self._fetch_identity(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
-            audit = self._fetch_drive_audit(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
-            goals = self._fetch_goals(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
+            identity, identity_rows = self._fetch_identity(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
+            audit, drives_rows = self._fetch_drive_audit(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
+            goals, goals_rows = self._fetch_goals(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
         except (GraphQueryError, Exception):
+            logger.warning(
+                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false identity_rows=%s drives_rows=%s goals_rows=%s availability=unavailable unavailable_reason=query_error",
+                subject,
+                binding.model_layer,
+                binding.entity_id,
+                identity_rows,
+                drives_rows,
+                goals_rows,
+            )
             return AutonomyLookupV1(subject=subject, state=None, availability="unavailable", unavailable_reason="query_error")
 
         if not identity and not audit and not goals:
+            logger.info(
+                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=true identity_rows=%s drives_rows=%s goals_rows=%s availability=empty empty_reason=no_rows",
+                subject,
+                binding.model_layer,
+                binding.entity_id,
+                identity_rows,
+                drives_rows,
+                goals_rows,
+            )
             return AutonomyLookupV1(subject=subject, state=None, availability="empty")
 
         generated_at = None
@@ -322,6 +349,16 @@ LIMIT {self._goals_limit}
             goal_headlines=goals,
             source="graph",
             generated_at=generated_at,
+        )
+        logger.info(
+            "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=true identity_rows=%s drives_rows=%s goals_rows=%s availability=available mapped_state=true summary_present=%s",
+            subject,
+            binding.model_layer,
+            binding.entity_id,
+            identity_rows,
+            drives_rows,
+            goals_rows,
+            "yes" if bool(state.identity_summary) else "no",
         )
         return AutonomyLookupV1(subject=subject, state=state, availability="available")
 

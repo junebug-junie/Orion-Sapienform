@@ -1861,6 +1861,18 @@ loadDismissedIds();
   function openAutonomyDebugModal() {
     if (!autonomyDebugModalRoot) return;
     ensureAutonomyModalRootOnBody();
+    autonomyDebugModalRoot.style.position = 'fixed';
+    autonomyDebugModalRoot.style.inset = '0';
+    autonomyDebugModalRoot.style.zIndex = '2147483646';
+    if (autonomyDebugModalBackdrop) {
+      autonomyDebugModalBackdrop.style.position = 'fixed';
+      autonomyDebugModalBackdrop.style.inset = '0';
+      autonomyDebugModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (autonomyDebugModalDialog) {
+      autonomyDebugModalDialog.style.position = 'fixed';
+      autonomyDebugModalDialog.style.zIndex = '2147483647';
+    }
     if (autonomyDebugModalMeta) autonomyDebugModalMeta.textContent = autonomyDebugMeta ? autonomyDebugMeta.textContent : '--';
     if (autonomyDebugModalBody) autonomyDebugModalBody.innerHTML = autonomyDebugBody ? autonomyDebugBody.innerHTML : '--';
     autonomyDebugModalRoot.classList.remove('hidden');

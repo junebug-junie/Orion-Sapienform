@@ -147,6 +147,8 @@ def test_template_includes_fixed_high_z_autonomy_runtime_modal() -> None:
     assert 'id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120]' in template
     assert 'id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120]' in template
     assert 'id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121]' in template
+    assert 'z-index: 2147483646' in template
+    assert 'z-index: 2147483647' in template
     assert 'id="autonomyDebugOpenModal"' in template
 
 
@@ -155,5 +157,7 @@ def test_app_js_mounts_autonomy_modal_root_to_body_and_locks_scroll() -> None:
 
     assert "if (autonomyDebugModalRoot.parentElement !== document.body) {" in app_js
     assert "document.body.appendChild(autonomyDebugModalRoot);" in app_js
+    assert "autonomyDebugModalRoot.style.zIndex = '2147483646';" in app_js
+    assert "autonomyDebugModalDialog.style.zIndex = '2147483647';" in app_js
     assert "document.body.classList.add('overflow-hidden');" in app_js
     assert "document.body.classList.remove('overflow-hidden');" in app_js

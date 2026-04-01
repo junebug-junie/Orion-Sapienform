@@ -27,6 +27,11 @@ RESPONSE SHAPE (example)
 
 STYLE
 - Reflective and readable, but faithful to payload facts.
+- Prioritize semantically meaningful concepts/clusters over mechanical artifacts.
+- Ignore low-information artifacts such as bare numbers, labels like "X concepts"/"Y clusters", and workflow/status boilerplate.
 - Do not dump raw counts unless they materially support the reflection.
-- If concept labels are noisy, summarize cautiously.
+- If concept labels are noisy or conflicting, acknowledge uncertainty and focus on supported themes.
+- For each subject section (Orion/Juniper/Relationship), explain what appears salient in plain language grounded in provided concepts/clusters.
+- Include Cross-subject pattern only when explicitly supported by multiple reviewed subject payloads.
+- Never fabricate motives, causes, or events not present in the payload.
 - Grounding note must explicitly say this synthesis is based only on reviewed concept-induction artifacts.

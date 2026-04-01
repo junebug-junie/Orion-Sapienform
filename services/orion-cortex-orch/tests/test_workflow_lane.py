@@ -1665,3 +1665,96 @@ def test_concept_induction_pass_does_not_pass_generic_orch_settings_to_repositor
 
     assert captured_settings_types
     assert result.ok is False
+
+
+def test_concept_induction_details_filter_suppresses_junk_and_keeps_meaningful_labels() -> None:
+    from app.workflow_runtime import _sanitize_concept_induction_details
+
+    details = {
+        "generated_at": "2026-04-01T00:00:00Z",
+        "profiles": [
+            {
+                "subject": "juniper",
+                "profile_id": "profile-1",
+                "revision": 9,
+                "concepts": [
+                    {"concept_id": "c1", "label": "13 clusters", "salience": 0.9, "confidence": 0.6, "evidence_count": 2},
+                    {"concept_id": "c2", "label": "snuggling kitties", "salience": 0.8, "confidence": 0.9, "evidence_count": 3},
+                    {"concept_id": "c3", "label": "50", "salience": 0.7, "confidence": 0.2, "evidence_count": 1},
+                    {"concept_id": "c4", "label": "a nice family outing", "salience": 0.6, "confidence": 0.7, "evidence_count": 2},
+                ],
+                "clusters": [
+                    {"cluster_id": "k1", "label": "1 clusters", "representative_labels": [], "cohesion_score": 0.9},
+                    {"cluster_id": "k2", "label": "cuddles", "representative_labels": ["snuggling kitties"], "cohesion_score": 0.7},
+                    {"cluster_id": "k3", "label": "concept induction pass status", "representative_labels": [], "cohesion_score": 0.4},
+                ],
+            }
+        ],
+        "trace": {},
+    }
+
+    sanitized = _sanitize_concept_induction_details(details=details)
+    concepts = [item["label"] for item in sanitized["profiles"][0]["concepts"]]
+    clusters = [item["label"] for item in sanitized["profiles"][0]["clusters"]]
+    assert "snuggling kitties" in concepts
+    assert "a nice family outing" in concepts
+    assert "13 clusters" not in concepts
+    assert "50" not in concepts
+    assert "cuddles" in clusters
+    assert "1 clusters" not in clusters
+    assert sanitized["trace"]["suppressed_artifacts"]["concepts"] == 2
+    assert sanitized["trace"]["suppressed_artifacts"]["clusters"] == 2
+
+
+def test_concept_induction_synth_request_payload_omits_low_information_artifacts(monkeypatch, tmp_path) -> None:
+    from app import workflow_runtime
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / "concepts.json")
+        subjects = ["orion"]
+
+    (tmp_path / "concepts.json").write_text(
+        '{"profiles": {"orion": {"profile_id": "profile-1", "subject": "orion", "revision": 4, "created_at": "2026-03-23T00:00:00+00:00", "window_start": "2026-03-22T00:00:00+00:00", "window_end": "2026-03-23T00:00:00+00:00", "concepts": [{"concept_id": "concept-1", "label": "13 clusters", "aliases": [], "type": "identity", "salience": 1.0, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}, {"concept_id": "concept-2", "label": "purrrr", "aliases": [], "type": "identity", "salience": 0.9, "confidence": 0.8, "embedding_ref": null, "evidence": [], "metadata": {}}], "clusters": [{"cluster_id": "cluster-1", "label": "concept induction pass status", "summary": "core cluster", "concept_ids": ["concept-1"], "cohesion_score": 0.8, "metadata": {}}, {"cluster_id": "cluster-2", "label": "milkshakes", "summary": "core cluster", "concept_ids": ["concept-2"], "cohesion_score": 0.7, "metadata": {}}], "state_estimate": null, "metadata": {}}}}'
+    )
+    monkeypatch.setattr(workflow_runtime, "build_orch_concept_profile_settings", lambda *_args, **_kwargs: FakeConceptSettings())
+    req = _req("concept_induction_pass")
+    req.context.metadata["workflow_request"]["action"] = "synthesize_to_journal"
+    seen: dict[str, Any] = {}
+
+    async def _runtime(*_args, **kwargs):
+        grounding = kwargs["client_request"].context.metadata["concept_induction_journal_grounding"]
+        seen["labels"] = [item.get("label") for item in grounding["profiles"][0]["concepts"]]
+        seen["clusters"] = [item.get("label") for item in grounding["profiles"][0]["clusters"]]
+        seen["suppressed"] = grounding["trace"]["suppressed_artifacts"]
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": json.dumps({"mode": "manual", "title": "Synth Review", "body": "## Orion\nGrounded.\n\n## Grounding note\nThis synthesis is based only on reviewed concept-induction artifacts."}),
+                    "steps": [],
+                    "metadata": {},
+                }
+            }
+        )
+
+    asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=req,
+            correlation_id="00000000-0000-0000-0000-000000010106",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_runtime,
+        )
+    )
+    assert seen["labels"] == ["purrrr"]
+    assert seen["clusters"] == ["milkshakes"]
+    assert seen["suppressed"]["concepts"] == 1
+    assert seen["suppressed"]["clusters"] == 1
+
+
+def test_concept_induction_prompt_contract_contains_noise_suppression_guidance() -> None:
+    prompt = (REPO_ROOT / "orion" / "cognition" / "prompts" / "concept_induction_journal_synthesize.j2").read_text(encoding="utf-8")
+    assert "Ignore low-information artifacts" in prompt
+    assert "Cross-subject pattern only when explicitly supported" in prompt

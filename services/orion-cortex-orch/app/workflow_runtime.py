@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Tuple
 from uuid import uuid4
@@ -810,6 +811,42 @@ def _concept_item_payload(concept: Any) -> Dict[str, Any]:
     }
 
 
+_NOISE_LABEL_PATTERNS = (
+    re.compile(r"^\d+$"),
+    re.compile(r"^\d+\s+(?:concept|concepts|cluster|clusters)$"),
+    re.compile(r"^(?:concept|concepts|cluster|clusters)$"),
+)
+_NOISE_LABEL_SNIPPETS = (
+    "concept induction pass status",
+    "workflow status",
+    "status",
+    "summary",
+)
+
+
+def _is_low_information_label(value: Any) -> bool:
+    label = str(value or "").strip().lower()
+    if not label:
+        return True
+    if label in {"none", "n/a", "na", "null", "--", "unknown"}:
+        return True
+    if any(pattern.match(label) for pattern in _NOISE_LABEL_PATTERNS):
+        return True
+    return any(snippet in label for snippet in _NOISE_LABEL_SNIPPETS)
+
+
+def _semantic_sort_key(item: Dict[str, Any]) -> tuple[float, float, int, str]:
+    salience = item.get("salience")
+    confidence = item.get("confidence")
+    evidence_count = item.get("evidence_count")
+    return (
+        float(salience) if isinstance(salience, (int, float)) else 0.0,
+        float(confidence) if isinstance(confidence, (int, float)) else 0.0,
+        int(evidence_count) if isinstance(evidence_count, int) else 0,
+        len(str(item.get("label") or "").strip()),
+    )
+
+
 def _cluster_item_payload(cluster: Any, *, concepts: list[dict[str, Any]]) -> Dict[str, Any]:
     concept_ids = list(getattr(cluster, "concept_ids", []) or [])
     labels_by_id = {str(item.get("concept_id") or ""): item.get("label") for item in concepts}
@@ -857,6 +894,59 @@ def _profile_detail_payload(lookup: Any) -> Dict[str, Any] | None:
     }
 
 
+def _filter_profile_semantic_artifacts(*, profile: Dict[str, Any], max_concepts: int = 25, max_clusters: int = 15) -> Dict[str, Any]:
+    concepts = [dict(item) for item in (profile.get("concepts") or []) if isinstance(item, dict)]
+    clusters = [dict(item) for item in (profile.get("clusters") or []) if isinstance(item, dict)]
+    kept_concepts = [item for item in concepts if not _is_low_information_label(item.get("label"))]
+    kept_cluster_items = [item for item in clusters if not _is_low_information_label(item.get("label"))]
+    kept_concepts.sort(key=_semantic_sort_key, reverse=True)
+    kept_clusters = kept_cluster_items[:]
+    kept_clusters.sort(
+        key=lambda item: (
+            float(item.get("cohesion_score")) if isinstance(item.get("cohesion_score"), (float, int)) else 0.0,
+            len([lbl for lbl in (item.get("representative_labels") or []) if str(lbl or "").strip()]),
+            len(str(item.get("label") or "").strip()),
+        ),
+        reverse=True,
+    )
+    suppressed = {
+        "concepts": max(0, len(concepts) - len(kept_concepts)),
+        "clusters": max(0, len(clusters) - len(kept_clusters)),
+    }
+    return {
+        **profile,
+        "concepts": kept_concepts[:max_concepts],
+        "clusters": kept_clusters[:max_clusters],
+        "suppressed_artifacts": suppressed,
+    }
+
+
+def _sanitize_concept_induction_details(*, details: Dict[str, Any]) -> Dict[str, Any]:
+    sanitized_profiles: list[dict[str, Any]] = []
+    suppressed_totals = {"concepts": 0, "clusters": 0}
+    for item in (details.get("profiles") or []):
+        if not isinstance(item, dict):
+            continue
+        filtered = _filter_profile_semantic_artifacts(profile=item)
+        suppression = filtered.get("suppressed_artifacts") if isinstance(filtered.get("suppressed_artifacts"), dict) else {}
+        suppressed_totals["concepts"] += int(suppression.get("concepts") or 0)
+        suppressed_totals["clusters"] += int(suppression.get("clusters") or 0)
+        sanitized_profiles.append(filtered)
+    trace = details.get("trace") if isinstance(details.get("trace"), dict) else {}
+    trace = {
+        **trace,
+        "suppressed_artifacts": {
+            "concepts": suppressed_totals["concepts"],
+            "clusters": suppressed_totals["clusters"],
+        },
+    }
+    return {
+        "generated_at": details.get("generated_at"),
+        "profiles": sanitized_profiles[:6],
+        "trace": trace,
+    }
+
+
 def _concept_induction_trace_payload(*, lookups: list[Any], observer: dict[str, str], repository_status: Any, requested_backend: str, resolved_backend: str, fallback_used: bool, fallback_policy: str, unavailable_reason: str | None) -> Dict[str, Any]:
     profile_rows = []
     for lookup in lookups[:8]:
@@ -883,46 +973,6 @@ def _concept_induction_trace_payload(*, lookups: list[Any], observer: dict[str, 
             "lookup_rows": profile_rows,
         },
     }
-
-
-def _build_concept_induction_synthesis_body(*, details: Dict[str, Any]) -> str:
-    by_subject = {str(item.get("subject") or ""): item for item in (details.get("profiles") or []) if isinstance(item, dict)}
-
-    def _subject_line(subject: str) -> str:
-        item = by_subject.get(subject) or {}
-        top_concepts = [str(c.get("label") or c.get("concept_id") or "").strip() for c in (item.get("concepts") or [])[:3] if isinstance(c, dict)]
-        top_clusters = [str(c.get("label") or c.get("cluster_id") or "").strip() for c in (item.get("clusters") or [])[:2] if isinstance(c, dict)]
-        state = item.get("state_estimate") if isinstance(item.get("state_estimate"), dict) else {}
-        return (
-            f"- {subject}: rev {item.get('revision', '--')} "
-            f"({item.get('concept_count', 0)} concepts / {item.get('cluster_count', 0)} clusters). "
-            f"Concepts: {', '.join([x for x in top_concepts if x]) or 'none'}. "
-            f"Clusters: {', '.join([x for x in top_clusters if x]) or 'none'}. "
-            f"State: {_state_summary(state) if state else 'n/a'}."
-        )
-
-    review_lines = [_subject_line(name) for name in ("orion", "juniper", "relationship")]
-    trace = details.get("trace") if isinstance(details.get("trace"), dict) else {}
-    resolution = trace.get("repository_resolution") if isinstance(trace.get("repository_resolution"), dict) else {}
-    backend_line = (
-        f"Backend resolution: requested={resolution.get('requested_backend') or '--'}, "
-        f"resolved={resolution.get('resolved_backend') or '--'}, "
-        f"fallback_used={bool(resolution.get('fallback_used'))}."
-    )
-    return "\n".join(
-        [
-            "Concept induction review synthesis",
-            "",
-            "Reviewed subjects:",
-            *review_lines,
-            "",
-            "Repository trace:",
-            f"- {backend_line}",
-            "",
-            "Reflection:",
-            "The current concept-profile revisions show what appears most salient across Orion, Juniper, and relationship context with bounded artifact-backed traceability.",
-        ]
-    ).strip()
 
 
 def _concept_induction_grounding_payload(*, details: Dict[str, Any], workflow_id: str, resolved_backend: str) -> Dict[str, Any]:
@@ -1072,11 +1122,12 @@ def _coerce_reviewed_concept_details(value: Any) -> Dict[str, Any] | None:
         return None
     bounded_profiles = [item for item in profiles if isinstance(item, dict)][:6]
     trace = value.get("trace") if isinstance(value.get("trace"), dict) else {}
-    return {
+    coerced = {
         "generated_at": value.get("generated_at"),
         "profiles": bounded_profiles,
         "trace": trace,
     }
+    return _sanitize_concept_induction_details(details=coerced)
 
 
 async def _execute_concept_induction_pass(
@@ -1251,7 +1302,15 @@ async def _execute_concept_induction_pass(
     }
     workflow_request = _workflow_request(req)
     requested_details = _coerce_reviewed_concept_details(workflow_request.get("concept_induction_details"))
-    concept_induction_details = requested_details or computed_details
+    concept_induction_details = requested_details or _sanitize_concept_induction_details(details=computed_details)
+    suppression = (
+        concept_induction_details.get("trace", {}).get("suppressed_artifacts")
+        if isinstance(concept_induction_details.get("trace"), dict)
+        else {}
+    )
+    suppressed_concepts = int((suppression or {}).get("concepts") or 0)
+    suppressed_clusters = int((suppression or {}).get("clusters") or 0)
+    suppression_detected = suppressed_concepts > 0 or suppressed_clusters > 0
     synthesize_requested = str(workflow_request.get("action") or "").strip().lower() == "synthesize_to_journal"
     persisted: list[str] = []
     synthesis_status: Dict[str, Any] | None = None
@@ -1263,7 +1322,11 @@ async def _execute_concept_induction_pass(
                     "stage": "synth_action_requested",
                     "workflow_id": workflow_id,
                     "correlation_id": correlation_id,
-                    "journal_content_source": "llm_synthesis",
+                    "journal_content_source": "payload_garbage" if suppression_detected else "llm_synthesis",
+                    "suppressed_artifacts": {
+                        "concepts": suppressed_concepts,
+                        "clusters": suppressed_clusters,
+                    },
                 },
                 sort_keys=True,
             ),
@@ -1282,6 +1345,10 @@ async def _execute_concept_induction_pass(
                         "workflow_id": workflow_id,
                         "correlation_id": correlation_id,
                         "journal_content_source": "llm_synthesis",
+                        "suppressed_artifacts": {
+                            "concepts": suppressed_concepts,
+                            "clusters": suppressed_clusters,
+                        },
                     },
                     sort_keys=True,
                 ),

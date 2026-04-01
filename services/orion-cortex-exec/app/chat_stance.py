@@ -89,6 +89,43 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def resolve_autonomy_graphdb_config() -> dict[str, Any]:
+    endpoint_raw = (
+        os.getenv("GRAPHDB_QUERY_ENDPOINT")
+        or os.getenv("GRAPHDB_URL")
+        or os.getenv("CONCEPT_PROFILE_GRAPHDB_ENDPOINT")
+        or os.getenv("CONCEPT_PROFILE_GRAPHDB_URL")
+        or ""
+    ).strip()
+    repo = (
+        os.getenv("GRAPHDB_REPO")
+        or os.getenv("CONCEPT_PROFILE_GRAPHDB_REPO")
+        or "collapse"
+    ).strip() or "collapse"
+    user = (os.getenv("GRAPHDB_USER") or os.getenv("CONCEPT_PROFILE_GRAPHDB_USER") or "").strip() or None
+    password = (os.getenv("GRAPHDB_PASS") or os.getenv("CONCEPT_PROFILE_GRAPHDB_PASS") or "").strip() or None
+
+    endpoint = endpoint_raw
+    if endpoint and endpoint.rstrip("/").endswith("/repositories"):
+        endpoint = f"{endpoint.rstrip('/')}/{repo}"
+    elif endpoint and "/repositories/" not in endpoint:
+        endpoint = f"{endpoint.rstrip('/')}/repositories/{repo}"
+
+    if os.getenv("GRAPHDB_QUERY_ENDPOINT") or os.getenv("GRAPHDB_URL"):
+        source = "generic_graphdb"
+    elif os.getenv("CONCEPT_PROFILE_GRAPHDB_ENDPOINT") or os.getenv("CONCEPT_PROFILE_GRAPHDB_URL"):
+        source = "concept_profile_fallback"
+    else:
+        source = "unconfigured"
+    return {
+        "endpoint": endpoint or None,
+        "repo": repo,
+        "user": user,
+        "password": password,
+        "source": source,
+    }
+
+
 def _compact(value: Any, *, limit: int = 220) -> str:
     text = " ".join(str(value or "").split()).strip()
     return text[:limit]
@@ -427,13 +464,8 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    endpoint = os.getenv("GRAPHDB_QUERY_ENDPOINT") or os.getenv("GRAPHDB_URL")
-    if endpoint and endpoint.rstrip("/").endswith("/repositories"):
-        repo = os.getenv("GRAPHDB_REPO", "collapse").strip()
-        endpoint = f"{endpoint.rstrip('/')}/{repo}"
-    elif endpoint and "/repositories/" not in endpoint:
-        repo = os.getenv("GRAPHDB_REPO", "collapse").strip()
-        endpoint = f"{endpoint.rstrip('/')}/repositories/{repo}"
+    graphdb_cfg = resolve_autonomy_graphdb_config()
+    endpoint = graphdb_cfg["endpoint"]
 
     backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
     if backend not in {"graph", "local", "shadow"}:
@@ -443,8 +475,8 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         backend=backend,
         endpoint=endpoint,
         timeout_sec=_env_float("GRAPHDB_TIMEOUT_SEC", 4.5),
-        user=os.getenv("GRAPHDB_USER") or None,
-        password=os.getenv("GRAPHDB_PASS") or None,
+        user=graphdb_cfg["user"],
+        password=graphdb_cfg["password"],
         goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
     )
     subjects = ["orion", "relationship", "juniper"]
@@ -488,9 +520,22 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "backend": repo_status.backend,
                 "source_path": repo_status.source_path,
                 "source_available": repo_status.source_available,
+                "config_source": graphdb_cfg["source"],
                 "endpoint_repo": endpoint or "graphdb:unconfigured",
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
+                "availability_counts": {
+                    "available": sum(1 for item in lookups if item.availability == "available"),
+                    "empty": sum(1 for item in lookups if item.availability == "empty"),
+                    "unavailable": sum(1 for item in lookups if item.availability == "unavailable"),
+                },
+                "unavailable_reasons": sorted(
+                    {
+                        item.unavailable_reason
+                        for item in lookups
+                        if item.availability == "unavailable" and item.unavailable_reason
+                    }
+                ),
                 "selected_subject": selected_subject,
                 "summary_present": bool(summary and summary.stance_hint),
                 "exported_metadata_keys": exported_keys,

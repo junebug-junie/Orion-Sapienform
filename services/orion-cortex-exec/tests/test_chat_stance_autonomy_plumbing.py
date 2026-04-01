@@ -95,3 +95,45 @@ def test_triage_mode_not_overridden_by_autonomy_hint(monkeypatch) -> None:
     assert fb.task_mode == "triage"
     assert fb.identity_salience == "low"
     assert "triage_operational_blockers_first" in fb.response_priorities
+
+
+def test_autonomy_graphdb_config_falls_back_to_concept_profile(monkeypatch) -> None:
+    for key in (
+        "GRAPHDB_QUERY_ENDPOINT",
+        "GRAPHDB_URL",
+        "GRAPHDB_REPO",
+        "GRAPHDB_USER",
+        "GRAPHDB_PASS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_URL", "http://orion-athena-graphdb:7200")
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_REPO", "collapse")
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_USER", "admin")
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_PASS", "admin")
+
+    cfg = chat_stance.resolve_autonomy_graphdb_config()
+
+    assert cfg["endpoint"] == "http://orion-athena-graphdb:7200/repositories/collapse"
+    assert cfg["repo"] == "collapse"
+    assert cfg["user"] == "admin"
+    assert cfg["password"] == "admin"
+    assert cfg["source"] == "concept_profile_fallback"
+
+
+def test_autonomy_graphdb_config_prefers_generic_vars(monkeypatch) -> None:
+    monkeypatch.setenv("GRAPHDB_URL", "http://generic-graphdb:7200")
+    monkeypatch.setenv("GRAPHDB_REPO", "generic-repo")
+    monkeypatch.setenv("GRAPHDB_USER", "generic-user")
+    monkeypatch.setenv("GRAPHDB_PASS", "generic-pass")
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_URL", "http://orion-athena-graphdb:7200")
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_REPO", "collapse")
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_USER", "admin")
+    monkeypatch.setenv("CONCEPT_PROFILE_GRAPHDB_PASS", "admin")
+
+    cfg = chat_stance.resolve_autonomy_graphdb_config()
+
+    assert cfg["endpoint"] == "http://generic-graphdb:7200/repositories/generic-repo"
+    assert cfg["repo"] == "generic-repo"
+    assert cfg["user"] == "generic-user"
+    assert cfg["password"] == "generic-pass"
+    assert cfg["source"] == "generic_graphdb"

@@ -108,6 +108,10 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
         "think_stripping_applied": False,
         "structured_output_sanitized": False,
         "structured_output_rejected": False,
+        "structured_json_extraction_attempted": False,
+        "candidate_count": 0,
+        "rejected_candidate_count": 0,
+        "candidate_fields_considered": [],
         "result_len": 0,
     }
     structured_expected = _structured_output_expected(verb_name)
@@ -119,22 +123,41 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                 candidate = payload.get(field)
                 if not isinstance(candidate, str) or not candidate.strip():
                     continue
+                diagnostics["candidate_count"] += 1
                 cleaned, has_think_tags, think_stripped = _strip_think_content(candidate)
+                pre_len = len(candidate.strip())
+                post_len = len(cleaned)
+                candidate_diag = {
+                    "service": service_name,
+                    "field": field,
+                    "raw_len": pre_len,
+                    "clean_len": post_len,
+                    "think_tags": bool(has_think_tags),
+                    "think_stripped": bool(think_stripped),
+                }
+                if len(diagnostics["candidate_fields_considered"]) < 8:
+                    diagnostics["candidate_fields_considered"].append(candidate_diag)
+                if structured_expected:
+                    diagnostics["structured_json_extraction_attempted"] = True
+                    json_text = _extract_first_json_object_text(cleaned)
+                    if json_text:
+                        diagnostics["source_field"] = field
+                        diagnostics["source_service"] = service_name
+                        diagnostics["think_tags_detected"] = bool(has_think_tags)
+                        diagnostics["think_stripping_applied"] = bool(think_stripped)
+                        diagnostics["structured_output_sanitized"] = bool(json_text != cleaned)
+                        diagnostics["result_len"] = len(json_text)
+                        return json_text, diagnostics
+                    diagnostics["rejected_candidate_count"] += 1
+                    continue
                 diagnostics["source_field"] = field
                 diagnostics["source_service"] = service_name
                 diagnostics["think_tags_detected"] = bool(has_think_tags)
                 diagnostics["think_stripping_applied"] = bool(think_stripped)
-                if structured_expected:
-                    json_text = _extract_first_json_object_text(cleaned)
-                    diagnostics["structured_output_sanitized"] = bool(json_text and json_text != cleaned)
-                    if json_text:
-                        diagnostics["result_len"] = len(json_text)
-                        return json_text, diagnostics
-                    diagnostics["structured_output_rejected"] = True
-                    diagnostics["result_len"] = 0
-                    return "", diagnostics
                 diagnostics["result_len"] = len(cleaned)
                 return cleaned, diagnostics
+    if structured_expected and diagnostics["candidate_count"] > 0:
+        diagnostics["structured_output_rejected"] = True
     return "", diagnostics
 
 
@@ -547,7 +570,7 @@ class PlanRunner:
 
         final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
         logger.info(
-            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_stripping_applied=%s structured_output_sanitized=%s structured_output_rejected=%s result_len=%s",
+            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_stripping_applied=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s result_len=%s",
             correlation_id,
             plan.verb_name,
             final_text_diag.get("source_service"),
@@ -556,6 +579,10 @@ class PlanRunner:
             final_text_diag.get("think_stripping_applied"),
             final_text_diag.get("structured_output_sanitized"),
             final_text_diag.get("structured_output_rejected"),
+            final_text_diag.get("structured_json_extraction_attempted"),
+            final_text_diag.get("candidate_count"),
+            final_text_diag.get("rejected_candidate_count"),
+            final_text_diag.get("candidate_fields_considered"),
             final_text_diag.get("result_len"),
         )
         if overall_status == "success" and soft_failure:

@@ -521,6 +521,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "source_path": repo_status.source_path,
                 "source_available": repo_status.source_available,
                 "config_source": graphdb_cfg["source"],
+                "repo": graphdb_cfg["repo"],
                 "endpoint_repo": endpoint or "graphdb:unconfigured",
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
@@ -537,7 +538,17 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 ),
                 "selected_subject": selected_subject,
+                "selected_subject_availability": preferred.availability if preferred is not None else "empty",
+                "selected_subject_unavailable_reason": preferred.unavailable_reason if preferred is not None else None,
+                "mapped_state": bool(preferred and preferred.state is not None),
                 "summary_present": bool(summary and summary.stance_hint),
+                "subject_availability": {
+                    subject: {
+                        "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
+                        "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
+                    }
+                    for subject in subjects
+                },
                 "exported_metadata_keys": exported_keys,
                 "debug": debug,
             },

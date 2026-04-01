@@ -158,16 +158,42 @@ def _run_autonomy_graph_probe() -> None:
 
     timeout_sec = min(max(float(os.getenv("GRAPHDB_PROBE_TIMEOUT_SEC", "3.0")), 1.0), 4.0)
     auth = (str(user), str(password)) if auth_present else None
+    ask_query = "ASK { ?s ?p ?o }"
+    headers = {
+        "Accept": "application/sparql-results+json",
+    }
     try:
-        response = requests.get(endpoint, timeout=timeout_sec, auth=auth)
-        if response.status_code < 400:
-            logger.info("autonomy_graph_probe result=ok endpoint=%s", endpoint)
+        response = requests.post(
+            endpoint,
+            data={"query": ask_query},
+            headers=headers,
+            timeout=timeout_sec,
+            auth=auth,
+        )
+        if response.status_code == 200:
+            parsed_ok = False
+            try:
+                payload = response.json()
+                parsed_ok = isinstance(payload, dict) and isinstance(payload.get("boolean"), bool)
+            except Exception:
+                body = (response.text or "").strip().lower()
+                parsed_ok = body in {"true", "false"} or "<boolean>true</boolean>" in body or "<boolean>false</boolean>" in body
+            if parsed_ok:
+                logger.info("autonomy_graph_probe result=ok endpoint=%s repo=%s query=ASK", endpoint, repo)
+                return
+            logger.warning(
+                "autonomy_graph_probe result=fail reason=parse_error endpoint=%s repo=%s response_snippet=%r",
+                endpoint,
+                repo,
+                _debug_snippet(response.text, max_len=160),
+            )
             return
         logger.warning(
-            "autonomy_graph_probe result=fail reason=http_%s endpoint=%s repo=%s",
+            "autonomy_graph_probe result=fail reason=http_%s endpoint=%s repo=%s response_snippet=%r",
             response.status_code,
             endpoint,
             repo,
+            _debug_snippet(response.text, max_len=160),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(

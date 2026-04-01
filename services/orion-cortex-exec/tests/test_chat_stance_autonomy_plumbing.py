@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from app import chat_stance
 
 
@@ -76,6 +78,32 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> 
     assert "repository_status" in ctx["chat_autonomy_debug"]["_runtime"]
     assert ctx["chat_autonomy_backend"] == "graph"
     assert "chat_autonomy_repository_status" in ctx
+
+
+def test_autonomy_lookup_turn_log_distinguishes_empty_and_unavailable(monkeypatch, caplog) -> None:
+    from orion.autonomy.models import AutonomyStateV1
+
+    state = AutonomyStateV1(
+        subject="juniper",
+        model_layer="user-model",
+        entity_id="user:juniper",
+        source="graph",
+    )
+    repo = _Repo(
+        {
+            "orion": _Lookup("orion", "empty", None),
+            "relationship": _Lookup("relationship", "unavailable", None, unavailable_reason="query_error"),
+            "juniper": _Lookup("juniper", "available", state=state),
+        }
+    )
+    monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
+    caplog.set_level(logging.INFO)
+
+    chat_stance.build_chat_stance_inputs({"user_message": "hello"})
+
+    assert "autonomy_lookup_turn" in caplog.text
+    assert '"availability_counts": {"available": 1, "empty": 1, "unavailable": 1}' in caplog.text
+    assert '"selected_subject_availability": "unavailable"' in caplog.text
 
 
 def test_triage_mode_not_overridden_by_autonomy_hint(monkeypatch) -> None:

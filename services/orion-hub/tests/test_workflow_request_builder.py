@@ -238,3 +238,31 @@ def test_workflow_request_override_allows_bounded_modal_actions_without_prompt_m
     assert workflow_request['action'] == 'synthesize_to_journal'
     assert workflow_request['execution_policy']['invocation_mode'] == 'immediate'
     assert debug['workflow_resolution_reason'] == 'workflow_request_override'
+
+
+def test_workflow_request_override_preserves_concept_induction_details_for_synth_action() -> None:
+    req, _, _ = hub_builder.build_chat_request(
+        payload={
+            'mode': 'brain',
+            'workflow_request_override': {
+                'workflow_id': 'concept_induction_pass',
+                'action': 'synthesize_to_journal',
+                'concept_induction_details': {
+                    'profiles': [{'subject': 'orion', 'profile_id': 'profile-1', 'revision': 4}],
+                    'trace': {'artifacts': {'lookup_rows': [{'subject': 'orion'}]}},
+                },
+            },
+        },
+        session_id='sid-workflow',
+        user_id='user-1',
+        trace_id='trace-workflow',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='ignored',
+    )
+
+    workflow_request = req.metadata['workflow_request']
+    assert workflow_request['workflow_id'] == 'concept_induction_pass'
+    assert workflow_request['action'] == 'synthesize_to_journal'
+    assert workflow_request['concept_induction_details']['profiles'][0]['profile_id'] == 'profile-1'

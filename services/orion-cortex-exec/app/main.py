@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import requests
 from pydantic import Field, ValidationError
 
 # IMPORTS UPDATED: Added Envelope for generic typing
@@ -27,6 +28,7 @@ from orion.schemas.metacognitive_trace import MetacognitiveTraceEnvelope, Metaco
 from .router import PlanRouter
 from .settings import settings
 from .dream_publish import build_dream_publish_envelope
+from .chat_stance import resolve_autonomy_graphdb_config
 from .core_event_cache import get_core_event_cache
 from .trace_cache import get_trace_cache
 from .verb_adapters import LegacyPlanVerb, RespondToJuniperCollapseMirrorVerb  # noqa: F401 - register verb adapter
@@ -118,6 +120,62 @@ def _diagnostic_enabled(payload: PlanExecutionRequest) -> bool:
         )
     except Exception:
         return settings.diagnostic_mode
+
+
+def _resolve_autonomy_backend() -> str:
+    backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
+    return backend if backend in {"graph", "local", "shadow"} else "graph"
+
+
+def _run_autonomy_graph_probe() -> None:
+    backend = _resolve_autonomy_backend()
+    if backend != "graph":
+        return
+
+    cfg = resolve_autonomy_graphdb_config()
+    endpoint = str(cfg.get("endpoint") or "")
+    repo = str(cfg.get("repo") or "collapse")
+    user = cfg.get("user")
+    password = cfg.get("password")
+    auth_present = bool(user and password)
+    source = str(cfg.get("source") or "unconfigured")
+    endpoint_present = bool(endpoint)
+
+    logger.info(
+        "autonomy_graph_probe backend=%s endpoint_present=%s repo=%s auth_present=%s source=%s",
+        backend,
+        "yes" if endpoint_present else "no",
+        repo,
+        "yes" if auth_present else "no",
+        source,
+    )
+    if not endpoint_present:
+        logger.warning(
+            "autonomy_graph_probe result=fail reason=graph_not_configured endpoint=graphdb:unconfigured repo=%s",
+            repo,
+        )
+        return
+
+    timeout_sec = min(max(float(os.getenv("GRAPHDB_PROBE_TIMEOUT_SEC", "3.0")), 1.0), 4.0)
+    auth = (str(user), str(password)) if auth_present else None
+    try:
+        response = requests.get(endpoint, timeout=timeout_sec, auth=auth)
+        if response.status_code < 400:
+            logger.info("autonomy_graph_probe result=ok endpoint=%s", endpoint)
+            return
+        logger.warning(
+            "autonomy_graph_probe result=fail reason=http_%s endpoint=%s repo=%s",
+            response.status_code,
+            endpoint,
+            repo,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "autonomy_graph_probe result=fail reason=%s endpoint=%s repo=%s",
+            exc.__class__.__name__,
+            endpoint,
+            repo,
+        )
 
 
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
@@ -547,6 +605,7 @@ async def main() -> None:
         f"Starting cortex-exec bus listener channel={settings.channel_exec_request} "
         f"bus={settings.orion_bus_url}"
     )
+    _run_autonomy_graph_probe()
     assert verb_listener is not None, "Verb listener not initialized"
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"

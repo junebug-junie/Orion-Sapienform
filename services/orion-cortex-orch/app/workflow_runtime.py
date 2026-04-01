@@ -1260,9 +1260,10 @@ async def _execute_concept_induction_pass(
             "concept_induction_journal_handoff %s",
             json.dumps(
                 {
-                    "stage": "synth_result_requested",
+                    "stage": "synth_action_requested",
                     "workflow_id": workflow_id,
                     "correlation_id": correlation_id,
+                    "journal_content_source": "llm_synthesis",
                 },
                 sort_keys=True,
             ),
@@ -1273,6 +1274,18 @@ async def _execute_concept_induction_pass(
             resolved_backend=resolved_backend,
         )
         try:
+            logger.info(
+                "concept_induction_journal_handoff %s",
+                json.dumps(
+                    {
+                        "stage": "synth_llm_requested",
+                        "workflow_id": workflow_id,
+                        "correlation_id": correlation_id,
+                        "journal_content_source": "llm_synthesis",
+                    },
+                    sort_keys=True,
+                ),
+            )
             synthesis_draft = await _run_concept_induction_grounded_journal_synthesis(
                 call_verb_runtime=call_verb_runtime,
                 bus=bus,
@@ -1288,9 +1301,10 @@ async def _execute_concept_induction_pass(
                 "concept_induction_journal_handoff %s",
                 json.dumps(
                     {
-                        "stage": "synth_result_received",
+                        "stage": "synth_llm_succeeded",
                         "workflow_id": workflow_id,
                         "correlation_id": correlation_id,
+                        "journal_content_source": "llm_synthesis",
                     },
                     sort_keys=True,
                 ),
@@ -1299,9 +1313,10 @@ async def _execute_concept_induction_pass(
                 "concept_induction_journal_handoff %s",
                 json.dumps(
                     {
-                        "stage": "synth_result_parsed",
+                        "stage": "synth_draft_parsed",
                         "workflow_id": workflow_id,
                         "correlation_id": correlation_id,
+                        "journal_content_source": "llm_synthesis",
                     },
                     sort_keys=True,
                 ),
@@ -1310,9 +1325,10 @@ async def _execute_concept_induction_pass(
                 "concept_induction_journal_handoff %s",
                 json.dumps(
                     {
-                        "stage": "grounding_check_passed",
+                        "stage": "synth_draft_grounding_passed",
                         "workflow_id": workflow_id,
                         "correlation_id": correlation_id,
+                        "journal_content_source": "llm_synthesis",
                     },
                     sort_keys=True,
                 ),
@@ -1328,6 +1344,7 @@ async def _execute_concept_induction_pass(
                         "workflow_id": workflow_id,
                         "correlation_id": correlation_id,
                         "error": message,
+                        "journal_content_source": "summary_fallback",
                     },
                     sort_keys=True,
                     default=str,
@@ -1366,6 +1383,9 @@ async def _execute_concept_induction_pass(
                     "kind": JOURNAL_WRITE_KIND,
                     "channel": JOURNAL_WRITE_CHANNEL,
                     "entry_id": write.entry_id,
+                    "journal_content_source": "llm_synthesis",
+                    "draft_mode": synthesis_draft.mode,
+                    "draft_title": synthesis_draft.title,
                 },
                 sort_keys=True,
             ),
@@ -1384,6 +1404,7 @@ async def _execute_concept_induction_pass(
                         "channel": JOURNAL_WRITE_CHANNEL,
                         "entry_id": write.entry_id,
                         "error": str(exc),
+                        "journal_content_source": "summary_fallback",
                     },
                     sort_keys=True,
                     default=str,
@@ -1394,12 +1415,13 @@ async def _execute_concept_induction_pass(
             "concept_induction_journal_handoff %s",
             json.dumps(
                 {
-                    "stage": "journal_write_published",
+                    "stage": "journal_write_emitted",
                     "workflow_id": workflow_id,
                     "correlation_id": correlation_id,
                     "kind": JOURNAL_WRITE_KIND,
                     "channel": JOURNAL_WRITE_CHANNEL,
                     "entry_id": write.entry_id,
+                    "journal_content_source": "llm_synthesis",
                 },
                 sort_keys=True,
             ),
@@ -1426,6 +1448,7 @@ async def _execute_concept_induction_pass(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "synthesis_mode": "brain_grounded",
                 "synthesis_prompt_version": "concept_induction_journal_grounded.v1",
+                "journal_content_source": "llm_synthesis",
             },
         }
     metadata["workflow"] = {

@@ -69,6 +69,32 @@ def _literal(binding: dict[str, dict[str, str]], key: str) -> str | None:
     return None
 
 
+def _bounded_reason(exc: Exception, *, limit: int = 180) -> str:
+    reason = " ".join(str(exc or "").split()).strip() or exc.__class__.__name__
+    return reason[:limit]
+
+
+def _dominant_drive_from_evidence(
+    *,
+    explicit: str | None,
+    drive_pressures: dict[str, float],
+    active_drives: Sequence[str],
+) -> str | None:
+    explicit_text = " ".join(str(explicit or "").split()).strip()
+    if explicit_text:
+        return explicit_text
+    if drive_pressures:
+        return max(
+            drive_pressures.items(),
+            key=lambda item: (float(item[1]), item[0]),
+        )[0]
+    for drive in active_drives:
+        drive_text = " ".join(str(drive or "").split()).strip()
+        if drive_text:
+            return drive_text
+    return None
+
+
 def _status_json(*, backend: str, subjects: Sequence[str], results: Sequence[AutonomyLookupV1], observer: dict[str, str] | None) -> str:
     unavailable = [item.unavailable_reason for item in results if item.availability == "unavailable"]
     payload = {
@@ -181,6 +207,7 @@ LIMIT 1
     def _fetch_drive_audit(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[dict[str, object] | None, int]:
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT ?artifact_id ?dominant_drive ?created_at ?active_drive ?drive_name ?drive_pressure ?tension_kind
 WHERE {{
   GRAPH <{AUTONOMY_DRIVES_GRAPH}> {{
@@ -191,12 +218,23 @@ WHERE {{
       orion:artifactId ?artifact_id ;
       orion:timestamp ?created_at .
     OPTIONAL {{ ?artifact orion:dominantDriveName ?dominant_drive . }}
-    OPTIONAL {{ ?artifact orion:highlightsActiveDrive ?active_drive_uri . ?active_drive_uri <http://www.w3.org/2000/01/rdf-schema#label> ?active_drive . }}
+    OPTIONAL {{
+      ?artifact orion:highlightsActiveDrive ?active_drive_ref .
+      OPTIONAL {{
+        FILTER(isIRI(?active_drive_ref))
+        ?active_drive_ref rdfs:label ?active_drive_label .
+      }}
+      BIND(COALESCE(?active_drive_label, STR(?active_drive_ref)) AS ?active_drive)
+    }}
     OPTIONAL {{
       ?artifact orion:hasDriveAssessment ?assessment .
-      ?assessment orion:driveDimension ?drive_uri ;
+      ?assessment orion:driveDimension ?drive_ref ;
         orion:drivePressure ?drive_pressure .
-      ?drive_uri <http://www.w3.org/2000/01/rdf-schema#label> ?drive_name .
+      OPTIONAL {{
+        FILTER(isIRI(?drive_ref))
+        ?drive_ref rdfs:label ?drive_name_label .
+      }}
+      BIND(COALESCE(?drive_name_label, STR(?drive_ref)) AS ?drive_name)
     }}
     OPTIONAL {{ ?artifact orion:derivedFromTension ?tension_ref . ?tension_ref orion:tensionKind ?tension_kind . }}
   }}
@@ -235,7 +273,11 @@ LIMIT 200
 
         return ({
             "artifact_id": latest_id,
-            "dominant_drive": dominant_drive,
+            "dominant_drive": _dominant_drive_from_evidence(
+                explicit=dominant_drive,
+                drive_pressures=drive_pressures,
+                active_drives=active_drives,
+            ),
             "created_at": created_at,
             "active_drives": active_drives,
             "drive_pressures": drive_pressures,
@@ -296,19 +338,55 @@ LIMIT {self._goals_limit}
             )
             return AutonomyLookupV1(subject=subject, state=None, availability="unavailable", unavailable_reason="graph_not_configured")
 
+        identity: dict[str, str] | None = None
+        audit: dict[str, object] | None = None
+        goals: list[AutonomyGoalHeadlineV1] = []
         identity_rows = 0
         drives_rows = 0
         goals_rows = 0
-        try:
-            identity, identity_rows = self._fetch_identity(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
-            audit, drives_rows = self._fetch_drive_audit(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
-            goals, goals_rows = self._fetch_goals(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
-        except (GraphQueryError, Exception):
+        failed_subquery: str | None = None
+        failure_reason: str | None = None
+        for name, fn in (
+            ("identity", self._fetch_identity),
+            ("drives", self._fetch_drive_audit),
+            ("goals", self._fetch_goals),
+        ):
+            try:
+                value, row_count = fn(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
+                if name == "identity":
+                    identity = value  # type: ignore[assignment]
+                    identity_rows = row_count
+                elif name == "drives":
+                    audit = value  # type: ignore[assignment]
+                    drives_rows = row_count
+                else:
+                    goals = value  # type: ignore[assignment]
+                    goals_rows = row_count
+                logger.info(
+                    "autonomy_graph_subquery subject=%s subquery=%s status=ok rows=%s",
+                    subject,
+                    name,
+                    row_count,
+                )
+            except (GraphQueryError, Exception) as exc:
+                failed_subquery = name
+                failure_reason = _bounded_reason(exc)
+                logger.warning(
+                    "autonomy_graph_subquery subject=%s subquery=%s status=query_error reason=%s",
+                    subject,
+                    name,
+                    failure_reason,
+                )
+                break
+
+        if failed_subquery is not None:
             logger.warning(
-                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false identity_rows=%s drives_rows=%s goals_rows=%s availability=unavailable unavailable_reason=query_error",
+                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false failed_subquery=%s failure_reason=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=unavailable unavailable_reason=query_error",
                 subject,
                 binding.model_layer,
                 binding.entity_id,
+                failed_subquery,
+                failure_reason or "unknown",
                 identity_rows,
                 drives_rows,
                 goals_rows,

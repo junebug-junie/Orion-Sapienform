@@ -166,8 +166,16 @@ def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
     state = ctx.get("chat_autonomy_state") if isinstance(ctx.get("chat_autonomy_state"), dict) else {}
     if not summary and not state:
         return None
+    dominant_drive = state.get("dominant_drive")
+    if not dominant_drive:
+        top_drives = list(summary.get("top_drives") or [])
+        if top_drives:
+            dominant_drive = top_drives[0]
+        else:
+            active_drives = list(state.get("active_drives") or [])
+            dominant_drive = active_drives[0] if active_drives else None
     preview = {
-        "dominant_drive": state.get("dominant_drive"),
+        "dominant_drive": dominant_drive,
         "top_drives": list(summary.get("top_drives") or state.get("active_drives") or [])[:3],
         "active_tensions": list(summary.get("active_tensions") or state.get("tension_kinds") or [])[:3],
         "proposal_headlines": list(summary.get("proposal_headlines") or [])[:3],

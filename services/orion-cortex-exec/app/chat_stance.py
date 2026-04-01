@@ -470,16 +470,30 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         for subject in SUBJECT_BINDINGS
     }
     repo_status = repository.status()
+    debug["_runtime"] = {
+        "backend": repo_status.backend,
+        "selected_subject": selected_subject,
+        "repository_status": {
+            "source_available": repo_status.source_available,
+            "source_path": repo_status.source_path,
+        },
+    }
+    exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
+    if preferred and preferred.availability == "available":
+        exported_keys.append("autonomy_state")
     logger.info(
-        "chat_autonomy_repository_status %s",
+        "autonomy_lookup_turn %s",
         json.dumps(
             {
                 "backend": repo_status.backend,
                 "source_path": repo_status.source_path,
                 "source_available": repo_status.source_available,
+                "endpoint_repo": endpoint or "graphdb:unconfigured",
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
                 "selected_subject": selected_subject,
+                "summary_present": bool(summary and summary.stance_hint),
+                "exported_metadata_keys": exported_keys,
                 "debug": debug,
             },
             sort_keys=True,
@@ -488,6 +502,13 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "lookups": lookups,
         "state": preferred.state if preferred and preferred.availability == "available" else None,
+        "backend": repo_status.backend,
+        "selected_subject": selected_subject,
+        "repository_status": {
+            "backend": repo_status.backend,
+            "source_path": repo_status.source_path,
+            "source_available": repo_status.source_available,
+        },
         "summary": summary,
         "debug": debug,
     }
@@ -530,6 +551,9 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ctx["chat_autonomy_state"] = autonomy["state"].model_dump(mode="json") if autonomy["state"] is not None else None
     ctx["chat_autonomy_summary"] = autonomy["summary"].model_dump(mode="json")
     ctx["chat_autonomy_debug"] = autonomy["debug"]
+    ctx["chat_autonomy_backend"] = autonomy["backend"]
+    ctx["chat_autonomy_selected_subject"] = autonomy["selected_subject"]
+    ctx["chat_autonomy_repository_status"] = autonomy["repository_status"]
     return inputs
 
 

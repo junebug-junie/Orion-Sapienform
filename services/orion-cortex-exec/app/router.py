@@ -181,6 +181,10 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else None
     debug = ctx.get("chat_autonomy_debug") if isinstance(ctx.get("chat_autonomy_debug"), dict) else None
     state = ctx.get("chat_autonomy_state") if isinstance(ctx.get("chat_autonomy_state"), dict) else None
+    backend = ctx.get("chat_autonomy_backend")
+    selected_subject = ctx.get("chat_autonomy_selected_subject")
+    repository_status = ctx.get("chat_autonomy_repository_status") if isinstance(ctx.get("chat_autonomy_repository_status"), dict) else None
+    has_autonomy_context = any(item is not None for item in (summary, debug, state, backend, selected_subject, repository_status))
     payload: Dict[str, Any] = {}
     if summary:
         payload["autonomy_summary"] = summary
@@ -189,9 +193,21 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     preview = _autonomy_state_preview(ctx)
     if preview:
         payload["autonomy_state_preview"] = preview
-    if state:
-        payload["autonomy_backend"] = state.get("source")
-        payload["autonomy_selected_subject"] = state.get("subject")
+    if has_autonomy_context:
+        if backend:
+            payload["autonomy_backend"] = backend
+        elif state:
+            payload["autonomy_backend"] = state.get("source")
+        else:
+            payload["autonomy_backend"] = None
+        if selected_subject is not None:
+            payload["autonomy_selected_subject"] = selected_subject
+        elif state:
+            payload["autonomy_selected_subject"] = state.get("subject")
+        else:
+            payload["autonomy_selected_subject"] = None
+    if repository_status:
+        payload["autonomy_repository_status"] = repository_status
     return payload
 
 

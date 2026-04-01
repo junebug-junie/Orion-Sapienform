@@ -153,3 +153,46 @@ def test_router_prepares_brain_autonomy_context_for_non_chat_general_verbs(monke
     assert result.verb_name == "analyze_text"
     assert result.metadata["autonomy_summary"]["stance_hint"] == "stabilize and clarify"
     assert result.metadata["autonomy_debug"]["orion"]["availability"] == "available"
+
+
+def test_router_exports_backend_and_repository_status_when_autonomy_unavailable(monkeypatch) -> None:
+    runner = PlanRunner()
+    fake_step = StepExecutionResult(
+        status="success",
+        verb_name="chat_general",
+        step_name="llm_chat_general",
+        order=0,
+        result={"LLMGatewayService": {"content": "ok"}},
+        latency_ms=1,
+        node="n",
+        logs=[],
+        error=None,
+    )
+    monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    req = _request()
+    ctx = {
+        "mode": "brain",
+        "raw_user_text": "hello",
+        "chat_autonomy_summary": {"stance_hint": "stay stable"},
+        "chat_autonomy_debug": {
+            "orion": {"availability": "unavailable", "present": False, "unavailable_reason": "query_error"},
+            "_runtime": {"backend": "graph", "selected_subject": None, "repository_status": {"source_available": True, "source_path": "http://graphdb/repositories/collapse"}},
+        },
+        "chat_autonomy_backend": "graph",
+        "chat_autonomy_selected_subject": None,
+        "chat_autonomy_repository_status": {"backend": "graph", "source_path": "http://graphdb/repositories/collapse", "source_available": True},
+    }
+    result = asyncio.run(
+        runner.run_plan(
+            bus=object(),
+            source=ServiceRef(name="x", version="0", node="n"),
+            req=req,
+            correlation_id="corr-a4",
+            ctx=ctx,
+        )
+    )
+    assert result.metadata["autonomy_backend"] == "graph"
+    assert result.metadata["autonomy_selected_subject"] is None
+    assert result.metadata["autonomy_repository_status"]["source_available"] is True
+    assert result.metadata["autonomy_debug"]["orion"]["unavailable_reason"] == "query_error"

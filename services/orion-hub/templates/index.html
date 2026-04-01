@@ -263,14 +263,23 @@
         </div>
 
         <div id="autonomyDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
-          <button
-            id="autonomyDebugToggle"
-            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-            type="button"
-          >
-            <span class="uppercase tracking-wide">Autonomy Runtime</span>
-            <span id="autonomyDebugCaret" class="text-gray-500">▾</span>
-          </button>
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="autonomyDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Autonomy Runtime</span>
+              <span id="autonomyDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="autonomyDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
           <div id="autonomyDebugBody" class="hidden space-y-4 text-xs text-gray-300">
             <div id="autonomyDebugMeta" class="text-[10px] text-gray-500">--</div>
             <div>
@@ -1974,6 +1983,28 @@
             <div id="socialInspectionMemorySurface" class="mt-4 space-y-3"></div>
           </section>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" aria-hidden="true">
+    <div id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm"></div>
+    <div id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-emerald-300">Autonomy runtime</div>
+          <div id="autonomyDebugModalMeta" class="mt-1 text-[11px] text-gray-400">Live autonomy repository and proposal-only alignment payload.</div>
+        </div>
+        <button
+          id="autonomyDebugModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="autonomyDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
       </div>
     </div>
   </div>

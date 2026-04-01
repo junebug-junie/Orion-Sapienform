@@ -63,6 +63,7 @@ def test_structured_verb_with_only_contaminated_text_is_rejected() -> None:
     ], verb_name="concept_induction_journal_synthesize")
     assert final_text == ""
     assert diag["structured_output_rejected"] is True
+    assert diag["structured_json_extraction_attempted"] is True
 
 
 def test_chat_general_preserves_visible_answer_after_think_stripping() -> None:
@@ -85,3 +86,26 @@ def test_concept_induction_regression_strips_think_and_returns_json() -> None:
         _step({"content": "<think>check format</think>\n{\"mode\":\"manual\",\"title\":\"Synthesis\",\"body\":\"Stable output.\"}"})
     ], verb_name="concept_induction_journal_synthesize")
     assert final_text == '{"mode":"manual","title":"Synthesis","body":"Stable output."}'
+
+
+def test_structured_verb_keeps_scanning_candidates_after_rejecting_first() -> None:
+    final_text, diag = _extract_final_text([
+        _step(
+            {
+                "content": "<think>inner monologue only</think>",
+                "text": '{"mode":"manual","title":"Recovered","body":"From text field."}',
+            }
+        )
+    ], verb_name="concept_induction_journal_synthesize")
+    assert final_text == '{"mode":"manual","title":"Recovered","body":"From text field."}'
+    assert diag["source_field"] == "text"
+    assert diag["candidate_count"] == 2
+    assert diag["rejected_candidate_count"] == 1
+
+
+def test_chat_general_does_not_blank_clean_visible_answer() -> None:
+    final_text, diag = _extract_final_text([
+        _step({"content": "Visible final answer without tags."})
+    ], verb_name="chat_general")
+    assert final_text == "Visible final answer without tags."
+    assert diag["result_len"] == len("Visible final answer without tags.")

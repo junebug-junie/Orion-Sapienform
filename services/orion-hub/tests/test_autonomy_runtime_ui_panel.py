@@ -41,7 +41,11 @@ def test_app_js_wires_autonomy_debug_panel_clear_update_and_toggle() -> None:
     assert "function clearAutonomyDebugPanel()" in app_js
     assert "function updateAutonomyDebugPanel(summary, debug, meta = {})" in app_js
     assert "function toggleAutonomyDebugPanel()" in app_js
+    assert "function openAutonomyDebugModal()" in app_js
+    assert "function closeAutonomyDebugModal()" in app_js
+    assert "function ensureAutonomyModalRootOnBody()" in app_js
     assert "autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);" in app_js
+    assert "autonomyDebugOpenModal.addEventListener('click', openAutonomyDebugModal);" in app_js
     assert "clearAutonomyDebugPanel();" in app_js
     assert "if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = 'No meaningful autonomy signal for this turn.';" in app_js
     assert "const hubUiVersion = (window.__HUB_UI_VERSION__ || document.body?.dataset?.uiVersion || \"unknown\").trim() || \"unknown\";" in app_js
@@ -134,3 +138,26 @@ def test_alignment_rules_are_deterministic_and_bounded() -> None:
     assert "'reply appears aligned'" in app_js
     assert "'reply posture not clearly visible'" in app_js
     assert "'no strong posture expected'" in app_js
+
+
+def test_template_includes_fixed_high_z_autonomy_runtime_modal() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert 'id="autonomyDebugModalRoot"' in template
+    assert 'id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120]' in template
+    assert 'id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120]' in template
+    assert 'id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121]' in template
+    assert 'z-index: 2147483646' in template
+    assert 'z-index: 2147483647' in template
+    assert 'id="autonomyDebugOpenModal"' in template
+
+
+def test_app_js_mounts_autonomy_modal_root_to_body_and_locks_scroll() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "if (autonomyDebugModalRoot.parentElement !== document.body) {" in app_js
+    assert "document.body.appendChild(autonomyDebugModalRoot);" in app_js
+    assert "autonomyDebugModalRoot.style.zIndex = '2147483646';" in app_js
+    assert "autonomyDebugModalDialog.style.zIndex = '2147483647';" in app_js
+    assert "document.body.classList.add('overflow-hidden');" in app_js
+    assert "document.body.classList.remove('overflow-hidden');" in app_js

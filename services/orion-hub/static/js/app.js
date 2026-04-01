@@ -120,6 +120,13 @@ loadDismissedIds();
   const autonomyDebugProposals = document.getElementById('autonomyDebugProposals');
   const autonomyDebugAlignment = document.getElementById('autonomyDebugAlignment');
   const autonomyDebugRaw = document.getElementById('autonomyDebugRaw');
+  const autonomyDebugOpenModal = document.getElementById('autonomyDebugOpenModal');
+  const autonomyDebugModalRoot = document.getElementById('autonomyDebugModalRoot');
+  const autonomyDebugModalBackdrop = document.getElementById('autonomyDebugModalBackdrop');
+  const autonomyDebugModalDialog = document.getElementById('autonomyDebugModalDialog');
+  const autonomyDebugModalClose = document.getElementById('autonomyDebugModalClose');
+  const autonomyDebugModalMeta = document.getElementById('autonomyDebugModalMeta');
+  const autonomyDebugModalBody = document.getElementById('autonomyDebugModalBody');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
@@ -1669,6 +1676,8 @@ loadDismissedIds();
     if (autonomyDebugProposals) autonomyDebugProposals.textContent = 'No autonomy payload on this turn.';
     if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = 'No meaningful autonomy signal for this turn.';
     if (autonomyDebugRaw) autonomyDebugRaw.textContent = 'No autonomy payload on this turn.';
+    if (autonomyDebugModalMeta) autonomyDebugModalMeta.textContent = 'No autonomy payload on this turn.';
+    if (autonomyDebugModalBody) autonomyDebugModalBody.textContent = 'No autonomy payload on this turn.';
   }
 
   function expectedPostureFromDrive(drive) {
@@ -1727,7 +1736,9 @@ loadDismissedIds();
     const proposals = Array.isArray(safeSummary && safeSummary.proposal_headlines)
       ? safeSummary.proposal_headlines.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
       : [];
-    const availabilityRows = safeDebug ? Object.entries(safeDebug).filter((entry) => entry[1] && typeof entry[1] === 'object') : [];
+    const availabilityRows = safeDebug
+      ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
+      : [];
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
     const subjectCount = availabilityRows.length;
@@ -1745,8 +1756,8 @@ loadDismissedIds();
       stanceHint: String((safeSummary && safeSummary.stance_hint) || '').trim(),
       hasSemanticSignal,
       hasDebugSignal,
-      backend: String((meta.autonomyBackend || meta.backend || '')).trim() || '--',
-      selectedSubject: String((meta.autonomySelectedSubject || meta.selectedSubject || '')).trim() || '--',
+      backend: String((meta.autonomyBackend || (safeDebug && safeDebug._runtime && safeDebug._runtime.backend) || meta.backend || '')).trim() || '--',
+      selectedSubject: String((meta.autonomySelectedSubject || (safeDebug && safeDebug._runtime && safeDebug._runtime.selected_subject) || meta.selectedSubject || '')).trim() || '--',
       availability: {
         available: availableCount,
         unavailable: unavailableCount,
@@ -1836,6 +1847,44 @@ loadDismissedIds();
     });
 
     autonomyDebugRaw.textContent = JSON.stringify(model.raw, null, 2);
+    if (autonomyDebugModalMeta) autonomyDebugModalMeta.textContent = autonomyDebugMeta ? autonomyDebugMeta.textContent : '';
+    if (autonomyDebugModalBody) autonomyDebugModalBody.innerHTML = autonomyDebugBody ? autonomyDebugBody.innerHTML : '';
+  }
+
+  function ensureAutonomyModalRootOnBody() {
+    if (!autonomyDebugModalRoot || !document.body) return;
+    if (autonomyDebugModalRoot.parentElement !== document.body) {
+      document.body.appendChild(autonomyDebugModalRoot);
+    }
+  }
+
+  function openAutonomyDebugModal() {
+    if (!autonomyDebugModalRoot) return;
+    ensureAutonomyModalRootOnBody();
+    autonomyDebugModalRoot.style.position = 'fixed';
+    autonomyDebugModalRoot.style.inset = '0';
+    autonomyDebugModalRoot.style.zIndex = '2147483646';
+    if (autonomyDebugModalBackdrop) {
+      autonomyDebugModalBackdrop.style.position = 'fixed';
+      autonomyDebugModalBackdrop.style.inset = '0';
+      autonomyDebugModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (autonomyDebugModalDialog) {
+      autonomyDebugModalDialog.style.position = 'fixed';
+      autonomyDebugModalDialog.style.zIndex = '2147483647';
+    }
+    if (autonomyDebugModalMeta) autonomyDebugModalMeta.textContent = autonomyDebugMeta ? autonomyDebugMeta.textContent : '--';
+    if (autonomyDebugModalBody) autonomyDebugModalBody.innerHTML = autonomyDebugBody ? autonomyDebugBody.innerHTML : '--';
+    autonomyDebugModalRoot.classList.remove('hidden');
+    autonomyDebugModalRoot.setAttribute('aria-hidden', 'false');
+    if (document.body) document.body.classList.add('overflow-hidden');
+  }
+
+  function closeAutonomyDebugModal() {
+    if (!autonomyDebugModalRoot) return;
+    autonomyDebugModalRoot.classList.add('hidden');
+    autonomyDebugModalRoot.setAttribute('aria-hidden', 'true');
+    if (document.body) document.body.classList.remove('overflow-hidden');
   }
 
   function renderSocialInspectionBadges(container, badges) {
@@ -4576,6 +4625,24 @@ loadDismissedIds();
   if (autonomyDebugToggle) {
     autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);
   }
+  ensureAutonomyModalRootOnBody();
+  if (autonomyDebugOpenModal) {
+    autonomyDebugOpenModal.addEventListener('click', openAutonomyDebugModal);
+  }
+  if (autonomyDebugModalClose) {
+    autonomyDebugModalClose.addEventListener('click', closeAutonomyDebugModal);
+  }
+  if (autonomyDebugModalBackdrop) {
+    autonomyDebugModalBackdrop.addEventListener('click', closeAutonomyDebugModal);
+  }
+  if (autonomyDebugModalRoot) {
+    autonomyDebugModalRoot.addEventListener('click', (event) => {
+      if (event.target === autonomyDebugModalRoot) closeAutonomyDebugModal();
+    });
+  }
+  if (autonomyDebugModalDialog) {
+    autonomyDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
   if (socialInspectionOpen) {
     socialInspectionOpen.addEventListener('click', () => openSocialInspectionModal());
   }
@@ -4661,6 +4728,10 @@ loadDismissedIds();
     }
     if (event.key === 'Escape' && workflowModal && !workflowModal.classList.contains('hidden')) {
       closeWorkflowModal();
+      return;
+    }
+    if (event.key === 'Escape' && autonomyDebugModalRoot && !autonomyDebugModalRoot.classList.contains('hidden')) {
+      closeAutonomyDebugModal();
       return;
     }
     if (event.key === 'Escape' && scheduleModal && !scheduleModal.classList.contains('hidden')) {

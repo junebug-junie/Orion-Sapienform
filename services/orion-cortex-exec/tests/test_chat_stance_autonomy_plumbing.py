@@ -72,6 +72,10 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> 
 
     assert ctx["chat_autonomy_debug"]["orion"]["availability"] == "unavailable"
     assert ctx["chat_autonomy_debug"]["orion"]["unavailable_reason"] == "query_error"
+    assert ctx["chat_autonomy_debug"]["_runtime"]["backend"] == "graph"
+    assert "repository_status" in ctx["chat_autonomy_debug"]["_runtime"]
+    assert ctx["chat_autonomy_backend"] == "graph"
+    assert "chat_autonomy_repository_status" in ctx
 
 
 def test_triage_mode_not_overridden_by_autonomy_hint(monkeypatch) -> None:

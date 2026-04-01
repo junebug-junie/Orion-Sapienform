@@ -79,6 +79,11 @@ class _FakeCortexClient:
                 },
                 "autonomy_backend": "graph",
                 "autonomy_selected_subject": "orion",
+                "autonomy_repository_status": {
+                    "backend": "graph",
+                    "source_available": True,
+                    "source_path": "http://graphdb/repositories/collapse",
+                },
             },
         )
         return CortexChatResult(cortex_result=result, final_text=result.final_text)
@@ -214,6 +219,7 @@ def test_http_chat_path_exports_autonomy_payload_for_brain_lane() -> None:
     assert result["autonomy_state_preview"]["dominant_drive"] == "coherence"
     assert result["autonomy_backend"] == "graph"
     assert result["autonomy_selected_subject"] == "orion"
+    assert result["autonomy_repository_status"]["source_available"] is True
 
 
 def test_websocket_chat_path_exports_autonomy_payload_for_brain_lane(monkeypatch) -> None:
@@ -245,3 +251,4 @@ def test_websocket_chat_path_exports_autonomy_payload_for_brain_lane(monkeypatch
     assert latest["autonomy_state_preview"]["dominant_drive"] == "coherence"
     assert latest["autonomy_backend"] == "graph"
     assert latest["autonomy_selected_subject"] == "orion"
+    assert latest["autonomy_repository_status"]["source_available"] is True

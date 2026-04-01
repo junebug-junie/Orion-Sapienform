@@ -24,7 +24,7 @@ def test_template_places_autonomy_runtime_panel_between_agent_trace_and_social_i
     assert 'id="autonomyDebugProposals"' in template
     assert 'id="autonomyDebugAlignment"' in template
     assert 'id="autonomyDebugRaw"' in template
-    assert "proposal-only" in template
+    assert "Raw compact debug" in template
     assert 'id="hubUiBuildLabel"' in template
     assert 'data-ui-version="{{HUB_UI_ASSET_VERSION}}"' in template
 
@@ -61,6 +61,7 @@ def test_app_js_passes_autonomy_payload_through_orion_message_meta_ws_and_http()
     assert "autonomySummary: d.autonomy_summary," in app_js
     assert "autonomyDebug: d.autonomy_debug," in app_js
     assert "autonomyStatePreview: d.autonomy_state_preview," in app_js
+    assert "autonomyRepositoryStatus: d.autonomy_repository_status," in app_js
 
 
 def test_append_message_renders_autonomy_between_body_and_agent_trace_for_orion() -> None:
@@ -74,12 +75,12 @@ def test_append_message_renders_autonomy_between_body_and_agent_trace_for_orion(
     assert body_idx < autonomy_idx < trace_idx < metacog_idx
 
 
-def test_autonomy_inline_card_and_debug_panel_are_proposal_only_and_compact() -> None:
+def test_autonomy_inline_card_and_debug_panel_use_semantic_and_runtime_payloads() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert "function createAutonomyPanel(summary, debug, meta = {})" in app_js
-    assert "'proposal-only'" in app_js
-    assert "proposal-only:" in app_js
+    assert "state_preview: safePreview || {}" in app_js
+    assert "repository_status:" in app_js
     assert "normalizeAutonomyModel(summary, debug, meta)" in app_js
     assert "['alignment', model.alignment.alignment_note]" in app_js
 
@@ -102,6 +103,16 @@ def test_inline_autonomy_rendering_uses_high_signal_gate() -> None:
     assert "function shouldRenderAutonomyInline(model)" in app_js
     assert "if (!model || !shouldRenderAutonomyInline(model)) return null;" in app_js
     assert "return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length);" in app_js
+
+
+def test_normalization_uses_state_preview_semantics_when_summary_sparse() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const safePreview = meta && meta.autonomyStatePreview" in app_js
+    assert "(safeSummary && safeSummary.top_drives) || (safePreview && safePreview.top_drives)" in app_js
+    assert "(safeSummary && safeSummary.active_tensions) || (safePreview && safePreview.active_tensions)" in app_js
+    assert "(safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines)" in app_js
+    assert "(safeSummary && safeSummary.dominant_drive) || (safePreview && safePreview.dominant_drive)" in app_js
 
 
 def test_clear_flow_clears_autonomy_debug_state() -> None:

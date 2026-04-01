@@ -1726,15 +1726,18 @@ loadDismissedIds();
   function normalizeAutonomyModel(summary, debug, meta = {}) {
     const safeSummary = summary && typeof summary === 'object' ? summary : null;
     const safeDebug = debug && typeof debug === 'object' ? debug : null;
+    const safePreview = meta && meta.autonomyStatePreview && typeof meta.autonomyStatePreview === 'object'
+      ? meta.autonomyStatePreview
+      : (meta && meta.autonomy_state_preview && typeof meta.autonomy_state_preview === 'object' ? meta.autonomy_state_preview : null);
     if (!safeSummary && !safeDebug) return null;
-    const topDrives = Array.isArray(safeSummary && safeSummary.top_drives)
-      ? safeSummary.top_drives.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
+    const topDrives = Array.isArray((safeSummary && safeSummary.top_drives) || (safePreview && safePreview.top_drives))
+      ? ((safeSummary && safeSummary.top_drives) || (safePreview && safePreview.top_drives)).map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
       : [];
-    const tensions = Array.isArray(safeSummary && safeSummary.active_tensions)
-      ? safeSummary.active_tensions.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
+    const tensions = Array.isArray((safeSummary && safeSummary.active_tensions) || (safePreview && safePreview.active_tensions))
+      ? ((safeSummary && safeSummary.active_tensions) || (safePreview && safePreview.active_tensions)).map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
       : [];
-    const proposals = Array.isArray(safeSummary && safeSummary.proposal_headlines)
-      ? safeSummary.proposal_headlines.map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
+    const proposalHeadlines = Array.isArray((safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines))
+      ? ((safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines)).map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
       : [];
     const availabilityRows = safeDebug
       ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
@@ -1742,8 +1745,14 @@ loadDismissedIds();
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
     const subjectCount = availabilityRows.length;
-    const dominantDrive = String((safeSummary && safeSummary.dominant_drive) || '').trim();
-    const hasSemanticSignal = !!(dominantDrive || topDrives.length || tensions.length || proposals.length);
+    const dominantDrive = String((safeSummary && safeSummary.dominant_drive) || (safePreview && safePreview.dominant_drive) || '').trim();
+    const runtimeRepositoryStatus = (safeDebug && safeDebug._runtime && safeDebug._runtime.repository_status && typeof safeDebug._runtime.repository_status === 'object')
+      ? safeDebug._runtime.repository_status
+      : {};
+    const repositoryStatus = (meta.autonomyRepositoryStatus && typeof meta.autonomyRepositoryStatus === 'object')
+      ? meta.autonomyRepositoryStatus
+      : ((meta.autonomy_repository_status && typeof meta.autonomy_repository_status === 'object') ? meta.autonomy_repository_status : runtimeRepositoryStatus);
+    const hasSemanticSignal = !!(dominantDrive || topDrives.length || tensions.length || proposalHeadlines.length);
     const hasDebugSignal = !!(safeDebug && typeof safeDebug === 'object' && Object.keys(safeDebug).length);
     const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal || String((safeSummary && safeSummary.stance_hint) || '').trim());
     if (!hasAnySignal) return null;
@@ -1752,7 +1761,8 @@ loadDismissedIds();
       dominantDrive,
       topDrives,
       tensions,
-      proposals,
+      proposals: proposalHeadlines,
+      proposalHeadlines,
       stanceHint: String((safeSummary && safeSummary.stance_hint) || '').trim(),
       hasSemanticSignal,
       hasDebugSignal,
@@ -1764,10 +1774,23 @@ loadDismissedIds();
         subjects: subjectCount,
       },
       fallback: unavailableCount > 0 ? 'yes' : 'no',
+      repositoryStatus: {
+        source_available: !!repositoryStatus.source_available,
+        source_path: String(repositoryStatus.source_path || '').trim() || '--',
+      },
       alignment: computeAutonomyAlignment({ dominantDrive }, meta.replyText || meta.reply_text || ''),
       raw: {
         summary: safeSummary || {},
         debug: safeDebug || {},
+        state_preview: safePreview || {},
+        runtime: {
+          backend: String((meta.autonomyBackend || (safeDebug && safeDebug._runtime && safeDebug._runtime.backend) || meta.backend || '')).trim() || '--',
+          selected_subject: String((meta.autonomySelectedSubject || (safeDebug && safeDebug._runtime && safeDebug._runtime.selected_subject) || meta.selectedSubject || '')).trim() || '--',
+          repository_status: {
+            source_available: !!repositoryStatus.source_available,
+            source_path: String(repositoryStatus.source_path || '').trim() || '--',
+          },
+        },
       },
     };
   }
@@ -1797,7 +1820,7 @@ loadDismissedIds();
     }
     autonomyDebugPanel.classList.remove('hidden');
     if (autonomyDebugMeta) {
-      autonomyDebugMeta.textContent = `backend ${model.backend} · selected ${model.selectedSubject} · proposal-only`;
+      autonomyDebugMeta.textContent = `backend ${model.backend} · selected ${model.selectedSubject} · runtime+semantic`;
     }
 
     autonomyDebugOverview.innerHTML = '';
@@ -1805,6 +1828,8 @@ loadDismissedIds();
       `backend: ${model.backend}`,
       `selected subject: ${model.selectedSubject}`,
       `availability: ${model.availability.available}/${model.availability.subjects} available`,
+      `repository source: ${model.repositoryStatus.source_available ? 'available' : 'unavailable'}`,
+      `repository path: ${model.repositoryStatus.source_path}`,
       `fallback: ${model.fallback}`,
     ].forEach((line) => {
       const row = document.createElement('div');
@@ -1824,11 +1849,11 @@ loadDismissedIds();
     });
 
     autonomyDebugProposals.innerHTML = '';
-    if (model.proposals.length) {
-      model.proposals.forEach((proposal) => {
+    if (model.proposalHeadlines.length) {
+      model.proposalHeadlines.forEach((proposal) => {
         const row = document.createElement('div');
         row.className = 'rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1';
-        row.textContent = `proposal-only: ${proposal}`;
+        row.textContent = proposal;
         autonomyDebugProposals.appendChild(row);
       });
     } else {
@@ -3836,7 +3861,7 @@ loadDismissedIds();
     [
       `backend:${model.backend}`,
       `availability:${model.availability.available}/${model.availability.subjects}`,
-      'proposal-only',
+      `repo:${model.repositoryStatus.source_available ? 'up' : 'down'}`,
     ].forEach((value) => {
       const badge = document.createElement('span');
       badge.className = 'rounded-full border border-violet-400/40 bg-violet-500/15 px-2 py-0.5 text-[10px] text-violet-100';
@@ -3850,7 +3875,7 @@ loadDismissedIds();
       ['dominant drive', model.dominantDrive || '--'],
       ['top drives', model.topDrives.length ? model.topDrives.join(', ') : '--'],
       ['top tensions', model.tensions.length ? model.tensions.join(', ') : '--'],
-      ['proposal headlines', model.proposals.length ? model.proposals.join(' · ') : '--'],
+      ['proposal headlines', model.proposalHeadlines.length ? model.proposalHeadlines.join(' · ') : '--'],
       ['alignment', model.alignment.alignment_note],
     ].forEach(([label, value]) => {
       const row = document.createElement('div');
@@ -4775,6 +4800,7 @@ loadDismissedIds();
               autonomyStatePreview: d.autonomy_state_preview,
               autonomyBackend: d.autonomy_backend,
               autonomySelectedSubject: d.autonomy_selected_subject,
+              autonomyRepositoryStatus: d.autonomy_repository_status,
             });
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
@@ -4860,6 +4886,7 @@ loadDismissedIds();
                 autonomyStatePreview: d.autonomy_state_preview,
                 autonomyBackend: d.autonomy_backend,
                 autonomySelectedSubject: d.autonomy_selected_subject,
+                autonomyRepositoryStatus: d.autonomy_repository_status,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
             } else if(d.error) appendMessage('System', d.error, 'text-red-400');

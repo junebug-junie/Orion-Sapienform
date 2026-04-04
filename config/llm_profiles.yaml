@@ -393,6 +393,44 @@ profiles:
       Atlas-specific metacog worker profile.
       Mirrors the former Athena/P4 metacog lane, but pins to Atlas GPU lane 2.
 
+  llama3-8b-instruct-q4km-atlas-helper:
+    display_name: "Llama 3 8B Instruct – Q4_K_M (llama.cpp, Atlas Helper Lane)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "llama-3-8b-instruct-q4_k_m"
+
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [3]
+      max_model_len: 4096
+      max_batch_tokens: 256
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.85
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "PawanKrd/Meta-Llama-3-8B-Instruct-GGUF"
+      hf_filename: "llama-3-8b-instruct.Q4_K_M.gguf"
+      host: "0.0.0.0"
+      port: 8080
+      ctx_size: 4096
+      n_gpu_layers: 35
+      threads: 8
+      n_parallel: 2
+      batch_size: 256
+      temperature: 0.2
+      n_predict: 512
+
+    notes: |
+      Fast, non-thinking helper lane for bounded internal transforms:
+      - chat stance brief synthesis
+      - cheap deterministic helper passes
+
   qwen3-30b-a3b-q4km-atlas-agent:
     display_name: "Qwen3 30B A3B – Q4_K_M (llama.cpp, Atlas Agent Lane 1)"
     task_type: chat

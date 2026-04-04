@@ -159,7 +159,25 @@ class TestLLMBackendExecution(unittest.TestCase):
         self.assertIn("response_format", payload)
         self.assertEqual(payload["response_format"], {"type": "json_object"})
 
-    def test_route_table_accepts_agent_route(self):
+    def test_route_table_accepts_agent_route_in_merged_mode(self):
+        original = settings.llm_route_table_json
+        try:
+            settings.llm_route_table_json = (
+                '{"chat":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
+                '"agent":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
+                '"helper":{"url":"http://atlas:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"}}'
+            )
+            _load_route_targets.cache_clear()
+            targets = _load_route_targets()
+            self.assertIn("agent", targets)
+            self.assertEqual(targets["agent"].served_by, "atlas-worker-1")
+            self.assertIn("helper", targets)
+            self.assertEqual(targets["helper"].served_by, "atlas-worker-helper-1")
+        finally:
+            settings.llm_route_table_json = original
+            _load_route_targets.cache_clear()
+
+    def test_route_table_accepts_agent_route_in_split_mode(self):
         original = settings.llm_route_table_json
         try:
             settings.llm_route_table_json = (

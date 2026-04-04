@@ -2106,6 +2106,15 @@ async def call_step_services(
                     model=req_model,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                    route=(
+                        "helper"
+                        if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
+                        else "chat"
+                        if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
+                        else "metacog"
+                        if ctx.get("mode") == "metacog"
+                        else None
+                    ),
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),

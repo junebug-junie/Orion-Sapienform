@@ -199,6 +199,69 @@ profiles:
       - single-lane / single-parallel for stable long-context reasoning
 
 
+  qwq-32b-q5km-atlas-agent-64k-think:
+    display_name: "QwQ 32B – Q5_K_M (llama.cpp, Atlas Agent Lane, 2x V100 32GB, 64k Think)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwq-32b-q5_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [1, 2]
+      max_model_len: 65536
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "bartowski/Qwen_QwQ-32B-GGUF"
+      hf_filename: "QwQ-32B-Q5_K_M.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 65536
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        enable_thinking: true
+
+      no_context_shift: true
+
+      split_mode: "row"
+      tensor_split: "1,1"
+      flash_attn: "on"
+
+      temperature: 0.55
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 1.25
+
+      n_predict: 16384
+
+    notes: |
+      Sweet-spot profile for 2x V100 32GB SXM2:
+      - Q5_K_M chosen over Q4_K_M to preserve more reasoning quality on a model that is explicitly tuned for thinking
+      - 64k context keeps this lane ambitious without getting stupid on KV/cache pressure
+      - native long-context model, so no YaRN scaling applied here
+      - thinking kept on
+      - deepseek reasoning parsing keeps thoughts structured instead of dumping raw reasoning into visible content
+      - single-lane / single-parallel for stable long-context reasoning
+      - if you want a lighter fallback, drop to Q4_K_M from the same repo
+
+
+
   # ─────────────────────────────────────────────
   # DeepSeek 70B via llama.cpp on Atlas
   # ─────────────────────────────────────────────

@@ -53,14 +53,25 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 
 > Note: Only run a single `orion-llm-gateway` subscriber on the shared request topic.
 > Route isolation should be expressed through `LLM_GATEWAY_ROUTE_TABLE_JSON`, not by running multiple gateways.
-> The `chat` route should keep pointing at the existing Atlas chat worker endpoint; any internal Atlas lane-sharing stays behind that endpoint and is not modeled by the gateway.
+> Atlas default merged mode keeps logical `chat` and `agent` routes separate while mapping both to the same chat worker URL.
 
-### Route table example
+### Route table example (default merged mode)
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
-  "agent":{"url":"http://100.121.214.30:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"}
+  "helper":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"}
+}'
+```
+
+### Route table example (optional split agent mode)
+```bash
+LLM_GATEWAY_ROUTE_TABLE_JSON='{
+  "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.121.214.30:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"},
+  "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
+  "helper":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"}
 }'
 ```
 

@@ -83,7 +83,47 @@ services:
           devices:
             - capabilities: [gpu]
 
+  atlas-helper:
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-llamacpp-helper
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=${ATLAS_HELPER_SERVICE_NAME:-atlas-worker-helper-1}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${ATLAS_HELPER_PROFILE_NAME:-llama3-8b-instruct-q4km-atlas-helper}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_HELPER_CUDA_VISIBLE_DEVICES:-3}
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${ATLAS_HELPER_HOST_PORT:-8013}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
   atlas-agent:
+    profiles: ["agent-split"]
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile

@@ -17,6 +17,8 @@ services:
     volumes:
       - ./templates:/app/templates
       - ./static:/app/static
+      - ../..:/repo:ro
+      - /var/run/docker.sock:/var/run/docker.sock
       #- /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
     environment:
       # Core service identity
@@ -26,6 +28,7 @@ services:
       - HUB_PORT=${HUB_PORT}
       - HUB_API_BASE_OVERRIDE=${HUB_API_BASE_OVERRIDE}
       - HUB_WS_BASE_OVERRIDE=${HUB_WS_BASE_OVERRIDE}
+      - ORION_REPO_ROOT=${ORION_REPO_ROOT:-/repo}
 
       # Whisper + Brain
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}

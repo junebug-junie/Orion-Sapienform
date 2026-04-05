@@ -5,6 +5,7 @@ WORKDIR /app
 # Install Python + tools + network utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip curl \
+    docker.io docker-compose-plugin \
     \
     # 1. Compiler and build tools (fixes 'gcc' not found)
     build-essential \

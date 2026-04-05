@@ -20,7 +20,23 @@ class ServiceLogConfig:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    env_root = os.getenv("ORION_REPO_ROOT", "").strip()
+    if env_root:
+        candidate = Path(env_root).resolve()
+        if (candidate / "services").is_dir():
+            return candidate
+
+    module_path = Path(__file__).resolve()
+    search_roots = [module_path.parent, *module_path.parents]
+    for candidate in search_roots:
+        if (candidate / "services").is_dir():
+            return candidate
+
+    cwd = Path.cwd().resolve()
+    if (cwd / "services").is_dir():
+        return cwd
+
+    return module_path.parent
 
 
 def discover_loggable_services(repo_root: Optional[Path] = None) -> List[ServiceLogConfig]:
@@ -185,4 +201,3 @@ class ServiceLogSession:
         for name in list(self._active.keys()):
             proc = self._active.pop(name)
             await proc.stop()
-

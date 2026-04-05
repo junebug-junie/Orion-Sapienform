@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 HUB_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -50,3 +52,15 @@ def test_build_compose_logs_command_includes_root_and_service_env_files(tmp_path
     assert "services/orion-hub/.env" in cmd
     assert "services/orion-hub/docker-compose.yml" in cmd
     assert cmd[-3:] == ["-f", "--no-color", "--timestamps"]
+
+
+def test_discovery_uses_orion_repo_root_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    services_root = tmp_path / "services"
+    service_dir = services_root / "orion-env-root"
+    service_dir.mkdir(parents=True)
+    (service_dir / "docker-compose.yml").write_text("services: {}", encoding="utf-8")
+
+    monkeypatch.setenv("ORION_REPO_ROOT", str(tmp_path))
+
+    discovered = discover_loggable_services()
+    assert any(item.name == "orion-env-root" for item in discovered)

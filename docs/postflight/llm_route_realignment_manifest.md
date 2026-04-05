@@ -1,59 +1,39 @@
-# LLM Route Realignment Manifest (Merged Chat+Agent Default + Helper Lane)
+# LLM Route Realignment Manifest (Merged Default + HELPER internal + QUICK user lane)
 
 ## Scope
 
-This change set keeps Orion's schema-level and internal route contracts intact while changing the default Atlas physical mapping:
+This change set keeps logical route contracts intact (`chat`, `agent`, `metacog`, `helper`, `quick`) while changing default Atlas physical placement:
 
-- `chat` remains on Atlas chat lane (`8011`).
-- `agent` remains a distinct logical route, but defaults to the same Atlas chat lane (`8011`) in merged mode.
-- `metacog` remains a dedicated Atlas lane (`8012`), unchanged behavior.
-- `helper` is added as a new Atlas lane (`8013`) for cheap bounded internal transforms.
-- Dedicated heavy `agent` split (`8014`) remains available through configuration only (`agent-split` compose profile + route table update).
+- `chat` → `atlas-worker-1` (`8011`)
+- `agent` (logical lane preserved) → `atlas-worker-1` (`8011`) in default merged mode
+- `metacog` → `atlas-worker-2` (`8012`) unchanged
+- `helper` (internal bounded lane) → `atlas-worker-helper-1` (`8013`)
+- `quick` (Hub-visible fast lane) → `atlas-worker-quick-1` (`8015`)
 
-## Files touched
+Optional split mode stays config-only:
 
-- `config/llm_profiles.yaml`
-- `docs/postflight/llm_route_realignment_manifest.md`
-- `scripts/smoke_llm_gateway_routes.py`
-- `services/orion-cortex-exec/app/executor.py`
-- `services/orion-agent-chain/tests/test_tool_executor_routes.py`
-- `services/orion-cortex-exec/tests/test_chat_general_route_mapping.py`
-- `services/orion-llm-gateway/.env_example`
-- `services/orion-llm-gateway/README.md`
-- `services/orion-llm-gateway/docker-compose.yml`
-- `services/orion-llm-gateway/tests/test_llm_backend.py`
-- `services/orion-llamacpp-host/.env_example`
-- `services/orion-llamacpp-host/README.md`
-- `services/orion-llamacpp-host/docker-compose.yml`
-- `services/orion-llamacpp-host/docker-compose.atlas-workers.yml`
-- `tests/test_planner_react_contract.py`
+- `agent` → `atlas-worker-agent-1` (`8014`) via `agent-split` compose profile + route table switch
 
-## Resulting route intent (default merged mode)
+## Route-table centered architecture
 
-- `chat` → existing Atlas chat worker endpoint (`atlas-worker-1`)
-- `agent` → existing Atlas chat worker endpoint (`atlas-worker-1`) [logical route preserved]
-- `metacog` → Atlas dedicated metacog worker (`atlas-worker-2`)
-- `helper` → Atlas helper worker (`atlas-worker-helper-1`)
+- Routing remains enforced by `LLM_GATEWAY_ROUTE_TABLE_JSON`.
+- `served_by` remains observability metadata.
+- No schema-level collapse of `chat`/`agent`.
+- No Orch mode rewrite and no typed planner/agent RPC rewrites.
 
-## Optional split mode (config-only)
+## Chat behavior guarantees
 
-- `agent` → Atlas heavy Qwen worker (`atlas-worker-agent-1`)
-- Enabled by route-table configuration and docker compose `agent-split` profile.
+- `chat_general` remains two-pass:
+  1) `synthesize_chat_stance_brief` on `route="helper"`
+  2) `llm_chat_general` on `route="chat"`
+- New `chat_quick` is a first-class single-pass verb:
+  - one step
+  - explicit `route="quick"`
+  - no stance-brief dependency
+  - still receives lightweight identity context from existing executor injection plumbing
 
-## Architecture notes
+## Non-goals preserved
 
-- Routing remains gateway-centered and env-first through `LLM_GATEWAY_ROUTE_TABLE_JSON`.
-- No new route enum or service-discovery layer was introduced.
-- `served_by` remains observability metadata; route isolation is enforced by explicit route → URL mapping plus one profile per host container.
-- Schema-level `route` was not collapsed or renamed (`chat`, `agent`, `metacog` remain valid; `helper` added).
-- Default/no-route callers intentionally still resolve through `LLM_ROUTE_DEFAULT` (normally `chat`), while explicit bad named routes fail closed whenever route-table mode is active.
-
-## Validation notes
-
-- PlannerReact now sends `route="agent"` for its gateway calls.
-- AgentChain delegated LLM-only tools now send `route="agent"`.
-- `chat_general.synthesize_chat_stance_brief` now sends `route="helper"`.
-- `chat_general.llm_chat_general` now sends `route="chat"` explicitly.
-- Metacog callers continue using explicit `route="metacog"`.
-- Gateway tests cover merged and split-mode `agent` route tables, helper route loading, fail-closed behavior for unknown explicit routes, and preserved default-chat behavior for no-route callers under route-table mode.
-- Typed agent RPC contracts (`agent.planner.request`, `agent.chain.request`) and Orch mode routing remain unchanged.
+- No new profile added to `config/llm_profiles.yaml` for QUICK.
+- HELPER not exposed in Hub mode selector.
+- Metacog routing behavior unchanged.

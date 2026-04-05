@@ -165,14 +165,19 @@ class TestLLMBackendExecution(unittest.TestCase):
             settings.llm_route_table_json = (
                 '{"chat":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
                 '"agent":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
-                '"helper":{"url":"http://atlas:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"}}'
+                '"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"},'
+                '"helper":{"url":"http://atlas:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"},'
+                '"quick":{"url":"http://atlas:8015","served_by":"atlas-worker-quick-1","backend":"llamacpp"}}'
             )
             _load_route_targets.cache_clear()
             targets = _load_route_targets()
+            self.assertEqual(targets["chat"].served_by, "atlas-worker-1")
             self.assertIn("agent", targets)
             self.assertEqual(targets["agent"].served_by, "atlas-worker-1")
+            self.assertEqual(targets["metacog"].served_by, "atlas-worker-2")
             self.assertIn("helper", targets)
             self.assertEqual(targets["helper"].served_by, "atlas-worker-helper-1")
+            self.assertEqual(targets["quick"].served_by, "atlas-worker-quick-1")
         finally:
             settings.llm_route_table_json = original
             _load_route_targets.cache_clear()
@@ -182,12 +187,16 @@ class TestLLMBackendExecution(unittest.TestCase):
         try:
             settings.llm_route_table_json = (
                 '{"chat":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
-                '"agent":{"url":"http://atlas:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"}}'
+                '"agent":{"url":"http://atlas:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"},'
+                '"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"},'
+                '"helper":{"url":"http://atlas:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"},'
+                '"quick":{"url":"http://atlas:8015","served_by":"atlas-worker-quick-1","backend":"llamacpp"}}'
             )
             _load_route_targets.cache_clear()
             targets = _load_route_targets()
             self.assertIn("agent", targets)
             self.assertEqual(targets["agent"].served_by, "atlas-worker-agent-1")
+            self.assertEqual(targets["quick"].served_by, "atlas-worker-quick-1")
         finally:
             settings.llm_route_table_json = original
             _load_route_targets.cache_clear()

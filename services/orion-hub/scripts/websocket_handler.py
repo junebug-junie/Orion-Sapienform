@@ -448,6 +448,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 trace_verb = "task_execution"
             elif mode == "council":
                 trace_verb = "council_deliberation"
+            elif isinstance(data.get("verbs"), list) and len(data.get("verbs")) == 1:
+                candidate_verb = str(data.get("verbs")[0] or "").strip()
+                if candidate_verb:
+                    trace_verb = candidate_verb
 
             # 3. Force verb for Test/Stub Submissions
             if data.get("test_mode") or data.get("submission_id"):

@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
+from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 
@@ -232,6 +233,7 @@ app.include_router(api_router)
 
 # Real-time WS endpoint
 app.add_websocket_route("/ws", websocket_endpoint)
+app.add_websocket_route("/ws/service-logs", service_logs_websocket_endpoint)
 
 # Static files for JS/CSS
 app.mount("/static", HubStaticFiles(directory=str(STATIC_DIR)), name="static")

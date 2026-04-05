@@ -58,12 +58,12 @@ services:
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
-      - LLM_PROFILE_NAME=${ATLAS_METACOG_PROFILE_NAME:-llama3-8b-instruct-q4km-atlas-metacog}
+      - LLM_PROFILE_NAME=${ATLAS_METACOG_PROFILE_NAME}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
       - LLAMACPP_PORT_OVERRIDE=8080
-      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_METACOG_CUDA_VISIBLE_DEVICES:-2}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_METACOG_CUDA_VISIBLE_DEVICES}
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:
@@ -83,30 +83,30 @@ services:
           devices:
             - capabilities: [gpu]
 
-  atlas-helper:
+  atlas-fast:
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
       args:
         - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
     image: orion-llamacpp-host:0.1.0
-    container_name: ${PROJECT:-orion}-atlas-llamacpp-helper
+    container_name: ${PROJECT:-orion}-atlas-llamacpp-fast
     restart: unless-stopped
     environment:
-      - SERVICE_NAME=${ATLAS_HELPER_SERVICE_NAME:-atlas-worker-helper-1}
+      - SERVICE_NAME=${ATLAS_FAST_SERVICE_NAME:-atlas-worker-fast-1}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
-      - LLM_PROFILE_NAME=${ATLAS_HELPER_PROFILE_NAME}
+      - LLM_PROFILE_NAME=${ATLAS_FAST_PROFILE_NAME}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
       - LLAMACPP_PORT_OVERRIDE=8080
-      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_HELPER_CUDA_VISIBLE_DEVICES:-3}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_FAST_CUDA_VISIBLE_DEVICES}
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:
-      - "${ATLAS_HELPER_HOST_PORT:-8013}:8080"
+      - "${ATLAS_FAST_HOST_PORT:-8013}:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -137,12 +137,12 @@ services:
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
-      - LLM_PROFILE_NAME=${ATLAS_AGENT_PROFILE_NAME:-qwen3-30b-a3b-q4km-atlas-agent}
+      - LLM_PROFILE_NAME=${ATLAS_AGENT_PROFILE_NAME}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
       - LLAMACPP_PORT_OVERRIDE=8080
-      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_AGENT_CUDA_VISIBLE_DEVICES:-1}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_AGENT_CUDA_VISIBLE_DEVICES}
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:

@@ -2107,7 +2107,7 @@ async def call_step_services(
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=(
-                        "helper"
+                        "quick"
                         if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
                         else "chat"
                         if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"

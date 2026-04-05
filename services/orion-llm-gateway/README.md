@@ -61,12 +61,11 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
   "agent":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
-  "helper":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"},
-  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"}
+  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
 }'
 ```
 
-`helper` is an internal lane for bounded substeps; `quick` is a user-facing chat lane.
+`quick` is the FAST lane route used by user-facing quick chat and chat_general pass-1.
 
 ### Route table example (optional split agent mode)
 ```bash
@@ -74,8 +73,7 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
   "agent":{"url":"http://100.121.214.30:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
-  "helper":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"},
-  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"}
+  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
 }'
 ```
 

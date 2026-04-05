@@ -16,7 +16,7 @@ def _base_ctx(mode: str = "brain") -> dict:
     }
 
 
-def test_chat_general_stance_step_uses_helper_route() -> None:
+def test_chat_general_stance_step_uses_quick_route() -> None:
     step = ExecutionStep(
         step_name="synthesize_chat_stance_brief",
         verb_name="chat_general",
@@ -39,7 +39,7 @@ def test_chat_general_stance_step_uses_helper_route() -> None:
 
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
-    assert sent_req.route == "helper"
+    assert sent_req.route == "quick"
 
 
 def test_chat_general_final_step_uses_chat_route() -> None:

@@ -268,8 +268,10 @@ loadDismissedIds();
   // Topic Studio
   const hubTabButton = document.getElementById("hubTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
+  const serviceLogsTabButton = document.getElementById("serviceLogsTabButton");
   const hubTabPanel = document.getElementById("hubTabPanel");
   const topicStudioPanel = document.getElementById("topicStudioPanel");
+  const serviceLogsPanel = document.getElementById("service-logs");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -500,23 +502,27 @@ loadDismissedIds();
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
 
+  function styleTabButton(button, isActive) {
+    if (!button) return;
+    button.classList.toggle("bg-indigo-600", isActive);
+    button.classList.toggle("text-white", isActive);
+    button.classList.toggle("border-indigo-500", isActive);
+    button.classList.toggle("bg-gray-800", !isActive);
+    button.classList.toggle("text-gray-200", !isActive);
+    button.classList.toggle("border-gray-700", !isActive);
+  }
+
   function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !hubTabButton || !topicStudioTabButton) return;
+    if (!hubTabPanel || !topicStudioPanel || !serviceLogsPanel || !hubTabButton || !topicStudioTabButton || !serviceLogsTabButton) return;
     const isHub = tabKey === "hub";
+    const isTopicStudio = tabKey === "topic-studio";
+    const isServiceLogs = tabKey === "service-logs";
     hubTabPanel.classList.toggle("hidden", !isHub);
-    topicStudioPanel.classList.toggle("hidden", isHub);
-    hubTabButton.classList.toggle("bg-indigo-600", isHub);
-    hubTabButton.classList.toggle("text-white", isHub);
-    hubTabButton.classList.toggle("border-indigo-500", isHub);
-    hubTabButton.classList.toggle("bg-gray-800", !isHub);
-    hubTabButton.classList.toggle("text-gray-200", !isHub);
-    hubTabButton.classList.toggle("border-gray-700", !isHub);
-    topicStudioTabButton.classList.toggle("bg-indigo-600", !isHub);
-    topicStudioTabButton.classList.toggle("text-white", !isHub);
-    topicStudioTabButton.classList.toggle("border-indigo-500", !isHub);
-    topicStudioTabButton.classList.toggle("bg-gray-800", isHub);
-    topicStudioTabButton.classList.toggle("text-gray-200", isHub);
-    topicStudioTabButton.classList.toggle("border-gray-700", isHub);
+    topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
+    serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
+    styleTabButton(hubTabButton, isHub);
+    styleTabButton(topicStudioTabButton, isTopicStudio);
+    styleTabButton(serviceLogsTabButton, isServiceLogs);
   }
 
   function resolveTopicStudioSubview() {
@@ -5499,7 +5505,7 @@ loadDismissedIds();
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
 
-  if (hubTabButton && topicStudioTabButton) {
+  if (hubTabButton && topicStudioTabButton && serviceLogsTabButton) {
     hubTabButton.addEventListener("click", () => {
       setActiveTab("hub");
       history.replaceState(null, "", "#hub");
@@ -5509,9 +5515,15 @@ loadDismissedIds();
       history.replaceState(null, "", "#topic-studio");
       refreshTopicStudio();
     });
+    serviceLogsTabButton.addEventListener("click", () => {
+      setActiveTab("service-logs");
+      history.replaceState(null, "", "#service-logs");
+    });
     if (window.location.hash === "#topic-studio") {
       setActiveTab("topic-studio");
       refreshTopicStudio();
+    } else if (window.location.hash === "#service-logs") {
+      setActiveTab("service-logs");
     } else {
       setActiveTab("hub");
     }

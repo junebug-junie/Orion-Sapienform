@@ -36,7 +36,19 @@ def _repo_root() -> Path:
     if (cwd / "services").is_dir():
         return cwd
 
+    for fallback in (
+        Path("/workspace/Orion-Sapienform"),
+        Path("/workspace"),
+        Path("/repo"),
+    ):
+        if (fallback / "services").is_dir():
+            return fallback
+
     return module_path.parent
+
+
+def resolve_repo_root() -> Path:
+    return _repo_root()
 
 
 def discover_loggable_services(repo_root: Optional[Path] = None) -> List[ServiceLogConfig]:

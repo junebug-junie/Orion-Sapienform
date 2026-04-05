@@ -27,7 +27,7 @@ from .autonomy_payloads import extract_autonomy_payload
 from .workflow_payloads import extract_workflow_payload
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .social_room import is_social_room_payload, social_room_client_meta
-from .service_logs import discover_loggable_services
+from .service_logs import discover_loggable_services, resolve_repo_root
 from orion.cognition.verb_activation import build_verb_list
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
@@ -304,6 +304,8 @@ def api_debug_build():
 
 @router.get("/api/service-logs/services")
 def api_service_logs_services() -> Dict[str, Any]:
+    repo_root = resolve_repo_root()
+    services_root = repo_root / "services"
     services = discover_loggable_services()
     return {
         "services": [
@@ -312,7 +314,12 @@ def api_service_logs_services() -> Dict[str, Any]:
                 "has_local_env": cfg.service_env_file is not None,
             }
             for cfg in services
-        ]
+        ],
+        "meta": {
+            "repo_root": os.fspath(repo_root),
+            "services_root": os.fspath(services_root),
+            "count": len(services),
+        },
     }
 
 @router.get("/api/notifications")

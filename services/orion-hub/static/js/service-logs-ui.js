@@ -157,6 +157,11 @@
         const payload = await response.json();
         const names = Array.isArray(payload.services) ? payload.services.map((item) => item.name).filter(Boolean) : [];
         renderInventory(names);
+        const meta = payload && typeof payload.meta === "object" ? payload.meta : {};
+        if (names.length === 0) {
+          const rootHint = meta.services_root || meta.repo_root || "services/";
+          setStatus(`No loggable services found under ${rootHint}. Mount repo services or set ORION_REPO_ROOT.`);
+        }
       } catch (err) {
         console.warn("[ServiceLogs] Failed to load inventory", err);
         setStatus(`Inventory error: ${err.message || err}`);

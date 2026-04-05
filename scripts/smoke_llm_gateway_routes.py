@@ -14,7 +14,7 @@ DEFAULT_ROUTE_SERVERS = {
     "agent": "atlas-worker-1",
     "metacog": "atlas-worker-2",
     "helper": "atlas-worker-helper-1",
-    "quick": "atlas-worker-quick-1",
+    "quick": "atlas-worker-helper-1",
 }
 
 

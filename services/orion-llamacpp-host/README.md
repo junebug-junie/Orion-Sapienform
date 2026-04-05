@@ -15,7 +15,7 @@ If you are standing up Atlas workers for the current `chat` / `agent` (merged ph
 
 ## TL;DR for Atlas operators
 
-For the default merged gateway route layout, Atlas should run **4 always-on `orion-llamacpp-host` containers** plus an optional split-agent worker:
+For the default merged gateway route layout, Atlas should run **3 always-on `orion-llamacpp-host` containers** plus an optional split-agent worker (serving 4 logical routes in merged mode):
 
 | Route | Compose service | Worker `SERVICE_NAME` | Host port | Profile source | GPU binding env |
 | --- | --- | --- | --- | --- | --- |
@@ -23,8 +23,10 @@ For the default merged gateway route layout, Atlas should run **4 always-on `ori
 | `agent` (logical) | routes to `chat` backend by default | `atlas-worker-1` | `8011` | same as chat | same as chat |
 | `metacog` | `atlas-metacog` | `atlas-worker-2` | `8012` | `llama3-8b-instruct-q4km-atlas-metacog` | `ATLAS_METACOG_CUDA_VISIBLE_DEVICES` |
 | `helper` (internal) | `atlas-helper` | `atlas-worker-helper-1` | `8013` | `ATLAS_HELPER_PROFILE_NAME` | `ATLAS_HELPER_CUDA_VISIBLE_DEVICES` |
-| `quick` (Hub-visible) | `atlas-quick` | `atlas-worker-quick-1` | `8015` | `ATLAS_QUICK_PROFILE_NAME` | `ATLAS_QUICK_CUDA_VISIBLE_DEVICES` |
+| `quick` (Hub-visible) | shares `atlas-helper` physical worker | `atlas-worker-helper-1` | `8013` | `ATLAS_HELPER_PROFILE_NAME` | `ATLAS_HELPER_CUDA_VISIBLE_DEVICES` |
 | `agent` (optional split mode) | `atlas-agent` | `atlas-worker-agent-1` | `8014` | `qwen3-30b-a3b-q4km-atlas-agent` | `ATLAS_AGENT_CUDA_VISIBLE_DEVICES` |
+
+`quick` is a distinct **logical gateway route** that reuses the `atlas-helper` physical worker/GPU lane.
 
 Use:
 
@@ -74,11 +76,6 @@ ATLAS_HELPER_PROFILE_NAME=
 ATLAS_HELPER_CUDA_VISIBLE_DEVICES=
 ATLAS_HELPER_HOST_PORT=8013
 
-ATLAS_QUICK_SERVICE_NAME=atlas-worker-quick-1
-ATLAS_QUICK_PROFILE_NAME=
-ATLAS_QUICK_CUDA_VISIBLE_DEVICES=
-ATLAS_QUICK_HOST_PORT=8015
-
 ATLAS_AGENT_SERVICE_NAME=atlas-worker-agent-1
 ATLAS_AGENT_PROFILE_NAME=qwen3-30b-a3b-q4km-atlas-agent
 ATLAS_AGENT_CUDA_VISIBLE_DEVICES=1
@@ -89,8 +86,8 @@ Notes:
 
 - `ATLAS_CHAT_PROFILE_NAME` is intentionally operator-supplied; keep it pointed at the current Atlas chat profile.
 - `ATLAS_METACOG_PROFILE_NAME` keeps an Atlas-specific default in compose.
-- `ATLAS_HELPER_PROFILE_NAME` and `ATLAS_QUICK_PROFILE_NAME` are operator-supplied so each lane can reuse any existing profile without changing `config/llm_profiles.yaml`.
-- Do **not** let the default workers collide on host ports (`8011/8012/8013/8015`).
+- `ATLAS_HELPER_PROFILE_NAME` is operator-supplied so the helper/quick shared lane can reuse any existing profile without changing `config/llm_profiles.yaml`.
+- Do **not** let the default workers collide on host ports (`8011/8012/8013`).
 - Optional `atlas-agent` split mode is behind compose profile `agent-split`.
 
 ### 4. Ensure the Docker network exists
@@ -105,7 +102,7 @@ docker network create app-net >/dev/null 2>&1 || true
   docker compose \
   --env-file services/orion-llamacpp-host/.env.atlas \
   -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
-  up -d --build atlas-chat atlas-metacog atlas-helper atlas-quick
+  up -d --build atlas-chat atlas-metacog atlas-helper
 ```
 
 ### 6. Verify each worker directly
@@ -114,7 +111,6 @@ docker network create app-net >/dev/null 2>&1 || true
 curl http://localhost:${ATLAS_CHAT_HOST_PORT}/health
 curl http://localhost:${ATLAS_METACOG_HOST_PORT}/health
 curl http://localhost:${ATLAS_HELPER_HOST_PORT}/health
-curl http://localhost:${ATLAS_QUICK_HOST_PORT}/health
 ```
 
 Optional split agent worker:
@@ -167,7 +163,7 @@ When working on this service, these are the main files that matter:
 - `config/llm_profiles.yaml` — model/profile registry
 - `services/orion-llamacpp-host/.env_example` — selection + override contract, plus Atlas `ATLAS_*` examples
 - `services/orion-llamacpp-host/docker-compose.yml` — single-worker compose
-- `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` — Atlas merged-mode workers (`chat`, `metacog`, `helper`, `quick`) + optional `agent-split` profile
+- `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` — Atlas merged-mode workers (`chat`, `metacog`, `helper`) where logical `quick` shares helper's physical lane, plus optional `agent-split` profile
 - `services/orion-llamacpp-host/app/settings.py` — env contract actually parsed by the wrapper
 - `services/orion-llamacpp-host/app/main.py` — model resolution, GPU binding, and llama-server launch logic
 - `../../postflight.md` — operator-facing Atlas runbook
@@ -278,7 +274,7 @@ Use `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` for the curr
 
 Important characteristics of this compose file:
 
-- one compose service per active lane (`atlas-chat`, `atlas-metacog`, `atlas-helper`, `atlas-quick`) plus optional `atlas-agent` split profile
+- one compose service per active lane (`atlas-chat`, `atlas-metacog`, `atlas-helper`) plus optional `atlas-agent` split profile
 - one active profile per container
 - one published host port per container
 - one explicit GPU binding per container

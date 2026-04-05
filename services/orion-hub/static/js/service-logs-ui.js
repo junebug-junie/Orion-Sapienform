@@ -141,6 +141,18 @@
       }
     }
 
+    function diagnosticsHint(meta) {
+      if (!meta || typeof meta !== "object") return "";
+      const hints = [];
+      if (meta.repo_root) hints.push(`repo_root=${meta.repo_root}`);
+      if (meta.services_root) hints.push(`services_root=${meta.services_root}`);
+      if (meta.services_root_exists === false) hints.push("services_root_missing");
+      if (meta.root_env_exists === false) hints.push("root_env_missing");
+      if (meta.docker_available === false) hints.push("docker_cli_missing");
+      if (meta.docker_socket_exists === false) hints.push("docker_socket_missing");
+      return hints.join(" | ");
+    }
+
     function appendLog(serviceName, line, stream) {
       const entry = ensureServiceTerminal(serviceName);
       queueLine(entry.state, line);
@@ -160,7 +172,8 @@
         const meta = payload && typeof payload.meta === "object" ? payload.meta : {};
         if (names.length === 0) {
           const rootHint = meta.services_root || meta.repo_root || "services/";
-          setStatus(`No loggable services found under ${rootHint}. Mount repo services or set ORION_REPO_ROOT.`);
+          const hint = diagnosticsHint(meta);
+          setStatus(`No loggable services found under ${rootHint}. ${hint}`.trim());
         }
       } catch (err) {
         console.warn("[ServiceLogs] Failed to load inventory", err);
@@ -184,6 +197,11 @@
           const payload = JSON.parse(event.data || "{}");
           if (payload.type === "service_inventory" && Array.isArray(payload.services)) {
             renderInventory(payload.services);
+            const meta = payload && typeof payload.meta === "object" ? payload.meta : {};
+            if (payload.services.length === 0) {
+              const hint = diagnosticsHint(meta);
+              if (hint) setStatus(`No services discovered. ${hint}`);
+            }
             sendSelection();
             return;
           }

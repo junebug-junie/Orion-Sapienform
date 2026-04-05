@@ -4,9 +4,11 @@ import asyncio
 import contextlib
 import os
 import re
+import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple, Any
 
 
 _SAFE_SERVICE_NAME = re.compile(r"^[a-zA-Z0-9._-]+$")
@@ -19,32 +21,44 @@ class ServiceLogConfig:
     service_env_file: Optional[Path]
 
 
-def _repo_root() -> Path:
+@dataclass(frozen=True)
+class RepoRootResolution:
+    repo_root: Path
+    strategy: str
+    checked: Tuple[str, ...]
+
+
+def resolve_repo_root_details() -> RepoRootResolution:
+    checked: list[str] = []
+
     env_root = os.getenv("ORION_REPO_ROOT", "").strip()
     if env_root:
         candidate = Path(env_root).resolve()
+        checked.append(f"env:ORION_REPO_ROOT={candidate}")
         if (candidate / "services").is_dir():
-            return candidate
+            return RepoRootResolution(candidate, "env:ORION_REPO_ROOT", tuple(checked))
 
     module_path = Path(__file__).resolve()
-    search_roots = [module_path.parent, *module_path.parents]
-    for candidate in search_roots:
+    for candidate in [module_path.parent, *module_path.parents]:
+        checked.append(f"module-ancestor:{candidate}")
         if (candidate / "services").is_dir():
-            return candidate
+            return RepoRootResolution(candidate, "module-ancestor", tuple(checked))
 
     cwd = Path.cwd().resolve()
+    checked.append(f"cwd:{cwd}")
     if (cwd / "services").is_dir():
-        return cwd
+        return RepoRootResolution(cwd, "cwd", tuple(checked))
 
-    for fallback in (
-        Path("/workspace/Orion-Sapienform"),
-        Path("/workspace"),
-        Path("/repo"),
-    ):
-        if (fallback / "services").is_dir():
-            return fallback
+    repo_mount = Path("/repo")
+    checked.append(f"fallback:{repo_mount}")
+    if (repo_mount / "services").is_dir():
+        return RepoRootResolution(repo_mount, "fallback:/repo", tuple(checked))
 
-    return module_path.parent
+    return RepoRootResolution(module_path.parent, "fallback:module_dir", tuple(checked))
+
+
+def _repo_root() -> Path:
+    return resolve_repo_root_details().repo_root
 
 
 def resolve_repo_root() -> Path:
@@ -52,7 +66,7 @@ def resolve_repo_root() -> Path:
 
 
 def discover_loggable_services(repo_root: Optional[Path] = None) -> List[ServiceLogConfig]:
-    root = repo_root or _repo_root()
+    root = (repo_root or _repo_root()).resolve()
     services_root = root / "services"
     if not services_root.exists() or not services_root.is_dir():
         return []
@@ -81,8 +95,78 @@ def discover_loggable_services(repo_root: Optional[Path] = None) -> List[Service
     return discovered
 
 
+def _services_scan_preview(services_root: Path, limit: int = 8) -> list[dict[str, Any]]:
+    if not services_root.is_dir():
+        return []
+
+    preview: list[dict[str, Any]] = []
+    for entry in sorted(services_root.iterdir(), key=lambda p: p.name)[:limit]:
+        if not entry.is_dir():
+            continue
+        preview.append(
+            {
+                "name": entry.name,
+                "has_compose": (entry / "docker-compose.yml").is_file(),
+                "has_env": (entry / ".env").is_file(),
+            }
+        )
+    return preview
+
+
+def _docker_diagnostics() -> dict[str, Any]:
+    docker_path = shutil.which("docker")
+    sock_path = Path("/var/run/docker.sock")
+    is_socket = False
+    if sock_path.exists():
+        with contextlib.suppress(OSError):
+            mode = sock_path.stat().st_mode
+            is_socket = stat.S_ISSOCK(mode)
+
+    return {
+        "docker_available": bool(docker_path),
+        "docker_path": docker_path,
+        "docker_socket": os.fspath(sock_path),
+        "docker_socket_exists": sock_path.exists(),
+        "docker_socket_is_socket": is_socket,
+    }
+
+
+def collect_service_inventory(repo_root: Optional[Path] = None) -> Dict[str, Any]:
+    if repo_root is None:
+        resolution = resolve_repo_root_details()
+        root = resolution.repo_root
+    else:
+        root = repo_root.resolve()
+        resolution = RepoRootResolution(root, "explicit-arg", tuple())
+
+    services = discover_loggable_services(root)
+    services_root = root / "services"
+
+    return {
+        "services": [
+            {
+                "name": cfg.name,
+                "has_local_env": cfg.service_env_file is not None,
+            }
+            for cfg in services
+        ],
+        "meta": {
+            "repo_root": os.fspath(root),
+            "resolution_strategy": resolution.strategy,
+            "resolution_checked": list(resolution.checked),
+            "services_root": os.fspath(services_root),
+            "services_root_exists": services_root.is_dir(),
+            "root_env": os.fspath(root / ".env"),
+            "root_env_exists": (root / ".env").is_file(),
+            "scan_preview": _services_scan_preview(services_root),
+            "count": len(services),
+            **_docker_diagnostics(),
+        },
+    }
+
+
 def build_compose_logs_command(config: ServiceLogConfig, repo_root: Optional[Path] = None) -> List[str]:
-    root = repo_root or _repo_root()
+    root = (repo_root or _repo_root()).resolve()
     cmd: List[str] = ["docker", "compose", "--env-file", ".env"]
 
     if config.service_env_file is not None:

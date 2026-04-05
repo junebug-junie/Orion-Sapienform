@@ -8,14 +8,16 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from .service_logs import ServiceLogSession
+from .service_logs import ServiceLogSession, collect_service_inventory, resolve_repo_root
 
 logger = logging.getLogger("orion-hub.service-logs")
 
 
 async def service_logs_websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
-    session = ServiceLogSession()
+    inventory = collect_service_inventory()
+    repo_root = resolve_repo_root()
+    session = ServiceLogSession(repo_root=repo_root)
     sender_task: asyncio.Task | None = None
 
     async def _sender() -> None:
@@ -30,6 +32,7 @@ async def service_logs_websocket_endpoint(websocket: WebSocket) -> None:
                 {
                     "type": "service_inventory",
                     "services": session.available_services,
+                    "meta": inventory.get("meta", {}),
                 }
             )
         )

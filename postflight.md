@@ -136,15 +136,19 @@ READ_TIMEOUT_SEC=700
 
 ### Route-table JSON (primary)
 
-For the current Atlas layout, use route-table JSON as the authoritative mapping:
+For the current Atlas merged-default layout, use route-table JSON as the authoritative mapping:
 
 ```dotenv
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
-  "agent":{"url":"http://100.121.214.30:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"}
+  "helper":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"},
+  "quick":{"url":"http://100.121.214.30:8015","served_by":"atlas-worker-quick-1","backend":"llamacpp"}
 }'
 ```
+
+Optional split mode keeps the logical `agent` route but points it at `8014`.
 
 ### Legacy / secondary envs
 
@@ -181,7 +185,9 @@ Edit in `services/orion-llamacpp-host/.env.atlas`:
 - per-worker vars:
   - all `ATLAS_CHAT_*`
   - all `ATLAS_METACOG_*`
-  - all `ATLAS_AGENT_*`
+  - all `ATLAS_HELPER_*`
+  - all `ATLAS_QUICK_*`
+  - optional `ATLAS_AGENT_*` (split mode only)
 
 ### Ensure network exists
 
@@ -257,8 +263,10 @@ PYTHONPATH=/workspace/Orion-Sapienform python -m scripts.smoke_llm_gateway_route
 Expected outcome:
 
 - `chat` returns `served_by=atlas-worker-1`
+- `agent` returns `served_by=atlas-worker-1` (default merged mode)
 - `metacog` returns `served_by=atlas-worker-2`
-- `agent` returns `served_by=atlas-worker-agent-1`
+- `helper` returns `served_by=atlas-worker-helper-1`
+- `quick` returns `served_by=atlas-worker-quick-1`
 
 ---
 
@@ -284,8 +292,8 @@ Expected outcome:
 - [ ] Set all `ATLAS_*` worker vars
 - [ ] Confirm unique ports / profiles / GPU bindings
 - [ ] Create `app-net`
-- [ ] Launch `atlas-chat`, `atlas-metacog`, `atlas-agent`
-- [ ] Verify worker health on `8011`, `8012`, `8014`
+- [ ] Launch `atlas-chat`, `atlas-metacog`, `atlas-helper`, `atlas-quick` (plus optional `atlas-agent` in split mode)
+- [ ] Verify worker health on `8011`, `8012`, `8013`, `8015` (and `8014` for split mode)
 - [ ] Create `services/orion-llm-gateway/.env`
 - [ ] Set `PROJECT`, bus vars, and route-table JSON
 - [ ] Launch `llm-gateway`
@@ -294,8 +302,10 @@ Expected outcome:
 ### Smoke checklist
 
 - [ ] `chat` route responds
-- [ ] `metacog` route responds
 - [ ] `agent` route responds
+- [ ] `metacog` route responds
+- [ ] `helper` route responds
+- [ ] `quick` route responds
 - [ ] each route returns the expected `served_by`
 
 ---
@@ -304,8 +314,8 @@ Expected outcome:
 
 If you only remember five things:
 
-1. Run **3** Atlas `orion-llamacpp-host` containers.
+1. Run **4** Atlas `orion-llamacpp-host` containers in merged mode (`chat`, `metacog`, `helper`, `quick`).
 2. Keep each worker unique by **port**, **profile**, **GPU binding**, and **service identity**.
-3. Use **`LLM_GATEWAY_ROUTE_TABLE_JSON`** as the source of truth for `chat`, `metacog`, and `agent` routing.
+3. Use **`LLM_GATEWAY_ROUTE_TABLE_JSON`** as the source of truth for `chat`, `agent`, `metacog`, `helper`, and `quick` routing.
 4. Treat **`served_by` as metadata**, not routing logic.
 5. Use the repo smoke test to verify the exact route map before declaring Atlas ready.

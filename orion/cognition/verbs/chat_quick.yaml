@@ -1,0 +1,39 @@
+name: chat_quick
+label: Chat (Quick)
+description: >
+  Single-pass quick conversational lane for Oríon.
+  Uses lightweight identity grounding and skips stance-brief synthesis.
+
+category: ExecutiveControl
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+recall_profile: chat.general.v1
+
+timeout_ms: 180000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: chat_quick.j2
+
+personality_file: orion/cognition/personality/orion_identity.yaml
+
+plan:
+  - name: llm_chat_quick
+    description: >
+      Single-pass quick response lane with lightweight identity context.
+    order: 0
+    prompt_template: chat_quick.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: true
+
+safety_rules: []

@@ -192,6 +192,28 @@ def test_auto_mode_emits_auto_route_intent_without_forcing_supervisor() -> None:
     assert req.metadata["hub_route"]["selected_ui_route"] == "auto"
 
 
+def test_quick_chat_selection_uses_chat_quick_verb_without_changing_brain_mode_contract() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "mode": "brain",
+            "verbs": ["chat_quick"],
+        },
+        session_id="sid-quick",
+        user_id="user-quick",
+        trace_id="trace-quick",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Quick check: does this compile?",
+    )
+
+    assert req.mode == "brain"
+    assert req.verb == "chat_quick"
+    assert req.route_intent == "none"
+    assert req.options.get("route_intent") is None
+    assert debug["verb"] == "chat_quick"
+
+
 def test_social_room_profile_forces_brain_chat_verb_and_safe_recall() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={

@@ -2111,6 +2111,8 @@ async def call_step_services(
                         if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
                         else "chat"
                         if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
+                        else "quick"
+                        if step.verb_name == "chat_quick"
                         else "metacog"
                         if ctx.get("mode") == "metacog"
                         else None

@@ -23,6 +23,7 @@ let visionIsFloating = false;
 let currentMode = "brain";
 let selectedPacks = [];
 let selectedVerbs = [];
+let modeVerbOverride = null;
 let orionSessionId = localStorage.getItem('orion_sid') || null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
 let selectedBiometricsNode = "cluster";
@@ -2412,6 +2413,7 @@ loadDismissedIds();
     const details = workflowUiApi.normalizeConceptInductionDetails ? workflowUiApi.normalizeConceptInductionDetails(workflow) : null;
     if (!details) return;
     if (statusElement) statusElement.textContent = 'Synthesizing concept induction learnings to journal…';
+    const effectiveVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
     const payload = {
       mode: 'brain',
       session_id: orionSessionId,
@@ -4489,13 +4491,15 @@ loadDismissedIds();
   modeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       currentMode = btn.dataset.mode || 'brain';
+      modeVerbOverride = btn.dataset.verbOverride || null;
       modeButtons.forEach(b => {
         b.classList.remove('bg-indigo-600', 'text-white');
         b.classList.add('bg-gray-700', 'text-gray-200');
       });
       btn.classList.add('bg-indigo-600', 'text-white');
       btn.classList.remove('bg-gray-700', 'text-gray-200');
-      updateStatus(`Switched to ${currentMode} mode.`);
+      const modeLabel = modeVerbOverride ? `${currentMode} (${modeVerbOverride})` : currentMode;
+      updateStatus(`Switched to ${modeLabel} mode.`);
     });
   });
 
@@ -4840,6 +4844,7 @@ loadDismissedIds();
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
+    const effectiveVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
     const payload = {
        text_input: value,
        mode: currentMode,
@@ -4851,7 +4856,7 @@ loadDismissedIds();
        recall_profile: recallProfile !== "auto" ? recallProfile : null,
        recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
        packs: selectedPacks,
-       verbs: selectedVerbs,
+       verbs: effectiveVerbs,
     };
 
     if (socket && socket.readyState === WebSocket.OPEN) {

@@ -14,7 +14,7 @@ DEFAULT_ROUTE_SERVERS = {
     "agent": "atlas-worker-1",
     "metacog": "atlas-worker-2",
     "helper": "atlas-worker-helper-1",
-    "specialist": "atlas-worker-3",
+    "quick": "atlas-worker-quick-1",
 }
 
 
@@ -39,7 +39,7 @@ def _load_route_urls() -> Dict[str, str]:
         "agent": os.getenv("LLM_ROUTE_AGENT_URL", ""),
         "metacog": os.getenv("LLM_ROUTE_METACOG_URL", ""),
         "helper": os.getenv("LLM_ROUTE_HELPER_URL", ""),
-        "specialist": os.getenv("LLM_ROUTE_SPECIALIST_URL", ""),
+        "quick": os.getenv("LLM_ROUTE_QUICK_URL", ""),
     }
 
 
@@ -97,13 +97,11 @@ async def _main_async(args: argparse.Namespace) -> None:
     await bus.connect()
 
     route_urls = _load_route_urls()
-    for route in ("chat", "agent", "metacog", "helper"):
+    for route in ("chat", "agent", "metacog", "helper", "quick"):
         if not route_urls.get(route):
             raise RuntimeError(f"Route '{route}' is not configured (missing URL)")
 
-    routes_to_test = ["chat", "agent", "metacog", "helper"]
-    if route_urls.get("specialist"):
-        routes_to_test.append("specialist")
+    routes_to_test = ["chat", "agent", "metacog", "helper", "quick"]
 
     for route in routes_to_test:
         await _rpc_chat(

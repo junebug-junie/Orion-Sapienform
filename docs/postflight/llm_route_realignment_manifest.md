@@ -8,7 +8,7 @@ This change set keeps logical route contracts intact (`chat`, `agent`, `metacog`
 - `agent` (logical lane preserved) → `atlas-worker-1` (`8011`) in default merged mode
 - `metacog` → `atlas-worker-2` (`8012`) unchanged
 - `helper` (internal bounded lane) → `atlas-worker-helper-1` (`8013`)
-- `quick` (Hub-visible fast lane) → `atlas-worker-quick-1` (`8015`)
+- `quick` (Hub-visible fast lane) → `atlas-worker-helper-1` (`8013`) [shared physical lane with `helper`]
 
 Optional split mode stays config-only:
 

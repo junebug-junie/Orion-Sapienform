@@ -144,11 +144,13 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "agent":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
   "helper":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"},
-  "quick":{"url":"http://100.121.214.30:8015","served_by":"atlas-worker-quick-1","backend":"llamacpp"}
+  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-helper-1","backend":"llamacpp"}
 }'
 ```
 
 Optional split mode keeps the logical `agent` route but points it at `8014`.
+
+`quick` is a distinct logical route that intentionally shares the `helper` physical worker lane.
 
 ### Legacy / secondary envs
 
@@ -186,7 +188,6 @@ Edit in `services/orion-llamacpp-host/.env.atlas`:
   - all `ATLAS_CHAT_*`
   - all `ATLAS_METACOG_*`
   - all `ATLAS_HELPER_*`
-  - all `ATLAS_QUICK_*`
   - optional `ATLAS_AGENT_*` (split mode only)
 
 ### Ensure network exists
@@ -201,7 +202,7 @@ docker network create app-net >/dev/null 2>&1 || true
 docker compose \
   --env-file services/orion-llamacpp-host/.env.atlas \
   -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
-  up -d --build atlas-chat atlas-metacog atlas-agent
+  up -d --build atlas-chat atlas-metacog atlas-helper
 ```
 
 ### Verify worker health
@@ -209,7 +210,7 @@ docker compose \
 ```bash
 curl http://localhost:8011/health
 curl http://localhost:8012/health
-curl http://localhost:8014/health
+curl http://localhost:8013/health
 ```
 
 ## 4.2 Gateway
@@ -266,7 +267,7 @@ Expected outcome:
 - `agent` returns `served_by=atlas-worker-1` (default merged mode)
 - `metacog` returns `served_by=atlas-worker-2`
 - `helper` returns `served_by=atlas-worker-helper-1`
-- `quick` returns `served_by=atlas-worker-quick-1`
+- `quick` returns `served_by=atlas-worker-helper-1`
 
 ---
 
@@ -292,8 +293,8 @@ Expected outcome:
 - [ ] Set all `ATLAS_*` worker vars
 - [ ] Confirm unique ports / profiles / GPU bindings
 - [ ] Create `app-net`
-- [ ] Launch `atlas-chat`, `atlas-metacog`, `atlas-helper`, `atlas-quick` (plus optional `atlas-agent` in split mode)
-- [ ] Verify worker health on `8011`, `8012`, `8013`, `8015` (and `8014` for split mode)
+- [ ] Launch `atlas-chat`, `atlas-metacog`, `atlas-helper` (plus optional `atlas-agent` in split mode)
+- [ ] Verify worker health on `8011`, `8012`, `8013` (and `8014` for split mode)
 - [ ] Create `services/orion-llm-gateway/.env`
 - [ ] Set `PROJECT`, bus vars, and route-table JSON
 - [ ] Launch `llm-gateway`
@@ -314,7 +315,7 @@ Expected outcome:
 
 If you only remember five things:
 
-1. Run **4** Atlas `orion-llamacpp-host` containers in merged mode (`chat`, `metacog`, `helper`, `quick`).
+1. Run **3** Atlas `orion-llamacpp-host` containers in merged mode (`chat`, `metacog`, `helper`) while routing logical `quick` through `helper`.
 2. Keep each worker unique by **port**, **profile**, **GPU binding**, and **service identity**.
 3. Use **`LLM_GATEWAY_ROUTE_TABLE_JSON`** as the source of truth for `chat`, `agent`, `metacog`, `helper`, and `quick` routing.
 4. Treat **`served_by` as metadata**, not routing logic.

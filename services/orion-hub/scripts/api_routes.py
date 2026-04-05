@@ -27,6 +27,7 @@ from .autonomy_payloads import extract_autonomy_payload
 from .workflow_payloads import extract_workflow_payload
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .social_room import is_social_room_payload, social_room_client_meta
+from .service_logs import discover_loggable_services
 from orion.cognition.verb_activation import build_verb_list
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
@@ -297,6 +298,21 @@ def api_debug_build():
             "notify_base_url": settings.NOTIFY_BASE_URL,
             "landing_pad_url": settings.LANDING_PAD_URL,
         },
+    }
+
+
+
+@router.get("/api/service-logs/services")
+def api_service_logs_services() -> Dict[str, Any]:
+    services = discover_loggable_services()
+    return {
+        "services": [
+            {
+                "name": cfg.name,
+                "has_local_env": cfg.service_env_file is not None,
+            }
+            for cfg in services
+        ]
     }
 
 @router.get("/api/notifications")

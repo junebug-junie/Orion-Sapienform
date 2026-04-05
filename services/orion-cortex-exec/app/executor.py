@@ -2102,21 +2102,37 @@ async def call_step_services(
                     sizes,
                 )
 
+                # Keep lane selection explicit by internal flow:
+                # - chat_general stance brief: FAST lane ("quick")
+                # - chat_general final response: DEEP lane ("chat")
+                # - chat_quick single-pass: FAST lane ("quick")
+                # - introspect_spark internal analysis: FAST lane ("quick")
+                # - metacog: METACOG lane
+                llm_route = (
+                    "quick"
+                    if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
+                    else "chat"
+                    if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
+                    else "quick"
+                    if step.verb_name in {"chat_quick", "introspect_spark"}
+                    else "metacog"
+                    if ctx.get("mode") == "metacog"
+                    else None
+                )
+                logger.info(
+                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s",
+                    correlation_id,
+                    ctx.get("mode"),
+                    step.verb_name,
+                    step.step_name,
+                    llm_route,
+                )
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
-                    route=(
-                        "quick"
-                        if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
-                        else "chat"
-                        if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
-                        else "quick"
-                        if step.verb_name == "chat_quick"
-                        else "metacog"
-                        if ctx.get("mode") == "metacog"
-                        else None
-                    ),
+                    route=llm_route,
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),

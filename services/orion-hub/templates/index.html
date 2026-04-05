@@ -33,6 +33,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Topic Studio</a>
+          <a
+            id="serviceLogsTabButton"
+            href="#service-logs"
+            data-hash-target="#service-logs"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Service Logs</a>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -1841,6 +1848,28 @@
     </div>
   </div>
 
+
+      <section id="service-logs" data-panel="service-logs" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 class="text-xl font-bold text-white">Live Service Logs</h2>
+            <p class="text-xs text-gray-400">Select services to stream <code>docker compose logs -f</code>. Master stream aggregates active services.</p>
+          </div>
+          <div class="w-full md:w-96">
+            <label for="serviceLogsServiceSelect" class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Services (multi-select)</label>
+            <select id="serviceLogsServiceSelect" multiple class="w-full h-32 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+            <div id="serviceLogsStatus" class="mt-2 text-[11px] text-gray-400">Loading services...</div>
+          </div>
+        </div>
+
+        <section class="bg-gray-900 rounded-xl border border-gray-800 p-3 flex flex-col gap-2 min-h-[20rem]">
+          <div class="text-xs uppercase tracking-wide text-emerald-300">Master stream</div>
+          <pre id="serviceLogsMasterTerminal" class="flex-1 min-h-[18rem] bg-gray-950/80 border border-gray-800 rounded-lg p-3 overflow-auto text-[11px] leading-4 text-gray-200 font-mono"></pre>
+        </section>
+
+        <div id="serviceLogsTerminals" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+      </section>
+
   <div
     id="agentTraceModal"
     class="hidden fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm px-4 py-6"
@@ -2018,6 +2047,7 @@
   <script src="/static/js/workflow-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/workflow-schedule-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/social-inspection.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/service-logs-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

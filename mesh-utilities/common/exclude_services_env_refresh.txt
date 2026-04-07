@@ -3,3 +3,4 @@ orion-security-watcher
 orion-sql-db
 orion-llama-cola-host
 orion-notify
+orion-social-room-bridge

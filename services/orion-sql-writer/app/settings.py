@@ -42,6 +42,9 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "external.room.post.result.v1": "ExternalRoomMessageSQL",
     "external.room.turn.skipped.v1": "ExternalRoomMessageSQL",
     "external.room.participant.v1": "ExternalRoomParticipantSQL",
+    "endogenous.runtime.record.v1": "EndogenousRuntimeRecordSQL",
+    "endogenous.runtime.audit.v1": "EndogenousRuntimeAuditSQL",
+    "calibration.profile.audit.v1": "CalibrationProfileAuditSQL",
 }
 
 
@@ -92,6 +95,9 @@ class Settings(BaseSettings):
             "orion:notify:persistence:request",
             "orion:notify:persistence:receipt",
             "orion:journal:write",
+            "orion:endogenous:runtime:record",
+            "orion:endogenous:runtime:audit",
+            "orion:calibration:profile:audit",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

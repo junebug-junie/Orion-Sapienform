@@ -8,8 +8,18 @@ from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.summary import summarize_autonomy_state
 from orion.autonomy.repository import SUBJECT_BINDINGS, build_autonomy_repository
+from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
+from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
+from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
+
+from .endogenous_runtime import (
+    consume_endogenous_runtime_for_reflective_review,
+    inspect_endogenous_runtime_records,
+    runtime_service,
+)
+from orion.core.schemas.endogenous_runtime import EndogenousRuntimeQueryV1
 
 FALLBACK_ORION_IDENTITY_SUMMARY = [
     "Oríon is an ongoing cognitive presence in a long-running shared project.",
@@ -570,6 +580,54 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _compile_reasoning_summary(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    request = ReasoningSummaryRequestV1(
+        anchor_scope="orion",
+        subject_refs=[str(v) for v in (ctx.get("reasoning_subject_refs") or []) if str(v).strip()],
+    )
+    try:
+        repository = ctx.get("reasoning_repository")
+        if repository is None:
+            repository = InMemoryReasoningRepository()
+            raw_artifacts = ctx.get("reasoning_artifacts")
+            if isinstance(raw_artifacts, list) and raw_artifacts:
+                write_request = ReasoningWriteRequestV1(
+                    context=ReasoningWriteContextV1(
+                        source_family="manual",
+                        source_kind="chat_stance_ctx",
+                        source_channel="orion:cortex_exec:chat_stance",
+                        producer="chat_stance",
+                    ),
+                    artifacts=raw_artifacts,
+                )
+                repository.write_artifacts(write_request)
+
+        compiler = ReasoningSummaryCompiler(repository)
+        summary = compiler.compile(request)
+        return {
+            "summary": summary.model_dump(mode="json"),
+            "used": not summary.fallback_recommended,
+            "debug": summary.debug.model_dump(mode="json"),
+        }
+    except Exception as exc:
+        logger.warning("chat_stance_reasoning_summary_failed error=%s", exc)
+        fallback = ReasoningSummaryV1(
+            request_id=request.request_id,
+            anchor_scope=request.anchor_scope,
+            fallback_recommended=True,
+        )
+        return {
+            "summary": fallback.model_dump(mode="json"),
+            "used": False,
+            "debug": {
+                **fallback.debug.model_dump(mode="json"),
+                "compiler_ran": True,
+                "compiler_succeeded": False,
+                "fallback_used": True,
+            },
+        }
+
+
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(identity)
@@ -581,6 +639,8 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     social["relationship_facets"] = _unique((social.get("relationship_facets") or []) + (social_bridge.get("framing") or []), limit=8)
     reflective = _reflective_summary(ctx)
     autonomy = _load_autonomy_state(ctx)
+    reasoning = _compile_reasoning_summary(ctx)
+    social["hazards"] = _unique((social.get("hazards") or []) + list((reasoning.get("summary") or {}).get("hazards") or []), limit=8)
 
     inputs = {
         "identity": {
@@ -597,6 +657,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "summary": autonomy["summary"].model_dump(mode="json"),
             "debug": autonomy["debug"],
         },
+        "reasoning_summary": reasoning["summary"],
     }
 
     ctx["chat_stance_inputs"] = inputs
@@ -610,6 +671,24 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ctx["chat_autonomy_backend"] = autonomy["backend"]
     ctx["chat_autonomy_selected_subject"] = autonomy["selected_subject"]
     ctx["chat_autonomy_repository_status"] = autonomy["repository_status"]
+    ctx["chat_reasoning_summary"] = reasoning["summary"]
+    ctx["chat_reasoning_debug"] = reasoning["debug"]
+    ctx["chat_reasoning_summary_used"] = reasoning["used"]
+    ctx["chat_endogenous_runtime"] = runtime_service().maybe_invoke(
+        ctx=ctx,
+        reasoning_summary=reasoning["summary"],
+        reflective=reflective,
+        autonomy=inputs["autonomy"],
+        concept=concept,
+    )
+    if ctx.get("endogenous_runtime_operator_review"):
+        try:
+            ctx["chat_endogenous_runtime_recent"] = inspect_endogenous_runtime_records(limit=8)
+            ctx["chat_endogenous_runtime_reflective_feed"] = consume_endogenous_runtime_for_reflective_review(
+                query=EndogenousRuntimeQueryV1(limit=6, invocation_surface="chat_reflective_lane")
+            )
+        except Exception as exc:
+            logger.warning("chat_stance_endogenous_runtime_recent_failed error=%s", exc)
     return inputs
 
 
@@ -631,6 +710,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     social_bridge = ctx.get("chat_social_bridge_summary") if isinstance(ctx.get("chat_social_bridge_summary"), dict) else {}
     reflective = ctx.get("chat_reflective_summary") if isinstance(ctx.get("chat_reflective_summary"), dict) else {}
     autonomy_summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
+    reasoning_summary = ctx.get("chat_reasoning_summary") if isinstance(ctx.get("chat_reasoning_summary"), dict) else {}
     identity_turn = _is_identity_sensitive_turn(user_message)
     social_posture = list(social.get("social_posture") or [])
     bridge_posture = list(social_bridge.get("posture") or [])
@@ -642,6 +722,12 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     identity_salience = "high" if identity_turn else ("low" if technical_turn else "medium")
     active_identity = list(concept.get("self") or [])[:3] + identity["orion_identity_summary"][:4]
     active_relationship = list(social.get("relationship_facets") or [])[:3] + identity["juniper_relationship_summary"][:4]
+    if reasoning_summary and not reasoning_summary.get("fallback_recommended"):
+        reasoning_claims = [item for item in (reasoning_summary.get("active_claims") or []) if isinstance(item, dict)]
+        reasoning_concepts = [item for item in (reasoning_summary.get("active_concepts") or []) if isinstance(item, dict)]
+        active_identity = active_identity + [str(item.get("claim_text") or "") for item in reasoning_claims[:2]]
+        active_identity = active_identity + [str(item.get("label") or "") for item in reasoning_concepts[:2]]
+        active_relationship = active_relationship + list(reasoning_summary.get("relationship_signals") or [])[:2]
     if identity_turn:
         response_priorities = [
             "answer_identity_directly",
@@ -674,7 +760,12 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     ]
     if task_mode == "triage":
         response_hazards.extend(["self_intro_on_operational_turn", "relationship_label_recital_during_triage"])
-    response_hazards = _unique(response_hazards + list(autonomy_summary.get("response_hazards") or []), limit=8)
+    response_hazards = _unique(
+        response_hazards
+        + list(autonomy_summary.get("response_hazards") or [])
+        + list(reasoning_summary.get("hazards") or []),
+        limit=8,
+    )
     answer_strategy = (
         "DirectIdentityAnswer"
         if identity_turn
@@ -693,7 +784,11 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         active_relationship_facets=_unique(active_relationship, limit=6),
         social_posture=list(social.get("social_posture") or [])[:5],
         reflective_themes=list(reflective.get("themes") or [])[:4],
-        active_tensions=list(reflective.get("tensions") or list(concept.get("tension") or []))[:4],
+        active_tensions=_unique(
+            list(reflective.get("tensions") or list(concept.get("tension") or []))
+            + list(reasoning_summary.get("tensions") or []),
+            limit=6,
+        )[:4],
         dream_motifs=list(reflective.get("dream_motifs") or [])[:3],
         response_priorities=response_priorities,
         response_hazards=_unique(response_hazards + list(social.get("hazards") or []) + list(social_bridge.get("hazards") or []), limit=8),

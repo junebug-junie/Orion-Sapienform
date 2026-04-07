@@ -51,7 +51,7 @@ services:
       ROOM_EPISTEMIC_DECISION_CHANNEL: ${ROOM_EPISTEMIC_DECISION_CHANNEL:-orion:social:epistemic:decision}
       ROOM_TURN_POLICY_CHANNEL: ${ROOM_TURN_POLICY_CHANNEL:-orion:social:turn-policy}
     ports:
-      - "${PORT:-8764}:${PORT:-8764}"
+      - "${PORT:-89101}:${PORT:-89101}"
     restart: unless-stopped
     networks:
       - app-net

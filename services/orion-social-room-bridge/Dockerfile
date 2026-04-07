@@ -12,6 +12,6 @@ COPY services/orion-social-room-bridge/app ./app
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
-EXPOSE 8764
+EXPOSE 89101
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8764"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "89101"]

@@ -224,6 +224,26 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         self.assertEqual(draft.title, "Final")
         self.assertEqual(draft.body, "Visible answer.")
 
+    def test_draft_from_cortex_result_reads_nested_result_final_text(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "result": {"final_text": '{"mode":"manual","title":"Nested","body":"From result."}'},
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.title, "Nested")
+        self.assertEqual(draft.body, "From result.")
+
+    def test_draft_from_cortex_result_reads_nested_cortex_result_final_text(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "cortex_result": {"final_text": '{"mode":"manual","title":"Wrapped","body":"From cortex_result."}'},
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.title, "Wrapped")
+        self.assertEqual(draft.body, "From cortex_result.")
+
 
     def test_draft_from_cortex_result_missing_required_key_fails_clearly(self):
         payload = {

@@ -9,6 +9,7 @@ from app.main import (
     _rpc_request_with_retry,
     _daily_metacog_dedupe_key,
     _daily_pulse_dedupe_key,
+    _clamp_daily_metacog_payload,
     _extract_daily_llm_diagnostics,
     _extract_plan_final_text,
     _is_likely_incomplete_json,
@@ -106,6 +107,22 @@ def test_metacog_schema_and_json_parser():
 
     with pytest.raises(Exception):
         _json_loads_strict("[]")
+
+
+def test_clamp_daily_metacog_payload_truncates_over_limit_fields():
+    parsed = {
+        "date": "2026-02-14",
+        "timezone": "America/Denver",
+        "thinking_patterns": ["pattern"],
+        "blindspots": [],
+        "course_correction": "c" * 350,
+        "tomorrow_experiment": "t" * 260,
+        "confidence": 0.6,
+    }
+    clamped = _clamp_daily_metacog_payload(parsed, action_name="daily_metacog_v1")
+    assert len(clamped["course_correction"]) == 300
+    assert len(clamped["tomorrow_experiment"]) == 240
+    DailyMetacogV1.model_validate(clamped)
 
 
 def test_json_loads_strict_accepts_wrapped_json():

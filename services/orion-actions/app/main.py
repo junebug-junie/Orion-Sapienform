@@ -190,6 +190,31 @@ def _json_loads_strict(text: str) -> dict[str, Any]:
     return data
 
 
+def _clamp_daily_metacog_payload(parsed: dict[str, Any], *, action_name: str) -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return parsed
+    if action_name != ACTION_DAILY_METACOG_V1:
+        return parsed
+
+    clamped = dict(parsed)
+    max_lengths = {
+        "course_correction": 300,
+        "tomorrow_experiment": 240,
+    }
+    for field, limit in max_lengths.items():
+        value = clamped.get(field)
+        if isinstance(value, str) and len(value) > limit:
+            logger.warning(
+                "daily payload field exceeded max length; clamping action=%s field=%s original_len=%s max_len=%s",
+                action_name,
+                field,
+                len(value),
+                limit,
+            )
+            clamped[field] = value[:limit].rstrip()
+    return clamped
+
+
 def _extract_daily_llm_diagnostics(plan_result_payload: dict[str, Any] | None) -> dict[str, Any]:
     result = plan_result_payload.get("result") if isinstance(plan_result_payload, dict) else None
     if not isinstance(result, dict):
@@ -692,6 +717,7 @@ async def lifespan(app: FastAPI):
 
             if parsed is None:
                 raise RuntimeError("daily_json_parse_unavailable")
+            parsed = _clamp_daily_metacog_payload(parsed, action_name=action_name)
 
             if action_name == ACTION_DAILY_PULSE_V1:
                 model = DailyPulseV1.model_validate(parsed)

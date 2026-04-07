@@ -74,7 +74,7 @@
       }
 
       const card = document.createElement("section");
-      card.className = "bg-gray-900 rounded-xl border border-gray-800 p-3 flex flex-col gap-2 min-h-[16rem]";
+      card.className = "bg-gray-900 rounded-xl border border-gray-800 p-3 flex flex-col gap-2 min-h-[14rem]";
       card.dataset.serviceName = serviceName;
 
       const heading = document.createElement("div");
@@ -82,7 +82,7 @@
       heading.textContent = serviceName;
 
       const terminal = document.createElement("pre");
-      terminal.className = "flex-1 min-h-[14rem] bg-gray-950/80 border border-gray-800 rounded-lg p-3 overflow-auto text-[11px] leading-4 text-gray-200 font-mono";
+      terminal.className = "h-[18rem] max-h-[18rem] bg-gray-950/80 border border-gray-800 rounded-lg p-3 overflow-auto text-[11px] leading-4 text-gray-200 font-mono";
       terminal.textContent = "";
 
       card.appendChild(heading);

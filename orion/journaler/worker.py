@@ -329,15 +329,23 @@ def _parse_journal_draft_json(final_text: str) -> tuple[dict[str, Any], _DraftPa
 
 
 def _select_draft_text(payload: dict[str, Any]) -> tuple[str | None, str]:
-    final_text = payload.get("final_text")
-    if isinstance(final_text, str) and final_text.strip():
-        return final_text, "final_text"
-    content = payload.get("content")
-    if isinstance(content, str) and content.strip():
-        return content, "content"
-    text = payload.get("text")
-    if isinstance(text, str) and text.strip():
-        return text, "text"
+    for key in ("final_text", "content", "text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value, key
+
+    nested_candidates = (
+        ("result", payload.get("result")),
+        ("cortex_result", payload.get("cortex_result")),
+    )
+    for container_key, container in nested_candidates:
+        if not isinstance(container, dict):
+            continue
+        for key in ("final_text", "content", "text"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value, f"{container_key}.{key}"
+
     return None, "missing"
 
 

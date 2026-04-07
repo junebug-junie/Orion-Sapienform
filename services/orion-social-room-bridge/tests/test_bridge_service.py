@@ -11,8 +11,10 @@ for module_name in [name for name in sys.modules if name == "app" or name.starts
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SERVICE_ROOT))
 
+from app.clients import _callsyne_bridge_post_body
 from app.service import SocialRoomBridgeService
 from app.settings import Settings
+from orion.schemas.social_bridge import ExternalRoomPostRequestV1
 from orion.schemas.registry import _REGISTRY
 
 
@@ -1387,6 +1389,69 @@ def test_pending_artifact_state_is_not_framed_as_accepted_memory() -> None:
     assert hub_payload["social_epistemic_decision"]["decision"] != "answer_recall"
 
 
+def test_normalize_channel_key_aliases_room_id() -> None:
+    svc = SocialRoomBridgeService(
+        settings=_settings(),
+        hub_client=_FakeHubClient(),
+        callsyne_client=_FakeCallSyneClient(),
+        bus=_FakeBus(),
+    )
+    for key_field in ("channel_key", "channelKey"):
+        msg = svc.normalize_callsyne_message(
+            {
+                key_field: "world-general",
+                "message_id": "m-ch",
+                "sender_id": "peer-9",
+                "text": "ping",
+            }
+        )
+        assert msg.room_id == "world-general"
+
+
+def test_normalize_channel_key_in_metadata() -> None:
+    svc = SocialRoomBridgeService(
+        settings=_settings(),
+        hub_client=_FakeHubClient(),
+        callsyne_client=_FakeCallSyneClient(),
+        bus=_FakeBus(),
+    )
+    msg = svc.normalize_callsyne_message(
+        {
+            "message_id": "m2",
+            "sender_id": "p1",
+            "text": "hi",
+            "metadata": {"channel_key": "zip-123-social"},
+        }
+    )
+    assert msg.room_id == "zip-123-social"
+
+
+def test_callsyne_bridge_post_body_minimal_and_media_hint() -> None:
+    req = ExternalRoomPostRequestV1(
+        platform="callsyne",
+        room_id="room-1",
+        text="hello",
+        reply_to_message_id="prev-1",
+        thread_id="t-a",
+        correlation_id="corr-x",
+        metadata={"gif_intent": "laugh_with", "media_hint": {"kind": "gif", "query": "lol"}},
+    )
+    body = _callsyne_bridge_post_body(req)
+    assert body == {
+        "room_id": "room-1",
+        "text": "hello",
+        "reply_to_message_id": "prev-1",
+        "thread_id": "t-a",
+        "media_hint": {"kind": "gif", "query": "lol"},
+        "metadata": {"gif_intent": "laugh_with", "correlation_id": "corr-x"},
+    }
+
+    bare = _callsyne_bridge_post_body(
+        ExternalRoomPostRequestV1(platform="callsyne", room_id="r", text="x", metadata={})
+    )
+    assert bare == {"room_id": "r", "text": "x"}
+
+
 def test_settings_defaults_and_schema_registration() -> None:
     settings = _settings()
 
@@ -1399,6 +1464,7 @@ def test_settings_defaults_and_schema_registration() -> None:
     assert settings.room_epistemic_signal_channel == "orion:social:epistemic:signal"
     assert settings.room_epistemic_decision_channel == "orion:social:epistemic:decision"
     assert settings.room_turn_policy_channel == "orion:social:turn-policy"
+    assert settings.callsyne_post_path_template == "/api/bridge/messages"
     assert _REGISTRY["CallSyneRoomMessageV1"].__name__ == "CallSyneRoomMessageV1"
     assert _REGISTRY["ExternalRoomPostResultV1"].__name__ == "ExternalRoomPostResultV1"
     assert _REGISTRY["SocialEpistemicSignalV1"].__name__ == "SocialEpistemicSignalV1"

@@ -97,7 +97,15 @@ class SocialRoomBridgeService:
         room = payload.get("room") if isinstance(payload.get("room"), dict) else {}
         sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
         metadata = dict(payload.get("metadata") or {})
-        room_id = str(payload.get("room_id") or room.get("id") or "").strip()
+        channel_key = payload.get("channel_key") if payload.get("channel_key") is not None else payload.get("channelKey")
+        room_id = str(
+            payload.get("room_id")
+            or room.get("id")
+            or channel_key
+            or metadata.get("channel_key")
+            or metadata.get("channelKey")
+            or ""
+        ).strip()
         thread_id = payload.get("thread_id") or payload.get("thread") or metadata.get("thread_id")
         message_id = str(payload.get("message_id") or payload.get("id") or "").strip()
         sender_id = str(payload.get("sender_id") or sender.get("id") or "").strip()

@@ -7,6 +7,27 @@ import httpx
 from orion.schemas.social_bridge import ExternalRoomPostRequestV1
 
 
+def _callsyne_bridge_post_body(request: ExternalRoomPostRequestV1) -> Dict[str, Any]:
+    """Shape for POST /api/bridge/messages: required room_id + text; optional fields omitted when empty."""
+    meta = dict(request.metadata or {})
+    media_hint = meta.pop("media_hint", None)
+    body: Dict[str, Any] = {
+        "room_id": request.room_id,
+        "text": request.text,
+    }
+    if request.reply_to_message_id:
+        body["reply_to_message_id"] = request.reply_to_message_id
+    if request.thread_id:
+        body["thread_id"] = request.thread_id
+    if media_hint:
+        body["media_hint"] = media_hint
+    if request.correlation_id:
+        meta.setdefault("correlation_id", request.correlation_id)
+    if meta:
+        body["metadata"] = meta
+    return body
+
+
 class HubClient:
     def __init__(self, *, base_url: str, chat_path: str, timeout_sec: float) -> None:
         self._base_url = base_url.rstrip("/")
@@ -37,14 +58,7 @@ class CallSyneClient:
         headers = {"Content-Type": "application/json"}
         if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
-        payload = {
-            "room_id": request.room_id,
-            "thread_id": request.thread_id,
-            "reply_to_message_id": request.reply_to_message_id,
-            "text": request.text,
-            "metadata": request.metadata,
-            "correlation_id": request.correlation_id,
-        }
+        payload = _callsyne_bridge_post_body(request)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()

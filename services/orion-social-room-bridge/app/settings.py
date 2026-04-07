@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     callsyne_api_token: str = Field("", alias="CALLSYNE_API_TOKEN")
     callsyne_timeout_sec: float = Field(30.0, alias="CALLSYNE_TIMEOUT_SEC")
     callsyne_post_path_template: str = Field(
-        "/api/rooms/{room_id}/messages",
+        "/api/bridge/messages",
         alias="CALLSYNE_POST_PATH_TEMPLATE",
     )
     callsyne_webhook_token: str = Field("", alias="CALLSYNE_WEBHOOK_TOKEN")

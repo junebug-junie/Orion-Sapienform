@@ -55,6 +55,36 @@ class Settings(BaseSettings):
     docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
     biometrics_service_url: str = Field("http://orion-biometrics:8058", alias="BIOMETRICS_SERVICE_URL")
     biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
+    endogenous_runtime_enabled: bool = Field(False, alias="ENDOGENOUS_RUNTIME_ENABLED")
+    endogenous_runtime_surface_chat_reflective_enabled: bool = Field(
+        False,
+        alias="ENDOGENOUS_RUNTIME_SURFACE_CHAT_REFLECTIVE_ENABLED",
+    )
+    endogenous_runtime_surface_operator_enabled: bool = Field(
+        False,
+        alias="ENDOGENOUS_RUNTIME_SURFACE_OPERATOR_ENABLED",
+    )
+    endogenous_runtime_allowed_workflow_types: str = Field(
+        "contradiction_review,concept_refinement,reflective_journal",
+        alias="ENDOGENOUS_RUNTIME_ALLOWED_WORKFLOW_TYPES",
+    )
+    endogenous_runtime_allow_mentor_branch: bool = Field(
+        False,
+        alias="ENDOGENOUS_RUNTIME_ALLOW_MENTOR_BRANCH",
+    )
+    endogenous_runtime_sample_rate: float = Field(1.0, alias="ENDOGENOUS_RUNTIME_SAMPLE_RATE")
+    endogenous_runtime_max_actions: int = Field(5, alias="ENDOGENOUS_RUNTIME_MAX_ACTIONS")
+    endogenous_runtime_store_backend: str = Field("memory", alias="ENDOGENOUS_RUNTIME_STORE_BACKEND")
+    endogenous_runtime_store_path: str = Field(
+        "/tmp/orion_endogenous_runtime_records.jsonl",
+        alias="ENDOGENOUS_RUNTIME_STORE_PATH",
+    )
+    endogenous_runtime_store_max_records: int = Field(2000, alias="ENDOGENOUS_RUNTIME_STORE_MAX_RECORDS")
+    endogenous_runtime_sql_read_enabled: bool = Field(True, alias="ENDOGENOUS_RUNTIME_SQL_READ_ENABLED")
+    endogenous_runtime_sql_database_url: str = Field(
+        "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
+        alias="ENDOGENOUS_RUNTIME_SQL_DATABASE_URL",
+    )
 
     class Config:
         env_file = ".env"

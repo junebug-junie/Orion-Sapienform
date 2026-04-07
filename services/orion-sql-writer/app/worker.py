@@ -40,6 +40,9 @@ from app.models import (
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
     ExternalRoomParticipantSQL,
+    EndogenousRuntimeRecordSQL,
+    EndogenousRuntimeAuditSQL,
+    CalibrationProfileAuditSQL,
 )
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -64,6 +67,8 @@ from orion.schemas.social_bridge import (
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
+from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionRecordV1, EndogenousRuntimeAuditV1
+from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 
 from app.spark_contract_metrics import SparkContractMetrics, LEGACY_KINDS
 
@@ -138,6 +143,9 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
     "ExternalRoomParticipantSQL": (ExternalRoomParticipantSQL, ExternalRoomParticipantV1),
+    "EndogenousRuntimeRecordSQL": (EndogenousRuntimeRecordSQL, EndogenousRuntimeExecutionRecordV1),
+    "EndogenousRuntimeAuditSQL": (EndogenousRuntimeAuditSQL, EndogenousRuntimeAuditV1),
+    "CalibrationProfileAuditSQL": (CalibrationProfileAuditSQL, CalibrationProfileAuditV1),
 }
 
 
@@ -794,6 +802,68 @@ def _build_social_turn_stored_payload(payload: dict[str, Any], *, correlation_id
     return SocialRoomTurnStoredV1.model_validate(base)
 
 
+def _extract_calibration_profile_id(actions: list[str]) -> str | None:
+    for action in actions:
+        if isinstance(action, str) and action.startswith("calibration_profile_id:"):
+            value = action.split(":", 1)[1].strip()
+            if value:
+                return value
+    return None
+
+
+def _normalize_endogenous_runtime_record_payload(payload: Any) -> Dict[str, Any]:
+    record = EndogenousRuntimeExecutionRecordV1.model_validate(payload)
+    return {
+        "runtime_record_id": record.runtime_record_id,
+        "correlation_id": record.correlation_id,
+        "request_id": record.trigger_request.request_id,
+        "invocation_surface": record.invocation_surface,
+        "trigger_outcome": record.decision.outcome,
+        "workflow_type": record.decision.workflow_type,
+        "subject_ref": record.subject_ref,
+        "anchor_scope": record.trigger_request.anchor_scope,
+        "mentor_invoked": record.mentor_invoked,
+        "execution_success": record.execution_success,
+        "calibration_profile_id": _extract_calibration_profile_id(record.audit_events),
+        "materialized_artifact_ids": list(record.materialized_artifact_ids),
+        "payload": record.model_dump(mode="json"),
+        "created_at": record.created_at,
+    }
+
+
+def _normalize_endogenous_runtime_audit_payload(payload: Any) -> Dict[str, Any]:
+    audit = EndogenousRuntimeAuditV1.model_validate(payload)
+    return {
+        "runtime_record_id": audit.runtime_record_id,
+        "invocation_surface": audit.invocation_surface,
+        "status": audit.status,
+        "workflow_type": audit.workflow_type,
+        "decision_outcome": audit.decision_outcome,
+        "mentor_invoked": audit.mentor_invoked,
+        "cooldown_applied": audit.cooldown_applied,
+        "debounce_applied": audit.debounce_applied,
+        "error": audit.error,
+        "calibration_profile_id": _extract_calibration_profile_id(list(audit.actions)),
+        "payload": audit.model_dump(mode="json"),
+        "recorded_at": datetime.now(timezone.utc),
+    }
+
+
+def _normalize_calibration_profile_audit_payload(payload: Any) -> Dict[str, Any]:
+    event = CalibrationProfileAuditV1.model_validate(payload)
+    return {
+        "audit_id": event.audit_id,
+        "profile_id": event.profile_id,
+        "previous_profile_id": event.previous_profile_id,
+        "event_type": event.event_type,
+        "operator_id": event.operator_id,
+        "rationale": event.rationale,
+        "details": event.details,
+        "payload": event.model_dump(mode="json"),
+        "recorded_at": event.recorded_at,
+    }
+
+
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
     sess = get_session()
     try:
@@ -1060,6 +1130,15 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                     env.kind, data_to_process, extra_sql_fields
                 )
                 await _write(sql_model, None, normalized, {}, kind=env.kind)
+            elif sql_model is EndogenousRuntimeRecordSQL:
+                normalized = _normalize_endogenous_runtime_record_payload(data_to_process)
+                write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
+            elif sql_model is EndogenousRuntimeAuditSQL:
+                normalized = _normalize_endogenous_runtime_audit_payload(data_to_process)
+                write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
+            elif sql_model is CalibrationProfileAuditSQL:
+                normalized = _normalize_calibration_profile_audit_payload(data_to_process)
+                write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             # Post-commit safety: emit only after _write() has returned success.

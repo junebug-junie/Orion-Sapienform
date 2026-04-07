@@ -26,6 +26,10 @@ from .journal_entry import JournalEntrySQL
 from .social_room_turn import SocialRoomTurnSQL
 from .external_room_message import ExternalRoomMessageSQL
 from .external_room_participant import ExternalRoomParticipantSQL
+from .endogenous_runtime_record import EndogenousRuntimeRecordSQL
+from .endogenous_runtime_audit import EndogenousRuntimeAuditSQL
+from .calibration_profile_audit import CalibrationProfileAuditSQL
+from .calibration_profile_state import CalibrationProfileStateSQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -50,4 +54,8 @@ __all__ = [
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",
     "ExternalRoomParticipantSQL",
+    "EndogenousRuntimeRecordSQL",
+    "EndogenousRuntimeAuditSQL",
+    "CalibrationProfileAuditSQL",
+    "CalibrationProfileStateSQL",
 ]

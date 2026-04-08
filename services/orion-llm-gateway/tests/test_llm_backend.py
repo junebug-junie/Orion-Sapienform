@@ -8,6 +8,7 @@ sys.path.append(str(ROOT))
 
 from app.llm_backend import (  # noqa: E402
     _build_ollama_payload,
+    _extract_reasoning_from_openai_response,
     _extract_text_from_ollama_response,
     _extract_vector_from_openai_response,
     _split_think_blocks,
@@ -57,6 +58,25 @@ class TestLLMBackendHelpers(unittest.TestCase):
         visible, reasoning = _split_think_blocks("Hi\n<think>long reasoning without close")
         self.assertEqual(visible, "Hi")
         self.assertEqual(reasoning, "long reasoning without close")
+
+    def test_extract_reasoning_supports_reasoning_aliases(self) -> None:
+        data = {"choices": [{"message": {"content": "answer", "reasoning_text": "step trace"}}]}
+        self.assertEqual(_extract_reasoning_from_openai_response(data), "step trace")
+
+    def test_extract_reasoning_supports_content_reasoning_parts(self) -> None:
+        data = {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "output_text", "text": "answer"},
+                            {"type": "reasoning", "text": "hidden rationale"},
+                        ]
+                    }
+                }
+            ]
+        }
+        self.assertEqual(_extract_reasoning_from_openai_response(data), "hidden rationale")
 
 
 class TestLLMBackendExecution(unittest.TestCase):
@@ -213,6 +233,25 @@ class TestLLMBackendExecution(unittest.TestCase):
         finally:
             settings.llm_route_table_json = original
             _load_route_targets.cache_clear()
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_does_not_promote_inline_think_to_structured_reasoning(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "<think>scratchpad</think>Visible answer"}}]
+        }
+        body = ChatBody(messages=[ChatMessage(role="user", content="hi")])
+        result = _execute_openai_chat(
+            body=body,
+            model="test-model",
+            base_url="http://localhost",
+            backend_name="llamacpp",
+        )
+        self.assertEqual(result.get("text"), "Visible answer")
+        self.assertIsNone(result.get("reasoning_content"))
+        self.assertEqual(result.get("inline_think_content"), "scratchpad")
 
     @patch("app.llm_backend._execute_openai_chat")
     def test_no_route_still_uses_default_chat_when_route_table_active(self, mock_execute):

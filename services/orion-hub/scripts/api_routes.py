@@ -46,6 +46,9 @@ from orion.schemas.notify import (
 
 from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
+from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
+from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
+from orion.substrate.policy_comparison import SubstratePolicyComparisonService
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
 
@@ -54,8 +57,22 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
 
-SUBSTRATE_REVIEW_QUEUE_STORE = GraphReviewQueue(max_items=200)
-SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(max_records=2000)
+SUBSTRATE_REVIEW_QUEUE_STORE = GraphReviewQueue(
+    max_items=200,
+    sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_QUEUE_SQL_DB_PATH", "")).strip() or None,
+    postgres_url=str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip() or str(os.getenv("DATABASE_URL", "")).strip() or None,
+)
+SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
+    max_records=2000,
+    sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_TELEMETRY_SQL_DB_PATH", "")).strip() or None,
+    postgres_url=str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip() or str(os.getenv("DATABASE_URL", "")).strip() or None,
+)
+SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
+SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()
+SUBSTRATE_POLICY_COMPARISON = SubstratePolicyComparisonService(
+    policy_store=SUBSTRATE_POLICY_STORE,
+    telemetry_recorder=SUBSTRATE_REVIEW_TELEMETRY_STORE,
+)
 
 
 def _thought_debug_enabled() -> bool:
@@ -1212,33 +1229,73 @@ def _source_meta(*, kind: str, degraded: bool, limit: int, error: Optional[str] 
     }
 
 
-def _graphdb_overview_payload(*, limit: int = 10) -> Dict[str, Any]:
-    # Placeholder read seam until dedicated GraphDB query service is wired.
-    # Kept explicit/degraded for operator trust.
+def _serialize_slice(result) -> Dict[str, Any]:
     return {
-        "source": _source_meta(kind="graphdb", degraded=True, limit=limit, error="graphdb_read_unavailable_in_hub"),
+        "nodes": [node.model_dump(mode="json") for node in result.slice.nodes],
+        "edges": [edge.model_dump(mode="json") for edge in result.slice.edges],
+        "truncated": bool(result.truncated),
+        "limits": dict(result.limits or {}),
+        "query_kind": result.query_kind,
+        "generated_at": result.generated_at,
+        "details": dict(result.details or {}),
+    }
+
+
+def _graphdb_overview_payload(*, limit: int = 10) -> Dict[str, Any]:
+    hotspot = SUBSTRATE_SEMANTIC_STORE.query_hotspot_region(limit_nodes=limit, limit_edges=max(20, limit * 2))
+    contradiction = SUBSTRATE_SEMANTIC_STORE.query_contradiction_region(limit_nodes=limit, limit_edges=max(20, limit * 2))
+    concept = SUBSTRATE_SEMANTIC_STORE.query_concept_region(limit_nodes=limit, limit_edges=max(20, limit * 2))
+
+    source_kind = hotspot.source_kind
+    degraded = bool(hotspot.degraded or contradiction.degraded or concept.degraded)
+    error = hotspot.error or contradiction.error or concept.error
+
+    return {
+        "source": {
+            **_source_meta(kind=source_kind, degraded=degraded, limit=limit, error=error),
+            "query_kind": "overview",
+            "semantic_backend": type(SUBSTRATE_SEMANTIC_STORE).__name__,
+            "truncated": bool(hotspot.truncated or contradiction.truncated or concept.truncated),
+        },
         "data": {
             "coherence": None,
             "identity_conflict": None,
             "goal_pressure": None,
             "concept_drift": None,
-            "contradiction_count": 0,
-            "top_hotspots": [],
-            "top_tensions": [],
-            "top_stabilizers": [],
+            "contradiction_count": len(contradiction.slice.nodes),
+            "top_hotspots": [node.model_dump(mode="json") for node in hotspot.slice.nodes[:limit]],
+            "top_tensions": [node.model_dump(mode="json") for node in hotspot.slice.nodes if node.node_kind == "tension"][:limit],
+            "top_stabilizers": [node.model_dump(mode="json") for node in concept.slice.nodes[:limit]],
             "metacog_brief": None,
+            "regions": {
+                "hotspot": _serialize_slice(hotspot),
+                "contradiction": _serialize_slice(contradiction),
+                "concept": _serialize_slice(concept),
+            },
         },
     }
 
 
 def _graphdb_hotspots_payload(*, limit: int = 20) -> Dict[str, Any]:
+    hotspot = SUBSTRATE_SEMANTIC_STORE.query_hotspot_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
+    contradiction = SUBSTRATE_SEMANTIC_STORE.query_contradiction_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
+    concept = SUBSTRATE_SEMANTIC_STORE.query_concept_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
+
+    degraded = bool(hotspot.degraded or contradiction.degraded or concept.degraded)
+    error = hotspot.error or contradiction.error or concept.error
+
     return {
-        "source": _source_meta(kind="graphdb", degraded=True, limit=limit, error="graphdb_read_unavailable_in_hub"),
+        "source": {
+            **_source_meta(kind=hotspot.source_kind, degraded=degraded, limit=limit, error=error),
+            "query_kind": "hotspots",
+            "semantic_backend": type(SUBSTRATE_SEMANTIC_STORE).__name__,
+            "truncated": bool(hotspot.truncated or contradiction.truncated or concept.truncated),
+        },
         "data": {
-            "active_regions": [],
-            "contradiction_hotspots": [],
-            "pressure_hotspots": [],
-            "drift_hotspots": [],
+            "active_regions": _serialize_slice(hotspot),
+            "contradiction_hotspots": _serialize_slice(contradiction),
+            "pressure_hotspots": _serialize_slice(hotspot),
+            "drift_hotspots": _serialize_slice(concept),
         },
     }
 
@@ -1246,7 +1303,12 @@ def _graphdb_hotspots_payload(*, limit: int = 20) -> Dict[str, Any]:
 def _sql_review_queue_payload(*, limit: int = 50) -> Dict[str, Any]:
     snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=limit)
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_QUEUE_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_QUEUE_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_REVIEW_QUEUE_STORE.last_error(),
+        ),
         "data": snapshot.model_dump(mode="json"),
     }
 
@@ -1254,7 +1316,12 @@ def _sql_review_queue_payload(*, limit: int = 50) -> Dict[str, Any]:
 def _sql_review_executions_payload(*, limit: int = 50) -> Dict[str, Any]:
     records = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=limit))
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
         "data": [record.model_dump(mode="json") for record in records],
     }
 
@@ -1263,7 +1330,12 @@ def _sql_telemetry_summary_payload(*, limit: int = 200) -> Dict[str, Any]:
     summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=limit))
     recommendations = GraphReviewCalibrationAnalyzer().recommend(summary=summary)
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
         "data": {
             "summary": summary.model_dump(mode="json"),
             "recommendations": [rec.model_dump(mode="json") for rec in recommendations],
@@ -1274,16 +1346,97 @@ def _sql_telemetry_summary_payload(*, limit: int = 200) -> Dict[str, Any]:
 def _sql_calibration_payload(*, limit: int = 20) -> Dict[str, Any]:
     summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=200))
     recommendations = GraphReviewCalibrationAnalyzer().recommend(summary=summary)
-    active_profile = GraphReviewCyclePolicyV1().model_dump(mode="json")
+    baseline_policy = GraphReviewCyclePolicyV1().model_dump(mode="json")
+    inspection = SUBSTRATE_POLICY_STORE.inspect(audit_limit=limit)
+    source_kind = "postgres" if (
+        SUBSTRATE_POLICY_STORE.source_kind() == "postgres"
+        and SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind() == "postgres"
+    ) else SUBSTRATE_POLICY_STORE.source_kind()
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=source_kind,
+            degraded=bool(SUBSTRATE_POLICY_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded()),
+            limit=limit,
+            error=SUBSTRATE_POLICY_STORE.last_error() or SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
         "data": {
-            "active_profile": active_profile,
-            "staged_profiles": [],
-            "recent_audit_events": [],
+            "active_profile": (
+                inspection.active_profiles[0].model_dump(mode="json")
+                if inspection.active_profiles
+                else baseline_policy
+            ),
+            "staged_profiles": [item.model_dump(mode="json") for item in inspection.staged_profiles],
+            "recent_audit_events": [item.model_dump(mode="json") for item in inspection.recent_audit_events],
+            "rolled_back_profiles": [item.model_dump(mode="json") for item in inspection.rolled_back_profiles],
             "advisory_recommendations": [rec.model_dump(mode="json") for rec in recommendations],
         },
     }
+
+
+def _sql_policy_comparison_payload(
+    *,
+    pair_mode: str = "baseline_vs_active",
+    baseline_profile_id: str | None = None,
+    candidate_profile_id: str | None = None,
+    window_seconds: int = 86400,
+    sample_limit: int = 500,
+) -> Dict[str, Any]:
+    try:
+        if not isinstance(pair_mode, str):
+            pair_mode = "baseline_vs_active"
+        if not isinstance(baseline_profile_id, str):
+            baseline_profile_id = None
+        if not isinstance(candidate_profile_id, str):
+            candidate_profile_id = None
+        if not isinstance(window_seconds, int):
+            window_seconds = 86400
+        if not isinstance(sample_limit, int):
+            sample_limit = 500
+        request = SubstratePolicyComparisonRequestV1(
+            pair_mode=pair_mode,  # type: ignore[arg-type]
+            baseline_profile_id=baseline_profile_id,
+            candidate_profile_id=candidate_profile_id,
+            window_seconds=window_seconds,
+            sample_limit=sample_limit,
+        )
+        data = SUBSTRATE_POLICY_COMPARISON.compare(request=request)
+        source_kind = "postgres" if (
+            SUBSTRATE_POLICY_STORE.source_kind() == "postgres"
+            and SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind() == "postgres"
+        ) else (
+            "fallback" if (SUBSTRATE_POLICY_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded()) else (
+                "sqlite" if (
+                    SUBSTRATE_POLICY_STORE.source_kind() == "sqlite"
+                    or SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind() == "sqlite"
+                ) else "sql"
+            )
+        )
+        return {
+            "source": _source_meta(
+                kind=source_kind,
+                degraded=bool(SUBSTRATE_POLICY_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded()),
+                limit=sample_limit,
+                error=SUBSTRATE_POLICY_STORE.last_error() or SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+            ),
+            "data": data,
+        }
+    except Exception as exc:
+        return {
+            "source": _source_meta(kind="sql", degraded=True, limit=sample_limit, error=str(exc)),
+            "data": {
+                "pair": {
+                    "mode": pair_mode,
+                    "baseline_profile_id": baseline_profile_id,
+                    "candidate_profile_id": candidate_profile_id,
+                },
+                "report": {
+                    "verdict": "insufficient_data",
+                    "confidence": 0.2,
+                    "notes": [f"comparison_error:{exc}"],
+                },
+                "advisory": {"mutating": False, "message": "comparison failed safely"},
+            },
+        }
 
 
 @router.get("/substrate")
@@ -1331,3 +1484,20 @@ def api_substrate_telemetry_summary(limit: int = Query(default=200, ge=1, le=500
 @router.get("/api/substrate/calibration")
 def api_substrate_calibration(limit: int = Query(default=20, ge=1, le=100)) -> Dict[str, Any]:
     return _sql_calibration_payload(limit=limit)
+
+
+@router.get("/api/substrate/policy-comparison")
+def api_substrate_policy_comparison(
+    pair_mode: str = Query(default="baseline_vs_active"),
+    baseline_profile_id: str | None = Query(default=None),
+    candidate_profile_id: str | None = Query(default=None),
+    window_seconds: int = Query(default=86400, ge=60, le=60 * 60 * 24 * 30),
+    sample_limit: int = Query(default=500, ge=1, le=500),
+) -> Dict[str, Any]:
+    return _sql_policy_comparison_payload(
+        pair_mode=pair_mode,
+        baseline_profile_id=baseline_profile_id,
+        candidate_profile_id=candidate_profile_id,
+        window_seconds=window_seconds,
+        sample_limit=sample_limit,
+    )

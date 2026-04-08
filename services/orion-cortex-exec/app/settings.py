@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # CHANGED: 8000 -> 60000 (60s). LLMs need time.
     step_timeout_ms: int = Field(60000, alias="STEP_TIMEOUT_MS")
 
+    # Chat lane generation budgets (completion tokens)
+    llm_chat_max_tokens_default: int = Field(512, alias="LLM_CHAT_MAX_TOKENS_DEFAULT")
+    llm_chat_quick_max_tokens: int = Field(512, alias="LLM_CHAT_QUICK_MAX_TOKENS")
+    llm_chat_general_max_tokens: int = Field(512, alias="LLM_CHAT_GENERAL_MAX_TOKENS")
+
     # CHANGED: "orion-llm:intake" -> "orion:exec:request:LLMGatewayService"
     channel_llm_intake: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
     channel_recall_intake: str = Field("orion:exec:request:RecallService", alias="CHANNEL_RECALL_INTAKE")

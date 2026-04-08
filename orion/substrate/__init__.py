@@ -7,11 +7,21 @@ from .adapters import (
 )
 from .materializer import MaterializationResultV1, SubstrateGraphMaterializer
 from .reconcile import EdgeMergeDecision, NodeMergeDecision, SubstrateIdentityResolver
-from .store import InMemorySubstrateGraphStore, MaterializedSubstrateGraphState
+from .graphdb_store import GraphDBSubstrateStore, GraphDBSubstrateStoreConfig, build_substrate_store_from_env
+from .store import InMemorySubstrateGraphStore, MaterializedSubstrateGraphState, SubstrateGraphStore, SubstrateNeighborhoodSliceV1, SubstrateQueryResultV1
 from .frontier_context import FrontierContextPackBuilder, FrontierContextPackV1
 from .frontier_expansion import FrontierExpansionResultV1, FrontierExpansionService
 from .frontier_mapper import FrontierDeltaMapper
 from .frontier_landing import FrontierLandingEvaluator, FrontierLandingExecutionResultV1
+from .policy_profiles import SubstratePolicyProfileStore, build_substrate_policy_store_from_env
+from .query_planning import (
+    SubstrateQueryExecutionMetaV1,
+    SubstrateQueryExecutionV1,
+    SubstrateQueryPlanStepV1,
+    SubstrateQueryPlanV1,
+    SubstrateQueryPlanner,
+    SubstrateSemanticReadCoordinator,
+)
 from .dynamics import (
     ActivationUpdateV1,
     DormancyTransitionV1,
@@ -33,6 +43,12 @@ __all__ = [
     "EdgeMergeDecision",
     "InMemorySubstrateGraphStore",
     "MaterializedSubstrateGraphState",
+    "SubstrateGraphStore",
+    "SubstrateNeighborhoodSliceV1",
+    "SubstrateQueryResultV1",
+    "GraphDBSubstrateStore",
+    "GraphDBSubstrateStoreConfig",
+    "build_substrate_store_from_env",
     "SubstrateDynamicsEngine",
     "SubstrateDynamicsResultV1",
     "ActivationUpdateV1",
@@ -45,4 +61,12 @@ __all__ = [
     "FrontierExpansionResultV1",
     "FrontierLandingEvaluator",
     "FrontierLandingExecutionResultV1",
+    "SubstratePolicyProfileStore",
+    "build_substrate_policy_store_from_env",
+    "SubstrateQueryPlanStepV1",
+    "SubstrateQueryPlanV1",
+    "SubstrateQueryExecutionMetaV1",
+    "SubstrateQueryExecutionV1",
+    "SubstrateQueryPlanner",
+    "SubstrateSemanticReadCoordinator",
 ]

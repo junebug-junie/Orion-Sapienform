@@ -6,6 +6,7 @@
     executions: document.getElementById('substrateReviewExecutions'),
     telemetry: document.getElementById('substrateTelemetrySummary'),
     calibration: document.getElementById('substrateCalibration'),
+    policyComparison: document.getElementById('substratePolicyComparison'),
   };
   const sourceMeta = document.getElementById('substrateSourceMeta');
   const refreshButton = document.getElementById('substrateRefreshButton');
@@ -37,6 +38,7 @@
       ['executions', '/api/substrate/review-executions?limit=50'],
       ['telemetry', '/api/substrate/telemetry-summary?limit=200'],
       ['calibration', '/api/substrate/calibration?limit=20'],
+      ['policyComparison', '/api/substrate/policy-comparison?pair_mode=baseline_vs_active&sample_limit=300'],
     ];
 
     const meta = [];

@@ -118,6 +118,80 @@ class CapabilityRoutingSupervisor(Supervisor):
         )
 
 
+class OperationalPreferenceSupervisor(Supervisor):
+    def __init__(self):
+        super().__init__(MagicMock())
+        self.executed_tool_ids = []
+
+    def _toolset(self, packs=None, tags=None):
+        return [
+            ToolDef(
+                tool_id="housekeep_runtime",
+                description="runtime cleanup semantic tool",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                side_effect_level="low",
+            )
+        ]
+
+    async def _planner_step(self, **kwargs):
+        step = StepExecutionResult(
+            status="success",
+            verb_name="planner",
+            step_name="planner_react",
+            order=0,
+            result={"PlannerReactService": {"status": "ok", "trace": [{"thought": "answer directly", "action": None}], "stop_reason": "final_answer"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+        return None, step, FinalAnswer(content="Run: docker container prune --force"), None
+
+    async def _execute_action(self, **kwargs):
+        action = kwargs.get("action") or {}
+        tool_id = action.get("tool_id")
+        self.executed_tool_ids.append(tool_id)
+        if tool_id == "housekeep_runtime":
+            return StepExecutionResult(
+                status="success",
+                verb_name="housekeep_runtime",
+                step_name="agent_chain",
+                order=1,
+                result={"AgentChainService": {"text": "dry-run cleanup complete"}},
+                latency_ms=1,
+                node="test",
+                logs=["ok"],
+                error=None,
+            )
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=2,
+            result={"AgentChainService": {"text": "chain-result"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+    async def _agent_chain_escalation(self, **kwargs):
+        self.executed_tool_ids.append("agent_chain")
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=100,
+            result={"AgentChainService": {"text": "agent-chain-fallback"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+
 class TestSupervisorPlannerDelegate(unittest.TestCase):
     def _run(self, planner_outputs, action_step_output=None, action_outputs=None):
         supervisor = StubSupervisor(planner_outputs, action_step_output=action_step_output, action_outputs=action_outputs)
@@ -242,6 +316,76 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         cfg = CapabilityRoutingSupervisor().registry.get("housekeep_runtime")
         with self.assertRaises(RuntimeError):
             _verb_to_step(cfg)
+
+    def test_operational_intent_prefers_semantic_tool_over_planner_final_answer(self):
+        supervisor = OperationalPreferenceSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "would you please dry-run cleanup of stopped containers"}],
+            "max_steps": 1,
+            "options": {},
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-operational-prefer",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        self.assertIn("housekeep_runtime", supervisor.executed_tool_ids)
+        self.assertIn("runtime_policy", result.metadata)
+        self.assertTrue(result.metadata["runtime_policy"]["semantic_tool_preferred"])
+
+    def test_no_write_explicit_downgrade_for_operational_request(self):
+        supervisor = OperationalPreferenceSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "would you please dry-run cleanup of stopped containers"}],
+            "max_steps": 1,
+            "options": {"tool_execution_policy": "none", "no_write_active": True},
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-no-write",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        self.assertNotIn("housekeep_runtime", supervisor.executed_tool_ids)
+        self.assertIn("Execution is disabled in this session", result.final_text or "")
+        self.assertTrue(result.metadata["runtime_policy"]["no_write_active"])
+        self.assertTrue(result.metadata["runtime_policy"]["downgraded_to_explanation"])
+
+    def test_operational_guidance_blocked_without_validated_semantic_execution(self):
+        supervisor = StubSupervisor(
+            planner_outputs=[(FinalAnswer(content="```bash\ndocker rm -f $(docker ps -aq)\n```"), None, "final_answer")]
+        )
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "cleanup stopped containers now"}],
+            "max_steps": 1,
+            "options": {},
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-guidance-block",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        self.assertIn("safe preview", (result.final_text or "").lower())
 
     def test_supervisor_prefers_effective_packs_from_context_metadata(self):
         supervisor = StubSupervisor(planner_outputs=[(FinalAnswer(content="hello"), None, "final_answer")])

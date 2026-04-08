@@ -712,8 +712,10 @@ async def handle_chat_request(
         latest_user_prompt=user_prompt,
         turns=context_turns,
     )
+    routed_payload = dict(payload)
+    routed_payload["no_write"] = bool(no_write)
     req, route_debug, _ = build_chat_request(
-        payload=payload,
+        payload=routed_payload,
         session_id=session_id,
         user_id=payload.get("user_id"),
         trace_id=None,

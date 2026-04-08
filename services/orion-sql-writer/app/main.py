@@ -90,6 +90,53 @@ async def lifespan(app: FastAPI):
             )
             conn.exec_driver_sql(
                 """
+                CREATE TABLE IF NOT EXISTS chat_response_feedback (
+                    feedback_id TEXT PRIMARY KEY,
+                    target_turn_id TEXT NULL,
+                    target_message_id TEXT NULL,
+                    target_correlation_id TEXT NULL,
+                    target_key TEXT NULL,
+                    session_id TEXT NULL,
+                    user_id TEXT NULL,
+                    feedback_value TEXT NOT NULL,
+                    categories TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+                    free_text TEXT NULL,
+                    source TEXT NULL,
+                    ui_context JSONB NULL,
+                    submission_fingerprint TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_turn_id ON chat_response_feedback (target_turn_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_message_id ON chat_response_feedback (target_message_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_corr_id ON chat_response_feedback (target_correlation_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_target_key ON chat_response_feedback (target_key);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_session_id ON chat_response_feedback (session_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_user_id ON chat_response_feedback (user_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_value ON chat_response_feedback (feedback_value);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_created_at ON chat_response_feedback (created_at);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_fingerprint ON chat_response_feedback (submission_fingerprint);"
+            )
+            conn.exec_driver_sql(
+                """
                 CREATE TABLE IF NOT EXISTS social_room_turns (
                     turn_id TEXT PRIMARY KEY,
                     correlation_id TEXT NULL,

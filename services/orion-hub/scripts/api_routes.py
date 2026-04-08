@@ -17,7 +17,9 @@ from .settings import settings
 from .session import ensure_session
 from .chat_history import (
     build_chat_history_envelope,
+    build_chat_response_feedback_envelope,
     publish_chat_history,
+    publish_chat_response_feedback,
     publish_social_room_turn,
     select_reasoning_trace_for_history,
 )
@@ -33,6 +35,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
+from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1, build_feedback_category_options
 from orion.schemas.notify import (
     ChatAttentionAck,
     ChatMessageReceipt,
@@ -574,6 +577,46 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
     except Exception as exc:
         logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
+
+@router.post("/api/chat/response-feedback")
+async def api_chat_response_feedback(payload: Dict[str, Any]):
+    from .main import bus
+
+    if not bus or not getattr(bus, "enabled", False):
+        raise HTTPException(status_code=503, detail="Bus unavailable")
+
+    try:
+        payload_data = dict(payload or {})
+        payload_data.setdefault("source", "hub_ui")
+        payload_data.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        feedback_payload = ChatResponseFeedbackV1.model_validate(payload_data)
+    except Exception as exc:
+        logger.warning(
+            "chat_response_feedback_rejected reason=%s feedback_id=%s corr=%s sid=%s",
+            exc,
+            (payload or {}).get("feedback_id"),
+            (payload or {}).get("target_correlation_id"),
+            (payload or {}).get("session_id"),
+        )
+        raise HTTPException(status_code=422, detail=f"Invalid feedback payload: {exc}") from exc
+
+    env = build_chat_response_feedback_envelope(
+        feedback_payload=feedback_payload,
+        correlation_id=feedback_payload.target_correlation_id,
+    )
+    await publish_chat_response_feedback(bus, env)
+    return {"ok": True, "feedback_id": feedback_payload.feedback_id}
+
+
+@router.get("/api/chat/response-feedback/options")
+def api_chat_response_feedback_options() -> Dict[str, Any]:
+    return {
+        "feedback_values": ["up", "down"],
+        "categories": build_feedback_category_options(),
+        "max_free_text_chars": 2000,
+    }
+
+
 # ======================================================================
 # 🧠 SESSION MANAGEMENT
 # ======================================================================

@@ -50,9 +50,10 @@ input[type=range]::-moz-range-thumb {
 }
 
 .mode-btn-quick {
-  border-color: rgba(129, 140, 248, 0.65) !important;
-  background: rgba(79, 70, 229, 0.3) !important;
-  box-shadow: 0 0 14px rgba(99, 102, 241, 0.28);
+  border-color: rgba(129, 140, 248, 0.7) !important;
+  background: rgba(79, 70, 229, 0.18) !important;
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.18);
+  color: rgb(199 210 254) !important;
 }
 
 .mode-btn-active {

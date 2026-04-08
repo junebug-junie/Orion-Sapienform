@@ -4601,24 +4601,32 @@ loadDismissedIds();
 
   // Mode Switching
   const modeButtons = document.querySelectorAll('.mode-btn');
+  function applyModeButtonSelection(selectedBtn) {
+    modeButtons.forEach((b) => {
+      b.classList.remove('bg-indigo-600', 'text-white', 'mode-btn-active');
+      if (b.classList.contains('mode-btn-quick')) {
+        b.classList.add('mode-btn-quick');
+      } else {
+        b.classList.add('bg-gray-700', 'text-gray-200');
+      }
+    });
+    if (selectedBtn) {
+      selectedBtn.classList.add('mode-btn-active', 'text-white');
+      selectedBtn.classList.remove('bg-gray-700', 'text-gray-200');
+    }
+  }
   modeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       currentMode = btn.dataset.mode || 'brain';
       modeVerbOverride = btn.dataset.verbOverride || null;
-      modeButtons.forEach(b => {
-        b.classList.remove('bg-indigo-600', 'text-white', 'mode-btn-active');
-        if (b.classList.contains('mode-btn-quick')) {
-          b.classList.add('mode-btn-quick');
-        } else {
-          b.classList.add('bg-gray-700', 'text-gray-200');
-        }
-      });
-      btn.classList.add('mode-btn-active', 'text-white');
-      btn.classList.remove('bg-gray-700', 'text-gray-200');
+      applyModeButtonSelection(btn);
       const modeLabel = modeVerbOverride ? `${currentMode} (${modeVerbOverride})` : currentMode;
       updateStatus(`Switched to ${modeLabel} mode.`);
     });
   });
+  const defaultModeButton = Array.from(modeButtons).find((btn) => (btn.dataset.mode || 'brain') === currentMode && !btn.dataset.verbOverride)
+    || modeButtons[0];
+  applyModeButtonSelection(defaultModeButton);
 
   // --- 4. Logic Functions ---
 

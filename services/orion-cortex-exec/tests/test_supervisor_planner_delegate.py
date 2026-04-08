@@ -312,6 +312,37 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         self.assertEqual(result.final_text, "dry-run cleanup complete")
         self.assertEqual(async_mock.await_count, 0)
 
+
+    def test_no_write_blocks_bound_capability_pre_dispatch(self):
+        supervisor = CapabilityRoutingSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "dry-run cleanup"}],
+            "max_steps": 1,
+            "options": {"no_write_active": True, "tool_execution_policy": "none", "action_execution_policy": "none"},
+        }
+
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-cap-no-write",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+
+        self.assertEqual(supervisor.chain_calls, 0)
+        self.assertIn("Execution is disabled in this session", result.final_text or "")
+        blocked_step = next((s for s in result.steps if s.step_name == "bound_capability_pre_dispatch_blocked"), None)
+        self.assertIsNotNone(blocked_step)
+        payload = (blocked_step.result or {}).get("AgentChainService", {})
+        bound = payload.get("bound_capability", {})
+        self.assertEqual(bound.get("path"), "blocked_pre_dispatch")
+        self.assertTrue(bound.get("dispatch_skipped"))
+
     def test_capability_backed_verb_cannot_fall_back_to_llm_step(self):
         cfg = CapabilityRoutingSupervisor().registry.get("housekeep_runtime")
         with self.assertRaises(RuntimeError):

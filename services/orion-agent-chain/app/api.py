@@ -316,6 +316,87 @@ def _replan_allowed_for_bound_recovery(
     return reason in allowed_reasons
 
 
+
+
+def _bound_policy_state(contract: BoundCapabilityExecutionRequestV1) -> dict[str, Any]:
+    meta = contract.policy_metadata if isinstance(contract.policy_metadata, dict) else {}
+    no_write_active = bool(meta.get("no_write_active"))
+    tool_execution_policy = str(meta.get("tool_execution_policy") or "").strip().lower()
+    action_execution_policy = str(meta.get("action_execution_policy") or "").strip().lower()
+    execution_forbidden = bool(no_write_active or tool_execution_policy == "none" or action_execution_policy == "none")
+    reasons: list[str] = []
+    if no_write_active:
+        reasons.append("no_write_active=true")
+    if tool_execution_policy == "none":
+        reasons.append("tool_execution_policy=none")
+    if action_execution_policy == "none":
+        reasons.append("action_execution_policy=none")
+    return {
+        "no_write_active": no_write_active,
+        "tool_execution_policy": tool_execution_policy or None,
+        "action_execution_policy": action_execution_policy or None,
+        "execution_forbidden": execution_forbidden,
+        "blocked_reason": ";".join(reasons) if reasons else None,
+    }
+
+
+def _bound_policy_blocked_result(*, body: AgentChainRequest, contract: BoundCapabilityExecutionRequestV1, dbg: dict[str, Any]) -> AgentChainResult:
+    policy_state = _bound_policy_state(contract)
+    blocked_reason = str(policy_state.get("blocked_reason") or "execution_forbidden_policy")
+    selected_verb = str(contract.selected_verb or "unknown")
+    detail = f"Execution blocked by policy: {blocked_reason}"
+    failure = BoundCapabilityExecutionFailureV1(
+        reason=CapabilityRecoveryReasonV1.policy_blocked,
+        selected_verb=selected_verb,
+        detail=detail,
+        recovery=CapabilityRecoveryDecisionV1(
+            reason=CapabilityRecoveryReasonV1.policy_blocked,
+            allow_replan=False,
+            replanned=False,
+            detail="blocked_agent_chain_entry",
+        ),
+        observation={
+            "selected_verb": selected_verb,
+            "selected_tool_would_have_been": selected_verb,
+            "no_write_active": bool(policy_state.get("no_write_active")),
+            "tool_execution_policy": policy_state.get("tool_execution_policy"),
+            "action_execution_policy": policy_state.get("action_execution_policy"),
+            "execution_blocked_reason": blocked_reason,
+            "path": "blocked_agent_chain_entry",
+            "dispatch_skipped": False,
+            "reply_emitted": True,
+        },
+    )
+    dbg["bound_capability_policy_state"] = dict(policy_state)
+    dbg["bound_capability_agent_chain_blocked"] = True
+    dbg["bound_capability_blocked_reply_emitted"] = True
+    dbg["bound_capability_timeout_prevented"] = True
+    logger.warning(
+        "[agent-chain] bound_capability_agent_chain_blocked=1 selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s blocked_reason=%s dispatch_skipped=false reply_emitted=true",
+        selected_verb,
+        policy_state.get("no_write_active"),
+        policy_state.get("tool_execution_policy"),
+        policy_state.get("action_execution_policy"),
+        blocked_reason,
+    )
+    logger.info(
+        "[agent-chain] bound_capability_blocked_reply_emitted=1 selected_verb=%s path=blocked_agent_chain_entry",
+        selected_verb,
+    )
+    return AgentChainResult(
+        mode=body.mode,
+        text=(
+            f"Execution is disabled by runtime policy, so I’m not running '{selected_verb}'. "
+            "I can provide a safe preview, but no capability was executed."
+        ),
+        structured={
+            "finalization_reason": "bound_capability_policy_blocked",
+            "bound_capability": failure.model_dump(mode="json"),
+        },
+        planner_raw={"runtime_debug": dbg, "trace": []},
+        runtime_debug=dbg,
+    )
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -469,6 +550,18 @@ async def execute_agent_chain(
                         runtime_debug=dbg,
                     )
             else:
+                policy_state = _bound_policy_state(bound_contract)
+                dbg["bound_capability_policy_state"] = dict(policy_state)
+                logger.info(
+                    "[agent-chain] bound_capability_policy_state selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s execution_forbidden=%s",
+                    selected_verb,
+                    policy_state.get("no_write_active"),
+                    policy_state.get("tool_execution_policy"),
+                    policy_state.get("action_execution_policy"),
+                    policy_state.get("execution_forbidden"),
+                )
+                if policy_state.get("execution_forbidden"):
+                    return _bound_policy_blocked_result(body=body, contract=bound_contract, dbg=dbg)
                 candidate = next((t for t in tools if t.tool_id == selected_verb), None)
                 is_capability = bool(
                     candidate

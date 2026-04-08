@@ -100,11 +100,19 @@ loadDismissedIds();
   const runtimeDebugPanelBody = document.getElementById('runtimeDebugPanelBody');
   const runtimeDebugPanelCaret = document.getElementById('runtimeDebugPanelCaret');
   const memoryPanelToggle = document.getElementById('memoryPanelToggle');
+  const memoryPanelCaret = document.getElementById('memoryPanelCaret');
   const memoryPanelBody = document.getElementById('memoryPanelBody');
   const memoryUsedValue = document.getElementById('memoryUsedValue');
   const recallCountValue = document.getElementById('recallCountValue');
   const backendCountsValue = document.getElementById('backendCountsValue');
   const memoryDigestPre = document.getElementById('memoryDigestPre');
+  const memoryDebugOpenModal = document.getElementById('memoryDebugOpenModal');
+  const memoryDebugModalRoot = document.getElementById('memoryDebugModalRoot');
+  const memoryDebugModalBackdrop = document.getElementById('memoryDebugModalBackdrop');
+  const memoryDebugModalDialog = document.getElementById('memoryDebugModalDialog');
+  const memoryDebugModalClose = document.getElementById('memoryDebugModalClose');
+  const memoryDebugModalMeta = document.getElementById('memoryDebugModalMeta');
+  const memoryDebugModalBody = document.getElementById('memoryDebugModalBody');
   const agentTraceDebugPanel = document.getElementById('agentTraceDebugPanel');
   const agentTraceDebugToggle = document.getElementById('agentTraceDebugToggle');
   const agentTraceDebugCaret = document.getElementById('agentTraceDebugCaret');
@@ -210,6 +218,7 @@ loadDismissedIds();
   const responseFeedbackCategoryList = document.getElementById('responseFeedbackCategoryList');
   const responseFeedbackNotes = document.getElementById('responseFeedbackNotes');
   const responseFeedbackStatus = document.getElementById('responseFeedbackStatus');
+  let lastMemoryDebugModel = null;
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -1619,8 +1628,49 @@ loadDismissedIds();
     outboundRoutingDebug.textContent = routeDebug ? JSON.stringify(routeDebug, null, 2) : '--';
   }
 
-  function updateMemoryPanelFromResponse(data) {
-    if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
+  function applyDebugTextLayout(node) {
+    if (!node) return;
+    node.style.whiteSpace = 'pre-wrap';
+    node.style.overflowWrap = 'anywhere';
+    node.style.wordBreak = 'break-word';
+  }
+
+  function toPrettyText(value) {
+    if (typeof value === 'string') return value;
+    if (value === null || value === undefined) return '--';
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (_error) {
+      return String(value);
+    }
+  }
+
+  function summarizeInlineText(value, maxChars = 220) {
+    const raw = String(value || '').trim();
+    if (!raw) return '--';
+    return raw.length > maxChars ? `${raw.slice(0, maxChars - 1)}…` : raw;
+  }
+
+  function collectRecallEntries(recallDebug) {
+    if (!recallDebug || typeof recallDebug !== 'object') return [];
+    const debugLayer = recallDebug.debug && typeof recallDebug.debug === 'object' ? recallDebug.debug : null;
+    const candidates = [
+      recallDebug.results,
+      recallDebug.recall_results,
+      recallDebug.entries,
+      recallDebug.items,
+      recallDebug.memories,
+      debugLayer && debugLayer.results,
+      debugLayer && debugLayer.recall_results,
+      debugLayer && debugLayer.entries,
+      debugLayer && debugLayer.items,
+      debugLayer && debugLayer.memories,
+    ];
+    const found = candidates.find((entry) => Array.isArray(entry));
+    return Array.isArray(found) ? found : [];
+  }
+
+  function normalizeMemoryDebugModel(data) {
     const recallDebug = data && typeof data.recall_debug === 'object' ? data.recall_debug : null;
     const recallCount = recallDebug && typeof recallDebug.count === 'number' ? recallDebug.count : null;
     const backendCounts = recallDebug && recallDebug.backend_counts
@@ -1629,13 +1679,215 @@ loadDismissedIds();
     const memoryUsed = typeof data.memory_used === 'boolean'
       ? data.memory_used
       : (typeof recallCount === 'number' ? recallCount > 0 : false);
-    const memoryDigest = data.memory_digest || (recallDebug && recallDebug.memory_digest) || "";
+    const memoryDigest = data.memory_digest || (recallDebug && recallDebug.memory_digest) || '';
+    const routingDebug = data && typeof data.routing_debug === 'object' ? data.routing_debug : null;
+    const recallEntries = collectRecallEntries(recallDebug);
 
-    memoryUsedValue.textContent = memoryUsed ? "true" : "false";
-    recallCountValue.textContent = typeof recallCount === 'number' ? recallCount : "--";
-    backendCountsValue.textContent = backendCounts ? JSON.stringify(backendCounts, null, 2) : "--";
-    memoryDigestPre.textContent = memoryDigest || "--";
+    return {
+      memoryUsed,
+      recallCount,
+      backendCounts,
+      memoryDigest,
+      routingDebug,
+      recallEntries,
+      recallDebug,
+      raw: {
+        memory_used: memoryUsed,
+        memory_digest: memoryDigest,
+        recall_debug: recallDebug || {},
+        routing_debug: routingDebug || {},
+      },
+    };
+  }
+
+  function buildMemoryDebugRecallEntryNode(entry, index) {
+    const details = document.createElement('details');
+    details.className = 'rounded-xl border border-gray-700 bg-gray-900/40';
+
+    const summary = document.createElement('summary');
+    summary.className = 'cursor-pointer list-none px-3 py-2 text-xs text-gray-200';
+    const source = entry && typeof entry === 'object' ? (entry.source || entry.backend || entry.kind || 'unknown') : 'scalar';
+    const score = entry && typeof entry === 'object' && entry.score != null ? `score ${entry.score}` : '';
+    const title = entry && typeof entry === 'object'
+      ? (entry.title || entry.id || entry.uri || entry.source_ref || '')
+      : '';
+    const stableLabel = `Entry ${index + 1}`;
+    summary.textContent = `${stableLabel} · ${source}${score ? ` · ${score}` : ''}${title ? ` · ${title}` : ''}`;
+    details.dataset.recallEntry = title || `${source}-${index + 1}`;
+
+    const body = document.createElement('div');
+    body.className = 'border-t border-gray-800 px-3 py-3 space-y-2';
+
+    const snippet = entry && typeof entry === 'object'
+      ? (entry.snippet || entry.text || entry.content || entry.rendered || '')
+      : '';
+    if (snippet) {
+      const snippetLabel = document.createElement('div');
+      snippetLabel.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      snippetLabel.textContent = 'Snippet';
+      const snippetPre = document.createElement('pre');
+      snippetPre.className = 'whitespace-pre-wrap break-words rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] leading-5 text-gray-200 max-h-52 overflow-y-auto';
+      snippetPre.textContent = String(snippet);
+      applyDebugTextLayout(snippetPre);
+      body.appendChild(snippetLabel);
+      body.appendChild(snippetPre);
+    }
+
+    const rawLabel = document.createElement('div');
+    rawLabel.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    rawLabel.textContent = 'Raw entry';
+    const rawPre = document.createElement('pre');
+    rawPre.className = 'whitespace-pre-wrap break-words rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] leading-5 text-gray-200 max-h-72 overflow-y-auto';
+    rawPre.textContent = toPrettyText(entry);
+    applyDebugTextLayout(rawPre);
+    body.appendChild(rawLabel);
+    body.appendChild(rawPre);
+
+    details.appendChild(summary);
+    details.appendChild(body);
+    return details;
+  }
+
+  function renderMemoryDebugModal(model) {
+    if (!memoryDebugModalMeta || !memoryDebugModalBody) return;
+    const safeModel = model || normalizeMemoryDebugModel({});
+    const backendLabel = safeModel.backendCounts ? toPrettyText(safeModel.backendCounts).replace(/\s+/g, ' ') : '--';
+    memoryDebugModalMeta.textContent = `memory ${safeModel.memoryUsed ? 'used' : 'unused'} · recall ${safeModel.recallCount ?? '--'} · backends ${backendLabel}`;
+
+    memoryDebugModalBody.innerHTML = '';
+    const summaryGrid = document.createElement('div');
+    summaryGrid.className = 'grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4';
+    [
+      ['memory used', safeModel.memoryUsed ? 'true' : 'false'],
+      ['recall count', safeModel.recallCount ?? '--'],
+      ['backend counts', toPrettyText(safeModel.backendCounts)],
+      ['recall entries', safeModel.recallEntries.length],
+    ].forEach(([label, value]) => {
+      const card = document.createElement('div');
+      card.className = 'rounded-xl border border-gray-800 bg-gray-900/50 px-3 py-2';
+      const key = document.createElement('div');
+      key.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      key.textContent = label;
+      const val = document.createElement('pre');
+      val.className = 'mt-1 whitespace-pre-wrap break-words text-[11px] text-gray-100';
+      val.textContent = String(value);
+      applyDebugTextLayout(val);
+      card.appendChild(key);
+      card.appendChild(val);
+      summaryGrid.appendChild(card);
+    });
+    memoryDebugModalBody.appendChild(summaryGrid);
+
+    const sections = [
+      ['Memory digest', safeModel.memoryDigest],
+      ['Outbound routing debug', safeModel.routingDebug],
+      ['Recall debug payload', safeModel.recallDebug],
+      ['Raw payload', safeModel.raw],
+    ];
+    sections.forEach(([label, value]) => {
+      const block = document.createElement('section');
+      block.className = 'rounded-xl border border-gray-700 bg-gray-900/40 p-3';
+      const title = document.createElement('div');
+      title.className = 'text-[10px] uppercase tracking-wide text-gray-500 mb-2';
+      title.textContent = label;
+      const pre = document.createElement('pre');
+      pre.className = 'whitespace-pre-wrap break-words rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] leading-5 text-gray-200 max-h-80 overflow-y-auto';
+      pre.textContent = toPrettyText(value);
+      applyDebugTextLayout(pre);
+      block.appendChild(title);
+      block.appendChild(pre);
+      memoryDebugModalBody.appendChild(block);
+    });
+
+    const entriesSection = document.createElement('section');
+    entriesSection.className = 'rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2';
+    const entriesTitle = document.createElement('div');
+    entriesTitle.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    entriesTitle.textContent = `Recall entries (${safeModel.recallEntries.length})`;
+    entriesSection.appendChild(entriesTitle);
+    if (!safeModel.recallEntries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'text-xs text-gray-400';
+      empty.textContent = 'No explicit recall entries were provided in recall_debug.';
+      entriesSection.appendChild(empty);
+    } else {
+      safeModel.recallEntries.forEach((entry, index) => {
+        entriesSection.appendChild(buildMemoryDebugRecallEntryNode(entry, index));
+      });
+    }
+    memoryDebugModalBody.appendChild(entriesSection);
+  }
+
+  function updateMemoryPanelFromResponse(data) {
+    if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
+    const model = normalizeMemoryDebugModel(data);
+    lastMemoryDebugModel = model;
+
+    memoryUsedValue.textContent = model.memoryUsed ? 'true' : 'false';
+    recallCountValue.textContent = typeof model.recallCount === 'number' ? model.recallCount : '--';
+    backendCountsValue.textContent = model.backendCounts ? JSON.stringify(model.backendCounts, null, 2) : '--';
+    memoryDigestPre.textContent = summarizeInlineText(model.memoryDigest);
     updateRoutingDebugPanel(data);
+    applyDebugTextLayout(backendCountsValue);
+    applyDebugTextLayout(memoryDigestPre);
+    applyDebugTextLayout(outboundRoutingDebug);
+    renderMemoryDebugModal(model);
+  }
+
+  function clearMemoryDebugPanel() {
+    if (memoryUsedValue) memoryUsedValue.textContent = '--';
+    if (recallCountValue) recallCountValue.textContent = '--';
+    if (backendCountsValue) backendCountsValue.textContent = '--';
+    if (memoryDigestPre) memoryDigestPre.textContent = '--';
+    if (outboundRoutingDebug) outboundRoutingDebug.textContent = '--';
+    lastMemoryDebugModel = normalizeMemoryDebugModel({});
+    renderMemoryDebugModal(lastMemoryDebugModel);
+  }
+
+  function ensureMemoryDebugModalRootOnBody() {
+    if (!memoryDebugModalRoot || !document.body) return;
+    if (memoryDebugModalRoot.parentElement !== document.body) {
+      document.body.appendChild(memoryDebugModalRoot);
+    }
+  }
+
+  function isModalVisible(el) {
+    return !!(el && !el.classList.contains('hidden'));
+  }
+
+  function syncDebugModalScrollLock() {
+    if (!document.body) return;
+    const shouldLock = isModalVisible(memoryDebugModalRoot) || isModalVisible(autonomyDebugModalRoot);
+    document.body.classList.toggle('overflow-hidden', shouldLock);
+  }
+
+  function openMemoryDebugModal() {
+    if (!memoryDebugModalRoot) return;
+    closeAutonomyDebugModal();
+    ensureMemoryDebugModalRootOnBody();
+    memoryDebugModalRoot.style.position = 'fixed';
+    memoryDebugModalRoot.style.inset = '0';
+    memoryDebugModalRoot.style.zIndex = '2147483646';
+    if (memoryDebugModalBackdrop) {
+      memoryDebugModalBackdrop.style.position = 'fixed';
+      memoryDebugModalBackdrop.style.inset = '0';
+      memoryDebugModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (memoryDebugModalDialog) {
+      memoryDebugModalDialog.style.position = 'fixed';
+      memoryDebugModalDialog.style.zIndex = '2147483647';
+    }
+    renderMemoryDebugModal(lastMemoryDebugModel || normalizeMemoryDebugModel({}));
+    memoryDebugModalRoot.classList.remove('hidden');
+    memoryDebugModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeMemoryDebugModal() {
+    if (!memoryDebugModalRoot) return;
+    memoryDebugModalRoot.classList.add('hidden');
+    memoryDebugModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
   }
 
   function clearAgentTraceDebugPanel() {
@@ -1905,6 +2157,7 @@ loadDismissedIds();
 
   function openAutonomyDebugModal() {
     if (!autonomyDebugModalRoot) return;
+    closeMemoryDebugModal();
     ensureAutonomyModalRootOnBody();
     autonomyDebugModalRoot.style.position = 'fixed';
     autonomyDebugModalRoot.style.inset = '0';
@@ -1923,6 +2176,7 @@ loadDismissedIds();
     autonomyDebugModalRoot.classList.remove('hidden');
     autonomyDebugModalRoot.setAttribute('aria-hidden', 'false');
     if (document.body) document.body.classList.add('overflow-hidden');
+    syncDebugModalScrollLock();
   }
 
   function closeAutonomyDebugModal() {
@@ -1930,6 +2184,7 @@ loadDismissedIds();
     autonomyDebugModalRoot.classList.add('hidden');
     autonomyDebugModalRoot.setAttribute('aria-hidden', 'true');
     if (document.body) document.body.classList.remove('overflow-hidden');
+    syncDebugModalScrollLock();
   }
 
   function renderSocialInspectionBadges(container, badges) {
@@ -2175,7 +2430,9 @@ loadDismissedIds();
 
   function toggleMemoryPanel() {
     if (!memoryPanelBody) return;
-    memoryPanelBody.classList.toggle('hidden');
+    const nextHidden = !memoryPanelBody.classList.contains('hidden');
+    memoryPanelBody.classList.toggle('hidden', nextHidden);
+    if (memoryPanelCaret) memoryPanelCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function toggleRuntimeDebugPanel() {
@@ -4832,6 +5089,7 @@ loadDismissedIds();
   if (clearButton && conversationDiv) {
     clearButton.addEventListener('click', () => {
       conversationDiv.innerHTML = '';
+      clearMemoryDebugPanel();
       clearAgentTraceDebugPanel();
       clearAutonomyDebugPanel();
     });
@@ -5019,6 +5277,27 @@ loadDismissedIds();
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }
+  ensureMemoryDebugModalRootOnBody();
+  if (memoryDebugOpenModal) {
+    memoryDebugOpenModal.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openMemoryDebugModal();
+    });
+  }
+  if (memoryDebugModalClose) {
+    memoryDebugModalClose.addEventListener('click', closeMemoryDebugModal);
+  }
+  if (memoryDebugModalBackdrop) {
+    memoryDebugModalBackdrop.addEventListener('click', closeMemoryDebugModal);
+  }
+  if (memoryDebugModalRoot) {
+    memoryDebugModalRoot.addEventListener('click', (event) => {
+      if (event.target === memoryDebugModalRoot) closeMemoryDebugModal();
+    });
+  }
+  if (memoryDebugModalDialog) {
+    memoryDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
   if (runtimeDebugPanelToggle) {
     runtimeDebugPanelToggle.addEventListener('click', toggleRuntimeDebugPanel);
   }
@@ -5135,6 +5414,10 @@ loadDismissedIds();
     });
   }
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && memoryDebugModalRoot && !memoryDebugModalRoot.classList.contains('hidden')) {
+      closeMemoryDebugModal();
+      return;
+    }
     if (event.key === 'Escape' && socialInspectionModal && !socialInspectionModal.classList.contains('hidden')) {
       closeSocialInspectionModal();
       return;
@@ -5168,6 +5451,7 @@ loadDismissedIds();
     textToSpeechToggle.checked = false;
   }
   normalizeRecallProfileDisplay();
+  clearMemoryDebugPanel();
   renderSocialInspectionState(null);
   loadResponseFeedbackOptions();
   loadScheduleInventory();

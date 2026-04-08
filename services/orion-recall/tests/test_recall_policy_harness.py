@@ -49,6 +49,23 @@ def test_fusion_diagnostic_stats_capture_dedupe_and_drop_reasons():
     assert isinstance(diag.get("source_selected_counts"), dict)
 
 
+def test_fusion_sanitizes_planner_contamination_in_transcript_snippets():
+    cands = [
+        {
+            "id": "chat-1",
+            "source": "sql_timeline",
+            "text": 'ExactUserText: "What changed?" OrionResponse: "Okay, so the user wants a recap. Here is the clean answer."',
+            "score": 0.9,
+            "tags": ["chat_timeline"],
+        }
+    ]
+    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="changed", diagnostic=True)
+    assert len(bundle.items) == 0
+    diag = bundle.stats.diagnostic or {}
+    assert diag.get("contaminated_recall_sanitized_count", 0) >= 1
+    assert diag.get("contaminated_recall_filtered_count", 0) >= 1
+
+
 def test_process_recall_diagnostic_contains_gating_suppression_and_selection(monkeypatch):
     monkeypatch.setattr(worker, "get_profile", lambda _name: _profile())
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_VECTOR", True)
@@ -96,3 +113,10 @@ def test_process_recall_diagnostic_contains_gating_suppression_and_selection(mon
     assert decision.recall_debug.get("source_gating", {}).get("sql_timeline") == "disabled_by_profile_or_global"
     assert "self_hit_suppressed" in (decision.recall_debug.get("active_turn", {}) or {})
     assert isinstance(decision.recall_debug.get("selected_summary"), list)
+    assert isinstance(decision.recall_debug.get("latency_breakdown_ms"), dict)
+
+
+def test_chat_general_profile_disables_sql_chat_by_default(monkeypatch):
+    monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", True)
+    assert worker._sql_chat_enabled_for_profile({"profile": "chat.general.v1"}) is False
+    assert worker._sql_chat_enabled_for_profile({"profile": "reflect.v1"}) is True

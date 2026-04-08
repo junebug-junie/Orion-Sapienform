@@ -49,8 +49,13 @@ def _preview_text(value: str | None, limit: int = 220) -> str:
 
 
 _THINK_BLOCK_RE = re.compile(r"<think>\s*.*?\s*</think>", flags=re.IGNORECASE | re.DOTALL)
+_THINK_CLOSE_ONLY_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
 _PLANNING_LINE_RE = re.compile(
-    r"^\s*(okay,?\s+so\s+the\s+user\s+wants|i\s+should|need\s+to|let\s+me\s+think|plan:|steps?:)\b",
+    r"^\s*(okay,?\s+i\s+need\s+to|okay,?\s+so\s+the\s+user\s+wants|the\s+user\s+wants|i\s+should|need\s+to|let\s+me(?:\s+think)?|check\s+response\s+hazards|looking\s+at\s+the\s+memory\s+digest|plan:|steps?:)\b",
+    flags=re.IGNORECASE,
+)
+_PLANNING_TEXT_RE = re.compile(
+    r"^\s*(okay,?\s+i\s+need\s+to|okay,?\s+so\s+the\s+user\s+wants|the\s+user\s+wants|i\s+should|need\s+to|let\s+me(?:\s+think)?|check\s+response\s+hazards|looking\s+at\s+the\s+memory\s+digest)\b",
     flags=re.IGNORECASE,
 )
 
@@ -62,15 +67,45 @@ def _structured_output_expected(verb_name: str | None) -> bool:
     }
 
 
-def _strip_think_content(text: str) -> tuple[str, bool, bool]:
+def _strip_think_content(text: str) -> tuple[str, dict[str, Any]]:
     raw = str(text or "")
-    has_think_tags = "<think>" in raw.lower()
-    if not has_think_tags:
-        return raw.strip(), False, False
-    stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
-    if "<think>" in stripped.lower():
-        stripped = stripped[: stripped.lower().find("<think>")].strip()
-    return stripped, True, stripped != raw.strip()
+    raw_trimmed = raw.strip()
+    has_open = "<think>" in raw.lower()
+    has_close = bool(_THINK_CLOSE_ONLY_RE.search(raw))
+    if has_open and has_close:
+        stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
+        if "<think>" in stripped.lower():
+            stripped = stripped[: stripped.lower().find("<think>")].strip()
+        return stripped, {
+            "has_think_tags": True,
+            "think_stripped": stripped != raw_trimmed,
+            "full_block_detected": True,
+            "close_tag_only_detected": False,
+        }
+    if (not has_open) and has_close:
+        first_close = _THINK_CLOSE_ONLY_RE.search(raw)
+        cleaned = raw[first_close.end() :] if first_close else raw
+        stripped = cleaned.strip()
+        return stripped, {
+            "has_think_tags": True,
+            "think_stripped": stripped != raw_trimmed,
+            "full_block_detected": False,
+            "close_tag_only_detected": True,
+        }
+    if has_open and not has_close:
+        stripped = raw[: raw.lower().find("<think>")].strip()
+        return stripped, {
+            "has_think_tags": True,
+            "think_stripped": stripped != raw_trimmed,
+            "full_block_detected": False,
+            "close_tag_only_detected": False,
+        }
+    return raw_trimmed, {
+        "has_think_tags": False,
+        "think_stripped": False,
+        "full_block_detected": False,
+        "close_tag_only_detected": False,
+    }
 
 
 def _strip_planning_preamble(text: str) -> tuple[str, bool, int]:
@@ -81,6 +116,14 @@ def _strip_planning_preamble(text: str) -> tuple[str, bool, int]:
         dropped += 1
     cleaned = "\n".join(lines).strip()
     return cleaned, dropped > 0, dropped
+
+
+def _looks_like_internal_planning(text: str) -> bool:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return False
+    head = "\n".join(candidate.splitlines()[:3]).strip()
+    return bool(_PLANNING_TEXT_RE.search(head))
 
 
 def _provider_completion_meta(payload: dict[str, Any]) -> dict[str, Any]:
@@ -136,6 +179,8 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
         "source_service": None,
         "think_tags_detected": False,
         "think_stripping_applied": False,
+        "think_full_block_detected": False,
+        "think_close_tag_only_detected": False,
         "structured_output_sanitized": False,
         "structured_output_rejected": False,
         "structured_json_extraction_attempted": False,
@@ -148,6 +193,11 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
         "provider_has_reasoning_trace": False,
         "planning_stripping_applied": False,
         "planning_lines_dropped": 0,
+        "planning_candidate_rejected": False,
+        "planning_candidate_rejection_reason": None,
+        "raw_len": 0,
+        "clean_len": 0,
+        "final_len": 0,
         "truncation_detected": False,
         "result_len": 0,
     }
@@ -161,7 +211,7 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                 if not isinstance(candidate, str) or not candidate.strip():
                     continue
                 diagnostics["candidate_count"] += 1
-                cleaned, has_think_tags, think_stripped = _strip_think_content(candidate)
+                cleaned, think_diag = _strip_think_content(candidate)
                 pre_len = len(candidate.strip())
                 post_len = len(cleaned)
                 candidate_diag = {
@@ -169,8 +219,10 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                     "field": field,
                     "raw_len": pre_len,
                     "clean_len": post_len,
-                    "think_tags": bool(has_think_tags),
-                    "think_stripped": bool(think_stripped),
+                    "think_tags": bool(think_diag["has_think_tags"]),
+                    "think_stripped": bool(think_diag["think_stripped"]),
+                    "think_full_block_detected": bool(think_diag["full_block_detected"]),
+                    "think_close_tag_only_detected": bool(think_diag["close_tag_only_detected"]),
                 }
                 provider_meta = _provider_completion_meta(payload)
                 diagnostics["provider_finish_reason"] = provider_meta.get("finish_reason")
@@ -190,25 +242,40 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                     if json_text:
                         diagnostics["source_field"] = field
                         diagnostics["source_service"] = service_name
-                        diagnostics["think_tags_detected"] = bool(has_think_tags)
-                        diagnostics["think_stripping_applied"] = bool(think_stripped)
+                        diagnostics["think_tags_detected"] = bool(think_diag["has_think_tags"])
+                        diagnostics["think_stripping_applied"] = bool(think_diag["think_stripped"])
+                        diagnostics["think_full_block_detected"] = bool(think_diag["full_block_detected"])
+                        diagnostics["think_close_tag_only_detected"] = bool(think_diag["close_tag_only_detected"])
                         diagnostics["structured_output_sanitized"] = bool(json_text != cleaned)
                         diagnostics["result_len"] = len(json_text)
+                        diagnostics["raw_len"] = pre_len
+                        diagnostics["clean_len"] = len(json_text)
+                        diagnostics["final_len"] = len(json_text)
                         return json_text, diagnostics
                     diagnostics["rejected_candidate_count"] += 1
                     continue
                 diagnostics["source_field"] = field
                 diagnostics["source_service"] = service_name
-                diagnostics["think_tags_detected"] = bool(has_think_tags)
-                diagnostics["think_stripping_applied"] = bool(think_stripped)
+                diagnostics["think_tags_detected"] = bool(think_diag["has_think_tags"])
+                diagnostics["think_stripping_applied"] = bool(think_diag["think_stripped"])
+                diagnostics["think_full_block_detected"] = bool(think_diag["full_block_detected"])
+                diagnostics["think_close_tag_only_detected"] = bool(think_diag["close_tag_only_detected"])
                 diagnostics["planning_stripping_applied"] = planning_applied
                 diagnostics["planning_lines_dropped"] = dropped_lines
                 final_text = no_plan_text or cleaned
+                if str(verb_name or "").strip().lower() == "chat_general" and _looks_like_internal_planning(final_text):
+                    diagnostics["planning_candidate_rejected"] = True
+                    diagnostics["planning_candidate_rejection_reason"] = "looks_like_internal_planning_after_cleanup"
+                    diagnostics["rejected_candidate_count"] += 1
+                    continue
                 if provider_meta.get("finish_reason") == "length":
                     diagnostics["truncation_detected"] = True
                     if final_text and final_text[-1] not in ".!?…":
                         final_text = f"{final_text}…"
                 diagnostics["result_len"] = len(final_text)
+                diagnostics["raw_len"] = pre_len
+                diagnostics["clean_len"] = post_len
+                diagnostics["final_len"] = len(final_text)
                 return final_text, diagnostics
     if structured_expected and diagnostics["candidate_count"] > 0:
         diagnostics["structured_output_rejected"] = True
@@ -648,15 +715,19 @@ class PlanRunner:
 
         final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
         logger.info(
-            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s result_len=%s",
+            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
             correlation_id,
             plan.verb_name,
             final_text_diag.get("source_service"),
             final_text_diag.get("source_field"),
             final_text_diag.get("think_tags_detected"),
+            final_text_diag.get("think_full_block_detected"),
+            final_text_diag.get("think_close_tag_only_detected"),
             final_text_diag.get("think_stripping_applied"),
             final_text_diag.get("planning_stripping_applied"),
             final_text_diag.get("planning_lines_dropped"),
+            final_text_diag.get("planning_candidate_rejected"),
+            final_text_diag.get("planning_candidate_rejection_reason"),
             final_text_diag.get("provider_has_reasoning_content"),
             final_text_diag.get("provider_has_reasoning_trace"),
             final_text_diag.get("provider_completion_tokens"),
@@ -668,6 +739,9 @@ class PlanRunner:
             final_text_diag.get("candidate_count"),
             final_text_diag.get("rejected_candidate_count"),
             final_text_diag.get("candidate_fields_considered"),
+            final_text_diag.get("raw_len"),
+            final_text_diag.get("clean_len"),
+            final_text_diag.get("final_len"),
             final_text_diag.get("result_len"),
         )
         if overall_status == "success" and soft_failure:

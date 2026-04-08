@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, Sequence
@@ -168,6 +168,12 @@ class GraphAutonomyRepository:
         self._goals_limit = max(1, min(int(goals_limit), 5))
         self._subquery_max_workers = 3
         self._subject_max_workers = max(1, int(os.getenv("AUTONOMY_SUBJECT_MAX_WORKERS", "3")))
+        self._chat_stance_short_circuit = str(os.getenv("AUTONOMY_CHAT_STANCE_SHORT_CIRCUIT", "true")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._query_client = query_client or (
             GraphQueryClient(
                 GraphQueryConfig(
@@ -528,19 +534,65 @@ LIMIT {self._goals_limit}
 
     def list_latest(self, subjects: Sequence[str], *, observer: dict[str, str] | None = None) -> list[AutonomyLookupV1]:
         corr = str((observer or {}).get("correlation_id") or "-")
+        consumer = str((observer or {}).get("consumer") or "")
+        ordered_subjects = list(subjects)
+        preferred_order = [name for name in ("orion", "relationship", "juniper") if name in ordered_subjects]
+        short_circuit_allowed = self._chat_stance_short_circuit and consumer == "chat_stance" and bool(preferred_order)
         started = time.perf_counter()
         logger.info(
-            "autonomy_graph_subject_fanout_start subjects=%s execution_mode=concurrent workers=%s correlation_id=%s",
+            "autonomy_graph_subject_fanout_start subjects=%s execution_mode=concurrent workers=%s correlation_id=%s short_circuit_allowed=%s",
             list(subjects),
             self._subject_max_workers,
             corr,
+            short_circuit_allowed,
         )
         results_by_subject: dict[str, AutonomyLookupV1] = {}
-        with ThreadPoolExecutor(max_workers=max(1, min(self._subject_max_workers, len(subjects) or 1))) as executor:
+        executor = ThreadPoolExecutor(max_workers=max(1, min(self._subject_max_workers, len(subjects) or 1)))
+        try:
             future_map = {executor.submit(self._query_subject, subject, observer=observer): subject for subject in subjects}
-            for future in as_completed(future_map):
-                subject = future_map[future]
-                results_by_subject[subject] = future.result()
+            if short_circuit_allowed:
+                pending = set(future_map.keys())
+                short_circuit_triggered = False
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        subject = future_map[future]
+                        results_by_subject[subject] = future.result()
+                    selected = next(
+                        (
+                            results_by_subject.get(name)
+                            for name in preferred_order
+                            if results_by_subject.get(name) is not None and results_by_subject.get(name).availability == "available"
+                        ),
+                        None,
+                    )
+                    if selected is not None:
+                        short_circuit_triggered = True
+                        for future in pending:
+                            future.cancel()
+                        logger.info(
+                            "autonomy_graph_subject_fanout_short_circuit correlation_id=%s selected_subject=%s selected_availability=%s selected_unavailable_reason=%s",
+                            corr,
+                            selected.subject,
+                            selected.availability,
+                            selected.unavailable_reason,
+                        )
+                        break
+                if short_circuit_triggered:
+                    for subject in ordered_subjects:
+                        if subject not in results_by_subject:
+                            results_by_subject[subject] = AutonomyLookupV1(
+                                subject=subject,
+                                state=None,
+                                availability="unavailable",
+                                unavailable_reason="short_circuited_after_preferred_subject",
+                            )
+            else:
+                for future in as_completed(future_map):
+                    subject = future_map[future]
+                    results_by_subject[subject] = future.result()
+        finally:
+            executor.shutdown(wait=not short_circuit_allowed, cancel_futures=short_circuit_allowed)
         results = [results_by_subject.get(subject, AutonomyLookupV1(subject=subject, state=None, availability="empty")) for subject in subjects]
         logger.info(
             "autonomy_graph_subject_fanout_end subjects=%s elapsed_ms=%s correlation_id=%s",

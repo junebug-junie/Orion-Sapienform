@@ -28,6 +28,11 @@ from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecu
 from orion.cognition.verb_activation import is_active
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
 from orion.cognition.quality_evaluator import should_rewrite_for_instructional
+from orion.schemas.agents.bound_capability import (
+    BoundCapabilityExecutionRequestV1,
+    CapabilityRecoveryDecisionV1,
+    CapabilityRecoveryReasonV1,
+)
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
@@ -56,6 +61,10 @@ def _load_prompt_content(template_ref: Optional[str]) -> Optional[str]:
 
 def _verb_to_step(cfg) -> ExecutionStep:
     prompt_text = _load_prompt_content(cfg.prompt_template)
+    if _is_capability_backed_cfg(cfg):
+        raise RuntimeError(
+            f"capability_backed_llm_fallback_blocked:{cfg.name}"
+        )
     services = cfg.services or ["LLMGatewayService"]
     return ExecutionStep(
         verb_name=cfg.name,
@@ -68,6 +77,10 @@ def _verb_to_step(cfg) -> ExecutionStep:
         requires_memory=bool(cfg.requires_memory),
         timeout_ms=int(cfg.timeout_ms or settings.step_timeout_ms),
     )
+
+def _is_capability_backed_cfg(cfg: Any) -> bool:
+    execution_mode = str(getattr(cfg, "execution_mode", "") or "").strip().lower()
+    return execution_mode == "capability_backed" or bool(getattr(cfg, "requires_capability_selector", False))
 
 
 def _extract_observation(step_res: StepExecutionResult) -> Dict[str, Any]:
@@ -567,6 +580,61 @@ class Supervisor:
             )
 
         verb_cfg = self.registry.get(tool_id)
+        if _is_capability_backed_cfg(verb_cfg):
+            logger.info(
+                "dispatch_action corr_id=%s mode=%s step=%s route=AgentChainService(bound_capability)",
+                correlation_id,
+                mode,
+                tool_id,
+            )
+            bound_execution = BoundCapabilityExecutionRequestV1(
+                selected_verb=str(tool_id),
+                normalized_action_input=tool_input if isinstance(tool_input, dict) else {},
+                execution_mode="capability_backed",
+                requires_capability_selector=bool(getattr(verb_cfg, "requires_capability_selector", False)),
+                preferred_skill_families=list(getattr(verb_cfg, "preferred_skill_families", []) or []),
+                side_effect_level=getattr(verb_cfg, "side_effect_level", None),
+                planner_correlation_id=correlation_id,
+                planner_metadata={"planner_mode": mode, "source": "supervisor_planner_delegate"},
+                selected_tool_metadata={"tool_id": str(tool_id), "description": getattr(verb_cfg, "description", "")},
+                policy_metadata={},
+                recovery=CapabilityRecoveryDecisionV1(
+                    reason=CapabilityRecoveryReasonV1.internal_contract_error,
+                    allow_replan=False,
+                    replanned=False,
+                    detail="default_fail_closed",
+                ),
+            )
+            chain_ctx = {**ctx, "__bound_execution": bound_execution.model_dump(mode="json")}
+            try:
+                return await self._agent_chain_escalation(
+                    source=source,
+                    correlation_id=correlation_id,
+                    ctx=chain_ctx,
+                    packs=packs,
+                )
+            except Exception as exc:
+                logger.error(
+                    "bound_capability_fail_closed corr_id=%s selected_verb=%s reason=capability_executor_unavailable error=%s",
+                    correlation_id,
+                    tool_id,
+                    exc,
+                )
+                return StepExecutionResult(
+                    status="fail",
+                    verb_name=str(tool_id),
+                    step_name="bound_capability_execution_failed",
+                    order=0,
+                    result={
+                        "error": "capability_executor_unavailable",
+                        "selected_verb": str(tool_id),
+                        "bound_capability_execution": bound_execution.model_dump(mode="json"),
+                    },
+                    latency_ms=0,
+                    node=settings.node_name,
+                    logs=["fail_closed <- bound capability escalation unavailable"],
+                    error=f"capability_executor_unavailable:{tool_id}",
+                )
         step = _verb_to_step(verb_cfg)
 
         exec_ctx = {**ctx, **tool_input}
@@ -674,6 +742,16 @@ class Supervisor:
             "output_mode": ctx.get("output_mode"),
             "response_profile": ctx.get("response_profile"),
         }
+        bound_execution = ctx.get("__bound_execution")
+        if isinstance(bound_execution, dict):
+            contract = BoundCapabilityExecutionRequestV1.model_validate(bound_execution)
+            logger.info(
+                "bound_capability_request_received corr_id=%s selected_verb=%s selected_verb_preserved=1",
+                correlation_id,
+                contract.selected_verb,
+            )
+            agent_req["goal_description"] = "execute_selected_capability"
+            agent_req["bound_capability_execution"] = contract.model_dump(mode="json")
         reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
         t0 = time.time()
         logs = [f"rpc -> AgentChainService reply={reply_channel}"]
@@ -987,7 +1065,23 @@ class Supervisor:
                 final_text = obs.get("llm_output")
 
             selected_tool = str((action or {}).get("tool_id") or "")
+            selected_cfg = None
             if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
+                try:
+                    selected_cfg = self.registry.get(selected_tool)
+                except Exception:
+                    selected_cfg = None
+            selected_is_capability = _is_capability_backed_cfg(selected_cfg) if selected_cfg else False
+            if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
+                if selected_is_capability:
+                    logger.info(
+                        "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=capability_bound_executed tool_id=%s",
+                        correlation_id,
+                        mode,
+                        req.verb_name,
+                        selected_tool,
+                    )
+                    break
                 logger.info(
                     "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=delegate_then_agent_chain tool_id=%s",
                     correlation_id,

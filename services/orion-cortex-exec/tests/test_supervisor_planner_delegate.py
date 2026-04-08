@@ -11,7 +11,7 @@ from orion.schemas.cortex.schemas import ExecutionPlan, StepExecutionResult
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
-from app.supervisor import Supervisor, _ensure_agent_chain_tool, _extract_latest_planner_thought
+from app.supervisor import Supervisor, _ensure_agent_chain_tool, _extract_latest_planner_thought, _verb_to_step
 
 
 class StubSupervisor(Supervisor):
@@ -74,6 +74,48 @@ class StubSupervisor(Supervisor):
             return self.action_outputs["agent_chain"]
         return self.action_step_output
 
+
+class CapabilityRoutingSupervisor(Supervisor):
+    def __init__(self):
+        super().__init__(MagicMock())
+        self.chain_calls = 0
+
+    def _toolset(self, packs=None, tags=None):
+        return [ToolDef(tool_id="housekeep_runtime", description="cap", input_schema={}, output_schema={})]
+
+    async def _planner_step(self, **kwargs):
+        step = StepExecutionResult(
+            status="success",
+            verb_name="planner",
+            step_name="planner_react",
+            order=0,
+            result={
+                "PlannerReactService": {
+                    "status": "ok",
+                    "trace": [{"thought": "run cleanup", "action": {"tool_id": "housekeep_runtime", "input": {"text": "dry run"}}}],
+                    "stop_reason": "delegate",
+                }
+            },
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+        return None, step, None, {"tool_id": "housekeep_runtime", "input": {"text": "dry run"}}
+
+    async def _agent_chain_escalation(self, **kwargs):
+        self.chain_calls += 1
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=100,
+            result={"AgentChainService": {"text": "dry-run cleanup complete", "runtime_debug": {"bound_execution_completed": True}}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
 
 
 class TestSupervisorPlannerDelegate(unittest.TestCase):
@@ -173,6 +215,33 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         step_names = [s.step_name for s in result.steps]
         self.assertIn("analyze_text", step_names)
         self.assertIn("agent_chain", step_names)
+
+    def test_capability_backed_action_routes_to_bound_agent_chain_without_llm_fallback(self):
+        supervisor = CapabilityRoutingSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {"mode": "agent", "messages": [{"role": "user", "content": "dry-run cleanup"}], "max_steps": 1}
+
+        async_mock = AsyncMock(side_effect=AssertionError("call_step_services should not execute for capability-backed verbs"))
+        with patch("app.supervisor.is_active", return_value=True), patch("app.supervisor.call_step_services", async_mock):
+            result = asyncio.run(
+                supervisor.execute(
+                    source=source,
+                    req=req,
+                    correlation_id="corr-cap",
+                    ctx=ctx,
+                    recall_cfg={"enabled": False},
+                )
+            )
+
+        self.assertEqual(supervisor.chain_calls, 1)
+        self.assertEqual(result.final_text, "dry-run cleanup complete")
+        self.assertEqual(async_mock.await_count, 0)
+
+    def test_capability_backed_verb_cannot_fall_back_to_llm_step(self):
+        cfg = CapabilityRoutingSupervisor().registry.get("housekeep_runtime")
+        with self.assertRaises(RuntimeError):
+            _verb_to_step(cfg)
 
     def test_supervisor_prefers_effective_packs_from_context_metadata(self):
         supervisor = StubSupervisor(planner_outputs=[(FinalAnswer(content="hello"), None, "final_answer")])

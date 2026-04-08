@@ -18,6 +18,7 @@ def _clear_graphdb_env(monkeypatch) -> None:
         "CONCEPT_PROFILE_GRAPHDB_REPO",
         "CONCEPT_PROFILE_GRAPHDB_USER",
         "CONCEPT_PROFILE_GRAPHDB_PASS",
+        "AUTONOMY_GRAPH_PROBE_DEEP",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -103,3 +104,33 @@ def test_autonomy_graph_probe_non_200_logs_bounded_snippet(monkeypatch, caplog) 
 
     assert "autonomy_graph_probe result=fail reason=http_400 endpoint=http://graphdb:7200/repositories/collapse repo=collapse response_snippet=" in caplog.text
     assert ("x" * 220) not in caplog.text
+
+
+def test_autonomy_graph_probe_deep_optional_repo_ready_check(monkeypatch, caplog) -> None:
+    _clear_graphdb_env(monkeypatch)
+    monkeypatch.setenv("AUTONOMY_REPOSITORY_BACKEND", "graph")
+    monkeypatch.setenv("GRAPHDB_URL", "http://graphdb:7200")
+    monkeypatch.setenv("GRAPHDB_REPO", "collapse")
+    monkeypatch.setenv("AUTONOMY_GRAPH_PROBE_DEEP", "true")
+    caplog.set_level(logging.INFO)
+
+    calls = []
+
+    class _Resp:
+        status_code = 200
+        text = '{"boolean": true}'
+
+        def json(self):
+            return {"boolean": True}
+
+    def _fake_post(url, data, headers, timeout, auth):
+        calls.append(data)
+        del url, headers, timeout, auth
+        return _Resp()
+
+    monkeypatch.setattr(exec_main.requests, "post", _fake_post)
+    exec_main._run_autonomy_graph_probe()
+
+    assert len(calls) == 2
+    assert calls[1]["query"].startswith("ASK { GRAPH <http://conjourney.net/graph/autonomy/identity>")
+    assert "autonomy_graph_probe_deep result=ok endpoint=http://graphdb:7200/repositories/collapse repo=collapse graph=autonomy_identity" in caplog.text

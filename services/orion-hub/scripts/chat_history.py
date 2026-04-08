@@ -13,6 +13,10 @@ from orion.schemas.chat_history import (
     ChatHistoryTurnV1,
     ChatRole,
 )
+from orion.schemas.chat_response_feedback import (
+    ChatResponseFeedbackEnvelope,
+    ChatResponseFeedbackV1,
+)
 from orion.schemas.social_chat import SocialRoomTurnV1
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
@@ -538,3 +542,43 @@ async def publish_social_room_turn(
     except Exception as e:
         logger.warning("Failed to publish social_room turn history: %s", e, exc_info=True)
         return None
+
+
+def build_chat_response_feedback_envelope(
+    *,
+    feedback_payload: ChatResponseFeedbackV1,
+    correlation_id: UUID | str | None,
+) -> ChatResponseFeedbackEnvelope:
+    """Construct a feedback envelope linked to a specific assistant response."""
+    normalized_corr: UUID
+    corr_candidate = correlation_id or feedback_payload.target_correlation_id
+    try:
+        normalized_corr = UUID(str(corr_candidate)) if corr_candidate is not None else uuid4()
+    except Exception:
+        normalized_corr = uuid4()
+
+    return ChatResponseFeedbackEnvelope(
+        correlation_id=normalized_corr,
+        source=ServiceRef(
+            name=settings.SERVICE_NAME,
+            node=settings.NODE_NAME,
+            version=settings.SERVICE_VERSION,
+        ),
+        payload=feedback_payload,
+    )
+
+
+async def publish_chat_response_feedback(
+    bus,
+    env: ChatResponseFeedbackEnvelope,
+    *,
+    channel: str = "orion:chat:response:feedback",
+) -> None:
+    if not bus or not getattr(bus, "enabled", False):
+        return
+    if not settings.PUBLISH_CHAT_HISTORY_LOG:
+        return
+    try:
+        await bus.publish(channel, env)
+    except Exception as e:
+        logger.warning("Failed to publish chat response feedback: %s", e, exc_info=True)

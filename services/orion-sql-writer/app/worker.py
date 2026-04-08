@@ -57,6 +57,7 @@ from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSumm
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
+from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
@@ -88,7 +89,7 @@ logger = logging.getLogger("sql-writer")
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
-INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL}
+INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL}
 
 
 def _thought_debug_enabled() -> bool:
@@ -149,6 +150,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "EndogenousRuntimeRecordSQL": (EndogenousRuntimeRecordSQL, EndogenousRuntimeExecutionRecordV1),
     "EndogenousRuntimeAuditSQL": (EndogenousRuntimeAuditSQL, EndogenousRuntimeAuditV1),
     "CalibrationProfileAuditSQL": (CalibrationProfileAuditSQL, CalibrationProfileAuditV1),
+    "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
 }
 
 

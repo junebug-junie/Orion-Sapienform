@@ -699,6 +699,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     f"keys={sorted(cortex_result_dump.keys()) if isinstance(cortex_result_dump, dict) else []} "
                     f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
                     f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+                    f"provider_reasoning_available={(gateway_meta or {}).get('provider_reasoning_available') if isinstance(gateway_meta, dict) else None} "
+                    f"inline_think_extracted={(gateway_meta or {}).get('inline_think_extracted') if isinstance(gateway_meta, dict) else None} "
                     f"metacog_count={len(metacog_traces) if metacog_traces else 0} "
                     f"preview={_preview_text(reasoning_content or trace_content)}",
                     flush=True,

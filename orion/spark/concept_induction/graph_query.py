@@ -11,7 +11,16 @@ SPARK_PROFILE_GRAPH = "http://conjourney.net/graph/spark/concept-profile"
 
 
 class GraphQueryError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str = "query_error",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -46,8 +55,17 @@ class GraphQueryClient:
             response.raise_for_status()
             payload = response.json()
             return list(payload.get("results", {}).get("bindings", []))
+        except requests.exceptions.Timeout as exc:
+            raise GraphQueryError(str(exc), error_type="timeout") from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise GraphQueryError(str(exc), error_type="connection_error") from exc
+        except requests.exceptions.HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            malformed_statuses = {400, 422}
+            error_type = "malformed_query" if status_code in malformed_statuses else "http_error"
+            raise GraphQueryError(str(exc), error_type=error_type, status_code=status_code) from exc
         except Exception as exc:  # noqa: BLE001
-            raise GraphQueryError(str(exc)) from exc
+            raise GraphQueryError(str(exc), error_type="query_error") from exc
 
 
 def _escape_sparql(value: str) -> str:

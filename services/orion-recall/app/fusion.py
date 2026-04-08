@@ -25,6 +25,10 @@ OVERLAP_WEIGHT = 0.15
 EXACT_MATCH_WEIGHT = 0.45
 RECENCY_WEIGHT = 0.2
 TRANSCRIPT_SOURCES = {"sql_chat", "sql_timeline"}
+_PLANNING_PREAMBLE_RE = re.compile(
+    r"^\s*(okay,?\s+i\s+need\s+to|okay,?\s+so\s+the\s+user\s+wants|the\s+user\s+wants|i\s+should|need\s+to|let\s+me(?:\s+think)?|check\s+response\s+hazards|looking\s+at\s+the\s+memory\s+digest)\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _norm_score(score: Any) -> float:
@@ -58,6 +62,24 @@ def _extract_transcript_parts(text: str) -> tuple[str, str]:
         elif lowered.startswith("orion:"):
             assistant = line.split(":", 1)[1].strip()
     return user, assistant
+
+
+def _sanitize_transcript_for_recall(snippet: str) -> tuple[str, bool]:
+    raw = str(snippet or "")
+    user, assistant = _extract_transcript_parts(raw)
+    if not assistant:
+        return raw, False
+    assistant_lines = [line for line in assistant.splitlines()]
+    dropped = 0
+    while assistant_lines and _PLANNING_PREAMBLE_RE.search((assistant_lines[0] or "").strip()):
+        assistant_lines.pop(0)
+        dropped += 1
+    cleaned_assistant = "\n".join(assistant_lines).strip()
+    if not cleaned_assistant:
+        return "", dropped > 0
+    if user:
+        return f'ExactUserText: "{user}" OrionResponse: "{cleaned_assistant}"', dropped > 0
+    return f"Orion: {cleaned_assistant}", dropped > 0
 
 
 def _transcript_fingerprint(text: str) -> str:
@@ -343,6 +365,8 @@ def fuse_candidates(
     drop_counts: Dict[str, int] = {}
     selected_counts: Dict[str, int] = {}
     novelty_drop_count = 0
+    contaminated_recall_filtered_count = 0
+    contaminated_recall_sanitized_count = 0
 
     denial_patterns = _denial_patterns()
     for cand in candidates:
@@ -350,6 +374,18 @@ def fuse_candidates(
             continue
         source = str(cand.get("source") or "unknown")
         snippet = str(cand.get("text") or cand.get("snippet") or "")
+        transcript_like = _is_transcript_like(cand, snippet)
+        if transcript_like:
+            sanitized_snippet, changed = _sanitize_transcript_for_recall(snippet)
+            if changed:
+                contaminated_recall_sanitized_count += 1
+            if not sanitized_snippet.strip():
+                contaminated_recall_filtered_count += 1
+                drop_counts["contaminated_recall"] = drop_counts.get("contaminated_recall", 0) + 1
+                continue
+            snippet = sanitized_snippet
+            cand = dict(cand)
+            cand["text"] = sanitized_snippet
         if substantive_query and _is_low_info_social_candidate(snippet):
             drop_counts["low_info_social"] = drop_counts.get("low_info_social", 0) + 1
             if diagnostic:
@@ -556,6 +592,8 @@ def fuse_candidates(
                 "drop_counts": drop_counts,
                 "source_candidate_counts": backend_counts,
                 "source_selected_counts": selected_counts,
+                "contaminated_recall_filtered_count": contaminated_recall_filtered_count,
+                "contaminated_recall_sanitized_count": contaminated_recall_sanitized_count,
             }
             if diagnostic
             else None

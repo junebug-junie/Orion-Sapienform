@@ -208,14 +208,23 @@
           </button>
           <div id="runtimeDebugPanelBody" class="hidden space-y-2 text-xs text-gray-300">
             <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
-              <button
-                id="memoryPanelToggle"
-                class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-                type="button"
-              >
-                <span class="uppercase tracking-wide">Memory / Recall Debug</span>
-                <span class="text-gray-500">▾</span>
-              </button>
+              <div class="flex items-center justify-between gap-2">
+                <button
+                  id="memoryPanelToggle"
+                  class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+                  type="button"
+                >
+                  <span class="uppercase tracking-wide">Memory / Recall Debug</span>
+                  <span id="memoryPanelCaret" class="text-gray-500">▾</span>
+                </button>
+                <button
+                  id="memoryDebugOpenModal"
+                  class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+                  type="button"
+                >
+                  Modal
+                </button>
+              </div>
               <div id="memoryPanelBody" class="hidden space-y-2 text-xs text-gray-300">
             <div class="flex items-center justify-between">
               <span class="text-gray-500">Memory used</span>
@@ -227,28 +236,37 @@
             </div>
             <div>
               <div class="text-gray-500 mb-1">Backend counts</div>
-              <pre id="backendCountsValue" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+              <pre id="backendCountsValue" class="whitespace-pre-wrap break-words text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-20 overflow-y-auto">--</pre>
             </div>
             <div>
-              <div class="text-gray-500 mb-1">Memory digest</div>
-              <pre id="memoryDigestPre" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+              <div class="text-gray-500 mb-1">Memory digest (summary)</div>
+              <pre id="memoryDigestPre" class="whitespace-pre-wrap break-words text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-24 overflow-y-auto">--</pre>
             </div>
             <div>
               <div class="text-gray-500 mb-1">Outbound routing debug</div>
-              <div id="outboundRoutingDebug" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</div>
+              <pre id="outboundRoutingDebug" class="whitespace-pre-wrap break-words text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-20 overflow-y-auto">--</pre>
             </div>
               </div>
             </div>
 
         <div id="agentTraceDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
-          <button
-            id="agentTraceDebugToggle"
-            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-            type="button"
-          >
-            <span class="uppercase tracking-wide">Agent Trace</span>
-            <span id="agentTraceDebugCaret" class="text-gray-500">▾</span>
-          </button>
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="agentTraceDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Agent Trace</span>
+              <span id="agentTraceDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="agentTraceDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
           <div id="agentTraceDebugBody" class="hidden space-y-4 text-xs text-gray-300">
             <div id="agentTraceDebugMeta" class="text-[10px] text-gray-500">--</div>
             <div id="agentTraceDebugOverview" class="space-y-3"></div>
@@ -2023,6 +2041,30 @@
     </div>
   </div>
 
+  <div id="responseFeedbackModal" class="hidden fixed inset-0 z-[72] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto flex h-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-3 border-b border-gray-800 px-5 py-4">
+        <div>
+          <h2 id="responseFeedbackTitle" class="text-lg font-semibold text-white">Response feedback</h2>
+          <div id="responseFeedbackMeta" class="mt-1 text-[11px] text-gray-400">Share quick feedback on this response.</div>
+        </div>
+        <button id="responseFeedbackModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+        <div id="responseFeedbackCategoryList" class="flex flex-wrap gap-2"></div>
+        <div>
+          <label for="responseFeedbackNotes" class="mb-1 block text-xs text-gray-300">Optional notes</label>
+          <textarea id="responseFeedbackNotes" maxlength="2000" rows="4" class="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500" placeholder="Anything else you'd like to add?"></textarea>
+        </div>
+        <div id="responseFeedbackStatus" class="text-xs text-gray-400"></div>
+      </div>
+      <div class="flex items-center justify-end gap-2 border-t border-gray-800 px-5 py-3">
+        <button id="responseFeedbackCancel" type="button" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800">Cancel</button>
+        <button id="responseFeedbackSubmit" type="button" class="rounded-lg border border-indigo-500/70 bg-indigo-500/20 px-3 py-1 text-sm font-semibold text-indigo-100 hover:bg-indigo-500/30">Submit feedback</button>
+      </div>
+    </div>
+  </div>
+
   <div id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
     <div id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
@@ -2041,6 +2083,28 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div id="autonomyDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="memoryDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="memoryDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="memoryDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Memory / recall debug</div>
+          <div id="memoryDebugModalMeta" class="mt-1 text-[11px] text-gray-400">Recall and memory diagnostics for the selected turn.</div>
+        </div>
+        <button
+          id="memoryDebugModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="memoryDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
       </div>
     </div>
   </div>

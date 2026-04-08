@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.summary import summarize_autonomy_state
@@ -97,6 +98,11 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return default
+
+
+def resolve_autonomy_graph_timeout_sec() -> float:
+    timeout = _env_float("AUTONOMY_GRAPH_TIMEOUT_SEC", _env_float("GRAPHDB_TIMEOUT_SEC", 4.5))
+    return max(0.25, timeout)
 
 
 def resolve_autonomy_graphdb_config() -> dict[str, Any]:
@@ -474,6 +480,7 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    started_at = time.perf_counter()
     graphdb_cfg = resolve_autonomy_graphdb_config()
     endpoint = graphdb_cfg["endpoint"]
 
@@ -484,7 +491,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     repository = build_autonomy_repository(
         backend=backend,
         endpoint=endpoint,
-        timeout_sec=_env_float("GRAPHDB_TIMEOUT_SEC", 4.5),
+        timeout_sec=resolve_autonomy_graph_timeout_sec(),
         user=graphdb_cfg["user"],
         password=graphdb_cfg["password"],
         goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
@@ -501,6 +508,14 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if preferred is None or preferred.availability != "available":
         preferred = by_subject.get("relationship")
     selected_subject = preferred.subject if preferred is not None else None
+    partial_used = bool(
+        preferred
+        and preferred.availability == "available"
+        and any(
+            str((preferred.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+            for name in ("identity", "drives", "goals")
+        )
+    )
 
     summary = summarize_autonomy_state(preferred.state if preferred and preferred.availability == "available" else None)
     debug = {
@@ -508,16 +523,19 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
             "present": bool(by_subject.get(subject) and by_subject.get(subject).state is not None),
             "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
+            "subqueries": (by_subject.get(subject).subquery_diagnostics or {}) if by_subject.get(subject) else {},
         }
         for subject in SUBJECT_BINDINGS
     }
     repo_status = repository.status()
     debug["_runtime"] = {
-        "backend": repo_status.backend,
-        "selected_subject": selected_subject,
-        "repository_status": {
-            "source_available": repo_status.source_available,
-            "source_path": repo_status.source_path,
+            "backend": repo_status.backend,
+            "selected_subject": selected_subject,
+            "endpoint_repo": endpoint or "graphdb:unconfigured",
+            "timeout_sec": resolve_autonomy_graph_timeout_sec(),
+            "repository_status": {
+                "source_available": repo_status.source_available,
+                "source_path": repo_status.source_path,
         },
     }
     exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
@@ -533,12 +551,22 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "config_source": graphdb_cfg["source"],
                 "repo": graphdb_cfg["repo"],
                 "endpoint_repo": endpoint or "graphdb:unconfigured",
+                "timeout_sec": resolve_autonomy_graph_timeout_sec(),
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
                 "availability_counts": {
                     "available": sum(1 for item in lookups if item.availability == "available"),
                     "empty": sum(1 for item in lookups if item.availability == "empty"),
                     "unavailable": sum(1 for item in lookups if item.availability == "unavailable"),
+                    "partial": sum(
+                        1
+                        for item in lookups
+                        if item.availability == "available"
+                        and any(
+                            str((item.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+                            for name in ("identity", "drives", "goals")
+                        )
+                    ),
                 },
                 "unavailable_reasons": sorted(
                     {
@@ -548,10 +576,12 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 ),
                 "selected_subject": selected_subject,
+                "selected_subject_partial": partial_used,
                 "selected_subject_availability": preferred.availability if preferred is not None else "empty",
                 "selected_subject_unavailable_reason": preferred.unavailable_reason if preferred is not None else None,
                 "mapped_state": bool(preferred and preferred.state is not None),
                 "summary_present": bool(summary and summary.stance_hint),
+                "elapsed_ms_before_llm_emit": round((time.perf_counter() - started_at) * 1000.0, 2),
                 "subject_availability": {
                     subject: {
                         "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",

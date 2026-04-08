@@ -41,8 +41,16 @@ from orion.schemas.cortex.contracts import (
 )
 from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
+from orion.schemas.agents.bound_capability import (
+    BoundCapabilityExecutionFailureV1,
+    BoundCapabilityExecutionRequestV1,
+    BoundCapabilityExecutionResultV1,
+    CapabilityRecoveryDecisionV1,
+    CapabilityRecoveryReasonV1,
+)
 from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
+from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
@@ -504,6 +512,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatStanceBrief": ChatStanceBrief,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields
     "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
+    "ChatResponseFeedbackV1": ChatResponseFeedbackV1,
     "ChatGptLogTurnV1": ChatGptLogTurnV1,
     "ChatGptMessageV1": ChatGptMessageV1,
     "ChatResponseFeedbackV1": ChatResponseFeedbackV1,
@@ -791,6 +800,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "WorkflowScheduleRunRecordV1": WorkflowScheduleRunRecordV1,
     "WorkflowScheduleManageRequestV1": WorkflowScheduleManageRequestV1,
     "WorkflowScheduleManageResponseV1": WorkflowScheduleManageResponseV1,
+    "CapabilityRecoveryReasonV1": CapabilityRecoveryReasonV1,
+    "CapabilityRecoveryDecisionV1": CapabilityRecoveryDecisionV1,
+    "BoundCapabilityExecutionRequestV1": BoundCapabilityExecutionRequestV1,
+    "BoundCapabilityExecutionResultV1": BoundCapabilityExecutionResultV1,
+    "BoundCapabilityExecutionFailureV1": BoundCapabilityExecutionFailureV1,
 
 }
 

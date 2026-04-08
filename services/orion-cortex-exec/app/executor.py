@@ -804,6 +804,24 @@ def _last_user_message(ctx: Dict[str, Any]) -> str:
     return str(ctx.get("user_message") or "")
 
 
+def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tuple[int, str, int | None]:
+    requested_raw = ctx.get("max_tokens")
+    requested: int | None = None
+    if isinstance(requested_raw, (int, float)) and int(requested_raw) > 0:
+        requested = int(requested_raw)
+
+    if requested is not None:
+        return requested, "ctx_override", requested
+
+    if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
+        return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
+    if step.verb_name == "chat_quick":
+        return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
+    if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
+        return max(1, int(settings.llm_chat_general_max_tokens)), "general_default", requested
+    return max(1, int(settings.llm_chat_fallback_max_tokens)), "fallback_default", requested
+
+
 def _json_sanitize(obj: Any, *, _seen: set[int] | None = None, _depth: int = 0, _max_depth: int = 10) -> Any:
     if _seen is None:
         _seen = set()
@@ -1122,6 +1140,7 @@ async def run_recall_step(
                     debug["source_gating"] = recall_dbg.get("source_gating") or {}
                     debug["drop_counts"] = (decision_dbg.get("dropped") or {})
                     debug["selected_summary"] = recall_dbg.get("selected_summary") or []
+                    debug["latency_breakdown_ms"] = recall_dbg.get("latency_breakdown_ms") or {}
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         debug["memory_digest"] = memory_digest
         debug["memory_digest_chars"] = len(memory_digest or "")
@@ -1170,7 +1189,7 @@ async def run_recall_step(
         ]
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
         logger.info(
-            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s profile_source=%s override_source=%s items=%s source_gating=%s drop_counts=%s summary=%s",
+            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s profile_source=%s override_source=%s items=%s source_gating=%s drop_counts=%s latency_breakdown_ms=%s summary=%s",
             correlation_id,
             trace_val,
             ctx.get("session_id"),
@@ -1180,6 +1199,7 @@ async def run_recall_step(
             len(recall_fragments),
             debug.get("source_gating", {}),
             debug.get("drop_counts", {}),
+            debug.get("latency_breakdown_ms", {}),
             debug["items"],
         )
 
@@ -2041,6 +2061,7 @@ async def call_step_services(
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 memory_digest = (ctx.get("memory_digest") or "").strip()
                 prompt = _append_memory_digest(prompt, memory_digest)
+                effective_max_tokens, max_tokens_source, requested_max_tokens = _resolve_llm_max_tokens(ctx=ctx, step=step)
                 if diagnostic:
                     logger.info(
                         "memory_digest_present=%s memory_digest_chars=%s",
@@ -2140,6 +2161,15 @@ async def call_step_services(
                     step.verb_name,
                     step.step_name,
                     llm_route,
+                )
+                logger.info(
+                    "llm_chat_budget corr_id=%s verb=%s step=%s requested_max_tokens=%s effective_max_tokens=%s source=%s",
+                    correlation_id,
+                    step.verb_name,
+                    step.step_name,
+                    requested_max_tokens,
+                    effective_max_tokens,
+                    max_tokens_source,
                 )
 
                 effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)

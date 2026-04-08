@@ -40,6 +40,7 @@ def test_chat_general_stance_step_uses_quick_route() -> None:
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.route == "quick"
+    assert sent_req.options["max_tokens"] == 384
 
 
 def test_chat_general_final_step_uses_chat_route() -> None:
@@ -66,6 +67,7 @@ def test_chat_general_final_step_uses_chat_route() -> None:
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.route == "chat"
+    assert sent_req.options["max_tokens"] == 768
 
 
 def test_chat_quick_step_uses_quick_route() -> None:
@@ -92,6 +94,7 @@ def test_chat_quick_step_uses_quick_route() -> None:
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.route == "quick"
+    assert sent_req.options["max_tokens"] == 384
 
 
 def test_introspect_spark_uses_quick_route() -> None:
@@ -123,7 +126,7 @@ def test_introspect_spark_uses_quick_route() -> None:
     assert sent_req.route == "quick"
 
 
-def test_chat_general_final_step_uses_lane_default_max_tokens(monkeypatch) -> None:
+def test_ctx_override_max_tokens_takes_precedence() -> None:
     step = ExecutionStep(
         step_name="llm_chat_general",
         verb_name="chat_general",
@@ -132,73 +135,18 @@ def test_chat_general_final_step_uses_lane_default_max_tokens(monkeypatch) -> No
         prompt_template="{{ raw_user_text }}",
     )
     source = ServiceRef(name="test", node="test", version="1.0")
-    monkeypatch.setattr("app.executor.settings.llm_chat_general_max_tokens", 1536, raising=False)
-
+    ctx = _base_ctx()
+    ctx["max_tokens"] = 222
     with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content="final"))) as llm_chat:
         result = asyncio.run(
             call_step_services(
                 bus=MagicMock(),
                 source=source,
                 step=step,
-                ctx=_base_ctx(),
+                ctx=ctx,
                 correlation_id=str(uuid4()),
             )
         )
-
-    assert result.status == "success"
-    sent_req = llm_chat.await_args.kwargs["req"]
-    assert sent_req.options["max_tokens"] == 1536
-
-
-def test_chat_quick_step_uses_lane_default_max_tokens(monkeypatch) -> None:
-    step = ExecutionStep(
-        step_name="llm_chat_quick",
-        verb_name="chat_quick",
-        services=["LLMGatewayService"],
-        order=0,
-        prompt_template="{{ raw_user_text }}",
-    )
-    source = ServiceRef(name="test", node="test", version="1.0")
-    monkeypatch.setattr("app.executor.settings.llm_chat_quick_max_tokens", 384, raising=False)
-
-    with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content="quick"))) as llm_chat:
-        result = asyncio.run(
-            call_step_services(
-                bus=MagicMock(),
-                source=source,
-                step=step,
-                ctx=_base_ctx(),
-                correlation_id=str(uuid4()),
-            )
-        )
-
-    assert result.status == "success"
-    sent_req = llm_chat.await_args.kwargs["req"]
-    assert sent_req.options["max_tokens"] == 384
-
-
-def test_ctx_max_tokens_overrides_lane_default(monkeypatch) -> None:
-    step = ExecutionStep(
-        step_name="llm_chat_general",
-        verb_name="chat_general",
-        services=["LLMGatewayService"],
-        order=1,
-        prompt_template="{{ raw_user_text }}",
-    )
-    source = ServiceRef(name="test", node="test", version="1.0")
-    monkeypatch.setattr("app.executor.settings.llm_chat_general_max_tokens", 1536, raising=False)
-
-    with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content="final"))) as llm_chat:
-        result = asyncio.run(
-            call_step_services(
-                bus=MagicMock(),
-                source=source,
-                step=step,
-                ctx={**_base_ctx(), "max_tokens": 222},
-                correlation_id=str(uuid4()),
-            )
-        )
-
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.options["max_tokens"] == 222

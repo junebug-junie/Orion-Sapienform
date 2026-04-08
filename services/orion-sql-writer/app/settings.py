@@ -46,6 +46,7 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "endogenous.runtime.record.v1": "EndogenousRuntimeRecordSQL",
     "endogenous.runtime.audit.v1": "EndogenousRuntimeAuditSQL",
     "calibration.profile.audit.v1": "CalibrationProfileAuditSQL",
+    "chat.response.feedback.v1": "ChatResponseFeedbackSQL",
 }
 
 
@@ -77,6 +78,7 @@ class Settings(BaseSettings):
             "orion:chat:history:log",
             "orion:chat:history:turn",
             "orion:chat:social:turn",
+            "orion:chat:response:feedback",
             "orion:bridge:social:room:intake",
             "orion:bridge:social:room:delivery",
             "orion:bridge:social:room:skipped",

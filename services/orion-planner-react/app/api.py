@@ -709,6 +709,10 @@ async def _call_planner_llm(
     grounding_mode = ext_facts.get("delivery_grounding_mode") or "default_delivery"
     grounding_context = (ext_facts.get("grounding_context") or "")[:2000]
     anti_generic_drift = ext_facts.get("anti_generic_drift") or ""
+    no_write_active = bool(ext_facts.get("no_write_active"))
+    execution_blocked_reason = ext_facts.get("execution_blocked_reason") or ""
+    operational_intent_detected = bool(ext_facts.get("operational_intent_detected"))
+    available_operational_tools = ext_facts.get("available_operational_tools") or []
 
     system_msg = (system_override or f"""
 You are Orion's internal ReAct planner.
@@ -727,6 +731,10 @@ When delivery_grounding_mode is orion_repo_architecture:
   Do not silently substitute a generic Flask/Ubuntu deployment stack unless the user explicitly asks for that stack.
 Grounding context: {grounding_context or "(none)"}
 Anti-generic drift: {anti_generic_drift or "(none)"}
+Operational intent detected: {operational_intent_detected}
+No-write active: {no_write_active}
+Execution blocked reason: {execution_blocked_reason or "(none)"}
+Available operational semantic tools: {available_operational_tools}
 
 AVAILABLE TOOLS:
 {tools_description}
@@ -759,6 +767,8 @@ CORE INSTRUCTIONS:
    - RIGHT: {{"thought": "..."}}
 
 9. **NO REPEATED TOOLS:** Do not call the same tool twice. Use the prior result; if you can answer, set finish: true.
+10. **OPERATIONAL TOOL PREFERENCE:** If the user asks for concrete runtime/operational action and an operational semantic tool is available, prefer delegating to that tool over writing CLI prose.
+11. **NO-WRITE HONESTY:** If no-write is active, never imply execution occurred. Prefer explicit blocked-execution framing instead of command instructions.
 
 JSON FORMAT:
 {{

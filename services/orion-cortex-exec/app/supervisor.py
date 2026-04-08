@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -164,6 +165,62 @@ def _extract_key_terms(text: str) -> List[str]:
         if token not in terms:
             terms.append(token)
     return terms[:12]
+
+
+_OPERATIONAL_INTENT_TERMS = {
+    "run", "execute", "cleanup", "clean", "prune", "restart", "remove", "delete", "stop",
+    "start", "deploy", "rollback", "docker", "container", "kubernetes", "cluster", "runtime",
+}
+_SHELL_GUIDANCE_PATTERN = re.compile(r"(^|\n)\s*(```\w*\n)?\s*(docker|kubectl|systemctl|rm\s+-rf|sudo|killall|service)\b", re.IGNORECASE)
+
+
+def _detect_operational_intent(user_text: str) -> bool:
+    lowered = str(user_text or "").lower()
+    return any(term in lowered for term in _OPERATIONAL_INTENT_TERMS)
+
+
+def _available_operational_semantic_tools(toolset: List[ToolDef]) -> List[ToolDef]:
+    operational: List[ToolDef] = []
+    for tool in toolset:
+        if str(tool.tool_id or "") in {"agent_chain", "tool_chain", "finalize_response", "answer_direct"}:
+            continue
+        mode = str(getattr(tool, "execution_mode", "") or "").lower()
+        side_effect = str(getattr(tool, "side_effect_level", "") or "").lower()
+        if mode == "capability_backed" or side_effect in {"low", "moderate", "high"}:
+            operational.append(tool)
+    return operational
+
+
+def _select_preferred_operational_tool(user_text: str, tools: List[ToolDef]) -> Optional[ToolDef]:
+    if not tools:
+        return None
+    ask_terms = set(_extract_key_terms(user_text))
+    best: Optional[ToolDef] = None
+    best_score = -1
+    for tool in tools:
+        hay = f"{tool.tool_id} {tool.description or ''}".lower()
+        score = sum(1 for term in ask_terms if term in hay)
+        if score > best_score:
+            best = tool
+            best_score = score
+    return best or tools[0]
+
+
+def _build_blocked_execution_explanation(*, selected_tool: Optional[str], no_write_active: bool) -> str:
+    tool_part = f" '{selected_tool}'" if selected_tool else ""
+    if no_write_active:
+        return (
+            f"Execution is disabled in this session (NO_WRITE active), so I’m not running{tool_part}. "
+            "I can provide a safe preview of what would run, but this is not execution."
+        )
+    return (
+        f"Execution is blocked by runtime policy, so I’m not running{tool_part}. "
+        "I can provide a safe preview-only explanation, but no commands were executed."
+    )
+
+
+def _is_operational_guidance_text(answer: str) -> bool:
+    return bool(_SHELL_GUIDANCE_PATTERN.search(str(answer or "")))
 
 
 def _grounding_verdict(user_text: str, answer_text: str) -> Dict[str, Any]:
@@ -432,6 +489,10 @@ class Supervisor:
                     description=v.description or f"Orion verb: {v.name}",
                     input_schema=v.input_schema or {},
                     output_schema=v.output_schema or {},
+                    execution_mode=v.execution_mode or None,
+                    requires_capability_selector=bool(v.requires_capability_selector),
+                    preferred_skill_families=list(v.preferred_skill_families or []),
+                    side_effect_level=v.side_effect_level or None,
                 )
             )
         return tools
@@ -474,6 +535,10 @@ class Supervisor:
         for key in ("delivery_grounding_mode", "grounding_context", "anti_generic_drift"):
             if ctx.get(key):
                 ext_facts[key] = ctx[key]
+        ext_facts["no_write_active"] = bool(ctx.get("no_write_active"))
+        ext_facts["execution_blocked_reason"] = ctx.get("execution_blocked_reason")
+        ext_facts["operational_intent_detected"] = bool(ctx.get("operational_intent_detected"))
+        ext_facts["available_operational_tools"] = list(ctx.get("available_operational_tools") or [])
         planner_req = PlannerRequest(
             request_id=correlation_id,
             caller="cortex-exec",
@@ -897,7 +962,26 @@ class Supervisor:
                 correlation_id,
             )
         options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+        no_write_active = bool(options.get("no_write_active")) or str(options.get("tool_execution_policy") or "").lower() == "none"
+        execution_blocked_reason = "NO_WRITE/tool_execution_policy=none" if no_write_active else None
+        user_text = _last_user_message(ctx)
+        operational_intent_detected = _detect_operational_intent(user_text)
+        operational_tools = _available_operational_semantic_tools(tools)
+        offered_operational_tool_ids = [t.tool_id for t in operational_tools]
+        preferred_operational_tool = _select_preferred_operational_tool(user_text, operational_tools)
+        ctx["no_write_active"] = no_write_active
+        ctx["execution_blocked_reason"] = execution_blocked_reason
+        ctx["operational_intent_detected"] = operational_intent_detected
+        ctx["available_operational_tools"] = offered_operational_tool_ids
         allowed_verbs = [str(v).strip() for v in (options.get("allowed_verbs") or []) if str(v).strip()]
+        if operational_intent_detected:
+            logger.info(
+                "operational_intent_detected corr_id=%s user_intent=%s offered_semantic_tools=%s no_write_active=%s",
+                correlation_id,
+                "operational_action",
+                offered_operational_tool_ids,
+                no_write_active,
+            )
 
         if not self._should_use_react(mode, tools):
             logger.info("Supervisor: using direct LLM path")
@@ -946,6 +1030,8 @@ class Supervisor:
         final_text: Optional[str] = None
         planner_thought: Optional[str] = None
         executed_steps: List[str] = [s.step_name for s in step_results]
+        semantic_execution_validated = False
+        selected_tool_would_have_been = preferred_operational_tool.tool_id if preferred_operational_tool else None
 
         for loop_index in range(max_steps):
             goal_text = _last_user_message(ctx)
@@ -988,7 +1074,48 @@ class Supervisor:
             logger.info("planner_action corr_id=%s tool_id=%s lane=%s", correlation_id, tool_id, "depth2")
 
             if decision["stop_reason"] == "final_answer" and not decision["action_present"]:
-                if not trace:
+                forced_delegate = False
+                if operational_intent_detected and preferred_operational_tool and mode in {"agent", "council"}:
+                    logger.info(
+                        "semantic_tool_preferred corr_id=%s chosen_path=%s selected_tool=%s no_write_active=%s reason=%s",
+                        correlation_id,
+                        "blocked_explanation" if no_write_active else "delegate",
+                        preferred_operational_tool.tool_id,
+                        no_write_active,
+                        "operational_intent_with_semantic_tool_available",
+                    )
+                    ctx.setdefault("debug", {})["selected_tool_would_have_been"] = preferred_operational_tool.tool_id
+                    if no_write_active:
+                        ctx.setdefault("debug", {})["no_write_downgrade"] = True
+                        ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                        final_text = _build_blocked_execution_explanation(
+                            selected_tool=preferred_operational_tool.tool_id,
+                            no_write_active=True,
+                        )
+                        logger.info(
+                            "no_write_downgrade corr_id=%s selected_tool_would_have_been=%s blocked_execution_explanation_emitted=true",
+                            correlation_id,
+                            preferred_operational_tool.tool_id,
+                        )
+                        break
+                    action = {
+                        "tool_id": preferred_operational_tool.tool_id,
+                        "input": {"text": goal_text},
+                    }
+                    decision["action_present"] = True
+                    decision["stop_reason"] = "delegate"
+                    decision["continue_reason"] = "operational_semantic_tool_preferred"
+                    forced_delegate = True
+                if decision["action_present"]:
+                    logger.info(
+                        "planner_final_answer_overridden corr_id=%s chosen_path=delegate selected_tool=%s",
+                        correlation_id,
+                        (action or {}).get("tool_id"),
+                    )
+                    final_text = None
+                if forced_delegate:
+                    pass
+                elif not trace:
                     trace.append(
                         TraceStep(
                             step_index=0,
@@ -997,18 +1124,19 @@ class Supervisor:
                             observation={"llm_output": final_text},
                         )
                     )
-                logger.info(
-                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
-                    correlation_id,
-                    mode,
-                    req.verb_name,
-                    decision["stop_reason"],
-                    len(final_text or ""),
-                    decision["action_present"],
-                    executed_steps,
-                    ["agent_chain"],
-                )
-                break
+                if not forced_delegate:
+                    logger.info(
+                        "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+                        correlation_id,
+                        mode,
+                        req.verb_name,
+                        decision["stop_reason"],
+                        len(final_text or ""),
+                        decision["action_present"],
+                        executed_steps,
+                        ["agent_chain"],
+                    )
+                    break
 
             if planner_step.status != "success":
                 logger.info(
@@ -1073,6 +1201,8 @@ class Supervisor:
                     selected_cfg = None
             selected_is_capability = _is_capability_backed_cfg(selected_cfg) if selected_cfg else False
             if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
+                if selected_is_capability:
+                    semantic_execution_validated = True
                 if selected_is_capability:
                     logger.info(
                         "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=capability_bound_executed tool_id=%s",
@@ -1219,6 +1349,34 @@ class Supervisor:
                     obs = _extract_observation(fin_step)
                     final_text = obs.get("llm_output") or final_text
 
+        if final_text and operational_intent_detected and _is_operational_guidance_text(final_text):
+            if no_write_active:
+                final_text = _build_blocked_execution_explanation(
+                    selected_tool=selected_tool_would_have_been,
+                    no_write_active=True,
+                )
+                ctx.setdefault("debug", {})["no_write_downgrade"] = True
+                ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                logger.info(
+                    "final_answer_operational_guidance_blocked corr_id=%s chosen_path=blocked_explanation no_write_active=true reason=direct_command_guidance_blocked",
+                    correlation_id,
+                )
+            elif not semantic_execution_validated:
+                final_text = (
+                    "I can provide a safe preview, but I’m not executing operations in this answer. "
+                    "Use the semantic runtime housekeeping path for execution; this response is explanation-only."
+                )
+                ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                logger.info(
+                    "final_answer_operational_guidance_blocked corr_id=%s chosen_path=safe_preview no_write_active=false reason=unvalidated_direct_command_guidance",
+                    correlation_id,
+                )
+            else:
+                logger.info(
+                    "final_answer_operational_guidance_allowed corr_id=%s chosen_path=delegate validated_semantic_execution=true",
+                    correlation_id,
+                )
+
         logger.info(
             "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=loop_complete final_len=%s output_mode=%s packs=%s steps=%s",
             correlation_id,
@@ -1243,7 +1401,8 @@ class Supervisor:
             verdict["unrelated_markers"],
             verdict["scaffolding_markers"],
         )
-        if not verdict["anchored"] and not recent_followup_continuity:
+        explanation_downgrade = bool((ctx.get("debug") or {}).get("downgraded_to_explanation"))
+        if not verdict["anchored"] and not recent_followup_continuity and not explanation_downgrade:
             logger.warning(
                 "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
                 correlation_id,
@@ -1254,6 +1413,21 @@ class Supervisor:
                 f"I may have drifted from your request. You asked: {user_text}\n\n"
                 "Could you restate the key constraint and I will answer directly from that prompt?"
             )
+
+        runtime_policy_meta = {
+            "no_write_active": no_write_active,
+            "execution_blocked_reason": execution_blocked_reason,
+            "operational_intent_detected": operational_intent_detected,
+            "semantic_tool_preferred": bool(operational_intent_detected and preferred_operational_tool),
+            "downgraded_to_explanation": bool((ctx.get("debug") or {}).get("downgraded_to_explanation")),
+            "selected_tool_would_have_been": selected_tool_would_have_been,
+        }
+        logger.info(
+            "blocked_execution_explanation_emitted corr_id=%s emitted=%s selected_tool=%s",
+            correlation_id,
+            runtime_policy_meta["downgraded_to_explanation"],
+            selected_tool_would_have_been,
+        )
 
         overall_status = "success" if step_results and all(s.status == "success" for s in step_results if s) else "partial"
         return PlanExecutionResult(
@@ -1267,5 +1441,6 @@ class Supervisor:
             final_text=final_text,
             memory_used=memory_used,
             recall_debug=recall_debug,
+            metadata={"runtime_policy": runtime_policy_meta},
             error=None,
         )

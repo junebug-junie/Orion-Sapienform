@@ -277,11 +277,16 @@ def build_cortex_chat_request(
         recall_payload["profile"] = SOCIAL_ROOM_RECALL_PROFILE if use_recall else None
 
     options = dict(payload.get("options") or {}) if isinstance(payload.get("options"), dict) else {}
+    no_write_active = bool(payload.get("no_write", False))
     if selected_ui_route == "agent":
         options.setdefault("supervised", True)
     if social_room:
         options["tool_execution_policy"] = "none"
         options["action_execution_policy"] = "none"
+    if no_write_active:
+        options["tool_execution_policy"] = "none"
+        options["action_execution_policy"] = "none"
+        options["no_write_active"] = True
 
     selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
 

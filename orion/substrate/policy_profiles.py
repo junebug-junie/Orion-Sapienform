@@ -200,6 +200,13 @@ class SubstratePolicyProfileStore:
             recent_audit_events=list(self._audit_events[-max(1, audit_limit) :]),
         )
 
+    def get_profile(self, profile_id: str) -> SubstratePolicyProfileV1 | None:
+        return self._profiles.get(profile_id)
+
+    def list_profiles(self, *, limit: int = 200) -> list[SubstratePolicyProfileV1]:
+        bounded_limit = max(1, min(limit, self.max_profiles))
+        return sorted(self._profiles.values(), key=lambda p: p.created_at, reverse=True)[:bounded_limit]
+
     def compare_against_baseline(self, *, resolution: SubstratePolicyResolutionV1, baseline_summary: dict[str, Any]) -> SubstratePolicyComparisonV1:
         if resolution.mode == "baseline":
             return SubstratePolicyComparisonV1(baseline_summary=baseline_summary, comparison_notes=["baseline_only"])

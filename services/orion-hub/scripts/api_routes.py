@@ -43,7 +43,9 @@ from orion.schemas.notify import (
 
 from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
+from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
+from orion.substrate.policy_comparison import SubstratePolicyComparisonService
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
 
@@ -53,9 +55,16 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 router = APIRouter()
 
 SUBSTRATE_REVIEW_QUEUE_STORE = GraphReviewQueue(max_items=200)
-SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(max_records=2000)
+SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
+    max_records=2000,
+    sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_TELEMETRY_SQL_DB_PATH", "")).strip() or None,
+)
 SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
 SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()
+SUBSTRATE_POLICY_COMPARISON = SubstratePolicyComparisonService(
+    policy_store=SUBSTRATE_POLICY_STORE,
+    telemetry_recorder=SUBSTRATE_REVIEW_TELEMETRY_STORE,
+)
 
 
 def _thought_debug_enabled() -> bool:
@@ -1292,6 +1301,56 @@ def _sql_calibration_payload(*, limit: int = 20) -> Dict[str, Any]:
     }
 
 
+def _sql_policy_comparison_payload(
+    *,
+    pair_mode: str = "baseline_vs_active",
+    baseline_profile_id: str | None = None,
+    candidate_profile_id: str | None = None,
+    window_seconds: int = 86400,
+    sample_limit: int = 500,
+) -> Dict[str, Any]:
+    try:
+        if not isinstance(pair_mode, str):
+            pair_mode = "baseline_vs_active"
+        if not isinstance(baseline_profile_id, str):
+            baseline_profile_id = None
+        if not isinstance(candidate_profile_id, str):
+            candidate_profile_id = None
+        if not isinstance(window_seconds, int):
+            window_seconds = 86400
+        if not isinstance(sample_limit, int):
+            sample_limit = 500
+        request = SubstratePolicyComparisonRequestV1(
+            pair_mode=pair_mode,  # type: ignore[arg-type]
+            baseline_profile_id=baseline_profile_id,
+            candidate_profile_id=candidate_profile_id,
+            window_seconds=window_seconds,
+            sample_limit=sample_limit,
+        )
+        data = SUBSTRATE_POLICY_COMPARISON.compare(request=request)
+        return {
+            "source": _source_meta(kind="sql", degraded=False, limit=sample_limit),
+            "data": data,
+        }
+    except Exception as exc:
+        return {
+            "source": _source_meta(kind="sql", degraded=True, limit=sample_limit, error=str(exc)),
+            "data": {
+                "pair": {
+                    "mode": pair_mode,
+                    "baseline_profile_id": baseline_profile_id,
+                    "candidate_profile_id": candidate_profile_id,
+                },
+                "report": {
+                    "verdict": "insufficient_data",
+                    "confidence": 0.2,
+                    "notes": [f"comparison_error:{exc}"],
+                },
+                "advisory": {"mutating": False, "message": "comparison failed safely"},
+            },
+        }
+
+
 @router.get("/substrate")
 async def substrate_page() -> HTMLResponse:
     from .main import TEMPLATES_DIR, build_hub_ui_asset_version
@@ -1337,3 +1396,20 @@ def api_substrate_telemetry_summary(limit: int = Query(default=200, ge=1, le=500
 @router.get("/api/substrate/calibration")
 def api_substrate_calibration(limit: int = Query(default=20, ge=1, le=100)) -> Dict[str, Any]:
     return _sql_calibration_payload(limit=limit)
+
+
+@router.get("/api/substrate/policy-comparison")
+def api_substrate_policy_comparison(
+    pair_mode: str = Query(default="baseline_vs_active"),
+    baseline_profile_id: str | None = Query(default=None),
+    candidate_profile_id: str | None = Query(default=None),
+    window_seconds: int = Query(default=86400, ge=60, le=60 * 60 * 24 * 30),
+    sample_limit: int = Query(default=500, ge=1, le=500),
+) -> Dict[str, Any]:
+    return _sql_policy_comparison_payload(
+        pair_mode=pair_mode,
+        baseline_profile_id=baseline_profile_id,
+        candidate_profile_id=candidate_profile_id,
+        window_seconds=window_seconds,
+        sample_limit=sample_limit,
+    )

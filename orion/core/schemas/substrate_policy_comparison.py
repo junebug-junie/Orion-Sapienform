@@ -25,6 +25,12 @@ class SubstratePolicyComparisonRequestV1(BaseModel):
     request_id: str = Field(default_factory=lambda: f"substrate-policy-compare-{uuid4()}")
     candidate_profile_id: Optional[str] = None
     baseline_profile_id: Optional[str] = None
+    pair_mode: Literal["baseline_vs_active", "previous_vs_current", "selected_pair"] = "baseline_vs_active"
+    window_seconds: int = Field(default=86400, ge=60, le=60 * 60 * 24 * 30)
+    sample_limit: int = Field(default=500, ge=1, le=500)
+    invocation_surface: Optional[str] = None
+    target_zone: Optional[str] = None
+    operator_only: Optional[bool] = None
     baseline_window_label: str = "baseline_window"
     candidate_window_label: str = "candidate_window"
     operator_id: Optional[str] = None

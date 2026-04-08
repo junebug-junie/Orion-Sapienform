@@ -19,6 +19,7 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, candidate)
 
 from scripts import api_routes
+from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
 from orion.core.schemas.substrate_policy_adoption import (
     SubstratePolicyAdoptionRequestV1,
     SubstratePolicyOverridesV1,
@@ -34,30 +35,66 @@ def test_substrate_route_and_template_and_bundle_are_standalone() -> None:
     script = js_path.read_text(encoding="utf-8")
 
     assert "Substrate Inspector" in template
+    assert "substratePolicyComparison" in template
     assert "/static/js/substrate.js?v={{HUB_UI_ASSET_VERSION}}" in template
     assert "window.OrionHub" not in script
     assert "\'/api/substrate/overview?limit=10\'" in script
+    assert "policy-comparison?pair_mode=baseline_vs_active" in script
 
     route_paths = {route.path for route in api_routes.router.routes}
     assert "/substrate" in route_paths
 
 
 def test_backend_substrate_endpoints_have_source_metadata_and_expected_split() -> None:
-    api_routes.SUBSTRATE_POLICY_STORE.adopt(
+    first = api_routes.SUBSTRATE_POLICY_STORE.adopt(
+        SubstratePolicyAdoptionRequestV1(
+            rollout_scope=SubstratePolicyRolloutScopeV1(invocation_surfaces=["operator_review"], target_zones=["concept_graph"]),
+            policy_overrides=SubstratePolicyOverridesV1(normal_revisit_seconds=1100),
+            activate_now=True,
+            operator_id="hub-test",
+            rationale="operator-inspection-first",
+        )
+    )
+    second = api_routes.SUBSTRATE_POLICY_STORE.adopt(
         SubstratePolicyAdoptionRequestV1(
             rollout_scope=SubstratePolicyRolloutScopeV1(invocation_surfaces=["operator_review"], target_zones=["concept_graph"]),
             policy_overrides=SubstratePolicyOverridesV1(normal_revisit_seconds=999),
-            activate_now=False,
+            activate_now=True,
             operator_id="hub-test",
             rationale="operator-inspection",
         )
     )
+    for _ in range(6):
+        api_routes.SUBSTRATE_REVIEW_TELEMETRY_STORE.record(
+            GraphReviewTelemetryRecordV1(
+                policy_profile_id=first.profile_id,
+                invocation_surface="operator_review",
+                target_zone="concept_graph",
+                selection_reason="test",
+                execution_outcome="failed",
+                runtime_duration_ms=100,
+                cycle_count_before=3,
+            )
+        )
+        api_routes.SUBSTRATE_REVIEW_TELEMETRY_STORE.record(
+            GraphReviewTelemetryRecordV1(
+                policy_profile_id=second.profile_id,
+                invocation_surface="operator_review",
+                target_zone="concept_graph",
+                selection_reason="test",
+                execution_outcome="executed",
+                runtime_duration_ms=100,
+                cycle_count_before=1,
+                frontier_followup_invoked=True,
+            )
+        )
     overview = api_routes.api_substrate_overview(limit=5)
     hotspots = api_routes.api_substrate_hotspots(limit=5)
     queue = api_routes.api_substrate_review_queue(limit=5)
     executions = api_routes.api_substrate_review_executions(limit=5)
     telemetry = api_routes.api_substrate_telemetry_summary(limit=5)
     calibration = api_routes.api_substrate_calibration(limit=5)
+    comparison = api_routes.api_substrate_policy_comparison(pair_mode="previous_vs_current", sample_limit=100)
 
     assert overview["source"]["kind"] in {"graphdb", "fallback", "cache"}
     assert hotspots["source"]["kind"] in {"graphdb", "fallback", "cache"}
@@ -68,8 +105,12 @@ def test_backend_substrate_endpoints_have_source_metadata_and_expected_split() -
     assert executions["source"]["kind"] == "sql"
     assert telemetry["source"]["kind"] == "sql"
     assert calibration["source"]["kind"] == "sql"
+    assert comparison["source"]["kind"] == "sql"
     assert "staged_profiles" in calibration["data"]
     assert "recent_audit_events" in calibration["data"]
+    assert comparison["data"]["report"]["verdict"] in {"improved", "neutral", "degraded", "insufficient_data"}
+    assert comparison["data"]["advisory"]["mutating"] is False
+    assert comparison["data"]["pair"]["candidate_profile_id"] == second.profile_id
 
     assert "degraded" in overview["source"]
     assert "truncated" in hotspots["source"]

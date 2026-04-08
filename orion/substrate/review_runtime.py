@@ -248,6 +248,11 @@ class GraphReviewRuntimeExecutor:
             self.telemetry_recorder.record(
                 GraphReviewTelemetryRecordV1(
                     correlation_id=request.correlation_id,
+                    policy_profile_id=(
+                        str(result.audit_summary.get("policy_profile_id"))
+                        if isinstance(result.audit_summary, dict) and result.audit_summary.get("policy_profile_id")
+                        else None
+                    ),
                     invocation_surface=request.invocation_surface,
                     queue_item_id=selected_item.queue_item_id if selected_item else None,
                     anchor_scope=selected_item.anchor_scope if selected_item else None,

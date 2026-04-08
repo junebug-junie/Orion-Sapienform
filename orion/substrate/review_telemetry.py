@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
+import sqlite3
 
 from orion.core.schemas.substrate_review_telemetry import (
     GraphReviewCalibrationRecommendationV1,
@@ -16,15 +18,27 @@ from orion.core.schemas.substrate_review_telemetry import (
 @dataclass
 class GraphReviewTelemetryRecorder:
     max_records: int = 2000
+    sql_db_path: str | None = None
     _records: list[GraphReviewTelemetryRecordV1] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.sql_db_path:
+            self._ensure_sql_schema()
+            self._load_from_sql()
 
     def record(self, entry: GraphReviewTelemetryRecordV1) -> None:
         self._records.append(entry)
         if len(self._records) > self.max_records:
             self._records = self._records[-self.max_records :]
+        if self.sql_db_path:
+            self._insert_sql(entry)
+            self._trim_sql()
 
     def query(self, query: GraphReviewTelemetryQueryV1) -> list[GraphReviewTelemetryRecordV1]:
         records = self._records
+        if self.sql_db_path:
+            records = self._load_from_sql()
+
         if query.since is not None:
             records = [r for r in records if r.selected_at >= query.since]
         if query.invocation_surface is not None:
@@ -72,6 +86,68 @@ class GraphReviewTelemetryRecorder:
             },
             notes=["bounded_telemetry_summary_v1"],
         )
+
+    def _ensure_sql_schema(self) -> None:
+        if not self.sql_db_path:
+            return
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS substrate_review_telemetry (
+                    telemetry_id TEXT PRIMARY KEY,
+                    selected_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+    def _insert_sql(self, entry: GraphReviewTelemetryRecordV1) -> None:
+        if not self.sql_db_path:
+            return
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO substrate_review_telemetry(telemetry_id, selected_at, payload_json)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    entry.telemetry_id,
+                    entry.selected_at.isoformat(),
+                    json.dumps(entry.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                ),
+            )
+            conn.commit()
+
+    def _trim_sql(self) -> None:
+        if not self.sql_db_path:
+            return
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute(
+                """
+                DELETE FROM substrate_review_telemetry
+                WHERE telemetry_id IN (
+                    SELECT telemetry_id FROM substrate_review_telemetry
+                    ORDER BY selected_at DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (self.max_records,),
+            )
+            conn.commit()
+
+    def _load_from_sql(self) -> list[GraphReviewTelemetryRecordV1]:
+        if not self.sql_db_path:
+            return list(self._records)
+        with sqlite3.connect(self.sql_db_path) as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM substrate_review_telemetry ORDER BY selected_at ASC"
+            ).fetchall()
+        self._records = [
+            GraphReviewTelemetryRecordV1.model_validate(json.loads(payload_json))
+            for (payload_json,) in rows
+        ][-self.max_records :]
+        return list(self._records)
 
 
 class GraphReviewCalibrationAnalyzer:

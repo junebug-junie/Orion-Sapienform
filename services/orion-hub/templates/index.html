@@ -208,14 +208,23 @@
           </button>
           <div id="runtimeDebugPanelBody" class="hidden space-y-2 text-xs text-gray-300">
             <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
-              <button
-                id="memoryPanelToggle"
-                class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-                type="button"
-              >
-                <span class="uppercase tracking-wide">Memory / Recall Debug</span>
-                <span id="memoryPanelCaret" class="text-gray-500">▾</span>
-              </button>
+              <div class="flex items-center justify-between gap-2">
+                <button
+                  id="memoryPanelToggle"
+                  class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+                  type="button"
+                >
+                  <span class="uppercase tracking-wide">Memory / Recall Debug</span>
+                  <span id="memoryPanelCaret" class="text-gray-500">▾</span>
+                </button>
+                <button
+                  id="memoryDebugOpenModal"
+                  class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+                  type="button"
+                >
+                  Modal
+                </button>
+              </div>
               <div id="memoryPanelBody" class="hidden space-y-2 text-xs text-gray-300">
             <div class="flex items-center justify-between">
               <span class="text-gray-500">Memory used</span>
@@ -236,15 +245,6 @@
             <div>
               <div class="text-gray-500 mb-1">Outbound routing debug</div>
               <pre id="outboundRoutingDebug" class="whitespace-pre-wrap break-words text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-20 overflow-y-auto">--</pre>
-            </div>
-            <div class="pt-1">
-              <button
-                id="memoryDebugOpenModal"
-                class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
-                type="button"
-              >
-                Modal
-              </button>
             </div>
               </div>
             </div>

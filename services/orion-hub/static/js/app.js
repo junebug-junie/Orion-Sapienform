@@ -5033,7 +5033,10 @@ loadDismissedIds();
   }
   ensureMemoryDebugModalRootOnBody();
   if (memoryDebugOpenModal) {
-    memoryDebugOpenModal.addEventListener('click', openMemoryDebugModal);
+    memoryDebugOpenModal.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openMemoryDebugModal();
+    });
   }
   if (memoryDebugModalClose) {
     memoryDebugModalClose.addEventListener('click', closeMemoryDebugModal);

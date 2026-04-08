@@ -117,6 +117,16 @@ def test_backend_substrate_endpoints_have_source_metadata_and_expected_split() -
     assert "query" in queue["source"]
 
 
+def test_main_hub_has_substrate_navigation_link_to_standalone_page() -> None:
+    index_html = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="substratePageLink"' in index_html
+    assert 'href="/substrate"' in index_html
+    assert ">Substrate<" in index_html
+    substrate_link_block = index_html.split('id="substratePageLink"', 1)[1].split("</a>", 1)[0]
+    assert 'data-hash-target="' not in substrate_link_block
+
+
 def test_substrate_page_keeps_main_shell_untouched() -> None:
     index_html = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
     app_js = (HUB_ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")

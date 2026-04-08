@@ -426,17 +426,25 @@ def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str
     if role and role != "assistant" and not has_assistant_response:
         return None, f"role_filtered:{role}"
     rt = payload.get("reasoning_trace")
+    thinking_source = _normalized_text(payload.get("thinking_source")) or "none"
+    reasoning_content = _normalized_text(payload.get("reasoning_content"))
+    inline_think_content = _normalized_text(payload.get("inline_think_content"))
+    if thinking_source == "provider_reasoning" and reasoning_content:
+        return reasoning_content, "reasoning_content.provider"
+    if thinking_source.startswith("inline_think") and inline_think_content:
+        return inline_think_content, f"inline_think_content.{thinking_source}"
     if isinstance(rt, dict):
         candidate = _normalized_text(rt.get("content"))
         if candidate:
-            return candidate, "reasoning_trace.content"
+            return candidate, f"reasoning_trace.content({thinking_source})"
     elif isinstance(rt, str):
         candidate = _normalized_text(rt)
         if candidate:
             return candidate, "reasoning_trace.string"
-    candidate = _normalized_text(payload.get("reasoning_content"))
-    if candidate:
-        return candidate, "reasoning_content"
+    if reasoning_content:
+        return reasoning_content, "reasoning_content"
+    if inline_think_content:
+        return inline_think_content, "inline_think_content"
     traces = payload.get("metacog_traces")
     if isinstance(traces, list):
         for idx, trace in enumerate(traces):
@@ -990,11 +998,13 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
         )
     if _thought_debug_enabled() and env.kind == "chat.history":
         logger.info(
-            "THOUGHT_DEBUG_SQL_INTAKE stage=chat_history_intake corr=%s payload_keys=%s reasoning_trace_exists=%s reasoning_content_exists=%s candidate_source=%s candidate_len=%s candidate_snippet=%r discarded=%s",
+            "THOUGHT_DEBUG_SQL_INTAKE stage=chat_history_intake corr=%s payload_keys=%s reasoning_trace_exists=%s reasoning_content_exists=%s inline_think_content_exists=%s thinking_source=%s candidate_source=%s candidate_len=%s candidate_snippet=%r discarded=%s",
             env.correlation_id,
             sorted(list(payload.keys())) if isinstance(payload, dict) else [],
             isinstance(payload.get("reasoning_trace"), dict) or isinstance(payload.get("reasoning_trace"), str),
             bool(str(payload.get("reasoning_content") or "").strip()),
+            bool(str(payload.get("inline_think_content") or "").strip()),
+            payload.get("thinking_source"),
             thought_source,
             _debug_len(thought_process),
             _debug_snippet(thought_process),

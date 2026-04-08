@@ -27,7 +27,7 @@ def test_thought_candidate_prefers_reasoning_trace_over_other_sources() -> None:
     }
     thought, source = worker._thought_candidate_and_reason(payload)
     assert thought == "trace-thought"
-    assert source == "reasoning_trace.content"
+    assert source == "reasoning_trace.content(none)"
 
 
 def test_thought_candidate_uses_metacog_when_reasoning_content_missing() -> None:
@@ -48,3 +48,15 @@ def test_thought_candidate_returns_none_when_no_reasoning_payload() -> None:
     thought, source = worker._thought_candidate_and_reason(payload)
     assert thought is None
     assert source == "none"
+
+
+def test_thought_candidate_uses_inline_think_when_marked_as_inline_source() -> None:
+    payload = {
+        "reasoning_trace": {"content": "trace-thought"},
+        "reasoning_content": "provider-structured",
+        "inline_think_content": "inline-think",
+        "thinking_source": "inline_think_close_tag_only",
+    }
+    thought, source = worker._thought_candidate_and_reason(payload)
+    assert thought == "inline-think"
+    assert source == "inline_think_content.inline_think_close_tag_only"

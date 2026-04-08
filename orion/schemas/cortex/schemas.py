@@ -58,6 +58,8 @@ class PlanExecutionResult(BaseModel):
     mode: Optional[str] = None
     final_text: Optional[str] = None
     reasoning_content: Optional[str] = None
+    inline_think_content: Optional[str] = None
+    thinking_source: Optional[str] = None
     reasoning_trace: Optional[Dict[str, Any]] = None
     memory_used: bool = False
     recall_debug: Dict[str, Any] = Field(default_factory=dict)

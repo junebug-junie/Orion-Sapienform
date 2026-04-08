@@ -658,6 +658,8 @@ async def websocket_endpoint(websocket: WebSocket):
             workflow = None
             metacog_traces: List[Dict[str, Any]] = []
             reasoning_content: Optional[str] = None
+            inline_think_content: Optional[str] = None
+            thinking_source: str = "none"
             explicit_reasoning_trace: Optional[Dict[str, Any]] = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
@@ -685,6 +687,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     or (cortex_result_dump.get("reasoning_content") if isinstance(cortex_result_dump, dict) else None)
                     or (((cortex_result_dump.get("raw") or {}).get("reasoning_content")) if isinstance(cortex_result_dump.get("raw"), dict) else None)
                 )
+                inline_think_content = (
+                    (gateway_meta or {}).get("inline_think_content")
+                    or (cortex_result_dump.get("inline_think_content") if isinstance(cortex_result_dump, dict) else None)
+                )
+                raw_thinking_source = (
+                    (gateway_meta or {}).get("thinking_source")
+                    or (cortex_result_dump.get("thinking_source") if isinstance(cortex_result_dump, dict) else None)
+                )
+                if isinstance(raw_thinking_source, str) and raw_thinking_source.strip():
+                    thinking_source = raw_thinking_source.strip()
+                elif isinstance(reasoning_content, str) and reasoning_content.strip():
+                    thinking_source = "provider_reasoning"
+                elif isinstance(inline_think_content, str) and inline_think_content.strip():
+                    thinking_source = "inline_think_full_block"
                 if reasoning_content and not (isinstance(explicit_reasoning_trace, dict) and str(explicit_reasoning_trace.get("content") or "").strip()):
                     explicit_reasoning_trace = {
                         "trace_role": "reasoning",
@@ -698,6 +714,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     f"corr={trace_id} "
                     f"keys={sorted(cortex_result_dump.keys()) if isinstance(cortex_result_dump, dict) else []} "
                     f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+                    f"inline_think_len={len(inline_think_content) if isinstance(inline_think_content, str) else 0} "
+                    f"thinking_source={thinking_source} "
                     f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
                     f"provider_reasoning_available={(gateway_meta or {}).get('provider_reasoning_available') if isinstance(gateway_meta, dict) else None} "
                     f"inline_think_extracted={(gateway_meta or {}).get('inline_think_extracted') if isinstance(gateway_meta, dict) else None} "
@@ -724,6 +742,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         {
                             "reasoning_content_exists": bool(str(reasoning_content or "").strip()),
                             "reasoning_content_len": _debug_len(reasoning_content),
+                            "inline_think_content_exists": bool(str(inline_think_content or "").strip()),
+                            "inline_think_content_len": _debug_len(inline_think_content),
+                            "thinking_source": thinking_source,
                             "reasoning_trace_exists": bool(explicit_reasoning_trace),
                             "reasoning_trace_content_len": _debug_len((explicit_reasoning_trace or {}).get("content") if isinstance(explicit_reasoning_trace, dict) else None),
                             "metacog_traces_exists": bool(metacog_traces),
@@ -808,6 +829,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 "routing_debug": route_debug,
                 "metacog_traces": metacog_traces,
                 "reasoning_content": reasoning_content,
+                "inline_think_content": inline_think_content,
+                "thinking_source": thinking_source,
                 "reasoning_trace": explicit_reasoning_trace,
                 **autonomy_payload,
             }
@@ -844,6 +867,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "mode": mode,
                         "trace_verb": trace_verb,
                         "use_recall": use_recall,
+                        "reasoning_content": reasoning_content,
+                        "inline_think_content": inline_think_content,
+                        "thinking_source": thinking_source,
                         **(gateway_meta if isinstance(gateway_meta, dict) else {}),
                     }
 
@@ -876,6 +902,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "reasoning_trace_content_len": _debug_len((selected_reasoning_trace or {}).get("content") if isinstance(selected_reasoning_trace, dict) else None),
                                 "reasoning_content_exists": bool(str(reasoning_content or "").strip()),
                                 "reasoning_content_len": _debug_len(reasoning_content),
+                                "inline_think_content_exists": bool(str(inline_think_content or "").strip()),
+                                "inline_think_content_len": _debug_len(inline_think_content),
+                                "thinking_source": thinking_source,
                                 "metacog_traces_exists": bool(metacog_traces),
                             },
                         )
@@ -893,6 +922,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         memory_status="accepted",
                         memory_tier="ephemeral",
                         client_meta=enriched_client_meta,
+                        reasoning_content=reasoning_content,
+                        inline_think_content=inline_think_content,
+                        thinking_source=thinking_source,
                         reasoning_trace=selected_reasoning_trace,
                     )
                     _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")

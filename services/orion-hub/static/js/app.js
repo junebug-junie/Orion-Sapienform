@@ -95,6 +95,9 @@ loadDismissedIds();
   const noWriteToggle = document.getElementById('noWriteToggle');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
+  const runtimeDebugPanelToggle = document.getElementById('runtimeDebugPanelToggle');
+  const runtimeDebugPanelBody = document.getElementById('runtimeDebugPanelBody');
+  const runtimeDebugPanelCaret = document.getElementById('runtimeDebugPanelCaret');
   const memoryPanelToggle = document.getElementById('memoryPanelToggle');
   const memoryPanelBody = document.getElementById('memoryPanelBody');
   const memoryUsedValue = document.getElementById('memoryUsedValue');
@@ -2165,6 +2168,13 @@ loadDismissedIds();
     memoryPanelBody.classList.toggle('hidden');
   }
 
+  function toggleRuntimeDebugPanel() {
+    if (!runtimeDebugPanelBody) return;
+    const nextHidden = !runtimeDebugPanelBody.classList.contains('hidden');
+    runtimeDebugPanelBody.classList.toggle('hidden', nextHidden);
+    if (runtimeDebugPanelCaret) runtimeDebugPanelCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
   function toggleAgentTraceDebugPanel() {
     if (!agentTraceDebugBody) return;
     const nextHidden = !agentTraceDebugBody.classList.contains('hidden');
@@ -3462,11 +3472,94 @@ loadDismissedIds();
     }
   }
 
+  function normalizeRecallProfileDisplay() {
+    if (!recallProfileSelect) return;
+    const options = Array.from(recallProfileSelect.options || []);
+    options.forEach((opt) => {
+      if ((opt.value || '').trim().toLowerCase() === 'chat.general.v1') {
+        opt.textContent = 'chat.general.v1';
+      }
+    });
+    if (!recallProfileSelect.value || recallProfileSelect.value === 'auto') {
+      recallProfileSelect.value = 'chat.general.v1';
+    }
+  }
+
+  function extractResponseInspectSections(meta = {}) {
+    const sections = [];
+    const addSection = (key, label, value) => {
+      if (value === null || value === undefined) return;
+      if (typeof value === 'string' && !value.trim()) return;
+      if (Array.isArray(value) && !value.length) return;
+      if (typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length) return;
+      sections.push({ key, label, value });
+    };
+    addSection('reasoning', 'Reasoning', meta.reasoning || meta.reasoning_trace || meta.reasoningTrace);
+    addSection('recall', 'Recall', meta.recallDebug || meta.recall_debug || meta.memoryDigest || meta.memory_digest);
+    addSection('agent_trace', 'Agent Trace', meta.agentTrace || meta.agent_trace);
+    addSection('routing', 'Routing', meta.routingDebug || meta.routing_debug);
+    return sections;
+  }
+
+  function formatInspectValue(value) {
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (_error) {
+      return String(value);
+    }
+  }
+
+  function buildResponseInspectPanel(meta = {}) {
+    const sections = extractResponseInspectSections(meta);
+    if (!sections.length) return null;
+    const panel = document.createElement('div');
+    panel.className = 'mt-2 rounded-xl border border-gray-700 bg-gray-900/40 p-2 hidden space-y-2';
+
+    const tabRow = document.createElement('div');
+    tabRow.className = 'flex flex-wrap items-center gap-1';
+    const content = document.createElement('div');
+    content.className = 'rounded-lg border border-gray-700 bg-gray-950/50 p-2 text-[11px] text-gray-200';
+    let activeKey = sections[0].key;
+
+    const renderContent = () => {
+      const activeSection = sections.find((section) => section.key === activeKey) || sections[0];
+      content.innerHTML = '';
+      const pre = document.createElement('pre');
+      pre.className = 'whitespace-pre-wrap break-words text-[10px] leading-5 text-gray-200';
+      pre.textContent = formatInspectValue(activeSection.value);
+      content.appendChild(pre);
+      tabRow.querySelectorAll('button').forEach((btn) => {
+        const selected = btn.dataset.inspectTab === activeKey;
+        btn.className = selected
+          ? 'rounded-md border border-indigo-400/60 bg-indigo-500/20 px-2 py-1 text-[10px] font-semibold text-indigo-100'
+          : 'rounded-md border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-300 hover:bg-gray-700';
+      });
+    };
+
+    sections.forEach((section) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.dataset.inspectTab = section.key;
+      tab.textContent = section.label;
+      tab.addEventListener('click', () => {
+        activeKey = section.key;
+        renderContent();
+      });
+      tabRow.appendChild(tab);
+    });
+    renderContent();
+    panel.appendChild(tabRow);
+    panel.appendChild(content);
+    return panel;
+  }
+
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
+    let inspectPanel = null;
     const headerRow = document.createElement('div');
     headerRow.className = 'mb-1 flex items-center justify-between gap-3';
     const header = document.createElement('p');
@@ -3497,6 +3590,19 @@ loadDismissedIds();
           });
         });
         actionRow.appendChild(inspectionButton);
+      }
+      inspectPanel = buildResponseInspectPanel(meta);
+      if (inspectPanel) {
+        const inspectButton = document.createElement('button');
+        inspectButton.className = 'rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[10px] font-semibold text-blue-200 hover:bg-blue-500/20';
+        inspectButton.type = 'button';
+        inspectButton.textContent = 'Inspect';
+        inspectButton.addEventListener('click', () => {
+          const nextHidden = inspectPanel.classList.contains('hidden');
+          inspectPanel.classList.toggle('hidden', !nextHidden);
+          inspectButton.textContent = nextHidden ? 'Hide Inspect' : 'Inspect';
+        });
+        actionRow.appendChild(inspectButton);
       }
       if (actionRow.childNodes.length) {
         headerRow.appendChild(actionRow);
@@ -3548,6 +3654,7 @@ loadDismissedIds();
     }) : null;
     if (workflowPanel) div.appendChild(workflowPanel);
     div.appendChild(body);
+    if (inspectPanel) div.appendChild(inspectPanel);
     if (sender === 'Orion') {
       const autonomyPanel = createAutonomyPanel(
         meta.autonomySummary || meta.autonomy_summary,
@@ -4494,20 +4601,32 @@ loadDismissedIds();
 
   // Mode Switching
   const modeButtons = document.querySelectorAll('.mode-btn');
+  function applyModeButtonSelection(selectedBtn) {
+    modeButtons.forEach((b) => {
+      b.classList.remove('bg-indigo-600', 'text-white', 'mode-btn-active');
+      if (b.classList.contains('mode-btn-quick')) {
+        b.classList.add('mode-btn-quick');
+      } else {
+        b.classList.add('bg-gray-700', 'text-gray-200');
+      }
+    });
+    if (selectedBtn) {
+      selectedBtn.classList.add('mode-btn-active', 'text-white');
+      selectedBtn.classList.remove('bg-gray-700', 'text-gray-200');
+    }
+  }
   modeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       currentMode = btn.dataset.mode || 'brain';
       modeVerbOverride = btn.dataset.verbOverride || null;
-      modeButtons.forEach(b => {
-        b.classList.remove('bg-indigo-600', 'text-white');
-        b.classList.add('bg-gray-700', 'text-gray-200');
-      });
-      btn.classList.add('bg-indigo-600', 'text-white');
-      btn.classList.remove('bg-gray-700', 'text-gray-200');
+      applyModeButtonSelection(btn);
       const modeLabel = modeVerbOverride ? `${currentMode} (${modeVerbOverride})` : currentMode;
       updateStatus(`Switched to ${modeLabel} mode.`);
     });
   });
+  const defaultModeButton = Array.from(modeButtons).find((btn) => (btn.dataset.mode || 'brain') === currentMode && !btn.dataset.verbOverride)
+    || modeButtons[0];
+  applyModeButtonSelection(defaultModeButton);
 
   // --- 4. Logic Functions ---
 
@@ -4654,6 +4773,9 @@ loadDismissedIds();
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }
+  if (runtimeDebugPanelToggle) {
+    runtimeDebugPanelToggle.addEventListener('click', toggleRuntimeDebugPanel);
+  }
   if (agentTraceDebugToggle) {
     agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
   }
@@ -4778,6 +4900,10 @@ loadDismissedIds();
     }
   });
 
+  if (textToSpeechToggle) {
+    textToSpeechToggle.checked = false;
+  }
+  normalizeRecallProfileDisplay();
   renderSocialInspectionState(null);
   loadScheduleInventory();
 
@@ -4800,10 +4926,14 @@ loadDismissedIds();
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
           if (d.llm_response) {
             appendMessage('Orion', d.llm_response, 'text-white', {
+              reasoning: d.reasoning,
+              reasoningTrace: d.reasoning_trace,
               agentTrace: d.agent_trace,
               metacogTraces: d.metacog_traces,
               correlationId: d.correlation_id,
               routingDebug: d.routing_debug,
+              recallDebug: d.recall_debug,
+              memoryDigest: d.memory_digest,
               workflow: d.workflow,
               autonomySummary: d.autonomy_summary,
               autonomyDebug: d.autonomy_debug,
@@ -4887,10 +5017,14 @@ loadDismissedIds();
         .then(d => {
             if(d.text) {
               appendMessage('Orion', d.text, 'text-white', {
+                reasoning: d.reasoning,
+                reasoningTrace: d.reasoning_trace,
                 agentTrace: d.agent_trace,
                 metacogTraces: d.metacog_traces,
                 correlationId: d.correlation_id,
                 routingDebug: d.routing_debug,
+                recallDebug: d.recall_debug,
+                memoryDigest: d.memory_digest,
                 workflow: d.workflow,
                 autonomySummary: d.autonomy_summary,
                 autonomyDebug: d.autonomy_debug,

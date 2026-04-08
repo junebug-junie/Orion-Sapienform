@@ -146,39 +146,34 @@
           <button id="sendButton" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-4 py-2 font-semibold">Send</button>
         </div>
 
-        <div class="flex items-center justify-between bg-gray-800 p-2 rounded-lg text-xs">
+        <div class="bg-gray-800 p-2 rounded-lg text-xs space-y-2">
           <div class="flex items-center gap-2">
             <span class="uppercase text-gray-500 font-bold text-[10px]">Mode</span>
-            <div class="flex gap-1">
+            <div class="flex flex-wrap gap-1">
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="auto">Auto</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="brain">Brain</button>
-              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="brain" data-verb-override="chat_quick">Quick</button>
+              <button class="mode-btn mode-btn-quick px-2 py-1 rounded bg-indigo-500/30 text-indigo-100 border border-indigo-400/60 shadow-[0_0_12px_rgba(99,102,241,0.3)] hover:bg-indigo-500/40 transition-colors" data-mode="brain" data-verb-override="chat_quick">Quick</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="agent">Agent</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
             </div>
           </div>
-
-          <div class="flex items-center gap-2 border-l border-gray-600 pl-2">
-            <div class="flex items-center space-x-2">
-              <label for="recallToggle" class="text-xs text-gray-400">Recall</label>
+          <div class="flex items-center gap-3 pt-1 border-t border-gray-700/80">
+            <label class="flex items-center gap-1.5 text-xs text-gray-400" for="recallToggle">
               <input type="checkbox" id="recallToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
-            </div>
-            <div class="flex items-center space-x-2">
-              <label for="recallRequiredToggle" class="text-xs text-gray-400">Force</label>
-              <input type="checkbox" id="recallRequiredToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
-            </div>
-            <div class="flex items-center space-x-2">
-              <label for="noWriteToggle" class="text-xs text-gray-400">No-write</label>
+              <span>Recall</span>
+            </label>
+            <label class="flex items-center gap-1.5 text-xs text-gray-400" for="noWriteToggle">
               <input type="checkbox" id="noWriteToggle" class="h-3 w-3 text-amber-500 rounded bg-gray-700 border-gray-600" />
-            </div>
-            <div class="flex items-center space-x-2">
-              <label for="textToSpeechToggle" class="text-xs text-gray-400">TTS</label>
-              <input type="checkbox" id="textToSpeechToggle" class="h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-600" checked />
-            </div>
+              <span>No-write</span>
+            </label>
+            <label class="flex items-center gap-1.5 text-xs text-gray-400" for="textToSpeechToggle">
+              <input type="checkbox" id="textToSpeechToggle" class="h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-600" />
+              <span>TTS</span>
+            </label>
           </div>
         </div>
 
-        <div class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-lg p-2 text-xs">
+        <div class="flex flex-wrap items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-lg p-2 text-xs">
           <div class="flex items-center gap-2">
             <label for="recallModeSelect" class="text-gray-400">Recall Mode</label>
             <select id="recallModeSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
@@ -191,9 +186,9 @@
           <div class="flex items-center gap-2">
             <label for="recallProfileSelect" class="text-gray-400">Recall Profile</label>
             <select id="recallProfileSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
-              <option value="auto" selected>Auto</option>
+              <option value="auto">Auto</option>
               <option value="assist.light.v1">assist.light.v1</option>
-              <option value="chat.general.v1">chat.general.v1</option>
+              <option value="chat.general.v1" selected>chat.general.v1</option>
               <option value="reflect.v1">reflect.v1</option>
               <option value="reflect.anchor.v1">reflect.anchor.v1</option>
               <option value="deep.graph.v1">deep.graph.v1</option>
@@ -202,17 +197,26 @@
           </div>
         </div>
 
-        <!-- ✅ Keep ONLY this (bottom) Memory / Recall Debug panel -->
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
+        <div id="runtimeDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <button
-            id="memoryPanelToggle"
+            id="runtimeDebugPanelToggle"
             class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
             type="button"
           >
-            <span class="uppercase tracking-wide">Memory / Recall Debug</span>
-            <span class="text-gray-500">▾</span>
+            <span class="uppercase tracking-wide">Debug Panel</span>
+            <span id="runtimeDebugPanelCaret" class="text-gray-500">▾</span>
           </button>
-          <div id="memoryPanelBody" class="hidden space-y-2 text-xs text-gray-300">
+          <div id="runtimeDebugPanelBody" class="hidden space-y-2 text-xs text-gray-300">
+            <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+              <button
+                id="memoryPanelToggle"
+                class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
+                type="button"
+              >
+                <span class="uppercase tracking-wide">Memory / Recall Debug</span>
+                <span class="text-gray-500">▾</span>
+              </button>
+              <div id="memoryPanelBody" class="hidden space-y-2 text-xs text-gray-300">
             <div class="flex items-center justify-between">
               <span class="text-gray-500">Memory used</span>
               <span id="memoryUsedValue">--</span>
@@ -233,10 +237,10 @@
               <div class="text-gray-500 mb-1">Outbound routing debug</div>
               <div id="outboundRoutingDebug" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</div>
             </div>
-          </div>
-        </div>
+              </div>
+            </div>
 
-        <div id="agentTraceDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
+        <div id="agentTraceDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <button
             id="agentTraceDebugToggle"
             class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
@@ -270,7 +274,7 @@
           </div>
         </div>
 
-        <div id="autonomyDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
+        <div id="autonomyDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <div class="flex items-center justify-between gap-2">
             <button
               id="autonomyDebugToggle"
@@ -313,7 +317,7 @@
           </div>
         </div>
 
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
+        <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between gap-3">
             <div>
               <div class="text-xs uppercase tracking-wide text-gray-500">Social Inspection</div>
@@ -325,7 +329,7 @@
           <div id="socialInspectionPanelSummary" class="grid grid-cols-1 gap-2 text-[11px] text-gray-300"></div>
         </div>
 
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
+        <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between">
             <div class="text-xs uppercase tracking-wide text-gray-500">Cognition Packs</div>
           </div>
@@ -359,6 +363,8 @@
               </div>
               <div id="verbList" class="max-h-56 overflow-y-auto p-2 space-y-1"></div>
             </div>
+          </div>
+        </div>
           </div>
         </div>
       </div>

@@ -115,6 +115,7 @@ loadDismissedIds();
   const memoryDebugModalBody = document.getElementById('memoryDebugModalBody');
   const agentTraceDebugPanel = document.getElementById('agentTraceDebugPanel');
   const agentTraceDebugToggle = document.getElementById('agentTraceDebugToggle');
+  const agentTraceDebugOpenModal = document.getElementById('agentTraceDebugOpenModal');
   const agentTraceDebugCaret = document.getElementById('agentTraceDebugCaret');
   const agentTraceDebugBody = document.getElementById('agentTraceDebugBody');
   const agentTraceDebugMeta = document.getElementById('agentTraceDebugMeta');
@@ -219,6 +220,8 @@ loadDismissedIds();
   const responseFeedbackNotes = document.getElementById('responseFeedbackNotes');
   const responseFeedbackStatus = document.getElementById('responseFeedbackStatus');
   let lastMemoryDebugModel = null;
+  let lastAgentTraceSummary = null;
+  let lastAgentTraceMeta = {};
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -1857,7 +1860,9 @@ loadDismissedIds();
 
   function syncDebugModalScrollLock() {
     if (!document.body) return;
-    const shouldLock = isModalVisible(memoryDebugModalRoot) || isModalVisible(autonomyDebugModalRoot);
+    const shouldLock = isModalVisible(memoryDebugModalRoot)
+      || isModalVisible(autonomyDebugModalRoot)
+      || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
   }
 
@@ -1899,6 +1904,8 @@ loadDismissedIds();
     if (agentTraceDebugToolGroups) agentTraceDebugToolGroups.innerHTML = '';
     if (agentTraceDebugTimeline) agentTraceDebugTimeline.innerHTML = '';
     if (agentTraceDebugRaw) agentTraceDebugRaw.textContent = 'No agent trace on this turn.';
+    lastAgentTraceSummary = null;
+    lastAgentTraceMeta = {};
   }
 
   function updateAgentTraceDebugPanel(summary, meta = {}) {
@@ -1917,6 +1924,8 @@ loadDismissedIds();
       clearAgentTraceDebugPanel();
       return;
     }
+    lastAgentTraceSummary = summary;
+    lastAgentTraceMeta = meta || {};
 
     agentTraceDebugPanel.classList.remove('hidden');
     if (agentTraceDebugMeta) {
@@ -1929,14 +1938,33 @@ loadDismissedIds();
 
     agentTraceDebugSummary.textContent = summary.summary_text || 'No deterministic summary available.';
 
+    const grouped = agentTraceApi.groupToolsByFamily ? agentTraceApi.groupToolsByFamily(summary.tools) : [];
+    const timelineRows = agentTraceApi.buildTimelineRows ? agentTraceApi.buildTimelineRows(summary) : [];
+    const compactRows = [
+      ['Tool families', grouped.length],
+      ['Total tool calls', summary.tool_call_count ?? summary.tools_count ?? '--'],
+      ['Timeline events', timelineRows.length],
+      ['Status', summary.status || '--'],
+    ];
     agentTraceDebugToolGroups.innerHTML = '';
-    Array.from(buildAgentTraceToolGroupsNode(summary).children).forEach((child) => agentTraceDebugToolGroups.appendChild(child));
+    compactRows.forEach(([label, value]) => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2';
+      const key = document.createElement('span');
+      key.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      key.textContent = String(label);
+      const val = document.createElement('span');
+      val.className = 'text-xs text-gray-200';
+      val.textContent = String(value ?? '--');
+      row.appendChild(key);
+      row.appendChild(val);
+      agentTraceDebugToolGroups.appendChild(row);
+    });
 
     agentTraceDebugTimeline.innerHTML = '';
-    agentTraceDebugTimeline.appendChild(buildAgentTraceTimelineNode(summary));
-
+    agentTraceDebugTimeline.innerHTML = '<div class="text-[11px] text-gray-400">Timeline details moved to modal for full inspection.</div>';
     agentTraceDebugRaw.innerHTML = '';
-    agentTraceDebugRaw.appendChild(buildAgentTraceRawPayloadsNode(summary));
+    agentTraceDebugRaw.innerHTML = '<div class="text-[11px] text-gray-400">Raw payload inspection is available in the modal.</div>';
   }
 
   function clearAutonomyDebugPanel() {
@@ -4178,6 +4206,7 @@ loadDismissedIds();
     if (!agentTraceModal) return;
     agentTraceModal.classList.add('hidden');
     agentTraceModal.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
   }
 
   function setAgentTraceEmptyState(isEmpty) {
@@ -4558,6 +4587,7 @@ loadDismissedIds();
       }
       agentTraceModal.classList.remove('hidden');
       agentTraceModal.setAttribute('aria-hidden', 'false');
+      syncDebugModalScrollLock();
       return;
     }
     setAgentTraceEmptyState(false);
@@ -4568,6 +4598,7 @@ loadDismissedIds();
     populateAgentTraceModal(summary);
     agentTraceModal.classList.remove('hidden');
     agentTraceModal.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
   }
 
   async function loadNotifications() {
@@ -5280,6 +5311,7 @@ loadDismissedIds();
   ensureMemoryDebugModalRootOnBody();
   if (memoryDebugOpenModal) {
     memoryDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
       event.stopPropagation();
       openMemoryDebugModal();
     });
@@ -5304,12 +5336,23 @@ loadDismissedIds();
   if (agentTraceDebugToggle) {
     agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
   }
+  if (agentTraceDebugOpenModal) {
+    agentTraceDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAgentTraceModal(lastAgentTraceSummary, lastAgentTraceMeta);
+    });
+  }
   if (autonomyDebugToggle) {
     autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);
   }
   ensureAutonomyModalRootOnBody();
   if (autonomyDebugOpenModal) {
-    autonomyDebugOpenModal.addEventListener('click', openAutonomyDebugModal);
+    autonomyDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAutonomyDebugModal();
+    });
   }
   if (autonomyDebugModalClose) {
     autonomyDebugModalClose.addEventListener('click', closeAutonomyDebugModal);

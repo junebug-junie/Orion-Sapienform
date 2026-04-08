@@ -76,7 +76,12 @@ class ToolRegistry:
                 verb_cfg = self._verb_registry.get(verb_name)
                 services = verb_cfg.services or []
                 execution_mode = str(verb_cfg.execution_mode or "").strip().lower()
-                is_capability_backed = execution_mode == "capability_backed"
+                # Keep planner-visible registry semantic: reasoning verbs plus
+                # capability-backed verbs that route through the capability bridge.
+                # Some verb YAMLs may only mark requires_capability_selector, so
+                # treat that as capability-backed for visibility instead of dropping
+                # those verbs from PlannerReact toolset assembly.
+                is_capability_backed = execution_mode == "capability_backed" or bool(verb_cfg.requires_capability_selector)
                 is_reasoning_llm = services == ["LLMGatewayService"]
                 if not (is_reasoning_llm or is_capability_backed):
                     continue
@@ -96,7 +101,7 @@ class ToolRegistry:
                         description=verb_cfg.description or f"Orion verb: {verb_cfg.name}",
                         input_schema=input_schema,
                         output_schema=output_schema,
-                        execution_mode=(verb_cfg.execution_mode or ("reasoning_only" if is_reasoning_llm else None)),
+                        execution_mode=(verb_cfg.execution_mode or ("reasoning_only" if is_reasoning_llm else "capability_backed")),
                         requires_capability_selector=bool(verb_cfg.requires_capability_selector),
                         preferred_skill_families=list(verb_cfg.preferred_skill_families or []),
                         side_effect_level=verb_cfg.side_effect_level or ("none" if is_reasoning_llm else "low"),

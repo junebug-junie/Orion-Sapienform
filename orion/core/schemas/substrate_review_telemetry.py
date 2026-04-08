@@ -27,6 +27,7 @@ class GraphReviewTelemetryRecordV1(BaseModel):
 
     telemetry_id: str = Field(default_factory=lambda: f"graph-review-telemetry-{uuid4()}")
     correlation_id: Optional[str] = None
+    policy_profile_id: Optional[str] = None
     invocation_surface: GraphReviewRuntimeSurfaceV1
     queue_item_id: Optional[str] = None
     anchor_scope: Optional[str] = None

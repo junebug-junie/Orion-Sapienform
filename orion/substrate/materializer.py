@@ -6,7 +6,8 @@ from typing import Iterable
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1, SubstrateGraphRecordV1
 
 from .reconcile import EdgeMergeDecision, NodeMergeDecision, SubstrateIdentityResolver, merge_edge, merge_node
-from .store import InMemorySubstrateGraphStore
+from .graphdb_store import build_substrate_store_from_env
+from .store import SubstrateGraphStore
 
 
 @dataclass(frozen=True)
@@ -26,14 +27,14 @@ class SubstrateGraphMaterializer:
     def __init__(
         self,
         *,
-        store: InMemorySubstrateGraphStore | None = None,
+        store: SubstrateGraphStore | None = None,
         identity_resolver: SubstrateIdentityResolver | None = None,
     ) -> None:
-        self._store = store or InMemorySubstrateGraphStore()
+        self._store = store or build_substrate_store_from_env()
         self._identity_resolver = identity_resolver or SubstrateIdentityResolver()
 
     @property
-    def store(self) -> InMemorySubstrateGraphStore:
+    def store(self) -> SubstrateGraphStore:
         return self._store
 
     def apply_record(self, record: SubstrateGraphRecordV1) -> MaterializationResultV1:

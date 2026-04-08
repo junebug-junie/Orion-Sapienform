@@ -24,6 +24,7 @@ from app.models import (
     ChatGptLogSQL,
     ChatGptMessageSQL,
     ChatMessageSQL,
+    ChatResponseFeedbackSQL,
     CollapseEnrichment,
     CollapseMirror,
     Dream,
@@ -57,6 +58,7 @@ from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
+from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
 from orion.schemas.social_bridge import (
     ExternalRoomMessageV1,
@@ -127,6 +129,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ChatGptLogSQL": (ChatGptLogSQL, ChatGptLogTurnV1),
     "ChatGptMessageSQL": (ChatGptMessageSQL, ChatGptMessageV1),
     "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),
+    "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
     "Dream": (Dream, None),
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
     "BiometricsSummarySQL": (BiometricsSummarySQL, BiometricsSummaryV1),

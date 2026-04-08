@@ -219,6 +219,20 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tuple[int, Optional[int], str]:
+    requested = _safe_int(ctx.get("max_tokens"))
+    if requested is not None and requested > 0:
+        return requested, requested, "ctx.max_tokens"
+
+    if step.verb_name == "chat_quick":
+        return int(settings.llm_chat_quick_max_tokens), requested, "settings.llm_chat_quick_max_tokens"
+
+    if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens"
+
+    return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
+
+
 def _format_pad_frame_summary(pad_result: Any) -> str:
     if not isinstance(pad_result, dict):
         return str(pad_result)
@@ -2128,6 +2142,24 @@ async def call_step_services(
                     llm_route,
                 )
 
+                effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)
+                prompt_token_count = _safe_int(ctx.get("prompt_token_count"))
+                logger.info(
+                    "llm_chat_budget corr_id=%s mode=%s verb=%s step=%s route=%s requested_max_tokens=%s effective_max_tokens=%s max_tokens_source=%s profile=%s model=%s prompt_token_count=%s prompt_char_count=%s",
+                    correlation_id,
+                    ctx.get("mode"),
+                    step.verb_name,
+                    step.step_name,
+                    llm_route,
+                    requested_max_tokens,
+                    effective_max_tokens,
+                    max_tokens_source,
+                    ctx.get("profile_name"),
+                    req_model,
+                    prompt_token_count,
+                    len(prompt or ""),
+                )
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     messages=messages_payload,
@@ -2135,7 +2167,7 @@ async def call_step_services(
                     route=llm_route,
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
-                        "max_tokens": int(ctx.get("max_tokens", 512)),
+                        "max_tokens": effective_max_tokens,
                         "stream": False,
                         "response_format": ctx.get("response_format") if isinstance(ctx.get("response_format"), dict) else None,
                         "return_json": bool(ctx.get("return_json")) if ctx.get("return_json") is not None else None,
@@ -2152,6 +2184,27 @@ async def call_step_services(
                 )
 
                 result_payload = result_object.model_dump(mode="json")
+                raw_payload = result_payload.get("raw") if isinstance(result_payload, dict) else {}
+                if not isinstance(raw_payload, dict):
+                    raw_payload = {}
+                usage = raw_payload.get("usage") if isinstance(raw_payload.get("usage"), dict) else {}
+                choices = raw_payload.get("choices") if isinstance(raw_payload.get("choices"), list) else []
+                first_choice = choices[0] if choices else {}
+                finish_reason = first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
+                logger.info(
+                    "llm_chat_result corr_id=%s mode=%s verb=%s step=%s route=%s profile=%s model=%s prompt_tokens=%s completion_tokens=%s finish_reason=%s emitted_chars=%s",
+                    correlation_id,
+                    ctx.get("mode"),
+                    step.verb_name,
+                    step.step_name,
+                    llm_route,
+                    ctx.get("profile_name"),
+                    req_model,
+                    usage.get("prompt_tokens") if isinstance(usage, dict) else None,
+                    usage.get("completion_tokens") if isinstance(usage, dict) else None,
+                    finish_reason,
+                    len(_extract_llm_text(result_object) or ""),
+                )
                 menu_topic = ctx.get("menu_topic_selection")
                 if (
                     step.verb_name == "chat_general"

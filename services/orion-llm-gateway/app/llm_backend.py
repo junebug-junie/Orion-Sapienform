@@ -787,7 +787,16 @@ def _execute_openai_chat(
     payload = {k: v for k, v in payload.items() if v is not None}
 
     # 3. Execute
-    logger.info(f"[LLM-GW] {backend_name} req model={model} msgs={len(body.messages or [])} url={url}")
+    logger.info(
+        "[LLM-GW] %s req model=%s msgs=%s url=%s route=%s corr=%s payload_max_tokens=%s",
+        backend_name,
+        model,
+        len(body.messages or []),
+        url,
+        route,
+        body.trace_id,
+        payload.get("max_tokens"),
+    )
 
     try:
         with _common_http_client() as client:
@@ -802,6 +811,20 @@ def _execute_openai_chat(
 
             r.raise_for_status()
             raw_data = r.json()
+            usage = raw_data.get("usage") if isinstance(raw_data, dict) and isinstance(raw_data.get("usage"), dict) else {}
+            choices = raw_data.get("choices") if isinstance(raw_data, dict) and isinstance(raw_data.get("choices"), list) else []
+            first_choice = choices[0] if choices else {}
+            finish_reason = first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
+            logger.info(
+                "[LLM-GW] %s rsp model=%s route=%s corr=%s prompt_tokens=%s completion_tokens=%s finish_reason=%s",
+                backend_name,
+                model,
+                route,
+                body.trace_id,
+                usage.get("prompt_tokens") if isinstance(usage, dict) else None,
+                usage.get("completion_tokens") if isinstance(usage, dict) else None,
+                finish_reason,
+            )
             if _thought_debug_enabled():
                 choices = raw_data.get("choices") if isinstance(raw_data, dict) else None
                 first = choices[0] if isinstance(choices, list) and choices else {}

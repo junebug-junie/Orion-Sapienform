@@ -2,14 +2,49 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+import json
+import sqlite3
 
 from orion.core.schemas.substrate_review_queue import GraphReviewQueueItemV1, GraphReviewQueueSnapshotV1
 
 
 class GraphReviewQueue:
-    def __init__(self, *, max_items: int = 200) -> None:
+    def __init__(
+        self,
+        *,
+        max_items: int = 200,
+        sql_db_path: str | None = None,
+        postgres_url: str | None = None,
+    ) -> None:
         self._max_items = max_items
+        self.sql_db_path = sql_db_path
+        self.postgres_url = postgres_url
         self._items: dict[str, GraphReviewQueueItemV1] = {}
+        self._source_kind = "memory"
+        self._last_error: str | None = None
+
+        if self.postgres_url:
+            try:
+                self._ensure_postgres_schema()
+                self._load_from_postgres()
+                self._source_kind = "postgres"
+                return
+            except Exception as exc:
+                self._source_kind = "fallback"
+                self._last_error = str(exc)
+        if self.sql_db_path:
+            self._ensure_sql_schema()
+            self._load_from_sql()
+            self._source_kind = "sqlite"
+
+    def source_kind(self) -> str:
+        return self._source_kind
+
+    def degraded(self) -> bool:
+        return self._source_kind == "fallback" or self._last_error is not None
+
+    def last_error(self) -> str | None:
+        return self._last_error
 
     def upsert(self, item: GraphReviewQueueItemV1) -> None:
         region_key = self._region_key(item.focal_node_refs, item.target_zone)
@@ -29,12 +64,14 @@ class GraphReviewQueue:
                 }
             )
             self._items[existing_id] = item
+            self._persist()
             return
 
         if len(self._items) >= self._max_items:
             evict_id = sorted(self._items.items(), key=lambda kv: (kv[1].priority, kv[1].created_at))[0][0]
             del self._items[evict_id]
         self._items[item.queue_item_id] = item
+        self._persist()
 
     def mark_reviewed(self, queue_item_id: str, *, reviewed_at: datetime | None = None) -> GraphReviewQueueItemV1 | None:
         item = self._items.get(queue_item_id)
@@ -56,6 +93,7 @@ class GraphReviewQueue:
             }
         )
         self._items[queue_item_id] = updated
+        self._persist()
         return updated
 
     def apply_cycle_feedback(self, queue_item_id: str, *, no_change: bool) -> GraphReviewQueueItemV1 | None:
@@ -73,6 +111,7 @@ class GraphReviewQueue:
             }
         )
         self._items[queue_item_id] = updated
+        self._persist()
         return updated
 
     def list_eligible(self, *, now: datetime | None = None, limit: int = 10) -> list[GraphReviewQueueItemV1]:
@@ -108,3 +147,117 @@ class GraphReviewQueue:
     @staticmethod
     def _region_key(node_refs: list[str], zone: str) -> str:
         return f"{zone}|{','.join(sorted(node_refs))}"
+
+    def _persist(self) -> None:
+        if self.postgres_url:
+            try:
+                self._persist_to_postgres()
+                self._source_kind = "postgres"
+                self._last_error = None
+                return
+            except Exception as exc:
+                self._source_kind = "fallback"
+                self._last_error = str(exc)
+        if self.sql_db_path:
+            self._persist_to_sql()
+
+    def _ensure_sql_schema(self) -> None:
+        if not self.sql_db_path:
+            return
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS substrate_review_queue_item (
+                    queue_item_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+    def _persist_to_sql(self) -> None:
+        if not self.sql_db_path:
+            return
+        with sqlite3.connect(self.sql_db_path) as conn:
+            conn.execute("DELETE FROM substrate_review_queue_item")
+            for item in self._items.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_review_queue_item(queue_item_id, created_at, payload_json)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        item.queue_item_id,
+                        item.created_at.isoformat(),
+                        json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+            conn.commit()
+
+    def _load_from_sql(self) -> None:
+        if not self.sql_db_path:
+            return
+        with sqlite3.connect(self.sql_db_path) as conn:
+            rows = conn.execute("SELECT payload_json FROM substrate_review_queue_item ORDER BY created_at ASC").fetchall()
+        self._items = {}
+        for (payload_json,) in rows:
+            item = GraphReviewQueueItemV1.model_validate(json.loads(payload_json))
+            self._items[item.queue_item_id] = item
+
+    def _ensure_postgres_schema(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS substrate_review_queue_item (
+                        queue_item_id TEXT PRIMARY KEY,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    )
+                    """
+                )
+            )
+
+    def _persist_to_postgres(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM substrate_review_queue_item"))
+            for item in self._items.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_review_queue_item(queue_item_id, created_at, payload_json)
+                        VALUES (:queue_item_id, :created_at, CAST(:payload_json AS JSONB))
+                        """
+                    ),
+                    {
+                        "queue_item_id": item.queue_item_id,
+                        "created_at": item.created_at,
+                        "payload_json": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                    },
+                )
+
+    def _load_from_postgres(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text("SELECT payload_json::text FROM substrate_review_queue_item ORDER BY created_at ASC")
+            ).fetchall()
+        self._items = {}
+        for (payload_json,) in rows:
+            item = GraphReviewQueueItemV1.model_validate(json.loads(payload_json))
+            self._items[item.queue_item_id] = item

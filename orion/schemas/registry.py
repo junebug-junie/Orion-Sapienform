@@ -45,6 +45,7 @@ from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
+from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.social_chat import (
     SocialConceptEvidenceV1,
     SocialGroundingStateV1,
@@ -272,6 +273,24 @@ from orion.core.schemas.substrate_review_telemetry import (
     GraphReviewCalibrationRequestV1,
     GraphReviewCalibrationRecommendationV1,
 )
+from orion.core.schemas.substrate_policy_adoption import (
+    SubstratePolicyAdoptionRequestV1,
+    SubstratePolicyAdoptionResultV1,
+    SubstratePolicyAuditEventV1,
+    SubstratePolicyComparisonV1,
+    SubstratePolicyInspectionV1,
+    SubstratePolicyOverridesV1,
+    SubstratePolicyProfileV1,
+    SubstratePolicyResolutionV1,
+    SubstratePolicyRollbackRequestV1,
+    SubstratePolicyRollbackResultV1,
+    SubstratePolicyRolloutScopeV1,
+)
+from orion.core.schemas.substrate_policy_comparison import (
+    SubstratePolicyComparisonRequestV1,
+    SubstratePolicyEffectivenessReportV1,
+    SubstratePolicyMetricDeltaV1,
+)
 from orion.core.schemas.drives import (
     DriveAuditV1,
     DriveStateV1,
@@ -487,6 +506,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistoryTurnV1": ChatHistoryTurnV1,  # includes memory policy + client_meta fields
     "ChatGptLogTurnV1": ChatGptLogTurnV1,
     "ChatGptMessageV1": ChatGptMessageV1,
+    "ChatResponseFeedbackV1": ChatResponseFeedbackV1,
     "SocialConceptEvidenceV1": SocialConceptEvidenceV1,
     "SocialGroundingStateV1": SocialGroundingStateV1,
     "SocialRedactionScoreV1": SocialRedactionScoreV1,
@@ -673,6 +693,20 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GraphReviewTelemetrySummaryV1": GraphReviewTelemetrySummaryV1,
     "GraphReviewCalibrationRequestV1": GraphReviewCalibrationRequestV1,
     "GraphReviewCalibrationRecommendationV1": GraphReviewCalibrationRecommendationV1,
+    "SubstratePolicyRolloutScopeV1": SubstratePolicyRolloutScopeV1,
+    "SubstratePolicyOverridesV1": SubstratePolicyOverridesV1,
+    "SubstratePolicyProfileV1": SubstratePolicyProfileV1,
+    "SubstratePolicyAdoptionRequestV1": SubstratePolicyAdoptionRequestV1,
+    "SubstratePolicyAdoptionResultV1": SubstratePolicyAdoptionResultV1,
+    "SubstratePolicyRollbackRequestV1": SubstratePolicyRollbackRequestV1,
+    "SubstratePolicyRollbackResultV1": SubstratePolicyRollbackResultV1,
+    "SubstratePolicyAuditEventV1": SubstratePolicyAuditEventV1,
+    "SubstratePolicyResolutionV1": SubstratePolicyResolutionV1,
+    "SubstratePolicyInspectionV1": SubstratePolicyInspectionV1,
+    "SubstratePolicyComparisonV1": SubstratePolicyComparisonV1,
+    "SubstratePolicyComparisonRequestV1": SubstratePolicyComparisonRequestV1,
+    "SubstratePolicyMetricDeltaV1": SubstratePolicyMetricDeltaV1,
+    "SubstratePolicyEffectivenessReportV1": SubstratePolicyEffectivenessReportV1,
     "SparkSourceSnapshotV1": SparkSourceSnapshotV1,
     "MentorConstraintsV1": MentorConstraintsV1,
     "MentorContextSliceV1": MentorContextSliceV1,

@@ -11,6 +11,8 @@ from orion.core.schemas.substrate_review_queue import (
     GraphReviewQueueItemV1,
     GraphReviewScheduleDecisionV1,
 )
+from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
+from orion.substrate.policy_profiles import SubstratePolicyProfileStore
 from orion.substrate.review_queue import GraphReviewQueue
 
 
@@ -21,9 +23,16 @@ class GraphReviewSchedulingResultV1:
 
 
 class GraphReviewScheduler:
-    def __init__(self, *, queue: GraphReviewQueue | None = None, policy: GraphReviewCyclePolicyV1 | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        queue: GraphReviewQueue | None = None,
+        policy: GraphReviewCyclePolicyV1 | None = None,
+        policy_profiles: SubstratePolicyProfileStore | None = None,
+    ) -> None:
         self._policy = policy or GraphReviewCyclePolicyV1()
         self._queue = queue or GraphReviewQueue(max_items=self._policy.queue_max_items)
+        self._policy_profiles = policy_profiles
 
     @property
     def queue(self) -> GraphReviewQueue:
@@ -36,6 +45,7 @@ class GraphReviewScheduler:
         anchor_scope: SubstrateAnchorScopeV1,
         subject_ref: str | None,
         now: datetime | None = None,
+        invocation_surface: GraphReviewRuntimeSurfaceV1 = "operator_review",
     ) -> GraphReviewSchedulingResultV1:
         t = now or datetime.now(timezone.utc)
         decisions: list[GraphReviewScheduleDecisionV1] = []
@@ -48,6 +58,7 @@ class GraphReviewScheduler:
                 anchor_scope=anchor_scope,
                 subject_ref=subject_ref,
                 now=t,
+                invocation_surface=invocation_surface,
             )
             decisions.append(sched_decision)
             if queue_item is not None:
@@ -64,9 +75,11 @@ class GraphReviewScheduler:
         anchor_scope: SubstrateAnchorScopeV1,
         subject_ref: str | None,
         now: datetime,
+        invocation_surface: GraphReviewRuntimeSurfaceV1,
     ) -> tuple[GraphReviewScheduleDecisionV1, GraphReviewQueueItemV1 | None]:
         outcome = consolidation_decision.outcome
         zone = consolidation_decision.zone
+        policy = self._effective_policy(invocation_surface=invocation_surface, target_zone=zone)
 
         if outcome == "operator_only" or zone == "self_relationship_graph":
             return (
@@ -94,7 +107,7 @@ class GraphReviewScheduler:
             )
 
         if outcome == "damp":
-            next_time = now + timedelta(seconds=self._policy.slow_revisit_seconds)
+            next_time = now + timedelta(seconds=policy.slow_revisit_seconds)
             decision = GraphReviewScheduleDecisionV1(
                 target_refs=consolidation_decision.target_refs,
                 outcome="schedule_later",
@@ -110,13 +123,14 @@ class GraphReviewScheduler:
                 subject_ref=subject_ref,
                 next_review_at=next_time,
                 priority=decision.priority,
+                policy=policy,
             )
 
         if outcome in {"maintain_priority", "requeue_review"}:
             seconds = (
-                self._policy.urgent_revisit_seconds
+                policy.urgent_revisit_seconds
                 if outcome == "maintain_priority"
-                else self._policy.normal_revisit_seconds
+                else policy.normal_revisit_seconds
             )
             next_time = now + timedelta(seconds=seconds)
             decision = GraphReviewScheduleDecisionV1(
@@ -134,10 +148,11 @@ class GraphReviewScheduler:
                 subject_ref=subject_ref,
                 next_review_at=next_time,
                 priority=decision.priority,
+                policy=policy,
             )
 
         if outcome in {"keep_provisional", "reinforce"}:
-            next_time = now + timedelta(seconds=self._policy.normal_revisit_seconds)
+            next_time = now + timedelta(seconds=policy.normal_revisit_seconds)
             decision = GraphReviewScheduleDecisionV1(
                 target_refs=consolidation_decision.target_refs,
                 outcome="schedule_later",
@@ -153,6 +168,7 @@ class GraphReviewScheduler:
                 subject_ref=subject_ref,
                 next_review_at=next_time,
                 priority=decision.priority,
+                policy=policy,
             )
 
         return (
@@ -175,12 +191,13 @@ class GraphReviewScheduler:
         subject_ref: str | None,
         next_review_at: datetime,
         priority: int,
+        policy: GraphReviewCyclePolicyV1,
     ) -> GraphReviewQueueItemV1:
         max_cycles_by_zone = {
-            "world_ontology": self._policy.max_cycles_world,
-            "concept_graph": self._policy.max_cycles_concept,
-            "autonomy_graph": self._policy.max_cycles_autonomy,
-            "self_relationship_graph": self._policy.max_cycles_self_relationship,
+            "world_ontology": policy.max_cycles_world,
+            "concept_graph": policy.max_cycles_concept,
+            "autonomy_graph": policy.max_cycles_autonomy,
+            "self_relationship_graph": policy.max_cycles_self_relationship,
         }
         max_cycles = max_cycles_by_zone[consolidation_decision.zone]
         return GraphReviewQueueItemV1(
@@ -199,9 +216,25 @@ class GraphReviewScheduler:
                 max_cycles=max_cycles,
                 remaining_cycles=max_cycles,
                 no_change_cycles=0,
-                suppress_after_low_value_cycles=self._policy.suppress_after_low_value_cycles,
+                suppress_after_low_value_cycles=policy.suppress_after_low_value_cycles,
             ),
             suppression_state=False,
             termination_state=False,
             notes=consolidation_decision.notes[:8],
         )
+
+    def _effective_policy(self, *, invocation_surface: GraphReviewRuntimeSurfaceV1, target_zone: str) -> GraphReviewCyclePolicyV1:
+        if self._policy_profiles is None:
+            return self._policy
+        resolution = self._policy_profiles.resolve(
+            invocation_surface=invocation_surface,
+            target_zone=target_zone,
+            operator_mode=invocation_surface == "operator_review",
+        )
+        if resolution.mode != "adopted":
+            return self._policy
+        allowed = GraphReviewCyclePolicyV1.model_fields.keys()
+        overrides = {key: value for key, value in resolution.overrides.items() if key in allowed}
+        if not overrides:
+            return self._policy
+        return self._policy.model_copy(update=overrides)

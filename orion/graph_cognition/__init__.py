@@ -16,11 +16,13 @@ from .views import (
     EpisodicGraphViewV1,
     ExecutiveGraphViewV1,
     GraphViewBundleV1,
+    GraphViewReadBasisV1,
     SemanticGraphViewV1,
     SelfGraphViewV1,
     SocialGraphViewV1,
     SubgraphViewV1,
     TemporalDeltaGraphViewV1,
+    build_graph_views_from_store,
     build_graph_views,
 )
 
@@ -35,7 +37,9 @@ __all__ = [
     "ContradictionGraphViewV1",
     "TemporalDeltaGraphViewV1",
     "GraphViewBundleV1",
+    "GraphViewReadBasisV1",
     "build_graph_views",
+    "build_graph_views_from_store",
     "GraphFeatureSetV1",
     "extract_graph_features",
     "CoherenceAssessmentV1",

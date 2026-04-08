@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
-from orion.substrate.store import MaterializedSubstrateGraphState
+from orion.substrate.query_planning import SubstrateQueryPlanner, SubstrateSemanticReadCoordinator
+from orion.substrate.store import MaterializedSubstrateGraphState, SubstrateGraphStore, SubstrateQueryResultV1
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,18 @@ class GraphViewBundleV1:
     concept: ConceptGraphViewV1
     contradiction: ContradictionGraphViewV1
     temporal_delta: TemporalDeltaGraphViewV1
+
+
+@dataclass(frozen=True)
+class GraphViewReadBasisV1:
+    source_kind: str
+    degraded: bool
+    reused_cache: bool
+    truncated: bool
+    duration_ms: float
+    plan_kind: str
+    notes: tuple[str, ...]
+    query_kinds: tuple[str, ...]
 
 
 def _score(node: BaseSubstrateNodeV1) -> float:
@@ -259,3 +272,70 @@ def build_graph_views(
         contradiction=contradiction,
         temporal_delta=temporal_delta,
     )
+
+
+def _merge_query_results(results: list[SubstrateQueryResultV1]) -> MaterializedSubstrateGraphState:
+    nodes: dict[str, BaseSubstrateNodeV1] = {}
+    edges: dict[str, SubstrateEdgeV1] = {}
+    for result in results:
+        for node in result.slice.nodes:
+            nodes[node.node_id] = node
+        for edge in result.slice.edges:
+            edges[edge.edge_id] = edge
+    return MaterializedSubstrateGraphState(
+        nodes=nodes,
+        edges=edges,
+        node_identity_index={},
+        edge_identity_index={},
+    )
+
+
+def build_graph_views_from_store(
+    *,
+    store: SubstrateGraphStore,
+    now: datetime,
+    scope: str,
+    subject_ref: str | None,
+    max_nodes: int = 64,
+    max_edges: int = 128,
+    time_window_seconds: int = 86400,
+    query_cache_enabled: bool = True,
+) -> tuple[GraphViewBundleV1, GraphViewReadBasisV1, MaterializedSubstrateGraphState]:
+    coordinator = SubstrateSemanticReadCoordinator(store=store, cache_enabled=query_cache_enabled)
+    execution = coordinator.execute(
+        SubstrateQueryPlanner.graph_view_basis(subject_ref=subject_ref, max_nodes=max_nodes, max_edges=max_edges)
+    )
+    query_results = list(execution.results)
+    merged_state = _merge_query_results(query_results)
+
+    if not merged_state.nodes:
+        merged_state = store.snapshot()
+        fallback_note = "snapshot_fallback_due_to_empty_query_region"
+    else:
+        fallback_note = ""
+
+    bundle = build_graph_views(
+        state=merged_state,
+        now=now,
+        scope=scope,
+        subject_ref=subject_ref,
+        max_nodes=max_nodes,
+        max_edges=max_edges,
+        time_window_seconds=time_window_seconds,
+    )
+    notes = [f"query:{result.query_kind}:{result.source_kind}" for result in query_results]
+    notes.extend(execution.meta.notes)
+    notes.append(f"query_cache_enabled:{query_cache_enabled}")
+    if fallback_note:
+        notes.append(fallback_note)
+    basis = GraphViewReadBasisV1(
+        source_kind=execution.meta.source_kind,
+        degraded=execution.meta.degraded,
+        reused_cache=execution.meta.reused_cache,
+        truncated=execution.meta.truncated,
+        duration_ms=execution.meta.duration_ms,
+        plan_kind=execution.meta.plan_kind,
+        notes=tuple(notes),
+        query_kinds=tuple(result.query_kind for result in query_results),
+    )
+    return bundle, basis, merged_state

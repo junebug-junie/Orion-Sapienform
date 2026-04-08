@@ -16,6 +16,7 @@ class CapabilityDecision(BaseModel):
     reason: str
     confidence: float = 0.0
     policy: Dict[str, Any] = Field(default_factory=dict)
+    observational: bool = True
 
 
 def resolve_capability_decision(
@@ -31,12 +32,21 @@ def resolve_capability_decision(
     candidates = registry.by_family(family)
     candidate_ids = [item.skill_id for item in candidates]
     selected = candidate_ids[0] if candidate_ids else None
-    policy: Dict[str, Any] = {"risk_class": "read_only", "confirmation_required": False}
+    if family == "runtime_housekeeping":
+        for candidate_id in candidate_ids:
+            if "docker_prune_stopped_containers" in candidate_id:
+                selected = candidate_id
+                break
+    policy: Dict[str, Any] = {"risk_class": "read_only", "confirmation_required": False, "execute_opt_in": False}
+    observational = True
     if candidates:
+        selected_entry = next((item for item in candidates if item.skill_id == selected), candidates[0])
         policy = {
-            "risk_class": candidates[0].risk_class,
-            "confirmation_required": bool(candidates[0].requires_confirmation),
+            "risk_class": selected_entry.risk_class,
+            "confirmation_required": bool(selected_entry.requires_confirmation),
+            "execute_opt_in": bool(selected_entry.requires_execute_opt_in),
         }
+        observational = bool(selected_entry.observational)
     reason = (
         f"Verb '{verb}' prefers family '{family}', selected '{selected}'."
         if selected
@@ -51,6 +61,7 @@ def resolve_capability_decision(
         reason=reason,
         confidence=0.87 if selected else 0.0,
         policy=policy,
+        observational=observational,
     )
 
 
@@ -65,6 +76,7 @@ def normalize_capability_observation(
         "selected_skill_family": decision.skill_family,
         "selected_skill": decision.selected_skill,
         "reason": decision.reason,
+        "observational": decision.observational,
         "execution_summary": execution_summary,
         "raw_payload_ref": raw_payload or {},
         "capability_decision": decision.model_dump(mode="json"),

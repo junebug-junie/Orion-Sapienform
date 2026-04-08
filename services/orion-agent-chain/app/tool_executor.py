@@ -205,6 +205,13 @@ class ToolExecutor:
                 metadata={
                     "capability_decision": decision.model_dump(mode="json"),
                     "capability_bridge": True,
+                    "requested_verb": tool_id,
+                    "selected_skill_family": decision.skill_family,
+                    "selected_skill": decision.selected_skill,
+                    "risk_class": decision.policy.get("risk_class"),
+                    "requires_confirmation": bool(decision.policy.get("confirmation_required")),
+                    "execute_opt_in": bool(decision.policy.get("execute_opt_in")),
+                    "observational": bool(decision.observational),
                 },
             ),
         )

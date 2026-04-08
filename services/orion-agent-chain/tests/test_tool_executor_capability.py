@@ -17,7 +17,7 @@ class _FakeBus:
         self.calls = []
 
     async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):
-        self.calls.append((channel, env.kind, env.payload.get("verb")))
+        self.calls.append((channel, env.kind, env.payload.get("verb"), env.payload.get("context", {}).get("metadata", {})))
         return {
             "data": {
                 "ok": True,
@@ -48,3 +48,6 @@ def test_capability_backed_tool_exec_normalizes_observation():
     assert result["selected_skill"] is not None
     assert "execution_summary" in result
     assert bus.calls and bus.calls[0][0] == "orion:cortex:request"
+    metadata = bus.calls[0][3]
+    assert metadata["requested_verb"] == "assess_runtime_state"
+    assert "risk_class" in metadata

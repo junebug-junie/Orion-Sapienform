@@ -13,6 +13,18 @@ from orion.core.bus.bus_schemas import (
 from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1, RecallQueryV1
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
+from orion.schemas.actions.mesh_ops import (
+    DiskHealthDeviceV1,
+    DiskHealthSnapshotV1,
+    DockerPruneResultV1,
+    DockerPruneSnapshotV1,
+    MeshNodeStatusV1,
+    MeshOpsRoundResultV1,
+    MeshStatusSnapshotV1,
+    OpsMeshRoundJournalEntryV1,
+    RepoPullRequestDigestItemV1,
+    RepoRecentChangesDigestV1,
+)
 from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalTriggerV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import (
@@ -719,6 +731,16 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalEntryDraftV1": JournalEntryDraftV1,
     "JournalEntryWriteV1": JournalEntryWriteV1,
     "DailyMetacogV1": DailyMetacogV1,
+    "MeshNodeStatusV1": MeshNodeStatusV1,
+    "MeshStatusSnapshotV1": MeshStatusSnapshotV1,
+    "DiskHealthDeviceV1": DiskHealthDeviceV1,
+    "DiskHealthSnapshotV1": DiskHealthSnapshotV1,
+    "RepoPullRequestDigestItemV1": RepoPullRequestDigestItemV1,
+    "RepoRecentChangesDigestV1": RepoRecentChangesDigestV1,
+    "DockerPruneResultV1": DockerPruneResultV1,
+    "DockerPruneSnapshotV1": DockerPruneSnapshotV1,
+    "MeshOpsRoundResultV1": MeshOpsRoundResultV1,
+    "OpsMeshRoundJournalEntryV1": OpsMeshRoundJournalEntryV1,
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,
     "TopicRailAssignedV1": TopicRailAssignedV1,

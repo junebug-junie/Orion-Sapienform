@@ -8,11 +8,11 @@ import re
 import shutil
 import socket
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 from uuid import uuid4
@@ -27,7 +27,7 @@ from orion.core.verbs.base import BaseVerb, VerbContext
 from orion.core.verbs.models import VerbEffectV1
 from orion.core.verbs.registry import verb
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
-from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
+from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.pad.v1 import PadRpcRequestV1, PadRpcResponseV1
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.self_study import (
@@ -823,6 +823,187 @@ def _pad_rpc_request(method: str, *, correlation_id: str, reply_channel: str, so
     )
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _classify_tailscale_peer(peer: Dict[str, Any]) -> str:
+    if bool(peer.get("online")) or bool(peer.get("Online")):
+        return "active"
+    if bool(peer.get("active")) or bool(peer.get("Active")):
+        return "idle"
+    if bool(peer.get("offline")) or bool(peer.get("Offline")):
+        return "offline"
+    return "unknown"
+
+
+def _parse_tailscale_status_json(payload: Dict[str, Any], *, probe_results: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    self_data = payload.get("Self") if isinstance(payload.get("Self"), dict) else {}
+    peers = payload.get("Peer") if isinstance(payload.get("Peer"), dict) else {}
+    observed_at = _utc_now_iso()
+    nodes: List[Dict[str, Any]] = []
+    backend_state = payload.get("BackendState")
+
+    if self_data:
+        self_name = str(self_data.get("HostName") or self_data.get("DNSName") or "self")
+        nodes.append(
+            {
+                "node_name": self_name.rstrip("."),
+                "tailscale_ip": self_data.get("TailscaleIPs", [None])[0] if isinstance(self_data.get("TailscaleIPs"), list) else None,
+                "dns_name": str(self_data.get("DNSName") or "").rstrip(".") or None,
+                "os": self_data.get("OS"),
+                "tags": self_data.get("Tags") if isinstance(self_data.get("Tags"), list) else [],
+                "owner": self_data.get("User") or self_data.get("Profile"),
+                "local_backend_state": backend_state,
+                "peer_status_classification": "active",
+                "connection_info": {"relay": self_data.get("Relay"), "cur_addr": self_data.get("CurAddr")},
+                "latency_probe": (probe_results or {}).get(self_name),
+                "observed_at_utc": observed_at,
+            }
+        )
+
+    for peer in peers.values():
+        if not isinstance(peer, dict):
+            continue
+        node_name = str(peer.get("HostName") or peer.get("DNSName") or peer.get("ID") or "unknown").rstrip(".")
+        nodes.append(
+            {
+                "node_name": node_name,
+                "tailscale_ip": peer.get("TailscaleIPs", [None])[0] if isinstance(peer.get("TailscaleIPs"), list) else None,
+                "dns_name": str(peer.get("DNSName") or "").rstrip(".") or None,
+                "os": peer.get("OS"),
+                "tags": peer.get("Tags") if isinstance(peer.get("Tags"), list) else [],
+                "owner": peer.get("User") or peer.get("Profile"),
+                "local_backend_state": backend_state,
+                "peer_status_classification": _classify_tailscale_peer(peer),
+                "connection_info": {"relay": peer.get("Relay"), "cur_addr": peer.get("CurAddr")},
+                "latency_probe": (probe_results or {}).get(node_name),
+                "observed_at_utc": observed_at,
+            }
+        )
+    active_nodes = [n.get("node_name") for n in nodes if n.get("peer_status_classification") == "active" and n.get("node_name")]
+    return {
+        "available": True,
+        "backend_state": backend_state,
+        "observed_at_utc": observed_at,
+        "node_count": len(nodes),
+        "active_nodes": active_nodes,
+        "nodes": nodes,
+    }
+
+
+def _derive_active_nodes(mesh_snapshot: Dict[str, Any], node_scope: List[str] | None = None) -> List[str]:
+    scoped = {str(item).strip() for item in (node_scope or []) if str(item).strip()}
+    out: List[str] = []
+    for node in mesh_snapshot.get("nodes") if isinstance(mesh_snapshot.get("nodes"), list) else []:
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("node_name") or "").strip()
+        if not name:
+            continue
+        if scoped and name not in scoped:
+            continue
+        if str(node.get("peer_status_classification") or "unknown") == "active":
+            out.append(name)
+    return out
+
+
+def _normalize_smartctl_device(*, node_name: str, device: str, payload: Dict[str, Any], exit_status: int) -> Dict[str, Any]:
+    smart_status = payload.get("smart_status") if isinstance(payload.get("smart_status"), dict) else {}
+    model_name = payload.get("model_name") or payload.get("model_family") or payload.get("product")
+    serial_number = payload.get("serial_number")
+    temp = payload.get("temperature") if isinstance(payload.get("temperature"), dict) else {}
+    ata = payload.get("ata_smart_attributes") if isinstance(payload.get("ata_smart_attributes"), dict) else {}
+    table = ata.get("table") if isinstance(ata.get("table"), list) else []
+    attrs = {str(item.get("name") or "").lower(): item for item in table if isinstance(item, dict)}
+    protocol = str(payload.get("device", {}).get("protocol") or payload.get("device", {}).get("type") or "unknown").lower()
+    nvme = payload.get("nvme_smart_health_information_log") if isinstance(payload.get("nvme_smart_health_information_log"), dict) else {}
+    return {
+        "node_name": node_name,
+        "device": device,
+        "protocol": protocol,
+        "model": model_name,
+        "serial": serial_number,
+        "health_passed": smart_status.get("passed"),
+        "overall_health": "passed" if smart_status.get("passed") else ("failed" if smart_status else "unknown"),
+        "temperature_c": _safe_float(temp.get("current") or nvme.get("temperature")),
+        "power_on_hours": _safe_int((payload.get("power_on_time") or {}).get("hours")),
+        "critical_warning": nvme.get("critical_warning"),
+        "percentage_used": _safe_int(nvme.get("percentage_used")),
+        "media_errors": _safe_int(nvme.get("media_errors")),
+        "available_spare": _safe_int(nvme.get("available_spare")),
+        "reallocated_sectors": _safe_int((attrs.get("reallocated_sector_ct") or {}).get("raw", {}).get("value")),
+        "pending_sectors": _safe_int((attrs.get("current_pending_sector") or {}).get("raw", {}).get("value")),
+        "raw_exit_status": exit_status,
+        "parse_warnings": [],
+        "observed_at_utc": _utc_now_iso(),
+    }
+
+
+def _normalize_nvme_smart_log(*, node_name: str, device: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "node_name": node_name,
+        "device": device,
+        "protocol": "nvme",
+        "model": payload.get("model_number"),
+        "serial": payload.get("serial_number"),
+        "health_passed": None,
+        "overall_health": "unknown",
+        "temperature_c": _safe_float(payload.get("temperature")),
+        "power_on_hours": _safe_int(payload.get("power_on_hours")),
+        "critical_warning": payload.get("critical_warning"),
+        "percentage_used": _safe_int(payload.get("percentage_used")),
+        "media_errors": _safe_int(payload.get("media_errors")),
+        "available_spare": _safe_int(payload.get("available_spare")),
+        "reallocated_sectors": None,
+        "pending_sectors": None,
+        "raw_exit_status": 0,
+        "parse_warnings": [],
+        "observed_at_utc": _utc_now_iso(),
+    }
+
+
+def _infer_services_from_paths(paths: List[str]) -> List[str]:
+    services: set[str] = set()
+    for path in paths:
+        p = str(path or "").strip("/")
+        if not p:
+            continue
+        parts = p.split("/")
+        if len(parts) >= 2 and parts[0] == "services":
+            services.add(parts[1])
+        elif len(parts) >= 2 and parts[0] == "orion":
+            services.add(f"orion.{parts[1]}")
+        else:
+            services.add(parts[0])
+    return sorted(services)
+
+
+def _summarize_prs_by_service(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[int]] = {}
+    for item in items:
+        number = _safe_int(item.get("number"))
+        if number is None:
+            continue
+        for svc in item.get("inferred_services") if isinstance(item.get("inferred_services"), list) else []:
+            grouped.setdefault(str(svc), []).append(number)
+    return [{"service": service, "pr_numbers": sorted(numbers)} for service, numbers in sorted(grouped.items())]
+
+
 @verb("skills.system.time_now.v1")
 class TimeNowVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
     input_model = PlanExecutionRequest
@@ -1007,6 +1188,359 @@ class LandingPadLastEventsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             filtered.append(event)
         result = {"available": True, "events": filtered, "count": len(filtered)}
         return _skill_result_output(skill_name="skills.landing_pad.last_events.v1", result=result), []
+
+
+@verb("skills.mesh.tailscale_mesh_status.v1")
+class TailscaleMeshStatusVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        active_probe = bool(skill_args.get("active_probe", False))
+        timeout_sec = float(settings.skills_mesh_ops_timeout_sec or settings.skills_command_timeout_sec)
+        binary = str(settings.tailscale_path or "tailscale").strip() or "tailscale"
+        runner = SafeCommandRunner(allowed_commands={binary}, timeout_sec=timeout_sec)
+        try:
+            proc = await asyncio.to_thread(runner.run, [binary, "status", "--json"])
+        except FileNotFoundError:
+            result = {"available": False, "reason": "tailscale_not_installed", "unsupported": True, "nodes": []}
+            return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
+        except Exception as exc:
+            result = {"available": False, "reason": str(exc), "nodes": []}
+            return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result, ok=False, status="fail", error={"message": str(exc)}), []
+        if proc.returncode != 0:
+            result = {"available": False, "reason": (proc.stderr or proc.stdout or "tailscale_status_failed").strip(), "nodes": []}
+            return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result, ok=False, status="fail", error={"message": result["reason"]}), []
+        raw = json.loads(proc.stdout or "{}")
+        probe_results: Dict[str, Any] = {}
+        if active_probe:
+            for node_name in _derive_active_nodes(_parse_tailscale_status_json(raw)):
+                try:
+                    ping_proc = await asyncio.to_thread(runner.run, [binary, "ping", "--timeout", "2s", "--c", "1", node_name])
+                    probe_results[node_name] = {"ok": ping_proc.returncode == 0, "summary": (ping_proc.stdout or ping_proc.stderr).strip()[:220]}
+                except Exception as exc:
+                    probe_results[node_name] = {"ok": False, "summary": str(exc)}
+        result = _parse_tailscale_status_json(raw, probe_results=probe_results)
+        result["probe_enabled"] = active_probe
+        return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result), []
+
+
+@verb("skills.storage.disk_health_snapshot.v1")
+class DiskHealthSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        devices = skill_args.get("devices") if isinstance(skill_args.get("devices"), list) else ["/dev/sda", "/dev/nvme0n1"]
+        node_name = str(skill_args.get("node_name") or settings.node_name)
+        timeout_sec = float(settings.skills_mesh_ops_timeout_sec or settings.skills_command_timeout_sec)
+        smartctl_binary = str(settings.smartctl_path or "smartctl").strip() or "smartctl"
+        nvme_binary = str(settings.nvme_path or "nvme").strip() or "nvme"
+        runner = SafeCommandRunner(allowed_commands={smartctl_binary, nvme_binary}, timeout_sec=timeout_sec)
+        items: List[Dict[str, Any]] = []
+        for device in devices:
+            dev = str(device or "").strip()
+            if not dev:
+                continue
+            try:
+                proc = await asyncio.to_thread(runner.run, [smartctl_binary, "--json", "-a", dev])
+            except FileNotFoundError:
+                items.append({"node_name": node_name, "device": dev, "overall_health": "unsupported", "raw_exit_status": None, "parse_warnings": ["smartctl_not_installed"], "observed_at_utc": _utc_now_iso()})
+                continue
+            except Exception as exc:
+                items.append({"node_name": node_name, "device": dev, "overall_health": "failed", "raw_exit_status": None, "parse_warnings": [str(exc)], "observed_at_utc": _utc_now_iso()})
+                continue
+            try:
+                payload_json = json.loads(proc.stdout or "{}")
+            except Exception:
+                items.append({"node_name": node_name, "device": dev, "overall_health": "failed", "raw_exit_status": proc.returncode, "parse_warnings": ["smartctl_json_parse_failed"], "observed_at_utc": _utc_now_iso()})
+                continue
+            normalized = _normalize_smartctl_device(node_name=node_name, device=dev, payload=payload_json, exit_status=proc.returncode)
+            if "nvme" in str(normalized.get("protocol") or "").lower():
+                try:
+                    nvme_proc = await asyncio.to_thread(runner.run, [nvme_binary, "smart-log", dev, "--output-format=json"])
+                    if nvme_proc.returncode == 0:
+                        normalized.update(_normalize_nvme_smart_log(node_name=node_name, device=dev, payload=json.loads(nvme_proc.stdout or "{}")))
+                except Exception:
+                    normalized["parse_warnings"] = list(normalized.get("parse_warnings") or []) + ["nvme_smart_log_unavailable"]
+            items.append(normalized)
+        summary = {
+            "healthy": sum(1 for item in items if item.get("overall_health") in {"passed", "healthy"}),
+            "warning": sum(1 for item in items if item.get("overall_health") in {"warning", "unknown"}),
+            "failed": sum(1 for item in items if item.get("overall_health") in {"failed"}),
+            "unsupported": sum(1 for item in items if item.get("overall_health") in {"unsupported"}),
+        }
+        result = {"node_name": node_name, "observed_at_utc": _utc_now_iso(), "devices": items, "summary": summary}
+        return _skill_result_output(skill_name="skills.storage.disk_health_snapshot.v1", result=result), []
+
+
+@verb("skills.repo.github_recent_prs.v1")
+class GithubRecentPullRequestsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        owner = str(skill_args.get("owner") or settings.github_owner or "").strip()
+        repo = str(skill_args.get("repo") or settings.github_repo or "").strip()
+        lookback_days = int(skill_args.get("lookback_days") or settings.mesh_default_lookback_days or 7)
+        if not owner or not repo:
+            result = {"available": False, "reason": "github_repo_not_configured", "items": [], "lookback_days": lookback_days}
+            return _skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "orion-cortex-exec"}
+        if settings.github_token:
+            headers["Authorization"] = f"Bearer {settings.github_token}"
+        base = str(settings.github_api_url or "https://api.github.com").rstrip("/")
+        pulls_url = f"{base}/repos/{quote(owner)}/{quote(repo)}/pulls?state=closed&sort=updated&direction=desc&per_page=20"
+        try:
+            request = Request(pulls_url, headers=headers)
+            with urlopen(request, timeout=float(settings.skills_mesh_ops_timeout_sec)) as response:  # noqa: S310
+                payload_json = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            result = {"available": False, "reason": str(exc), "items": [], "lookback_days": lookback_days}
+            return _skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
+        items: List[Dict[str, Any]] = []
+        for pr in payload_json if isinstance(payload_json, list) else []:
+            if not isinstance(pr, dict):
+                continue
+            merged_at = pr.get("merged_at")
+            if not merged_at:
+                continue
+            merged_dt = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
+            if merged_dt < cutoff:
+                continue
+            touched_paths: List[str] = []
+            changed_files_count = int(pr.get("changed_files") or 0)
+            files_url = pr.get("url")
+            if isinstance(files_url, str) and files_url:
+                try:
+                    file_request = Request(f"{files_url}/files?per_page=100", headers=headers)
+                    with urlopen(file_request, timeout=float(settings.skills_mesh_ops_timeout_sec)) as file_response:  # noqa: S310
+                        files_payload = json.loads(file_response.read().decode("utf-8"))
+                    if isinstance(files_payload, list):
+                        touched_paths = [str(item.get("filename")) for item in files_payload if isinstance(item, dict) and item.get("filename")]
+                        changed_files_count = max(changed_files_count, len(touched_paths))
+                except Exception:
+                    touched_paths = []
+            item = {
+                "number": pr.get("number"),
+                "title": pr.get("title"),
+                "author": (pr.get("user") or {}).get("login") if isinstance(pr.get("user"), dict) else None,
+                "state": pr.get("state"),
+                "merged_at": merged_at,
+                "created_at": pr.get("created_at"),
+                "updated_at": pr.get("updated_at"),
+                "labels": [label.get("name") for label in (pr.get("labels") or []) if isinstance(label, dict) and label.get("name")],
+                "base_ref": (pr.get("base") or {}).get("ref") if isinstance(pr.get("base"), dict) else None,
+                "head_ref": (pr.get("head") or {}).get("ref") if isinstance(pr.get("head"), dict) else None,
+                "url": pr.get("html_url"),
+                "changed_files_count": changed_files_count,
+                "touched_paths": touched_paths,
+                "inferred_services": _infer_services_from_paths(touched_paths),
+            }
+            items.append(item)
+        result = {
+            "available": True,
+            "repo": f"{owner}/{repo}",
+            "lookback_days": lookback_days,
+            "merged_pr_count": len(items),
+            "items": items,
+            "grouped_summary": _summarize_prs_by_service(items),
+            "observed_at_utc": _utc_now_iso(),
+        }
+        return _skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result=result), []
+
+
+@verb("skills.runtime.docker_prune_stopped_containers.v1")
+class DockerPruneStoppedContainersVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        dry_run = bool(skill_args.get("dry_run", True))
+        execute_requested = bool(skill_args.get("execute", False))
+        if execute_requested:
+            dry_run = False
+        until = str(skill_args.get("until") or settings.docker_prune_default_until or "").strip()
+        keep_labels = [str(item).strip() for item in str(settings.docker_protected_labels or "").split(",") if str(item).strip()]
+        if isinstance(skill_args.get("keep_labels"), list):
+            keep_labels = [str(item).strip() for item in skill_args.get("keep_labels") if str(item).strip()]
+        runner = SafeCommandRunner(allowed_commands={"docker"}, timeout_sec=float(settings.skills_mesh_ops_timeout_sec))
+        try:
+            ps_cmd = ["docker", "ps", "-a", "--filter", "status=exited", "--format", "{{json .}}"]
+            proc = await asyncio.to_thread(runner.run, ps_cmd)
+        except Exception as exc:
+            result = {"node_name": settings.node_name, "dry_run": dry_run, "status": "unavailable", "reason": str(exc), "observed_at_utc": _utc_now_iso()}
+            return _skill_result_output(skill_name="skills.runtime.docker_prune_stopped_containers.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
+        containers = _parse_docker_ps_lines(proc.stdout) if proc.returncode == 0 else []
+        matched = len(containers)
+        if dry_run:
+            result = {
+                "node_name": settings.node_name,
+                "dry_run": True,
+                "requested_filters": {"until": until, "keep_labels": keep_labels},
+                "matched_container_count": matched,
+                "pruned_container_count": 0,
+                "reclaimed_bytes": 0,
+                "protected_skips": [],
+                "command": "docker container prune --filter status=exited",
+                "stdout_stderr_summary": "dry_run_only",
+                "status": "dry_run",
+                "observed_at_utc": _utc_now_iso(),
+            }
+            return _skill_result_output(skill_name="skills.runtime.docker_prune_stopped_containers.v1", result=result), []
+
+        if not settings.skills_allow_mutating_runtime_housekeeping:
+            result = {
+                "node_name": settings.node_name,
+                "dry_run": False,
+                "requested_filters": {"until": until, "keep_labels": keep_labels},
+                "matched_container_count": matched,
+                "pruned_container_count": 0,
+                "reclaimed_bytes": 0,
+                "protected_skips": [],
+                "command": "docker container prune --filter status=exited",
+                "stdout_stderr_summary": "policy_blocked_execute_opt_in_required",
+                "status": "blocked",
+                "observed_at_utc": _utc_now_iso(),
+            }
+            return _skill_result_output(
+                skill_name="skills.runtime.docker_prune_stopped_containers.v1",
+                result=result,
+                ok=False,
+                status="blocked",
+                error={"message": "execute_mode_blocked_by_policy"},
+            ), []
+        cmd = ["docker", "container", "prune", "--force"]
+        if until:
+            cmd += ["--filter", f"until={until}"]
+        prune_proc = await asyncio.to_thread(runner.run, cmd)
+        result = {
+            "node_name": settings.node_name,
+            "dry_run": False,
+            "requested_filters": {"until": until, "keep_labels": keep_labels},
+            "matched_container_count": matched,
+            "pruned_container_count": matched if prune_proc.returncode == 0 else 0,
+            "reclaimed_bytes": None,
+            "protected_skips": [],
+            "command": " ".join(cmd),
+            "stdout_stderr_summary": (prune_proc.stdout or prune_proc.stderr or "").strip()[:400],
+            "status": "success" if prune_proc.returncode == 0 else "failed",
+            "observed_at_utc": _utc_now_iso(),
+        }
+        return _skill_result_output(
+            skill_name="skills.runtime.docker_prune_stopped_containers.v1",
+            result=result,
+            ok=prune_proc.returncode == 0,
+            status="success" if prune_proc.returncode == 0 else "fail",
+            error=None if prune_proc.returncode == 0 else {"message": "docker_prune_failed"},
+        ), []
+
+
+@verb("skills.mesh.mesh_ops_round.v1")
+class MeshOpsRoundVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        include_pr_digest = bool(skill_args.get("include_pr_digest", True))
+        include_disk_health = bool(skill_args.get("include_disk_health", True))
+        include_docker_housekeeping = bool(skill_args.get("include_docker_housekeeping", False))
+        write_journal = bool(skill_args.get("write_journal", False))
+
+        mesh_snapshot, _ = await TailscaleMeshStatusVerb().execute(ctx, _plan_request_from_payload(payload, "skills.mesh.tailscale_mesh_status.v1", {"active_probe": bool(skill_args.get("active_probe", False))}))
+        mesh_result = (mesh_snapshot.metadata or {}).get("skill_result") if isinstance(mesh_snapshot.metadata, dict) else {}
+        active_nodes = _derive_active_nodes(mesh_result if isinstance(mesh_result, dict) else {}, node_scope=skill_args.get("node_scope") if isinstance(skill_args.get("node_scope"), list) else None)
+
+        disk_result: Dict[str, Any] = {"enabled": include_disk_health, "nodes": []}
+        if include_disk_health:
+            for node_name in active_nodes or [settings.node_name]:
+                disk_snapshot, _ = await DiskHealthSnapshotVerb().execute(ctx, _plan_request_from_payload(payload, "skills.storage.disk_health_snapshot.v1", {"node_name": node_name, "devices": skill_args.get("devices")}))
+                disk_result["nodes"].append((disk_snapshot.metadata or {}).get("skill_result"))
+
+        pr_result: Dict[str, Any] = {"enabled": include_pr_digest}
+        if include_pr_digest:
+            prs, _ = await GithubRecentPullRequestsVerb().execute(
+                ctx,
+                _plan_request_from_payload(payload, "skills.repo.github_recent_prs.v1", {"lookback_days": int(skill_args.get("pr_lookback_days") or settings.mesh_default_lookback_days)}),
+            )
+            pr_result = (prs.metadata or {}).get("skill_result") if isinstance(prs.metadata, dict) else {"enabled": True}
+
+        docker_result: Dict[str, Any] = {"enabled": include_docker_housekeeping}
+        if include_docker_housekeeping:
+            docker, _ = await DockerPruneStoppedContainersVerb().execute(
+                ctx,
+                _plan_request_from_payload(
+                    payload,
+                    "skills.runtime.docker_prune_stopped_containers.v1",
+                    {
+                        "dry_run": not bool(skill_args.get("docker_execute", False)),
+                        "execute": bool(skill_args.get("docker_execute", False)),
+                        "until": skill_args.get("docker_until"),
+                        "keep_labels": skill_args.get("keep_labels"),
+                    },
+                ),
+            )
+            docker_result = (docker.metadata or {}).get("skill_result") if isinstance(docker.metadata, dict) else {"enabled": True}
+
+        round_result = {
+            "round_name": "mesh_ops_round",
+            "observed_at_utc": _utc_now_iso(),
+            "mesh_presence": mesh_result,
+            "active_nodes": active_nodes,
+            "storage_health": disk_result,
+            "recent_changes": pr_result,
+            "runtime_housekeeping": docker_result,
+            "overall_health": "ok" if active_nodes else "degraded",
+            "partial_failures": [
+                item
+                for item in [
+                    None if mesh_snapshot.ok else "mesh_presence_failed",
+                    None if (not include_pr_digest or pr_result.get("available", True)) else "pr_digest_unavailable",
+                    None if (not include_docker_housekeeping or docker_result.get("status") not in {"failed", "blocked"}) else f"docker_{docker_result.get('status')}",
+                ]
+                if item
+            ],
+        }
+
+        if write_journal:
+            bus = ctx.meta.get("bus")
+            source = _actions_source(ctx.meta.get("source"))
+            if bus is not None:
+                payload_write = {
+                    "entry_id": f"ops-mesh-round-{uuid4()}",
+                    "title": "ops.mesh_round.v1",
+                    "body": json.dumps(round_result, sort_keys=True),
+                    "tags": ["ops", "mesh", "round"],
+                    "author": "orion-actions",
+                    "created_at": _utc_now_iso(),
+                }
+                await bus.publish("orion:journal:write", BaseEnvelope(kind="journal.entry.write.v1", source=source, payload=payload_write))
+                round_result["journal_write"] = {"attempted": True, "status": "published", "entry_type": "ops.mesh_round.v1"}
+            else:
+                round_result["journal_write"] = {"attempted": True, "status": "skipped_missing_bus", "entry_type": "ops.mesh_round.v1"}
+        return _skill_result_output(skill_name="skills.mesh.mesh_ops_round.v1", result=round_result), []
+
+
+def _plan_request_from_payload(payload: PlanExecutionRequest, verb_name: str, skill_args: Dict[str, Any]) -> PlanExecutionRequest:
+    args_extra = dict(payload.args.extra or {})
+    args_extra["skill_args"] = skill_args
+    return PlanExecutionRequest(
+        plan=ExecutionPlan(verb_name=verb_name, steps=[]),
+        args=PlanExecutionArgs(
+            request_id=payload.args.request_id,
+            user_id=payload.args.user_id,
+            trigger_source=payload.args.trigger_source,
+            extra=args_extra,
+        ),
+        context=payload.context or {"metadata": {}},
+    )
 
 
 @verb("self_repo_inspect")

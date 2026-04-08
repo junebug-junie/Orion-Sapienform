@@ -175,3 +175,156 @@ def test_landing_pad_metrics_snapshot_calls_rpc_get_stats():
     assert env.payload["method"] == "get_stats"
     data = json.loads(out.final_text)
     assert data["stats"]["ingested"] == 9
+
+
+def test_tailscale_json_parsing_and_active_nodes():
+    parsed = verb_adapters._parse_tailscale_status_json(
+        {
+            "BackendState": "Running",
+            "Self": {"HostName": "athena", "TailscaleIPs": ["100.64.0.1"], "OS": "linux"},
+            "Peer": {
+                "p1": {"HostName": "zeus", "Online": True, "TailscaleIPs": ["100.64.0.2"], "OS": "linux"},
+                "p2": {"HostName": "hera", "Online": False, "TailscaleIPs": ["100.64.0.3"], "OS": "linux"},
+            },
+        }
+    )
+    active = verb_adapters._derive_active_nodes(parsed)
+    assert "athena" in active
+    assert "zeus" in active
+    assert "hera" not in active
+
+
+def test_smartctl_json_normalization():
+    normalized = verb_adapters._normalize_smartctl_device(
+        node_name="athena",
+        device="/dev/sda",
+        payload={
+            "device": {"protocol": "ATA"},
+            "model_name": "Samsung",
+            "serial_number": "SN-1",
+            "smart_status": {"passed": True},
+            "temperature": {"current": 31},
+            "power_on_time": {"hours": 100},
+        },
+        exit_status=0,
+    )
+    assert normalized["protocol"] == "ata"
+    assert normalized["overall_health"] == "passed"
+    assert normalized["temperature_c"] == 31.0
+
+
+def test_nvme_json_normalization():
+    normalized = verb_adapters._normalize_nvme_smart_log(
+        node_name="athena",
+        device="/dev/nvme0n1",
+        payload={"temperature": 36, "percentage_used": 12, "media_errors": 0},
+    )
+    assert normalized["protocol"] == "nvme"
+    assert normalized["temperature_c"] == 36.0
+    assert normalized["percentage_used"] == 12
+
+
+def test_changed_file_to_service_inference_and_group_summary():
+    paths = ["services/orion-actions/app/main.py", "orion/schemas/registry.py"]
+    inferred = verb_adapters._infer_services_from_paths(paths)
+    assert "orion-actions" in inferred
+    assert "orion.schemas" in inferred
+    grouped = verb_adapters._summarize_prs_by_service(
+        [{"number": 12, "inferred_services": inferred}, {"number": 15, "inferred_services": ["orion-actions"]}]
+    )
+    assert any(item["service"] == "orion-actions" and item["pr_numbers"] == [12, 15] for item in grouped)
+
+
+def test_docker_prune_dry_run_behavior(monkeypatch):
+    class _Runner:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, command):
+            return SimpleNamespace(returncode=0, stdout='{"ID":"1","Names":"stopped","State":"exited"}\n', stderr="")
+
+    monkeypatch.setattr(verb_adapters, "SafeCommandRunner", _Runner)
+    req = _plan_request("skills.runtime.docker_prune_stopped_containers.v1", skill_args={"dry_run": True})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.DockerPruneStoppedContainersVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert data["status"] == "dry_run"
+    assert data["pruned_container_count"] == 0
+
+
+def test_docker_prune_execute_policy_gate(monkeypatch):
+    class _Runner:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, command):
+            return SimpleNamespace(returncode=0, stdout='{"ID":"1","Names":"stopped","State":"exited"}\n', stderr="")
+
+    monkeypatch.setattr(verb_adapters, "SafeCommandRunner", _Runner)
+    monkeypatch.setattr(verb_adapters.settings, "skills_allow_mutating_runtime_housekeeping", False)
+    req = _plan_request("skills.runtime.docker_prune_stopped_containers.v1", skill_args={"execute": True})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.DockerPruneStoppedContainersVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert data["status"] == "blocked"
+
+
+def test_mesh_ops_round_happy_path_with_journal_write():
+    class _Bus:
+        def __init__(self):
+            self.published = []
+
+        async def publish(self, channel, envelope):
+            self.published.append((channel, envelope.kind))
+
+    async def _mesh(*args, **kwargs):
+        return verb_adapters._skill_result_output(
+            skill_name="skills.mesh.tailscale_mesh_status.v1",
+            result={"nodes": [{"node_name": "athena", "peer_status_classification": "active"}]},
+        ), []
+
+    async def _disk(*args, **kwargs):
+        return verb_adapters._skill_result_output(skill_name="skills.storage.disk_health_snapshot.v1", result={"summary": {"healthy": 1}}), []
+
+    async def _prs(*args, **kwargs):
+        return verb_adapters._skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result={"available": True, "items": []}), []
+
+    async def _docker(*args, **kwargs):
+        return verb_adapters._skill_result_output(skill_name="skills.runtime.docker_prune_stopped_containers.v1", result={"status": "dry_run"}), []
+
+    verb_adapters.TailscaleMeshStatusVerb.execute = _mesh
+    verb_adapters.DiskHealthSnapshotVerb.execute = _disk
+    verb_adapters.GithubRecentPullRequestsVerb.execute = _prs
+    verb_adapters.DockerPruneStoppedContainersVerb.execute = _docker
+
+    req = _plan_request("skills.mesh.mesh_ops_round.v1", skill_args={"write_journal": True, "include_docker_housekeeping": True})
+    bus = _Bus()
+    ctx = VerbContext(meta={"bus": bus, "source": ServiceRef(name="exec"), "correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.MeshOpsRoundVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert data["overall_health"] == "ok"
+    assert data["journal_write"]["status"] == "published"
+    assert bus.published and bus.published[0][0] == "orion:journal:write"
+
+
+def test_mesh_ops_round_partial_failure_without_journal():
+    async def _mesh(*args, **kwargs):
+        return verb_adapters._skill_result_output(
+            skill_name="skills.mesh.tailscale_mesh_status.v1",
+            result={"nodes": []},
+            ok=False,
+            status="fail",
+            error={"message": "no_mesh"},
+        ), []
+
+    async def _prs(*args, **kwargs):
+        return verb_adapters._skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result={"available": False}), []
+
+    verb_adapters.TailscaleMeshStatusVerb.execute = _mesh
+    verb_adapters.GithubRecentPullRequestsVerb.execute = _prs
+    req = _plan_request("skills.mesh.mesh_ops_round.v1", skill_args={"write_journal": False})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.MeshOpsRoundVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert data["overall_health"] == "degraded"
+    assert "mesh_presence_failed" in data["partial_failures"]

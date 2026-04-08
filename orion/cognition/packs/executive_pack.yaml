@@ -12,4 +12,8 @@ verbs:
   - evaluate
   - extract_facts
   - assess_runtime_state
+  - assess_mesh_presence
+  - assess_storage_health
+  - summarize_recent_changes
+  - housekeep_runtime
   #- chat_general # generalist function and used in general chat

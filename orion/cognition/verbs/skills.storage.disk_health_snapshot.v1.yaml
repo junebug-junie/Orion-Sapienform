@@ -1,0 +1,17 @@
+name: skills.storage.disk_health_snapshot.v1
+label: Skills — Storage Health Snapshot
+description: Return bounded normalized smartctl/nvme disk health snapshots.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.storage.disk_health_snapshot.v1
+    description: Execute read-only disk health snapshot skill.
+    order: 0
+    services: []

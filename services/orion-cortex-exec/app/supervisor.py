@@ -219,6 +219,81 @@ def _build_blocked_execution_explanation(*, selected_tool: Optional[str], no_wri
     )
 
 
+
+
+def _execution_policy_state_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    tool_execution_policy = str(options.get("tool_execution_policy") or "").strip().lower()
+    action_execution_policy = str(options.get("action_execution_policy") or "").strip().lower()
+    no_write_active = bool(ctx.get("no_write_active")) or bool(options.get("no_write_active"))
+    forbidden_by_tool_policy = tool_execution_policy == "none"
+    forbidden_by_action_policy = action_execution_policy == "none"
+    execution_forbidden = bool(no_write_active or forbidden_by_tool_policy or forbidden_by_action_policy)
+    blocked_reasons: List[str] = []
+    if no_write_active:
+        blocked_reasons.append("no_write_active=true")
+    if forbidden_by_tool_policy:
+        blocked_reasons.append("tool_execution_policy=none")
+    if forbidden_by_action_policy:
+        blocked_reasons.append("action_execution_policy=none")
+    return {
+        "no_write_active": no_write_active,
+        "tool_execution_policy": tool_execution_policy or None,
+        "action_execution_policy": action_execution_policy or None,
+        "execution_forbidden": execution_forbidden,
+        "execution_blocked_reason": ";".join(blocked_reasons) if blocked_reasons else None,
+    }
+
+
+def _blocked_bound_step_result(*, tool_id: str, tool_input: Dict[str, Any], correlation_id: str, policy_state: Dict[str, Any]) -> StepExecutionResult:
+    blocked_reason = str(policy_state.get("execution_blocked_reason") or "execution_forbidden_policy")
+    no_write_active = bool(policy_state.get("no_write_active"))
+    text = _build_blocked_execution_explanation(selected_tool=tool_id, no_write_active=no_write_active)
+    metadata = {
+        "selected_verb": tool_id,
+        "no_write_active": no_write_active,
+        "tool_execution_policy": policy_state.get("tool_execution_policy"),
+        "action_execution_policy": policy_state.get("action_execution_policy"),
+        "execution_blocked_reason": blocked_reason,
+        "selected_tool_would_have_been": tool_id,
+        "path": "blocked_pre_dispatch",
+        "dispatch_skipped": True,
+        "reply_emitted": True,
+    }
+    logger.warning(
+        "bound_capability_pre_dispatch_blocked corr_id=%s selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s blocked_reason=%s dispatch_skipped=true",
+        correlation_id,
+        tool_id,
+        no_write_active,
+        policy_state.get("tool_execution_policy"),
+        policy_state.get("action_execution_policy"),
+        blocked_reason,
+    )
+    return StepExecutionResult(
+        status="success",
+        verb_name=str(tool_id),
+        step_name="bound_capability_pre_dispatch_blocked",
+        order=0,
+        result={
+            "AgentChainService": {
+                "text": text,
+                "bound_capability": {
+                    "status": "fail",
+                    "reason": CapabilityRecoveryReasonV1.policy_blocked.value,
+                    **metadata,
+                },
+                "runtime_debug": {
+                    "bound_capability_pre_dispatch_blocked": True,
+                    "bound_capability_policy_state": metadata,
+                },
+            }
+        },
+        latency_ms=0,
+        node=settings.node_name,
+        logs=["blocked <- bound capability pre-dispatch policy gate"],
+        error=None,
+    )
+
 def _is_operational_guidance_text(answer: str) -> bool:
     return bool(_SHELL_GUIDANCE_PATTERN.search(str(answer or "")))
 
@@ -646,6 +721,23 @@ class Supervisor:
 
         verb_cfg = self.registry.get(tool_id)
         if _is_capability_backed_cfg(verb_cfg):
+            policy_state = _execution_policy_state_from_ctx(ctx)
+            logger.info(
+                "bound_capability_policy_state corr_id=%s selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s execution_forbidden=%s",
+                correlation_id,
+                tool_id,
+                policy_state.get("no_write_active"),
+                policy_state.get("tool_execution_policy"),
+                policy_state.get("action_execution_policy"),
+                policy_state.get("execution_forbidden"),
+            )
+            if policy_state.get("execution_forbidden"):
+                return _blocked_bound_step_result(
+                    tool_id=str(tool_id),
+                    tool_input=tool_input if isinstance(tool_input, dict) else {},
+                    correlation_id=correlation_id,
+                    policy_state=policy_state,
+                )
             logger.info(
                 "dispatch_action corr_id=%s mode=%s step=%s route=AgentChainService(bound_capability)",
                 correlation_id,
@@ -662,7 +754,12 @@ class Supervisor:
                 planner_correlation_id=correlation_id,
                 planner_metadata={"planner_mode": mode, "source": "supervisor_planner_delegate"},
                 selected_tool_metadata={"tool_id": str(tool_id), "description": getattr(verb_cfg, "description", "")},
-                policy_metadata={},
+                policy_metadata={
+                    "no_write_active": bool(policy_state.get("no_write_active")),
+                    "tool_execution_policy": policy_state.get("tool_execution_policy"),
+                    "action_execution_policy": policy_state.get("action_execution_policy"),
+                    "execution_blocked_reason": policy_state.get("execution_blocked_reason"),
+                },
                 recovery=CapabilityRecoveryDecisionV1(
                     reason=CapabilityRecoveryReasonV1.internal_contract_error,
                     allow_replan=False,
@@ -962,8 +1059,9 @@ class Supervisor:
                 correlation_id,
             )
         options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
-        no_write_active = bool(options.get("no_write_active")) or str(options.get("tool_execution_policy") or "").lower() == "none"
-        execution_blocked_reason = "NO_WRITE/tool_execution_policy=none" if no_write_active else None
+        policy_state = _execution_policy_state_from_ctx(ctx)
+        no_write_active = bool(policy_state.get("no_write_active"))
+        execution_blocked_reason = policy_state.get("execution_blocked_reason")
         user_text = _last_user_message(ctx)
         operational_intent_detected = _detect_operational_intent(user_text)
         operational_tools = _available_operational_semantic_tools(tools)
@@ -1191,6 +1289,16 @@ class Supervisor:
             )
             if obs.get("llm_output"):
                 final_text = obs.get("llm_output")
+
+            try:
+                agent_payload = (action_step.result or {}).get("AgentChainService", {})
+                if isinstance(agent_payload, dict):
+                    bound_payload = agent_payload.get("bound_capability")
+                    if isinstance(bound_payload, dict) and str(bound_payload.get("path") or "").startswith("blocked_"):
+                        ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                        ctx.setdefault("debug", {})["no_write_downgrade"] = True
+            except Exception:
+                pass
 
             selected_tool = str((action or {}).get("tool_id") or "")
             selected_cfg = None

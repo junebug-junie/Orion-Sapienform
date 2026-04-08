@@ -27,7 +27,7 @@ class _FakeToolExecutor:
         }
 
 
-def _bound_contract(*, allow_replan: bool = False) -> BoundCapabilityExecutionRequestV1:
+def _bound_contract(*, allow_replan: bool = False, policy_metadata: dict | None = None) -> BoundCapabilityExecutionRequestV1:
     return BoundCapabilityExecutionRequestV1(
         selected_verb="housekeep_runtime",
         normalized_action_input={"text": "dry-run cleanup stopped containers"},
@@ -38,7 +38,7 @@ def _bound_contract(*, allow_replan: bool = False) -> BoundCapabilityExecutionRe
         planner_correlation_id="corr-bound",
         planner_metadata={"source": "test"},
         selected_tool_metadata={"tool_id": "housekeep_runtime"},
-        policy_metadata={"confirmation_required": False, "execute_opt_in": False},
+        policy_metadata={"confirmation_required": False, "execute_opt_in": False, **(policy_metadata or {})},
         recovery=CapabilityRecoveryDecisionV1(
             reason=CapabilityRecoveryReasonV1.internal_contract_error,
             allow_replan=allow_replan,
@@ -48,12 +48,12 @@ def _bound_contract(*, allow_replan: bool = False) -> BoundCapabilityExecutionRe
     )
 
 
-def _bound_request(*, allow_replan: bool = False) -> AgentChainRequest:
+def _bound_request(*, allow_replan: bool = False, policy_metadata: dict | None = None) -> AgentChainRequest:
     return AgentChainRequest(
         text="dry-run cleanup stopped containers",
         mode="agent",
         tools=[{"tool_id": "housekeep_runtime", "execution_mode": "capability_backed", "requires_capability_selector": True}],
-        bound_capability_execution=_bound_contract(allow_replan=allow_replan),
+        bound_capability_execution=_bound_contract(allow_replan=allow_replan, policy_metadata=policy_metadata),
         messages=[{"role": "user", "content": "dry-run cleanup stopped containers"}],
     )
 
@@ -71,6 +71,60 @@ def test_bound_capability_contract_invalid_schema_rejected():
     except Exception:
         assert True
 
+
+
+
+def test_bound_capability_policy_blocked_entry_short_circuit(monkeypatch):
+    fake_exec = _FakeToolExecutor()
+    planner_calls = {"count": 0}
+
+    async def _fake_planner(*_args, **_kwargs):
+        planner_calls["count"] += 1
+        raise AssertionError("planner should not be called when policy blocks bound capability")
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+
+    out = asyncio.run(
+        agent_api.execute_agent_chain(
+            _bound_request(policy_metadata={"no_write_active": True, "tool_execution_policy": "none", "action_execution_policy": "none"}),
+            correlation_id=str(uuid4()),
+            rpc_bus=object(),
+        )
+    )
+
+    assert planner_calls["count"] == 0
+    assert fake_exec.calls == []
+    bound = out.structured["bound_capability"]
+    assert bound["reason"] == "policy_blocked"
+    assert bound["observation"]["path"] == "blocked_agent_chain_entry"
+    assert bound["observation"]["reply_emitted"] is True
+
+
+def test_bound_capability_policy_blocked_defense_in_depth_without_no_write(monkeypatch):
+    fake_exec = _FakeToolExecutor()
+
+    async def _fake_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called for blocked bound capability")
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+
+    out = asyncio.run(
+        agent_api.execute_agent_chain(
+            _bound_request(policy_metadata={"no_write_active": False, "action_execution_policy": "none"}),
+            correlation_id=str(uuid4()),
+            rpc_bus=object(),
+        )
+    )
+
+    assert fake_exec.calls == []
+    bound = out.structured["bound_capability"]
+    observation = bound["observation"]
+    assert observation["selected_verb"] == "housekeep_runtime"
+    assert observation["selected_tool_would_have_been"] == "housekeep_runtime"
+    assert observation["action_execution_policy"] == "none"
+    assert observation["execution_blocked_reason"] == "action_execution_policy=none"
 
 def test_bound_capability_executes_without_planner(monkeypatch):
     fake_exec = _FakeToolExecutor()

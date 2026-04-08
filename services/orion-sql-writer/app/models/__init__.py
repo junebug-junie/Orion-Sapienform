@@ -4,6 +4,7 @@ from .chat_history_log import ChatHistoryLogSQL
 from .chat_gpt_log import ChatGptLogSQL
 from .chat_gpt_message import ChatGptMessageSQL
 from .chat_message import ChatMessageSQL
+from .chat_response_feedback import ChatResponseFeedbackSQL
 from .dreams import Dream
 from .biometrics_telemetry import BiometricsTelemetry
 from .biometrics_summary import BiometricsSummarySQL
@@ -38,6 +39,7 @@ __all__ = [
     "ChatGptLogSQL",
     "ChatGptMessageSQL",
     "ChatMessageSQL",
+    "ChatResponseFeedbackSQL",
     "Dream",
     "BiometricsTelemetry",
     "BiometricsSummarySQL",

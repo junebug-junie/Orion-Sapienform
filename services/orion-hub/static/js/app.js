@@ -44,6 +44,7 @@ let latestSocialInspectionState = null;
 const socialInspectionCache = new Map();
 let workflowSchedules = [];
 let selectedSchedule = null;
+const submittedFeedbackTargets = new Set();
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
@@ -200,6 +201,15 @@ loadDismissedIds();
   const socialInspectionLiveSurface = document.getElementById('socialInspectionLiveSurface');
   const socialInspectionMemorySurface = document.getElementById('socialInspectionMemorySurface');
   const socialInspectionMemoryMeta = document.getElementById('socialInspectionMemoryMeta');
+  const responseFeedbackModal = document.getElementById('responseFeedbackModal');
+  const responseFeedbackModalClose = document.getElementById('responseFeedbackModalClose');
+  const responseFeedbackCancel = document.getElementById('responseFeedbackCancel');
+  const responseFeedbackSubmit = document.getElementById('responseFeedbackSubmit');
+  const responseFeedbackTitle = document.getElementById('responseFeedbackTitle');
+  const responseFeedbackMeta = document.getElementById('responseFeedbackMeta');
+  const responseFeedbackCategoryList = document.getElementById('responseFeedbackCategoryList');
+  const responseFeedbackNotes = document.getElementById('responseFeedbackNotes');
+  const responseFeedbackStatus = document.getElementById('responseFeedbackStatus');
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -3554,6 +3564,217 @@ loadDismissedIds();
     return panel;
   }
 
+  const RESPONSE_FEEDBACK_CATEGORY_OPTIONS_FALLBACK = {
+    up: [
+      { value: 'helpful_actionable', label: 'Helpful / actionable' },
+      { value: 'well_grounded', label: 'Well grounded' },
+      { value: 'good_recall_continuity', label: 'Good recall / continuity' },
+      { value: 'right_depth', label: 'Right depth' },
+      { value: 'good_tone', label: 'Good tone' },
+      { value: 'strong_implementation_detail', label: 'Strong implementation detail' },
+      { value: 'good_structure_easy_to_use', label: 'Good structure / easy to use' },
+      { value: 'good_judgment', label: 'Good judgment' },
+      { value: 'other', label: 'Other' },
+    ],
+    down: [
+      { value: 'made_up_facts', label: 'Made up facts' },
+      { value: 'fabricated_recall_memory', label: 'Fabricated recall / memory' },
+      { value: 'missed_relevant_context', label: 'Missed relevant context' },
+      { value: 'lost_conversation_continuity', label: 'Lost conversation continuity' },
+      { value: 'contradicted_earlier_messages', label: 'Contradicted earlier messages' },
+      { value: 'did_not_distinguish_fact_vs_inference', label: "Didn't distinguish fact vs inference" },
+      { value: 'overconfident_false_certainty', label: 'Overconfident / false certainty' },
+      { value: 'too_surface_level', label: 'Too surface-level' },
+      { value: 'too_abstract', label: 'Too abstract' },
+      { value: 'not_actionable', label: 'Not actionable' },
+      { value: 'incomplete_truncated', label: 'Incomplete / truncated' },
+      { value: 'did_not_answer_directly', label: "Didn't answer directly" },
+      { value: 'missed_edge_cases', label: 'Missed edge cases' },
+      { value: 'incorrect_tone', label: 'Incorrect tone' },
+      { value: 'too_boilerplate_generic', label: 'Too boilerplate / generic' },
+      { value: 'too_guarded_sanitized', label: 'Too guarded / sanitized' },
+      { value: 'poor_attunement', label: 'Poor attunement' },
+      { value: 'ignored_instructions', label: 'Ignored instructions' },
+      { value: 'asked_unnecessary_follow_up', label: 'Asked unnecessary follow-up' },
+      { value: 'poor_structure_hard_to_scan', label: 'Poor structure / hard to scan' },
+      { value: 'wrong_tool_wrong_routing_wrong_mode', label: 'Wrong tool / routing / mode' },
+      { value: 'should_have_probed_more_about_stated_topics', label: 'Should have probed more' },
+      { value: 'other', label: 'Other' },
+    ],
+  };
+  let responseFeedbackCategoryOptions = RESPONSE_FEEDBACK_CATEGORY_OPTIONS_FALLBACK;
+  let responseFeedbackDraft = null;
+
+  async function loadResponseFeedbackOptions() {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/chat/response-feedback/options`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const categories = data && typeof data === 'object' ? data.categories : null;
+      if (
+        categories
+        && typeof categories === 'object'
+        && Array.isArray(categories.up)
+        && Array.isArray(categories.down)
+      ) {
+        responseFeedbackCategoryOptions = categories;
+      }
+    } catch (_err) {
+      // keep fallback options
+    }
+  }
+
+  function feedbackTargetKey(meta = {}) {
+    const linkage = resolveFeedbackLinkage(meta);
+    const turnId = linkage ? String(linkage.targetTurnId || linkage.targetCorrelationId || linkage.targetMessageId || '').trim() : '';
+    const sessionId = String(orionSessionId || '').trim();
+    if (!turnId || !sessionId) return null;
+    return `${sessionId}:${turnId}`;
+  }
+
+  function resolveFeedbackLinkage(meta = {}) {
+    const explicitTurnId = String(meta.turnId || '').trim();
+    const explicitMessageId = String(meta.messageId || '').trim();
+    const explicitCorrelationId = String(meta.correlationId || '').trim();
+
+    let linkageStrategy = 'explicit_ids';
+    let targetTurnId = explicitTurnId || null;
+    let targetMessageId = explicitMessageId || null;
+    let targetCorrelationId = explicitCorrelationId || null;
+
+    if (!targetTurnId && targetCorrelationId) {
+      targetTurnId = targetCorrelationId;
+      linkageStrategy = 'derived_turn_id_from_correlation_id';
+    }
+    if (!targetMessageId && targetTurnId) {
+      targetMessageId = `${targetTurnId}:assistant`;
+      linkageStrategy = linkageStrategy === 'explicit_ids'
+        ? 'derived_message_id_from_turn_id'
+        : `${linkageStrategy}+derived_message_id_from_turn_id`;
+    }
+    if (!targetCorrelationId && targetTurnId) {
+      targetCorrelationId = targetTurnId;
+      linkageStrategy = linkageStrategy === 'explicit_ids'
+        ? 'derived_correlation_id_from_turn_id'
+        : `${linkageStrategy}+derived_correlation_id_from_turn_id`;
+    }
+
+    if (!targetTurnId && !targetMessageId && !targetCorrelationId) return null;
+    return { targetTurnId, targetMessageId, targetCorrelationId, linkageStrategy };
+  }
+
+  function closeResponseFeedbackModal() {
+    if (!responseFeedbackModal) return;
+    responseFeedbackModal.classList.add('hidden');
+    responseFeedbackModal.setAttribute('aria-hidden', 'true');
+    responseFeedbackDraft = null;
+  }
+
+  function renderResponseFeedbackCategoryOptions(value) {
+    if (!responseFeedbackCategoryList) return;
+    responseFeedbackCategoryList.innerHTML = '';
+    const options = responseFeedbackCategoryOptions[value] || [];
+    options.forEach((item) => {
+      const label = document.createElement('label');
+      label.className = 'inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/70 px-3 py-1 text-xs text-gray-200';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = item.value;
+      checkbox.className = 'h-3 w-3 accent-indigo-400';
+      checkbox.checked = !!(responseFeedbackDraft && responseFeedbackDraft.categories.has(item.value));
+      checkbox.addEventListener('change', () => {
+        if (!responseFeedbackDraft) return;
+        if (checkbox.checked) responseFeedbackDraft.categories.add(item.value);
+        else responseFeedbackDraft.categories.delete(item.value);
+      });
+      const text = document.createElement('span');
+      text.textContent = item.label;
+      label.appendChild(checkbox);
+      label.appendChild(text);
+      responseFeedbackCategoryList.appendChild(label);
+    });
+  }
+
+  function openResponseFeedbackModal(value, meta = {}, responseText = '') {
+    if (!responseFeedbackModal || !responseFeedbackTitle) return;
+    const linkage = resolveFeedbackLinkage(meta);
+    if (!linkage) return;
+    const key = feedbackTargetKey(meta);
+    if (key && submittedFeedbackTargets.has(key)) return;
+    responseFeedbackDraft = {
+      feedbackId: (window.crypto && typeof window.crypto.randomUUID === 'function') ? window.crypto.randomUUID() : `feedback:${Date.now()}:${Math.random()}`,
+      feedbackValue: value,
+      categories: new Set(),
+      targetTurnId: linkage.targetTurnId,
+      targetMessageId: linkage.targetMessageId,
+      targetCorrelationId: linkage.targetCorrelationId,
+      sessionId: String(orionSessionId || ''),
+      userId: '',
+      source: 'hub_ui',
+      responsePreview: String(responseText || '').slice(0, 140),
+      uiContext: {
+        mode: meta.routingDebug && meta.routingDebug.mode ? meta.routingDebug.mode : null,
+        trace_verb: meta.routingDebug && meta.routingDebug.verb ? meta.routingDebug.verb : null,
+        linkage_strategy: linkage.linkageStrategy,
+      },
+    };
+    responseFeedbackTitle.textContent = value === 'up' ? 'What was good about this response?' : 'What went wrong with this response?';
+    if (responseFeedbackMeta) {
+      const turnLabel = String(linkage.targetTurnId || linkage.targetCorrelationId || linkage.targetMessageId || '').slice(0, 16);
+      responseFeedbackMeta.textContent = `Turn ${turnLabel} · ${value === 'up' ? 'thumbs up' : 'thumbs down'}`;
+    }
+    if (responseFeedbackNotes) responseFeedbackNotes.value = '';
+    if (responseFeedbackStatus) responseFeedbackStatus.textContent = '';
+    renderResponseFeedbackCategoryOptions(value);
+    responseFeedbackModal.classList.remove('hidden');
+    responseFeedbackModal.setAttribute('aria-hidden', 'false');
+  }
+
+  async function submitResponseFeedback() {
+    if (!responseFeedbackDraft) return;
+    if (!responseFeedbackSubmit) return;
+    if (!responseFeedbackDraft.feedbackValue || !['up', 'down'].includes(responseFeedbackDraft.feedbackValue)) return;
+    responseFeedbackSubmit.disabled = true;
+    responseFeedbackSubmit.textContent = 'Submitting…';
+    if (responseFeedbackStatus) responseFeedbackStatus.textContent = '';
+    try {
+      const payload = {
+        feedback_id: responseFeedbackDraft.feedbackId,
+        target_turn_id: responseFeedbackDraft.targetTurnId,
+        target_message_id: responseFeedbackDraft.targetMessageId,
+        target_correlation_id: responseFeedbackDraft.targetCorrelationId,
+        session_id: responseFeedbackDraft.sessionId || null,
+        user_id: responseFeedbackDraft.userId || null,
+        feedback_value: responseFeedbackDraft.feedbackValue,
+        categories: Array.from(responseFeedbackDraft.categories),
+        free_text: responseFeedbackNotes ? String(responseFeedbackNotes.value || '').trim().slice(0, 2000) : null,
+        source: responseFeedbackDraft.source,
+        ui_context: responseFeedbackDraft.uiContext,
+      };
+      const resp = await fetch(`${API_BASE_URL}/api/chat/response-feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const key = feedbackTargetKey({
+        turnId: responseFeedbackDraft.targetTurnId,
+        correlationId: responseFeedbackDraft.targetCorrelationId,
+      });
+      if (key) submittedFeedbackTargets.add(key);
+      if (responseFeedbackStatus) responseFeedbackStatus.textContent = 'Thanks — feedback saved.';
+      closeResponseFeedbackModal();
+    } catch (err) {
+      if (responseFeedbackStatus) responseFeedbackStatus.textContent = `Could not save feedback: ${String(err.message || err)}`;
+    } finally {
+      responseFeedbackSubmit.disabled = false;
+      responseFeedbackSubmit.textContent = 'Submit feedback';
+    }
+  }
+
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
     const div = document.createElement('div');
@@ -3566,6 +3787,7 @@ loadDismissedIds();
     header.className = `font-bold ${color}`;
     header.textContent = sender;
     headerRow.appendChild(header);
+    let feedbackRow = null;
     if (sender === 'Orion') {
       const actionRow = document.createElement('div');
       actionRow.className = 'flex items-center gap-2';
@@ -3647,6 +3869,29 @@ loadDismissedIds();
       if (actionRow.childNodes.length) {
         headerRow.appendChild(actionRow);
       }
+      const targetKey = feedbackTargetKey(meta);
+      feedbackRow = document.createElement('div');
+      feedbackRow.className = 'mt-2 flex items-center gap-2';
+      const thumbsUp = document.createElement('button');
+      thumbsUp.type = 'button';
+      thumbsUp.className = 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20';
+      thumbsUp.textContent = '👍';
+      const thumbsDown = document.createElement('button');
+      thumbsDown.type = 'button';
+      thumbsDown.className = 'rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[10px] font-semibold text-rose-200 hover:bg-rose-500/20';
+      thumbsDown.textContent = '👎';
+      const ack = document.createElement('span');
+      ack.className = 'text-[10px] text-gray-400';
+      if (targetKey && submittedFeedbackTargets.has(targetKey)) {
+        thumbsUp.disabled = true;
+        thumbsDown.disabled = true;
+        ack.textContent = 'Feedback saved';
+      }
+      thumbsUp.addEventListener('click', () => openResponseFeedbackModal('up', meta, text));
+      thumbsDown.addEventListener('click', () => openResponseFeedbackModal('down', meta, text));
+      feedbackRow.appendChild(thumbsUp);
+      feedbackRow.appendChild(thumbsDown);
+      feedbackRow.appendChild(ack);
     }
     div.appendChild(headerRow);
     const workflowPanel = sender === 'Orion' ? createWorkflowPanel(meta.workflow, {
@@ -3654,6 +3899,7 @@ loadDismissedIds();
     }) : null;
     if (workflowPanel) div.appendChild(workflowPanel);
     div.appendChild(body);
+    if (feedbackRow) div.appendChild(feedbackRow);
     if (inspectPanel) div.appendChild(inspectPanel);
     if (sender === 'Orion') {
       const autonomyPanel = createAutonomyPanel(
@@ -4806,6 +5052,20 @@ loadDismissedIds();
   if (socialInspectionModalClose) {
     socialInspectionModalClose.addEventListener('click', closeSocialInspectionModal);
   }
+  if (responseFeedbackModalClose) {
+    responseFeedbackModalClose.addEventListener('click', closeResponseFeedbackModal);
+  }
+  if (responseFeedbackCancel) {
+    responseFeedbackCancel.addEventListener('click', closeResponseFeedbackModal);
+  }
+  if (responseFeedbackSubmit) {
+    responseFeedbackSubmit.addEventListener('click', submitResponseFeedback);
+  }
+  if (responseFeedbackModal) {
+    responseFeedbackModal.addEventListener('click', (event) => {
+      if (event.target === responseFeedbackModal) closeResponseFeedbackModal();
+    });
+  }
   if (socialInspectionModal) {
     socialInspectionModal.addEventListener('click', (event) => {
       if (event.target === socialInspectionModal) closeSocialInspectionModal();
@@ -4879,6 +5139,10 @@ loadDismissedIds();
       closeSocialInspectionModal();
       return;
     }
+    if (event.key === 'Escape' && responseFeedbackModal && !responseFeedbackModal.classList.contains('hidden')) {
+      closeResponseFeedbackModal();
+      return;
+    }
     if (event.key === 'Escape' && agentTraceModal && !agentTraceModal.classList.contains('hidden')) {
       closeAgentTraceModal();
       return;
@@ -4905,6 +5169,7 @@ loadDismissedIds();
   }
   normalizeRecallProfileDisplay();
   renderSocialInspectionState(null);
+  loadResponseFeedbackOptions();
   loadScheduleInventory();
 
   // --- WebSocket ---
@@ -4931,6 +5196,8 @@ loadDismissedIds();
               agentTrace: d.agent_trace,
               metacogTraces: d.metacog_traces,
               correlationId: d.correlation_id,
+              turnId: d.turn_id || d.turnId || d.correlation_id,
+              messageId: d.message_id || d.messageId || null,
               routingDebug: d.routing_debug,
               recallDebug: d.recall_debug,
               memoryDigest: d.memory_digest,
@@ -5022,6 +5289,8 @@ loadDismissedIds();
                 agentTrace: d.agent_trace,
                 metacogTraces: d.metacog_traces,
                 correlationId: d.correlation_id,
+                turnId: d.turn_id || d.turnId || d.correlation_id,
+                messageId: d.message_id || d.messageId || null,
                 routingDebug: d.routing_debug,
                 recallDebug: d.recall_debug,
                 memoryDigest: d.memory_digest,

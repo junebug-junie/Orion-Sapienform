@@ -109,3 +109,19 @@ def test_chat_general_does_not_blank_clean_visible_answer() -> None:
     ], verb_name="chat_general")
     assert final_text == "Visible final answer without tags."
     assert diag["result_len"] == len("Visible final answer without tags.")
+
+
+def test_chat_general_strips_internal_planning_lead_in() -> None:
+    final_text, diag = _extract_final_text([
+        _step({"content": "Okay, so the user wants a quick fix.\nI should keep this concise.\nHere is the actual answer."})
+    ], verb_name="chat_general")
+    assert final_text == "Here is the actual answer."
+    assert diag["planning_stripping_applied"] is True
+
+
+def test_chat_general_marks_truncation_when_finish_reason_length() -> None:
+    final_text, diag = _extract_final_text([
+        _step({"content": "Partial answer that stops", "raw": {"choices": [{"finish_reason": "length"}]}})
+    ], verb_name="chat_general")
+    assert final_text.endswith("…")
+    assert diag["truncation_detected"] is True

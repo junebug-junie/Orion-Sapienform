@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.summary import summarize_autonomy_state
@@ -479,6 +480,7 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    started_at = time.perf_counter()
     graphdb_cfg = resolve_autonomy_graphdb_config()
     endpoint = graphdb_cfg["endpoint"]
 
@@ -506,6 +508,14 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if preferred is None or preferred.availability != "available":
         preferred = by_subject.get("relationship")
     selected_subject = preferred.subject if preferred is not None else None
+    partial_used = bool(
+        preferred
+        and preferred.availability == "available"
+        and any(
+            str((preferred.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+            for name in ("identity", "drives", "goals")
+        )
+    )
 
     summary = summarize_autonomy_state(preferred.state if preferred and preferred.availability == "available" else None)
     debug = {
@@ -566,10 +576,12 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 ),
                 "selected_subject": selected_subject,
+                "selected_subject_partial": partial_used,
                 "selected_subject_availability": preferred.availability if preferred is not None else "empty",
                 "selected_subject_unavailable_reason": preferred.unavailable_reason if preferred is not None else None,
                 "mapped_state": bool(preferred and preferred.state is not None),
                 "summary_present": bool(summary and summary.stance_hint),
+                "elapsed_ms_before_llm_emit": round((time.perf_counter() - started_at) * 1000.0, 2),
                 "subject_availability": {
                     subject: {
                         "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",

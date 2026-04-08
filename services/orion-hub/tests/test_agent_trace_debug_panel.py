@@ -38,13 +38,17 @@ def test_memory_debug_uses_modal_driven_detail_view_with_autonomy_modal_pattern(
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert 'id="memoryDebugOpenModal"' in template
+    assert 'id="memoryPanelToggle"\n                  class="flex-1 flex items-center justify-between' in template
+    assert template.index('id="memoryDebugOpenModal"') < template.index('id="memoryPanelBody"')
     assert 'id="memoryDebugModalRoot" class="hidden fixed inset-0 z-[120]' in template
     assert 'id="memoryDebugModalBackdrop" class="fixed inset-0 z-[120]' in template
     assert 'id="memoryDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121]' in template
     assert "function openMemoryDebugModal()" in app_js
     assert "function closeMemoryDebugModal()" in app_js
     assert "function ensureMemoryDebugModalRootOnBody()" in app_js
-    assert "memoryDebugOpenModal.addEventListener('click', openMemoryDebugModal);" in app_js
+    assert "memoryDebugOpenModal.addEventListener('click', (event) => {" in app_js
+    assert "event.stopPropagation();" in app_js
+    assert "openMemoryDebugModal();" in app_js
 
 
 def test_memory_debug_modal_render_path_keeps_full_payload_and_expandable_entries() -> None:

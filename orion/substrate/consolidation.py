@@ -12,19 +12,24 @@ from orion.core.schemas.substrate_consolidation import (
 )
 from orion.graph_cognition.interpreters import GraphCognitionReportV1
 from orion.substrate.frontier_landing import FrontierLandingExecutionResultV1
-from orion.substrate.store import InMemorySubstrateGraphStore
+from orion.substrate.query_planning import SubstrateQueryExecutionMetaV1, SubstrateQueryPlanner, SubstrateSemanticReadCoordinator
+from orion.substrate.store import SubstrateGraphStore, SubstrateQueryResultV1
 
 
 @dataclass(frozen=True)
 class GraphConsolidationExecutionV1:
     result: GraphConsolidationResultV1
     cycle_record: GraphReviewCycleRecordV1
+    semantic_source: str
+    semantic_degraded: bool
+    semantic_plan_kind: str
+    semantic_reused_cache: bool
 
 
 class GraphConsolidationEvaluator:
     """Deterministic bounded consolidation evaluator over substrate graph regions."""
 
-    def __init__(self, *, store: InMemorySubstrateGraphStore, max_region_nodes: int = 32, max_region_edges: int = 64) -> None:
+    def __init__(self, *, store: SubstrateGraphStore, max_region_nodes: int = 32, max_region_edges: int = 64) -> None:
         self._store = store
         self._max_region_nodes = max_region_nodes
         self._max_region_edges = max_region_edges
@@ -36,11 +41,46 @@ class GraphConsolidationEvaluator:
         prior_cycle: GraphReviewCycleRecordV1 | None = None,
         cognition_report: GraphCognitionReportV1 | None = None,
         landing_result: FrontierLandingExecutionResultV1 | None = None,
+        max_region_nodes: int | None = None,
+        max_region_edges: int | None = None,
+        query_cache_enabled: bool = True,
     ) -> GraphConsolidationExecutionV1:
-        state = self._store.snapshot()
-        node_ids, edge_ids = self._select_region(request=request, state=state)
-        nodes = [state.nodes[nid] for nid in node_ids if nid in state.nodes]
-        edges = [state.edges[eid] for eid in edge_ids if eid in state.edges]
+        effective_nodes = max_region_nodes if max_region_nodes is not None else self._max_region_nodes
+        effective_edges = max_region_edges if max_region_edges is not None else self._max_region_edges
+        semantic_region, semantic_meta = self._select_region(
+            request=request,
+            max_region_nodes=effective_nodes,
+            max_region_edges=effective_edges,
+            query_cache_enabled=query_cache_enabled,
+        )
+        nodes = [
+            node
+            for node in semantic_region.slice.nodes
+            if node.anchor_scope == request.anchor_scope and (request.subject_ref is None or node.subject_ref in (None, request.subject_ref))
+        ]
+        node_ids = [node.node_id for node in nodes[: effective_nodes]]
+        node_set = set(node_ids)
+        edges = [
+            edge
+            for edge in semantic_region.slice.edges
+            if edge.source.node_id in node_set and edge.target.node_id in node_set
+        ][: effective_edges]
+        edge_ids = [edge.edge_id for edge in edges]
+        if not node_ids:
+            state = self._store.snapshot()
+            node_ids, edge_ids = self._select_region_from_state(
+                request=request,
+                state=state,
+                max_region_nodes=effective_nodes,
+                max_region_edges=effective_edges,
+            )
+            nodes = [state.nodes[nid] for nid in node_ids if nid in state.nodes]
+            edges = [state.edges[eid] for eid in edge_ids if eid in state.edges]
+            semantic_source = "local_fallback"
+            semantic_degraded = True
+        else:
+            semantic_source = semantic_region.source_kind
+            semantic_degraded = semantic_region.degraded
 
         contradiction_count = sum(1 for n in nodes if n.node_kind == "contradiction" and not bool(n.metadata.get("resolved", False)))
         evidence_gap_count = sum(1 for n in nodes if bool(n.metadata.get("frontier_hypothesis_marker", False)))
@@ -93,7 +133,15 @@ class GraphConsolidationEvaluator:
             unresolved_regions=unresolved,
             confidence=confidence,
             degraded=False,
-            notes=["deterministic_consolidation_cycle_v1"],
+            notes=[
+                "deterministic_consolidation_cycle_v1",
+                f"semantic_source:{semantic_source}",
+                f"semantic_degraded:{semantic_degraded}",
+                f"semantic_plan:{semantic_meta.plan_kind}",
+                f"semantic_reused_cache:{semantic_meta.reused_cache}",
+                f"semantic_duration_ms:{semantic_meta.duration_ms:.3f}",
+                f"semantic_cache_enabled:{query_cache_enabled}",
+            ],
             state_delta_digest=digest,
         )
 
@@ -107,11 +155,50 @@ class GraphConsolidationEvaluator:
             evidence_gap_count=evidence_gap_count,
             isolated_frontier_count=isolated_frontier_count,
             outcome_counts=dict(counts),
-            notes=[f"zone:{request.target_zone}"],
+            notes=[
+                f"zone:{request.target_zone}",
+                f"semantic_source:{semantic_source}",
+                f"semantic_degraded:{semantic_degraded}",
+                f"semantic_plan:{semantic_meta.plan_kind}",
+                f"semantic_reused_cache:{semantic_meta.reused_cache}",
+                f"semantic_cache_enabled:{query_cache_enabled}",
+            ],
         )
-        return GraphConsolidationExecutionV1(result=result, cycle_record=cycle_record)
+        return GraphConsolidationExecutionV1(
+            result=result,
+            cycle_record=cycle_record,
+            semantic_source=semantic_source,
+            semantic_degraded=semantic_degraded,
+            semantic_plan_kind=semantic_meta.plan_kind,
+            semantic_reused_cache=semantic_meta.reused_cache,
+        )
 
-    def _select_region(self, *, request: GraphConsolidationRequestV1, state) -> tuple[list[str], list[str]]:
+    def _select_region(
+        self,
+        *,
+        request: GraphConsolidationRequestV1,
+        max_region_nodes: int,
+        max_region_edges: int,
+        query_cache_enabled: bool,
+    ) -> tuple[SubstrateQueryResultV1, SubstrateQueryExecutionMetaV1]:
+        coordinator = SubstrateSemanticReadCoordinator(store=self._store, cache_enabled=query_cache_enabled)
+        plan = SubstrateQueryPlanner.consolidation_region(
+            target_zone=request.target_zone,
+            focal_node_refs=list(request.focal_node_refs),
+            max_nodes=max_region_nodes,
+            max_edges=max_region_edges,
+        )
+        execution = coordinator.execute(plan)
+        return execution.results[0], execution.meta
+
+    def _select_region_from_state(
+        self,
+        *,
+        request: GraphConsolidationRequestV1,
+        state,
+        max_region_nodes: int,
+        max_region_edges: int,
+    ) -> tuple[list[str], list[str]]:
         node_ids = [nid for nid in request.focal_node_refs if nid in state.nodes]
         if not node_ids:
             node_ids = [
@@ -119,13 +206,13 @@ class GraphConsolidationEvaluator:
                 for node in state.nodes.values()
                 if node.anchor_scope == request.anchor_scope and (request.subject_ref is None or node.subject_ref in (None, request.subject_ref))
             ]
-        node_ids = node_ids[: self._max_region_nodes]
+        node_ids = node_ids[: max_region_nodes]
         node_set = set(node_ids)
         edge_ids = [
             eid
             for eid, edge in state.edges.items()
             if edge.source.node_id in node_set and edge.target.node_id in node_set
-        ][: self._max_region_edges]
+        ][: max_region_edges]
         return node_ids, edge_ids
 
     @staticmethod

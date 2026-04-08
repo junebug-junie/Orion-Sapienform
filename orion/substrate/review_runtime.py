@@ -10,6 +10,7 @@ from orion.core.schemas.substrate_review_queue import GraphReviewQueueItemV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1, GraphReviewRuntimeResultV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
 from orion.substrate.consolidation import GraphConsolidationEvaluator, GraphConsolidationExecutionV1
+from orion.substrate.policy_profiles import SubstratePolicyProfileStore
 from orion.substrate.review_queue import GraphReviewQueue
 from orion.substrate.review_schedule import GraphReviewScheduler
 from orion.substrate.review_telemetry import GraphReviewTelemetryRecorder
@@ -26,6 +27,7 @@ class GraphReviewRuntimeExecutor:
     scheduler: GraphReviewScheduler
     frontier_followup_executor: FrontierFollowupExecutor | None = None
     telemetry_recorder: GraphReviewTelemetryRecorder | None = None
+    policy_profiles: SubstratePolicyProfileStore | None = None
 
     def execute_once(self, *, request: GraphReviewRuntimeRequestV1, now: datetime | None = None) -> GraphReviewRuntimeResultV1:
         started = time.perf_counter()
@@ -85,7 +87,14 @@ class GraphReviewRuntimeExecutor:
                 target_zone=reviewed_item.target_zone,
                 bounded_context_refs=[f"queue_item:{reviewed_item.queue_item_id}"],
             )
-            consolidation = self.consolidation_evaluator.consolidate(request=consolidation_request)
+            policy_resolution = self._resolve_policy(request=request, queue_item=reviewed_item)
+            overrides = policy_resolution.overrides if policy_resolution.mode == "adopted" else {}
+            consolidation = self.consolidation_evaluator.consolidate(
+                request=consolidation_request,
+                max_region_nodes=int(overrides.get("query_limit_nodes")) if overrides.get("query_limit_nodes") is not None else None,
+                max_region_edges=int(overrides.get("query_limit_edges")) if overrides.get("query_limit_edges") is not None else None,
+                query_cache_enabled=bool(overrides.get("query_cache_enabled", True)),
+            )
 
             no_change = self._no_change_cycle(consolidation)
             updated_item = self.queue.apply_cycle_feedback(reviewed_item.queue_item_id, no_change=no_change) or reviewed_item
@@ -96,11 +105,14 @@ class GraphReviewRuntimeExecutor:
                 anchor_scope=reviewed_item.anchor_scope,
                 subject_ref=reviewed_item.subject_ref,
                 now=runtime_now,
+                invocation_surface=request.invocation_surface,
             )
 
             frontier_followup_invoked = False
+            followup_allowed_by_policy = bool(overrides.get("frontier_followup_allowed", True))
             if (
                 request.execute_frontier_followup_allowed
+                and followup_allowed_by_policy
                 and request.invocation_surface == "operator_review"
                 and self.frontier_followup_executor is not None
                 and any(d.outcome in {"requeue_review", "maintain_priority", "keep_provisional"} for d in consolidation.result.decisions)
@@ -132,8 +144,15 @@ class GraphReviewRuntimeExecutor:
                     "invocation_surface": request.invocation_surface,
                     "selection_reason": "eligible_item_selected",
                     "consolidation_outcomes": [d.outcome for d in consolidation.result.decisions],
+                    "semantic_source": consolidation.semantic_source,
+                    "semantic_degraded": consolidation.semantic_degraded,
+                    "semantic_plan": consolidation.semantic_plan_kind,
+                    "semantic_reused_cache": consolidation.semantic_reused_cache,
+                    "policy_mode": policy_resolution.mode,
+                    "policy_profile_id": policy_resolution.profile_id,
+                    "policy_query_cache_enabled": bool(overrides.get("query_cache_enabled", True)),
                 },
-                notes=["single_cycle_execution"],
+                notes=["single_cycle_execution", f"policy_mode:{policy_resolution.mode}"],
             )
             self._record_telemetry(
                 request=request,
@@ -260,3 +279,19 @@ class GraphReviewRuntimeExecutor:
     def _no_change_cycle(consolidation: GraphConsolidationExecutionV1) -> bool:
         meaningful = {"reinforce", "damp", "retire", "requeue_review", "maintain_priority"}
         return not any(decision.outcome in meaningful for decision in consolidation.result.decisions)
+
+    def _resolve_policy(
+        self,
+        *,
+        request: GraphReviewRuntimeRequestV1,
+        queue_item: GraphReviewQueueItemV1,
+    ):
+        if self.policy_profiles is None:
+            from orion.core.schemas.substrate_policy_adoption import SubstratePolicyResolutionV1
+
+            return SubstratePolicyResolutionV1(mode="baseline", reason="policy_store_unconfigured")
+        return self.policy_profiles.resolve(
+            invocation_surface=request.invocation_surface,
+            target_zone=queue_item.target_zone,
+            operator_mode=request.invocation_surface == "operator_review",
+        )

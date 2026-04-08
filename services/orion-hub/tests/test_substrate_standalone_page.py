@@ -19,6 +19,11 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, candidate)
 
 from scripts import api_routes
+from orion.core.schemas.substrate_policy_adoption import (
+    SubstratePolicyAdoptionRequestV1,
+    SubstratePolicyOverridesV1,
+    SubstratePolicyRolloutScopeV1,
+)
 
 
 def test_substrate_route_and_template_and_bundle_are_standalone() -> None:
@@ -38,6 +43,15 @@ def test_substrate_route_and_template_and_bundle_are_standalone() -> None:
 
 
 def test_backend_substrate_endpoints_have_source_metadata_and_expected_split() -> None:
+    api_routes.SUBSTRATE_POLICY_STORE.adopt(
+        SubstratePolicyAdoptionRequestV1(
+            rollout_scope=SubstratePolicyRolloutScopeV1(invocation_surfaces=["operator_review"], target_zones=["concept_graph"]),
+            policy_overrides=SubstratePolicyOverridesV1(normal_revisit_seconds=999),
+            activate_now=False,
+            operator_id="hub-test",
+            rationale="operator-inspection",
+        )
+    )
     overview = api_routes.api_substrate_overview(limit=5)
     hotspots = api_routes.api_substrate_hotspots(limit=5)
     queue = api_routes.api_substrate_review_queue(limit=5)
@@ -45,15 +59,20 @@ def test_backend_substrate_endpoints_have_source_metadata_and_expected_split() -
     telemetry = api_routes.api_substrate_telemetry_summary(limit=5)
     calibration = api_routes.api_substrate_calibration(limit=5)
 
-    assert overview["source"]["kind"] == "graphdb"
-    assert hotspots["source"]["kind"] == "graphdb"
+    assert overview["source"]["kind"] in {"graphdb", "fallback", "cache"}
+    assert hotspots["source"]["kind"] in {"graphdb", "fallback", "cache"}
+    assert overview["source"]["query_kind"] == "overview"
+    assert hotspots["source"]["query_kind"] == "hotspots"
 
     assert queue["source"]["kind"] == "sql"
     assert executions["source"]["kind"] == "sql"
     assert telemetry["source"]["kind"] == "sql"
     assert calibration["source"]["kind"] == "sql"
+    assert "staged_profiles" in calibration["data"]
+    assert "recent_audit_events" in calibration["data"]
 
     assert "degraded" in overview["source"]
+    assert "truncated" in hotspots["source"]
     assert "query" in queue["source"]
 
 

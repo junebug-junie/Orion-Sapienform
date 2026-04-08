@@ -182,6 +182,19 @@ from .substrate_review_telemetry import (
     GraphReviewCalibrationRequestV1,
     GraphReviewCalibrationRecommendationV1,
 )
+from .substrate_policy_adoption import (
+    SubstratePolicyAdoptionRequestV1,
+    SubstratePolicyAdoptionResultV1,
+    SubstratePolicyAuditEventV1,
+    SubstratePolicyComparisonV1,
+    SubstratePolicyInspectionV1,
+    SubstratePolicyOverridesV1,
+    SubstratePolicyProfileV1,
+    SubstratePolicyResolutionV1,
+    SubstratePolicyRollbackRequestV1,
+    SubstratePolicyRollbackResultV1,
+    SubstratePolicyRolloutScopeV1,
+)
 
 __all__ = [
     "ConceptEvidenceRef",
@@ -328,4 +341,15 @@ __all__ = [
     "GraphReviewTelemetrySummaryV1",
     "GraphReviewCalibrationRequestV1",
     "GraphReviewCalibrationRecommendationV1",
+    "SubstratePolicyRolloutScopeV1",
+    "SubstratePolicyOverridesV1",
+    "SubstratePolicyProfileV1",
+    "SubstratePolicyAdoptionRequestV1",
+    "SubstratePolicyAdoptionResultV1",
+    "SubstratePolicyRollbackRequestV1",
+    "SubstratePolicyRollbackResultV1",
+    "SubstratePolicyAuditEventV1",
+    "SubstratePolicyResolutionV1",
+    "SubstratePolicyInspectionV1",
+    "SubstratePolicyComparisonV1",
 ]

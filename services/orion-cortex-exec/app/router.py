@@ -134,11 +134,14 @@ def _provider_completion_meta(payload: dict[str, Any]) -> dict[str, Any]:
     first = choices[0] if choices and isinstance(choices[0], dict) else {}
     finish_reason = first.get("finish_reason")
     completion_tokens = usage.get("completion_tokens") or raw_usage.get("completion_tokens")
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     return {
         "finish_reason": finish_reason,
         "completion_tokens": completion_tokens,
         "has_reasoning_content": bool(str(payload.get("reasoning_content") or "").strip()),
         "has_reasoning_trace": isinstance(payload.get("reasoning_trace"), dict),
+        "provider_reasoning_available": meta.get("provider_reasoning_available"),
+        "inline_think_extracted": meta.get("inline_think_extracted"),
     }
 
 
@@ -191,6 +194,8 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
         "provider_completion_tokens": None,
         "provider_has_reasoning_content": False,
         "provider_has_reasoning_trace": False,
+        "provider_reasoning_available": None,
+        "inline_think_extracted": None,
         "planning_stripping_applied": False,
         "planning_lines_dropped": 0,
         "planning_candidate_rejected": False,
@@ -229,6 +234,8 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                 diagnostics["provider_completion_tokens"] = provider_meta.get("completion_tokens")
                 diagnostics["provider_has_reasoning_content"] = provider_meta.get("has_reasoning_content")
                 diagnostics["provider_has_reasoning_trace"] = provider_meta.get("has_reasoning_trace")
+                diagnostics["provider_reasoning_available"] = provider_meta.get("provider_reasoning_available")
+                diagnostics["inline_think_extracted"] = provider_meta.get("inline_think_extracted")
                 no_plan_text = cleaned
                 planning_applied = False
                 dropped_lines = 0
@@ -381,6 +388,8 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
             f"keys={payload_keys} "
             f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
             f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+            f"provider_reasoning_available={(payload.get('meta') or {}).get('provider_reasoning_available') if isinstance(payload, dict) else None} "
+            f"inline_think_extracted={(payload.get('meta') or {}).get('inline_think_extracted') if isinstance(payload, dict) else None} "
             f"preview={_preview_text((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content)}",
             flush=True,
         )
@@ -715,7 +724,7 @@ class PlanRunner:
 
         final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
         logger.info(
-            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
+            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_reasoning_available=%s inline_think_extracted=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
             correlation_id,
             plan.verb_name,
             final_text_diag.get("source_service"),
@@ -730,6 +739,8 @@ class PlanRunner:
             final_text_diag.get("planning_candidate_rejection_reason"),
             final_text_diag.get("provider_has_reasoning_content"),
             final_text_diag.get("provider_has_reasoning_trace"),
+            final_text_diag.get("provider_reasoning_available"),
+            final_text_diag.get("inline_think_extracted"),
             final_text_diag.get("provider_completion_tokens"),
             final_text_diag.get("provider_finish_reason"),
             final_text_diag.get("truncation_detected"),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -63,6 +64,29 @@ class PlannerParseError(RuntimeError):
 
 class PlannerSchemaError(RuntimeError):
     """Planner response JSON was present but semantically invalid."""
+
+
+class PlannerContractViolation(PlannerSchemaError):
+    """Planner output violated the offered tool contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_category: str,
+        raw_action_name: Optional[str] = None,
+        raw_action_id: Optional[str] = None,
+        normalized_action_name: Optional[str] = None,
+        normalized_action_id: Optional[str] = None,
+        from_salvage: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.failure_category = failure_category
+        self.raw_action_name = raw_action_name
+        self.raw_action_id = raw_action_id
+        self.normalized_action_name = normalized_action_name
+        self.normalized_action_id = normalized_action_id
+        self.from_salvage = from_salvage
 
 
 # ─────────────────────────────────────────────
@@ -255,6 +279,29 @@ def _final_answer_type_name(payload: Any) -> str:
     return "missing"
 
 
+_DESTRUCTIVE_SHELL_PATTERNS = (
+    "docker rm",
+    "rm -rf",
+    "docker system prune",
+    "docker volume rm",
+    "docker network rm",
+)
+
+
+def _contains_destructive_shell_pattern(value: Any) -> bool:
+    if value is None:
+        return False
+    blob = ""
+    if isinstance(value, str):
+        blob = value
+    elif isinstance(value, dict):
+        blob = json.dumps(value, ensure_ascii=False)
+    else:
+        blob = str(value)
+    lowered = re.sub(r"\s+", " ", blob.lower())
+    return any(pattern in lowered for pattern in _DESTRUCTIVE_SHELL_PATTERNS)
+
+
 def _parse_planner_response_text(raw_text: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     raw = raw_text if isinstance(raw_text, str) else str(raw_text or "")
     stripped_raw = raw.strip()
@@ -439,7 +486,12 @@ def _normalize_finished_final_answer(final_answer: Any, thought: str) -> Optiona
     return None
 
 
-def _validate_or_normalize_planner_step(planner_step: Any) -> Dict[str, Any]:
+def _validate_or_normalize_planner_step(
+    planner_step: Any,
+    *,
+    toolset: List[ToolDef],
+    from_salvage: bool = False,
+) -> Dict[str, Any]:
     if not isinstance(planner_step, dict):
         raise PlannerSchemaError(f"planner response must be an object, got {type(planner_step).__name__}")
 
@@ -474,7 +526,12 @@ def _validate_or_normalize_planner_step(planner_step: Any) -> Dict[str, Any]:
         action_salvaged = True
         normalization_mode = "normalized_from_jsonish"
     elif isinstance(action, dict):
-        tool_id = action.get("tool_id") or action.get("tool") or action.get("name") or action.get("verb_name")
+        action = dict(action)
+        tool_id = action.get("tool_id") or action.get("tool") or action.get("verb_name")
+        if "name" in action and "tool_id" not in action and isinstance(action.get("name"), str):
+            action["name"] = action.get("name")
+        if "action_id" in action and isinstance(action.get("action_id"), str):
+            action["action_id"] = action.get("action_id")
         tool_input = action.get("input")
         if tool_input is None:
             tool_input = action.get("args") or action.get("arguments") or action.get("payload") or {}
@@ -482,11 +539,85 @@ def _validate_or_normalize_planner_step(planner_step: Any) -> Dict[str, Any]:
                 action_salvaged = True
                 normalization_mode = "normalized_from_jsonish"
         if tool_id and ("tool_id" not in action or "input" not in action):
-            action = {"tool_id": str(tool_id), "input": tool_input if isinstance(tool_input, dict) else {"value": tool_input}}
+            action["tool_id"] = str(tool_id)
+            action["input"] = tool_input if isinstance(tool_input, dict) else {"value": tool_input}
             action_salvaged = True
             normalization_mode = "normalized_from_jsonish"
     if action is not None and not isinstance(action, dict):
         raise PlannerSchemaError(f"action must be object|string|null, got {type(action).__name__}")
+    if isinstance(action, dict):
+        raw_action_name = action.get("name")
+        raw_action_id = action.get("action_id")
+        raw_tool_id = action.get("tool_id")
+        offered_tool_ids = {t.tool_id for t in toolset}
+        normalized_action_name = str(raw_action_name).strip() if isinstance(raw_action_name, str) and raw_action_name.strip() else None
+        normalized_action_id = str(raw_action_id).strip() if isinstance(raw_action_id, str) and raw_action_id.strip() else None
+        normalized_tool_id = str(raw_tool_id).strip() if isinstance(raw_tool_id, str) and raw_tool_id.strip() else None
+
+        if normalized_tool_id is not None:
+            normalized_action_id = normalized_tool_id
+        elif normalized_action_id is not None:
+            normalized_tool_id = normalized_action_id
+        elif normalized_action_name is not None:
+            normalized_tool_id = normalized_action_name
+
+        if normalized_action_name and normalized_action_id and normalized_action_name != normalized_action_id:
+            raise PlannerContractViolation(
+                "action.name and action_id disagree",
+                failure_category="action_name_id_mismatch",
+                raw_action_name=str(raw_action_name) if raw_action_name is not None else None,
+                raw_action_id=str(raw_action_id) if raw_action_id is not None else None,
+                normalized_action_name=normalized_action_name,
+                normalized_action_id=normalized_action_id,
+                from_salvage=from_salvage,
+            )
+
+        if normalized_action_name and normalized_action_name not in offered_tool_ids:
+            failure_category = "invalid_action_not_in_toolset"
+            if from_salvage and _contains_destructive_shell_pattern(action.get("input")):
+                failure_category = "salvage_out_of_contract"
+            raise PlannerContractViolation(
+                "action.name is not in planner-visible toolset",
+                failure_category=failure_category,
+                raw_action_name=str(raw_action_name) if raw_action_name is not None else None,
+                raw_action_id=str(raw_action_id) if raw_action_id is not None else None,
+                normalized_action_name=normalized_action_name,
+                normalized_action_id=normalized_action_id,
+                from_salvage=from_salvage,
+            )
+
+        if normalized_action_id and normalized_action_id not in offered_tool_ids:
+            failure_category = "invalid_action_id_not_in_toolset"
+            if from_salvage and _contains_destructive_shell_pattern(action.get("input")):
+                failure_category = "salvage_out_of_contract"
+            raise PlannerContractViolation(
+                "action_id is not in planner-visible toolset",
+                failure_category=failure_category,
+                raw_action_name=str(raw_action_name) if raw_action_name is not None else None,
+                raw_action_id=str(raw_action_id) if raw_action_id is not None else None,
+                normalized_action_name=normalized_action_name,
+                normalized_action_id=normalized_action_id,
+                from_salvage=from_salvage,
+            )
+
+        if not normalized_tool_id or normalized_tool_id not in offered_tool_ids:
+            failure_category = "planner_contract_violation"
+            if from_salvage and _contains_destructive_shell_pattern(action.get("input")):
+                failure_category = "salvage_out_of_contract"
+            raise PlannerContractViolation(
+                "action cannot be validated against offered planner toolset",
+                failure_category=failure_category,
+                raw_action_name=str(raw_action_name) if raw_action_name is not None else None,
+                raw_action_id=str(raw_action_id) if raw_action_id is not None else None,
+                normalized_action_name=normalized_action_name,
+                normalized_action_id=normalized_action_id,
+                from_salvage=from_salvage,
+            )
+
+        action = dict(action)
+        action["tool_id"] = normalized_tool_id
+        normalized["action"] = action
+
     normalized["action"] = action
 
     final_info = _normalize_finished_final_answer(normalized.get("final_answer"), normalized["thought"]) if finish else None
@@ -512,42 +643,6 @@ def _validate_or_normalize_planner_step(planner_step: Any) -> Dict[str, Any]:
     normalized["_action_salvaged"] = action_salvaged
     normalized["_final_answer_salvaged"] = final_answer_salvaged
     return normalized
-
-
-def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
-    if not requested:
-        return ""
-    requested = requested.strip()
-    tool_map = {t.tool_id: t for t in toolset}
-    if requested in tool_map:
-        return requested
-
-    variations = [
-        requested.lower(),
-        requested.replace(" ", ""),
-        requested.replace(" ", "_").lower(),
-        requested.replace("_", "-").lower(),
-        requested.replace("-", "_").lower(),
-    ]
-    for v in variations:
-        if v in tool_map:
-            return v
-        for valid_id in tool_map.keys():
-            if valid_id.lower() == v:
-                return valid_id
-
-    req_lower = requested.lower()
-    for t in toolset:
-        tid = t.tool_id.lower()
-        desc = (t.description or "").lower()
-        if tid in req_lower:
-            return t.tool_id
-        if req_lower in tid and len(req_lower) > 4:
-            return t.tool_id
-        if req_lower in desc:
-            return t.tool_id
-
-    return requested
 
 
 def _format_schema(schema: Dict[str, Any]) -> str:
@@ -826,8 +921,20 @@ async def _repair_or_fallback_step(
         repaired = _planner_error_step(f"Planner repair failed: {e}")
         repair_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
 
+    logger.info(
+        "event=planner_salvage_attempt corr_id=%s step=%s offered_tools=%s salvage_source=%s",
+        corr_id,
+        step_index,
+        [t.tool_id for t in toolset],
+        repair_meta.get("salvage_source", "none"),
+    )
+
     try:
-        normalized_repaired = _validate_or_normalize_planner_step(repaired)
+        normalized_repaired = _validate_or_normalize_planner_step(
+            repaired,
+            toolset=toolset,
+            from_salvage=True,
+        )
         if repair_meta.get("salvage_succeeded") or normalized_repaired.get("_action_salvaged"):
             logger.info(
                 "corr_id=%s step=%s failure_category=repair_salvaged planner_normalization_mode=%s salvage_source=%s final_answer_type=%s final_answer_salvaged=%s action_salvaged=%s normalization_succeeded=%s salvage_succeeded=%s raw_snippet=%s",
@@ -855,7 +962,30 @@ async def _repair_or_fallback_step(
                 str(bool(repair_meta.get("salvage_succeeded"))).lower(),
                 repair_meta.get("raw_snippet", _truncate_for_log(repaired)),
             )
+        logger.info(
+            "event=planner_action_validated corr_id=%s step=%s offered_tools=%s raw_action_name=%s raw_action_id=%s normalized_action_name=%s normalized_action_id=%s parse_path=salvage",
+            corr_id,
+            step_index,
+            [t.tool_id for t in toolset],
+            ((repaired.get("action") or {}).get("name") if isinstance(repaired, dict) and isinstance(repaired.get("action"), dict) else None),
+            ((repaired.get("action") or {}).get("action_id") if isinstance(repaired, dict) and isinstance(repaired.get("action"), dict) else None),
+            ((normalized_repaired.get("action") or {}).get("name") if isinstance(normalized_repaired.get("action"), dict) else None),
+            ((normalized_repaired.get("action") or {}).get("tool_id") if isinstance(normalized_repaired.get("action"), dict) else None),
+        )
         return normalized_repaired
+    except PlannerContractViolation as e:
+        logger.warning(
+            "event=planner_salvage_rejected_out_of_toolset corr_id=%s step=%s offered_tools=%s raw_action_name=%s raw_action_id=%s normalized_action_name=%s normalized_action_id=%s failure_category=%s parse_path=salvage detail=%s",
+            corr_id,
+            step_index,
+            [t.tool_id for t in toolset],
+            e.raw_action_name,
+            e.raw_action_id,
+            e.normalized_action_name,
+            e.normalized_action_id,
+            e.failure_category,
+            e,
+        )
     except PlannerSchemaError as e:
         logger.warning(
             "corr_id=%s step=%s failure_category=repair_schema_validation planner_normalization_mode=%s salvage_source=%s final_answer_type=%s normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s detail=%s",
@@ -868,36 +998,6 @@ async def _repair_or_fallback_step(
             repair_meta.get("raw_snippet", _truncate_for_log(repaired)),
             e,
         )
-
-    if delegate_only:
-        logger.warning(
-            "corr_id=%s step=%s failure_category=repair_fallback_invoked normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s",
-            corr_id,
-            step_index,
-            str(bool(repair_meta.get("salvage_succeeded"))).lower(),
-            repair_meta.get("raw_snippet", _truncate_for_log(planner_step)),
-        )
-        tool_id = _fallback_tool_id(step_index, toolset)
-        if not tool_id:
-            return {
-                "thought": f"{planner_step.get('thought', '')} Planner contract failed and no tool is available.",
-                "finish": True,
-                "action": None,
-                "final_answer": {"content": "Planner failed: no available delegate tool."},
-            }
-
-        last_user = ""
-        if context.conversation_history:
-            last_msg = context.conversation_history[-1]
-            last_user = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content", "")
-        text_value = last_user or goal.description
-
-        return {
-            "thought": f"{planner_step.get('thought', '')} [Fallback action injected after contract violation.]".strip(),
-            "finish": False,
-            "action": {"tool_id": tool_id, "input": {"text": text_value, "request": goal.description}},
-            "final_answer": None,
-        }
 
     logger.warning(
         "corr_id=%s step=%s failure_category=repair_fallback_invoked normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s",
@@ -1033,6 +1133,8 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
     delegate_only = getattr(payload.preferences, "plan_only", False) or getattr(payload.preferences, "delegate_tool_execution", False)
 
     try:
+        offered_tools = [t.tool_id for t in payload.toolset]
+        logger.info("event=planner_contract_toolset corr_id=%s offered_tools=%s", corr_id, offered_tools)
         for step_index in range(payload.limits.max_steps):
             steps_used = step_index + 1
 
@@ -1065,6 +1167,14 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                     _truncate_for_log(getattr(e, "raw_text", str(e))),
                     e,
                 )
+                logger.warning(
+                    "event=planner_parse_failure corr_id=%s step=%s offered_tools=%s parse_mode=%s salvage_source=%s",
+                    corr_id,
+                    step_index,
+                    offered_tools,
+                    getattr(e, "parse_mode", "unrecoverable_parse_failure"),
+                    getattr(e, "salvage_source", "none"),
+                )
                 planner_step = _planner_error_step(f"Planner call failed: {e}")
                 planner_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
             except Exception as e:
@@ -1078,7 +1188,11 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 planner_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
             else:
                 try:
-                    planner_step = _validate_or_normalize_planner_step(raw_planner_step)
+                    planner_step = _validate_or_normalize_planner_step(
+                        raw_planner_step,
+                        toolset=payload.toolset,
+                        from_salvage=bool(planner_meta.get("salvage_succeeded")),
+                    )
                     if planner_meta.get("salvage_succeeded"):
                         logger.info(
                             "corr_id=%s step=%s failure_category=planner_response_salvaged planner_normalization_mode=%s salvage_source=%s final_answer_type=%s final_answer_salvaged=%s action_salvaged=%s normalization_succeeded=%s salvage_succeeded=%s raw_snippet=%s",
@@ -1106,6 +1220,32 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                             str(bool(planner_meta.get("salvage_succeeded"))).lower(),
                             planner_meta.get("raw_snippet", _truncate_for_log(raw_planner_step)),
                         )
+                    logger.info(
+                        "event=planner_action_validated corr_id=%s step=%s offered_tools=%s raw_action_name=%s raw_action_id=%s normalized_action_name=%s normalized_action_id=%s parse_path=%s",
+                        corr_id,
+                        step_index,
+                        offered_tools,
+                        ((raw_planner_step.get("action") or {}).get("name") if isinstance(raw_planner_step, dict) and isinstance(raw_planner_step.get("action"), dict) else None),
+                        ((raw_planner_step.get("action") or {}).get("action_id") if isinstance(raw_planner_step, dict) and isinstance(raw_planner_step.get("action"), dict) else None),
+                        ((planner_step.get("action") or {}).get("name") if isinstance(planner_step.get("action"), dict) else None),
+                        ((planner_step.get("action") or {}).get("tool_id") if isinstance(planner_step.get("action"), dict) else None),
+                        ("salvage" if planner_meta.get("salvage_succeeded") else "clean_parse"),
+                    )
+                except PlannerContractViolation as e:
+                    logger.warning(
+                        "event=planner_contract_violation_blocked corr_id=%s step=%s offered_tools=%s raw_action_name=%s raw_action_id=%s normalized_action_name=%s normalized_action_id=%s failure_category=%s parse_path=%s detail=%s",
+                        corr_id,
+                        step_index,
+                        offered_tools,
+                        e.raw_action_name,
+                        e.raw_action_id,
+                        e.normalized_action_name,
+                        e.normalized_action_id,
+                        e.failure_category,
+                        ("salvage" if planner_meta.get("salvage_succeeded") else "clean_parse"),
+                        e,
+                    )
+                    planner_step = _planner_error_step(f"Planner contract violation: {e.failure_category}")
                 except PlannerSchemaError as e:
                     logger.warning(
                         "corr_id=%s step=%s failure_category=planner_response_schema_validation planner_normalization_mode=%s salvage_source=%s final_answer_type=%s normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s detail=%s",
@@ -1173,7 +1313,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                 final_answer = FinalAnswer(content=thought or "Invalid action format.")
                 break
 
-            tool_id = _normalize_tool_id(raw_tool_id, payload.toolset)
+            tool_id = str(raw_tool_id).strip()
 
             if delegate_only:
                 trace.append(

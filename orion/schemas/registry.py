@@ -215,6 +215,51 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateEdgeV1,
     SubstrateGraphRecordV1,
 )
+from orion.core.schemas.frontier_expansion import (
+    FrontierContextRefsV1,
+    FrontierGraphRegionRefV1,
+    FrontierDeltaItemV1,
+    FrontierExpansionRequestV1,
+    FrontierExpansionResponseV1,
+    FrontierGraphDeltaBundleV1,
+    FrontierSourceProvenanceV1,
+)
+from orion.core.schemas.frontier_landing import (
+    FrontierLandingRequestV1,
+    FrontierDeltaLandingDecisionV1,
+    FrontierLandingResultV1,
+)
+from orion.core.schemas.frontier_curiosity import (
+    FrontierInvocationSignalV1,
+    FrontierInvocationDecisionV1,
+    FrontierInvocationPlanV1,
+    FrontierInvocationRunResultV1,
+)
+from orion.core.schemas.substrate_consolidation import (
+    GraphConsolidationRequestV1,
+    GraphConsolidationDecisionV1,
+    GraphConsolidationResultV1,
+    GraphReviewCycleRecordV1,
+    GraphStateDeltaDigestV1,
+)
+from orion.core.schemas.substrate_review_queue import (
+    GraphReviewCyclePolicyV1,
+    GraphReviewCycleBudgetV1,
+    GraphReviewQueueItemV1,
+    GraphReviewScheduleDecisionV1,
+    GraphReviewQueueSnapshotV1,
+)
+from orion.core.schemas.substrate_review_runtime import (
+    GraphReviewRuntimeRequestV1,
+    GraphReviewRuntimeResultV1,
+)
+from orion.core.schemas.substrate_review_telemetry import (
+    GraphReviewTelemetryRecordV1,
+    GraphReviewTelemetryQueryV1,
+    GraphReviewTelemetrySummaryV1,
+    GraphReviewCalibrationRequestV1,
+    GraphReviewCalibrationRecommendationV1,
+)
 from orion.core.schemas.drives import (
     DriveAuditV1,
     DriveStateV1,
@@ -585,6 +630,37 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "OntologyBranchNodeV1": OntologyBranchNodeV1,
     "SubstrateEdgeV1": SubstrateEdgeV1,
     "SubstrateGraphRecordV1": SubstrateGraphRecordV1,
+    "FrontierContextRefsV1": FrontierContextRefsV1,
+    "FrontierGraphRegionRefV1": FrontierGraphRegionRefV1,
+    "FrontierDeltaItemV1": FrontierDeltaItemV1,
+    "FrontierExpansionRequestV1": FrontierExpansionRequestV1,
+    "FrontierExpansionResponseV1": FrontierExpansionResponseV1,
+    "FrontierGraphDeltaBundleV1": FrontierGraphDeltaBundleV1,
+    "FrontierSourceProvenanceV1": FrontierSourceProvenanceV1,
+    "FrontierLandingRequestV1": FrontierLandingRequestV1,
+    "FrontierDeltaLandingDecisionV1": FrontierDeltaLandingDecisionV1,
+    "FrontierLandingResultV1": FrontierLandingResultV1,
+    "FrontierInvocationSignalV1": FrontierInvocationSignalV1,
+    "FrontierInvocationDecisionV1": FrontierInvocationDecisionV1,
+    "FrontierInvocationPlanV1": FrontierInvocationPlanV1,
+    "FrontierInvocationRunResultV1": FrontierInvocationRunResultV1,
+    "GraphConsolidationRequestV1": GraphConsolidationRequestV1,
+    "GraphConsolidationDecisionV1": GraphConsolidationDecisionV1,
+    "GraphConsolidationResultV1": GraphConsolidationResultV1,
+    "GraphReviewCycleRecordV1": GraphReviewCycleRecordV1,
+    "GraphStateDeltaDigestV1": GraphStateDeltaDigestV1,
+    "GraphReviewCyclePolicyV1": GraphReviewCyclePolicyV1,
+    "GraphReviewCycleBudgetV1": GraphReviewCycleBudgetV1,
+    "GraphReviewQueueItemV1": GraphReviewQueueItemV1,
+    "GraphReviewScheduleDecisionV1": GraphReviewScheduleDecisionV1,
+    "GraphReviewQueueSnapshotV1": GraphReviewQueueSnapshotV1,
+    "GraphReviewRuntimeRequestV1": GraphReviewRuntimeRequestV1,
+    "GraphReviewRuntimeResultV1": GraphReviewRuntimeResultV1,
+    "GraphReviewTelemetryRecordV1": GraphReviewTelemetryRecordV1,
+    "GraphReviewTelemetryQueryV1": GraphReviewTelemetryQueryV1,
+    "GraphReviewTelemetrySummaryV1": GraphReviewTelemetrySummaryV1,
+    "GraphReviewCalibrationRequestV1": GraphReviewCalibrationRequestV1,
+    "GraphReviewCalibrationRecommendationV1": GraphReviewCalibrationRecommendationV1,
     "SparkSourceSnapshotV1": SparkSourceSnapshotV1,
     "MentorConstraintsV1": MentorConstraintsV1,
     "MentorContextSliceV1": MentorContextSliceV1,

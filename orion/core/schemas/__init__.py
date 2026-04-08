@@ -137,6 +137,51 @@ from .cognitive_substrate import (
     SubstrateEdgeV1,
     SubstrateGraphRecordV1,
 )
+from .frontier_expansion import (
+    FrontierContextRefsV1,
+    FrontierGraphRegionRefV1,
+    FrontierDeltaItemV1,
+    FrontierExpansionRequestV1,
+    FrontierExpansionResponseV1,
+    FrontierGraphDeltaBundleV1,
+    FrontierSourceProvenanceV1,
+)
+from .frontier_landing import (
+    FrontierLandingRequestV1,
+    FrontierDeltaLandingDecisionV1,
+    FrontierLandingResultV1,
+)
+from .frontier_curiosity import (
+    FrontierInvocationSignalV1,
+    FrontierInvocationDecisionV1,
+    FrontierInvocationPlanV1,
+    FrontierInvocationRunResultV1,
+)
+from .substrate_consolidation import (
+    GraphConsolidationRequestV1,
+    GraphConsolidationDecisionV1,
+    GraphConsolidationResultV1,
+    GraphReviewCycleRecordV1,
+    GraphStateDeltaDigestV1,
+)
+from .substrate_review_queue import (
+    GraphReviewCyclePolicyV1,
+    GraphReviewCycleBudgetV1,
+    GraphReviewQueueItemV1,
+    GraphReviewScheduleDecisionV1,
+    GraphReviewQueueSnapshotV1,
+)
+from .substrate_review_runtime import (
+    GraphReviewRuntimeRequestV1,
+    GraphReviewRuntimeResultV1,
+)
+from .substrate_review_telemetry import (
+    GraphReviewTelemetryRecordV1,
+    GraphReviewTelemetryQueryV1,
+    GraphReviewTelemetrySummaryV1,
+    GraphReviewCalibrationRequestV1,
+    GraphReviewCalibrationRecommendationV1,
+)
 
 __all__ = [
     "ConceptEvidenceRef",
@@ -252,4 +297,35 @@ __all__ = [
     "SubstrateNodeV1",
     "SubstrateEdgeV1",
     "SubstrateGraphRecordV1",
+    "FrontierContextRefsV1",
+    "FrontierGraphRegionRefV1",
+    "FrontierDeltaItemV1",
+    "FrontierExpansionRequestV1",
+    "FrontierExpansionResponseV1",
+    "FrontierGraphDeltaBundleV1",
+    "FrontierSourceProvenanceV1",
+    "FrontierLandingRequestV1",
+    "FrontierDeltaLandingDecisionV1",
+    "FrontierLandingResultV1",
+    "FrontierInvocationSignalV1",
+    "FrontierInvocationDecisionV1",
+    "FrontierInvocationPlanV1",
+    "FrontierInvocationRunResultV1",
+    "GraphConsolidationRequestV1",
+    "GraphConsolidationDecisionV1",
+    "GraphConsolidationResultV1",
+    "GraphReviewCycleRecordV1",
+    "GraphStateDeltaDigestV1",
+    "GraphReviewCyclePolicyV1",
+    "GraphReviewCycleBudgetV1",
+    "GraphReviewQueueItemV1",
+    "GraphReviewScheduleDecisionV1",
+    "GraphReviewQueueSnapshotV1",
+    "GraphReviewRuntimeRequestV1",
+    "GraphReviewRuntimeResultV1",
+    "GraphReviewTelemetryRecordV1",
+    "GraphReviewTelemetryQueryV1",
+    "GraphReviewTelemetrySummaryV1",
+    "GraphReviewCalibrationRequestV1",
+    "GraphReviewCalibrationRecommendationV1",
 ]

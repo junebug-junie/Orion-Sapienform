@@ -41,10 +41,18 @@ from orion.schemas.notify import (
     RecipientProfileUpdate,
 )
 
+from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
+from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
+from orion.substrate.review_queue import GraphReviewQueue
+from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
+
 logger = logging.getLogger("orion-hub.api")
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
+
+SUBSTRATE_REVIEW_QUEUE_STORE = GraphReviewQueue(max_items=200)
+SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(max_records=2000)
 
 
 def _thought_debug_enabled() -> bool:
@@ -1149,3 +1157,134 @@ async def api_debug_spark_last(
             "note": "Spark debug deprecated in dumb hub.",
         }
     )
+
+
+def _source_meta(*, kind: str, degraded: bool, limit: int, error: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "kind": kind,
+        "degraded": degraded,
+        "error": error,
+        "query": {"limit": limit},
+        "last_refreshed": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _graphdb_overview_payload(*, limit: int = 10) -> Dict[str, Any]:
+    # Placeholder read seam until dedicated GraphDB query service is wired.
+    # Kept explicit/degraded for operator trust.
+    return {
+        "source": _source_meta(kind="graphdb", degraded=True, limit=limit, error="graphdb_read_unavailable_in_hub"),
+        "data": {
+            "coherence": None,
+            "identity_conflict": None,
+            "goal_pressure": None,
+            "concept_drift": None,
+            "contradiction_count": 0,
+            "top_hotspots": [],
+            "top_tensions": [],
+            "top_stabilizers": [],
+            "metacog_brief": None,
+        },
+    }
+
+
+def _graphdb_hotspots_payload(*, limit: int = 20) -> Dict[str, Any]:
+    return {
+        "source": _source_meta(kind="graphdb", degraded=True, limit=limit, error="graphdb_read_unavailable_in_hub"),
+        "data": {
+            "active_regions": [],
+            "contradiction_hotspots": [],
+            "pressure_hotspots": [],
+            "drift_hotspots": [],
+        },
+    }
+
+
+def _sql_review_queue_payload(*, limit: int = 50) -> Dict[str, Any]:
+    snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=limit)
+    return {
+        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "data": snapshot.model_dump(mode="json"),
+    }
+
+
+def _sql_review_executions_payload(*, limit: int = 50) -> Dict[str, Any]:
+    records = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=limit))
+    return {
+        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "data": [record.model_dump(mode="json") for record in records],
+    }
+
+
+def _sql_telemetry_summary_payload(*, limit: int = 200) -> Dict[str, Any]:
+    summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=limit))
+    recommendations = GraphReviewCalibrationAnalyzer().recommend(summary=summary)
+    return {
+        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "data": {
+            "summary": summary.model_dump(mode="json"),
+            "recommendations": [rec.model_dump(mode="json") for rec in recommendations],
+        },
+    }
+
+
+def _sql_calibration_payload(*, limit: int = 20) -> Dict[str, Any]:
+    summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=200))
+    recommendations = GraphReviewCalibrationAnalyzer().recommend(summary=summary)
+    active_profile = GraphReviewCyclePolicyV1().model_dump(mode="json")
+    return {
+        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "data": {
+            "active_profile": active_profile,
+            "staged_profiles": [],
+            "recent_audit_events": [],
+            "advisory_recommendations": [rec.model_dump(mode="json") for rec in recommendations],
+        },
+    }
+
+
+@router.get("/substrate")
+async def substrate_page() -> HTMLResponse:
+    from .main import TEMPLATES_DIR, build_hub_ui_asset_version
+
+    template = (TEMPLATES_DIR / "substrate.html").read_text(encoding="utf-8")
+    rendered = template.replace("{{HUB_UI_ASSET_VERSION}}", build_hub_ui_asset_version())
+    return HTMLResponse(
+        content=rendered,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@router.get("/api/substrate/overview")
+def api_substrate_overview(limit: int = Query(default=10, ge=1, le=100)) -> Dict[str, Any]:
+    return _graphdb_overview_payload(limit=limit)
+
+
+@router.get("/api/substrate/hotspots")
+def api_substrate_hotspots(limit: int = Query(default=20, ge=1, le=200)) -> Dict[str, Any]:
+    return _graphdb_hotspots_payload(limit=limit)
+
+
+@router.get("/api/substrate/review-queue")
+def api_substrate_review_queue(limit: int = Query(default=50, ge=1, le=200)) -> Dict[str, Any]:
+    return _sql_review_queue_payload(limit=limit)
+
+
+@router.get("/api/substrate/review-executions")
+def api_substrate_review_executions(limit: int = Query(default=50, ge=1, le=200)) -> Dict[str, Any]:
+    return _sql_review_executions_payload(limit=limit)
+
+
+@router.get("/api/substrate/telemetry-summary")
+def api_substrate_telemetry_summary(limit: int = Query(default=200, ge=1, le=500)) -> Dict[str, Any]:
+    return _sql_telemetry_summary_payload(limit=limit)
+
+
+@router.get("/api/substrate/calibration")
+def api_substrate_calibration(limit: int = Query(default=20, ge=1, le=100)) -> Dict[str, Any]:
+    return _sql_calibration_payload(limit=limit)

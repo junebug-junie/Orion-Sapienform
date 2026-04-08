@@ -207,6 +207,9 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     spark_vector = (result.get("spark_vector") if isinstance(result, dict) else None)
     reasoning_content = (result.get("reasoning_content") if isinstance(result, dict) else None)
     inline_think_content = (result.get("inline_think_content") if isinstance(result, dict) else None)
+    thinking_source = "provider_reasoning" if bool(str(reasoning_content or "").strip()) else (
+        "inline_think" if bool(str(inline_think_content or "").strip()) else "none"
+    )
     backend = (result.get("backend") if isinstance(result, dict) else None)
     model_used = (result.get("model") if isinstance(result, dict) else None)
     route_used = (result.get("route") if isinstance(result, dict) else None)
@@ -218,6 +221,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         "route": route_used,
         "provider_reasoning_available": bool(str(reasoning_content or "").strip()),
         "inline_think_extracted": bool(str(inline_think_content or "").strip()),
+        "thinking_source": thinking_source,
     }
     meta = {k: v for k, v in meta.items() if v is not None}
     if _thought_debug_enabled():
@@ -248,6 +252,8 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             model_used=model_used,
             content=text or "",
             reasoning_content=reasoning_content,
+            inline_think_content=inline_think_content,
+            thinking_source=thinking_source,
             reasoning_trace=reasoning_trace,
             usage=(result.get("raw") or {}).get("usage", {}) if isinstance(result, dict) else {},
             raw=(result.get("raw") if isinstance(result, dict) else None) or {},

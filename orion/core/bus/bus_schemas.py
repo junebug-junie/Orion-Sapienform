@@ -203,6 +203,8 @@ class ChatResultPayload(BaseModel):
 
     content: Optional[str] = None
     reasoning_content: Optional[str] = None
+    inline_think_content: Optional[str] = None
+    thinking_source: Optional[str] = None
     reasoning_trace: Optional[Dict[str, Any]] = None
     model_used: Optional[str] = None
     spark_meta: Optional[Dict[str, Any]] = None

@@ -146,6 +146,8 @@ class CortexClientResult(BaseModel):
     status: str
     final_text: Optional[str] = None
     reasoning_content: Optional[str] = None
+    inline_think_content: Optional[str] = None
+    thinking_source: Optional[str] = None
     reasoning_trace: Optional[Dict[str, Any]] = None
     spark_vector: Optional[List[float]] = None
     memory_used: bool = False

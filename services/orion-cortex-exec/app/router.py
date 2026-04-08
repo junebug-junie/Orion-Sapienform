@@ -432,7 +432,11 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
     return traces
 
 
-def _extract_reasoning_payload(step_results: List[StepExecutionResult]) -> tuple[str | None, Dict[str, Any] | None]:
+def _extract_reasoning_payload(
+    step_results: List[StepExecutionResult],
+    *,
+    think_close_tag_only_detected: bool = False,
+) -> tuple[str | None, str | None, str, Dict[str, Any] | None]:
     for step in step_results:
         if not isinstance(step.result, dict):
             continue
@@ -440,15 +444,23 @@ def _extract_reasoning_payload(step_results: List[StepExecutionResult]) -> tuple
         if not isinstance(payload, dict):
             continue
         reasoning_content = payload.get("reasoning_content")
+        inline_think_content = payload.get("inline_think_content")
+        raw_thinking_source = payload.get("thinking_source")
         reasoning_trace = payload.get("reasoning_trace")
         if isinstance(reasoning_content, str) and reasoning_content.strip():
             trace_dict = reasoning_trace if isinstance(reasoning_trace, dict) else None
-            return reasoning_content.strip(), trace_dict
+            return reasoning_content.strip(), (
+                inline_think_content.strip() if isinstance(inline_think_content, str) and inline_think_content.strip() else None
+            ), "provider_reasoning", trace_dict
+        if isinstance(inline_think_content, str) and inline_think_content.strip():
+            thinking_source = "inline_think_close_tag_only" if think_close_tag_only_detected else "inline_think_full_block"
+            if isinstance(raw_thinking_source, str) and raw_thinking_source.strip() == "inline_think":
+                return None, inline_think_content.strip(), thinking_source, None
         if isinstance(reasoning_trace, dict):
             trace_content = reasoning_trace.get("content")
             if isinstance(trace_content, str) and trace_content.strip():
-                return trace_content.strip(), reasoning_trace
-    return None, None
+                return trace_content.strip(), None, "provider_reasoning", reasoning_trace
+    return None, None, "none", None
 
 
 class PlanRunner:
@@ -765,12 +777,28 @@ class PlanRunner:
             correlation_id=correlation_id,
             session_id=str(ctx.get("session_id")) if ctx.get("session_id") else None,
         )
-        reasoning_content, reasoning_trace = _extract_reasoning_payload(step_results)
+        reasoning_content, inline_think_content, thinking_source, reasoning_trace = _extract_reasoning_payload(
+            step_results,
+            think_close_tag_only_detected=bool(final_text_diag.get("think_close_tag_only_detected")),
+        )
         if reasoning_trace is None and metacog_traces:
             first_trace = metacog_traces[0]
             reasoning_trace = first_trace.model_dump(mode="json")
             if not reasoning_content:
                 reasoning_content = str(first_trace.content or "").strip() or None
+                if thinking_source == "none" and reasoning_content:
+                    thinking_source = "provider_reasoning"
+        if thinking_source == "none" and inline_think_content:
+            thinking_source = "inline_think_close_tag_only" if bool(final_text_diag.get("think_close_tag_only_detected")) else "inline_think_full_block"
+        logger.info(
+            "exec_reasoning_selection corr_id=%s provider_reasoning_available=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s final_clean_answer_len=%s",
+            correlation_id,
+            bool(reasoning_content),
+            len(reasoning_content) if isinstance(reasoning_content, str) else 0,
+            len(inline_think_content) if isinstance(inline_think_content, str) else 0,
+            thinking_source,
+            len(final_text or ""),
+        )
         logger.info(
             "cortex_exec_metacog_attached corr_id=%s verb=%s traces=%s",
             correlation_id,
@@ -798,6 +826,8 @@ class PlanRunner:
             mode=mode,
             final_text=final_text or None,
             reasoning_content=reasoning_content,
+            inline_think_content=inline_think_content,
+            thinking_source=thinking_source,
             reasoning_trace=reasoning_trace,
             memory_used=memory_used,
             recall_debug=recall_debug,

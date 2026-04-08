@@ -312,6 +312,9 @@ def build_chat_turn_envelope(
     memory_tier: Optional[str] = None,
     memory_reason: Optional[str] = None,
     client_meta: Optional[dict] = None,
+    reasoning_content: Optional[str] = None,
+    inline_think_content: Optional[str] = None,
+    thinking_source: Optional[str] = None,
     reasoning_trace: Optional[MetacognitiveTraceV1 | dict] = None,
 ) -> ChatHistoryTurnEnvelope:
     """Construct a turn-level chat history envelope (prompt + response)."""
@@ -344,6 +347,9 @@ def build_chat_turn_envelope(
         source=source_label,
         prompt=prompt,
         response=response,
+        reasoning_content=reasoning_content,
+        inline_think_content=inline_think_content,
+        thinking_source=thinking_source,
         user_id=user_id,
         session_id=session_id,
         spark_meta=merged_spark_meta or None,
@@ -377,10 +383,20 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
         explicit_reasoning_trace = getattr(turn_payload, "reasoning_trace", None)
         spark_meta = getattr(turn_payload, "spark_meta", None)
         reasoning_content = getattr(turn_payload, "reasoning_content", None)
+        inline_think_content = getattr(turn_payload, "inline_think_content", None)
+        thinking_source = getattr(turn_payload, "thinking_source", None)
         if not isinstance(reasoning_content, str) and isinstance(spark_meta, dict):
             maybe_reasoning_content = spark_meta.get("reasoning_content")
             if isinstance(maybe_reasoning_content, str):
                 reasoning_content = maybe_reasoning_content
+        if not isinstance(inline_think_content, str) and isinstance(spark_meta, dict):
+            maybe_inline = spark_meta.get("inline_think_content")
+            if isinstance(maybe_inline, str):
+                inline_think_content = maybe_inline
+        if not isinstance(thinking_source, str) and isinstance(spark_meta, dict):
+            maybe_source = spark_meta.get("thinking_source")
+            if isinstance(maybe_source, str):
+                thinking_source = maybe_source
         metacog_traces = getattr(turn_payload, "metacog_traces", None)
         if not isinstance(metacog_traces, list) and isinstance(spark_meta, dict):
             maybe_metacog_traces = spark_meta.get("metacog_traces")
@@ -425,6 +441,26 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
                 message_id=getattr(turn_payload, "id", None) or str(env.correlation_id),
                 model=inferred_model,
                 metadata_source="chat_history_reasoning_content_fallback",
+            )
+        elif isinstance(inline_think_content, str) and inline_think_content.strip():
+            selected_source = "inline_think_content"
+            selected_content = inline_think_content.strip()
+            selected_trace = _normalize_reasoning_trace(
+                trace={
+                    "correlation_id": str(env.correlation_id),
+                    "session_id": getattr(turn_payload, "session_id", None),
+                    "message_id": getattr(turn_payload, "id", None) or str(env.correlation_id),
+                    "trace_role": "reasoning",
+                    "trace_stage": "post_answer",
+                    "content": selected_content,
+                    "model": inferred_model or "unknown",
+                    "metadata": {"source": "chat_history_inline_think_fallback", "thinking_source": thinking_source or "inline_think_content"},
+                },
+                correlation_id=env.correlation_id,
+                session_id=getattr(turn_payload, "session_id", None),
+                message_id=getattr(turn_payload, "id", None) or str(env.correlation_id),
+                model=inferred_model,
+                metadata_source="chat_history_inline_think_fallback",
             )
         elif isinstance(metacog_traces, list):
             for idx, trace in enumerate(metacog_traces):
@@ -485,6 +521,8 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
                     "reasoning_trace_keys": sorted(list(rt.keys())) if isinstance(rt, dict) else (sorted(list(rt.model_dump(mode="json").keys())) if hasattr(rt, "model_dump") else []),
                     "reasoning_trace_content_len": _debug_len((rt.get("content") if isinstance(rt, dict) else getattr(rt, "content", None))),
                     "reasoning_content_len": _debug_len(rc),
+                    "inline_think_content_len": _debug_len(getattr(payload, "inline_think_content", None)),
+                    "thinking_source": getattr(payload, "thinking_source", None),
                 },
             )
         await bus.publish(channel, env)

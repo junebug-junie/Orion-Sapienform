@@ -99,6 +99,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def resolve_autonomy_graph_timeout_sec() -> float:
+    timeout = _env_float("AUTONOMY_GRAPH_TIMEOUT_SEC", _env_float("GRAPHDB_TIMEOUT_SEC", 4.5))
+    return max(0.25, timeout)
+
+
 def resolve_autonomy_graphdb_config() -> dict[str, Any]:
     endpoint_raw = (
         os.getenv("GRAPHDB_QUERY_ENDPOINT")
@@ -484,7 +489,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     repository = build_autonomy_repository(
         backend=backend,
         endpoint=endpoint,
-        timeout_sec=_env_float("GRAPHDB_TIMEOUT_SEC", 4.5),
+        timeout_sec=resolve_autonomy_graph_timeout_sec(),
         user=graphdb_cfg["user"],
         password=graphdb_cfg["password"],
         goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
@@ -508,16 +513,19 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
             "present": bool(by_subject.get(subject) and by_subject.get(subject).state is not None),
             "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
+            "subqueries": (by_subject.get(subject).subquery_diagnostics or {}) if by_subject.get(subject) else {},
         }
         for subject in SUBJECT_BINDINGS
     }
     repo_status = repository.status()
     debug["_runtime"] = {
-        "backend": repo_status.backend,
-        "selected_subject": selected_subject,
-        "repository_status": {
-            "source_available": repo_status.source_available,
-            "source_path": repo_status.source_path,
+            "backend": repo_status.backend,
+            "selected_subject": selected_subject,
+            "endpoint_repo": endpoint or "graphdb:unconfigured",
+            "timeout_sec": resolve_autonomy_graph_timeout_sec(),
+            "repository_status": {
+                "source_available": repo_status.source_available,
+                "source_path": repo_status.source_path,
         },
     }
     exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
@@ -533,12 +541,22 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "config_source": graphdb_cfg["source"],
                 "repo": graphdb_cfg["repo"],
                 "endpoint_repo": endpoint or "graphdb:unconfigured",
+                "timeout_sec": resolve_autonomy_graph_timeout_sec(),
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
                 "availability_counts": {
                     "available": sum(1 for item in lookups if item.availability == "available"),
                     "empty": sum(1 for item in lookups if item.availability == "empty"),
                     "unavailable": sum(1 for item in lookups if item.availability == "unavailable"),
+                    "partial": sum(
+                        1
+                        for item in lookups
+                        if item.availability == "available"
+                        and any(
+                            str((item.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+                            for name in ("identity", "drives", "goals")
+                        )
+                    ),
                 },
                 "unavailable_reasons": sorted(
                     {

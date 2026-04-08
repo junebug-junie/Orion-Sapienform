@@ -6,11 +6,19 @@ from app import chat_stance
 
 
 class _Lookup:
-    def __init__(self, subject: str, availability: str, state=None, unavailable_reason: str | None = None):
+    def __init__(
+        self,
+        subject: str,
+        availability: str,
+        state=None,
+        unavailable_reason: str | None = None,
+        subquery_diagnostics: dict | None = None,
+    ):
         self.subject = subject
         self.availability = availability
         self.state = state
         self.unavailable_reason = unavailable_reason
+        self.subquery_diagnostics = subquery_diagnostics or {}
 
 
 class _Repo:
@@ -66,15 +74,27 @@ def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch) -> 
 
 
 def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> None:
-    repo = _Repo({"orion": _Lookup("orion", "unavailable", None, unavailable_reason="query_error")})
+    repo = _Repo(
+        {
+            "orion": _Lookup(
+                "orion",
+                "unavailable",
+                None,
+                unavailable_reason="timeout",
+                subquery_diagnostics={"identity": {"status": "timeout", "elapsed_ms": 4501.2, "row_count": 0}},
+            )
+        }
+    )
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
     ctx = {"user_message": "hello"}
     chat_stance.build_chat_stance_inputs(ctx)
 
     assert ctx["chat_autonomy_debug"]["orion"]["availability"] == "unavailable"
-    assert ctx["chat_autonomy_debug"]["orion"]["unavailable_reason"] == "query_error"
+    assert ctx["chat_autonomy_debug"]["orion"]["unavailable_reason"] == "timeout"
+    assert ctx["chat_autonomy_debug"]["orion"]["subqueries"]["identity"]["status"] == "timeout"
     assert ctx["chat_autonomy_debug"]["_runtime"]["backend"] == "graph"
+    assert ctx["chat_autonomy_debug"]["_runtime"]["timeout_sec"] == 4.5
     assert "repository_status" in ctx["chat_autonomy_debug"]["_runtime"]
     assert ctx["chat_autonomy_backend"] == "graph"
     assert "chat_autonomy_repository_status" in ctx
@@ -102,7 +122,7 @@ def test_autonomy_lookup_turn_log_distinguishes_empty_and_unavailable(monkeypatc
     chat_stance.build_chat_stance_inputs({"user_message": "hello"})
 
     assert "autonomy_lookup_turn" in caplog.text
-    assert '"availability_counts": {"available": 1, "empty": 1, "unavailable": 1}' in caplog.text
+    assert '"availability_counts": {"available": 1, "empty": 1, "partial": 0, "unavailable": 1}' in caplog.text
     assert '"selected_subject_availability": "unavailable"' in caplog.text
 
 
@@ -165,3 +185,10 @@ def test_autonomy_graphdb_config_prefers_generic_vars(monkeypatch) -> None:
     assert cfg["user"] == "generic-user"
     assert cfg["password"] == "generic-pass"
     assert cfg["source"] == "generic_graphdb"
+
+
+def test_autonomy_timeout_prefers_autonomy_specific_env(monkeypatch) -> None:
+    monkeypatch.setenv("GRAPHDB_TIMEOUT_SEC", "4.5")
+    monkeypatch.setenv("AUTONOMY_GRAPH_TIMEOUT_SEC", "9.25")
+
+    assert chat_stance.resolve_autonomy_graph_timeout_sec() == 9.25

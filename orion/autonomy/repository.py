@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, Sequence
@@ -32,6 +33,7 @@ class AutonomyLookupV1:
     state: AutonomyStateV1 | None
     availability: AvailabilityKind
     unavailable_reason: str | None = None
+    subquery_diagnostics: dict[str, dict[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,20 @@ def _literal(binding: dict[str, dict[str, str]], key: str) -> str | None:
 def _bounded_reason(exc: Exception, *, limit: int = 180) -> str:
     reason = " ".join(str(exc or "").split()).strip() or exc.__class__.__name__
     return reason[:limit]
+
+
+def _classify_query_error(exc: Exception) -> str:
+    if isinstance(exc, GraphQueryError):
+        if exc.error_type and exc.error_type != "query_error":
+            return exc.error_type
+    lowered = str(exc or "").lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timeout"
+    if any(token in lowered for token in ("connection refused", "name or service not known", "max retries exceeded")):
+        return "connection_error"
+    if "400" in lowered or "malformed" in lowered or "parse" in lowered:
+        return "malformed_query"
+    return "query_error"
 
 
 def _dominant_drive_from_evidence(
@@ -324,10 +340,12 @@ LIMIT {self._goals_limit}
                 continue
         return out, len(rows)
 
-    def _query_subject(self, subject: str) -> AutonomyLookupV1:
+    def _query_subject(self, subject: str, *, observer: dict[str, str] | None = None) -> AutonomyLookupV1:
         binding = SUBJECT_BINDINGS.get(subject)
         if binding is None:
             return AutonomyLookupV1(subject=subject, state=None, availability="empty")
+
+        correlation_id = str((observer or {}).get("correlation_id") or "")
 
         if self._query_client is None:
             logger.warning(
@@ -346,13 +364,17 @@ LIMIT {self._goals_limit}
         goals_rows = 0
         failed_subquery: str | None = None
         failure_reason: str | None = None
+        failure_type: str | None = None
+        subquery_diagnostics: dict[str, dict[str, object]] = {}
         for name, fn in (
             ("identity", self._fetch_identity),
             ("drives", self._fetch_drive_audit),
             ("goals", self._fetch_goals),
         ):
+            started_at = time.perf_counter()
             try:
                 value, row_count = fn(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
+                elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
                 if name == "identity":
                     identity = value  # type: ignore[assignment]
                     identity_rows = row_count
@@ -362,36 +384,70 @@ LIMIT {self._goals_limit}
                 else:
                     goals = value  # type: ignore[assignment]
                     goals_rows = row_count
+                status = "empty" if row_count == 0 else "ok"
+                subquery_diagnostics[name] = {
+                    "status": status,
+                    "row_count": row_count,
+                    "elapsed_ms": elapsed_ms,
+                }
                 logger.info(
-                    "autonomy_graph_subquery subject=%s subquery=%s status=ok rows=%s",
+                    "autonomy_graph_subquery subject=%s subquery=%s status=%s rows=%s repo=%s elapsed_ms=%s timeout_sec=%s correlation_id=%s",
                     subject,
                     name,
+                    status,
                     row_count,
+                    self._endpoint or "graphdb:unconfigured",
+                    elapsed_ms,
+                    self._timeout_sec,
+                    correlation_id or "-",
                 )
             except (GraphQueryError, Exception) as exc:
-                failed_subquery = name
-                failure_reason = _bounded_reason(exc)
+                elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+                failure_type = _classify_query_error(exc)
+                if failed_subquery is None:
+                    failed_subquery = name
+                    failure_reason = _bounded_reason(exc)
                 logger.warning(
-                    "autonomy_graph_subquery subject=%s subquery=%s status=query_error reason=%s",
+                    "autonomy_graph_subquery subject=%s subquery=%s status=%s repo=%s elapsed_ms=%s timeout_sec=%s error_type=%s reason=%s correlation_id=%s",
                     subject,
                     name,
-                    failure_reason,
+                    failure_type,
+                    self._endpoint or "graphdb:unconfigured",
+                    elapsed_ms,
+                    self._timeout_sec,
+                    failure_type,
+                    _bounded_reason(exc),
+                    correlation_id or "-",
                 )
-                break
+                subquery_diagnostics[name] = {
+                    "status": failure_type,
+                    "row_count": 0,
+                    "elapsed_ms": elapsed_ms,
+                    "error_type": failure_type,
+                    "reason": _bounded_reason(exc),
+                }
 
-        if failed_subquery is not None:
+        if failed_subquery is not None and not identity and not audit and not goals:
             logger.warning(
-                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false failed_subquery=%s failure_reason=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=unavailable unavailable_reason=query_error",
+                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false failed_subquery=%s failure_reason=%s failure_type=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=unavailable unavailable_reason=%s",
                 subject,
                 binding.model_layer,
                 binding.entity_id,
                 failed_subquery,
                 failure_reason or "unknown",
+                failure_type or "query_error",
                 identity_rows,
                 drives_rows,
                 goals_rows,
+                failure_type or "query_error",
             )
-            return AutonomyLookupV1(subject=subject, state=None, availability="unavailable", unavailable_reason="query_error")
+            return AutonomyLookupV1(
+                subject=subject,
+                state=None,
+                availability="unavailable",
+                unavailable_reason=failure_type or "query_error",
+                subquery_diagnostics=subquery_diagnostics,
+            )
 
         if not identity and not audit and not goals:
             logger.info(
@@ -403,7 +459,7 @@ LIMIT {self._goals_limit}
                 drives_rows,
                 goals_rows,
             )
-            return AutonomyLookupV1(subject=subject, state=None, availability="empty")
+            return AutonomyLookupV1(subject=subject, state=None, availability="empty", subquery_diagnostics=subquery_diagnostics)
 
         generated_at = None
         if identity and identity.get("created_at"):
@@ -428,25 +484,34 @@ LIMIT {self._goals_limit}
             source="graph",
             generated_at=generated_at,
         )
+        partial = failed_subquery is not None
         logger.info(
-            "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=true identity_rows=%s drives_rows=%s goals_rows=%s availability=available mapped_state=true summary_present=%s",
+            "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=available mapped_state=true summary_present=%s partial=%s",
             subject,
             binding.model_layer,
             binding.entity_id,
+            "false" if partial else "true",
             identity_rows,
             drives_rows,
             goals_rows,
             "yes" if bool(state.identity_summary) else "no",
+            "yes" if partial else "no",
         )
-        return AutonomyLookupV1(subject=subject, state=state, availability="available")
+        return AutonomyLookupV1(
+            subject=subject,
+            state=state,
+            availability="available",
+            unavailable_reason=(failure_type if partial else None),
+            subquery_diagnostics=subquery_diagnostics,
+        )
 
     def get_latest(self, subject: str, *, observer: dict[str, str] | None = None) -> AutonomyLookupV1:
-        result = self._query_subject(subject)
+        result = self._query_subject(subject, observer=observer)
         logger.info("autonomy_repository_status %s", _status_json(backend="graph", subjects=[subject], results=[result], observer=observer))
         return result
 
     def list_latest(self, subjects: Sequence[str], *, observer: dict[str, str] | None = None) -> list[AutonomyLookupV1]:
-        results = [self._query_subject(subject) for subject in subjects]
+        results = [self._query_subject(subject, observer=observer) for subject in subjects]
         logger.info("autonomy_repository_status %s", _status_json(backend="graph", subjects=subjects, results=results, observer=observer))
         return results
 

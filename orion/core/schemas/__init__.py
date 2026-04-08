@@ -195,6 +195,11 @@ from .substrate_policy_adoption import (
     SubstratePolicyRollbackResultV1,
     SubstratePolicyRolloutScopeV1,
 )
+from .substrate_policy_comparison import (
+    SubstratePolicyComparisonRequestV1,
+    SubstratePolicyEffectivenessReportV1,
+    SubstratePolicyMetricDeltaV1,
+)
 
 __all__ = [
     "ConceptEvidenceRef",
@@ -352,4 +357,7 @@ __all__ = [
     "SubstratePolicyResolutionV1",
     "SubstratePolicyInspectionV1",
     "SubstratePolicyComparisonV1",
+    "SubstratePolicyComparisonRequestV1",
+    "SubstratePolicyMetricDeltaV1",
+    "SubstratePolicyEffectivenessReportV1",
 ]

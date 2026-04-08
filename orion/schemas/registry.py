@@ -286,6 +286,11 @@ from orion.core.schemas.substrate_policy_adoption import (
     SubstratePolicyRollbackResultV1,
     SubstratePolicyRolloutScopeV1,
 )
+from orion.core.schemas.substrate_policy_comparison import (
+    SubstratePolicyComparisonRequestV1,
+    SubstratePolicyEffectivenessReportV1,
+    SubstratePolicyMetricDeltaV1,
+)
 from orion.core.schemas.drives import (
     DriveAuditV1,
     DriveStateV1,
@@ -699,6 +704,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SubstratePolicyResolutionV1": SubstratePolicyResolutionV1,
     "SubstratePolicyInspectionV1": SubstratePolicyInspectionV1,
     "SubstratePolicyComparisonV1": SubstratePolicyComparisonV1,
+    "SubstratePolicyComparisonRequestV1": SubstratePolicyComparisonRequestV1,
+    "SubstratePolicyMetricDeltaV1": SubstratePolicyMetricDeltaV1,
+    "SubstratePolicyEffectivenessReportV1": SubstratePolicyEffectivenessReportV1,
     "SparkSourceSnapshotV1": SparkSourceSnapshotV1,
     "MentorConstraintsV1": MentorConstraintsV1,
     "MentorContextSliceV1": MentorContextSliceV1,

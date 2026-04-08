@@ -83,3 +83,44 @@ def test_requires_capability_selector_alone_keeps_semantic_verb_planner_visible(
     tools = registry.tools_for_packs(["executive_pack"])
     assert [tool.tool_id for tool in tools] == ["selector_only_capability"]
     assert tools[0].execution_mode == "capability_backed"
+
+
+def test_registry_validation_blocks_capability_backed_llm_service_binding(tmp_path):
+    base = tmp_path / "cognition"
+    packs_dir = base / "packs"
+    verbs_dir = base / "verbs"
+    packs_dir.mkdir(parents=True)
+    verbs_dir.mkdir(parents=True)
+
+    (packs_dir / "executive_pack.yaml").write_text(
+        "\n".join(
+            [
+                "name: executive_pack",
+                "label: Exec",
+                "description: test",
+                "verbs:",
+                "  - bad_capability_verb",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (verbs_dir / "bad_capability_verb.yaml").write_text(
+        "\n".join(
+            [
+                "name: bad_capability_verb",
+                "description: invalid capability verb",
+                "services:",
+                "  - LLMGatewayService",
+                "execution_mode: capability_backed",
+                "requires_capability_selector: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    registry = ToolRegistry(base_dir=base)
+    try:
+        registry.tools_for_packs(["executive_pack"])
+        assert False, "expected capability-backed registry invariant validation to fail"
+    except ValueError as exc:
+        assert "cannot bind LLMGatewayService" in str(exc)

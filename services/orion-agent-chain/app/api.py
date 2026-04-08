@@ -16,6 +16,13 @@ from .settings import settings
 from .tool_executor import ToolExecutor
 from .tool_registry import ToolRegistry
 from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult, ToolDef
+from orion.schemas.agents.bound_capability import (
+    BoundCapabilityExecutionFailureV1,
+    BoundCapabilityExecutionRequestV1,
+    BoundCapabilityExecutionResultV1,
+    CapabilityRecoveryDecisionV1,
+    CapabilityRecoveryReasonV1,
+)
 from orion.cognition.output_mode_classifier import classify_output_mode
 from orion.cognition.quality_evaluator import detect_generic_delivery_drift, should_rewrite_for_instructional
 from orion.cognition.runtime_pack_merge import ensure_delivery_pack_in_packs
@@ -275,6 +282,40 @@ def _resolve_delegate_tool_id(
     return _pick_finalization_tool(available_ids) or _delivery_override_for_plan_action_repeat(output_mode), "fallback_finalize"
 
 
+def _extract_bound_capability_contract(body: AgentChainRequest) -> BoundCapabilityExecutionRequestV1 | None:
+    if body.bound_capability_execution is not None:
+        return body.bound_capability_execution
+    tools = body.tools if isinstance(body.tools, list) else []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        candidate = tool.get("bound_execution")
+        if isinstance(candidate, dict):
+            logger.warning("[agent-chain] selected_verb_lost_contract_violation=1 legacy_bound_execution_field=tools[0].bound_execution")
+            return BoundCapabilityExecutionRequestV1.model_validate(candidate)
+    return None
+
+
+def _replan_allowed_for_bound_recovery(
+    contract: BoundCapabilityExecutionRequestV1,
+    reason: CapabilityRecoveryReasonV1,
+) -> bool:
+    recovery = contract.recovery
+    if recovery is None:
+        return False
+    if not bool(recovery.allow_replan):
+        return False
+    allowed_reasons: set[CapabilityRecoveryReasonV1] = {
+        CapabilityRecoveryReasonV1.selected_verb_missing,
+        CapabilityRecoveryReasonV1.invalid_bound_input,
+        CapabilityRecoveryReasonV1.no_compatible_capability,
+        CapabilityRecoveryReasonV1.policy_blocked,
+        CapabilityRecoveryReasonV1.capability_executor_unavailable,
+        CapabilityRecoveryReasonV1.internal_contract_error,
+    }
+    return reason in allowed_reasons
+
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -354,6 +395,201 @@ async def execute_agent_chain(
 
     tools_called: list[str] = []
     try:
+        try:
+            bound_contract = _extract_bound_capability_contract(body)
+        except Exception as exc:
+            reason = CapabilityRecoveryReasonV1.internal_contract_error
+            failure = BoundCapabilityExecutionFailureV1(
+                reason=reason,
+                selected_verb="unknown",
+                detail=str(exc),
+                recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+            )
+            logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+            return AgentChainResult(
+                mode=body.mode,
+                text=f"Bound capability execution failed: {exc}",
+                structured={"bound_capability": failure.model_dump(mode="json")},
+                planner_raw={"runtime_debug": dbg, "trace": []},
+                runtime_debug=dbg,
+            )
+        if isinstance(bound_contract, BoundCapabilityExecutionRequestV1):
+            dbg["bound_execution_received"] = True
+            logger.info(
+                "[agent-chain] bound_capability_request_received=1 selected_verb=%s planner_corr=%s",
+                bound_contract.selected_verb,
+                bound_contract.planner_correlation_id,
+            )
+            selected_verb = str(bound_contract.selected_verb or "").strip()
+            action_input = bound_contract.normalized_action_input
+            if not isinstance(action_input, dict):
+                reason = CapabilityRecoveryReasonV1.invalid_bound_input
+                dbg["bound_execution_recovery_reason"] = reason.value
+                if _replan_allowed_for_bound_recovery(bound_contract, reason):
+                    logger.warning("[agent-chain] bound_capability_recovery_replan=1 reason=%s", reason.value)
+                    dbg["bound_execution_replanned"] = True
+                    bound_contract.recovery.reason = reason
+                    bound_contract.recovery.replanned = True
+                else:
+                    failure = BoundCapabilityExecutionFailureV1(
+                        reason=reason,
+                        selected_verb=selected_verb or "unknown",
+                        detail="normalized_action_input must be an object",
+                        recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+                    )
+                    logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+                    return AgentChainResult(
+                        mode=body.mode,
+                        text="Bound capability execution failed: normalized_action_input must be an object.",
+                        structured={"bound_capability": failure.model_dump(mode="json")},
+                        planner_raw={"runtime_debug": dbg, "trace": []},
+                        runtime_debug=dbg,
+                    )
+            elif not selected_verb:
+                reason = CapabilityRecoveryReasonV1.selected_verb_missing
+                dbg["bound_execution_recovery_reason"] = reason.value
+                if _replan_allowed_for_bound_recovery(bound_contract, reason):
+                    logger.warning("[agent-chain] bound_capability_recovery_replan=1 reason=%s", reason.value)
+                    dbg["bound_execution_replanned"] = True
+                    bound_contract.recovery.reason = reason
+                    bound_contract.recovery.replanned = True
+                else:
+                    failure = BoundCapabilityExecutionFailureV1(
+                        reason=reason,
+                        selected_verb="unknown",
+                        detail="selected_verb is required",
+                        recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+                    )
+                    logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+                    return AgentChainResult(
+                        mode=body.mode,
+                        text="Bound capability execution failed: selected semantic verb is missing.",
+                        structured={"bound_capability": failure.model_dump(mode="json")},
+                        planner_raw={"runtime_debug": dbg, "trace": []},
+                        runtime_debug=dbg,
+                    )
+            else:
+                candidate = next((t for t in tools if t.tool_id == selected_verb), None)
+                is_capability = bool(
+                    candidate
+                    and (
+                        str(candidate.execution_mode or "").strip().lower() == "capability_backed"
+                        or bool(candidate.requires_capability_selector)
+                    )
+                )
+                if not is_capability:
+                    reason = CapabilityRecoveryReasonV1.policy_blocked
+                    dbg["bound_execution_recovery_reason"] = reason.value
+                    failure = BoundCapabilityExecutionFailureV1(
+                        reason=reason,
+                        selected_verb=selected_verb,
+                        detail="selected verb is not capability-backed",
+                        recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+                    )
+                    logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+                    return AgentChainResult(
+                        mode=body.mode,
+                        text=f"Bound execution rejected: '{selected_verb}' is not capability-backed.",
+                        structured={"bound_capability": failure.model_dump(mode="json")},
+                        planner_raw={"runtime_debug": dbg, "trace": []},
+                        runtime_debug=dbg,
+                    )
+                try:
+                    observation = await tool_executor.execute_llm_verb(
+                        selected_verb,
+                        action_input,
+                        parent_correlation_id=parent_corr_id,
+                    )
+                except FileNotFoundError:
+                    reason = CapabilityRecoveryReasonV1.selected_verb_missing
+                    dbg["bound_execution_recovery_reason"] = reason.value
+                    if _replan_allowed_for_bound_recovery(bound_contract, reason):
+                        logger.warning("[agent-chain] bound_capability_recovery_replan=1 reason=%s", reason.value)
+                        dbg["bound_execution_replanned"] = True
+                        bound_contract.recovery.reason = reason
+                        bound_contract.recovery.replanned = True
+                    else:
+                        failure = BoundCapabilityExecutionFailureV1(
+                            reason=reason,
+                            selected_verb=selected_verb,
+                            detail=f"verb '{selected_verb}' no longer exists",
+                            recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+                        )
+                        logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+                        return AgentChainResult(
+                            mode=body.mode,
+                            text=f"Bound capability execution failed: verb '{selected_verb}' no longer exists.",
+                            structured={"bound_capability": failure.model_dump(mode="json")},
+                            planner_raw={"runtime_debug": dbg, "trace": []},
+                            runtime_debug=dbg,
+                        )
+                except Exception as e:
+                    reason = CapabilityRecoveryReasonV1.capability_executor_unavailable
+                    failure = BoundCapabilityExecutionFailureV1(
+                        reason=reason,
+                        selected_verb=selected_verb,
+                        detail=str(e),
+                        recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+                    )
+                    logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+                    return AgentChainResult(
+                        mode=body.mode,
+                        text=f"Bound capability execution failed: {e}",
+                        structured={"bound_capability": failure.model_dump(mode="json")},
+                        planner_raw={"runtime_debug": dbg, "trace": []},
+                        runtime_debug=dbg,
+                    )
+                else:
+                    if not dbg.get("bound_execution_replanned"):
+                        selected_skill = observation.get("selected_skill") if isinstance(observation, dict) else None
+                        if not selected_skill:
+                            reason = CapabilityRecoveryReasonV1.no_compatible_capability
+                            failure = BoundCapabilityExecutionFailureV1(
+                                reason=reason,
+                                selected_verb=selected_verb,
+                                detail="No compatible capability skill was resolved",
+                                recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+                                capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+                                observation=observation if isinstance(observation, dict) else {},
+                            )
+                            logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+                            return AgentChainResult(
+                                mode=body.mode,
+                                text="Bound capability execution failed: no compatible capability skill was resolved.",
+                                structured={"bound_capability": failure.model_dump(mode="json")},
+                                planner_raw={"runtime_debug": dbg, "trace": []},
+                                runtime_debug=dbg,
+                            )
+                        dbg["bound_execution_completed"] = True
+                        logger.info(
+                            "[agent-chain] bound_capability_direct_execute=1 selected_verb=%s selected_skill=%s selected_verb_preserved=1",
+                            selected_verb,
+                            selected_skill,
+                        )
+                        result_obj = BoundCapabilityExecutionResultV1(
+                            selected_verb=selected_verb,
+                            normalized_action_input=action_input,
+                            selected_skill_family=(observation or {}).get("selected_skill_family") if isinstance(observation, dict) else None,
+                            selected_skill=selected_skill,
+                            policy_metadata=bound_contract.policy_metadata,
+                            capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+                            structured_skill_output=observation if isinstance(observation, dict) else {},
+                            execution_path="direct_execute",
+                            recovery=CapabilityRecoveryDecisionV1(
+                                reason=CapabilityRecoveryReasonV1.internal_contract_error,
+                                allow_replan=False,
+                                replanned=False,
+                                detail="not_used",
+                            ),
+                        )
+                        return AgentChainResult(
+                            mode=body.mode,
+                            text=str(observation.get("execution_summary") or "Capability executed."),
+                            structured={"finalization_reason": "bound_capability_execution", "bound_capability": result_obj.model_dump(mode="json")},
+                            planner_raw={"runtime_debug": dbg, "trace": []},
+                            runtime_debug=dbg,
+                        )
+
         for step_idx in range(settings.default_max_steps):
             consecutive_plan_actions = consecutive_tool_count(tools_called=tools_called, candidate="plan_action")
             if step_idx > 0:

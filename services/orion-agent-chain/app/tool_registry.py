@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, List
+import logging
 
 from orion.cognition.packs_loader import PackManager
 from orion.cognition.planner.loader import VerbRegistry
@@ -31,6 +32,8 @@ _RICH_INPUT_SCHEMA: dict[str, Any] = {
     "required": ["text"],
 }
 
+logger = logging.getLogger("agent-chain.tool-registry")
+
 
 class ToolRegistry:
     """
@@ -43,13 +46,36 @@ class ToolRegistry:
         self._pack_manager = PackManager(self.base_dir)
         self._verb_registry = VerbRegistry(self.base_dir / "verbs")
         self._loaded = False
+        self._capability_registry_validated = False
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
         self._pack_manager.load_packs()
         self._verb_registry.load()
+        self._validate_capability_backed_registry_invariants()
         self._loaded = True
+
+    def _validate_capability_backed_registry_invariants(self) -> None:
+        if self._capability_registry_validated:
+            return
+        violations: list[str] = []
+        for verb_cfg in self._verb_registry.list():
+            execution_mode = str(verb_cfg.execution_mode or "").strip().lower()
+            requires_selector = bool(verb_cfg.requires_capability_selector)
+            if not (execution_mode == "capability_backed" or requires_selector):
+                continue
+            if str(verb_cfg.name).startswith("skills."):
+                violations.append(f"{verb_cfg.name}: capability-backed semantic verbs cannot use skills.* namespace")
+            services = verb_cfg.services or []
+            if "LLMGatewayService" in services:
+                violations.append(f"{verb_cfg.name}: capability-backed verb cannot bind LLMGatewayService")
+            if not requires_selector:
+                violations.append(f"{verb_cfg.name}: capability-backed verb must require_capability_selector=true")
+        if violations:
+            raise ValueError("Capability-backed registry invariant violation(s): " + "; ".join(violations))
+        logger.info("[agent-chain] capability_registry_validation_ok=1")
+        self._capability_registry_validated = True
 
     def tools_for_packs(self, pack_names: List[str]) -> List[ToolDef]:
         """

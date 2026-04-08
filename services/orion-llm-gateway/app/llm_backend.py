@@ -788,6 +788,13 @@ def _execute_openai_chat(
 
     # 3. Execute
     logger.info(f"[LLM-GW] {backend_name} req model={model} msgs={len(body.messages or [])} url={url}")
+    logger.info(
+        "[LLM-GW] llm_gateway_payload_budget corr=%s route=%s served_by=%s payload_max_tokens=%s",
+        body.trace_id,
+        route,
+        served_by,
+        payload.get("max_tokens"),
+    )
 
     try:
         with _common_http_client() as client:
@@ -822,6 +829,19 @@ def _execute_openai_chat(
                 )
             text = _extract_text_from_openai_response(raw_data)
             reasoning_content = _extract_reasoning_from_openai_response(raw_data)
+            raw_usage = raw_data.get("usage") if isinstance(raw_data.get("usage"), dict) else {}
+            raw_choices = raw_data.get("choices") if isinstance(raw_data.get("choices"), list) else []
+            first_choice = raw_choices[0] if raw_choices and isinstance(raw_choices[0], dict) else {}
+            finish_reason = first_choice.get("finish_reason")
+            completion_tokens = raw_usage.get("completion_tokens")
+            logger.info(
+                "[LLM-GW] llm_gateway_provider_result corr=%s route=%s served_by=%s completion_tokens=%s finish_reason=%s",
+                body.trace_id,
+                route,
+                served_by,
+                completion_tokens,
+                finish_reason,
+            )
             if _thought_debug_enabled():
                 _debug_think_capture(str(text or ""), "raw_provider_text")
                 logger.warning(

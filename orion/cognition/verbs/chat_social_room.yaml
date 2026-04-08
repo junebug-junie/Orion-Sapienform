@@ -1,0 +1,38 @@
+name: chat_social_room
+label: Chat (Social Room)
+description: >
+  Social-room conversational profile for Oríon. Keeps the interaction peer-oriented,
+  grounded, lightly recalled, and explicitly non-agentic by default.
+
+category: ExecutiveControl
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+recall_profile: social.room.v1
+
+timeout_ms: 300000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: chat_social_room.j2
+
+plan:
+  - name: llm_chat_social_room
+    description: >
+      Single-step social reply for peer conversation, identity continuity, and
+      memory-safe grounding. No tools or action execution by default.
+    order: 0
+    prompt_template: chat_social_room.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: true
+
+safety_rules: []

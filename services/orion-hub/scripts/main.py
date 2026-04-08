@@ -2,6 +2,9 @@
 
 import json
 import logging
+import os
+import subprocess
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI
@@ -10,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from scripts.websocket_handler import websocket_endpoint
+from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 
@@ -27,6 +31,41 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("orion-hub")
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+TEMPLATES_DIR = SERVICE_ROOT / "templates"
+STATIC_DIR = SERVICE_ROOT / "static"
+
+
+def _discover_git_sha() -> str:
+    """Best-effort git SHA discovery for cache-bust tokens when env vars are absent."""
+    repo_root = SERVICE_ROOT.parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return (result.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def build_hub_ui_asset_version() -> str:
+    """Build an explicit cache-busting token for Hub static assets."""
+    explicit = os.getenv("HUB_UI_BUILD")
+    build_id = os.getenv("BUILD_ID")
+    git_sha = os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT")
+    discovered_git_sha = _discover_git_sha()
+    build_ts = os.getenv("BUILD_TIMESTAMP")
+    service_version = settings.SERVICE_VERSION
+
+    for candidate in (explicit, build_id, git_sha, discovered_git_sha, build_ts, service_version):
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return "dev"
 
 
 # ───────────────────────────────────────────────────────────────
@@ -70,6 +109,15 @@ class PresenceState:
             "active_connections": self.active_connections,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
         }
+
+
+class HubStaticFiles(StaticFiles):
+    """Static responses are revalidated to avoid stale Hub JS when operators refresh."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 # ───────────────────────────────────────────────────────────────
@@ -134,21 +182,27 @@ async def startup_event():
     # Load UI HTML Template
     # ------------------------------------------------------------
     try:
-        with open("templates/index.html", "r") as f:
+        with open(TEMPLATES_DIR / "index.html", "r", encoding="utf-8") as f:
             html_content = f.read()
+        ui_asset_version = build_hub_ui_asset_version()
         html_content = html_content.replace(
             "{{NOTIFY_TOAST_SECONDS}}",
             str(settings.NOTIFY_TOAST_SECONDS),
         )
+        html_content = html_content.replace(
+            "{{HUB_UI_ASSET_VERSION}}",
+            ui_asset_version,
+        )
         hub_cfg = {
             "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
             "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
+            "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
         }
         html_content = html_content.replace(
             "{{HUB_CFG}}",
             json.dumps(hub_cfg),
         )
-        logger.info("UI template loaded successfully.")
+        logger.info("UI template loaded successfully (ui_asset_version=%s).", ui_asset_version)
     except FileNotFoundError:
         logger.error("CRITICAL: 'templates/index.html' not found.")
         html_content = "<html><body><h1>UI template missing</h1></body></html>"
@@ -179,8 +233,9 @@ app.include_router(api_router)
 
 # Real-time WS endpoint
 app.add_websocket_route("/ws", websocket_endpoint)
+app.add_websocket_route("/ws/service-logs", service_logs_websocket_endpoint)
 
 # Static files for JS/CSS
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", HubStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 logger.info("Routes, WebSocket endpoint, and static mounts ready.")

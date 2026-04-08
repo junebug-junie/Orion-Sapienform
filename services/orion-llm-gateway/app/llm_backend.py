@@ -3,6 +3,7 @@ from functools import lru_cache
 from typing import Any, Dict, Optional, List, Coroutine, Sequence, Tuple
 import asyncio
 import logging
+import os
 import time
 import json
 
@@ -20,6 +21,27 @@ from orion.spark.integration import (
 )
 
 logger = logging.getLogger("orion-llm-gateway.backend")
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
+
+
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
 
 
 @dataclass(frozen=True)
@@ -178,6 +200,71 @@ def _extract_text_from_openai_response(data: Dict[str, Any]) -> str:
 
     logger.warning(f"[LLM-GW] Response format not understood: {str(data)[:200]}...")
     return ""
+
+
+def _extract_reasoning_from_openai_response(data: Dict[str, Any]) -> Optional[str]:
+    try:
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+        first = choices[0] or {}
+        msg = first.get("message")
+        if isinstance(msg, dict):
+            reasoning = msg.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return reasoning.strip()
+        reasoning = first.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning.strip()
+    except Exception:
+        return None
+    return None
+
+
+def _split_think_blocks(text: str) -> Tuple[str, Optional[str]]:
+    raw = str(text or "")
+    if "<think>" not in raw:
+        return raw.strip(), None
+    visible = raw
+    traces: List[str] = []
+    while "<think>" in visible:
+        start = visible.find("<think>")
+        if start < 0:
+            break
+        end = visible.find("</think>", start)
+        close_len = len("</think>") if end >= 0 else 0
+        block = visible[start + len("<think>") : (end if end >= 0 else len(visible))].strip()
+        if block:
+            traces.append(block)
+        if end >= 0:
+            visible = (visible[:start] + visible[end + close_len :]).strip()
+        else:
+            # Unclosed think block: strip from open tag to end to avoid leaking reasoning.
+            visible = visible[:start].strip()
+            break
+    reasoning = "\n\n".join(traces).strip() if traces else None
+    return visible.strip(), (reasoning or None)
+
+
+def _debug_think_capture(raw_text: str, label: str) -> None:
+    if not raw_text:
+        logger.warning("think_debug label=%s raw_text empty", label)
+        return
+    start = raw_text.find("<think>")
+    end = raw_text.find("</think>")
+    excerpt_start = max(0, (start if start >= 0 else 0) - 200)
+    excerpt_end = min(len(raw_text), ((end + len("</think>")) if end >= 0 else min(len(raw_text), 400)) + 200)
+    excerpt = raw_text[excerpt_start:excerpt_end]
+    logger.warning(
+        "think_debug label=%s has_open=%s has_close=%s start=%s end=%s excerpt=%r raw_len=%s",
+        label,
+        start >= 0,
+        end >= 0,
+        start,
+        end,
+        excerpt,
+        len(raw_text),
+    )
 
 
 def _extract_vector_from_openai_response(data: Dict[str, Any]) -> Optional[List[float]]:
@@ -715,7 +802,69 @@ def _execute_openai_chat(
 
             r.raise_for_status()
             raw_data = r.json()
+            if _thought_debug_enabled():
+                choices = raw_data.get("choices") if isinstance(raw_data, dict) else None
+                first = choices[0] if isinstance(choices, list) and choices else {}
+                msg = first.get("message") if isinstance(first, dict) else {}
+                raw_reasoning = (msg.get("reasoning_content") if isinstance(msg, dict) else None) or (
+                    first.get("reasoning_content") if isinstance(first, dict) else None
+                )
+                logger.info(
+                    "THOUGHT_DEBUG_LLM stage=raw_response corr=%s model=%s keys=%s raw_reasoning_exists=%s raw_reasoning_len=%s raw_reasoning_snippet=%r raw_content_len=%s raw_content_snippet=%r",
+                    getattr(body, "trace_id", None),
+                    model,
+                    sorted(list(raw_data.keys())) if isinstance(raw_data, dict) else [],
+                    bool(str(raw_reasoning or "").strip()),
+                    _debug_len(raw_reasoning),
+                    _debug_snippet(raw_reasoning),
+                    _debug_len((msg or {}).get("content") if isinstance(msg, dict) else None),
+                    _debug_snippet((msg or {}).get("content") if isinstance(msg, dict) else None),
+                )
             text = _extract_text_from_openai_response(raw_data)
+            reasoning_content = _extract_reasoning_from_openai_response(raw_data)
+            if _thought_debug_enabled():
+                _debug_think_capture(str(text or ""), "raw_provider_text")
+                logger.warning(
+                    "think_debug label=pre_split structured_reasoning_exists=%s structured_reasoning_len=%s",
+                    bool(str(reasoning_content or "").strip()),
+                    _debug_len(reasoning_content),
+                )
+            think_blocks_found = "<think>" in str(text or "") and "</think>" in str(text or "")
+            text, think_reasoning = _split_think_blocks(text)
+            if _thought_debug_enabled():
+                logger.warning(
+                    "think_debug label=post_split visible_len=%s extracted_think_len=%s extracted_think_snippet=%r",
+                    _debug_len(text),
+                    _debug_len(think_reasoning),
+                    _debug_snippet(think_reasoning),
+                )
+            if not reasoning_content:
+                reasoning_content = think_reasoning
+            if _thought_debug_enabled():
+                logger.info(
+                    "THOUGHT_DEBUG_LLM stage=extracted corr=%s model=%s reasoning_exists=%s reasoning_len=%s visible_len=%s think_blocks_found=%s reasoning_snippet=%r visible_snippet=%r",
+                    getattr(body, "trace_id", None),
+                    model,
+                    bool(str(reasoning_content or "").strip()),
+                    _debug_len(reasoning_content),
+                    _debug_len(text),
+                    think_blocks_found,
+                    _debug_snippet(reasoning_content),
+                    _debug_snippet(text),
+                )
+            if reasoning_content:
+                logger.info(
+                    "[LLM-GW] reasoning_trace_extracted corr=%s model=%s chars=%s",
+                    getattr(body, "trace_id", None),
+                    model,
+                    len(reasoning_content.strip()),
+                )
+            else:
+                logger.info(
+                    "[LLM-GW] reasoning_trace_extracted corr=%s model=%s chars=0",
+                    getattr(body, "trace_id", None),
+                    model,
+                )
 
             # 3b. Spark Post-Ingest (assistant reply)
             _spark_post_ingest_for_reply(body, spark_meta, text)
@@ -726,11 +875,32 @@ def _execute_openai_chat(
             # Post-processing: Spark Introspect
             _maybe_publish_spark_introspect(body, spark_meta, text)
 
+            reasoning_trace = (
+                {
+                    "role": "reasoning",
+                    "stage": "post_answer",
+                    "content": reasoning_content,
+                }
+                if reasoning_content
+                else None
+            )
+            trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+            print(
+                "===THINK_HOP=== hop=llm_gateway_out "
+                f"corr={getattr(body, 'trace_id', None)} "
+                f"has_reasoning_content={bool(reasoning_content)} "
+                f"reasoning_len={len(reasoning_content) if reasoning_content else 0} "
+                f"trace_len={len(trace_content) if trace_content else 0} "
+                f"preview={_preview_text(reasoning_content)}",
+                flush=True,
+            )
             return {
                 "text": text,
                 "spark_meta": spark_meta,
                 "spark_vector": spark_vector,
                 "raw": raw_data,
+                "reasoning_content": reasoning_content,
+                "reasoning_trace": reasoning_trace,
             }
 
     except httpx.TimeoutException:

@@ -1,0 +1,23 @@
+name: finalize_response
+label: Finalize Response
+description: >
+  Transform internal reasoning trace into the final user-facing artifact.
+  Synthesize prior tool results and observations into a complete, concrete answer.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: finalize_response_prompt.j2
+
+steps:
+  - name: finalize
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: finalize_response_prompt.j2

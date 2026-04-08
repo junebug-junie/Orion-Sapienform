@@ -18,6 +18,10 @@ class ToolDef(BaseModel):
     description: Optional[str] = None
     input_schema: Dict[str, Any] = Field(default_factory=dict)
     output_schema: Dict[str, Any] = Field(default_factory=dict)
+    execution_mode: Optional[Literal["reasoning_only", "capability_backed", "mixed"]] = None
+    requires_capability_selector: bool = False
+    preferred_skill_families: List[str] = Field(default_factory=list)
+    side_effect_level: Optional[Literal["none", "low", "moderate", "high"]] = None
 
 
 # ─────────────────────────────────────────────
@@ -33,9 +37,11 @@ class AgentChainRequest(BaseModel):
     session_id: Optional[str] = None
     user_id: Optional[str] = None
     goal_description: Optional[str] = None
-    messages: Optional[List[LLMMessage]] = None 
+    messages: Optional[List[LLMMessage]] = None
     tools: Optional[List[Dict[str, Any]]] = None
     packs: Optional[List[str]] = None
+    output_mode: Optional[str] = None
+    response_profile: Optional[str] = None
 
 
 class AgentChainResult(BaseModel):
@@ -46,6 +52,10 @@ class AgentChainResult(BaseModel):
     text: str
     structured: Dict[str, Any] = Field(default_factory=dict)
     planner_raw: Dict[str, Any] = Field(default_factory=dict)
+    runtime_debug: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Compact QA wiring flags (output_mode, tools, overrides, etc.)",
+    )
 
 
 # ─────────────────────────────────────────────
@@ -125,6 +135,8 @@ class PlannerResponse(BaseModel):
     request_id: Optional[str] = None
     status: Literal["ok", "error", "timeout"] = "ok"
     error: Optional[Dict[str, Any]] = None
+    stop_reason: Optional[Literal["final_answer", "delegate", "continue", "error"]] = None
+    continue_reason: Optional[str] = None
     final_answer: Optional[FinalAnswer] = None
     trace: List[TraceStep] = Field(default_factory=list)
     usage: Optional[Usage] = None

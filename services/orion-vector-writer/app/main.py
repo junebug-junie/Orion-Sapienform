@@ -185,6 +185,23 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
             "mode": mode,
             "source": "cognition.trace"
         })
+    elif kind == "metacognitive.trace.v1":
+        collection = settings.VECTOR_WRITER_METACOG_COLLECTION
+        raw_trace = str(payload.get("content") or "").strip()
+        if not raw_trace:
+            return None
+        summary = raw_trace[: settings.VECTOR_WRITER_METACOG_SUMMARY_MAX_CHARS]
+        content = summary
+        meta.update(
+            {
+                "correlation_id": str(payload.get("correlation_id") or env.correlation_id),
+                "session_id": payload.get("session_id"),
+                "trace_role": payload.get("trace_role"),
+                "model": payload.get("model"),
+                "summary": summary,
+                "raw_trace": raw_trace,
+            }
+        )
     else:
         # Fallback for generic text/event
         content = payload.get("text") or payload.get("summary") or ""
@@ -258,12 +275,20 @@ async def handle_envelope(env: BaseEnvelope) -> None:
                 meta["embedding_dim"] = upsert.embedding_dim
             meta = sanitize_chroma_metadata(meta)
 
+            document_text = None
+            if upsert.documents:
+                first_doc = upsert.documents[0]
+                if isinstance(first_doc, str) and first_doc.strip():
+                    document_text = first_doc
+            if document_text is None and isinstance(upsert.text, str) and upsert.text.strip():
+                document_text = upsert.text
+
             collection = chroma_client.get_or_create_collection(name=collection_name)
             await asyncio.to_thread(
                 collection.upsert,
                 ids=[upsert.doc_id],
                 embeddings=[upsert.embedding],
-                documents=[upsert.text] if upsert.text is not None else None,
+                documents=[document_text] if document_text is not None else None,
                 metadatas=[meta],
             )
             logger.info(

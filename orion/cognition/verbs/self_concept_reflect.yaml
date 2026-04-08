@@ -1,0 +1,3 @@
+name: self_concept_reflect
+description: Generate bounded reflective self-study findings from authoritative facts and induced concepts.
+personality_file: orion/cognition/personality/orion_identity.yaml

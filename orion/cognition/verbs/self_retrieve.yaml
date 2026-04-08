@@ -1,0 +1,2 @@
+name: self_retrieve
+description: Retrieve self-study records by explicit trust mode without flattening authoritative, induced, and reflective lanes.

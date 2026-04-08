@@ -14,6 +14,7 @@ orion-ollama-host
 orion-voip-endpoint
 voip-endopoint
 orion-llama-cola-host
+orion-gdb-client
 # for testing
 #orion-llamacpp-host
 #orion-agent-chain
@@ -26,4 +27,4 @@ orion-bus-mirror
 orion-bus-tap
 #orion-biometrics
 #orion-dream
-orion-meta-tags
+#orion-meta-tags

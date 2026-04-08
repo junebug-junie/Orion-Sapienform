@@ -313,7 +313,7 @@ flowchart LR
 
     %% ── Hardware Mesh ────────────────────────────────
     subgraph Mesh["Hardware Mesh (Nodes)"]
-        AtlasNode["Atlas<br/>DL380 Gen10<br/>V100 x3"]
+        AtlasNode["Atlas<br/>DL380 Gen10<br/>V100 x4"]
         AthenaNode["Athena<br/>DL360 Gen10"]
         ApolloNode["Apollo<br/>X10DRG-Q<br/>MI50 x2"]
         CirceNode["Circe<br/>DL380 Gen10<br/>future V100 32GB x2"]
@@ -479,7 +479,7 @@ We tune geometry, surfaces, and attention policies so that changes should show u
   - HP ProLiant DL380 Gen10
   - 2 × Intel **Xeon Platinum 8168** (24C/48T each; 2.7 GHz base, up to 3.7 GHz turbo)
   - **192 GB** DDR4 ECC RAM
-  - GPUs: **2 × NVIDIA V100 16 GB SMX2** on NVLINK carrier + **1 × NVIDIA V100 16 GB PCIe**
+  - GPUs: **2 × NVIDIA V100 16 GB SMX2** and **2 × NVIDIA V100 32 GB SMX2** on NVLINK carrier + **2 × NVIDIA V100 16 GB PCIe**
 
 - **Athena — Orchestration and analytics**
 

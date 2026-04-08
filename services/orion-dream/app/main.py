@@ -4,14 +4,15 @@
 import asyncio
 import logging
 from fastapi import FastAPI
+from fastapi import HTTPException
 from contextlib import asynccontextmanager
 
-from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter, OrionBusAsync
+from orion.core.bus.bus_service_chassis import OrionBusAsync
+from orion.core.bus.enforce import enforcer
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.dream import DreamTriggerPayload
 from app.settings import settings
-from app.dream_api import app as dream_api
-from app.dream_cycle import run_dream
+from app.dream_api import router as dream_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,59 +20,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("dream-app")
 
-def chassis_cfg() -> ChassisConfig:
-    return ChassisConfig(
-        service_name=settings.SERVICE_NAME,
-        service_version=settings.SERVICE_VERSION,
-        node_name=settings.NODE_NAME,
-        bus_url=settings.ORION_BUS_URL,
-        bus_enabled=settings.ORION_BUS_ENABLED,
-        heartbeat_interval_sec=settings.HEARTBEAT_INTERVAL_SEC,
-        health_channel=settings.ORION_HEALTH_CHANNEL,
-        error_channel=settings.ERROR_CHANNEL,
-        shutdown_timeout_sec=settings.SHUTDOWN_GRACE_SEC,
-    )
-
-async def handle_dream_trigger(env: BaseEnvelope):
-    logger.info(f"Received dream trigger from {env.source}")
-    try:
-        # Validate payload
-        # Note: In Hunter, we might receive different kinds.
-        if env.kind != "dream.trigger":
-            # If we subscribed to pattern, we might get other things, but here we expect dream.trigger
-            # Or maybe we support multiple.
-            logger.info(f"Ignored kind: {env.kind}")
-            return
-
-        payload = DreamTriggerPayload.model_validate(env.payload)
-
-        # Trigger the legacy dream cycle (refactored to be async aware if needed)
-        # Assuming run_dream is safe to call.
-        # If run_dream expects arguments from payload, pass them.
-        # Currently run_dream() takes no args in the original code, but we should upgrade it eventually.
-        # For now, we just trigger it.
-        logger.info(f"Triggering dream cycle with mode={payload.mode}")
-        status = await run_dream()
-        logger.info(f"Dream cycle finished: {status}")
-
-    except Exception as e:
-        logger.error(f"Error handling dream trigger: {e}")
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🌙 Orion Dream module starting up…")
-
-    # Use Hunter to listen for triggers
-    hunter = Hunter(
-        chassis_cfg(),
-        pattern=settings.CHANNEL_DREAM_TRIGGER,
-        handler=handle_dream_trigger
-    )
-    await hunter.start_background()
+    """
+    Dream execution is owned by cortex-orch (dream.trigger -> dream_cycle).
+    This service provides HTTP readout and publishes compatibility triggers only.
+    """
+    logger.info("🌙 Orion Dream module starting up (readout façade; triggers go to cortex-orch)…")
 
     yield
 
-    await hunter.stop()
     logger.info("💤 Orion Dream module shutting down…")
 
 app = FastAPI(
@@ -81,29 +39,75 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount dream_api routes
-app.mount("/dreams", dream_api)
+# Dream readout routes
+app.include_router(dream_router, prefix="/dreams")
 
 @app.post("/dreams/run", summary="Manually run the dream cycle")
 async def run_dream_endpoint(mode: str = "standard"):
     """
-    Triggers the dream cycle via the event bus.
+    Publishes `dream.trigger` on the bus; cortex-orch normalizes it to `dream_cycle`.
     """
     if not settings.ORION_BUS_ENABLED:
         return {"error": "Bus disabled"}
 
-    # We publish a message to ourselves (or whoever is listening, which is us)
-    bus = OrionBusAsync(settings.ORION_BUS_URL)
-    await bus.connect()
+    trigger = DreamTriggerPayload(mode=mode)
+    channel = settings.CHANNEL_DREAM_TRIGGER
+    catalog_entry = enforcer.entry_for(channel)
+    catalog_schema_id = catalog_entry.get("schema_id") if catalog_entry else None
+    logger.info(
+        "Dream trigger request received channel=%s kind=%s payload_schema=%s catalog_schema=%s catalog_present=%s mode=%s",
+        channel,
+        "dream.trigger",
+        type(trigger).__name__,
+        catalog_schema_id,
+        bool(catalog_entry),
+        mode,
+    )
+    logger.debug("Dream trigger payload=%s", trigger.model_dump(mode="json"))
 
+    # cortex-orch consumes it and normalizes to dream_cycle
+    bus = OrionBusAsync(settings.ORION_BUS_URL)
     try:
-        trigger = DreamTriggerPayload(mode=mode)
+        logger.info("Connecting dream trigger bus url=%s", settings.ORION_BUS_URL)
+        await bus.connect()
         env = BaseEnvelope(
             kind="dream.trigger",
             source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
             payload=trigger.model_dump(mode="json")
         )
-        await bus.publish(settings.CHANNEL_DREAM_TRIGGER, env)
+        logger.info(
+            "Publishing dream trigger channel=%s kind=%s payload_schema=%s correlation_id=%s",
+            channel,
+            env.kind,
+            type(trigger).__name__,
+            env.correlation_id,
+        )
+        await bus.publish(channel, env)
         return {"status": "triggered", "mode": mode}
+    except Exception as exc:
+        logger.exception(
+            "Dream trigger publish failed channel=%s kind=%s payload_schema=%s catalog_schema=%s bus_url=%s",
+            channel,
+            "dream.trigger",
+            type(trigger).__name__,
+            catalog_schema_id,
+            settings.ORION_BUS_URL,
+        )
+        hint = (
+            "Verify Redis connectivity plus orion/bus/channels.yaml and "
+            "orion/schemas/registry.py registrations for dream.trigger."
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "dream_trigger_publish_failed",
+                "channel": channel,
+                "kind": "dream.trigger",
+                "schema_id": type(trigger).__name__,
+                "catalog_schema_id": catalog_schema_id,
+                "message": str(exc),
+                "hint": hint,
+            },
+        ) from exc
     finally:
         await bus.close()

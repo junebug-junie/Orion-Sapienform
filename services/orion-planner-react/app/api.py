@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 
+from orion.core.llm_json import parse_json_object, repair_json
 from .settings import settings
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage
@@ -37,9 +37,481 @@ logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
+
+class PlannerTransportError(RuntimeError):
+    """LLM transport, RPC, or gateway failure."""
+
+
+class PlannerParseError(RuntimeError):
+    """Planner response could not be parsed as JSON."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_text: str = "",
+        salvage_succeeded: bool = False,
+        parse_mode: str = "unrecoverable_parse_failure",
+        salvage_source: str = "none",
+    ) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+        self.salvage_succeeded = salvage_succeeded
+        self.parse_mode = parse_mode
+        self.salvage_source = salvage_source
+
+
+class PlannerSchemaError(RuntimeError):
+    """Planner response JSON was present but semantically invalid."""
+
+
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
+
+
+def _truncate_for_log(value: Any, limit: int = 300) -> str:
+    if isinstance(value, str):
+        raw = value
+    else:
+        try:
+            raw = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            raw = repr(value)
+    if len(raw) > limit:
+        return raw[:limit] + "... [TRUNCATED]"
+    return raw
+
+
+
+
+def _strip_code_fence_wrapper(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+
+    lines = stripped.splitlines()
+    if not lines:
+        return stripped
+
+    opening = lines[0].strip()
+    if not opening.startswith("```"):
+        return stripped
+
+    body = lines[1:]
+    if body and body[-1].strip().startswith("```"):
+        body = body[:-1]
+    return "\n".join(body).strip()
+
+
+def _strip_leading_language_marker(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+
+    lines = stripped.splitlines()
+    if not lines:
+        return stripped
+
+    marker = lines[0].strip().lower()
+    if marker in {"bash", "sh", "plaintext", "json"} and len(lines) > 1:
+        return "\n".join(lines[1:]).strip()
+    return stripped
+
+
+def _extract_first_balanced_json_object(text: str) -> Optional[str]:
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            continue
+
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+
+    return None
+
+
+def _extract_text_field(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, dict):
+        for key in ("content", "text", "answer"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+    return None
+
+
+def _looks_like_planner_contract_text(text: str) -> bool:
+    lowered = (text or "").lower()
+    return '"thought"' in lowered or '"finish"' in lowered or '"action"' in lowered or '"final_answer"' in lowered
+
+
+def _extract_markdown_code_block(text: str) -> Optional[Tuple[str, str]]:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return None
+    lines = stripped.splitlines()
+    if len(lines) < 2:
+        return None
+    opening = lines[0].strip()
+    language = opening[3:].strip().lower()
+    body = lines[1:]
+    if body and body[-1].strip().startswith("```"):
+        body = body[:-1]
+    body_text = "\n".join(body).strip()
+    if not body_text:
+        return None
+    return language, body_text
+
+
+def _strip_think_blocks(text: str) -> str:
+    cleaned = str(text or "")
+    while "<think>" in cleaned and "</think>" in cleaned:
+        start = cleaned.find("<think>")
+        end = cleaned.find("</think>", start)
+        if end == -1:
+            break
+        cleaned = (cleaned[:start] + cleaned[end + len("</think>") :]).strip()
+    return cleaned.strip()
+
+
+def _salvage_final_answer_text(raw_text: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    stripped = raw_text.strip()
+    if not stripped:
+        return None, {}
+
+    code_block = _extract_markdown_code_block(stripped)
+    if code_block is not None:
+        language, body = code_block
+        if not _looks_like_planner_contract_text(body):
+            return (
+                {
+                    "thought": "Planner emitted final answer content directly.",
+                    "finish": True,
+                    "action": None,
+                    "final_answer": {"content": body},
+                },
+                {
+                    "salvage_succeeded": True,
+                    "parse_mode": "salvaged_from_code_block",
+                    "salvage_source": language or "code_block",
+                    "final_answer_salvaged": True,
+                    "action_salvaged": False,
+                    "raw_snippet": _truncate_for_log(raw_text),
+                    "salvaged_snippet": _truncate_for_log(body),
+                },
+            )
+
+    if not _looks_like_planner_contract_text(stripped):
+        has_answer_shape = any(marker in stripped for marker in ("##", "###", "1.", "2.", "- ", "* ", "Step "))
+        if has_answer_shape or len(stripped) >= 80:
+            return (
+                {
+                    "thought": "Planner emitted mixed text final answer content.",
+                    "finish": True,
+                    "action": None,
+                    "final_answer": {"content": stripped},
+                },
+                {
+                    "salvage_succeeded": True,
+                    "parse_mode": "salvaged_final_answer_from_mixed_text",
+                    "salvage_source": "mixed_text",
+                    "final_answer_salvaged": True,
+                    "action_salvaged": False,
+                    "raw_snippet": _truncate_for_log(raw_text),
+                    "salvaged_snippet": _truncate_for_log(stripped),
+                },
+            )
+
+    return None, {}
+
+
+def _final_answer_type_name(payload: Any) -> str:
+    if isinstance(payload, dict) and "final_answer" in payload:
+        return type(payload.get("final_answer")).__name__
+    return "missing"
+
+
+def _parse_planner_response_text(raw_text: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    raw = raw_text if isinstance(raw_text, str) else str(raw_text or "")
+    stripped_raw = raw.strip()
+    first_line = stripped_raw.splitlines()[0].strip().lower() if stripped_raw.splitlines() else ""
+    needs_salvage_hint = (
+        stripped_raw.startswith("```")
+        or first_line in {"bash", "sh", "plaintext", "json"}
+        or not stripped_raw.startswith("{")
+        or not stripped_raw.endswith("}")
+    )
+
+    parse_attempts: List[Tuple[str, bool, str]] = []
+
+    def add_candidate(candidate: Optional[str], *, salvaged: bool, source: str) -> None:
+        if not candidate:
+            return
+        normalized = candidate.strip()
+        if not normalized:
+            return
+        if any(existing == normalized for existing, _, _ in parse_attempts):
+            return
+        parse_attempts.append((normalized, salvaged, source))
+
+    outer_balanced = _extract_first_balanced_json_object(raw)
+    add_candidate(
+        outer_balanced,
+        salvaged=bool(outer_balanced and outer_balanced.strip() != raw.strip()),
+        source="balanced_json",
+    )
+    add_candidate(raw if stripped_raw else None, salvaged=False, source="raw")
+
+    fence_stripped = _strip_code_fence_wrapper(raw)
+    marker_stripped = _strip_leading_language_marker(raw)
+    fence_then_marker = _strip_leading_language_marker(fence_stripped)
+    marker_then_fence = _strip_code_fence_wrapper(marker_stripped)
+
+    add_candidate(fence_stripped, salvaged=fence_stripped.strip() != raw.strip(), source="code_fence")
+    add_candidate(marker_stripped, salvaged=marker_stripped.strip() != raw.strip(), source="language_marker")
+    add_candidate(fence_then_marker, salvaged=fence_then_marker.strip() != raw.strip(), source="fence_then_marker")
+    add_candidate(marker_then_fence, salvaged=marker_then_fence.strip() != raw.strip(), source="marker_then_fence")
+
+    for candidate, _, source in list(parse_attempts):
+        balanced = _extract_first_balanced_json_object(candidate)
+        add_candidate(
+            balanced,
+            salvaged=bool(balanced and balanced.strip() != raw.strip()),
+            source=f"{source}_balanced",
+        )
+
+    for candidate, salvaged, source in parse_attempts:
+        try:
+            parsed = parse_json_object(candidate)
+            return parsed, {
+                "salvage_succeeded": salvaged,
+                "parse_mode": "raw_parse_success" if not salvaged and source == "raw" else "normalized_from_jsonish",
+                "salvage_source": source if salvaged else "none",
+                "final_answer_salvaged": False,
+                "action_salvaged": False,
+                "raw_snippet": _truncate_for_log(raw),
+                "salvaged_snippet": _truncate_for_log(candidate),
+            }
+        except Exception:
+            continue
+
+    if not needs_salvage_hint:
+        try:
+            parsed = parse_json_object(raw)
+            return parsed, {
+                "salvage_succeeded": False,
+                "parse_mode": "raw_parse_success",
+                "salvage_source": "none",
+                "final_answer_salvaged": False,
+                "action_salvaged": False,
+                "raw_snippet": _truncate_for_log(raw),
+            }
+        except Exception:
+            pass
+
+    salvaged_answer, salvage_meta = _salvage_final_answer_text(raw)
+    if salvaged_answer is not None:
+        return salvaged_answer, salvage_meta
+
+    repaired_preview = repair_json(raw)
+    if len(repaired_preview) > 500:
+        repaired_preview = repaired_preview[:500] + "... [TRUNCATED]"
+    raise PlannerParseError(
+        f"Planner LLM returned non-JSON (len={len(raw)}): {repaired_preview!r}",
+        raw_text=raw,
+        salvage_succeeded=False,
+        parse_mode="unrecoverable_parse_failure",
+        salvage_source="none",
+    )
+
+def _stringify_final_answer_node(value: Any, *, depth: int = 0) -> str:
+    if depth > 4:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    if isinstance(value, str):
+        return value.strip()
+
+    if isinstance(value, dict):
+        lines: List[str] = []
+        for key, item in value.items():
+            heading = str(key).replace("_", " ").strip().title() or "Section"
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    lines.append(f"### {heading}\n{text}")
+                continue
+            if isinstance(item, (dict, list)):
+                rendered = _stringify_final_answer_node(item, depth=depth + 1)
+                if rendered.strip():
+                    lines.append(f"### {heading}\n{rendered}")
+                continue
+            if item is not None:
+                lines.append(f"- **{key}**: {item}")
+        return "\n\n".join(line for line in lines if line.strip())
+
+    if isinstance(value, list):
+        if not value:
+            return ""
+        rendered_items: List[str] = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                rendered = _stringify_final_answer_node(item, depth=depth + 1)
+                if rendered.strip():
+                    rendered_items.append(f"- {rendered.replace(chr(10), chr(10) + '  ')}")
+            elif item is not None:
+                rendered_items.append(f"- {item}")
+        return "\n".join(rendered_items)
+
+    return ""
+
+
+def _normalize_finished_final_answer(final_answer: Any, thought: str) -> Optional[Dict[str, Any]]:
+    if isinstance(final_answer, str):
+        return {
+            "content": final_answer,
+            "structured": {},
+            "normalized": False,
+            "type": "str",
+        }
+
+    if isinstance(final_answer, dict):
+        preferred_content = _extract_text_field(final_answer)
+        if preferred_content is not None:
+            return {
+                "content": preferred_content,
+                "structured": final_answer.get("structured", final_answer) if isinstance(final_answer.get("structured"), dict) else final_answer,
+                "normalized": preferred_content != final_answer.get("content"),
+                "type": "dict",
+            }
+
+        rendered = _stringify_final_answer_node(final_answer)
+        if not rendered.strip():
+            rendered = json.dumps(final_answer, ensure_ascii=False, separators=(",", ":"))
+        if rendered.strip():
+            return {
+                "content": rendered,
+                "structured": final_answer,
+                "normalized": True,
+                "type": "dict",
+            }
+        return None
+
+    if isinstance(final_answer, list):
+        rendered = _stringify_final_answer_node(final_answer)
+        if not rendered.strip():
+            rendered = json.dumps(final_answer, ensure_ascii=False, separators=(",", ":"))
+        if rendered.strip():
+            return {
+                "content": rendered,
+                "structured": {"items": final_answer},
+                "normalized": True,
+                "type": "list",
+            }
+        return None
+
+    if final_answer is None and isinstance(thought, str) and thought.strip():
+        return None
+
+    return None
+
+
+def _validate_or_normalize_planner_step(planner_step: Any) -> Dict[str, Any]:
+    if not isinstance(planner_step, dict):
+        raise PlannerSchemaError(f"planner response must be an object, got {type(planner_step).__name__}")
+
+    normalized = dict(planner_step)
+    thought = normalized.get("thought", "")
+    normalized["thought"] = thought if isinstance(thought, str) else str(thought or "")
+
+    finish = normalized.get("finish")
+    action_salvaged = False
+    final_answer_salvaged = False
+    normalization_mode = "raw_parse_success"
+    if finish is None:
+        inferred_final = _normalize_finished_final_answer(normalized.get("final_answer"), normalized["thought"])
+        raw_action = normalized.get("action")
+        if inferred_final is not None:
+            finish = True
+            final_answer_salvaged = True
+            normalization_mode = "normalized_from_jsonish"
+        elif raw_action is not None:
+            finish = False
+            action_salvaged = True
+            normalization_mode = "normalized_from_jsonish"
+        else:
+            finish = False
+    if not isinstance(finish, bool):
+        raise PlannerSchemaError(f"finish must be boolean, got {type(finish).__name__}")
+    normalized["finish"] = finish
+
+    action = normalized.get("action")
+    if isinstance(action, str) and action.strip():
+        action = {"tool_id": action.strip(), "input": {}}
+        action_salvaged = True
+        normalization_mode = "normalized_from_jsonish"
+    elif isinstance(action, dict):
+        tool_id = action.get("tool_id") or action.get("tool") or action.get("name") or action.get("verb_name")
+        tool_input = action.get("input")
+        if tool_input is None:
+            tool_input = action.get("args") or action.get("arguments") or action.get("payload") or {}
+            if tool_input:
+                action_salvaged = True
+                normalization_mode = "normalized_from_jsonish"
+        if tool_id and ("tool_id" not in action or "input" not in action):
+            action = {"tool_id": str(tool_id), "input": tool_input if isinstance(tool_input, dict) else {"value": tool_input}}
+            action_salvaged = True
+            normalization_mode = "normalized_from_jsonish"
+    if action is not None and not isinstance(action, dict):
+        raise PlannerSchemaError(f"action must be object|string|null, got {type(action).__name__}")
+    normalized["action"] = action
+
+    final_info = _normalize_finished_final_answer(normalized.get("final_answer"), normalized["thought"]) if finish else None
+    if finish:
+        if final_info is None or not final_info["content"].strip():
+            raise PlannerSchemaError("finish=true requires a usable final_answer")
+        normalized["final_answer"] = final_info["content"]
+        normalized["_final_answer_structured"] = final_info["structured"]
+        normalized["_final_answer_normalized"] = final_info["normalized"]
+        normalized["_final_answer_type"] = final_info["type"]
+        normalized["_planner_normalization_mode"] = normalization_mode
+        normalized["_action_salvaged"] = action_salvaged
+        normalized["_final_answer_salvaged"] = final_answer_salvaged or final_info["normalized"]
+        return normalized
+
+    if action is None:
+        raise PlannerSchemaError("finish=false requires an action")
+
+    normalized["_final_answer_structured"] = {}
+    normalized["_final_answer_normalized"] = False
+    normalized["_final_answer_type"] = type(normalized.get("final_answer")).__name__
+    normalized["_planner_normalization_mode"] = normalization_mode
+    normalized["_action_salvaged"] = action_salvaged
+    normalized["_final_answer_salvaged"] = final_answer_salvaged
+    return normalized
 
 
 def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
@@ -78,24 +550,6 @@ def _normalize_tool_id(requested: str, toolset: List[ToolDef]) -> str:
     return requested
 
 
-def _repair_json(text: str) -> str:
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        text = text[start : end + 1]
-
-    text = text.replace(" None", " null").replace(":None", ":null")
-    text = text.replace(" True", " true").replace(":True", ":true")
-    text = text.replace(" False", " false").replace(":False", ":false")
-    text = re.sub(r",\s*([}\]])", r"\1", text)
-    return text
-
-
 def _format_schema(schema: Dict[str, Any]) -> str:
     if not schema or "properties" not in schema:
         return "{}"
@@ -122,7 +576,9 @@ async def _call_planner_llm(
     context: ContextBlock,
     prior_trace: List[TraceStep],
     limits: Limits,
-) -> Dict[str, Any]:
+    system_override: Optional[str] = None,
+    options_override: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     trace_id = str(uuid.uuid4())
     exec_channel = f"{settings.exec_request_prefix}:{settings.llm_gateway_service_name}"
     reply_channel = f"{settings.llm_reply_prefix}:{trace_id}"
@@ -151,10 +607,31 @@ async def _call_planner_llm(
         raw_user = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content", "")
         last_user = raw_user[:14000] + "..." if len(raw_user) > 14000 else raw_user
 
-    ext_text = (context.external_facts.get("text") or "")[:10000]
+    ext_facts = context.external_facts if isinstance(context.external_facts, dict) else {}
+    ext_text = (ext_facts.get("text") or "")[:10000]
+    om = ext_facts.get("output_mode") or ""
+    rp = ext_facts.get("response_profile") or ""
+    grounding_mode = ext_facts.get("delivery_grounding_mode") or "default_delivery"
+    grounding_context = (ext_facts.get("grounding_context") or "")[:2000]
+    anti_generic_drift = ext_facts.get("anti_generic_drift") or ""
 
-    system_msg = f"""
+    system_msg = (system_override or f"""
 You are Orion's internal ReAct planner.
+
+RUNTIME ROUTING (must respect):
+- output_mode: {om or "(not set)"}
+- response_profile: {rp or "(not set)"}
+- delivery_grounding_mode: {grounding_mode}
+When output_mode is implementation_guide, tutorial, code_delivery, or direct_answer for instructional asks:
+  Prefer delivery tools (write_guide, write_tutorial, answer_direct, finalize_response) over plan_action.
+When output_mode is code_delivery: prefer generate_code_scaffold.
+When output_mode is comparative_analysis: prefer compare_options.
+When output_mode is decision_support: prefer write_recommendation.
+When delivery_grounding_mode is orion_repo_architecture:
+  Keep answers grounded in Orion's actual architecture (Hub/Client -> Cortex-Orch -> Cortex-Exec -> PlannerReact/AgentChain -> LLM Gateway over the bus).
+  Do not silently substitute a generic Flask/Ubuntu deployment stack unless the user explicitly asks for that stack.
+Grounding context: {grounding_context or "(none)"}
+Anti-generic drift: {anti_generic_drift or "(none)"}
 
 AVAILABLE TOOLS:
 {tools_description}
@@ -163,9 +640,30 @@ CORE INSTRUCTIONS:
 1. **ANSWER THE USER'S INTENT EFFICIENTLY.** 2. **DEFINITION OF DONE:** As soon as you have the information to answer the user, STOP. Set "finish": true.
 3. **DO NOT EXECUTE SUGGESTIONS:** If a tool result says "Mitigation: Consult a doctor", do NOT call a tool to do that. REPORT the mitigation to the user.
 4. **FORMAT:** Output strict JSON. 
-5. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
+5. **TRIAGE RULE:** triage is ONLY allowed when TRACE is empty (step 0). After step 0, do NOT call triage. If TRACE is empty and the toolset includes "triage", you may choose "triage" as the first action. Triage output is internal—use it to select the next tool, then produce the actual answer.
+6. **INPUT FIELD MAPPING:** Populate tool-specific intent fields when calling tools:
+   - triage.request
+   - plan_action.goal
+   - goal_formulate.intention
+   - summarize_context.context_raw
+   - tag_enrich.fragment
+   - pattern_detect.fragments
+   - evaluate.output
+   - assess_risk.scenario
+   - answer_direct.request, finalize_response.original_request, write_guide.request
+   - write_tutorial.request, write_runbook.request, write_recommendation.request
+   - compare_options.request, synthesize_patterns.request, generate_code_scaffold.request
+   Also include "text" with the raw user request whenever possible.
+7. **ACTION FORMAT:** The "action" field MUST be a JSON object, NOT a string.
    - CORRECT: "action": {{ "tool_id": "assess_risk", "input": {{...}} }}
    - WRONG: "action": "assess_risk"
+8. **NO DOUBLE ENCODING:** Output must be a JSON OBJECT, not a JSON string.
+   - Do not wrap output in single or double quotes.
+   - Do not escape quotes with backslashes.
+   - WRONG: "{{\"thought\": \"...\"}}"
+   - RIGHT: {{"thought": "..."}}
+
+9. **NO REPEATED TOOLS:** Do not call the same tool twice. Use the prior result; if you can answer, set finish: true.
 
 JSON FORMAT:
 {{
@@ -174,7 +672,12 @@ JSON FORMAT:
   "action": null,
   "final_answer": {{ "content": "Summary of findings..." }}
 }}
-""".strip()
+WRONG:
+{{"thought":"Need more info","finish":false,"action":null,"final_answer":null}}
+
+RIGHT:
+{{"thought":"Need tool output first.","finish":false,"action":{{"tool_id":"triage","input":{{"text":"..."}}}},"final_answer":null}}
+""".strip())
 
     user_prompt = f"""
 GOAL: {goal.description}
@@ -199,7 +702,8 @@ NEXT STEP (JSON ONLY):
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_prompt},
         ],
-        "options": {"temperature": 0.1},
+        "route": "agent",
+        "options": options_override or {"temperature": 0.1, "max_tokens": 256, "return_json": True},
     }
 
     env = BaseEnvelope(
@@ -218,28 +722,196 @@ NEXT STEP (JSON ONLY):
     )
     decoded = bus.codec.decode(msg.get("data"))
     if not decoded.ok:
-        raise RuntimeError(f"LLM RPC Error: {decoded.error}")
+        raise PlannerTransportError(f"LLM RPC Error: {decoded.error}")
 
     resp_payload = decoded.envelope.payload or {}
     if "error" in resp_payload:
-        raise RuntimeError(f"LLM Gateway Error: {resp_payload.get('error')}")
+        raise PlannerTransportError(f"LLM Gateway Error: {resp_payload.get('error')}")
 
     try:
         chat_res = ChatResultPayload(**resp_payload)
         text = chat_res.text
+        if chat_res.reasoning_content:
+            text = _strip_think_blocks(text)
     except Exception:
         text = resp_payload.get("content") or resp_payload.get("text") or ""
+    text = _strip_think_blocks(text)
 
-    if "<think>" in text:
-        text = text.split("</think>")[-1].strip()
+    if text.strip().startswith("[Error:"):
+        raise PlannerTransportError(f"LLM Gateway error: {text.strip()}")
 
-    text = _repair_json(text)
-    text = text.replace(r"\'", "'")
+    return _parse_planner_response_text(text)
+
+
+def _planner_error_step(message: str) -> Dict[str, Any]:
+    return {
+        "thought": message,
+        "finish": False,
+        "action": None,
+        "final_answer": None,
+    }
+
+
+def _fallback_tool_id(step_index: int, toolset: List[ToolDef]) -> Optional[str]:
+    tool_ids = {t.tool_id for t in toolset}
+    if step_index == 0 and "triage" in tool_ids:
+        return "triage"
+    if "plan_action" in tool_ids:
+        return "plan_action"
+    if "analyze_text" in tool_ids:
+        return "analyze_text"
+    if toolset:
+        return toolset[0].tool_id
+    return None
+
+
+async def _repair_or_fallback_step(
+    *,
+    bus: OrionBusAsync,
+    corr_id: str,
+    step_index: int,
+    planner_step: Dict[str, Any],
+    goal: Goal,
+    toolset: List[ToolDef],
+    context: ContextBlock,
+    prior_trace: List[TraceStep],
+    limits: Limits,
+    delegate_only: bool,
+) -> Dict[str, Any]:
+    repair_system = (
+        "You violated planner contract. Output JSON ONLY with either "
+        "(finish=true and final_answer) OR (finish=false and action object). "
+        "Keep action.input compact; never paste full user text. Use text <= 300 chars."
+    )
+    try:
+        repaired, repair_meta = await _call_planner_llm(
+            bus=bus,
+            goal=goal,
+            toolset=toolset,
+            context=context,
+            prior_trace=prior_trace,
+            limits=limits,
+            system_override=repair_system,
+            options_override={"temperature": 0, "max_tokens": 128, "return_json": True},
+        )
+    except PlannerTransportError as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_transport_failure normalization_succeeded=false detail=%s",
+            corr_id,
+            step_index,
+            e,
+        )
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
+        repair_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
+    except PlannerParseError as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_parse_failure planner_normalization_mode=%s salvage_source=%s final_answer_type=missing normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s detail=%s",
+            corr_id,
+            step_index,
+            getattr(e, "parse_mode", "unrecoverable_parse_failure"),
+            getattr(e, "salvage_source", "none"),
+            str(bool(getattr(e, "salvage_succeeded", False))).lower(),
+            _truncate_for_log(getattr(e, "raw_text", str(e))),
+            e,
+        )
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
+        repair_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
+    except Exception as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_unknown_failure normalization_succeeded=false detail=%s",
+            corr_id,
+            step_index,
+            e,
+        )
+        repaired = _planner_error_step(f"Planner repair failed: {e}")
+        repair_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
 
     try:
-        return json.loads(text)
-    except Exception as e:
-        raise RuntimeError(f"Planner LLM returned non-JSON: {text!r}") from e
+        normalized_repaired = _validate_or_normalize_planner_step(repaired)
+        if repair_meta.get("salvage_succeeded") or normalized_repaired.get("_action_salvaged"):
+            logger.info(
+                "corr_id=%s step=%s failure_category=repair_salvaged planner_normalization_mode=%s salvage_source=%s final_answer_type=%s final_answer_salvaged=%s action_salvaged=%s normalization_succeeded=%s salvage_succeeded=%s raw_snippet=%s",
+                corr_id,
+                step_index,
+                normalized_repaired.get("_planner_normalization_mode", repair_meta.get("parse_mode", "normalized_from_jsonish")),
+                repair_meta.get("salvage_source", "none"),
+                normalized_repaired.get("_final_answer_type", _final_answer_type_name(repaired)),
+                str(bool(normalized_repaired.get("_final_answer_salvaged"))).lower(),
+                str(bool(normalized_repaired.get("_action_salvaged"))).lower(),
+                str(bool(normalized_repaired.get("_final_answer_normalized"))).lower(),
+                str(bool(repair_meta.get("salvage_succeeded"))).lower(),
+                repair_meta.get("raw_snippet", _truncate_for_log(repaired)),
+            )
+        if normalized_repaired.get("_final_answer_normalized"):
+            logger.info(
+                "corr_id=%s step=%s failure_category=normalization_applied planner_normalization_mode=%s salvage_source=%s final_answer_type=%s final_answer_salvaged=%s action_salvaged=%s normalization_succeeded=true salvage_succeeded=%s raw_snippet=%s",
+                corr_id,
+                step_index,
+                normalized_repaired.get("_planner_normalization_mode", repair_meta.get("parse_mode", "normalized_from_jsonish")),
+                repair_meta.get("salvage_source", "none"),
+                normalized_repaired.get("_final_answer_type"),
+                str(bool(normalized_repaired.get("_final_answer_salvaged"))).lower(),
+                str(bool(normalized_repaired.get("_action_salvaged"))).lower(),
+                str(bool(repair_meta.get("salvage_succeeded"))).lower(),
+                repair_meta.get("raw_snippet", _truncate_for_log(repaired)),
+            )
+        return normalized_repaired
+    except PlannerSchemaError as e:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_schema_validation planner_normalization_mode=%s salvage_source=%s final_answer_type=%s normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s detail=%s",
+            corr_id,
+            step_index,
+            repair_meta.get("parse_mode", "unrecoverable_parse_failure"),
+            repair_meta.get("salvage_source", "none"),
+            _final_answer_type_name(repaired),
+            str(bool(repair_meta.get("salvage_succeeded"))).lower(),
+            repair_meta.get("raw_snippet", _truncate_for_log(repaired)),
+            e,
+        )
+
+    if delegate_only:
+        logger.warning(
+            "corr_id=%s step=%s failure_category=repair_fallback_invoked normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s",
+            corr_id,
+            step_index,
+            str(bool(repair_meta.get("salvage_succeeded"))).lower(),
+            repair_meta.get("raw_snippet", _truncate_for_log(planner_step)),
+        )
+        tool_id = _fallback_tool_id(step_index, toolset)
+        if not tool_id:
+            return {
+                "thought": f"{planner_step.get('thought', '')} Planner contract failed and no tool is available.",
+                "finish": True,
+                "action": None,
+                "final_answer": {"content": "Planner failed: no available delegate tool."},
+            }
+
+        last_user = ""
+        if context.conversation_history:
+            last_msg = context.conversation_history[-1]
+            last_user = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content", "")
+        text_value = last_user or goal.description
+
+        return {
+            "thought": f"{planner_step.get('thought', '')} [Fallback action injected after contract violation.]".strip(),
+            "finish": False,
+            "action": {"tool_id": tool_id, "input": {"text": text_value, "request": goal.description}},
+            "final_answer": None,
+        }
+
+    logger.warning(
+        "corr_id=%s step=%s failure_category=repair_fallback_invoked normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s",
+        corr_id,
+        step_index,
+        str(bool(repair_meta.get("salvage_succeeded"))).lower(),
+        repair_meta.get("raw_snippet", _truncate_for_log(planner_step)),
+    )
+    return {
+        "thought": planner_step.get("thought", ""),
+        "finish": True,
+        "action": None,
+        "final_answer": {"content": "Planner failed contract: finish=false with no action after repair attempt."},
+    }
 
 
 async def _call_cortex_verb(
@@ -352,6 +1024,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
     bus = OrionBusAsync(url=settings.orion_bus_url)
     await bus.connect()
 
+    corr_id = payload.request_id or f"planner-react-{uuid.uuid4()}"
     trace: List[TraceStep] = list(payload.trace or [])
     tools_called: List[str] = []
     start = time.monotonic()
@@ -363,30 +1036,116 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
         for step_index in range(payload.limits.max_steps):
             steps_used = step_index + 1
 
-            planner_step = await _call_planner_llm(
-                bus=bus,
-                goal=payload.goal,
-                toolset=payload.toolset,
-                context=payload.context,
-                prior_trace=trace,
-                limits=payload.limits,
-            )
+            try:
+                raw_planner_step, planner_meta = await _call_planner_llm(
+                    bus=bus,
+                    goal=payload.goal,
+                    toolset=payload.toolset,
+                    context=payload.context,
+                    prior_trace=trace,
+                    limits=payload.limits,
+                )
+            except PlannerTransportError as e:
+                logger.warning(
+                    "corr_id=%s step=%s failure_category=llm_transport_failure normalization_succeeded=false detail=%s",
+                    corr_id,
+                    step_index,
+                    e,
+                )
+                planner_step = _planner_error_step(f"Planner call failed: {e}")
+                planner_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
+            except PlannerParseError as e:
+                logger.warning(
+                    "corr_id=%s step=%s failure_category=planner_response_parse_failure planner_normalization_mode=%s salvage_source=%s final_answer_type=missing normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s detail=%s",
+                    corr_id,
+                    step_index,
+                    getattr(e, "parse_mode", "unrecoverable_parse_failure"),
+                    getattr(e, "salvage_source", "none"),
+                    str(bool(getattr(e, "salvage_succeeded", False))).lower(),
+                    _truncate_for_log(getattr(e, "raw_text", str(e))),
+                    e,
+                )
+                planner_step = _planner_error_step(f"Planner call failed: {e}")
+                planner_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
+            except Exception as e:
+                logger.warning(
+                    "corr_id=%s step=%s failure_category=llm_unknown_failure normalization_succeeded=false detail=%s",
+                    corr_id,
+                    step_index,
+                    e,
+                )
+                planner_step = _planner_error_step(f"Planner call failed: {e}")
+                planner_meta = {"salvage_succeeded": False, "raw_snippet": _truncate_for_log(getattr(e, "raw_text", str(e)))}
+            else:
+                try:
+                    planner_step = _validate_or_normalize_planner_step(raw_planner_step)
+                    if planner_meta.get("salvage_succeeded"):
+                        logger.info(
+                            "corr_id=%s step=%s failure_category=planner_response_salvaged planner_normalization_mode=%s salvage_source=%s final_answer_type=%s final_answer_salvaged=%s action_salvaged=%s normalization_succeeded=%s salvage_succeeded=%s raw_snippet=%s",
+                            corr_id,
+                            step_index,
+                            planner_step.get("_planner_normalization_mode", planner_meta.get("parse_mode", "normalized_from_jsonish")),
+                            planner_meta.get("salvage_source", "none"),
+                            planner_step.get("_final_answer_type", _final_answer_type_name(raw_planner_step)),
+                            str(bool(planner_step.get("_final_answer_salvaged"))).lower(),
+                            str(bool(planner_step.get("_action_salvaged"))).lower(),
+                            str(bool(planner_step.get("_final_answer_normalized"))).lower(),
+                            str(bool(planner_meta.get("salvage_succeeded"))).lower(),
+                            planner_meta.get("raw_snippet", _truncate_for_log(raw_planner_step)),
+                        )
+                    if planner_step.get("_final_answer_normalized") or planner_step.get("_action_salvaged"):
+                        logger.info(
+                            "corr_id=%s step=%s failure_category=normalization_applied planner_normalization_mode=%s salvage_source=%s final_answer_type=%s final_answer_salvaged=%s action_salvaged=%s normalization_succeeded=true salvage_succeeded=%s raw_snippet=%s",
+                            corr_id,
+                            step_index,
+                            planner_step.get("_planner_normalization_mode", planner_meta.get("parse_mode", "normalized_from_jsonish")),
+                            planner_meta.get("salvage_source", "none"),
+                            planner_step.get("_final_answer_type"),
+                            str(bool(planner_step.get("_final_answer_salvaged"))).lower(),
+                            str(bool(planner_step.get("_action_salvaged"))).lower(),
+                            str(bool(planner_meta.get("salvage_succeeded"))).lower(),
+                            planner_meta.get("raw_snippet", _truncate_for_log(raw_planner_step)),
+                        )
+                except PlannerSchemaError as e:
+                    logger.warning(
+                        "corr_id=%s step=%s failure_category=planner_response_schema_validation planner_normalization_mode=%s salvage_source=%s final_answer_type=%s normalization_succeeded=false salvage_succeeded=%s raw_snippet=%s detail=%s",
+                        corr_id,
+                        step_index,
+                        planner_meta.get("parse_mode", "unrecoverable_parse_failure"),
+                        planner_meta.get("salvage_source", "none"),
+                        _final_answer_type_name(raw_planner_step),
+                        str(bool(planner_meta.get("salvage_succeeded"))).lower(),
+                        planner_meta.get("raw_snippet", _truncate_for_log(raw_planner_step)),
+                        e,
+                    )
+                    planner_step = _planner_error_step(f"Planner response invalid: {e}")
 
             thought = planner_step.get("thought", "")
             finish = planner_step.get("finish", False)
             action = planner_step.get("action")
             final = planner_step.get("final_answer")
 
-            if finish or (final and not action):
-                raw_content = final.get("content") if final else thought
-                if isinstance(raw_content, (dict, list)):
-                    content = json.dumps(raw_content, ensure_ascii=False)
-                elif raw_content is None:
-                    content = ""
-                else:
-                    content = str(raw_content)
+            if not finish and action is None:
+                planner_step = await _repair_or_fallback_step(
+                    bus=bus,
+                    corr_id=corr_id,
+                    step_index=step_index,
+                    planner_step=planner_step,
+                    goal=payload.goal,
+                    toolset=payload.toolset,
+                    context=payload.context,
+                    prior_trace=trace,
+                    limits=payload.limits,
+                    delegate_only=delegate_only,
+                )
+                thought = planner_step.get("thought", "")
+                finish = planner_step.get("finish", False)
+                action = planner_step.get("action")
+                final = planner_step.get("final_answer")
 
-                structured = final.get("structured", {}) if final else {}
+            if finish or (final and not action):
+                content = final if isinstance(final, str) else (thought or "")
+                structured = planner_step.get("_final_answer_structured", {})
                 final_answer = FinalAnswer(content=content, structured=structured)
                 trace.append(TraceStep(step_index=step_index, thought=thought))
                 break
@@ -460,13 +1219,27 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
 
     except Exception as e:
         logger.exception("ReAct Loop Failed")
-        return PlannerResponse(status="error", error={"message": str(e)}, request_id=payload.request_id)
+        return PlannerResponse(status="error", stop_reason="error", error={"message": str(e)}, request_id=payload.request_id)
     finally:
         await bus.close()
+
+    stop_reason = "continue"
+    continue_reason = None
+    if final_answer and final_answer.content:
+        stop_reason = "final_answer"
+    if trace:
+        last_action = trace[-1].action if isinstance(trace[-1].action, dict) else None
+        if isinstance(last_action, dict):
+            stop_reason = "delegate"
+            continue_reason = "action_present"
+    if final_answer is None and not trace:
+        stop_reason = "continue"
 
     return PlannerResponse(
         request_id=payload.request_id,
         status="ok",
+        stop_reason=stop_reason,
+        continue_reason=continue_reason,
         final_answer=final_answer,
         trace=trace,
         usage=Usage(

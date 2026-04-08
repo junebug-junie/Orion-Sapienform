@@ -1,0 +1,23 @@
+name: write_runbook
+label: Write Runbook
+description: >
+  Produce a debug/ops runbook with concrete steps, diagnostics, and
+  troubleshooting procedures. Include commands and expected outputs.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: write_runbook_prompt.j2
+
+steps:
+  - name: write_runbook
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: write_runbook_prompt.j2

@@ -1,10 +1,11 @@
 import asyncio
 import logging
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Deque, Dict, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, Clock, Hunter
@@ -26,6 +27,121 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(settings.SERVICE_NAME)
+
+
+_RAW_RECENT: Deque[Dict[str, Any]] = deque(maxlen=120)
+_SUMMARY_BY_NODE: Dict[str, Dict[str, Any]] = {}
+_INDUCTION_BY_NODE: Dict[str, Dict[str, Any]] = {}
+_CLUSTER: Optional[Dict[str, Any]] = None
+
+
+def _iso(ts: Optional[datetime]) -> Optional[str]:
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.isoformat()
+
+
+def _freshness_seconds(ts: Optional[datetime]) -> Optional[float]:
+    if ts is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds())
+
+
+def _status_for_freshness(freshness_s: Optional[float]) -> tuple[str, str]:
+    if freshness_s is None:
+        return "NO_SIGNAL", "no_recent_samples"
+    if freshness_s > 300:
+        return "NO_SIGNAL", "stale_over_no_signal_threshold"
+    if freshness_s > 90:
+        return "STALE", "stale_over_threshold"
+    return "OK", "fresh"
+
+
+def _cluster_trend(induction_by_node: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    if not induction_by_node:
+        return {}
+    totals: Dict[str, Dict[str, float]] = {}
+    count = 0
+    for item in induction_by_node.values():
+        metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+        if not metrics:
+            continue
+        count += 1
+        for name, data in metrics.items():
+            if not isinstance(data, dict):
+                continue
+            bucket = totals.setdefault(name, {"trend": 0.0, "volatility": 0.0, "spike": 0.0})
+            for key in ("trend", "volatility", "spike"):
+                try:
+                    bucket[key] += float(data.get(key) or 0.0)
+                except Exception:
+                    pass
+    if count <= 0:
+        return {}
+    return {name: {key: min(1.0, value / count) for key, value in data.items()} for name, data in totals.items()}
+
+
+def _constraint_from_snapshot(summary_by_node: Dict[str, Dict[str, Any]], cluster: Optional[Dict[str, Any]]) -> str:
+    if cluster and cluster.get("constraint"):
+        return str(cluster.get("constraint"))
+    best_name = "NONE"
+    best_value = 0.0
+    for item in summary_by_node.values():
+        pressures = item.get("pressures") if isinstance(item.get("pressures"), dict) else {}
+        for name, value in pressures.items():
+            try:
+                val = float(value)
+            except Exception:
+                continue
+            if val > best_value:
+                best_name = str(name).upper()
+                best_value = val
+    return best_name if best_value >= 0.7 else "NONE"
+
+
+def _build_snapshot_payload() -> Dict[str, Any]:
+    nodes: Dict[str, Any] = {}
+    latest_ts: Optional[datetime] = None
+    all_nodes = sorted(set(_SUMMARY_BY_NODE.keys()) | set(_INDUCTION_BY_NODE.keys()))
+    for node in all_nodes:
+        summary = _SUMMARY_BY_NODE.get(node)
+        induction = _INDUCTION_BY_NODE.get(node)
+        summary_ts = summary.get("timestamp") if isinstance(summary, dict) else None
+        induction_ts = induction.get("timestamp") if isinstance(induction, dict) else None
+        candidates = [ts for ts in [summary_ts, induction_ts] if isinstance(ts, datetime)]
+        node_ts = max(candidates) if candidates else None
+        freshness_s = _freshness_seconds(node_ts)
+        status, reason = _status_for_freshness(freshness_s)
+        if node_ts and (latest_ts is None or node_ts > latest_ts):
+            latest_ts = node_ts
+        nodes[node] = {
+            "summary": summary.get("payload") if isinstance(summary, dict) else None,
+            "induction": induction.get("payload") if isinstance(induction, dict) else None,
+            "as_of": _iso(node_ts),
+            "freshness_s": freshness_s,
+            "status": status,
+            "reason": reason,
+        }
+
+    cluster_payload = _CLUSTER.get("payload") if isinstance(_CLUSTER, dict) else None
+    cluster_ts = _CLUSTER.get("timestamp") if isinstance(_CLUSTER, dict) else None
+    as_of_ts = cluster_ts or latest_ts
+    freshness_s = _freshness_seconds(as_of_ts)
+    status, reason = _status_for_freshness(freshness_s)
+    return {
+        "status": status,
+        "reason": reason,
+        "as_of": _iso(as_of_ts),
+        "freshness_s": freshness_s,
+        "constraint": _constraint_from_snapshot({k: v.get("payload") or {} for k, v in _SUMMARY_BY_NODE.items()}, cluster_payload),
+        "cluster": {
+            "composite": (cluster_payload or {}).get("composites") if isinstance(cluster_payload, dict) else {},
+            "trend": _cluster_trend({k: v.get("payload") or {} for k, v in _INDUCTION_BY_NODE.items()}),
+        },
+        "nodes": nodes,
+    }
 
 
 def chassis_cfg() -> ChassisConfig:
@@ -76,6 +192,15 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
             service_version=sample.service_version,
         )
 
+        _RAW_RECENT.append({
+            "timestamp": sample.timestamp,
+            "node": sample.node,
+            "raw": raw_payload.model_dump(mode="json"),
+            "sample": sample.model_dump(mode="json"),
+        })
+        _SUMMARY_BY_NODE[sample.node] = {"payload": summary.model_dump(mode="json"), "timestamp": summary.timestamp}
+        _INDUCTION_BY_NODE[sample.node] = {"payload": induction.model_dump(mode="json"), "timestamp": induction.timestamp}
+
         await _publish(bus, settings.TELEMETRY_PUBLISH_CHANNEL, "biometrics.telemetry", raw_payload)
         await _publish(bus, settings.BIOMETRICS_SAMPLE_CHANNEL, "biometrics.sample.v1", sample)
         await _publish(bus, settings.BIOMETRICS_SUMMARY_CHANNEL, "biometrics.summary.v1", summary)
@@ -117,10 +242,12 @@ class BiometricsHub:
             summary = BiometricsSummaryV1.model_validate(payload_obj)
             if summary.node:
                 self._latest_summary[summary.node] = summary
+                _SUMMARY_BY_NODE[summary.node] = {"payload": summary.model_dump(mode="json"), "timestamp": summary.timestamp}
         elif env.kind == "biometrics.induction.v1":
             induction = BiometricsInductionV1.model_validate(payload_obj)
             if induction.node:
                 self._latest_induction[induction.node] = induction
+                _INDUCTION_BY_NODE[induction.node] = {"payload": induction.model_dump(mode="json"), "timestamp": induction.timestamp}
 
     async def publish_cluster(self, bus: OrionBusAsync) -> None:
         if not self._latest_summary:
@@ -166,6 +293,8 @@ class BiometricsHub:
             composites=composites,
             constraint=constraint,
         )
+        global _CLUSTER
+        _CLUSTER = {"payload": cluster.model_dump(mode="json"), "timestamp": cluster.timestamp}
         await _publish(bus, settings.BIOMETRICS_CLUSTER_CHANNEL, "biometrics.cluster.v1", cluster)
 
         strain = composites.get("strain", 0.0)
@@ -229,6 +358,28 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)
+
+
+@app.get("/snapshot")
+def snapshot() -> Dict[str, Any]:
+    return _build_snapshot_payload()
+
+
+@app.get("/raw/recent")
+def raw_recent(limit: int = Query(10, ge=1, le=100), node: Optional[str] = Query(None)) -> Dict[str, Any]:
+    items = []
+    for item in reversed(list(_RAW_RECENT)):
+        if node and str(item.get("node") or "") != str(node):
+            continue
+        items.append({
+            "timestamp": _iso(item.get("timestamp")),
+            "node": item.get("node"),
+            "raw": item.get("raw"),
+            "sample": item.get("sample"),
+        })
+        if len(items) >= limit:
+            break
+    return {"items": items, "count": len(items)}
 
 
 @app.get("/health")

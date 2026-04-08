@@ -1,10 +1,13 @@
 # services/orion-llamacpp-host/docker-compose.yml
+# Single-worker compose. For Atlas multi-worker isolation, use docker-compose.atlas-workers.yml.
 
 services:
   orion-llamacpp-host:
     build:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
     env_file:
       - .env
     image: orion-llamacpp-host:0.1.0

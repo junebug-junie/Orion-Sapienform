@@ -6,15 +6,17 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-from psycopg2 import errors as pg_errors
 
 from app.models import (
     EnrichmentSpec,
     ModelSpec,
+    RunEnrichRequest,
+    RunEnrichResponse,
     RunListPage,
     RunListResponse,
     RunRecord,
     RunListItem,
+    RunCompareResponse,
     RunSummary,
     RunTrainRequest,
     RunTrainResponse,
@@ -46,6 +48,7 @@ from app.storage.repository import (
     count_segments,
     list_runs,
     list_runs_paginated,
+    list_aspect_counts,
     utc_now,
 )
 
@@ -161,25 +164,12 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
 
     run_id = uuid4()
     created_at = utc_now()
-    dataset_for_spec = dataset
-    if effective_boundary and dataset.boundary_column != effective_boundary:
-        dataset_for_spec = dataset.copy(update={"boundary_column": effective_boundary})
     specs = RunSpecSnapshot(
-        dataset=dataset_for_spec,
-        windowing=windowing_spec,
+        dataset=dataset,
+        windowing=WindowingSpec(**model_row["windowing_spec"]),
         model=ModelSpec(**model_row["model_spec"]),
         enrichment=EnrichmentSpec(**model_row["enrichment_spec"]) if model_row.get("enrichment_spec") else EnrichmentSpec(),
-        run_scope=payload.run_scope,
     )
-    if specs.run_scope is None:
-        specs.run_scope = "micro" if specs.windowing.windowing_mode.startswith("conversation") else "macro"
-    if specs.windowing.windowing_mode.startswith("conversation") and not effective_boundary:
-        detail = {
-            "ok": False,
-            "error": "invalid_windowing",
-            "detail": f"boundary_column required for windowing_mode={specs.windowing.windowing_mode} dataset_id={dataset.dataset_id}",
-        }
-        raise HTTPException(status_code=400, detail=detail)
     spec_hash = compute_spec_hash(
         dataset_id=payload.dataset_id,
         model_id=payload.model_id,
@@ -203,7 +193,6 @@ def train_run_endpoint(payload: RunTrainRequest, background_tasks: BackgroundTas
         spec_hash=spec_hash,
         status="queued",
         stage="training",
-        run_scope=payload.run_scope,
         stats={},
         artifact_paths={},
         created_at=created_at,

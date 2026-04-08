@@ -12,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.cortex.contracts import AgentTraceSummaryV1
 from orion.schemas.notify import (
     ChatAttentionAck,
     ChatAttentionRequest,
@@ -522,6 +523,7 @@ async def _publish_in_app_event(
     try:
         attention_id = _parse_attention_id(payload.context)
         message_id = _parse_message_id(payload.context)
+        agent_trace = _parse_agent_trace(payload.context)
         notification_type = _resolve_notification_type(payload.event_kind)
         silent = bool(payload.context.get("silent")) if payload.context else None
         event = HubNotificationEvent(
@@ -538,8 +540,10 @@ async def _publish_in_app_event(
             status=status,
             attention_id=attention_id,
             message_id=message_id,
+            agent_trace=agent_trace,
             notification_type=notification_type,
             silent=silent,
+            workflow=_parse_workflow(payload.context),
         )
         env = BaseEnvelope(
             kind="notify.in_app.v1",
@@ -612,6 +616,10 @@ def _chat_message_to_notification(payload: ChatMessageNotification) -> Notificat
         "require_read_receipt": payload.require_read_receipt,
         "expires_at": payload.expires_at.isoformat() if payload.expires_at else None,
     }
+    if payload.agent_trace is not None:
+        context["agent_trace"] = payload.agent_trace.model_dump(mode="json")
+    if payload.workflow:
+        context["workflow"] = dict(payload.workflow)
     return NotificationRequest(
         source_service=payload.source_service,
         event_kind=CHAT_MESSAGE_EVENT_KIND,
@@ -658,10 +666,12 @@ def _chat_message_to_schema(payload: NotificationRequest) -> ChatMessageState:
         title=payload.title,
         preview_text=payload.body_text or "",
         full_text=payload.body_md,
+        agent_trace=_parse_agent_trace(ctx),
         tags=payload.tags,
         severity=payload.severity,
         require_read_receipt=bool(ctx.get("require_read_receipt")),
-        status="unread"
+        status="unread",
+        workflow=_parse_workflow(ctx),
     )
 
 def _parse_attention_id(context: Dict[str, Any]) -> Optional[UUID]:
@@ -677,6 +687,30 @@ def _parse_message_id(context: Dict[str, Any]) -> Optional[UUID]:
     if isinstance(raw, UUID): return raw
     try: return UUID(str(raw))
     except: return None
+
+
+
+
+def _parse_workflow(context: Dict[str, Any] | None) -> Dict[str, Any]:
+    raw = context.get("workflow") if isinstance(context, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    workflow_id = str(raw.get("id") or raw.get("workflow_id") or "").strip()
+    if not workflow_id:
+        return {}
+    return dict(raw)
+
+def _parse_agent_trace(context: Dict[str, Any] | None) -> Optional[AgentTraceSummaryV1]:
+    raw = context.get("agent_trace") if isinstance(context, dict) else None
+    if not raw:
+        return None
+    if isinstance(raw, AgentTraceSummaryV1):
+        return raw
+    try:
+        return AgentTraceSummaryV1.model_validate(raw)
+    except Exception:
+        logger.warning("Failed to parse agent_trace from notification context", exc_info=True)
+        return None
 
 def _resolve_notification_type(event_kind: str) -> Optional[str]:
     if event_kind == CHAT_MESSAGE_EVENT_KIND: return "chat_message"

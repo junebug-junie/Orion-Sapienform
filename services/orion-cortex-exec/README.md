@@ -31,6 +31,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_PLANNER_INTAKE` | ... | Planner worker channel. |
 | `CHANNEL_AGENT_CHAIN_INTAKE` | ... | Agent Chain worker channel. |
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
+| `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
 
 ## Running & Testing
 
@@ -38,6 +39,13 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 ```bash
 docker-compose up -d orion-cortex-exec
 ```
+
+### Self-study repo root override
+If self-study runs in a flattened container layout, set `ORION_REPO_ROOT` to the mounted repo root to override auto-detection; otherwise the service searches upward for repo markers and falls back to the container app root.
+
+### Self-study GraphDB readback
+`self_retrieve` can read persisted self-study RDF back from GraphDB when either `RECALL_RDF_ENDPOINT_URL` or `GRAPHDB_URL` / `GRAPHDB_REPO` are present in the environment. If that persisted backend is unavailable, Cortex Exec falls back explicitly to the in-process self-study snapshot path instead of silently widening trust semantics.
+
 
 ### Smoke Test
 Exec is tested via the Orchestrator flow.

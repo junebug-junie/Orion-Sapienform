@@ -11,9 +11,9 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMess
 
 DEFAULT_ROUTE_SERVERS = {
     "chat": "atlas-worker-1",
-    "metacog": "athena-worker-1",
-    "latents": "atlas-worker-2",
-    "specialist": "atlas-worker-3",
+    "agent": "atlas-worker-1",
+    "metacog": "atlas-worker-2",
+    "quick": "atlas-worker-fast-1",
 }
 
 
@@ -35,9 +35,9 @@ def _load_route_urls() -> Dict[str, str]:
 
     return {
         "chat": os.getenv("LLM_ROUTE_CHAT_URL", ""),
+        "agent": os.getenv("LLM_ROUTE_AGENT_URL", ""),
         "metacog": os.getenv("LLM_ROUTE_METACOG_URL", ""),
-        "latents": os.getenv("LLM_ROUTE_LATENTS_URL", ""),
-        "specialist": os.getenv("LLM_ROUTE_SPECIALIST_URL", ""),
+        "quick": os.getenv("LLM_ROUTE_QUICK_URL", ""),
     }
 
 
@@ -95,15 +95,11 @@ async def _main_async(args: argparse.Namespace) -> None:
     await bus.connect()
 
     route_urls = _load_route_urls()
-    for route in ("chat", "metacog"):
+    for route in ("chat", "agent", "metacog", "quick"):
         if not route_urls.get(route):
             raise RuntimeError(f"Route '{route}' is not configured (missing URL)")
 
-    routes_to_test = ["chat", "metacog"]
-    if route_urls.get("latents"):
-        routes_to_test.append("latents")
-    if route_urls.get("specialist"):
-        routes_to_test.append("specialist")
+    routes_to_test = ["chat", "agent", "metacog", "quick"]
 
     for route in routes_to_test:
         await _rpc_chat(

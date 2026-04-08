@@ -18,7 +18,11 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "chat.history": "ChatHistoryLogSQL",
     "chat.log": "ChatHistoryLogSQL",
     "chat.history.message.v1": "ChatMessageSQL",
+    "chat.gpt.log.v1": "ChatGptLogSQL",
+    "chat.gpt.turn.v1": "ChatGptLogSQL",
+    "chat.gpt.message.v1": "ChatGptMessageSQL",
     "dream.log": "Dream",
+    "dream.result.v1": "Dream",
     "biometrics.telemetry": "BiometricsTelemetry",
     "biometrics.summary.v1": "BiometricsSummarySQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
@@ -27,10 +31,20 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "cognition.trace": "CognitionTraceSQL",
     "metacognition.tick.v1": "MetacognitionTickSQL",
     "orion.metacog.trigger.v1": "MetacogTriggerSQL",
+    "metacognitive.trace.v1": "MetacognitiveTraceSQL",
     "notify.notification.request.v1": "NotificationRequestDB",
     "notify.notification.receipt.v1": "NotificationReceiptDB",
     "notify.recipient.update.v1": "RecipientProfileDB",
     "notify.preference.update.v1": "NotificationPreferenceDB",
+    "journal.entry.write.v1": "JournalEntrySQL",
+    "social.turn.v1": "SocialRoomTurnSQL",
+    "external.room.message.v1": "ExternalRoomMessageSQL",
+    "external.room.post.result.v1": "ExternalRoomMessageSQL",
+    "external.room.turn.skipped.v1": "ExternalRoomMessageSQL",
+    "external.room.participant.v1": "ExternalRoomParticipantSQL",
+    "endogenous.runtime.record.v1": "EndogenousRuntimeRecordSQL",
+    "endogenous.runtime.audit.v1": "EndogenousRuntimeAuditSQL",
+    "calibration.profile.audit.v1": "CalibrationProfileAuditSQL",
 }
 
 
@@ -61,6 +75,14 @@ class Settings(BaseSettings):
             "orion:collapse:sql-write",
             "orion:chat:history:log",
             "orion:chat:history:turn",
+            "orion:chat:social:turn",
+            "orion:bridge:social:room:intake",
+            "orion:bridge:social:room:delivery",
+            "orion:bridge:social:room:skipped",
+            "orion:bridge:social:participant",
+            "orion:chat:gpt:log",
+            "orion:chat:gpt:turn",
+            "orion:chat:gpt:message:log",
             "orion:dream:log",
             "orion:telemetry:biometrics",
             "orion:biometrics:summary",
@@ -69,8 +91,13 @@ class Settings(BaseSettings):
             "orion:cognition:trace",
             "orion:metacognition:tick",
             "orion:equilibrium:metacog:trigger",
+            "orion:metacog:trace",
             "orion:notify:persistence:request",
-            "orion:notify:persistence:receipt"
+            "orion:notify:persistence:receipt",
+            "orion:journal:write",
+            "orion:endogenous:runtime:record",
+            "orion:endogenous:runtime:audit",
+            "orion:calibration:profile:audit",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -86,6 +113,14 @@ class Settings(BaseSettings):
         default=json.dumps(DEFAULT_ROUTE_MAP),
         alias="SQL_WRITER_ROUTE_MAP_JSON"
     )
+    sql_writer_emit_journal_created: bool = Field(True, alias="SQL_WRITER_EMIT_JOURNAL_CREATED")
+    sql_writer_journal_created_channel: str = Field("orion:journal:created", alias="SQL_WRITER_JOURNAL_CREATED_CHANNEL")
+    sql_writer_emit_social_turn_stored: bool = Field(True, alias="SQL_WRITER_EMIT_SOCIAL_TURN_STORED")
+    sql_writer_social_turn_stored_channel: str = Field(
+        "orion:chat:social:stored",
+        alias="SQL_WRITER_SOCIAL_TURN_STORED_CHANNEL",
+    )
+    metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
 
     @property
     def route_map(self) -> Dict[str, str]:

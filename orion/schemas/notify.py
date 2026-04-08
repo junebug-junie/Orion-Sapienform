@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+from orion.schemas.cortex.contracts import AgentTraceSummaryV1
+
 
 class NotificationAttachment(BaseModel):
     filename: str
@@ -127,10 +129,12 @@ class ChatMessageNotification(BaseModel):
     title: Optional[str] = Field(default="New message from Orion")
     preview_text: str = Field(max_length=280)
     full_text: Optional[str] = None
+    agent_trace: Optional[AgentTraceSummaryV1] = None
     tags: List[str] = Field(default_factory=lambda: ["chat", "message"])
     severity: str = Field("info")
     require_read_receipt: bool = Field(True)
     expires_at: Optional[datetime] = None
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatMessageReceipt(BaseModel):
@@ -151,6 +155,7 @@ class ChatMessageState(BaseModel):
     title: Optional[str] = None
     preview_text: str
     full_text: Optional[str] = None
+    agent_trace: Optional[AgentTraceSummaryV1] = None
     tags: List[str] = Field(default_factory=list)
     severity: str
     require_read_receipt: bool
@@ -160,6 +165,7 @@ class ChatMessageState(BaseModel):
     dismissed_at: Optional[datetime] = None
     escalated_at: Optional[datetime] = None
     status: str = Field("unread")
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RecipientProfile(BaseModel):
@@ -231,8 +237,10 @@ class HubNotificationEvent(BaseModel):
     status: Optional[str] = None
     attention_id: Optional[UUID] = None
     message_id: Optional[UUID] = None
+    agent_trace: Optional[AgentTraceSummaryV1] = None
     notification_type: Optional[str] = None
     silent: Optional[bool] = None
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NotificationReceiptEvent(BaseModel):

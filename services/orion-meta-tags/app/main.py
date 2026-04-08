@@ -122,8 +122,8 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
                 raw_payload.get("source_service"),
             )
             return
-        if envelope.kind == "chat.history":
-            turn_id = raw_payload.get("correlation_id")
+        if envelope.kind in {"chat.history", "social.turn.stored.v1"}:
+            turn_id = raw_payload.get("turn_id") or raw_payload.get("correlation_id")
             if not turn_id and envelope.correlation_id:
                 turn_id = str(envelope.correlation_id)
             if not turn_id:
@@ -275,7 +275,7 @@ async def lifespan(app: FastAPI):
     meta_tagger = Hunter(
         cfg=config,
         handler=handle_triage_event,
-        patterns=[settings.CHANNEL_EVENTS_TRIAGE, settings.CHANNEL_EVENTS_CHAT_TURN],
+        patterns=[settings.CHANNEL_EVENTS_TRIAGE, settings.CHANNEL_EVENTS_CHAT_TURN, "orion:chat:social:stored"],
     )
 
     # RPC step-service (MetaTagsService)

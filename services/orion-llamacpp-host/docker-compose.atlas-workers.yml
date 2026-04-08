@@ -1,0 +1,167 @@
+services:
+  atlas-chat:
+    # Atlas multi-worker pattern:
+    # - one compose service per physical worker lane
+    # - one profile per container
+    # - one published host port per container
+    # - one explicit CUDA_VISIBLE_DEVICES binding per container
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-llamacpp-chat
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=${ATLAS_CHAT_SERVICE_NAME:-atlas-worker-1}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      # Required: set ATLAS_CHAT_PROFILE_NAME in your env file/shell.
+      - LLM_PROFILE_NAME=${ATLAS_CHAT_PROFILE_NAME}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_CHAT_CUDA_VISIBLE_DEVICES}
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${ATLAS_CHAT_HOST_PORT:-8011}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  atlas-metacog:
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-llamacpp-metacog
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=${ATLAS_METACOG_SERVICE_NAME:-atlas-worker-2}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${ATLAS_METACOG_PROFILE_NAME}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_METACOG_CUDA_VISIBLE_DEVICES}
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${ATLAS_METACOG_HOST_PORT:-8012}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  atlas-fast:
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-llamacpp-fast
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=${ATLAS_FAST_SERVICE_NAME:-atlas-worker-fast-1}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${ATLAS_FAST_PROFILE_NAME}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_FAST_CUDA_VISIBLE_DEVICES}
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${ATLAS_FAST_HOST_PORT:-8013}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  atlas-agent:
+    profiles: ["agent-split"]
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-host/Dockerfile
+      args:
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+    image: orion-llamacpp-host:0.1.0
+    container_name: ${PROJECT:-orion}-atlas-llamacpp-agent
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=${ATLAS_AGENT_SERVICE_NAME:-atlas-worker-agent-1}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
+      - LLM_PROFILE_NAME=${ATLAS_AGENT_PROFILE_NAME}
+      - HF_TOKEN=${HF_TOKEN}
+      - hf_token=${hf_token}
+      - LLAMACPP_HOST_OVERRIDE=0.0.0.0
+      - LLAMACPP_PORT_OVERRIDE=8080
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_AGENT_CUDA_VISIBLE_DEVICES}
+    volumes:
+      - "${LLM_CACHE_DIR}:/models"
+    ports:
+      - "${ATLAS_AGENT_HOST_PORT:-8014}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - app-net
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+networks:
+  app-net:
+    external: true

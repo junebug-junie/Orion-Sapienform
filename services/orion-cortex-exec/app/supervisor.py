@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,10 +25,13 @@ from orion.schemas.agents.schemas import (
     AgentChainRequest,
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionResult, StepExecutionResult
+from orion.cognition.verb_activation import is_active
+from orion.cognition.delivery_grounding import build_delivery_grounding_context
+from orion.cognition.quality_evaluator import should_rewrite_for_instructional
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
-from .recall_utils import has_inline_recall, resolve_profile, should_run_recall
+from .recall_utils import delivery_safe_recall_decision, has_inline_recall
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.supervisor")
@@ -79,6 +83,306 @@ def _extract_observation(step_res: StepExecutionResult) -> Dict[str, Any]:
     return {"raw": step_res.result}
 
 
+def _extract_latest_planner_thought(planner_result: Any) -> Optional[str]:
+    if not isinstance(planner_result, dict):
+        return None
+    planner_payload = planner_result.get("PlannerReactService", {})
+    if not isinstance(planner_payload, dict):
+        return None
+    trace = planner_payload.get("trace")
+    if not isinstance(trace, list) or not trace:
+        return None
+    last = trace[-1]
+    if not isinstance(last, dict):
+        return None
+    thought = last.get("thought")
+    return str(thought) if thought is not None else None
+
+
+def _truncate_text(value: Any, limit: int = 240) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _compact_json(value: Any, limit: int = 220) -> str:
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        rendered = str(value)
+    return _truncate_text(rendered, limit=limit)
+
+
+def _detect_scaffolding_markers(text: Any) -> List[str]:
+    lowered = str(text or "").lower()
+    markers: List[str] = []
+    if any(k in lowered for k in ("you are ", "system prompt", "developer instruction")):
+        markers.append("system_directive")
+    if any(k in lowered for k in ("return your normal council output contract", "toolset summary", "recent trace:")):
+        markers.append("tool_scaffold")
+    if any(k in lowered for k in ("delegate_tool_execution", "plan_only", "non-goals", "important")):
+        markers.append("meta_instruction")
+    return markers
+
+
+def _sanitize_text_block(text: Any) -> str:
+    lines = []
+    for line in str(text or "").splitlines():
+        lowered = line.strip().lower()
+        if lowered.startswith("you are "):
+            continue
+        if "return your normal council output contract" in lowered:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _extract_key_terms(text: str) -> List[str]:
+    stop = {
+        "the", "and", "for", "with", "that", "this", "from", "have", "what", "your", "about", "into",
+        "when", "where", "which", "there", "would", "could", "should", "please", "help",
+    }
+    terms: List[str] = []
+    for raw in str(text or "").lower().split():
+        token = "".join(ch for ch in raw if ch.isalnum())
+        if len(token) < 4 or token in stop:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:12]
+
+
+def _grounding_verdict(user_text: str, answer_text: str) -> Dict[str, Any]:
+    ask_terms = _extract_key_terms(user_text)
+    answer_lower = str(answer_text or "").lower()
+    overlap = [term for term in ask_terms if term in answer_lower]
+    unrelated_markers = [m for m in ("orion service setup", "content workflow", "internal instructions") if m in answer_lower]
+    scaffolding_markers = _detect_scaffolding_markers(answer_text)
+    if not ask_terms:
+        anchored = not unrelated_markers and not scaffolding_markers
+    else:
+        anchored = bool(overlap) and not unrelated_markers and not scaffolding_markers
+    return {
+        "anchored": anchored,
+        "ask_terms": ask_terms,
+        "overlap_terms": overlap[:8],
+        "unrelated_markers": unrelated_markers,
+        "scaffolding_markers": scaffolding_markers,
+    }
+
+
+def _has_recent_followup_continuity(messages: Any, answer_text: str) -> bool:
+    if not isinstance(messages, list) or len(messages) < 2:
+        return False
+    last_user = None
+    last_assistant = None
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        if last_user is None and role == "user":
+            last_user = content
+            continue
+        if last_user is not None and role == "assistant":
+            last_assistant = content
+            break
+    if not last_user or not last_assistant:
+        return False
+    user_tokens = _extract_key_terms(last_user)
+    if len(user_tokens) > 2:
+        return False
+    assistant_tokens = _extract_key_terms(last_assistant)
+    if not assistant_tokens:
+        return False
+    answer_lower = str(answer_text or "").lower()
+    return any(token in answer_lower for token in assistant_tokens[:8])
+
+
+def _coerce_pack_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        return [stripped]
+    return []
+
+
+def _effective_packs(ctx: Dict[str, Any], req: ExecutionPlan) -> List[str]:
+    packs: List[str] = []
+    for source in (
+        ctx.get("packs"),
+        (ctx.get("metadata") or {}).get("packs") if isinstance(ctx.get("metadata"), dict) else None,
+        req.metadata.get("packs") if isinstance(req.metadata, dict) else None,
+    ):
+        for pack in _coerce_pack_list(source):
+            if pack not in packs:
+                packs.append(pack)
+    return packs
+
+
+def _build_council_prompt(
+    *,
+    goal: str,
+    mode: str,
+    node_name: str,
+    correlation_id: str,
+    verb_name: str | None,
+    allowed_verbs: List[str],
+    toolset: List[ToolDef],
+    trace: List[TraceStep],
+    final_text: str | None,
+) -> str:
+    lines: List[str] = []
+    lines.append("Council Supervision Context")
+    lines.append(f"- goal: {_truncate_text(goal, 2000)}")
+    lines.append(f"- mode: {mode}")
+    lines.append(f"- node: {node_name}")
+    lines.append(f"- correlation_id: {correlation_id}")
+    if verb_name:
+        lines.append(f"- entry_verb: {verb_name}")
+    if allowed_verbs:
+        lines.append(f"- allowed_verbs: {', '.join(allowed_verbs[:50])}")
+
+    lines.append("\nToolset summary:")
+    if not toolset:
+        lines.append("- (none)")
+    else:
+        for tool in toolset[:25]:
+            lines.append(f"- {tool.tool_id}: {_truncate_text(tool.description or '', 120)}")
+        if len(toolset) > 25:
+            lines.append(f"- ... ({len(toolset) - 25} more tools omitted)")
+
+    lines.append("\nRecent trace:")
+    if not trace:
+        lines.append("- (no trace yet)")
+    else:
+        for step in trace[-8:]:
+            action = step.action if isinstance(step.action, dict) else {}
+            tool_id = action.get("tool_id") or "none"
+            args = _compact_json(action.get("input") or {}, 220)
+            obs = step.observation if isinstance(step.observation, dict) else {"raw": step.observation}
+            obs_text = obs.get("llm_output") or obs.get("text") or obs.get("content") or obs.get("error") or _compact_json(obs, 280)
+            lines.append(
+                f"- step {step.step_index}: tool={tool_id} args={args} obs={_truncate_text(obs_text, 280)}"
+            )
+
+    if final_text:
+        lines.append("\nProvisional final_text:")
+        lines.append(_truncate_text(final_text, 1500))
+
+    lines.append("\nReturn your normal council output contract.")
+    return "\n".join(lines)
+
+
+def _extract_council_debug(result_payload: Dict[str, Any]) -> Dict[str, Any]:
+    opinions_raw = result_payload.get("opinions") if isinstance(result_payload, dict) else []
+    opinions: List[Dict[str, Any]] = []
+    if isinstance(opinions_raw, list):
+        for item in opinions_raw[:12]:
+            if not isinstance(item, dict):
+                continue
+            opinions.append(
+                {
+                    "agent_name": _truncate_text(item.get("agent_name") or item.get("name") or "unknown", 80),
+                    "confidence": item.get("confidence"),
+                    "text": _truncate_text(item.get("text") or "", 800),
+                }
+            )
+
+    verdict_raw = result_payload.get("verdict") if isinstance(result_payload, dict) else {}
+    verdict = {}
+    if isinstance(verdict_raw, dict):
+        verdict = {
+            "action": verdict_raw.get("action"),
+            "reason": _truncate_text(verdict_raw.get("reason") or "", 500),
+            "constraints": verdict_raw.get("constraints") if isinstance(verdict_raw.get("constraints"), dict) else {},
+        }
+
+    blink_raw = result_payload.get("blink") if isinstance(result_payload, dict) else {}
+    blink: Dict[str, Any] = {}
+    if isinstance(blink_raw, dict):
+        scores = blink_raw.get("scores") if isinstance(blink_raw.get("scores"), dict) else {}
+        blink = {
+            "proposed_answer": _truncate_text(blink_raw.get("proposed_answer") or "", 500),
+            "scores": scores,
+        }
+
+    return {
+        "opinions": opinions,
+        "verdict": verdict,
+        "blink": blink,
+    }
+
+
+def _normalize_planner_decision(
+    *,
+    planner_step: StepExecutionResult,
+    planner_final: FinalAnswer | None,
+    action: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    payload = planner_step.result.get("PlannerReactService", {}) if isinstance(planner_step.result, dict) else {}
+    raw_stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
+    continue_reason = payload.get("continue_reason") if isinstance(payload, dict) else None
+
+    if raw_stop_reason in {"final_answer", "delegate", "continue", "error"}:
+        stop_reason = raw_stop_reason
+    elif planner_step.status != "success":
+        stop_reason = "error"
+    elif action:
+        stop_reason = "delegate"
+    elif planner_final and planner_final.content:
+        stop_reason = "final_answer"
+    else:
+        stop_reason = "continue"
+
+    if not continue_reason and action:
+        continue_reason = "action_present"
+
+    final_present = bool(planner_final and planner_final.content)
+    action_present = bool(action)
+    will_continue = planner_step.status == "success" and action_present
+
+    return {
+        "stop_reason": stop_reason,
+        "continue_reason": continue_reason,
+        "final_present": final_present,
+        "action_present": action_present,
+        "will_continue": will_continue,
+    }
+
+
+
+def _ensure_agent_chain_tool(toolset: List[ToolDef]) -> List[ToolDef]:
+    if any((t.tool_id or "") == "agent_chain" for t in toolset):
+        return toolset
+    return [
+        *toolset,
+        ToolDef(
+            tool_id="agent_chain",
+            description="Escalate to AgentChainService for multi-step runtime execution.",
+            input_schema={},
+            output_schema={},
+        ),
+    ]
+
+
+
+
 class Supervisor:
     """
     Hierarchical controller that can pick reasoning paths, run ReAct with verbs, checkpoint with Council,
@@ -107,6 +411,8 @@ class Supervisor:
 
         tools: List[ToolDef] = []
         for v in verbs:
+            if not is_active(v.name, node_name=settings.node_name):
+                continue
             tools.append(
                 ToolDef(
                     tool_id=v.name,
@@ -118,9 +424,13 @@ class Supervisor:
         return tools
 
     def _should_use_react(self, mode: str, tools: List[ToolDef]) -> bool:
-        if mode == "agent":
+        if mode in {"agent", "council"}:
             return True
+        if mode == "direct_chat":
+            return False
         return bool(tools)
+
+
 
     async def _planner_step(
         self,
@@ -133,13 +443,31 @@ class Supervisor:
         correlation_id: str,
         diagnostic: bool = False,
     ) -> Tuple[PlannerRequest, StepExecutionResult, FinalAnswer | None, Dict[str, Any] | None]:
+        logger.info(
+            "grounding_snapshot component=planner_react corr_id=%s trace_id=%s session_id=%s text_source=goal text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text(goal_text, 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(goal_text),
+        )
+        ext_facts = {"text": ctx.get("memory_digest", "")}
+        if ctx.get("output_mode"):
+            ext_facts["output_mode"] = ctx["output_mode"]
+        if ctx.get("response_profile"):
+            ext_facts["response_profile"] = ctx["response_profile"]
+        for key in ("delivery_grounding_mode", "grounding_context", "anti_generic_drift"):
+            if ctx.get(key):
+                ext_facts[key] = ctx[key]
         planner_req = PlannerRequest(
             request_id=correlation_id,
             caller="cortex-exec",
             goal=Goal(description=goal_text, metadata={"verb": ctx.get("verb")}),
             context=ContextBlock(
                 conversation_history=[LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])],
-                external_facts={"text": ctx.get("memory_digest", "")},
+                external_facts=ext_facts,
             ),
             toolset=toolset,
             trace=trace,
@@ -163,6 +491,16 @@ class Supervisor:
             timeout_sec=planner_timeout,
         )
         logs.append(f"ok <- PlannerReactService status={planner_res.status}")
+        logger.info(
+            "grounding_snapshot component=planner_react_result corr_id=%s trace_id=%s session_id=%s text_source=planner_final text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text((planner_res.final_answer.content if planner_res.final_answer else ""), 220),
+            len(trace),
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(planner_res.final_answer.content if planner_res.final_answer else ""),
+        )
 
         step_res = StepExecutionResult(
             status="success" if planner_res.status == "ok" else "fail",
@@ -189,9 +527,45 @@ class Supervisor:
         action: Dict[str, Any],
         ctx: Dict[str, Any],
         correlation_id: str,
+        mode: str,
+        packs: List[str],
     ) -> StepExecutionResult:
         tool_id = action.get("tool_id")
         tool_input = action.get("input") or {}
+        logger.info(
+            "grounding_snapshot component=%s corr_id=%s trace_id=%s session_id=%s text_source=action_input text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            f"action:{tool_id}",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _compact_json(tool_input, 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(tool_input),
+        )
+        if str(tool_id) == "agent_chain":
+            logger.info("dispatch_action corr_id=%s mode=%s step=agent_chain route=AgentChainService", correlation_id, mode)
+            chain_ctx = {**ctx, **tool_input}
+            return await self._agent_chain_escalation(
+                source=source,
+                correlation_id=correlation_id,
+                ctx=chain_ctx,
+                packs=packs,
+            )
+        if not tool_id or not is_active(str(tool_id), node_name=settings.node_name):
+            logger.warning("Inactive verb selected by supervisor corr_id=%s verb=%s", correlation_id, tool_id)
+            return StepExecutionResult(
+                status="fail",
+                verb_name=str(tool_id or "unknown"),
+                step_name="inactive_verb_guard",
+                order=0,
+                result={"error": "inactive_verb", "verb": tool_id, "node": settings.node_name},
+                latency_ms=0,
+                node=settings.node_name,
+                logs=[f"reject <- inactive verb {tool_id}"],
+                error=f"inactive_verb:{tool_id}",
+            )
+
         verb_cfg = self.registry.get(tool_id)
         step = _verb_to_step(verb_cfg)
 
@@ -213,9 +587,27 @@ class Supervisor:
         *,
         source: ServiceRef,
         correlation_id: str,
-        prompt: str,
         history: List[Dict[str, Any]],
+        goal_text: str,
+        mode: str,
+        verb_name: str | None,
+        allowed_verbs: List[str],
+        toolset: List[ToolDef],
+        trace: List[TraceStep],
+        final_text: str | None,
+        node_name: str,
     ) -> StepExecutionResult:
+        prompt = _build_council_prompt(
+            goal=goal_text,
+            mode=mode,
+            node_name=node_name,
+            correlation_id=correlation_id,
+            verb_name=verb_name,
+            allowed_verbs=allowed_verbs,
+            toolset=toolset,
+            trace=trace,
+            final_text=final_text,
+        )
         deliberation = DeliberationRequest(
             prompt=prompt,
             history=history,
@@ -236,6 +628,7 @@ class Supervisor:
             logs.append("ok <- CouncilService")
             status = "success"
             result_payload = council_res.model_dump(mode="json")
+            result_payload["debug_compact"] = _extract_council_debug(result_payload)
             error_msg = None
         except Exception as exc:
             logs.append(f"timeout/exception <- CouncilService: {exc}")
@@ -261,6 +654,16 @@ class Supervisor:
         ctx: Dict[str, Any],
         packs: List[str],
     ) -> StepExecutionResult:
+        logger.info(
+            "grounding_snapshot component=agent_chain_entry corr_id=%s trace_id=%s session_id=%s text_source=last_user_message text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text(_last_user_message(ctx), 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(_last_user_message(ctx)),
+        )
         agent_req = {
             "text": _last_user_message(ctx),
             "mode": ctx.get("mode") or "agent",
@@ -268,6 +671,8 @@ class Supervisor:
             "user_id": ctx.get("user_id"),
             "messages": ctx.get("messages") or [],
             "packs": packs,
+            "output_mode": ctx.get("output_mode"),
+            "response_profile": ctx.get("response_profile"),
         }
         reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
         t0 = time.time()
@@ -280,6 +685,16 @@ class Supervisor:
             timeout_sec=float(settings.step_timeout_ms) / 1000.0,
         )
         logs.append("ok <- AgentChainService")
+        logger.info(
+            "grounding_snapshot component=agent_chain_exit corr_id=%s trace_id=%s session_id=%s text_source=agent_result text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            _truncate_text(agent_res.text, 220),
+            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
+            bool(ctx.get("memory_digest")),
+            _detect_scaffolding_markers(agent_res.text),
+        )
         return StepExecutionResult(
             status="success",
             verb_name="agent_chain",
@@ -303,25 +718,38 @@ class Supervisor:
         step_results: List[StepExecutionResult] = []
         memory_used = False
         recall_debug: Dict[str, Any] = {}
+        ctx.setdefault("debug", {})
 
         verb_recall_profile = None
         if isinstance(req.metadata, dict):
             verb_recall_profile = req.metadata.get("recall_profile") or None
         ctx.setdefault("plan_recall_profile", verb_recall_profile)
         recall_required = bool(recall_cfg.get("required", False))
-        selected_profile, profile_source = resolve_profile(
+        recall_policy = delivery_safe_recall_decision(
             recall_cfg,
+            req.steps,
+            output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
+            user_text=_last_user_message(ctx),
+            runtime_mode=ctx.get("mode") or req.metadata.get("mode") or "agent",
         )
+        selected_profile = recall_policy["profile"]
+        profile_source = recall_policy["profile_source"]
+        ctx.setdefault("debug", {})["recall_gating_reason"] = recall_policy["recall_gating_reason"]
+        ctx.setdefault("debug", {})["recall_profile_source"] = profile_source
+        ctx.setdefault("debug", {})["recall_profile_override_source"] = recall_policy.get("profile_override_source")
         inline_recall = has_inline_recall(req.steps)
-        should_recall, recall_reason = should_run_recall(recall_cfg, req.steps)
+        should_recall = bool(recall_policy["run_recall"])
+        recall_reason = str(recall_policy["reason"])
 
         if should_recall and not inline_recall:
             logger.info(
-                "Supervisor recall resolved profile=%s source=%s gating=%s",
+                "Supervisor recall resolved profile=%s source=%s override_source=%s gating=%s recall_gating_reason=%s",
                 selected_profile,
                 profile_source,
+                recall_policy.get("profile_override_source"),
                 recall_reason,
+                recall_policy["recall_gating_reason"],
             )
             recall_step, recall_debug, _ = await run_recall_step(
                 self.bus,
@@ -350,26 +778,65 @@ class Supervisor:
                 )
         else:
             if inline_recall:
-                recall_debug = {"skipped": "inline_recall_step_present"}
+                recall_debug = {
+                    "skipped": "inline_recall_step_present",
+                    "recall_gating_reason": recall_policy["recall_gating_reason"],
+                }
                 logger.info(
                     "Supervisor recall skipped; inline RecallService step present",
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
                 )
             else:
-                recall_debug = {"skipped": recall_reason}
+                recall_debug = {
+                    "skipped": recall_reason,
+                    "recall_gating_reason": recall_policy["recall_gating_reason"],
+                }
                 logger.info(
-                    "Supervisor recall skipped by gating (%s)",
+                    "Supervisor recall skipped by gating (%s) recall_gating_reason=%s",
                     recall_reason,
+                    recall_policy["recall_gating_reason"],
                     extra={"correlation_id": correlation_id, "recall_cfg": recall_cfg},
                 )
 
-        packs = ctx.get("packs") or []
+        packs = _effective_packs(ctx, req)
+        ctx["packs"] = packs
         tags = ctx.get("verb_tags") or []
         tools = self._toolset(packs=packs, tags=tags)
+        logger.info(
+            "supervisor_wiring corr=%s output_mode=%s profile=%s packs=%s tool_ids=%s",
+            correlation_id,
+            ctx.get("output_mode"),
+            ctx.get("response_profile"),
+            packs,
+            [t.tool_id for t in tools[:30]],
+        )
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
+        if mode in {"agent", "council"}:
+            tools = _ensure_agent_chain_tool(tools)
+        if mode == "auto":
+            logger.warning(
+                "Supervisor received unexpected mode=auto corr_id=%s; preserving deterministic execution path",
+                correlation_id,
+            )
+        options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+        allowed_verbs = [str(v).strip() for v in (options.get("allowed_verbs") or []) if str(v).strip()]
 
         if not self._should_use_react(mode, tools):
             logger.info("Supervisor: using direct LLM path")
+            if not is_active(req.verb_name, node_name=settings.node_name):
+                return PlanExecutionResult(
+                    verb_name=req.verb_name,
+                    request_id=correlation_id,
+                    status="fail",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=mode,
+                    final_text=f"Verb '{req.verb_name}' is inactive on node {settings.node_name}.",
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    error=f"inactive_verb:{req.verb_name}",
+                )
             direct_cfg = self.registry.get(req.verb_name)
             step = _verb_to_step(direct_cfg)
             direct_step = await call_step_services(
@@ -400,8 +867,9 @@ class Supervisor:
         max_steps = int(ctx.get("max_steps") or 3)
         final_text: Optional[str] = None
         planner_thought: Optional[str] = None
+        executed_steps: List[str] = [s.step_name for s in step_results]
 
-        for _ in range(max_steps):
+        for loop_index in range(max_steps):
             goal_text = _last_user_message(ctx)
             planner_req, planner_step, planner_final, action = await self._planner_step(
                 source=source,
@@ -412,11 +880,36 @@ class Supervisor:
                 correlation_id=correlation_id,
             )
             step_results.append(planner_step)
+            executed_steps.append(planner_step.step_name)
 
-            planner_thought = planner_step.result.get("PlannerReactService", {}).get("trace", [{}])[-1].get("thought") if isinstance(planner_step.result, dict) else None
+            planner_thought = _extract_latest_planner_thought(planner_step.result)
+            decision = _normalize_planner_decision(
+                planner_step=planner_step,
+                planner_final=planner_final,
+                action=action,
+            )
 
             if planner_final and planner_final.content:
                 final_text = planner_final.content
+
+            logger.info(
+                "planner_decision corr_id=%s mode=%s verb=%s step=%s stop_reason=%s continue_reason=%s action_present=%s final_present=%s will_continue=%s remaining_steps=%s",
+                correlation_id,
+                mode,
+                req.verb_name,
+                planner_step.step_name,
+                decision["stop_reason"],
+                decision["continue_reason"],
+                decision["action_present"],
+                decision["final_present"],
+                decision["will_continue"],
+                max(0, max_steps - (loop_index + 1)),
+            )
+
+            tool_id = (action or {}).get("tool_id") if isinstance(action, dict) else None
+            logger.info("planner_action corr_id=%s tool_id=%s lane=%s", correlation_id, tool_id, "depth2")
+
+            if decision["stop_reason"] == "final_answer" and not decision["action_present"]:
                 if not trace:
                     trace.append(
                         TraceStep(
@@ -426,17 +919,61 @@ class Supervisor:
                             observation={"llm_output": final_text},
                         )
                     )
+                logger.info(
+                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+                    correlation_id,
+                    mode,
+                    req.verb_name,
+                    decision["stop_reason"],
+                    len(final_text or ""),
+                    decision["action_present"],
+                    executed_steps,
+                    ["agent_chain"],
+                )
                 break
-            if planner_step.status != "success" or not action:
+
+            if planner_step.status != "success":
+                logger.info(
+                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=planner_step_%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+                    correlation_id,
+                    mode,
+                    req.verb_name,
+                    planner_step.status,
+                    len(final_text or ""),
+                    decision["action_present"],
+                    executed_steps,
+                    ["agent_chain"],
+                )
                 break
+
+            if not action:
+                logger.info("planner_action_ambiguous corr_id=%s default=agent_chain", correlation_id)
+                action = {"tool_id": "agent_chain", "input": {}}
 
             action_step = await self._execute_action(
                 source=source,
                 action=action,
                 ctx=ctx,
                 correlation_id=correlation_id,
+                mode=mode,
+                packs=packs or [],
             )
             step_results.append(action_step)
+            executed_steps.append(action_step.step_name)
+            if action_step.status != "success" and str(action_step.error or "").startswith("inactive_verb:"):
+                return PlanExecutionResult(
+                    verb_name=req.verb_name,
+                    request_id=correlation_id,
+                    status="fail",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=mode,
+                    final_text=f"Verb '{action.get('tool_id')}' is inactive on node {settings.node_name}.",
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    error=action_step.error,
+                )
             obs = _extract_observation(action_step)
             trace.append(
                 TraceStep(
@@ -449,37 +986,65 @@ class Supervisor:
             if obs.get("llm_output"):
                 final_text = obs.get("llm_output")
 
+            selected_tool = str((action or {}).get("tool_id") or "")
+            if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
+                logger.info(
+                    "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=delegate_then_agent_chain tool_id=%s",
+                    correlation_id,
+                    mode,
+                    req.verb_name,
+                    selected_tool,
+                )
+                final_text = None
+                break
+
         # Council checkpoint (opt-in unless explicit mode=council)
         council_step: Optional[StepExecutionResult] = None
 
         require_council = bool(ctx.get("require_council")) or (ctx.get("mode") == "council")
         if require_council:
-            prompt_lines = [f"Goal: { _last_user_message(ctx)}", "Trace:"]
-            if trace:
-                for step in trace:
-                    prompt_lines.append(f"- action: {step.action} obs: {step.observation}")
-            elif planner_thought:
-                prompt_lines.append(f"- planner_thought: {planner_thought}")
-            council_prompt = "\n".join(prompt_lines)
             council_step = await self._council_checkpoint(
                 source=source,
                 correlation_id=correlation_id,
-                prompt=council_prompt,
                 history=ctx.get("messages") or [],
+                goal_text=_last_user_message(ctx),
+                mode=mode,
+                verb_name=req.verb_name,
+                allowed_verbs=allowed_verbs,
+                toolset=tools,
+                trace=trace,
+                final_text=final_text,
+                node_name=settings.node_name,
             )
             step_results.append(council_step)
             try:
                 council_payload = council_step.result.get("CouncilService", {})
                 if isinstance(council_payload, dict):
                     final_text = council_payload.get("final_text") or final_text
+                    compact_debug = council_payload.get("debug_compact")
+                    if isinstance(compact_debug, dict):
+                        ctx.setdefault("debug", {})["council"] = compact_debug
+                        recall_debug["council_debug"] = compact_debug
             except Exception:
                 pass
 
         if ctx.get("force_agent_chain"):
+            logger.info(
+                "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=force_agent_chain",
+                correlation_id,
+                mode,
+                req.verb_name,
+            )
             final_text = None
 
         # Escalate to agent chain if still no final text
         if not final_text:
+            logger.info(
+                "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=needs_chain step=agent_chain",
+                correlation_id,
+                mode,
+                req.verb_name,
+            )
             agent_step = await self._agent_chain_escalation(
                 source=source,
                 correlation_id=correlation_id,
@@ -493,6 +1058,108 @@ class Supervisor:
                     final_text = agent_payload.get("text") or final_text
             except Exception:
                 pass
+
+        # Shallow planner-only final (no agent_chain): re-synthesize if meta-plan for delivery-oriented mode
+        if final_text and mode in {"agent", "council"}:
+            grounding = build_delivery_grounding_context(
+                user_text=_last_user_message(ctx),
+                output_mode=ctx.get("output_mode"),
+            )
+            shallow, rewrite_reason = should_rewrite_for_instructional(
+                final_text,
+                ctx.get("output_mode"),
+                request_text=_last_user_message(ctx),
+                grounding_mode=grounding.get("delivery_grounding_mode"),
+            )
+            if shallow:
+                logger.info(
+                    "supervisor_finalize_response_invoked=1 corr=%s output_mode=%s reason=%s grounding=%s",
+                    correlation_id,
+                    ctx.get("output_mode"),
+                    rewrite_reason,
+                    grounding.get("delivery_grounding_mode"),
+                )
+                ctx.setdefault("debug", {})["supervisor_meta_plan_finalize"] = True
+                try:
+                    ser_trace = json.dumps(
+                        [
+                            t.model_dump(mode="json") if hasattr(t, "model_dump") else dict(t)
+                            for t in trace
+                        ],
+                        default=str,
+                    )[:12000]
+                except Exception:
+                    ser_trace = "[]"
+                goal_txt = _last_user_message(ctx)
+                ser_trace = _sanitize_text_block(ser_trace)
+                finalize_input_blob = {
+                    "original_request": goal_txt,
+                    "request": goal_txt,
+                    "text": goal_txt,
+                    "trace": ser_trace,
+                    "output_mode": ctx.get("output_mode") or "direct_answer",
+                    "response_profile": ctx.get("response_profile") or "direct_answer",
+                    **grounding,
+                }
+                scaffold_markers = _detect_scaffolding_markers(finalize_input_blob)
+                if scaffold_markers:
+                    logger.warning(
+                        "finalizer_sanitize corr_id=%s markers=%s",
+                        correlation_id,
+                        scaffold_markers,
+                    )
+                    finalize_input_blob["trace"] = _sanitize_text_block(str(finalize_input_blob.get("trace") or ""))
+                fin_step = await self._execute_action(
+                    source=source,
+                    action={
+                        "tool_id": "finalize_response",
+                        "input": finalize_input_blob,
+                    },
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    mode=mode,
+                    packs=packs or [],
+                )
+                step_results.append(fin_step)
+                if fin_step.status == "success":
+                    obs = _extract_observation(fin_step)
+                    final_text = obs.get("llm_output") or final_text
+
+        logger.info(
+            "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=loop_complete final_len=%s output_mode=%s packs=%s steps=%s",
+            correlation_id,
+            mode,
+            req.verb_name,
+            len(final_text or ""),
+            ctx.get("output_mode"),
+            packs,
+            [s.step_name for s in step_results],
+        )
+        user_text = _last_user_message(ctx)
+        verdict = _grounding_verdict(user_text, final_text or "")
+        recent_followup_continuity = _has_recent_followup_continuity(ctx.get("messages"), final_text or "")
+        logger.info(
+            "grounding_verdict corr_id=%s trace_id=%s session_id=%s anchored=%s recent_followup_continuity=%s overlap_terms=%s unrelated_markers=%s scaffolding_markers=%s",
+            correlation_id,
+            ctx.get("trace_id"),
+            ctx.get("session_id"),
+            verdict["anchored"],
+            recent_followup_continuity,
+            verdict["overlap_terms"],
+            verdict["unrelated_markers"],
+            verdict["scaffolding_markers"],
+        )
+        if not verdict["anchored"] and not recent_followup_continuity:
+            logger.warning(
+                "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
+                correlation_id,
+                _truncate_text(user_text, 220),
+                _truncate_text(final_text, 220),
+            )
+            final_text = (
+                f"I may have drifted from your request. You asked: {user_text}\n\n"
+                "Could you restate the key constraint and I will answer directly from that prompt?"
+            )
 
         overall_status = "success" if step_results and all(s.status == "success" for s in step_results if s) else "partial"
         return PlanExecutionResult(

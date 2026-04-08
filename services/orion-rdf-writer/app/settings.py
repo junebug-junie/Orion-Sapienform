@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # === LISTENER CHANNELS ===
     # Enqueue (Direct writes)
-    CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf-collapse:enqueue", env="CHANNEL_RDF_ENQUEUE")
+    CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf:enqueue", env="CHANNEL_RDF_ENQUEUE")
     # Collapse (Raw)
     CHANNEL_EVENTS_COLLAPSE: str = Field(default="orion:collapse:intake", env="CHANNEL_EVENTS_COLLAPSE")
     # Tagged/Enriched
@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # Chat History
     CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
     CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
+
+    # Autonomy artifact ingestion
+    CHANNEL_MEMORY_IDENTITY_SNAPSHOT: str = Field(default="orion:memory:identity:snapshot", env="CHANNEL_MEMORY_IDENTITY_SNAPSHOT")
+    CHANNEL_MEMORY_DRIVES_AUDIT: str = Field(default="orion:memory:drives:audit", env="CHANNEL_MEMORY_DRIVES_AUDIT")
+    CHANNEL_MEMORY_GOALS_PROPOSED: str = Field(default="orion:memory:goals:proposed", env="CHANNEL_MEMORY_GOALS_PROPOSED")
 
     # === PUBLISH CHANNELS ===
     CHANNEL_RDF_CONFIRM: str = Field(default="orion:rdf:confirm", env="CHANNEL_RDF_CONFIRM")
@@ -59,15 +64,21 @@ class Settings(BaseSettings):
         """Returns a list of all channels this service should subscribe to."""
         channels = [
             self.CHANNEL_RDF_ENQUEUE,
+            "orion:rdf-collapse:enqueue",
             self.CHANNEL_EVENTS_COLLAPSE,
             self.CHANNEL_EVENTS_TAGGED,
             self.CHANNEL_EVENTS_TAGGED_CHAT,
+            "orion:chat:social:stored",
             self.CHANNEL_CORE_EVENTS,
             self.CHANNEL_WORKER_RDF,
             self.CORTEX_LOG_CHANNEL,
             self.CHANNEL_COGNITION_TRACE_PUB,
             self.CHANNEL_CHAT_HISTORY_TURN,
             self.CHANNEL_CHAT_HISTORY_LOG,
+            self.CHANNEL_MEMORY_IDENTITY_SNAPSHOT,
+            self.CHANNEL_MEMORY_DRIVES_AUDIT,
+            self.CHANNEL_MEMORY_GOALS_PROPOSED,
+            "orion:metacog:trace",
         ]
         seen = set()
         ordered: List[str] = []

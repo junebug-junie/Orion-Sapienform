@@ -136,11 +136,20 @@ ORION_BUS_URL=redis://localhost:6379/0
 CORTEX_GATEWAY_REQUEST_CHANNEL=orion-cortex-gateway:request
 TTS_REQUEST_CHANNEL=orion:tts:intake
 
+# Landing Pad (Topic Rail)
+LANDING_PAD_URL=http://orion-landing-pad:8370
+LANDING_PAD_TIMEOUT_SEC=5
+
+# Topic Studio (Topic Foundry proxy)
+TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
+```
 
 ### Manual UI checklist
 - Navigate between **Hub** and **Topic Studio** tabs; ensure no overlays block pointer events on Hub.
 - In Topic Studio, run **Preview** with `turn_pairs`, then switch to `conversation_bound` after setting a `boundary_column`.
 - Train a run, poll for completion, then load segments and click a segment to confirm full text renders in the detail pane.
+
+Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
 
 ---
 

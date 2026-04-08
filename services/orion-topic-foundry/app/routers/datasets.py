@@ -3,9 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
-from psycopg2 import OperationalError
-from psycopg2 import errors as pg_errors
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from app.models import (
     DatasetCreateRequest,
@@ -15,8 +13,6 @@ from app.models import (
     DatasetPreviewRequest,
     DatasetPreviewResponse,
     DatasetSpec,
-    DatasetUpdateRequest,
-    WindowingSpec,
 )
 from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
 from app.services.preview import preview_dataset, preview_doc_detail
@@ -30,15 +26,6 @@ router = APIRouter()
 
 @router.post("/datasets", response_model=DatasetCreateResponse)
 def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateResponse:
-    logger.info(
-        "Create dataset request received",
-        extra={
-            "payload_keys": sorted(payload.model_dump(exclude_none=True).keys()),
-            "source_table": payload.source_table,
-        },
-    )
-    if payload.boundary_column and not payload.boundary_strategy:
-        payload.boundary_strategy = "column"
     dataset_id = uuid4()
     created_at = utc_now()
     dataset = DatasetSpec(
@@ -48,9 +35,9 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
         id_column=payload.id_column,
         time_column=payload.time_column,
         text_columns=payload.text_columns,
-        timezone=(payload.timezone or "UTC"),
-        boundary_column=payload.boundary_column,
-        boundary_strategy=payload.boundary_strategy,
+        where_sql=payload.where_sql,
+        where_params=payload.where_params,
+        timezone=payload.timezone,
         created_at=created_at,
     )
     try:

@@ -5,19 +5,32 @@ import asyncio
 import logging
 import traceback
 import json
+import os
+from datetime import datetime, timezone
 
 from pydantic import Field, ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
+from orion.normalizers.agent_trace import build_agent_trace_summary
 
 # REMOVED: dispatch_metacognition_tick
-from .orchestrator import call_verb_runtime, dispatch_metacog_trigger
+from .orchestrator import call_verb_runtime, dispatch_dream_trigger, dispatch_metacog_trigger
 from .settings import get_settings
+from .decision_router import DecisionRouter
+from .workflow_runtime import (
+    execute_chat_workflow,
+    execute_workflow_schedule_management,
+    has_explicit_workflow_request,
+    has_workflow_schedule_management_request,
+)
+from orion.spark.concept_induction.profile_repository import concept_profile_parity_evidence_snapshot
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
+from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
 
 logger = logging.getLogger("orion.cortex.orch")
+PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 # Channels
 # We only listen for the trigger now. The SQL Writer handles the ticks independently.
@@ -40,6 +53,34 @@ def _is_diagnostic(raw_payload: dict | None) -> bool:
     return bool(isinstance(opts, dict) and (opts.get("diagnostic") or opts.get("diagnostic_mode")))
 
 
+
+
+def _normalize_and_validate_verb(req: CortexClientRequest) -> tuple[bool, str | None]:
+    mode = (req.mode or "brain").lower()
+    verb = (req.verb or "").strip()
+
+    if mode == "auto":
+        req.verb = None
+        return True, None
+
+    if not verb:
+        if mode == "brain":
+            req.verb = "chat_general"
+            verb = req.verb
+        else:
+            req.verb = None
+            return True, None
+
+    if mode in {"agent", "council"} and is_runtime_entry_verb(verb):
+        req.verb = verb
+        return True, None
+
+    if not is_active(verb, node_name=get_settings().node_name):
+        return False, verb
+
+    req.verb = verb
+    return True, None
+
 def _cfg() -> ChassisConfig:
     s = get_settings()
     return ChassisConfig(
@@ -52,14 +93,53 @@ def _cfg() -> ChassisConfig:
     )
 
 
+
+
+def _should_auto_route(req: CortexClientRequest, env: BaseEnvelope) -> tuple[bool, str]:
+    options = req.options if isinstance(req.options, dict) else {}
+    route_intent = str(options.get("route_intent") or req.route_intent or "none").lower()
+    requested = route_intent == "auto" or str(req.mode).lower() == "auto"
+    source_name = ((env.source.name if env.source else "") or "").strip().lower()
+    allowlisted = source_name in {"cortex-gateway"}
+
+    if not requested:
+        return False, "intent_none"
+    if not allowlisted:
+        return False, f"source_not_allowlisted:{source_name or 'unknown'}"
+    return True, "intent_auto_allowlisted"
 def _source() -> ServiceRef:
     s = get_settings()
     return ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
 
 
+def _runtime_identity() -> dict[str, str]:
+    s = get_settings()
+    return {
+        "service": s.service_name,
+        "version": s.service_version,
+        "node": s.node_name,
+        "git_sha": os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT") or "unknown",
+        "build_timestamp": os.getenv("BUILD_TIMESTAMP") or "unknown",
+        "environment": os.getenv("ORION_ENV") or os.getenv("ENVIRONMENT") or "unknown",
+        "process_started_at": PROCESS_STARTED_AT_UTC.isoformat(),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     sref = _source()
     logger.info(f"Handling Orch Request kind={env.kind} corr_id={env.correlation_id}")
+
+    if env.kind == "orion.cortex.orch.info.request.v1":
+        runtime = _runtime_identity()
+        runtime["concept_profile_parity_evidence"] = concept_profile_parity_evidence_snapshot()
+        return BaseEnvelope(
+            kind="orion.cortex.orch.info.result.v1",
+            source=sref,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload=runtime,
+        )
 
     if env.kind not in ("cortex.orch.request", "legacy.message"):
         return CortexOrchResult(
@@ -81,6 +161,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
 
     # 1. Ingress Validation
+    route_meta: dict | None = None
     try:
         raw_payload = env.payload if isinstance(env.payload, dict) else {}
         diagnostic = _is_diagnostic(raw_payload)
@@ -94,16 +175,131 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         req = CortexClientRequest.model_validate(raw_payload)
 
         logger.info(
-            "Validated orch request: corr=%s mode=%s verb=%s packs=%s recall_enabled=%s recall_required=%s",
+            "orch_intake corr=%s source=%s reply=%s mode=%s verb=%s supervised=%s recall_enabled=%s recall_profile=%s packs=%s",
             str(env.correlation_id),
+            (env.source.name if env.source else "unknown"),
+            env.reply_to,
             req.mode,
             req.verb,
-            req.packs,
+            bool((req.options or {}).get("supervised")),
             req.recall.enabled,
-            req.recall.required,
+            req.recall.profile,
+            req.packs,
         )
         if diagnostic:
             logger.info("Diagnostic CortexClientRequest json=%s", req.model_dump_json())
+
+        should_route, route_reason = _should_auto_route(req, env)
+        logger.info(
+            "auto_depth_gate corr_id=%s should_auto=%s reason=%s source=%s mode=%s route_intent=%s",
+            str(env.correlation_id),
+            should_route,
+            route_reason,
+            ((env.source.name if env.source else "") or "unknown"),
+            req.mode,
+            (req.options.get("route_intent") if isinstance(req.options, dict) else None) or req.route_intent,
+        )
+
+        if should_route:
+            router = DecisionRouter(svc.bus)
+            routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
+            req = routed.request
+            route_meta = routed.decision.model_dump(mode="json")
+            output_mode_decision = getattr(routed, "output_mode_decision", None)
+            if output_mode_decision is not None and hasattr(output_mode_decision, "model_dump"):
+                route_meta["output_mode_decision"] = output_mode_decision.model_dump()
+            logger.info(
+                "auto_depth_result corr_id=%s depth=%s primary_verb=%s router_source=%s confidence=%.2f",
+                str(env.correlation_id),
+                routed.decision.execution_depth,
+                routed.decision.primary_verb,
+                routed.decision.source,
+                routed.decision.confidence,
+            )
+        elif str(req.mode).lower() == "auto":
+            logger.info("auto_route_gate corr_id=%s fallback_mode=brain reason=%s", str(env.correlation_id), route_reason)
+            req.mode = "brain"
+
+        if has_explicit_workflow_request(req):
+            try:
+                workflow_result = await execute_chat_workflow(
+                    bus=svc.bus,
+                    source=sref,
+                    req=req,
+                    correlation_id=str(env.correlation_id),
+                    causality_chain=env.causality_chain,
+                    trace=env.trace,
+                    call_verb_runtime=call_verb_runtime,
+                )
+            except Exception as exc:
+                workflow_request = (req.context.metadata or {}).get("workflow_request") if isinstance(req.context.metadata, dict) else {}
+                workflow_id = workflow_request.get("workflow_id") if isinstance(workflow_request, dict) else None
+                logger.exception("workflow_execution_failed corr=%s workflow_id=%s", str(env.correlation_id), workflow_id)
+                workflow_result = CortexClientResult(
+                    ok=False,
+                    mode="brain",
+                    verb=str(workflow_id or "workflow"),
+                    status="fail",
+                    final_text=f"Workflow '{workflow_id or 'unknown'}' failed and was not replaced with chat_general.",
+                    memory_used=False,
+                    recall_debug={},
+                    steps=[],
+                    error={"message": str(exc), "type": type(exc).__name__, "workflow_id": workflow_id},
+                    correlation_id=str(env.correlation_id),
+                    metadata={
+                        "workflow_status": "failed",
+                        "workflow_request": workflow_request if isinstance(workflow_request, dict) else {},
+                        "workflow": {
+                            "workflow_id": workflow_id,
+                            "status": "failed",
+                            "main_result": "Workflow execution failed before completion.",
+                            "persisted": [],
+                            "scheduled": [],
+                            "executed": False,
+                        },
+                    },
+                )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=workflow_result.model_dump(mode="json"),
+            )
+
+        if has_workflow_schedule_management_request(req):
+            management_result = await execute_workflow_schedule_management(
+                bus=svc.bus,
+                source=sref,
+                req=req,
+                correlation_id=str(env.correlation_id),
+            )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=management_result.model_dump(mode="json"),
+            )
+
+        ok, bad_verb = _normalize_and_validate_verb(req)
+        if not ok:
+            failure = CortexClientResult(
+                ok=False,
+                mode=req.mode,
+                verb=bad_verb or "unknown",
+                status="fail",
+                memory_used=False,
+                recall_debug={},
+                steps=[],
+                error={"message": f"inactive_verb:{bad_verb}", "verb": bad_verb, "node": get_settings().node_name},
+                correlation_id=str(env.correlation_id),
+                final_text=f"Verb '{bad_verb}' is inactive on node {get_settings().node_name}.",
+            )
+            return CortexOrchResult(
+                source=sref,
+                correlation_id=env.correlation_id,
+                causality_chain=env.causality_chain,
+                payload=failure.model_dump(mode="json"),
+            )
 
     except ValidationError as ve:
         trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
@@ -137,6 +333,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             causality_chain=env.causality_chain,
             trace=env.trace,
             timeout_sec=float(req.options.get("timeout_sec", 900.0)),
+            router_metadata=route_meta,
         )
 
         result_payload = verb_result.output if isinstance(verb_result.output, dict) else {}
@@ -169,26 +366,98 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if isinstance(final_meta, dict):
             final_meta["trace_verb"] = primary_verb
             final_meta["executed_verbs"] = executed_verbs
+            if route_meta:
+                final_meta["auto_route"] = route_meta
+
+        # Answer-depth: surface agent-chain runtime_debug for live proof evidence
+        for s in steps:
+            if not isinstance(s.result, dict):
+                continue
+            ac = s.result.get("AgentChainService")
+            if isinstance(ac, dict) and ac.get("runtime_debug"):
+                rd = ac["runtime_debug"]
+                if isinstance(final_meta, dict):
+                    final_meta["answer_depth"] = {
+                        "output_mode": rd.get("output_mode"),
+                        "response_profile": rd.get("response_profile"),
+                        "packs": rd.get("packs"),
+                        "resolved_tool_ids": rd.get("resolved_tool_ids"),
+                        "triage_blocked_post_step0": rd.get("triage_blocked_post_step0"),
+                        "repeated_plan_action_escalation": rd.get("repeated_plan_action_escalation"),
+                        "finalize_response_invoked": rd.get("finalize_response_invoked"),
+                        "quality_evaluator_rewrite": rd.get("quality_evaluator_rewrite"),
+                    }
+                break
+
+        agent_trace = build_agent_trace_summary(
+            correlation_id=str(env.correlation_id),
+            message_id=str(env.correlation_id),
+            mode=req.mode,
+            status=result_payload.get("status") or "fail",
+            final_text=result_payload.get("final_text"),
+            steps=steps,
+            metadata=final_meta if isinstance(final_meta, dict) else {},
+        )
+        if isinstance(final_meta, dict) and agent_trace is not None:
+            final_meta["agent_trace_available"] = True
+        metacog_traces = result_payload.get("metacog_traces") or []
+        reasoning_content = result_payload.get("reasoning_content")
+        reasoning_trace = result_payload.get("reasoning_trace")
+        reasoning_trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+        print(
+            "===THINK_HOP=== hop=gateway_in "
+            f"corr={env.correlation_id} "
+            f"payload_keys={sorted(result_payload.keys()) if isinstance(result_payload, dict) else []} "
+            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+            f"trace_len={len(reasoning_trace_content) if isinstance(reasoning_trace_content, str) else 0} "
+            f"metacog_count={len(metacog_traces) if isinstance(metacog_traces, list) else 0} "
+            f"preview={repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or reasoning_trace_content or '')[:220])}",
+            flush=True,
+        )
+        logger.info(
+            "cortex_orch_metacog_forwarded corr=%s verb=%s traces=%s",
+            env.correlation_id,
+            req.verb,
+            len(metacog_traces) if isinstance(metacog_traces, list) else 0,
+        )
 
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
-            verb=req.verb,
+            verb=req.verb or "unknown",
             status=result_payload.get("status") or "fail",
             final_text=result_payload.get("final_text"),
+            reasoning_content=reasoning_content if isinstance(reasoning_content, str) else None,
+            reasoning_trace=reasoning_trace if isinstance(reasoning_trace, dict) else None,
             memory_used=bool(result_payload.get("memory_used")),
             recall_debug=result_payload.get("recall_debug") or {},
             steps=steps,
             error=error_payload,
             correlation_id=str(env.correlation_id),
+            agent_trace=agent_trace,
+            metacog_traces=metacog_traces,
             metadata=final_meta,
+        )
+        client_payload = client_result.model_dump(mode="json")
+        client_reasoning = client_payload.get("reasoning_content") if isinstance(client_payload, dict) else None
+        client_trace = client_payload.get("reasoning_trace") if isinstance(client_payload, dict) else None
+        client_trace_content = client_trace.get("content") if isinstance(client_trace, dict) else None
+        print(
+            "===THINK_HOP=== hop=gateway_out "
+            f"corr={env.correlation_id} "
+            f"payload_keys={sorted(client_payload.keys()) if isinstance(client_payload, dict) else []} "
+            f"reasoning_len={len(client_reasoning) if isinstance(client_reasoning, str) else 0} "
+            f"trace_len={len(client_trace_content) if isinstance(client_trace_content, str) else 0} "
+            f"metacog_count={len(client_payload.get('metacog_traces')) if isinstance(client_payload.get('metacog_traces'), list) else 0} "
+            f"preview={repr(str((client_reasoning if isinstance(client_reasoning, str) else None) or client_trace_content or '')[:220])}",
+            flush=True,
         )
 
         return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
             causality_chain=env.causality_chain,
-            payload=client_result.model_dump(mode="json"),
+            payload=client_payload,
         )
 
     except Exception as e:
@@ -213,6 +482,15 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
 svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
 equilibrium_hunter: Hunter
+dream_hunter: Hunter
+
+
+async def _handle_dream_envelope(env: BaseEnvelope) -> None:
+    if env.kind != "dream.trigger":
+        return
+    trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+    logger.info("Dream trigger intake kind=%s trace_id=%s", env.kind, trace_id)
+    await dispatch_dream_trigger(dream_hunter.bus, source=_source(), env=env)
 
 
 async def _handle_equilibrium_envelope(env: BaseEnvelope) -> None:
@@ -242,6 +520,12 @@ equilibrium_hunter = Hunter(
     ],
 )
 
+dream_hunter = Hunter(
+    _cfg(),
+    handler=_handle_dream_envelope,
+    patterns=[get_settings().channel_dream_trigger],
+)
+
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
@@ -252,7 +536,8 @@ async def main() -> None:
         f"exec_channel={s.channel_exec_request} "
         f"bus={s.orion_bus_url}"
     )
-    await asyncio.gather(svc.start(), equilibrium_hunter.start())
+    logger.info("orch_runtime_identity %s", json.dumps(_runtime_identity(), sort_keys=True))
+    await asyncio.gather(svc.start(), equilibrium_hunter.start(), dream_hunter.start())
 
 
 if __name__ == "__main__":

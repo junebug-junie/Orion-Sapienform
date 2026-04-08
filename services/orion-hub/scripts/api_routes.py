@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
+from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 import aiohttp
@@ -12,10 +15,24 @@ import requests
 
 from .settings import settings
 from .session import ensure_session
-from .chat_history import build_chat_history_envelope, publish_chat_history
+from .chat_history import (
+    build_chat_history_envelope,
+    publish_chat_history,
+    publish_social_room_turn,
+    select_reasoning_trace_for_history,
+)
 from .library import scan_cognition_library
+from .trace_payloads import extract_agent_trace_payload
+from .autonomy_payloads import extract_autonomy_payload
+from .workflow_payloads import extract_workflow_payload
+from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
+from .social_room import is_social_room_payload, social_room_client_meta
+from .service_logs import collect_service_inventory
+from orion.cognition.verb_activation import build_verb_list
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
+from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 from orion.schemas.notify import (
     ChatAttentionAck,
     ChatMessageReceipt,
@@ -25,8 +42,24 @@ from orion.schemas.notify import (
 )
 
 logger = logging.getLogger("orion-hub.api")
+PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
 
 class AttentionAckRequest(BaseModel):
     ack_type: str = Field("seen")
@@ -42,6 +75,54 @@ class PreferencesResolveProxyRequest(BaseModel):
     recipient_group: str
     event_kind: str
     severity: str
+
+
+class WorkflowScheduleUpdateRequest(BaseModel):
+    run_at_utc: Optional[str] = None
+    cadence: Optional[str] = None
+    day_of_week: Optional[int] = None
+    hour_local: Optional[int] = None
+    minute_local: Optional[int] = None
+    timezone: Optional[str] = None
+    notify_on: Optional[str] = None
+    expected_revision: Optional[int] = None
+
+
+async def _execute_workflow_schedule_management(*, session_id: str, user_id: Optional[str], request: WorkflowScheduleManageRequestV1) -> Dict[str, Any]:
+    from .main import cortex_client
+
+    if cortex_client is None:
+        raise RuntimeError("Cortex client unavailable")
+
+    corr_id = str(uuid4())
+    chat_req = CortexChatRequest(
+        prompt="workflow schedule management",
+        mode="brain",
+        route_intent="none",
+        session_id=session_id,
+        user_id=user_id,
+        trace_id=corr_id,
+        metadata={"workflow_schedule_management": request.model_dump(mode="json")},
+    )
+    resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=corr_id)
+    metadata = resp.cortex_result.metadata if isinstance(resp.cortex_result.metadata, dict) else {}
+    payload = metadata.get("workflow_schedule_management") if isinstance(metadata.get("workflow_schedule_management"), dict) else {}
+    if payload:
+        try:
+            return WorkflowScheduleManageResponseV1.model_validate(payload).model_dump(mode="json")
+        except Exception:
+            return payload
+    return {
+        "ok": bool(resp.cortex_result.ok),
+        "operation": request.operation,
+        "request_id": request.request_id,
+        "message": resp.final_text or "No schedule response payload.",
+        "schedules": [],
+        "history": [],
+        "ambiguous": False,
+        "error_code": "invalid_management_payload",
+        "error_details": {},
+    }
 
 
 async def _proxy_request(request: Request, base_url: str, path: str) -> Response:
@@ -60,6 +141,28 @@ async def _proxy_request(request: Request, base_url: str, path: str) -> Response
             payload = await response.read()
             content_type = response.headers.get("content-type", "application/json")
             return Response(content=payload, status_code=response.status, media_type=content_type)
+
+
+async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = settings.LANDING_PAD_URL.rstrip("/")
+    url = f"{base_url}{path}"
+    timeout = aiohttp.ClientTimeout(total=settings.LANDING_PAD_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+
+
+async def _fetch_social_memory(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = settings.SOCIAL_MEMORY_BASE_URL.rstrip("/")
+    url = f"{base_url}{path}"
+    timeout = aiohttp.ClientTimeout(total=settings.TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+
+
 def _normalize_bool(value: Any, default: bool = True) -> bool:
     if value is None:
         return default
@@ -74,6 +177,35 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
         if lowered in {"0", "false", "no", "n", "off"}:
             return False
     return default
+
+
+def _log_hub_route_decision(
+    *,
+    corr_id: str,
+    session_id: str,
+    route_debug: Dict[str, Any],
+    user_prompt: str,
+) -> None:
+    emitted_mode = route_debug.get("mode")
+    emitted_verb = route_debug.get("verb")
+    effective_verb = emitted_verb
+    if not effective_verb and emitted_mode not in {"agent", "council"}:
+        effective_verb = "chat_general"
+    summary = {
+        "corr_id": corr_id,
+        "session_id": session_id,
+        "selected_ui_route": route_debug.get("selected_ui_route"),
+        "emitted_mode": emitted_mode,
+        "emitted_verb": emitted_verb,
+        "effective_verb": effective_verb,
+        "emitted_options": route_debug.get("options") or {},
+        "packs": route_debug.get("packs") or [],
+        "force_agent_chain": bool(route_debug.get("force_agent_chain")),
+        "supervised": bool(route_debug.get("supervised")),
+        "diagnostic": bool(route_debug.get("diagnostic")),
+        "last_user_head": (user_prompt or "")[:120],
+    }
+    logger.info("hub_route_egress %s", json.dumps(summary, sort_keys=True, default=str))
 
 
 def _rec_tape_req(
@@ -127,13 +259,52 @@ def _rec_tape_rsp(
 async def root():
     """Serves the main Hub UI (index.html)."""
     from .main import html_content
-    return HTMLResponse(content=html_content, status_code=200)
+    return HTMLResponse(
+        content=html_content,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @router.get("/health")
 def health():
     """Simple health check endpoint."""
     return {"status": "ok", "service": settings.SERVICE_NAME}
+
+
+def _runtime_identity() -> dict:
+    return {
+        "service": settings.SERVICE_NAME,
+        "version": settings.SERVICE_VERSION,
+        "node": settings.NODE_NAME,
+        "git_sha": os.getenv("GIT_SHA") or os.getenv("SOURCE_COMMIT") or "unknown",
+        "build_timestamp": os.getenv("BUILD_TIMESTAMP") or "unknown",
+        "environment": os.getenv("ORION_ENV") or os.getenv("ENVIRONMENT") or "unknown",
+        "process_started_at": PROCESS_STARTED_AT_UTC.isoformat(),
+        "now_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/api/debug/build")
+def api_debug_build():
+    return {
+        "hub": _runtime_identity(),
+        "downstream": {
+            "cortex_gateway_request_channel": settings.CORTEX_GATEWAY_REQUEST_CHANNEL,
+            "notify_base_url": settings.NOTIFY_BASE_URL,
+            "landing_pad_url": settings.LANDING_PAD_URL,
+        },
+    }
+
+
+
+@router.get("/api/service-logs/services")
+def api_service_logs_services() -> Dict[str, Any]:
+    return collect_service_inventory()
 
 @router.get("/api/notifications")
 async def api_notifications(limit: int = 50):
@@ -196,6 +367,27 @@ async def proxy_topic_foundry(path: str, request: Request) -> Response:
     except aiohttp.ClientError as exc:
         logger.warning("Topic Foundry proxy error: %s", exc)
         raise HTTPException(status_code=502, detail="Topic Foundry proxy request failed") from exc
+
+
+@router.get("/api/social-memory/inspection")
+async def api_social_memory_inspection(
+    platform: str = Query(...),
+    room_id: str = Query(...),
+    participant_id: str | None = Query(None),
+):
+    if not settings.SOCIAL_MEMORY_BASE_URL:
+        raise HTTPException(status_code=400, detail="Social memory base URL not configured")
+    try:
+        return await _fetch_social_memory(
+            "/inspection",
+            {"platform": platform, "room_id": room_id, "participant_id": participant_id},
+        )
+    except aiohttp.ClientResponseError as exc:
+        detail = exc.message or "Social memory inspection request failed"
+        raise HTTPException(status_code=exc.status or 502, detail=detail) from exc
+    except aiohttp.ClientError as exc:
+        logger.warning("Social memory inspection proxy error: %s", exc)
+        raise HTTPException(status_code=502, detail="Social memory inspection request failed") from exc
 
 
 @router.put("/api/notify/recipients/{recipient_group}")
@@ -402,6 +594,12 @@ def get_cognition_library():
     return scan_cognition_library()
 
 
+
+@router.get("/api/verbs")
+def api_verbs(include_inactive: int = Query(default=0, ge=0, le=1)):
+    include = bool(include_inactive)
+    return {"verbs": build_verb_list(node_name=settings.NODE_NAME, include_inactive=include)}
+
 # ======================================================================
 # 💬 SHARED CHAT CORE (HTTP + WS)
 # ======================================================================
@@ -417,51 +615,16 @@ async def handle_chat_request(
     Delegate strict typed requests to orion-cortex-gateway via Bus.
     """
     user_messages = payload.get("messages", [])
-    mode = payload.get("mode", "brain")
 
     # Respect client toggle; default to True if missing
     raw_recall = payload.get("use_recall", None)
     use_recall = _normalize_bool(raw_recall, default=True)
-    
-    recall_mode = payload.get("recall_mode")
-    recall_profile = payload.get("recall_profile")
-    recall_required = bool(payload.get("recall_required", False))
-
-    packs = payload.get("packs")
-    user_id = payload.get("user_id")
-
-    # Handle Verbs override (multi-select from UI)
-    ui_verbs = payload.get("verbs")
-
-    verb_override = None
-    options = payload.get("options") or {}
-
-    if isinstance(ui_verbs, list) and len(ui_verbs) > 0:
-        if len(ui_verbs) == 1:
-             # Single verb -> override entry point
-             verb_override = ui_verbs[0]
-        else:
-             # Multiple verbs -> pass as allowed tools/verbs in options
-             options["allowed_verbs"] = ui_verbs
 
     if not isinstance(user_messages, list) or len(user_messages) == 0:
         return {"error": "Invalid payload: missing messages[]"}
 
     user_prompt = user_messages[-1].get("content", "") or ""
 
-    recall_payload = {"enabled": use_recall}
-    if recall_mode:
-        recall_payload["mode"] = recall_mode
-    if recall_profile:
-        recall_payload["profile"] = recall_profile
-    if recall_required:
-        recall_payload["required"] = True
-    
-    # Default profile if enabled but missing
-    if use_recall and "profile" not in recall_payload:
-        recall_payload["profile"] = "reflect.v1"
-        
-    logger.info(f"Chat Request recall config: {recall_payload} session_id={session_id}")
     logger.info(
         "HTTP Chat Request payload session_id=%s messages_len=%s last_user_len=%s last_user_head=%r",
         session_id,
@@ -470,7 +633,85 @@ async def handle_chat_request(
         (user_prompt or "")[:120],
     )
 
+    inactive = validate_single_verb_override(payload, node_name=settings.NODE_NAME)
+    if inactive:
+        return inactive
+
     corr_id = str(uuid4())
+    context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+    continuity_messages = build_continuity_messages(
+        history=user_messages,
+        latest_user_prompt=user_prompt,
+        turns=context_turns,
+    )
+    req, route_debug, _ = build_chat_request(
+        payload=payload,
+        session_id=session_id,
+        user_id=payload.get("user_id"),
+        trace_id=None,
+        default_mode="brain",
+        auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+        source_label="hub_http",
+        prompt=user_prompt,
+        messages=continuity_messages,
+    )
+    workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
+    execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
+    logger.info(
+        "workflow_resolution_result %s",
+        json.dumps(
+            {
+                "correlation_id": corr_id,
+                "matched_workflow_id": (workflow_request or {}).get("workflow_id") if isinstance(workflow_request, dict) else None,
+                "fallback_route": route_debug.get("fallback_route"),
+                "reason": route_debug.get("workflow_resolution_reason"),
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
+    logger.info(
+        "hub_workflow_request corr=%s sid=%s workflow_id=%s invocation_mode=%s schedule_kind=%s",
+        corr_id,
+        session_id,
+        (workflow_request or {}).get("workflow_id") if isinstance(workflow_request, dict) else None,
+        (execution_policy or {}).get("invocation_mode") if isinstance(execution_policy, dict) else None,
+        ((execution_policy or {}).get("schedule") or {}).get("kind") if isinstance(execution_policy, dict) else None,
+    )
+
+    recall_payload = req.recall or {"enabled": use_recall}
+    mode = req.mode
+
+    logger.info(f"Chat Request recall config: {recall_payload} session_id={session_id}")
+
+    diagnostic = bool(payload.get("diagnostic") or (isinstance(payload.get("options"), dict) and payload.get("options", {}).get("diagnostic")))
+    if diagnostic:
+        logger.info("HTTP outbound CortexChatRequest corr=%s payload=%s", corr_id, req.model_dump(mode="json"))
+    logger.info(
+        "hub_egress corr=%s sid=%s mode=%s verb=%s route_intent=%s allowed_verbs=%s packs=%s",
+        corr_id,
+        session_id,
+        req.mode,
+        req.verb,
+        (req.options or {}).get("route_intent") or "none",
+        len(((req.options or {}).get("allowed_verbs") or [])),
+        req.packs or [],
+    )
+    logger.info(
+        "hub_context_messages corr=%s sid=%s mode=%s count=%s roles=%s",
+        corr_id,
+        session_id,
+        req.mode,
+        len(req.messages or []),
+        [m.role if hasattr(m, "role") else m.get("role") for m in (req.messages or [])][:12],
+    )
+    _log_hub_route_decision(
+        corr_id=corr_id,
+        session_id=session_id,
+        route_debug=route_debug,
+        user_prompt=user_prompt,
+    )
+
     _rec_tape_req(
         corr_id=corr_id,
         session_id=session_id,
@@ -480,20 +721,6 @@ async def handle_chat_request(
         user_head=(user_prompt or "")[:80],
         no_write=no_write,
     )
-
-    # Build the Request
-    req = CortexChatRequest(
-        prompt=user_prompt,
-        mode=mode,
-        session_id=session_id,
-        user_id=user_id,
-        packs=packs,
-        verb=verb_override,
-        options=options if options else None,
-        recall=recall_payload,
-        metadata={"source": "hub_http"},
-    )
-
     try:
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
         resp: CortexChatResult = await cortex_client.chat(req, correlation_id=corr_id)
@@ -511,9 +738,34 @@ async def handle_chat_request(
 
         memory_digest = None
         recall_debug = None
+        agent_trace = None
+        workflow = None
+        autonomy_payload = {}
+        metacog_traces = []
         if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
             recall_debug = resp.cortex_result.recall_debug
             memory_digest = recall_debug.get("memory_digest")
+        agent_trace = extract_agent_trace_payload(resp.cortex_result)
+        raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
+        if isinstance(raw_traces, list):
+            metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
+        logger.info(
+            "hub_metacog_received corr=%s source=http traces=%s",
+            correlation_id,
+            len(metacog_traces),
+        )
+        workflow = extract_workflow_payload(resp.cortex_result)
+        autonomy_payload = extract_autonomy_payload(resp.cortex_result)
+        if isinstance(workflow, dict):
+            logger.info(
+                "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s",
+                correlation_id,
+                workflow.get("workflow_id"),
+                workflow.get("status"),
+                len(workflow.get("scheduled") or []),
+                len(workflow.get("persisted") or []),
+                "scheduled_confirmation" if len(workflow.get("scheduled") or []) else "immediate_or_unscheduled",
+            )
 
         recall_count = 0
         backend_counts = None
@@ -525,6 +777,16 @@ async def handle_chat_request(
         memory_used = bool(getattr(resp.cortex_result, "memory_used", False))
         if not memory_used:
             memory_used = bool(recall_count)
+        logger.info(
+            "hub_ingress_result corr=%s sid=%s mode=%s status=%s final_len=%s memory_used=%s recall_count=%s",
+            correlation_id,
+            session_id,
+            mode,
+            getattr(resp.cortex_result, "status", None),
+            len(text or ""),
+            memory_used,
+            recall_count,
+        )
         _rec_tape_rsp(
             corr_id=str(correlation_id),
             memory_used=memory_used,
@@ -541,11 +803,16 @@ async def handle_chat_request(
             "tokens": len(text.split()), # simple approx
             "raw": raw_result,
             "recall_debug": recall_debug,
+            "agent_trace": agent_trace,
+            "workflow": workflow,
             "memory_used": memory_used,
             "memory_digest": memory_digest,
             "no_write": no_write,
             "spark_meta": None,
             "correlation_id": correlation_id,
+            "routing_debug": route_debug,
+            "metacog_traces": metacog_traces,
+            **autonomy_payload,
         }
 
     except Exception as e:
@@ -598,7 +865,30 @@ async def api_chat(
             # (but ideally we got it).
             final_corr_id = correlation_id or str(uuid4())
 
+            metacog_traces = result.get("metacog_traces") or []
+            reasoning_content = (
+                result.get("reasoning_content")
+                or ((result.get("raw") or {}).get("reasoning_content") if isinstance(result.get("raw"), dict) else None)
+            )
+            selected_reasoning_trace, _ = select_reasoning_trace_for_history(
+                correlation_id=final_corr_id,
+                reasoning_trace=result.get("reasoning_trace"),
+                metacog_traces=metacog_traces if isinstance(metacog_traces, list) else None,
+                reasoning_content=reasoning_content,
+                session_id=session_id,
+                message_id=f"{final_corr_id}:assistant",
+                model=(settings.GATEWAY_MODEL if hasattr(settings, "GATEWAY_MODEL") else None),
+            )
+
             envelopes = []
+            social_meta = {}
+            if is_social_room_payload(payload):
+                social_meta = social_room_client_meta(
+                    payload=payload,
+                    route_debug=result.get("routing_debug") or {},
+                    trace_verb=(result.get("routing_debug") or {}).get("verb"),
+                    memory_digest=result.get("memory_digest"),
+                )
             if latest_user_prompt:
                 envelopes.append(
                     build_chat_history_envelope(
@@ -608,6 +898,7 @@ async def api_chat(
                         correlation_id=final_corr_id,
                         speaker=payload.get("user_id") or "user",
                         tags=[result.get("mode", "brain")],
+                        client_meta=social_meta or None,
                     )
                 )
             envelopes.append(
@@ -618,9 +909,58 @@ async def api_chat(
                     correlation_id=final_corr_id,
                     speaker=settings.SERVICE_NAME,
                     tags=[result.get("mode", "brain")],
+                    client_meta=social_meta or None,
+                    reasoning_trace=selected_reasoning_trace,
                 )
             )
             await publish_chat_history(bus, envelopes)
+            if social_meta:
+                await publish_social_room_turn(
+                    bus,
+                    prompt=latest_user_prompt,
+                    response=text,
+                    session_id=session_id,
+                    correlation_id=final_corr_id,
+                    user_id=payload.get("user_id"),
+                    source_label="hub_http",
+                    recall_profile=((result.get("routing_debug") or {}).get("recall_profile")),
+                    trace_verb=(result.get("routing_debug") or {}).get("verb"),
+                    client_meta=social_meta,
+                    memory_digest=result.get("memory_digest"),
+                )
+            if isinstance(metacog_traces, list):
+                for trace in metacog_traces:
+                    if not isinstance(trace, dict):
+                        continue
+                    if _thought_debug_enabled():
+                        logger.info(
+                            "THOUGHT_DEBUG_METACOG_PUB stage=hub_http_prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
+                            final_corr_id,
+                            trace.get("trace_role") or trace.get("role"),
+                            trace.get("trace_stage") or trace.get("stage"),
+                            trace.get("model"),
+                            _debug_len(trace.get("content")),
+                            _debug_snippet(trace.get("content")),
+                        )
+                    trace_env = BaseEnvelope(
+                        kind="metacognitive.trace.v1",
+                        source=ServiceRef(
+                            name=settings.SERVICE_NAME,
+                            node=settings.NODE_NAME,
+                            version=settings.SERVICE_VERSION,
+                        ),
+                        correlation_id=final_corr_id,
+                        payload=trace,
+                    )
+                    await bus.publish("orion:metacog:trace", trace_env)
+                if _thought_debug_enabled() and not any(isinstance(t, dict) for t in metacog_traces):
+                    logger.info("THOUGHT_DEBUG_METACOG_PUB stage=hub_http_skipped corr=%s reason=no_valid_trace_dicts", final_corr_id)
+                logger.info(
+                    "hub_metacog_published corr=%s source=http channel=%s traces=%s",
+                    final_corr_id,
+                    "orion:metacog:trace",
+                    len([t for t in metacog_traces if isinstance(t, dict)]),
+                )
 
             # Legacy log for downstream SQL-writer compatibility
             chat_log_payload = {
@@ -633,7 +973,24 @@ async def api_chat(
                 "recall": use_recall,
                 "user_id": None,
                 "spark_meta": None,
+                "reasoning_trace": selected_reasoning_trace,
             }
+            if _thought_debug_enabled():
+                reasoning_trace = chat_log_payload.get("reasoning_trace")
+                reasoning_content = chat_log_payload.get("reasoning_content")
+                thought_candidate = (
+                    (reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None)
+                    or reasoning_content
+                )
+                logger.info(
+                    "THOUGHT_DEBUG_HUB stage=legacy_chat_history_publish corr=%s channel=%s target=chat.history.turn_payload reasoning_trace_exists=%s reasoning_content_exists=%s thought_candidate_len=%s thought_candidate_snippet=%r",
+                    final_corr_id,
+                    settings.chat_history_channel,
+                    isinstance(reasoning_trace, dict),
+                    bool(str(reasoning_content or "").strip()),
+                    _debug_len(thought_candidate),
+                    _debug_snippet(thought_candidate),
+                )
 
             await bus.publish(
                 settings.chat_history_channel,
@@ -647,6 +1004,75 @@ async def api_chat(
             )
 
     return result
+
+
+@router.get("/api/workflow/schedules")
+async def api_workflow_schedule_list(
+    x_orion_session_id: Optional[str] = Header(None),
+    user_id: Optional[str] = Query(default=None),
+    include_history: bool = Query(default=False),
+):
+    from .main import bus
+    if not bus:
+        raise HTTPException(status_code=503, detail="bus unavailable")
+    session_id = await ensure_session(x_orion_session_id, bus)
+    req = WorkflowScheduleManageRequestV1(
+        operation="list",
+        request_id=str(uuid4()),
+        include_history=include_history,
+        session_id=session_id,
+        origin_user_id=user_id,
+    )
+    return await _execute_workflow_schedule_management(session_id=session_id, user_id=user_id, request=req)
+
+
+@router.get("/api/workflow/schedules/{schedule_id}/history")
+async def api_workflow_schedule_history(
+    schedule_id: str,
+    x_orion_session_id: Optional[str] = Header(None),
+    user_id: Optional[str] = Query(default=None),
+):
+    from .main import bus
+    if not bus:
+        raise HTTPException(status_code=503, detail="bus unavailable")
+    session_id = await ensure_session(x_orion_session_id, bus)
+    req = WorkflowScheduleManageRequestV1(
+        operation="history",
+        request_id=str(uuid4()),
+        schedule_id=schedule_id,
+        include_history=True,
+        session_id=session_id,
+        origin_user_id=user_id,
+    )
+    return await _execute_workflow_schedule_management(session_id=session_id, user_id=user_id, request=req)
+
+
+@router.post("/api/workflow/schedules/{schedule_id}/{operation}")
+async def api_workflow_schedule_action(
+    schedule_id: str,
+    operation: str,
+    payload: Optional[WorkflowScheduleUpdateRequest] = None,
+    x_orion_session_id: Optional[str] = Header(None),
+    user_id: Optional[str] = Query(default=None),
+):
+    normalized_operation = str(operation or "").strip().lower()
+    if normalized_operation not in {"cancel", "pause", "resume", "update"}:
+        raise HTTPException(status_code=400, detail="unsupported_operation")
+
+    from .main import bus
+    if not bus:
+        raise HTTPException(status_code=503, detail="bus unavailable")
+    session_id = await ensure_session(x_orion_session_id, bus)
+    patch = payload.model_dump(exclude_none=True) if payload is not None else None
+    req = WorkflowScheduleManageRequestV1(
+        operation=normalized_operation,
+        request_id=str(uuid4()),
+        schedule_id=schedule_id,
+        patch=patch,
+        session_id=session_id,
+        origin_user_id=user_id,
+    )
+    return await _execute_workflow_schedule_management(session_id=session_id, user_id=user_id, request=req)
 
 # ======================================================================
 # 📿 COLLAPSE MIRROR ENDPOINTS

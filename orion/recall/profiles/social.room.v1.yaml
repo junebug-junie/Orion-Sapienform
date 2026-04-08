@@ -1,0 +1,23 @@
+profile: social.room.v1
+vector_top_k: 5
+rdf_top_k: 2
+max_per_source: 2
+max_total_items: 6
+time_decay_half_life_hours: 18
+render_budget_tokens: 144
+enable_query_expansion: false
+enable_sql_timeline: false
+sql_since_minutes: 180
+sql_top_k: 4
+relevance:
+  backend_weights:
+    vector: 1.0
+    sql_timeline: 0.4
+    sql_chat: 0.4
+    rdf_chat: 0.25
+    rdf: 0.15
+  score_weight: 0.8
+  text_similarity_weight: 0.1
+  recency_weight: 0.05
+  enable_recency: true
+  recency_half_life_hours: 18

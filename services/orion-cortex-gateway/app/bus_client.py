@@ -18,6 +18,61 @@ from .settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+
+def _think_hop_print(*, hop: str, corr: Any, payload: Any) -> None:
+    payload_dict: Dict[str, Any] = payload if isinstance(payload, dict) else {}
+    reasoning_content = payload_dict.get("reasoning_content")
+    reasoning_trace = payload_dict.get("reasoning_trace")
+    trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+    preview = repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content or "")[:220])
+    print(
+        "===THINK_HOP=== "
+        f"hop={hop} "
+        f"corr={corr} "
+        f"payload_keys={sorted(payload_dict.keys()) if isinstance(payload_dict, dict) else []} "
+        f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+        f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+        f"metacog_count={len(payload_dict.get('metacog_traces')) if isinstance(payload_dict.get('metacog_traces'), list) else 0} "
+        f"preview={preview}",
+        flush=True,
+    )
+
+
+def _request_summary(
+    *,
+    corr_id: Any,
+    reply_channel: str | None,
+    mode: str | None,
+    verb: str | None,
+    options: Dict[str, Any] | None,
+    recall: Dict[str, Any] | None,
+    packs: list[str] | None,
+    metadata: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    options = options or {}
+    recall = recall or {}
+    metadata = metadata or {}
+    return {
+        "corr_id": str(corr_id),
+        "source_service": "cortex-gateway",
+        "reply_channel": reply_channel,
+        "mode": mode,
+        "verb": verb,
+        "supervised": bool(options.get("supervised")),
+        "force_agent_chain": bool(options.get("force_agent_chain")),
+        "recall_enabled": bool(recall.get("enabled", True)),
+        "recall_profile": recall.get("profile"),
+        "packs": list(packs or []),
+        "output_mode": options.get("output_mode") or metadata.get("output_mode"),
+        "response_profile": options.get("response_profile") or metadata.get("response_profile"),
+    }
+
+
+def _context_messages_from_chat_request(req: CortexChatRequest) -> list[LLMMessage]:
+    if isinstance(req.messages, list) and req.messages:
+        return [m if isinstance(m, LLMMessage) else LLMMessage(**m) for m in req.messages]
+    return [LLMMessage(role="user", content=req.prompt)]
+
 class BusClient:
     def __init__(self):
         self.settings = get_settings()
@@ -53,9 +108,19 @@ class BusClient:
         )
 
         logger.info(
-            f"RPC Request channel={self.settings.channel_cortex_request} "
-            f"correlation_id={corr} reply_to={reply_to}"
+            "gateway_publish_orch %s",
+            _request_summary(
+                corr_id=corr,
+                reply_channel=reply_to,
+                mode=req.mode,
+                verb=req.verb,
+                options=req.options,
+                recall=req.recall.model_dump(mode="json"),
+                packs=req.packs,
+                metadata=req.context.metadata,
+            ),
         )
+        logger.info("gateway_wait_orch corr=%s reply=%s request_channel=%s", corr, reply_to, self.settings.channel_cortex_request)
         logger.debug(f"RPC Payload correlation_id={corr}: {env.payload}")
 
         async def _wait_for_matching_reply() -> Dict[str, Any]:
@@ -87,10 +152,10 @@ class BusClient:
                                 req.verb,
                             )
                             continue
-                        logger.info(f"RPC Success correlation_id={corr} kind={decoded.envelope.kind}")
+                        logger.info("gateway_orch_result corr=%s reply=%s kind=%s", corr, reply_to, decoded.envelope.kind)
                         return payload_dict
 
-                    logger.info(f"RPC Success correlation_id={corr} kind={decoded.envelope.kind}")
+                    logger.info("gateway_orch_result corr=%s reply=%s kind=%s", corr, reply_to, decoded.envelope.kind)
                     return payload  # Should be dict or primitive, or BaseEnvelope if unknown
             raise RuntimeError("RPC reply subscription closed without a match.")
 
@@ -100,7 +165,7 @@ class BusClient:
                 timeout=self.settings.gateway_rpc_timeout_sec,
             )
         except asyncio.TimeoutError as te:
-            logger.error(f"RPC Timeout correlation_id={corr}")
+            logger.error("gateway_orch_timeout corr=%s reply=%s timeout_sec=%s", corr, reply_to, self.settings.gateway_rpc_timeout_sec)
             raise TimeoutError(f"RPC timed out after {self.settings.gateway_rpc_timeout_sec}s") from te
 
     async def start_gateway_consumer(self):
@@ -122,6 +187,75 @@ class BusClient:
                 logger.error(f"Gateway consumer failed: {e}", exc_info=True)
                 await asyncio.sleep(5.0)
 
+
+    async def _publish_gateway_reply(
+        self,
+        *,
+        reply_to: str | None,
+        correlation_id: Any,
+        causality_chain: list[Any] | None,
+        payload: CortexChatResult,
+    ) -> None:
+        if not reply_to:
+            logger.warning(f"No reply_to in gateway request correlation_id={correlation_id}")
+            return
+
+        reply_env = BaseEnvelope(
+            kind="cortex.gateway.chat.result",
+            source=self._service_ref(),
+            correlation_id=correlation_id,
+            causality_chain=causality_chain or [],
+            payload=payload.model_dump(mode="json"),
+        )
+        _think_hop_print(
+            hop="gateway_out",
+            corr=correlation_id,
+            payload=((reply_env.payload or {}).get("cortex_result") if isinstance(reply_env.payload, dict) else {}),
+        )
+        await self.bus.publish(reply_to, reply_env)
+        recall_debug = payload.cortex_result.recall_debug if payload.cortex_result else {}
+        recall_enabled = None
+        if isinstance(recall_debug, dict):
+            if recall_debug.get("skipped") == "disabled_by_client":
+                recall_enabled = False
+            elif "profile" in recall_debug or payload.cortex_result.memory_used:
+                recall_enabled = True
+        logger.info(
+            "gateway_publish_hub_result corr=%s reply=%s mode=%s verb=%s status=%s recall_enabled=%s recall_profile=%s output_mode=%s response_profile=%s",
+            correlation_id,
+            reply_to,
+            payload.cortex_result.mode if payload.cortex_result else None,
+            payload.cortex_result.verb if payload.cortex_result else None,
+            payload.cortex_result.status if payload.cortex_result else None,
+            recall_enabled,
+            (recall_debug or {}).get("profile") if isinstance(recall_debug, dict) else None,
+            ((payload.cortex_result.metadata or {}).get("answer_depth") or {}).get("output_mode") if payload.cortex_result else None,
+            ((payload.cortex_result.metadata or {}).get("answer_depth") or {}).get("response_profile") if payload.cortex_result else None,
+        )
+
+    def _build_error_chat_result(
+        self,
+        *,
+        correlation_id: Any,
+        message: str,
+        mode: str = "unknown",
+        verb: str = "unknown",
+        error_type: str = "gateway_error",
+    ) -> CortexChatResult:
+        cortex_result = CortexClientResult(
+            ok=False,
+            mode=mode or "unknown",
+            verb=verb or "unknown",
+            status="fail",
+            final_text=f"Request failed: {message}",
+            memory_used=False,
+            steps=[],
+            error={"message": message, "type": error_type},
+            correlation_id=str(correlation_id) if correlation_id is not None else None,
+            metadata={"source": self.settings.service_name},
+        )
+        return CortexChatResult(cortex_result=cortex_result, final_text=cortex_result.final_text)
+
     async def handle_gateway_request(self, message: Dict[str, Any]):
         # decode
         decoded = self.bus.codec.decode(message.get("data"))
@@ -139,11 +273,27 @@ class BusClient:
             logger.info(f"Processing gateway request correlation_id={env.correlation_id}")
             # Validate payload
             req = CortexChatRequest.model_validate(env.payload)
+            logger.info(
+                "gateway_intake %s",
+                _request_summary(
+                    corr_id=env.correlation_id,
+                    reply_channel=env.reply_to,
+                    mode=req.mode,
+                    verb=req.verb,
+                    options=req.options,
+                    recall=req.recall,
+                    packs=req.packs,
+                    metadata=req.metadata,
+                ),
+            )
 
             # Logic similar to HTTP endpoint
-            verb = req.verb if req.verb else "chat_general"
+            if req.mode in {"agent", "council"}:
+                verb = req.verb
+            else:
+                verb = req.verb or "chat_general"
             packs = req.packs if req.packs is not None else ["executive_pack"]
-            messages = [LLMMessage(role="user", content=req.prompt)]
+            messages = _context_messages_from_chat_request(req)
 
             context = CortexClientContext(
                 messages=messages,
@@ -154,6 +304,13 @@ class BusClient:
                 trace_id=req.trace_id,
                 metadata=req.metadata or {}
             )
+            logger.info(
+                "gateway_context_messages corr=%s mode=%s count=%s roles=%s",
+                env.correlation_id,
+                req.mode,
+                len(messages),
+                [m.role for m in messages[:12]],
+            )
 
             if req.recall:
                 # Filter keys to match RecallDirective fields
@@ -163,11 +320,17 @@ class BusClient:
             else:
                 recall = RecallDirective() # defaults: enabled=True, etc.
 
+            route_intent = "auto" if req.mode == "auto" else req.route_intent
+            options = dict(req.options or {})
+            if route_intent == "auto":
+                options["route_intent"] = "auto"
+
             client_req = CortexClientRequest(
                 mode=req.mode,
+                route_intent=route_intent,
                 verb=verb,
                 packs=packs,
-                options=req.options or {},
+                options=options,
                 recall=recall,
                 context=context
             )
@@ -187,9 +350,38 @@ class BusClient:
                 correlation_id=env.correlation_id,
                 causality_chain=chain
             )
+            _think_hop_print(hop="gateway_in", corr=env.correlation_id, payload=orch_result_dict)
 
             # Wrap result
-            cortex_res_obj = CortexClientResult.model_validate(orch_result_dict)
+            try:
+                cortex_res_obj = CortexClientResult.model_validate(orch_result_dict)
+            except Exception as parse_error:
+                logger.error(
+                    "CortexClientResult validation failed corr=%s; sending failure payload",
+                    env.correlation_id,
+                    exc_info=True,
+                )
+                failed_payload = self._build_error_chat_result(
+                    correlation_id=env.correlation_id,
+                    message=f"Invalid Cortex result payload: {parse_error}",
+                    mode=req.mode,
+                    verb=(req.verb or "chat_general"),
+                    error_type="invalid_cortex_result",
+                )
+                await self._publish_gateway_reply(
+                    reply_to=env.reply_to,
+                    correlation_id=env.correlation_id,
+                    causality_chain=chain,
+                    payload=failed_payload,
+                )
+                logger.info("gateway_early_exit corr=%s reason=invalid_cortex_result reply=%s", env.correlation_id, env.reply_to)
+                return
+            _think_hop_print(
+                hop="gateway_normalized",
+                corr=env.correlation_id,
+                payload=cortex_res_obj.model_dump(mode="json"),
+            )
+
             executed_verbs: list[str] = []
             if isinstance(cortex_res_obj.metadata, dict):
                 raw_executed = cortex_res_obj.metadata.get("executed_verbs") or []
@@ -214,20 +406,29 @@ class BusClient:
                 spark_introspection_triggered,
             )
 
-            # Reply
-            if env.reply_to:
-                reply_env = BaseEnvelope(
-                    kind="cortex.gateway.chat.result",
-                    source=self._service_ref(),
-                    correlation_id=env.correlation_id,
-                    causality_chain=chain,
-                    payload=res_payload.model_dump(mode="json")
-                )
-                await self.bus.publish(env.reply_to, reply_env)
-                logger.info(f"Sent reply to {env.reply_to}")
-            else:
-                logger.warning(f"No reply_to in gateway request correlation_id={env.correlation_id}")
+            await self._publish_gateway_reply(
+                reply_to=env.reply_to,
+                correlation_id=env.correlation_id,
+                causality_chain=chain,
+                payload=res_payload,
+            )
 
         except Exception as e:
             logger.error(f"Error handling gateway request: {e}", exc_info=True)
-            # We could send an error reply here if we wanted
+            error_payload = self._build_error_chat_result(
+                correlation_id=getattr(env, "correlation_id", None),
+                message=str(e),
+                mode=getattr(locals().get("req", None), "mode", "unknown"),
+                verb=getattr(locals().get("req", None), "verb", "unknown"),
+                error_type=type(e).__name__,
+            )
+            try:
+                await self._publish_gateway_reply(
+                    reply_to=getattr(env, "reply_to", None),
+                    correlation_id=getattr(env, "correlation_id", None),
+                    causality_chain=getattr(env, "causality_chain", None),
+                    payload=error_payload,
+                )
+                logger.info("gateway_early_exit corr=%s reason=exception reply=%s", getattr(env, "correlation_id", None), getattr(env, "reply_to", None))
+            except Exception:
+                logger.exception("Failed to publish gateway error reply corr=%s", getattr(env, "correlation_id", None))

@@ -94,7 +94,7 @@ class PadRpcRequestV1(BaseModel):
 
     request_id: str
     reply_channel: str
-    method: Literal["get_latest_frame", "get_frames", "get_salient_events", "get_latest_tensor"]
+    method: Literal["get_latest_frame", "get_frames", "get_salient_events", "get_latest_tensor", "get_stats"]
     args: Dict[str, Any] = Field(default_factory=dict)
 
 

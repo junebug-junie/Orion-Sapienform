@@ -1,0 +1,3 @@
+name: self_repo_inspect
+description: Inspect the Orion repo and publish a factual authoritative self snapshot.
+recall_profile: self.factual.v1

@@ -44,12 +44,20 @@ from orion.schemas.telemetry.turn_effect_explanations import (
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 
+from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
 from .recall_utils import resolve_profile
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
+from .chat_stance import (
+    build_chat_stance_inputs,
+    enforce_chat_stance_quality,
+    fallback_chat_stance_brief,
+    identity_kernel_with_fallbacks,
+    parse_chat_stance_brief,
+)
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -129,6 +137,68 @@ def _truncate_text(value: Any, max_chars: int) -> Optional[str]:
     return text[:max_chars]
 
 
+def _prior_step_result_count(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        return len(value)
+    return 0
+
+
+def _detect_internal_scaffolding_markers(text: str) -> List[str]:
+    lowered = str(text or "").lower()
+    markers: List[str] = []
+    checks = {
+        "system_directive": ("you are ", "system prompt", "developer instruction"),
+        "policy_meta": ("do not reveal", "internal instruction", "non-goals"),
+        "planner_meta": ("delegate_tool_execution", "plan_only", "return_trace"),
+        "tool_scaffold": ("toolset summary", "return your normal council output contract"),
+    }
+    for key, needles in checks.items():
+        if any(needle in lowered for needle in needles):
+            markers.append(key)
+    return markers
+
+
+def _sanitize_final_input_blob(text: str) -> str:
+    cleaned_lines: List[str] = []
+    for line in str(text or "").splitlines():
+        lowered = line.strip().lower()
+        if lowered.startswith("you are "):
+            continue
+        if "return your normal council output contract" in lowered:
+            continue
+        if "developer instruction" in lowered:
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
+
+
+def _log_grounding_snapshot(
+    *,
+    component: str,
+    ctx: Dict[str, Any],
+    correlation_id: str,
+    text_source: str,
+    payload_text: str,
+    recall_included: bool,
+) -> None:
+    snippet = _truncate_text(payload_text or "", 220) or ""
+    scaffolding_markers = _detect_internal_scaffolding_markers(payload_text or "")
+    logger.info(
+        "grounding_snapshot component=%s corr_id=%s trace_id=%s session_id=%s text_source=%s text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
+        component,
+        correlation_id,
+        ctx.get("trace_id"),
+        ctx.get("session_id"),
+        text_source,
+        snippet,
+        _prior_step_result_count(ctx.get("prior_step_results")),
+        recall_included,
+        scaffolding_markers,
+    )
+
+
 def _truncate_list(values: Any, max_items: int, max_chars: int) -> List[str]:
     if not isinstance(values, list):
         return []
@@ -138,6 +208,76 @@ def _truncate_list(values: Any, max_items: int, max_chars: int) -> List[str]:
         if text:
             truncated.append(text)
     return truncated
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _format_pad_frame_summary(pad_result: Any) -> str:
+    if not isinstance(pad_result, dict):
+        return str(pad_result)
+    if pad_result.get("status") == "missing":
+        return "missing"
+
+    frame = pad_result.get("frame")
+    if not isinstance(frame, dict):
+        return json.dumps(pad_result, ensure_ascii=False)[:500]
+
+    summary = frame.get("summary") if isinstance(frame.get("summary"), dict) else {}
+    top_signals = _truncate_list(summary.get("top_signals"), 3, 80)
+    active_tasks = _truncate_list(summary.get("active_tasks"), 2, 80)
+    risk_flags = _truncate_list(summary.get("risk_flags"), 2, 80)
+    salient_ids = frame.get("salient_event_ids") if isinstance(frame.get("salient_event_ids"), list) else []
+
+    parts = [
+        f"frame ts={frame.get('ts_ms', '?')}",
+        f"window_ms={frame.get('window_ms', '?')}",
+        f"salient_events={len(salient_ids)}",
+    ]
+    if top_signals:
+        parts.append(f"signals={'; '.join(top_signals)}")
+    if active_tasks:
+        parts.append(f"tasks={'; '.join(active_tasks)}")
+    if risk_flags:
+        parts.append(f"risks={'; '.join(risk_flags)}")
+    return ", ".join(parts)
+
+
+def _format_pad_stats_summary(pad_stats: Any) -> str:
+    if not isinstance(pad_stats, dict):
+        return "stats=unavailable"
+    stats = pad_stats.get("stats") if isinstance(pad_stats.get("stats"), dict) else pad_stats
+    if not isinstance(stats, dict) or not stats:
+        return "stats=unavailable"
+
+    fields: list[str] = []
+    for key in ("ingested", "dropped_total", "frames_built", "rpc_requests", "rpc_errors", "queue_depth"):
+        if key in stats and stats.get(key) is not None:
+            fields.append(f"{key}={stats.get(key)}")
+
+    last_salience = stats.get("last_salience")
+    if last_salience is not None:
+        try:
+            fields.append(f"last_salience={float(last_salience):.2f}")
+        except Exception:
+            fields.append(f"last_salience={last_salience}")
+
+    ts_ms = _safe_int(stats.get("last_frame_ts_ms"))
+    if ts_ms is not None:
+        try:
+            fields.append(
+                f"last_frame={datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()}"
+            )
+        except Exception:
+            fields.append(f"last_frame_ts_ms={ts_ms}")
+
+    return ", ".join(fields) if fields else "stats=available"
 
 
 _PATCH_KEY_ALIASES = {
@@ -537,6 +677,78 @@ def _trace_meta_from_ctx(
 
 
 
+def _inject_identity_context(ctx: Dict[str, Any]) -> None:
+    plan_metadata = ctx.get("plan_metadata") if isinstance(ctx.get("plan_metadata"), dict) else {}
+    personality_declared_in_metadata = "personality_file" in plan_metadata
+    raw_personality_file = ctx.get("personality_file")
+    if raw_personality_file is None and personality_declared_in_metadata:
+        raw_personality_file = plan_metadata.get("personality_file")
+    personality_file = str(raw_personality_file or "").strip()
+
+    required_keys = ("orion_identity_summary", "juniper_relationship_summary", "response_policy_summary")
+    if all(k in ctx and isinstance(ctx.get(k), list) and ctx.get(k) for k in required_keys):
+        logger.debug("identity_injection skipped: identity context already present")
+        return
+
+    personality_file_loaded = False
+    identity_kernel_source = "configured_yaml"
+    if personality_file:
+        try:
+            identity_data = load_identity_file(personality_file)
+            identity_context = build_identity_context(identity_data)
+            has_yaml_identity = any(
+                isinstance(identity_context.get(key), list) and identity_context.get(key)
+                for key in required_keys
+            )
+            if has_yaml_identity:
+                personality_file_loaded = True
+                for key, value in identity_context.items():
+                    if isinstance(value, list) and value:
+                        ctx[key] = value
+            else:
+                identity_kernel_source = "fallback_empty_yaml"
+                logger.warning(
+                    "identity_injection fallback reason=empty_yaml personality_file=%s",
+                    personality_file,
+                )
+        except Exception:
+            identity_kernel_source = "fallback_load_error"
+            logger.warning(
+                "identity_injection fallback reason=load_error personality_file=%s",
+                personality_file,
+                exc_info=True,
+            )
+    else:
+        identity_kernel_source = "fallback_missing_metadata"
+        logger.warning(
+            "identity_injection fallback reason=missing_metadata personality_declared_in_metadata=%s raw_personality_file=%r",
+            personality_declared_in_metadata,
+            raw_personality_file,
+        )
+
+    fallback_identity = identity_kernel_with_fallbacks(ctx)
+    ctx.update(fallback_identity)
+    if identity_kernel_source == "configured_yaml":
+        if all(k in ctx and isinstance(ctx.get(k), list) and ctx.get(k) for k in required_keys):
+            identity_kernel_source = "configured_yaml"
+        else:
+            identity_kernel_source = "fallback_empty_yaml"
+    ctx["identity_kernel_source"] = identity_kernel_source
+    try:
+        logger.info(
+            "identity_context_ready identity_kernel_source=%s personality_file=%s personality_declared_in_metadata=%s personality_file_loaded=%s orion_count=%s juniper_count=%s policy_count=%s",
+            identity_kernel_source,
+            personality_file or None,
+            personality_declared_in_metadata,
+            personality_file_loaded,
+            len(ctx.get("orion_identity_summary") or []),
+            len(ctx.get("juniper_relationship_summary") or []),
+            len(ctx.get("response_policy_summary") or []),
+        )
+    except Exception:
+        logger.debug("identity_context_ready logging failed", exc_info=True)
+
+
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
 
@@ -735,6 +947,18 @@ def _clean_raw_llm_content(text: str) -> str:
     return cleaned.strip()
 
 
+def _sanitize_menu_topic_selection_reply(text: str) -> str:
+    cleaned = str(text or "")
+    if not cleaned:
+        return cleaned
+    cleaned = re.sub(r"`[a-z][a-z0-9]*(?:_[a-z0-9]+){1,}`", "", cleaned)
+    cleaned = re.sub(r"\bhm_[a-z0-9_]+\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"https?://(?:www\.)?(?:example\.[a-z]{2,}|[^\s/]*placeholder[^\s/]*)[^\s]*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _loose_json_extract(text: str) -> Dict[str, Any] | None:
     """
     Fallback extraction when strict find_collapse_entry fails.
@@ -818,7 +1042,28 @@ async def run_recall_step(
     recall_timeout = float(settings.step_timeout_ms) / 1000.0
 
     fragment = _last_user_message(ctx) or ""
+    _log_grounding_snapshot(
+        component=f"recall:{step_name}",
+        ctx=ctx,
+        correlation_id=correlation_id,
+        text_source="last_user_message",
+        payload_text=fragment,
+        recall_included=False,
+    )
     trace_val = ctx.get("trace_id") or recall_cfg.get("trace_id") or correlation_id
+    active_turn_ids = []
+    for candidate in (
+        correlation_id,
+        trace_val,
+        ctx.get("chat_correlation_id"),
+        ctx.get("trigger_correlation_id"),
+        ctx.get("request_id"),
+    ):
+        if candidate is None:
+            continue
+        value = str(candidate).strip()
+        if value and value not in active_turn_ids:
+            active_turn_ids.append(value)
     req = RecallQueryV1(
         fragment=fragment,
         verb=str(ctx.get("verb") or recall_cfg.get("verb") or "unknown"),
@@ -826,11 +1071,18 @@ async def run_recall_step(
         session_id=ctx.get("session_id"),
         node_id=ctx.get("node_id"),
         profile=recall_profile or recall_cfg.get("profile") or "reflect.v1",
+        exclude={
+            "active_turn_ids": active_turn_ids,
+            "active_turn_text": fragment,
+            "active_turn_ts": time.time(),
+        },
         reply_to=reply_channel,
     )
 
     logs: List[str] = [f"rpc -> RecallService (profile={req.profile})"]
     debug: Dict[str, Any] = {}
+    profile_source = (ctx.get("debug") or {}).get("recall_profile_source")
+    override_source = (ctx.get("debug") or {}).get("recall_profile_override_source")
     try:
         res = await recall_client.query(
             source=source,
@@ -843,8 +1095,19 @@ async def run_recall_step(
         debug = {
             "count": len(bundle.items),
             "profile": req.profile,
+            "profile_source": profile_source,
+            "profile_override_source": override_source,
             "error": None,
         }
+        if isinstance(getattr(res, "debug", None), dict):
+            decision_dbg = res.debug.get("decision")
+            if isinstance(decision_dbg, dict):
+                debug["decision"] = decision_dbg
+                recall_dbg = decision_dbg.get("recall_debug")
+                if isinstance(recall_dbg, dict):
+                    debug["source_gating"] = recall_dbg.get("source_gating") or {}
+                    debug["drop_counts"] = (decision_dbg.get("dropped") or {})
+                    debug["selected_summary"] = recall_dbg.get("selected_summary") or []
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         debug["memory_digest"] = memory_digest
         debug["memory_digest_chars"] = len(memory_digest or "")
@@ -852,7 +1115,59 @@ async def run_recall_step(
         ctx["memory_bundle"] = bundle.model_dump(mode="json")
         ctx["memory_used"] = True
         ctx["recall_fragments"] = [i.model_dump(mode="json") for i in bundle.items]
+
+        recall_fragments: List[Dict[str, Any]] = []
+        recall_citations: List[Dict[str, Any]] = []
+        for item in bundle.items[:12]:
+            snippet = str(getattr(item, "snippet", "") or "")[:480]
+            fragment = {
+                "id": str(getattr(item, "id", "") or ""),
+                "snippet": snippet,
+                "score": float(getattr(item, "score", 0.0) or 0.0),
+                "tags": [str(t) for t in (getattr(item, "tags", []) or []) if t],
+                "source": str(getattr(item, "source", "") or ""),
+                "source_ref": getattr(item, "source_ref", None),
+                "uri": getattr(item, "uri", None),
+            }
+            recall_fragments.append(fragment)
+            recall_citations.append(
+                {
+                    "id": fragment["id"],
+                    "source": fragment["source"],
+                    "source_ref": fragment["source_ref"],
+                    "uri": fragment["uri"],
+                }
+            )
+
+        ctx["recall_bundle"] = {
+            "fragments": recall_fragments,
+            "citations": recall_citations,
+            "rendered": memory_digest,
+        }
+        debug["items"] = [
+            {
+                "id": frag.get("id"),
+                "source": frag.get("source"),
+                "score": frag.get("score"),
+                "snippet": _truncate_text(frag.get("snippet"), 180),
+                "title": _truncate_text((frag.get("source_ref") or frag.get("uri") or ""), 120),
+            }
+            for frag in recall_fragments[:8]
+        ]
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
+        logger.info(
+            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s profile_source=%s override_source=%s items=%s source_gating=%s drop_counts=%s summary=%s",
+            correlation_id,
+            trace_val,
+            ctx.get("session_id"),
+            req.profile,
+            profile_source,
+            override_source,
+            len(recall_fragments),
+            debug.get("source_gating", {}),
+            debug.get("drop_counts", {}),
+            debug["items"],
+        )
 
         return (
             StepExecutionResult(
@@ -871,6 +1186,14 @@ async def run_recall_step(
     except Exception as e:
         logs.append(f"exception <- RecallService: {e}")
         debug["error"] = str(e)
+        logger.warning(
+            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s error=%s",
+            correlation_id,
+            trace_val,
+            ctx.get("session_id"),
+            req.profile,
+            e,
+        )
         return (
             StepExecutionResult(
                 status="fail",
@@ -906,6 +1229,24 @@ async def call_step_services(
 
     logger.info(f"--- EXEC STEP '{step.step_name}' START ---")
     logger.info(f"Context Keys available: {list(ctx.keys())}")
+    run_scope = str(correlation_id)
+    current_scope = str(ctx.get("_run_scope_corr_id") or "")
+    if current_scope and current_scope != run_scope:
+        logger.warning(
+            "state_scope_reset corr_id=%s previous_scope=%s keys=%s",
+            correlation_id,
+            current_scope,
+            sorted(list((ctx.get("prior_step_results_by_corr") or {}).keys()))[:10],
+        )
+    ctx["_run_scope_corr_id"] = run_scope
+    scoped_results = ctx.get("prior_step_results_by_corr")
+    if not isinstance(scoped_results, dict):
+        scoped_results = {}
+        ctx["prior_step_results_by_corr"] = scoped_results
+    if run_scope not in scoped_results:
+        scoped_results[run_scope] = []
+    if not isinstance(ctx.get("prior_step_results"), list):
+        ctx["prior_step_results"] = list(scoped_results[run_scope])
 
     step_timeout_sec = (step.timeout_ms or 60000) / 1000.0
     effective_timeout = step_timeout_sec
@@ -913,6 +1254,27 @@ async def call_step_services(
     llm_client = LLMGatewayClient(bus)
     planner_client = PlannerReactClient(bus)
     agent_client = AgentChainClient(bus)
+
+    def _record_scoped_step(status: str, error: str | None = None) -> None:
+        scoped = ctx.get("prior_step_results_by_corr")
+        if not isinstance(scoped, dict):
+            return
+        scoped_list = scoped.get(run_scope)
+        if not isinstance(scoped_list, list):
+            scoped_list = []
+            scoped[run_scope] = scoped_list
+        scoped_list.append(
+            {
+                "step_name": step.step_name,
+                "verb_name": step.verb_name,
+                "status": status,
+                "error": error,
+                "services": list(step.services or []),
+            }
+        )
+        ctx["prior_step_results"] = list(scoped_list)
+
+    prepare_brain_reply_context(ctx)
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
@@ -938,6 +1300,14 @@ async def call_step_services(
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
             debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
             logger.info(f"Rendered Prompt[{service}]: {debug_prompt!r}")
+        _log_grounding_snapshot(
+            component=f"service:{service}",
+            ctx=ctx,
+            correlation_id=correlation_id,
+            text_source="rendered_prompt",
+            payload_text=prompt,
+            recall_included=bool(ctx.get("memory_digest")),
+        )
 
         try:
             if service == "MetacogDraftService":
@@ -1350,12 +1720,14 @@ async def call_step_services(
                     trigger = MetacogTriggerV1(trigger_kind="unknown", reason="deserialization_failed")
 
                 pad_summary = "unknown"
+                pad_frame_result: Dict[str, Any] | None = None
+                pad_stats_result: Dict[str, Any] | None = None
                 spark_line = "unknown"
                 trace_summary = "unknown"
                 turn_effect = None
 
                 # Landing Pad
-                pad_reply_channel = f"orion:exec:result:PadRpc:{uuid4()}"
+                pad_reply_channel = f"{settings.channel_pad_rpc_reply_prefix}:{uuid4()}"
                 pad_req = PadRpcRequestV1(
                     request_id=correlation_id,
                     reply_channel=pad_reply_channel,
@@ -1379,13 +1751,58 @@ async def call_step_services(
                     pad_dec = bus.codec.decode(pad_msg.get("data"))
                     if pad_dec.ok:
                         pad_res = PadRpcResponseV1.model_validate(pad_dec.envelope.payload)
-                        pad_summary = str(pad_res.result)
+                        if pad_res.ok:
+                            pad_frame_result = pad_res.result or {}
+                            pad_summary = _format_pad_frame_summary(pad_frame_result)
+                        else:
+                            pad_summary = f"error: {pad_res.error or 'pad_rpc_failed'}"
                 except Exception as e:
-                    logger.warning("MetacogContextService pad RPC failed: %s", e)
+                    logger.warning("MetacogContextService pad frame RPC failed: %s", e)
                     pad_summary = f"error: {e}"
 
+                pad_stats_reply_channel = f"{settings.channel_pad_rpc_reply_prefix}:{uuid4()}"
+                pad_stats_req = PadRpcRequestV1(
+                    request_id=f"{correlation_id}:stats",
+                    reply_channel=pad_stats_reply_channel,
+                    method="get_stats",
+                    args={},
+                )
+                pad_stats_env = BaseEnvelope(
+                    kind=KIND_PAD_RPC_REQUEST_V1,
+                    source=source,
+                    correlation_id=correlation_id,
+                    reply_to=pad_stats_reply_channel,
+                    payload=pad_stats_req.model_dump(mode="json"),
+                )
+                try:
+                    pad_stats_msg = await bus.rpc_request(
+                        settings.channel_pad_rpc_request,
+                        pad_stats_env,
+                        reply_channel=pad_stats_reply_channel,
+                        timeout_sec=20.0,
+                    )
+                    pad_stats_dec = bus.codec.decode(pad_stats_msg.get("data"))
+                    if pad_stats_dec.ok:
+                        pad_stats_res = PadRpcResponseV1.model_validate(pad_stats_dec.envelope.payload)
+                        if pad_stats_res.ok:
+                            pad_stats_result = pad_stats_res.result or {}
+                        elif pad_summary == "unknown":
+                            pad_summary = f"error: {pad_stats_res.error or 'pad_stats_rpc_failed'}"
+                except Exception as e:
+                    logger.warning("MetacogContextService pad stats RPC failed: %s", e)
+                    if pad_summary == "unknown":
+                        pad_summary = f"error: {e}"
+
+                if pad_stats_result:
+                    pad_summary = f"{pad_summary} | {_format_pad_stats_summary(pad_stats_result)}"
+
+                ctx["pad_frame"] = pad_frame_result or {}
+                ctx["pad_frame_json"] = json.dumps(ctx["pad_frame"], indent=2)
+                ctx["pad_stats"] = pad_stats_result or {}
+                ctx["pad_stats_json"] = json.dumps(ctx["pad_stats"], indent=2)
+
                 # Spark (State Service)
-                state_reply_channel = f"orion:exec:result:StateService:{uuid4()}"
+                state_reply_channel = f"{settings.channel_state_reply_prefix}:{uuid4()}"
                 state_req = StateGetLatestRequest(scope="global")
                 state_env = BaseEnvelope(
                     kind="state.get_latest.v1",
@@ -1585,6 +2002,7 @@ async def call_step_services(
                     verb_profile=ctx.get("plan_recall_profile"),
                     step=step,
                     is_recall_step=True,
+                    runtime_mode=ctx.get("mode"),
                 )
                 logs.append(
                     f"rpc -> RecallService (reply={reply_channel}, profile={resolved_profile}, source={profile_source})"
@@ -1602,6 +2020,7 @@ async def call_step_services(
                 )
                 merged_result["RecallService"] = recall_debug
                 logs.extend(recall_step.logs)
+                _record_scoped_step(recall_step.status, recall_step.error)
                 return recall_step
 
             if service == "LLMGatewayService":
@@ -1683,14 +2102,43 @@ async def call_step_services(
                     sizes,
                 )
 
+                # Keep lane selection explicit by internal flow:
+                # - chat_general stance brief: FAST lane ("quick")
+                # - chat_general final response: DEEP lane ("chat")
+                # - chat_quick single-pass: FAST lane ("quick")
+                # - introspect_spark internal analysis: FAST lane ("quick")
+                # - metacog: METACOG lane
+                llm_route = (
+                    "quick"
+                    if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
+                    else "chat"
+                    if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
+                    else "quick"
+                    if step.verb_name in {"chat_quick", "introspect_spark"}
+                    else "metacog"
+                    if ctx.get("mode") == "metacog"
+                    else None
+                )
+                logger.info(
+                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s",
+                    correlation_id,
+                    ctx.get("mode"),
+                    step.verb_name,
+                    step.step_name,
+                    llm_route,
+                )
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                    route=llm_route,
                     options={
                         "temperature": float(ctx.get("temperature", 0.7)),
                         "max_tokens": int(ctx.get("max_tokens", 512)),
                         "stream": False,
+                        "response_format": ctx.get("response_format") if isinstance(ctx.get("response_format"), dict) else None,
+                        "return_json": bool(ctx.get("return_json")) if ctx.get("return_json") is not None else None,
                     },
                 )
 
@@ -1703,7 +2151,45 @@ async def call_step_services(
                     timeout_sec=effective_timeout,
                 )
 
-                merged_result[service] = result_object.model_dump(mode="json")
+                result_payload = result_object.model_dump(mode="json")
+                menu_topic = ctx.get("menu_topic_selection")
+                if (
+                    step.verb_name == "chat_general"
+                    and step.step_name == "llm_chat_general"
+                    and isinstance(menu_topic, dict)
+                    and bool(menu_topic.get("enabled"))
+                ):
+                    sanitized_reply = _sanitize_menu_topic_selection_reply(_extract_llm_text(result_object))
+                    if sanitized_reply:
+                        result_payload["content"] = sanitized_reply
+                        result_payload["text"] = sanitized_reply
+                merged_result[service] = result_payload
+                if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
+                    brief_text = _extract_llm_text(result_object)
+                    parsed_brief = parse_chat_stance_brief(brief_text)
+                    if parsed_brief is None:
+                        parsed_brief = fallback_chat_stance_brief(ctx)
+                        logs.append("warn <- chat stance brief parse failed; using fallback brief")
+                    else:
+                        logger.info(
+                            "chat_stance_brief_parsed frame=%s identity_facets=%s relationship_facets=%s priorities=%s",
+                            parsed_brief.conversation_frame,
+                            len(parsed_brief.active_identity_facets),
+                            len(parsed_brief.active_relationship_facets),
+                            len(parsed_brief.response_priorities),
+                        )
+                    parsed_brief, semantic_fallback = enforce_chat_stance_quality(parsed_brief, ctx)
+                    if semantic_fallback:
+                        logs.append("warn <- chat stance brief semantic guard enriched/replaced brief")
+                    logger.info(
+                        "chat_stance_brief_quality_guard frame=%s identity_facets=%s relationship_facets=%s semantic_fallback=%s",
+                        parsed_brief.conversation_frame,
+                        len(parsed_brief.active_identity_facets),
+                        len(parsed_brief.active_relationship_facets),
+                        semantic_fallback,
+                    )
+                    ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
+                    merged_result["ChatStanceBrief"] = ctx["chat_stance_brief"]
 
                 if spark_vector is None:
                     try:
@@ -1899,6 +2385,7 @@ async def call_step_services(
         except Exception as e:
             logs.append(f"exception <- {service}: {e}")
             logger.error(f"Service {service} failed: {e}")
+            _record_scoped_step("fail", f"{service}: {e}")
             return StepExecutionResult(
                 status="fail",
                 verb_name=step.verb_name,
@@ -1913,6 +2400,7 @@ async def call_step_services(
 
     if step_failed:
         logs.append(f"fail-fast <- {step_error}")
+        _record_scoped_step("fail", step_error)
         return StepExecutionResult(
             status="fail",
             verb_name=step.verb_name,
@@ -1926,6 +2414,7 @@ async def call_step_services(
             error=step_error,
         )
 
+    _record_scoped_step("success", None)
     return StepExecutionResult(
         status="success",
         verb_name=step.verb_name,
@@ -1937,3 +2426,27 @@ async def call_step_services(
         node=settings.node_name,
         logs=logs,
     )
+
+
+def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:
+    """
+    Canonical preparation hook for brain-lane reply context.
+    Ensures identity and stance/autonomy inputs are available for downstream reply verbs,
+    without coupling autonomy hydration to a single legacy verb name.
+    """
+    mode = str(ctx.get("mode") or "").strip().lower()
+    if mode != "brain":
+        return None
+    if not force_refresh and isinstance(ctx.get("chat_stance_inputs"), dict):
+        return ctx.get("chat_stance_inputs")
+
+    _inject_identity_context(ctx)
+    stance_inputs = build_chat_stance_inputs(ctx)
+    logger.info(
+        "chat_stance_inputs_ready has_identity_keys=%s orion_count=%s juniper_count=%s policy_count=%s",
+        sorted(list((stance_inputs.get("identity") or {}).keys())),
+        len((stance_inputs.get("identity") or {}).get("orion") or []),
+        len((stance_inputs.get("identity") or {}).get("juniper") or []),
+        len((stance_inputs.get("identity") or {}).get("response_policy") or []),
+    )
+    return stance_inputs

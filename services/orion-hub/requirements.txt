@@ -11,3 +11,4 @@ aiohttp==3.12.15
 redis[hiredis]==5.0.7
 pydantic==2.11.5
 pydantic-settings==2.5.2
+tzdata==2025.3

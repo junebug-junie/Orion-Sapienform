@@ -1,0 +1,23 @@
+name: schedule-browser-smoke
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  hub-schedule-browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest playwright
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Run schedule panel browser smoke
+        run: pytest -q services/orion-hub/tests/test_schedule_panel_browser_smoke.py

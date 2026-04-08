@@ -56,7 +56,12 @@ class EmbeddingGenerateV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     doc_id: str
-    text: str
+    text: str = Field(
+        ...,
+        validation_alias=AliasChoices("text", "document", "content"),
+        description="Source text to embed and persist as the vector document.",
+    )
+    collection: Optional[str] = None
     embedding_profile: str = "default"
     include_latent: bool = False
 
@@ -87,5 +92,6 @@ class VectorUpsertV1(BaseModel):
     embedding_kind: Literal["semantic", "latent"]
     embedding_model: Optional[str] = None
     embedding_dim: Optional[int] = None
+    documents: Optional[List[str]] = None
     text: Optional[str] = None
     meta: Dict[str, Any] = Field(default_factory=dict)

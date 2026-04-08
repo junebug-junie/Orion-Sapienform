@@ -17,6 +17,8 @@ services:
     volumes:
       - ./templates:/app/templates
       - ./static:/app/static
+      - ../..:/repo:ro
+      - /var/run/docker.sock:/var/run/docker.sock
       #- /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
     environment:
       # Core service identity
@@ -26,6 +28,7 @@ services:
       - HUB_PORT=${HUB_PORT}
       - HUB_API_BASE_OVERRIDE=${HUB_API_BASE_OVERRIDE}
       - HUB_WS_BASE_OVERRIDE=${HUB_WS_BASE_OVERRIDE}
+      - ORION_REPO_ROOT=${ORION_REPO_ROOT:-/repo}
 
       # Whisper + Brain
       - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE}
@@ -47,7 +50,10 @@ services:
       - NOTIFY_TOAST_SECONDS=${NOTIFY_TOAST_SECONDS}
       - NOTIFY_BASE_URL=${NOTIFY_BASE_URL}
       - NOTIFY_API_TOKEN=${NOTIFY_API_TOKEN}
+      - LANDING_PAD_URL=${LANDING_PAD_URL}
+      - LANDING_PAD_TIMEOUT_SEC=${LANDING_PAD_TIMEOUT_SEC}
       - TOPIC_FOUNDRY_BASE_URL=${TOPIC_FOUNDRY_BASE_URL}
+      - SOCIAL_MEMORY_BASE_URL=${SOCIAL_MEMORY_BASE_URL}
 
       # New Titanium Channels
       - CORTEX_GATEWAY_REQUEST_CHANNEL=${CORTEX_GATEWAY_REQUEST_CHANNEL:-orion-cortex-gateway:request}
@@ -98,7 +104,14 @@ services:
       - HUB_CONTEXT_TURNS=${HUB_CONTEXT_TURNS}
       - HUB_CONTEXT_MAX_CHARS=${HUB_CONTEXT_MAX_CHARS}
       - HUB_DEBUG_RECALL=${HUB_DEBUG_RECALL}
+      - HUB_DEBUG_COUNCIL=${HUB_DEBUG_COUNCIL}
+      - HUB_SOCIAL_SKILLS_ENABLED=${HUB_SOCIAL_SKILLS_ENABLED}
+      - HUB_SOCIAL_SKILLS_ALLOWLIST=${HUB_SOCIAL_SKILLS_ALLOWLIST}
+      - HUB_SOCIAL_STYLE_ADAPTATION_ENABLED=${HUB_SOCIAL_STYLE_ADAPTATION_ENABLED}
+      - HUB_SOCIAL_ROOM_RITUALS_ENABLED=${HUB_SOCIAL_ROOM_RITUALS_ENABLED}
+      - HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR=${HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR}
       - HUB_DEFAULT_NO_WRITE=${HUB_DEFAULT_NO_WRITE}
+      - HUB_AUTO_DEFAULT_ENABLED=${HUB_AUTO_DEFAULT_ENABLED}
 
 
     runtime: nvidia

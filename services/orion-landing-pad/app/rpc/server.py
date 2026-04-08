@@ -129,6 +129,7 @@ class PadRpcServer:
             "get_frames": self._get_frames,
             "get_salient_events": self._get_salient_events,
             "get_latest_tensor": self._get_latest_tensor,
+            "get_stats": self._get_stats,
         }
         return mapping.get(method)
 
@@ -153,3 +154,6 @@ class PadRpcServer:
         if tensor is None:
             return {"status": "missing"}
         return {"tensor": tensor.model_dump(mode="json")}
+
+    async def _get_stats(self, args: dict) -> dict:
+        return {"stats": self.stats.snapshot()}

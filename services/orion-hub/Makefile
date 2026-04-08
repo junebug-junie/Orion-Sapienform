@@ -11,7 +11,7 @@ PROJECT  ?= $(shell grep -E '^PROJECT=' $(ROOT_ENV) | cut -d= -f2)
 
 SVC ?= hub-app
 
-.PHONY: up down restart build status logs log shell env
+.PHONY: up down restart build status logs log shell env test-smoke-browser
 
 # ───────────────────────────────────────────────────────────────
 # Lifecycle
@@ -65,3 +65,9 @@ env:
 	@echo "NET=$(NET)"
 	@echo "LOG_TAIL=$(LOG_TAIL)"
 	@echo "Loaded from $(ROOT_ENV) + .env"
+
+## 🧪 Run browser smoke test lane (CI-friendly)
+test-smoke-browser:
+	@python -m pip install playwright
+	@python -m playwright install chromium
+	@pytest -q tests/test_schedule_panel_browser_smoke.py

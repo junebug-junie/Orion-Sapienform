@@ -1,0 +1,49 @@
+# Canonical dream verb: Recall-only gather + LLM synthesis (Orch/Exec native).
+# Legacy dream_preprocess / dream_simple use direct memory backends and remain denied.
+name: dream_cycle
+label: Dream Cycle
+personality_file: orion/cognition/personality/orion_identity.yaml
+description: >
+  Recall-first dream cycle: gather memory via RecallService (profile dream.v1),
+  then synthesize a structured dream artifact via LLMGatewayService.
+
+category: MetaCognition
+priority: low
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+recall_profile: dream.v1
+
+timeout_ms: 120000
+max_recursion_depth: 1
+
+services:
+  - RecallService
+  - LLMGatewayService
+
+prompt_template: dream_cycle.j2
+
+plan:
+  - name: gather_dream_memory
+    description: Retrieve consolidated memory for dream synthesis via RecallService only.
+    order: 0
+    services:
+      - RecallService
+    recall_profile: dream.v1
+    requires_gpu: false
+    requires_memory: true
+
+  - name: dream_synthesis
+    description: Synthesize structured dream JSON (DreamResultV1 fields) via LLM.
+    order: 1
+    prompt_template: dream_cycle.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: false
+
+safety_rules: []

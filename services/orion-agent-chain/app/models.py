@@ -15,3 +15,7 @@ class ToolDef(BaseModel):
     description: str                 # human-readable description
     input_schema: Dict[str, Any]     # JSON schema style
     output_schema: Dict[str, Any]    # JSON schema style
+    execution_mode: Optional[str] = None
+    requires_capability_selector: bool = False
+    preferred_skill_families: Dict[str, Any] | list[str] | None = None
+    side_effect_level: Optional[str] = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import httpx
@@ -23,6 +24,27 @@ from .settings import settings
 logger = logging.getLogger("orion-llm-gateway")
 bus_handle: Optional[Any] = None
 app = FastAPI()
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
+
+
+def _preview_text(value: str | None, limit: int = 220) -> str:
+    if not value:
+        return ""
+    return repr(value[:limit])
 
 
 @app.get("/health")
@@ -183,6 +205,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     # which gateway instance handled the request.
     spark_meta = (result.get("spark_meta") if isinstance(result, dict) else None) or {}
     spark_vector = (result.get("spark_vector") if isinstance(result, dict) else None)
+    reasoning_content = (result.get("reasoning_content") if isinstance(result, dict) else None)
     backend = (result.get("backend") if isinstance(result, dict) else None)
     model_used = (result.get("model") if isinstance(result, dict) else None)
     route_used = (result.get("route") if isinstance(result, dict) else None)
@@ -194,7 +217,25 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         "route": route_used,
     }
     meta = {k: v for k, v in meta.items() if v is not None}
+    if _thought_debug_enabled():
+        logger.info(
+            "THOUGHT_DEBUG_LLM stage=handle_chat_result corr=%s model=%s reasoning_exists=%s reasoning_len=%s content_len=%s reasoning_snippet=%r content_snippet=%r",
+            typed_req.correlation_id,
+            model_used,
+            bool(str(reasoning_content or "").strip()),
+            _debug_len(reasoning_content),
+            _debug_len(text),
+            _debug_snippet(reasoning_content),
+            _debug_snippet(text),
+        )
 
+    reasoning_trace = (result.get("reasoning_trace") if isinstance(result, dict) else None)
+    if reasoning_content and not (isinstance(reasoning_trace, dict) and str(reasoning_trace.get("content") or "").strip()):
+        reasoning_trace = {
+            "role": "reasoning",
+            "stage": "post_answer",
+            "content": reasoning_content,
+        }
     out = Envelope[ChatResultPayload](
         kind="llm.chat.result",
         source=_source(),  # [FIX]
@@ -203,12 +244,34 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         payload=ChatResultPayload(
             model_used=model_used,
             content=text or "",
+            reasoning_content=reasoning_content,
+            reasoning_trace=reasoning_trace,
             usage=(result.get("raw") or {}).get("usage", {}) if isinstance(result, dict) else {},
             raw=(result.get("raw") if isinstance(result, dict) else None) or {},
             spark_meta=spark_meta,
             spark_vector=spark_vector,
             meta=meta or None,
         ),
+    )
+    trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+    print(
+        "===THINK_HOP=== hop=llm_gateway_out "
+        f"corr={typed_req.correlation_id} "
+        f"has_reasoning_content={bool(reasoning_content)} "
+        f"reasoning_len={len(reasoning_content) if reasoning_content else 0} "
+        f"trace_len={len(trace_content) if trace_content else 0} "
+        f"preview={_preview_text(reasoning_content or trace_content)}",
+        flush=True,
+    )
+    response_payload = out.payload
+    try:
+        resp_keys = sorted(response_payload.model_dump().keys())
+    except Exception:
+        resp_keys = [type(response_payload).__name__]
+    print(
+        "===THINK_HOP=== hop=llm_gateway_response_shape "
+        f"corr={typed_req.correlation_id} keys={resp_keys}",
+        flush=True,
     )
     if bus_handle and text:
         doc_id = str(typed_req.correlation_id or env.id)

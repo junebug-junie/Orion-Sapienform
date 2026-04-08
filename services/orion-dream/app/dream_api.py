@@ -1,12 +1,12 @@
 # ==================================================
 # dream_api.py
 # ==================================================
-from fastapi import FastAPI
+from fastapi import APIRouter
 from datetime import date
 from .wake_readout import build_readout
 
-app = FastAPI(title="Orion Dream API", version="1.0.0")
+router = APIRouter()
 
-@app.get("/dreams/wakeup/today")
+@router.get("/wakeup/today")
 def wake_today():
     return build_readout(date.today())

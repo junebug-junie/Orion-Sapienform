@@ -34,16 +34,57 @@ class Settings(BaseSettings):
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")
+    channel_metacog_trace_pub: str = Field("orion:metacog:trace", alias="CHANNEL_METACOG_TRACE_PUB")
+    channel_dream_log: str = Field("orion:dream:log", alias="CHANNEL_DREAM_LOG")
     channel_collapse_sql_write: str = Field("orion:collapse:sql-write", alias="CHANNEL_COLLAPSE_SQL_WRITE")
     channel_collapse_intake: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_INTAKE")
     channel_pad_rpc_request: str = Field("orion:pad:rpc:request", alias="CHANNEL_PAD_RPC_REQUEST")
     channel_state_request: str = Field("orion:state:request", alias="CHANNEL_STATE_REQUEST")
+    channel_pad_rpc_reply_prefix: str = Field("orion:pad:rpc:reply", alias="CHANNEL_PAD_RPC_REPLY_PREFIX")
+    channel_state_reply_prefix: str = Field("orion:state:reply", alias="CHANNEL_STATE_REPLY_PREFIX")
     channel_core_events: str = Field("orion:core:events", alias="CHANNEL_CORE_EVENTS")
 
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
     diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")
     diagnostic_agent_timeout_sec: float = Field(15.0, alias="DIAGNOSTIC_AGENT_TIMEOUT_SEC")
     orion_verb_backdoor_enabled: bool = Field(False, alias="ORION_VERB_BACKDOOR_ENABLED")
+    notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
+    notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+    orion_tz: str = Field("America/Denver", alias="ORION_TZ")
+    skills_command_timeout_sec: float = Field(8.0, alias="SKILLS_COMMAND_TIMEOUT_SEC")
+    docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
+    biometrics_service_url: str = Field("http://orion-biometrics:8058", alias="BIOMETRICS_SERVICE_URL")
+    biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
+    endogenous_runtime_enabled: bool = Field(False, alias="ENDOGENOUS_RUNTIME_ENABLED")
+    endogenous_runtime_surface_chat_reflective_enabled: bool = Field(
+        False,
+        alias="ENDOGENOUS_RUNTIME_SURFACE_CHAT_REFLECTIVE_ENABLED",
+    )
+    endogenous_runtime_surface_operator_enabled: bool = Field(
+        False,
+        alias="ENDOGENOUS_RUNTIME_SURFACE_OPERATOR_ENABLED",
+    )
+    endogenous_runtime_allowed_workflow_types: str = Field(
+        "contradiction_review,concept_refinement,reflective_journal",
+        alias="ENDOGENOUS_RUNTIME_ALLOWED_WORKFLOW_TYPES",
+    )
+    endogenous_runtime_allow_mentor_branch: bool = Field(
+        False,
+        alias="ENDOGENOUS_RUNTIME_ALLOW_MENTOR_BRANCH",
+    )
+    endogenous_runtime_sample_rate: float = Field(1.0, alias="ENDOGENOUS_RUNTIME_SAMPLE_RATE")
+    endogenous_runtime_max_actions: int = Field(5, alias="ENDOGENOUS_RUNTIME_MAX_ACTIONS")
+    endogenous_runtime_store_backend: str = Field("memory", alias="ENDOGENOUS_RUNTIME_STORE_BACKEND")
+    endogenous_runtime_store_path: str = Field(
+        "/tmp/orion_endogenous_runtime_records.jsonl",
+        alias="ENDOGENOUS_RUNTIME_STORE_PATH",
+    )
+    endogenous_runtime_store_max_records: int = Field(2000, alias="ENDOGENOUS_RUNTIME_STORE_MAX_RECORDS")
+    endogenous_runtime_sql_read_enabled: bool = Field(True, alias="ENDOGENOUS_RUNTIME_SQL_READ_ENABLED")
+    endogenous_runtime_sql_database_url: str = Field(
+        "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
+        alias="ENDOGENOUS_RUNTIME_SQL_DATABASE_URL",
+    )
 
     class Config:
         env_file = ".env"

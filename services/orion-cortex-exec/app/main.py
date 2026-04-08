@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, Dict
+from uuid import NAMESPACE_URL, UUID, uuid5
 
+import requests
 from pydantic import Field, ValidationError
 
 # IMPORTS UPDATED: Added Envelope for generic typing
@@ -18,14 +21,17 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit, Hunter
 from orion.core.verbs import VerbRequestV1, VerbResultV1, VerbEffectV1, VerbRuntime
 
 from orion.schemas.cortex.exec import CortexExecResultPayload
-from orion.schemas.cortex.schemas import PlanExecutionRequest
+from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.schemas.metacognitive_trace import MetacognitiveTraceEnvelope, MetacognitiveTraceV1
 from .router import PlanRouter
 from .settings import settings
+from .dream_publish import build_dream_publish_envelope
+from .chat_stance import resolve_autonomy_graphdb_config
 from .core_event_cache import get_core_event_cache
 from .trace_cache import get_trace_cache
-from .verb_adapters import LegacyPlanVerb  # noqa: F401 - register verb adapter
+from .verb_adapters import LegacyPlanVerb, RespondToJuniperCollapseMirrorVerb  # noqa: F401 - register verb adapter
 from .collapse_verbs import (  # noqa: F401 - register collapse verbs
     LogCollapseMirrorVerb,
     EnrichCollapseMirrorVerb,
@@ -33,6 +39,28 @@ from .collapse_verbs import (  # noqa: F401 - register collapse verbs
 )
 
 logger = logging.getLogger("orion.cortex.exec.main")
+
+
+def _thought_debug_enabled() -> bool:
+    return str(os.getenv("DEBUG_THOUGHT_PROCESS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_len(value: Any) -> int:
+    return len(str(value or ""))
+
+
+def _debug_snippet(value: Any, max_len: int = 200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}…"
+
+
+def _uuid_from_correlation_id(value: str) -> UUID:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return uuid5(NAMESPACE_URL, str(value))
 
 
 class CortexExecRequest(BaseEnvelope):
@@ -94,6 +122,88 @@ def _diagnostic_enabled(payload: PlanExecutionRequest) -> bool:
         return settings.diagnostic_mode
 
 
+def _resolve_autonomy_backend() -> str:
+    backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
+    return backend if backend in {"graph", "local", "shadow"} else "graph"
+
+
+def _run_autonomy_graph_probe() -> None:
+    backend = _resolve_autonomy_backend()
+    if backend != "graph":
+        return
+
+    cfg = resolve_autonomy_graphdb_config()
+    endpoint = str(cfg.get("endpoint") or "")
+    repo = str(cfg.get("repo") or "collapse")
+    user = cfg.get("user")
+    password = cfg.get("password")
+    auth_present = bool(user and password)
+    source = str(cfg.get("source") or "unconfigured")
+    endpoint_present = bool(endpoint)
+
+    logger.info(
+        "autonomy_graph_probe backend=%s endpoint_present=%s repo=%s auth_present=%s source=%s",
+        backend,
+        "yes" if endpoint_present else "no",
+        repo,
+        "yes" if auth_present else "no",
+        source,
+    )
+    if not endpoint_present:
+        logger.warning(
+            "autonomy_graph_probe result=fail reason=graph_not_configured endpoint=graphdb:unconfigured repo=%s",
+            repo,
+        )
+        return
+
+    timeout_sec = min(max(float(os.getenv("GRAPHDB_PROBE_TIMEOUT_SEC", "3.0")), 1.0), 4.0)
+    auth = (str(user), str(password)) if auth_present else None
+    ask_query = "ASK { ?s ?p ?o }"
+    headers = {
+        "Accept": "application/sparql-results+json",
+    }
+    try:
+        response = requests.post(
+            endpoint,
+            data={"query": ask_query},
+            headers=headers,
+            timeout=timeout_sec,
+            auth=auth,
+        )
+        if response.status_code == 200:
+            parsed_ok = False
+            try:
+                payload = response.json()
+                parsed_ok = isinstance(payload, dict) and isinstance(payload.get("boolean"), bool)
+            except Exception:
+                body = (response.text or "").strip().lower()
+                parsed_ok = body in {"true", "false"} or "<boolean>true</boolean>" in body or "<boolean>false</boolean>" in body
+            if parsed_ok:
+                logger.info("autonomy_graph_probe result=ok endpoint=%s repo=%s query=ASK", endpoint, repo)
+                return
+            logger.warning(
+                "autonomy_graph_probe result=fail reason=parse_error endpoint=%s repo=%s response_snippet=%r",
+                endpoint,
+                repo,
+                _debug_snippet(response.text, max_len=160),
+            )
+            return
+        logger.warning(
+            "autonomy_graph_probe result=fail reason=http_%s endpoint=%s repo=%s response_snippet=%r",
+            response.status_code,
+            endpoint,
+            repo,
+            _debug_snippet(response.text, max_len=160),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "autonomy_graph_probe result=fail reason=%s endpoint=%s repo=%s",
+            exc.__class__.__name__,
+            endpoint,
+            repo,
+        )
+
+
 async def handle(env: BaseEnvelope) -> BaseEnvelope:
     corr_id = str(env.correlation_id)
     logger.info(f"Incoming Exec Request: correlation_id={corr_id}")
@@ -117,6 +227,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     payload_context = raw_payload.get("context") or req_env.payload.context or {}
 
     # 2. Merge Context
+    plan_metadata = req_env.payload.plan.metadata if isinstance(req_env.payload.plan.metadata, dict) else {}
     ctx = {
         **payload_context,
         **(req_env.payload.args.extra or {}),
@@ -125,11 +236,23 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         "trace_id": trace_id,
         "parent_event_id": parent_event_id,
         "correlation_id": corr_id,
+        "plan_metadata": plan_metadata,
     }
+    if "personality_file" in plan_metadata:
+        # Preserve declaration state (including empty string) for precise identity fallback diagnostics.
+        ctx["personality_file"] = plan_metadata.get("personality_file")
     ctx.setdefault("trigger_correlation_id", ctx.get("chat_correlation_id") or corr_id)
     ctx.setdefault("trigger_trace_id", trace_id)
 
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
+
+    if req_env.payload.plan.metadata and isinstance(req_env.payload.plan.metadata, dict):
+        auto_route_meta = req_env.payload.plan.metadata.get("auto_route")
+        if isinstance(auto_route_meta, dict):
+            logger.info("Exec received auto_route metadata corr=%s mode=%s verb=%s source=%s", corr_id, auto_route_meta.get("route_mode"), auto_route_meta.get("verb"), auto_route_meta.get("source"))
+
+    if str(ctx.get("mode") or "").lower() == "auto":
+        logger.warning("Exec received unexpected auto mode corr=%s; executing plan deterministically as provided", corr_id)
 
     assert svc is not None, "Rabbit service not initialized"
 
@@ -185,6 +308,91 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         await svc.bus.publish(settings.channel_cognition_trace_pub, trace_envelope)
         logger.info(f"Published CognitionTrace to {settings.channel_cognition_trace_pub}")
 
+        reasoning_trace = next(
+            (
+                trace
+                for trace in (res.metacog_traces or [])
+                if isinstance(trace, MetacognitiveTraceV1) and str(trace.content or "").strip()
+            ),
+            None,
+        )
+        extra = req_env.payload.args.extra if req_env.payload.args else {}
+        session_id = None
+        message_id = None
+        if isinstance(extra, dict):
+            session_id = extra.get("session_id")
+            message_id = extra.get("message_id")
+        if not session_id:
+            session_id = ctx.get("session_id")
+        if not message_id:
+            message_id = ctx.get("message_id")
+
+        metacog_payload = MetacognitiveTraceV1(
+            correlation_id=corr_id,
+            session_id=str(session_id) if session_id is not None else None,
+            message_id=str(message_id) if message_id is not None else None,
+            trace_role="reasoning",
+            trace_stage="pre_answer",
+            content=(reasoning_trace.content if reasoning_trace is not None else (res.final_text or "")).strip(),
+            model=(reasoning_trace.model if reasoning_trace is not None else "unknown"),
+            token_count=reasoning_trace.token_count if reasoning_trace is not None else None,
+            confidence=reasoning_trace.confidence if reasoning_trace is not None else None,
+            metadata={
+                **((reasoning_trace.metadata or {}) if reasoning_trace is not None else {}),
+                "request_id": res.request_id,
+                "status": res.status,
+                "fallback_from_final_text": reasoning_trace is None,
+            },
+        )
+        if _thought_debug_enabled():
+            logger.info(
+                "THOUGHT_DEBUG_METACOG_PUB stage=prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r fallback_from_final_text=%s",
+                corr_id,
+                metacog_payload.trace_role,
+                metacog_payload.trace_stage,
+                metacog_payload.model,
+                _debug_len(metacog_payload.content),
+                _debug_snippet(metacog_payload.content),
+                reasoning_trace is None,
+            )
+        if metacog_payload.content:
+            metacog_envelope = MetacognitiveTraceEnvelope(
+                source=_source(),
+                correlation_id=_uuid_from_correlation_id(corr_id),
+                causality_chain=env.causality_chain,
+                payload=metacog_payload,
+            )
+            await svc.bus.publish(settings.channel_metacog_trace_pub, metacog_envelope)
+            logger.info(
+                "Published MetacognitiveTrace to %s correlation_id=%s fallback=%s",
+                settings.channel_metacog_trace_pub,
+                corr_id,
+                reasoning_trace is None,
+            )
+            if _thought_debug_enabled():
+                logger.info(
+                    "THOUGHT_DEBUG_METACOG_PUB stage=published corr=%s channel=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
+                    corr_id,
+                    settings.channel_metacog_trace_pub,
+                    metacog_payload.trace_role,
+                    metacog_payload.trace_stage,
+                    metacog_payload.model,
+                    _debug_len(metacog_payload.content),
+                    _debug_snippet(metacog_payload.content),
+                )
+        else:
+            logger.info(
+                "Skipped MetacognitiveTrace publish due to empty content correlation_id=%s",
+                corr_id,
+            )
+            if _thought_debug_enabled():
+                logger.info(
+                    "THOUGHT_DEBUG_METACOG_PUB stage=skipped corr=%s reason=empty_content fallback_from_final_text=%s final_text_len=%s",
+                    corr_id,
+                    reasoning_trace is None,
+                    _debug_len(res.final_text),
+                )
+
     except Exception as e:
         logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)
         return CortexExecResult(
@@ -194,13 +402,42 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=CortexExecResultPayload(ok=False, error=str(e)),
         )
 
+    try:
+        dream_env = build_dream_publish_envelope(
+            source=_source(),
+            causality_chain=list(env.causality_chain or []),
+            correlation_id=corr_id,
+            res=res,
+            context=ctx,
+            extra=req_env.payload.args.extra if req_env.payload.args else None,
+        )
+        if dream_env is not None:
+            await svc.bus.publish(settings.channel_dream_log, dream_env)
+            logger.info("Published dream.result.v1 to %s", settings.channel_dream_log)
+    except Exception as exc:
+        logger.warning("dream.result.v1 publish skipped/failed corr=%s err=%s", corr_id, exc)
 
     if env.reply_to:
+        res_payload = res.model_dump(mode="json")
+        reasoning_content = res_payload.get("reasoning_content") if isinstance(res_payload, dict) else None
+        reasoning_trace = res_payload.get("reasoning_trace") if isinstance(res_payload, dict) else None
+        trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+        preview_text = repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content or "")[:220])
+        print(
+            "===THINK_HOP=== hop=exec_out "
+            f"corr={corr_id} "
+            f"payload_keys={sorted(res_payload.keys()) if isinstance(res_payload, dict) else []} "
+            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+            f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+            f"metacog_count={len(res_payload.get('metacog_traces')) if isinstance(res_payload.get('metacog_traces'), list) else 0} "
+            f"preview={preview_text}",
+            flush=True,
+        )
         manual_result = CortexExecResult(
             source=_source(),
             correlation_id=corr_id,
             causality_chain=env.causality_chain,
-            payload=CortexExecResultPayload(ok=True, result=res.model_dump(mode="json")),
+            payload=CortexExecResultPayload(ok=True, result=res_payload),
         )
         publish_started = time.perf_counter()
         try:
@@ -291,9 +528,18 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
     assert verb_runtime is not None, "Verb runtime not initialized"
 
     raw_payload = env.payload if isinstance(env.payload, dict) else {}
+    corr_id = str(env.correlation_id or raw_payload.get("request_id") or "unknown")
+    reply_channel = str(env.reply_to or "orion:verb:result")
     try:
         req = VerbRequestV1.model_validate(raw_payload)
     except ValidationError as ve:
+        logger.warning(
+            "verb_runtime_validation_failed corr=%s reply=%s request_id=%s error=%s",
+            corr_id,
+            reply_channel,
+            raw_payload.get("request_id"),
+            ve,
+        )
         error_result = VerbResultV1(
             verb=str(raw_payload.get("trigger") or raw_payload.get("verb") or "unknown"),
             ok=False,
@@ -301,20 +547,64 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
             request_id=raw_payload.get("request_id"),
         )
         result_env = _derive_envelope(env, kind="verb.result", payload=error_result.model_dump(mode="json"))
-        await svc.bus.publish("orion:verb:result", result_env)
+        await svc.bus.publish(reply_channel, result_env)
+        if reply_channel != "orion:verb:result":
+            await svc.bus.publish("orion:verb:result", result_env)
         return
 
+    logger.info(
+        "verb_runtime_intake corr=%s reply=%s request_id=%s trigger=%s",
+        corr_id,
+        reply_channel,
+        req.request_id,
+        req.trigger,
+    )
     result = await verb_runtime.handle_request(
         req,
         extra_meta={
             "bus": svc.bus,
             "source": _source(),
-            "correlation_id": str(env.correlation_id),
+            "correlation_id": corr_id,
         },
     )
 
     result_env = _derive_envelope(env, kind="verb.result", payload=result.model_dump(mode="json"))
-    await svc.bus.publish("orion:verb:result", result_env)
+    await svc.bus.publish(reply_channel, result_env)
+    logger.info(
+        "verb_runtime_result corr=%s reply=%s request_id=%s ok=%s",
+        corr_id,
+        reply_channel,
+        result.request_id,
+        result.ok,
+    )
+    if reply_channel != "orion:verb:result":
+        await svc.bus.publish("orion:verb:result", result_env)
+        logger.info(
+            "verb_runtime_result_legacy_mirror corr=%s reply=%s legacy_channel=orion:verb:result request_id=%s",
+            corr_id,
+            reply_channel,
+            result.request_id,
+        )
+
+    try:
+        if req.trigger == "legacy.plan":
+            plan_req = PlanExecutionRequest.model_validate(req.payload)
+            result_payload = result.output if isinstance(result.output, dict) else {}
+            plan_result_payload = result_payload.get("result") if isinstance(result_payload.get("result"), dict) else result_payload
+            plan_result = PlanExecutionResult.model_validate(plan_result_payload)
+            dream_env = build_dream_publish_envelope(
+                source=_source(),
+                causality_chain=list(env.causality_chain or []),
+                correlation_id=corr_id,
+                res=plan_result,
+                context=plan_req.context if isinstance(plan_req.context, dict) else {},
+                extra=plan_req.args.extra if plan_req.args else None,
+            )
+            if dream_env is not None:
+                await svc.bus.publish(settings.channel_dream_log, dream_env)
+                logger.info("Published dream.result.v1 to %s via verb runtime", settings.channel_dream_log)
+    except Exception as exc:
+        logger.warning("dream.result.v1 legacy-plan publish skipped/failed corr=%s err=%s", corr_id, exc)
 
     for effect in result.effects:
         effect_model = effect if isinstance(effect, VerbEffectV1) else VerbEffectV1.model_validate(effect)
@@ -341,6 +631,7 @@ async def main() -> None:
         f"Starting cortex-exec bus listener channel={settings.channel_exec_request} "
         f"bus={settings.orion_bus_url}"
     )
+    _run_autonomy_graph_probe()
     assert verb_listener is not None, "Verb listener not initialized"
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"

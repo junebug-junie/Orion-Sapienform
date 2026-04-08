@@ -1,0 +1,23 @@
+name: answer_direct
+label: Direct Answer
+description: >
+  Produce a direct, concrete answer to the user's question. Output user-facing
+  prose that addresses the request without meta-planning or executive scaffolding.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 60000
+
+services:
+  - LLMGatewayService
+
+prompt_template: answer_direct_prompt.j2
+
+steps:
+  - name: answer
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: answer_direct_prompt.j2

@@ -31,7 +31,6 @@ def _build_preview_segments(payload: DatasetPreviewRequest) -> tuple[list[dict],
         text_columns=payload.dataset.text_columns,
         time_column=payload.dataset.time_column,
         id_column=payload.dataset.id_column,
-        boundary_column=payload.dataset.boundary_column,
     )
     overrides = [
         OverrideRecord(
@@ -48,7 +47,6 @@ def _build_preview_segments(payload: DatasetPreviewRequest) -> tuple[list[dict],
         conversations,
         spec=payload.windowing,
         embedding_url=settings.topic_foundry_embedding_url,
-        run_id=None,
     )
     return rows, segments, blocks_generated
 
@@ -63,10 +61,8 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
     if not segments:
         return DatasetPreviewResponse(
             rows_scanned=len(rows),
-            row_count=len(rows),
             blocks_generated=blocks_generated,
             segments_generated=0,
-            segment_count=0,
             docs_generated=0,
             doc_count=0,
             avg_chars=0.0,
@@ -93,10 +89,8 @@ def preview_dataset(payload: DatasetPreviewRequest) -> DatasetPreviewResponse:
     ]
     return DatasetPreviewResponse(
         rows_scanned=len(rows),
-        row_count=len(rows),
         blocks_generated=blocks_generated,
         segments_generated=len(segments),
-        segment_count=len(segments),
         docs_generated=len(segments),
         doc_count=len(segments),
         avg_chars=float(mean(lengths)),

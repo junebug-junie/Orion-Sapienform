@@ -30,6 +30,7 @@ from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1,
 from orion.spark.orion_tissue import OrionTissue
 from orion.spark.signal_mapper import SignalMapper
 from orion.spark.surface_encoding import SurfaceEncoding
+from orion.spark.introspection_metadata import build_introspection_context
 
 from .settings import settings
 from .conn_manager import manager
@@ -95,6 +96,29 @@ class SparkCandidatePayload(BaseModel):
     response: str
     spark_meta: Dict[str, Any] = Field(default_factory=dict)
     introspection: Optional[str] = None
+
+
+def _build_introspection_context(
+    *,
+    candidate: SparkCandidatePayload,
+    correlation_id: str | None,
+) -> Dict[str, Any]:
+    continuity = build_introspection_context(
+        spark_meta=candidate.spark_meta,
+        trace_id=candidate.trace_id,
+        correlation_id=correlation_id,
+    )
+    required = ("correlation_id", "trace_id", "session_id", "workflow_id", "trace_verb", "personality_file")
+    missing = [field for field in required if not continuity.get(field)]
+    logger.info(
+        "introspection_metadata_status correlation_id=%s workflow_id=%s metadata_present=%s missing_fields=%s fallback_reason=%s",
+        correlation_id,
+        continuity.get("workflow_id"),
+        len(missing) == 0,
+        missing,
+        "missing_metadata" if missing else "none",
+    )
+    return continuity
 
 
 def _prune_candidate_caches() -> None:
@@ -219,6 +243,7 @@ async def _fetch_anchor_embedding(bus: OrionBusAsync, text: str, doc_id: str) ->
         payload=EmbeddingGenerateV1(
             doc_id=doc_id,
             text=text,
+            collection=settings.spark_vector_collection,
             embedding_profile="default",
             include_latent=False,
         ).model_dump(mode="json"),
@@ -1302,16 +1327,20 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     from orion.core.bus.bus_schemas import LLMMessage
     from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest
 
+    continuity = _build_introspection_context(candidate=candidate, correlation_id=str(env.correlation_id) if env.correlation_id else None)
     ctx = CortexClientContext(
         messages=[LLMMessage(role="user", content=prompt)],
         raw_user_text=prompt,
         user_message=prompt,
         trace_id=candidate.trace_id,
+        session_id=continuity.get("session_id"),
+        user_id=continuity.get("user_id"),
         metadata={
             "prompt": candidate.prompt,
             "response": candidate.response,
             "spark_meta": candidate.spark_meta or {},
             "spark_source": candidate.source or "spark-introspector",
+            "introspection_context": continuity,
         },
     )
 

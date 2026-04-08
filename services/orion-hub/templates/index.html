@@ -8,7 +8,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
 </head>
-<body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}">
+<body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}" data-ui-version="{{HUB_UI_ASSET_VERSION}}">
   <div
     id="hub-panel-host"
     style="position:fixed; inset:0; padding:80px 24px 24px 24px; overflow:auto; z-index:10; pointer-events:none;"
@@ -33,20 +33,30 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Topic Studio</a>
+          <a
+            id="serviceLogsTabButton"
+            href="#service-logs"
+            data-hash-target="#service-logs"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Service Logs</a>
         </div>
       </div>
-      <button
-        id="settingsToggle"
-        class="bg-gray-900/80 hover:bg-gray-800 text-gray-200 rounded-full p-2 shadow-lg border border-gray-700"
-        aria-label="Open settings"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path
-            d="M12 1v2m0 18v2m11-11h-2M3 12H1m18.364-6.364-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0-1.414-1.414M7.05 7.05 5.636 5.636" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-      </button>
+      <div class="flex items-center gap-3">
+        <span id="hubUiBuildLabel" class="text-[10px] uppercase tracking-wide text-gray-500">UI {{HUB_UI_ASSET_VERSION}}</span>
+        <button
+          id="settingsToggle"
+          class="bg-gray-900/80 hover:bg-gray-800 text-gray-200 rounded-full p-2 shadow-lg border border-gray-700"
+          aria-label="Open settings"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path
+              d="M12 1v2m0 18v2m11-11h-2M3 12H1m18.364-6.364-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0-1.414-1.414M7.05 7.05 5.636 5.636" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div id="appPanels">
@@ -140,7 +150,9 @@
           <div class="flex items-center gap-2">
             <span class="uppercase text-gray-500 font-bold text-[10px]">Mode</span>
             <div class="flex gap-1">
-              <button class="mode-btn px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 transition-colors" data-mode="brain">Brain</button>
+              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="auto">Auto</button>
+              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="brain">Brain</button>
+              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="brain" data-verb-override="chat_quick">Quick</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="agent">Agent</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
             </div>
@@ -217,7 +229,100 @@
               <div class="text-gray-500 mb-1">Memory digest</div>
               <pre id="memoryDigestPre" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
             </div>
+            <div>
+              <div class="text-gray-500 mb-1">Outbound routing debug</div>
+              <div id="outboundRoutingDebug" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</div>
+            </div>
           </div>
+        </div>
+
+        <div id="agentTraceDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <button
+            id="agentTraceDebugToggle"
+            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
+            type="button"
+          >
+            <span class="uppercase tracking-wide">Agent Trace</span>
+            <span id="agentTraceDebugCaret" class="text-gray-500">▾</span>
+          </button>
+          <div id="agentTraceDebugBody" class="hidden space-y-4 text-xs text-gray-300">
+            <div id="agentTraceDebugMeta" class="text-[10px] text-gray-500">--</div>
+            <div id="agentTraceDebugOverview" class="space-y-3"></div>
+            <div>
+              <div class="text-gray-500 mb-1">Deterministic summary</div>
+              <div
+                id="agentTraceDebugSummary"
+                class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-sm text-gray-200 whitespace-pre-wrap"
+              >--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Grouped tool usage</div>
+              <div id="agentTraceDebugToolGroups"></div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Timeline</div>
+              <div id="agentTraceDebugTimeline"></div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Raw payload</div>
+              <div id="agentTraceDebugRaw"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="autonomyDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="autonomyDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Autonomy Runtime</span>
+              <span id="autonomyDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="autonomyDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
+          <div id="autonomyDebugBody" class="hidden space-y-4 text-xs text-gray-300">
+            <div id="autonomyDebugMeta" class="text-[10px] text-gray-500">--</div>
+            <div>
+              <div class="text-gray-500 mb-1">Overview</div>
+              <div id="autonomyDebugOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Active state</div>
+              <div id="autonomyDebugState" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Proposals <span class="text-amber-300">(proposal-only)</span></div>
+              <div id="autonomyDebugProposals" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Stance alignment</div>
+              <div id="autonomyDebugAlignment" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Raw compact debug</div>
+              <pre id="autonomyDebugRaw" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <div class="text-xs uppercase tracking-wide text-gray-500">Social Inspection</div>
+              <div id="socialInspectionPanelStatus" class="text-[11px] text-gray-400 mt-1">Waiting for a social-room turn.</div>
+            </div>
+            <button id="socialInspectionOpen" type="button" class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-3 py-1.5 text-[11px] font-semibold text-indigo-200 hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-40" disabled>Open</button>
+          </div>
+          <div id="socialInspectionBadgeRow" class="flex flex-wrap gap-2"></div>
+          <div id="socialInspectionPanelSummary" class="grid grid-cols-1 gap-2 text-[11px] text-gray-300"></div>
         </div>
 
         <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-3">
@@ -242,9 +347,15 @@
             </button>
 
             <div id="verbDropdown" class="hidden absolute mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-20">
-              <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+              <div class="flex items-center justify-between px-3 py-2 border-b border-gray-800 gap-2">
                 <div class="text-[10px] uppercase tracking-wide text-gray-500">Available Verbs</div>
-                <button id="clearVerbs" class="text-[10px] text-gray-400 hover:text-white">Clear</button>
+                <div class="flex items-center gap-2">
+                  <label class="text-[10px] text-gray-400 flex items-center gap-1">
+                    <input id="verbActiveOnlyToggle" type="checkbox" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" checked />
+                    Active only
+                  </label>
+                  <button id="clearVerbs" class="text-[10px] text-gray-400 hover:text-white">Clear</button>
+                </div>
               </div>
               <div id="verbList" class="max-h-56 overflow-y-auto p-2 space-y-1"></div>
             </div>
@@ -287,6 +398,28 @@
           </div>
           <div id="notificationList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
         </div>
+      </div>
+
+      <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-semibold text-white">Workflow Schedules</h3>
+            <div id="scheduleInventoryMeta" class="text-[11px] text-gray-400">Durable schedule inventory from Actions.</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="scheduleFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="active" selected>Active</option>
+              <option value="needs_attention">Needs Attention</option>
+              <option value="all">All</option>
+              <option value="paused">Paused</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <button id="scheduleRefreshButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div id="scheduleAttentionSummary" class="hidden rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"></div>
+        <div id="scheduleInventoryStatus" class="text-xs text-gray-500">Loading…</div>
+        <div id="scheduleInventoryList" class="space-y-2 max-h-80 overflow-y-auto text-xs"></div>
       </div>
     </div>
 
@@ -709,19 +842,15 @@
 
         </div>
 
-        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4">
-          <div id="tsSkeletonMain" class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-300">
-            <span id="tsSkeletonStatus">Loading...</span>
-            <button id="tsSkeletonRetry" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-[10px]">Retry</button>
-          </div>
+        <div class="bg-gray-800/40 border border-gray-700 rounded-xl p-4 space-y-4 overflow-y-auto">
           <div class="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-gray-500">
             <button id="tsSubviewRunsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-900/60 text-gray-200">Runs & Segments</button>
-            
-            
-            
-            
-            
-            
+            <button id="tsSubviewConversationsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Conversations</button>
+            <button id="tsSubviewTopicsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Topics</button>
+            <button id="tsSubviewCompareBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Compare</button>
+            <button id="tsSubviewDriftBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Drift</button>
+            <button id="tsSubviewEventsBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">Events</button>
+            <button id="tsSubviewKgBtn" class="px-2 py-1 rounded border border-gray-700 bg-gray-800 text-gray-400">KG</button>
           </div>
 
           <div id="tsSubviewRuns" data-split-pane="true" class="space-y-4">
@@ -860,6 +989,368 @@
         <div>
           <div class="text-xs uppercase tracking-wide text-gray-500">Run Results</div>
           <div id="tsRunResultsModalTitle" class="text-sm text-gray-100 font-semibold">--</div>
+          <div class="space-y-2 pt-2 border-t border-gray-700">
+            <div class="flex items-center justify-between">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Browse segments</div>
+              <button id="tsSegmentsRefresh" class="text-[10px] text-gray-300 hover:text-white">Refresh</button>
+            </div>
+            <input id="tsSegmentsRunId" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsSegmentsSearch" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="search segments" />
+              <select id="tsSegmentsSort" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="time_desc">time desc</option>
+                <option value="friction_desc">friction desc</option>
+                <option value="size_desc">size desc</option>
+              </select>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsSegmentsEnrichment" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">all</option>
+                <option value="true">has enrichment</option>
+                <option value="false">no enrichment</option>
+              </select>
+              <input id="tsSegmentsAspect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="aspect filter" />
+            </div>
+            <div id="tsSegmentsFacets" class="flex flex-wrap gap-2 text-[10px] text-gray-400"></div>
+            <div class="flex items-center gap-2">
+              <button id="tsLoadSegments" class="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Segments</button>
+              <span id="tsSegmentsLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-400">
+              <div class="flex items-center gap-2">
+                <label class="uppercase tracking-wide text-gray-500">Page size</label>
+                <select id="tsSegmentsPageSize" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                </select>
+                <button id="tsSegmentsPrev" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Prev</button>
+                <button id="tsSegmentsNext" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Next</button>
+              </div>
+              <div id="tsSegmentsRange" class="text-[10px] text-gray-500">Offset --</div>
+              <button id="tsSegmentsExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 text-xs">Export CSV</button>
+            </div>
+            <div id="tsSegmentsError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Segment</th>
+                    <th class="py-2 pr-3">Size</th>
+                    <th class="py-2 pr-3">Rows</th>
+                    <th class="py-2 pr-3">Title</th>
+                    <th class="py-2 pr-3">Aspects</th>
+                    <th class="py-2 pr-3">Bounds</th>
+                    <th class="py-2 pr-3">Snippet</th>
+                    <th class="py-2 pr-3">Friction</th>
+                    <th class="py-2 pr-3">Valence</th>
+                  </tr>
+                </thead>
+                <tbody id="tsSegmentsTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Selected segment</div>
+            <div class="flex items-center gap-2 text-[10px] text-gray-400">
+              <button id="tsCopySegmentId" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Copy segment id</button>
+            </div>
+            <div id="tsSegmentDetail" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 whitespace-pre-wrap">--</div>
+          </div>
+          </div>
+
+          <div id="tsSubviewConversations" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Conversation Stitching</div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Dataset</label>
+                <select id="tsConvoDatasetSelect" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+              </div>
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Limit</label>
+                <input id="tsConvoLimit" type="number" min="1" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="200" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">Start at</label>
+                <input id="tsConvoStartAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+              </div>
+              <div class="space-y-2">
+                <label class="block text-[10px] uppercase tracking-wide text-gray-500">End at</label>
+                <input id="tsConvoEndAt" type="datetime-local" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsConvoLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Conversations</button>
+              <button id="tsConvoRebuildPreview" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Rebuild Preview</button>
+              <span id="tsConvoLoading" class="text-[10px] text-gray-500 hidden">Loading...</span>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div class="space-y-2">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Conversations</div>
+                <div class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-64 overflow-y-auto">
+                  <table class="w-full text-xs text-left text-gray-300">
+                    <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                      <tr>
+                        <th class="py-2 pr-2">Select</th>
+                        <th class="py-2 pr-2">Window</th>
+                        <th class="py-2 pr-2">Blocks</th>
+                        <th class="py-2 pr-2">Snippet</th>
+                        <th class="py-2 pr-2">ID</th>
+                      </tr>
+                    </thead>
+                    <tbody id="tsConvoList" class="divide-y divide-gray-800"></tbody>
+                  </table>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input id="tsConvoMergeReason" class="flex-1 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="merge reason (optional)" />
+                  <button id="tsConvoMerge" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 text-xs">Merge</button>
+                </div>
+                <div id="tsConvoMergeStatus" class="text-[11px] text-gray-400">--</div>
+              </div>
+              <div class="space-y-2">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Conversation Detail</div>
+                <div id="tsConvoDetail" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-64 overflow-y-auto">Select a conversation to view blocks.</div>
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Overrides</div>
+                <div id="tsConvoOverrides" class="text-[11px] text-gray-300 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-40 overflow-y-auto">--</div>
+              </div>
+            </div>
+            <div id="tsConvoError" class="text-[11px] text-red-300">--</div>
+            </div>
+          </div>
+
+          <div id="tsSubviewTopics" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Topic Explorer</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsTopicsRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsTopicsLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="200" />
+                <input id="tsTopicsOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsTopicsLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Topics</button>
+              <span id="tsTopicsStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsTopicsError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Topic</th>
+                    <th class="py-2 pr-3">Docs</th>
+                    <th class="py-2 pr-3">Outlier %</th>
+                    <th class="py-2 pr-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="tsTopicsTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+
+            <div class="space-y-2 pt-2 border-t border-gray-700">
+              <div class="flex items-center justify-between">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Selected topic</div>
+                <div id="tsTopicSelectedId" class="text-[10px] text-gray-400">--</div>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Keywords</div>
+                <div id="tsTopicKeywords" class="flex flex-wrap gap-2 text-[10px] text-gray-300">--</div>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="text-[10px] uppercase tracking-wide text-gray-500">Segments</div>
+                <div class="flex items-center gap-2">
+                  <label class="text-[10px] uppercase tracking-wide text-gray-500">Offset</label>
+                  <input id="tsTopicSegmentsOffset" type="number" min="0" class="w-20 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+                  <select id="tsTopicSegmentsLimit" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                  </select>
+                  <button id="tsTopicSegmentsPrev" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Prev</button>
+                  <button id="tsTopicSegmentsNext" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Next</button>
+                </div>
+              </div>
+              <div id="tsTopicSegmentsStatus" class="text-[10px] text-gray-500">--</div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left text-gray-300">
+                  <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                    <tr>
+                      <th class="py-2 pr-3">Segment</th>
+                      <th class="py-2 pr-3">Size</th>
+                      <th class="py-2 pr-3">Title</th>
+                      <th class="py-2 pr-3">Bounds</th>
+                      <th class="py-2 pr-3">Snippet</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tsTopicSegmentsTableBody" class="divide-y divide-gray-800"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div id="tsSubviewCompare" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Run Compare</div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsCompareLeftRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Left run…</option>
+              </select>
+              <select id="tsCompareRightRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">Right run…</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsCompareRun" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Compare Runs</button>
+              <span id="tsCompareStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsCompareError" class="text-[11px] text-red-300">--</div>
+            <div class="grid grid-cols-2 gap-2 text-xs text-gray-300">
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Docs</span>
+                <span id="tsCompareDocs" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Segments</span>
+                <span id="tsCompareSegments" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Clusters</span>
+                <span id="tsCompareClusters" class="font-semibold">--</span>
+              </div>
+              <div class="flex items-center justify-between bg-gray-900/60 border border-gray-700 rounded px-2 py-1">
+                <span>Outlier %</span>
+                <span id="tsCompareOutliers" class="font-semibold">--</span>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Metric</th>
+                    <th class="py-2 pr-3">Left</th>
+                    <th class="py-2 pr-3">Right</th>
+                    <th class="py-2 pr-3">Delta</th>
+                  </tr>
+                </thead>
+                <tbody id="tsCompareTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Top aspect deltas</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Aspect</th>
+                    <th class="py-2 pr-3">Left</th>
+                    <th class="py-2 pr-3">Right</th>
+                    <th class="py-2 pr-3">Delta</th>
+                  </tr>
+                </thead>
+                <tbody id="tsCompareAspectBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tsSubviewDrift" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Drift Monitor</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsDriftModelName" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="model name" />
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsDriftWindowHours" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="24" />
+                <input id="tsDriftLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="50" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsDriftLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Drift</button>
+              <button id="tsDriftRunNow" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Run Drift Now</button>
+              <span id="tsDriftStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsDriftError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Created</th>
+                    <th class="py-2 pr-3">JS</th>
+                    <th class="py-2 pr-3">Outlier %</th>
+                    <th class="py-2 pr-3">Δ Outlier</th>
+                    <th class="py-2 pr-3">Δ Top Topic</th>
+                    <th class="py-2 pr-3">Thresholds</th>
+                  </tr>
+                </thead>
+                <tbody id="tsDriftTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tsSubviewEvents" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Events</div>
+            <div class="grid grid-cols-2 gap-2">
+              <select id="tsEventsKind" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+                <option value="">All kinds</option>
+                <option value="run_complete">Run complete</option>
+                <option value="enrich_complete">Enrich complete</option>
+                <option value="drift_alert">Drift alert</option>
+              </select>
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsEventsLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="50" />
+                <input id="tsEventsOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsEventsLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Events</button>
+              <button id="tsEventsExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Export CSV</button>
+              <span id="tsEventsStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsEventsError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Created</th>
+                    <th class="py-2 pr-3">Kind</th>
+                    <th class="py-2 pr-3">Run</th>
+                    <th class="py-2 pr-3">Model</th>
+                    <th class="py-2 pr-3">Bus</th>
+                  </tr>
+                </thead>
+                <tbody id="tsEventsTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tsSubviewKg" class="hidden space-y-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Knowledge Graph</div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsKgRunId" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="run UUID" />
+              <div class="grid grid-cols-2 gap-2">
+                <input id="tsKgLimit" type="number" min="1" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="100" />
+                <input id="tsKgOffset" type="number" min="0" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" value="0" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="tsKgQuery" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="search subject/object" />
+              <input id="tsKgPredicate" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs" placeholder="predicate filter" />
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="tsKgLoad" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-2 border border-gray-700 text-xs">Load Edges</button>
+              <button id="tsKgExport" class="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg px-3 py-2 text-xs">Export CSV</button>
+              <span id="tsKgStatus" class="text-[10px] text-gray-500">--</span>
+            </div>
+            <div id="tsKgError" class="text-[11px] text-red-300">--</div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs text-left text-gray-300">
+                <thead class="text-[10px] uppercase text-gray-500 border-b border-gray-700">
+                  <tr>
+                    <th class="py-2 pr-3">Subject</th>
+                    <th class="py-2 pr-3">Predicate</th>
+                    <th class="py-2 pr-3">Object</th>
+                    <th class="py-2 pr-3">Confidence</th>
+                    <th class="py-2 pr-3">Segment</th>
+                  </tr>
+                </thead>
+                <tbody id="tsKgTableBody" class="divide-y divide-gray-800"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
         <button id="tsRunResultsModalClose" class="bg-gray-800 hover:bg-gray-700 text-gray-200 rounded px-2 py-1 border border-gray-700 text-xs">Close</button>
       </div>
@@ -977,10 +1468,208 @@
       </div>
     </div>
   </div>
+
+
+      <section id="service-logs" data-panel="service-logs" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 class="text-xl font-bold text-white">Live Service Logs</h2>
+            <p class="text-xs text-gray-400">Select services to stream <code>docker compose logs -f</code>. Master stream aggregates active services.</p>
+          </div>
+          <div class="w-full md:w-96">
+            <label for="serviceLogsServiceSelect" class="block text-[10px] uppercase tracking-wide text-gray-500 mb-1">Services (multi-select)</label>
+            <select id="serviceLogsServiceSelect" multiple class="w-full h-32 bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs"></select>
+            <div id="serviceLogsStatus" class="mt-2 text-[11px] text-gray-400">Loading services...</div>
+          </div>
+        </div>
+
+        <section class="bg-gray-900 rounded-xl border border-gray-800 p-3 flex flex-col gap-2 min-h-[20rem]">
+          <div class="text-xs uppercase tracking-wide text-emerald-300">Master stream</div>
+          <pre id="serviceLogsMasterTerminal" class="h-[20rem] max-h-[20rem] bg-gray-950/80 border border-gray-800 rounded-lg p-3 overflow-auto text-[11px] leading-4 text-gray-200 font-mono"></pre>
+        </section>
+
+        <div id="serviceLogsTerminals" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+      </section>
+
+  <div
+    id="agentTraceModal"
+    class="hidden fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm px-4 py-6"
+    aria-hidden="true"
+  >
+    <div class="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-sm font-semibold text-gray-100">Agent Trace</div>
+          <div id="agentTraceModalMeta" class="text-[11px] text-gray-400">Deterministic execution trace summary.</div>
+        </div>
+        <button
+          id="agentTraceModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+
+      <div id="agentTraceModalBody" class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="agentTraceEmptyState" class="hidden rounded-xl border border-dashed border-gray-700 bg-gray-900/50 p-4 text-sm text-gray-400">
+          No agent trace data is available for this message.
+        </div>
+
+        <div id="agentTraceContent" class="space-y-5">
+          <section class="space-y-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Overview</div>
+            <div id="agentTraceOverview" class="grid gap-3 md:grid-cols-3 xl:grid-cols-6"></div>
+          </section>
+
+          <section class="space-y-2">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Deterministic summary</div>
+            <div id="agentTraceSummary" class="rounded-xl border border-gray-700 bg-gray-800/50 p-4 text-sm text-gray-200"></div>
+          </section>
+
+          <section class="space-y-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Tool usage by family</div>
+            <div id="agentTraceToolGroups" class="space-y-3"></div>
+          </section>
+
+          <section class="space-y-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Timeline</div>
+            <div class="overflow-x-auto rounded-xl border border-gray-700">
+              <table class="min-w-full divide-y divide-gray-800 text-left text-xs text-gray-200">
+                <thead class="bg-gray-900/90 text-[10px] uppercase tracking-wide text-gray-500">
+                  <tr>
+                    <th class="px-3 py-2">#</th>
+                    <th class="px-3 py-2">Event</th>
+                    <th class="px-3 py-2">Tool</th>
+                    <th class="px-3 py-2">Family</th>
+                    <th class="px-3 py-2">Action</th>
+                    <th class="px-3 py-2">Effect</th>
+                    <th class="px-3 py-2">Status</th>
+                    <th class="px-3 py-2">Duration</th>
+                    <th class="px-3 py-2">Detail</th>
+                  </tr>
+                </thead>
+                <tbody id="agentTraceTimelineBody" class="divide-y divide-gray-800 bg-gray-950/40"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <details class="rounded-xl border border-gray-700 bg-gray-900/40 p-3">
+            <summary class="cursor-pointer text-xs uppercase tracking-wide text-gray-400">Raw debug payloads</summary>
+            <div class="mt-3 space-y-3">
+              <div>
+                <div class="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Normalized summary object</div>
+                <pre id="agentTraceRawSummary" class="overflow-x-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] text-gray-200"></pre>
+              </div>
+              <div>
+                <div class="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Raw trace payloads</div>
+                <pre id="agentTraceRawPayloads" class="overflow-x-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] text-gray-200"></pre>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </div>
   
+  <div id="workflowModal" class="hidden fixed inset-0 z-[68] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto flex h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-violet-300">Workflow details</div>
+          <h2 id="workflowModalTitle" class="mt-1 text-lg font-semibold text-white">Workflow</h2>
+          <div id="workflowModalMeta" class="mt-1 text-[11px] text-gray-400">Structured workflow metadata for this Orion turn.</div>
+        </div>
+        <button id="workflowModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <div id="workflowModalBadges" class="flex flex-wrap gap-2"></div>
+        <div id="workflowModalSummary" class="grid grid-cols-1 gap-2 md:grid-cols-2"></div>
+        <section class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+          <div class="text-xs uppercase tracking-wide text-gray-500">Structured detail</div>
+          <div id="workflowModalDetailSurface" class="mt-4 space-y-3"></div>
+        </section>
+        <details class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+          <summary class="cursor-pointer text-xs uppercase tracking-wide text-gray-400">Raw workflow metadata</summary>
+          <pre id="workflowModalRaw" class="mt-4 overflow-x-auto rounded-xl border border-gray-800 bg-gray-950/70 p-3 text-[11px] text-gray-200"></pre>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <div id="socialInspectionModal" class="hidden fixed inset-0 z-[70] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Social inspection</div>
+          <h2 class="mt-1 text-lg font-semibold text-white">Why Orion replied this way</h2>
+          <div id="socialInspectionModalMeta" class="mt-1 text-[11px] text-gray-400">Live Hub routing debug with social-memory inspection on demand.</div>
+        </div>
+        <button id="socialInspectionModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <div id="socialInspectionModalBadges" class="flex flex-wrap gap-2"></div>
+        <div id="socialInspectionModalSummary" class="grid grid-cols-1 gap-2 md:grid-cols-2"></div>
+        <div id="socialInspectionModalLoading" class="hidden rounded-xl border border-gray-700 bg-gray-900/70 px-4 py-3 text-sm text-gray-300">Loading social-memory inspection…</div>
+        <div id="socialInspectionModalError" class="hidden rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-sm text-red-200"></div>
+        <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <section class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <div class="text-xs uppercase tracking-wide text-gray-500">Live turn</div>
+                <div class="text-sm font-semibold text-white">Hub routing debug</div>
+              </div>
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Current reply</div>
+            </div>
+            <div id="socialInspectionLiveSurface" class="mt-4 space-y-3"></div>
+          </section>
+          <section class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <div class="text-xs uppercase tracking-wide text-gray-500">Memory baseline</div>
+                <div class="text-sm font-semibold text-white">social-memory /inspection</div>
+              </div>
+              <div id="socialInspectionMemoryMeta" class="text-[10px] uppercase tracking-wide text-gray-500">Not loaded</div>
+            </div>
+            <div id="socialInspectionMemorySurface" class="mt-4 space-y-3"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-emerald-300">Autonomy runtime</div>
+          <div id="autonomyDebugModalMeta" class="mt-1 text-[11px] text-gray-400">Live autonomy repository and proposal-only alignment payload.</div>
+        </div>
+        <button
+          id="autonomyDebugModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="autonomyDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
+    window.__HUB_UI_VERSION__ = "{{HUB_UI_ASSET_VERSION}}";
   </script>
   <script src="/static/js/app.js?v=20260214.3" defer></script>
+  <script src="/static/js/agent-trace.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/workflow-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/workflow-schedule-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/social-inspection.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/service-logs-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

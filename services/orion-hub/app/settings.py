@@ -39,10 +39,21 @@ class Settings(BaseSettings):
         alias="ORION_BUS_URL",
     )
 
+    # --- Landing Pad (Topic Rail) ---
+    LANDING_PAD_URL: str = Field(
+        default="http://orion-landing-pad:8370",
+        alias="LANDING_PAD_URL",
+    )
+    LANDING_PAD_TIMEOUT_SEC: float = Field(default=5.0, alias="LANDING_PAD_TIMEOUT_SEC")
+
     # --- Topic Foundry Integration ---
     TOPIC_FOUNDRY_BASE_URL: str = Field(
         default="http://orion-topic-foundry:8615",
         alias="TOPIC_FOUNDRY_BASE_URL",
+    )
+    SOCIAL_MEMORY_BASE_URL: str = Field(
+        default="http://orion-social-memory:8765",
+        alias="SOCIAL_MEMORY_BASE_URL",
     )
 
     # --- Biometrics Cache (Hub) ---
@@ -155,9 +166,19 @@ class Settings(BaseSettings):
 
     # --- Recall Debugging ---
     HUB_DEBUG_RECALL: bool = Field(default=False, alias="HUB_DEBUG_RECALL")
+    HUB_DEBUG_COUNCIL: bool = Field(default=False, alias="HUB_DEBUG_COUNCIL")
+    HUB_SOCIAL_SKILLS_ENABLED: bool = Field(default=True, alias="HUB_SOCIAL_SKILLS_ENABLED")
+    HUB_SOCIAL_SKILLS_ALLOWLIST: str = Field(
+        default="social_artifact_dialogue,social_summarize_thread,social_safe_recall,social_self_ground,social_followup_question,social_room_reflection,social_exit_or_pause",
+        alias="HUB_SOCIAL_SKILLS_ALLOWLIST",
+    )
+    HUB_SOCIAL_STYLE_ADAPTATION_ENABLED: bool = Field(default=True, alias="HUB_SOCIAL_STYLE_ADAPTATION_ENABLED")
+    HUB_SOCIAL_ROOM_RITUALS_ENABLED: bool = Field(default=True, alias="HUB_SOCIAL_ROOM_RITUALS_ENABLED")
+    HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR: float = Field(default=0.35, alias="HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR")
 
     # --- No-Write Debug Mode (skip publishing chat history) ---
     HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")
+    HUB_AUTO_DEFAULT_ENABLED: bool = Field(default=False, alias="HUB_AUTO_DEFAULT_ENABLED")
 
 
 

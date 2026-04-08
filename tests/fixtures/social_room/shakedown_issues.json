@@ -1,0 +1,498 @@
+{
+  "issues": [
+    {
+      "issue_id": "issue-local-landing-over-bridged",
+      "source_kind": "scenario_replay",
+      "source_ref": "explicit-landing-stays-local",
+      "scenario_id": "explicit-landing-stays-local",
+      "behavior_category": "bridge_summary",
+      "observed_behavior": "A direct two-peer landing request could still escalate into a bridge summary even when a plain local reply would feel more natural.",
+      "expected_behavior": "Stay with a normal peer reply unless the room truly needs a bridge-level intervention.",
+      "severity": "high",
+      "priority": "p1",
+      "fix_status": "verified",
+      "linked_regression_scenario": "explicit-landing-stays-local",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Live-room realism drops when Orion starts synthesizing the whole room for a tight local disagreement.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "over-firing bridge summary"
+      }
+    },
+    {
+      "issue_id": "issue-repair-prompt-managerial",
+      "source_kind": "scenario_replay",
+      "source_ref": "repair-after-wrong-thread-response",
+      "scenario_id": "repair-after-wrong-thread-response",
+      "behavior_category": "repair_tone",
+      "observed_behavior": "Repair grounding used managerial wording that sounded like Orion was moving participants around the room.",
+      "expected_behavior": "Repair wording should read like a quick course correction and follow the room's correction without sounding supervisory.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "repair-after-wrong-thread-response",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Even correct repair decisions can feel off if the grounding text sounds like room control instead of repair.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "awkward repair tone"
+      }
+    },
+    {
+      "issue_id": "issue-live-clarify-should-drop-reentry",
+      "source_kind": "scenario_replay",
+      "source_ref": "clarifying-thread-excludes-resumptive-cues",
+      "scenario_id": "clarifying-thread-excludes-resumptive-cues",
+      "behavior_category": "reentry_or_snapshot",
+      "observed_behavior": "Episode snapshots and re-entry anchors could stay softly present even while a live clarifying question already dominated the thread.",
+      "expected_behavior": "When the room is actively clarifying, resumptive cues should step out of the way so the live ambiguity stays primary.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "clarifying-thread-excludes-resumptive-cues",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Resumptive cues are useful background, but they become noise when the room is already working through a live clarification boundary.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "reentry anchor too sticky"
+      }
+    },
+    {
+      "issue_id": "issue-playful-room-gif-underfires",
+      "source_kind": "scenario_replay",
+      "source_ref": "playful-room-text-only-streak-allows-bounded-gif",
+      "scenario_id": "playful-room-text-only-streak-allows-bounded-gif",
+      "behavior_category": "calibration_or_freshness",
+      "observed_behavior": "GIFs could stay too rare in clearly playful rooms unless the peer explicitly used one first.",
+      "expected_behavior": "A fresh playful room with enough text-only runway can allow an occasional bounded GIF even without a peer GIF trigger.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "playful-room-text-only-streak-allows-bounded-gif",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Under-firing in playful rooms makes Orion feel oddly flat and less socially natural.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "playful room under-fire"
+      }
+    },
+    {
+      "issue_id": "issue-medium-chaos-gif-overfires",
+      "source_kind": "scenario_replay",
+      "source_ref": "medium-chaos-room-keeps-gif-bounded",
+      "scenario_id": "medium-chaos-room-keeps-gif-bounded",
+      "behavior_category": "calibration_or_freshness",
+      "observed_behavior": "A medium-chaos room could still receive another GIF even when thread churn was already rising.",
+      "expected_behavior": "In medium-chaos rooms, Orion should keep GIF use rarer and fall back to plain text sooner.",
+      "severity": "high",
+      "priority": "p1",
+      "fix_status": "verified",
+      "linked_regression_scenario": "medium-chaos-room-keeps-gif-bounded",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Over-firing expressive media in an already busy room makes the room feel more chaotic than grounded.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "medium chaos over-fire"
+      }
+    },
+    {
+      "issue_id": "issue-repeated-gif-intent-loop",
+      "source_kind": "scenario_replay",
+      "source_ref": "repeated-gif-intent-loop-stays-text-only",
+      "scenario_id": "repeated-gif-intent-loop-stays-text-only",
+      "behavior_category": "calibration_or_freshness",
+      "observed_behavior": "The same GIF intent could loop back onto the same peer after only a short gap.",
+      "expected_behavior": "Recent intent loops should suppress another GIF so Orion does not get stuck repeating the same gag.",
+      "severity": "high",
+      "priority": "p1",
+      "fix_status": "verified",
+      "linked_regression_scenario": "repeated-gif-intent-loop-stays-text-only",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Repeated GIF intent loops read as mechanical and can quickly become socially awkward.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "intent loop suppression"
+      }
+    },
+    {
+      "issue_id": "issue-stale-ritual-pushes-gif",
+      "source_kind": "scenario_replay",
+      "source_ref": "stale-ritual-does-not-push-gif",
+      "scenario_id": "stale-ritual-does-not-push-gif",
+      "behavior_category": "stale_context",
+      "observed_behavior": "Older ritual/style hints could still nudge Orion toward a GIF even when fresher caution context said to stay text-first.",
+      "expected_behavior": "Stale ritual hints should not outweigh fresh caution context or freshness warnings.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "stale-ritual-does-not-push-gif",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Fresh context should outrank stale vibe hints so GIF selection remains grounded in the live room.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "stale ritual pressure"
+      }
+    },
+    {
+      "issue_id": "issue-gif-transport-fallback-undertested",
+      "source_kind": "scenario_replay",
+      "source_ref": "gif-transport-fallback-stays-text-only",
+      "scenario_id": "gif-transport-fallback-stays-text-only",
+      "behavior_category": "safety_boundary",
+      "observed_behavior": "Transport fallback to text-only had too little replay coverage and could regress without clear harvesting evidence.",
+      "expected_behavior": "When media hints are unsupported, the reply should stay text-only and omit GIF transport metadata.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "gif-transport-fallback-stays-text-only",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Fallback behavior is easy to overlook unless the replay harness keeps harvesting it explicitly.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "transport fallback coverage"
+      }
+    },
+    {
+      "issue_id": "issue-peer-gif-clear-proxy-missed",
+      "source_kind": "scenario_replay",
+      "source_ref": "peer-gif-clear-celebration-proxy",
+      "scenario_id": "peer-gif-clear-celebration-proxy",
+      "behavior_category": "calibration_or_freshness",
+      "observed_behavior": "A clearly-labeled celebratory GIF could still be treated as an opaque blob.",
+      "expected_behavior": "Clear title/query metadata should yield a conservative celebration cue.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "peer-gif-clear-celebration-proxy",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "When metadata is strong, Orion should notice the likely social reaction without pretending vision.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "clear metadata proxy"
+      }
+    },
+    {
+      "issue_id": "issue-peer-gif-ambiguous-overclaimed",
+      "source_kind": "scenario_replay",
+      "source_ref": "peer-gif-ambiguous-metadata-stays-unknown",
+      "scenario_id": "peer-gif-ambiguous-metadata-stays-unknown",
+      "behavior_category": "safety_boundary",
+      "observed_behavior": "Thin GIF metadata could be overclaimed as a specific reaction.",
+      "expected_behavior": "Weak metadata should stay unknown and low-confidence.",
+      "severity": "high",
+      "priority": "p1",
+      "fix_status": "verified",
+      "linked_regression_scenario": "peer-gif-ambiguous-metadata-stays-unknown",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "The proxy must be explicit about uncertainty instead of fabricating visual confidence.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "ambiguity overclaim risk"
+      }
+    },
+    {
+      "issue_id": "issue-peer-gif-text-disambiguation-missed",
+      "source_kind": "scenario_replay",
+      "source_ref": "peer-gif-text-disambiguates-laughter",
+      "scenario_id": "peer-gif-text-disambiguates-laughter",
+      "behavior_category": "calibration_or_freshness",
+      "observed_behavior": "Nearby peer text was not helping Orion disambiguate an otherwise generic GIF.",
+      "expected_behavior": "Surrounding text can lightly disambiguate the likely reaction when metadata alone is generic.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "peer-gif-text-disambiguates-laughter",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "A bounded text proxy should use adjacent conversational text when it genuinely helps.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "text disambiguation"
+      }
+    },
+    {
+      "issue_id": "issue-peer-gif-contested-turn-overweighted",
+      "source_kind": "scenario_replay",
+      "source_ref": "peer-gif-contested-turn-stays-secondary",
+      "scenario_id": "peer-gif-contested-turn-stays-secondary",
+      "behavior_category": "safety_boundary",
+      "observed_behavior": "A plausible peer-GIF reaction could still pull too much weight in a contested clarification turn.",
+      "expected_behavior": "Contested or repair-heavy turns should keep the GIF cue secondary or ignored.",
+      "severity": "high",
+      "priority": "p1",
+      "fix_status": "verified",
+      "linked_regression_scenario": "peer-gif-contested-turn-stays-secondary",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Live text, repair, and epistemic caution must outrank the GIF proxy.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "secondary cue enforcement"
+      }
+    },
+    {
+      "issue_id": "issue-peer-gif-misleading-tags-overfit",
+      "source_kind": "scenario_replay",
+      "source_ref": "peer-gif-misleading-tags-stays-uncertain",
+      "scenario_id": "peer-gif-misleading-tags-stays-uncertain",
+      "behavior_category": "safety_boundary",
+      "observed_behavior": "Low-signal tag/title data could be overfit into a reaction that looked more certain than the metadata warranted.",
+      "expected_behavior": "Conflicting or low-signal title/tag data should stay uncertain.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "peer-gif-misleading-tags-stays-uncertain",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "The proxy should remain conservative around noisy metadata.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "misleading tag overfit"
+      }
+    },
+    {
+      "issue_id": "issue-peer-gif-no-useful-metadata-unknown",
+      "source_kind": "scenario_replay",
+      "source_ref": "peer-gif-no-useful-metadata-unknown",
+      "scenario_id": "peer-gif-no-useful-metadata-unknown",
+      "behavior_category": "safety_boundary",
+      "observed_behavior": "A transport-level GIF presence signal could still look more informative than it really was when no useful proxy text existed.",
+      "expected_behavior": "No useful metadata should still register that a GIF happened while keeping the meaning unknown.",
+      "severity": "medium",
+      "priority": "p2",
+      "fix_status": "verified",
+      "linked_regression_scenario": "peer-gif-no-useful-metadata-unknown",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Presence and meaning need to remain distinct in low-information transports.",
+      "metadata": {
+        "source": "scenario-replay",
+        "category_note": "presence vs meaning"
+      }
+    }
+  ],
+  "fixes": [
+    {
+      "fix_id": "fix-local-landing-stays-local",
+      "issue_id": "issue-local-landing-over-bridged",
+      "summary": "Lower bridge-summary eagerness for explicit landing requests when the thread is still a direct two-peer local exchange.",
+      "changed_surfaces": [
+        "services/orion-social-memory/app/synthesizer.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "explicit-landing-stays-local",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "The room only needs a bridge when the disagreement is genuinely room-level, not just because someone asked where the local thread stands.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-repair-prompt-course-correction",
+      "issue_id": "issue-repair-prompt-managerial",
+      "summary": "Make repair grounding sound like a compact course correction instead of a retargeting command.",
+      "changed_surfaces": [
+        "orion/cognition/prompts/chat_social_room.j2",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "repair-after-wrong-thread-response",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Repair can remain explicit without sounding like hidden room management.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-clarifying-thread-drops-resumptive-cues",
+      "issue_id": "issue-live-clarify-should-drop-reentry",
+      "summary": "Exclude episode snapshots and re-entry anchors when a live clarifying/leave-open intervention is already steering the active thread.",
+      "changed_surfaces": [
+        "services/orion-social-memory/app/synthesizer.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "clarifying-thread-excludes-resumptive-cues",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Live uncertainty should outrank resumptive context when the room is still clarifying the current thread.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-playful-room-gif-underfires",
+      "issue_id": "issue-playful-room-gif-underfires",
+      "summary": "Add a fresh playful-room bonus so bounded GIFs can appear after a text-only streak without requiring a peer GIF every time.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_policy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "playful-room-text-only-streak-allows-bounded-gif",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "A playful room should feel lightly expressive, not artificially flattened.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-medium-chaos-keeps-gif-bounded",
+      "issue_id": "issue-medium-chaos-gif-overfires",
+      "summary": "Tighten density blocking in medium-chaos rooms so GIFs back off before they add to room churn.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_policy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "medium-chaos-room-keeps-gif-bounded",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "A busier room needs plainer delivery sooner.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-repeated-gif-intent-loop",
+      "issue_id": "issue-repeated-gif-intent-loop",
+      "summary": "Detect recent same-intent / same-peer loops and suppress another GIF before the pattern becomes repetitive.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_policy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "repeated-gif-intent-loop-stays-text-only",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Occasional GIFs can feel natural; loops do not.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-stale-ritual-cannot-push-gif",
+      "issue_id": "issue-stale-ritual-pushes-gif",
+      "summary": "Ignore stale ritual boosts and let fresh caution/freshness context keep the turn text-first.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_policy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "stale-ritual-does-not-push-gif",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Live context should outrank stale vibe memory.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-gif-transport-fallback-harvested",
+      "issue_id": "issue-gif-transport-fallback-undertested",
+      "summary": "Expand replay harvesting so transport fallback stays visible and verified in GIF-specific regressions.",
+      "changed_surfaces": [
+        "orion/social/scenario_replay.py",
+        "tests/fixtures/social_room/scenario_replay.json",
+        "tests/fixtures/social_room/shakedown_issues.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "gif-transport-fallback-stays-text-only",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Fallback paths need the same regression visibility as allowed GIF paths.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-peer-gif-clear-proxy",
+      "issue_id": "issue-peer-gif-clear-proxy-missed",
+      "summary": "Extract bounded transport metadata and map clear celebratory evidence into a conservative peer-GIF reaction cue.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_proxy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "peer-gif-clear-celebration-proxy",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Clear metadata should help without pretending vision.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-peer-gif-ambiguous-stays-unknown",
+      "issue_id": "issue-peer-gif-ambiguous-overclaimed",
+      "summary": "Keep weak or generic GIF metadata unknown and high-ambiguity instead of inferring a precise reaction.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_proxy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "peer-gif-ambiguous-metadata-stays-unknown",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Uncertainty should remain visible when evidence is thin.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-peer-gif-text-disambiguation",
+      "issue_id": "issue-peer-gif-text-disambiguation-missed",
+      "summary": "Let nearby peer text lightly disambiguate the likely reaction when the GIF metadata itself is generic.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_proxy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "peer-gif-text-disambiguates-laughter",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "The proxy should use surrounding text, but still conservatively.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-peer-gif-contested-turn-secondary",
+      "issue_id": "issue-peer-gif-contested-turn-overweighted",
+      "summary": "Mark peer-GIF proxy cues as softened or ignored when live contested/repair cues are stronger.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_proxy.py",
+        "orion/cognition/prompts/chat_social_room.j2",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "peer-gif-contested-turn-stays-secondary",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "The GIF proxy must stay subordinate to stronger live conversational cues.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-peer-gif-misleading-tags-stays-uncertain",
+      "issue_id": "issue-peer-gif-misleading-tags-overfit",
+      "summary": "Keep noisy title/tag evidence low-confidence instead of overfitting it into a strong reaction claim.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_proxy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "peer-gif-misleading-tags-stays-uncertain",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "The proxy should prefer uncertainty over invented precision.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    },
+    {
+      "fix_id": "fix-peer-gif-no-useful-metadata-keeps-unknown",
+      "issue_id": "issue-peer-gif-no-useful-metadata-unknown",
+      "summary": "Separate GIF presence from GIF meaning so transport-only signals stay unknown when proxy text is absent.",
+      "changed_surfaces": [
+        "services/orion-social-room-bridge/app/gif_proxy.py",
+        "tests/fixtures/social_room/scenario_replay.json"
+      ],
+      "status": "verified",
+      "linked_regression_scenario": "peer-gif-no-useful-metadata-unknown",
+      "linked_regression_test": "tests/test_social_room_shakedown.py::test_shakedown_workflow_verifies_linked_replay_fixes",
+      "rationale": "Presence alone is not meaning.",
+      "metadata": {
+        "source": "social-shakedown"
+      }
+    }
+  ]
+}

@@ -1,17 +1,17 @@
 # FILE: prompts/triage_prompt.j2
-You are Oríon, engaging the cognitive verb: TRIAGE.
+You are Oríon, engaging the cognitive verb: TRIAGE (advisory classification only).
 
 INCOMING REQUEST
-{{ request | default("No explicit request provided.") }}
+{{ request or text or content or facts or "No explicit request provided." }}
 
 CURRENT STATE
 - System state: {{ system_state | default("unknown") }}
 
 INSTRUCTIONS
-1. Classify the type of request (e.g. memory, planning, reflection, simulation, dream-related).
-2. Decide which single cognitive verb should be executed next (e.g. recall, introspect, plan_action).
-3. Provide a short justification for that choice.
-4. Optionally suggest follow-up verbs for later.
+1. Classify the type of request (e.g. memory, planning, reflection, tutorial, implementation, comparison).
+2. Suggest which single cognitive verb should be executed next. This is advisory for routing, not a binding plan.
+3. Provide a short justification.
+4. Do NOT produce the actual answer—only classify and suggest. The planner will choose the tool.
 
 RESPONSE FORMAT (JSON-like text is fine)
 - intent_type: <classification>

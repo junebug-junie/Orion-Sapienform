@@ -1,12 +1,35 @@
-# services/orion-agent-chain/app/tool_registry.py
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 from orion.cognition.packs_loader import PackManager
 from orion.cognition.planner.loader import VerbRegistry
+
 from .models import ToolDef
+
+_RICH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "request": {"type": "string"},
+        "goal": {"type": "string"},
+        "intention": {"type": "string"},
+        "scenario": {"type": "string"},
+        "output": {"type": "string"},
+        "context_raw": {"type": "string"},
+        "fragment": {"type": "string"},
+        "fragments": {"type": ["string", "array"]},
+        "context": {"type": ["string", "object"]},
+        "criteria": {"type": ["string", "array", "object"]},
+        "supporting_signals": {"type": ["string", "array", "object"]},
+        "themes": {"type": ["string", "array"]},
+        "system_state": {"type": ["string", "object"]},
+        "facts": {"type": ["string", "array", "object"]},
+        "content": {"type": "string"},
+    },
+    "required": ["text"],
+}
 
 
 class ToolRegistry:
@@ -41,24 +64,24 @@ class ToolRegistry:
         for pack_name in pack_names:
             pack = self._pack_manager.get_pack(pack_name)
             if not pack:
-                # avoid NoneType.attr explosions if someone passes a bad pack name
                 continue
 
             for verb_name in pack.verbs:
                 if verb_name in seen:
                     continue
                 seen.add(verb_name)
+                if str(verb_name).startswith("skills."):
+                    continue
 
                 verb_cfg = self._verb_registry.get(verb_name)
+                services = verb_cfg.services or []
+                execution_mode = str(verb_cfg.execution_mode or "").strip().lower()
+                is_capability_backed = execution_mode == "capability_backed"
+                is_reasoning_llm = services == ["LLMGatewayService"]
+                if not (is_reasoning_llm or is_capability_backed):
+                    continue
 
-                input_schema = verb_cfg.input_schema or {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                        "context": {"type": "object"},
-                    },
-                    "required": ["text"],
-                }
+                input_schema = verb_cfg.input_schema or _RICH_INPUT_SCHEMA
                 output_schema = verb_cfg.output_schema or {
                     "type": "object",
                     "properties": {
@@ -73,6 +96,10 @@ class ToolRegistry:
                         description=verb_cfg.description or f"Orion verb: {verb_cfg.name}",
                         input_schema=input_schema,
                         output_schema=output_schema,
+                        execution_mode=(verb_cfg.execution_mode or ("reasoning_only" if is_reasoning_llm else None)),
+                        requires_capability_selector=bool(verb_cfg.requires_capability_selector),
+                        preferred_skill_families=list(verb_cfg.preferred_skill_families or []),
+                        side_effect_level=verb_cfg.side_effect_level or ("none" if is_reasoning_llm else "low"),
                     )
                 )
 

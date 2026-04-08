@@ -253,14 +253,25 @@ Profiles map to cognitive organs:
 | assist.light | sensorimotor layer |
 | chat.general | social interface |
 | future: planner | prefrontal cortex |
-| future: dream | REM consolidation |
+| dream.v1 | REM consolidation / nightly synthesis |
+
+---
+
+## dream.v1 — REM-style consolidation
+
+Use for:
+
+- nightly / scheduled dream cycles
+- autobiographical continuity with lower recency pressure than chat
+- blended sql_timeline + vector + moderate RDF
+
+Tuned from `reflect.v1` with higher `max_total_items`, `render_budget_tokens`, and slightly reduced recency weight.
 
 ---
 
 # Future Profiles (Planned)
 - plan.v1
 - anchor.v1
-- dream.v1
 - simulate.v1
 - equilibrium.v1
 

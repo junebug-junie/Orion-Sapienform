@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 
@@ -43,6 +43,25 @@ class LlamaCppConfig(BaseModel):
     threads: int = 16
     n_parallel: int = 2
     batch_size: int = 512
+
+    reasoning: Optional[Literal["on", "off", "auto"]] = None
+    reasoning_format: Optional[Literal["none", "deepseek", "deepseek-legacy", "auto"]] = None
+    chat_template_kwargs: Optional[Dict[str, Any]] = None
+
+    flash_attn: Optional[Literal["on", "off", "auto"]] = None
+    rope_scaling: Optional[Literal["none", "linear", "yarn"]] = None
+    rope_scale: Optional[float] = None
+    yarn_orig_ctx: Optional[int] = None
+    no_context_shift: Optional[bool] = None
+    split_mode: Optional[Literal["none", "layer", "row"]] = None
+    tensor_split: Optional[str] = None
+
+    n_predict: Optional[int] = None
+    temperature: Optional[float] = None
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
+    min_p: Optional[float] = None
+    presence_penalty: Optional[float] = None
 
 
 class LLMProfile(BaseModel):

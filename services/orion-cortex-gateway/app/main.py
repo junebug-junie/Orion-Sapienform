@@ -9,12 +9,11 @@ from orion.schemas.cortex.contracts import (
     CortexClientRequest,
     CortexClientContext,
     RecallDirective,
-    LLMMessage
 )
 from orion.schemas.cortex.gateway import CortexChatRequest
 
 from .settings import get_settings
-from .bus_client import BusClient
+from .bus_client import BusClient, _context_messages_from_chat_request
 
 # Ensure logs show up in container
 logging.basicConfig(level=logging.INFO)
@@ -50,13 +49,21 @@ def health():
 @app.post("/v1/cortex/chat")
 async def chat(req: CortexChatRequest, response: Response):
     # Defaults
-    # If verb is not provided, default to chat_general
-    verb = req.verb if req.verb else "chat_general"
+    if req.mode in {"agent", "council"}:
+        verb = req.verb
+    else:
+        verb = req.verb or "chat_general"
     # If packs is not provided, default to executive_pack (harness default)
     packs = req.packs if req.packs is not None else ["executive_pack"]
 
     # Messages
-    messages = [LLMMessage(role="user", content=req.prompt)]
+    messages = _context_messages_from_chat_request(req)
+    logging.getLogger("orion.cortex.gateway").info(
+        "gateway_context_messages mode=%s count=%s roles=%s",
+        req.mode,
+        len(messages),
+        [m.role for m in messages[:12]],
+    )
 
     # Context
     context = CortexClientContext(
@@ -79,11 +86,17 @@ async def chat(req: CortexChatRequest, response: Response):
     else:
         recall = RecallDirective() # defaults: enabled=True, etc.
 
+    route_intent = "auto" if req.mode == "auto" else req.route_intent
+    options = dict(req.options or {})
+    if route_intent == "auto":
+        options["route_intent"] = "auto"
+
     client_req = CortexClientRequest(
         mode=req.mode,
+        route_intent=route_intent,
         verb=verb,
         packs=packs,
-        options=req.options or {},
+        options=options,
         recall=recall,
         context=context
     )

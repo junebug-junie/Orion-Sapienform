@@ -125,3 +125,19 @@ def test_chat_general_marks_truncation_when_finish_reason_length() -> None:
     ], verb_name="chat_general")
     assert final_text.endswith("…")
     assert diag["truncation_detected"] is True
+
+
+def test_chat_general_strips_close_tag_only_think_compat() -> None:
+    final_text, diag = _extract_final_text([
+        _step({"content": "internal plan only</think>User-visible answer."})
+    ], verb_name="chat_general")
+    assert final_text == "User-visible answer."
+    assert diag["think_close_tag_only_detected"] is True
+
+
+def test_chat_general_rejects_remaining_planner_candidate_after_cleanup() -> None:
+    final_text, diag = _extract_final_text([
+        _step({"content": "Okay, I need to draft this carefully.\nI should ensure it is safe."})
+    ], verb_name="chat_general")
+    assert final_text == ""
+    assert diag["planning_candidate_rejected"] is True

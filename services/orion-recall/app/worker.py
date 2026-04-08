@@ -416,6 +416,14 @@ def _sql_timeline_enabled_for_profile(profile: Dict[str, Any]) -> bool:
     return bool(profile.get("enable_sql_timeline", True))
 
 
+def _sql_chat_enabled_for_profile(profile: Dict[str, Any]) -> bool:
+    if not settings.RECALL_ENABLE_SQL_CHAT:
+        return False
+    profile_name = str(profile.get("profile") or "")
+    default_enabled = not profile_name.startswith("chat.general")
+    return bool(profile.get("enable_sql_chat", default_enabled))
+
+
 async def _fetch_anchor_candidates(
     *,
     query_text: str,
@@ -638,7 +646,7 @@ async def _query_backends(
             expansion_terms,
         )
 
-    if settings.RECALL_ENABLE_SQL_CHAT:
+    if _sql_chat_enabled_for_profile(profile):
         try:
             chat_pairs = await fetch_chat_history_pairs(
                 limit=int(profile.get("sql_chat_top_k", settings.RECALL_SQL_TOP_K)),
@@ -681,6 +689,13 @@ async def _query_backends(
                 )
         except Exception as exc:
             logger.debug(f"sql chat backend skipped: {exc}")
+    elif diagnostic:
+        logger.info(
+            "recall sql_chat skipped profile=%s enable_sql_chat=%s global_sql_chat_enabled=%s",
+            profile.get("profile"),
+            profile.get("enable_sql_chat"),
+            settings.RECALL_ENABLE_SQL_CHAT,
+        )
 
     if _sql_timeline_enabled_for_profile(profile):
         try:
@@ -884,9 +899,11 @@ async def process_recall(
     source_gating: Dict[str, str] = {}
     source_gating["vector"] = "enabled" if _vector_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["sql_timeline"] = "enabled" if _sql_timeline_enabled_for_profile(profile) else "disabled_by_profile_or_global"
+    source_gating["sql_chat"] = "enabled" if _sql_chat_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["rdf"] = "enabled" if _rdf_enabled(profile) else "disabled_by_profile_or_global"
 
     t0 = time.time()
+    timing_breakdown_ms: Dict[str, int] = {}
     candidates: List[Dict[str, Any]] = []
     backend_counts_total: Dict[str, int] = {}
 
@@ -974,6 +991,7 @@ async def process_recall(
                         "self_hit_suppressed": 0,
                     },
                     "fusion": bundle.stats.diagnostic or {},
+                    "latency_breakdown_ms": {"total": latency_ms},
                     "selected_summary": _bounded_selected_summary(list(bundle.items)),
                 }
                 if diagnostic
@@ -988,6 +1006,7 @@ async def process_recall(
         )
         return bundle, decision
 
+    fetch_started = time.time()
     anchor_candidates, anchor_counts = await _fetch_anchor_candidates(
         query_text=query_fragment,
         session_id=effective_session_id,
@@ -996,6 +1015,7 @@ async def process_recall(
         diagnostic=diagnostic,
         exclusion=exclusion,
     )
+    timing_breakdown_ms["anchor_fetch"] = int((time.time() - fetch_started) * 1000)
     if anchor_candidates:
         candidates.extend(anchor_candidates)
         for key, value in anchor_counts.items():
@@ -1188,6 +1208,7 @@ async def process_recall(
                 backend_counts_total.get("sql_timeline", 0),
             )
     else:
+        backend_start = time.time()
         for sig in signals:
             cand, counts = await _query_backends(
                 sig,
@@ -1201,13 +1222,16 @@ async def process_recall(
             candidates.extend(cand)
             for k, v in counts.items():
                 backend_counts_total[k] = backend_counts_total.get(k, 0) + v
+        timing_breakdown_ms["backend_fetch"] = int((time.time() - backend_start) * 1000)
 
+    suppression_start = time.time()
     candidates, suppressed = _suppress_self_hits(
         candidates,
         active_turn_text=str(exclusion.get("active_turn_text") or ""),
         active_turn_ids=list(exclusion.get("active_turn_ids") or []),
         active_turn_ts=exclusion.get("active_turn_ts"),
     )
+    timing_breakdown_ms["self_hit_suppression"] = int((time.time() - suppression_start) * 1000)
     if suppressed:
         logger.info(
             "recall self-hit suppression active_turn_ids=%s suppressed=%s",
@@ -1215,6 +1239,7 @@ async def process_recall(
             suppressed,
         )
     latency_ms = int((time.time() - t0) * 1000)
+    fuse_started = time.time()
     bundle, ranking_debug = fuse_candidates(
         candidates=candidates,
         profile=profile,
@@ -1224,6 +1249,8 @@ async def process_recall(
         diagnostic=diagnostic,
         substantive_query=str(query_targeting.get("turn_type")) == "substantive",
     )
+    timing_breakdown_ms["fusion"] = int((time.time() - fuse_started) * 1000)
+    timing_breakdown_ms["total"] = latency_ms
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),
         session_id=ignored_session_id,
@@ -1253,6 +1280,7 @@ async def process_recall(
                     "self_hit_suppressed": suppressed,
                 },
                 "fusion": bundle.stats.diagnostic or {},
+                "latency_breakdown_ms": timing_breakdown_ms,
                 "selected_summary": _bounded_selected_summary(list(bundle.items)),
             }
             if diagnostic
@@ -1261,7 +1289,7 @@ async def process_recall(
     )
     if diagnostic:
         logger.info(
-            "recall_diagnostic_summary corr_id=%s profile=%s requested_profile=%s gating=%s drop_counts=%s selected_counts=%s suppressed=%s selected=%s",
+            "recall_diagnostic_summary corr_id=%s profile=%s requested_profile=%s gating=%s drop_counts=%s selected_counts=%s suppressed=%s latency_breakdown_ms=%s selected=%s",
             decision.corr_id,
             profile.get("profile"),
             q.profile,
@@ -1269,6 +1297,7 @@ async def process_recall(
             decision.dropped,
             (bundle.stats.diagnostic or {}).get("source_selected_counts", {}),
             suppressed,
+            timing_breakdown_ms,
             decision.selected_ids[:8],
         )
     _log_debug_dump(

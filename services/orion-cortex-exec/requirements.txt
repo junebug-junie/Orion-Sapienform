@@ -11,3 +11,4 @@ pyaml==25.7.0
 requests==2.32.5
 rdflib==7.0.0
 spacy==3.8.13
+SQLAlchemy==2.0.43

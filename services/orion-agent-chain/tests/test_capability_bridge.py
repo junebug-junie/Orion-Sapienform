@@ -36,3 +36,16 @@ def test_normalized_capability_observation_shape():
     assert observation["selected_skill"] == decision.selected_skill
     assert "execution_summary" in observation
     assert "raw_payload_ref" in observation
+
+
+def test_housekeep_runtime_selects_mutating_skill_with_execute_opt_in_policy():
+    registry = ActionsSkillRegistry(verbs_dir=Path("/workspace/Orion-Sapienform/orion/cognition/verbs"))
+    decision = resolve_capability_decision(
+        verb="housekeep_runtime",
+        preferred_skill_families=["runtime_housekeeping"],
+        registry=registry,
+    )
+    assert decision.selected_skill == "skills.runtime.docker_prune_stopped_containers.v1"
+    assert decision.policy["risk_class"] == "high_impact"
+    assert decision.policy["execute_opt_in"] is True
+    assert decision.observational is False

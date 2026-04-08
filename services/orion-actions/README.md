@@ -198,6 +198,43 @@ These are defined in workflow registry/runtime, not in Actions.
 - Workflow attention notifications (`workflow.schedule.attention.v1`) for recurring schedules.
 - Existing notify integration for daily ops / other bounded operational actions.
 
+### Bounded mesh ops capability bridge surfaces
+
+The capability bridge now includes bounded operational skill surfaces for mesh/runtime rounds, while preserving the verb-vs-skill split:
+
+- `assess_mesh_presence` → family `mesh_presence` → `skills.mesh.tailscale_mesh_status.v1` (read-only).
+- `assess_storage_health` → family `storage_health` → `skills.storage.disk_health_snapshot.v1` (read-only).
+- `summarize_recent_changes` → family `repo_change_intel` → `skills.repo.github_recent_prs.v1` (read-only).
+- `housekeep_runtime` → family `runtime_housekeeping` → `skills.runtime.docker_prune_stopped_containers.v1` (mutating risk class; dry-run default; explicit execute opt-in).
+
+Additionally, a bounded orchestration skill is available:
+
+- `skills.mesh.mesh_ops_round.v1`
+  - collects mesh presence,
+  - derives active nodes,
+  - snapshots disk health for active nodes,
+  - optionally retrieves recent PR digest/changelog grouping,
+  - optionally performs docker stopped-container housekeeping (dry-run default),
+  - returns structured summary suitable for trace/memory/downstream summarization,
+  - optionally writes exactly one explicit journal entry (`ops.mesh_round.v1`) when `write_journal=true`.
+
+### Mesh ops env/config knobs (cortex-exec skill runtime)
+
+These are bounded operational settings used by the mesh ops skill surfaces:
+
+- `SKILLS_MESH_OPS_TIMEOUT_SEC`
+- `ORION_ACTIONS_TAILSCALE_PATH`
+- `ORION_ACTIONS_SMARTCTL_PATH`
+- `ORION_ACTIONS_NVME_PATH`
+- `ORION_ACTIONS_GITHUB_API_URL`
+- `GITHUB_TOKEN`
+- `ORION_ACTIONS_GITHUB_OWNER`
+- `ORION_ACTIONS_GITHUB_REPO`
+- `ORION_ACTIONS_MESH_DEFAULT_LOOKBACK_DAYS`
+- `ORION_ACTIONS_DOCKER_PRUNE_DEFAULT_UNTIL`
+- `ORION_ACTIONS_DOCKER_PROTECTED_LABELS`
+- `SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING` (must be true for execute mode)
+
 ### Analytics/health behaviors
 
 Derived per schedule from durable schedule+run records:

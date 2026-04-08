@@ -1,0 +1,17 @@
+name: skills.runtime.docker_prune_stopped_containers.v1
+label: Skills — Runtime Housekeeping (Docker Stopped Prune)
+description: Prune stopped containers in bounded mode (dry-run default, execute policy-gated).
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.runtime.docker_prune_stopped_containers.v1
+    description: Execute docker stopped-container prune skill in dry-run/execute modes.
+    order: 0
+    services: []

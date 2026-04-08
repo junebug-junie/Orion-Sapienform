@@ -15,6 +15,8 @@ class ActionSkillManifestEntry(BaseModel):
     read_only: bool
     idempotent: bool
     requires_confirmation: bool
+    requires_execute_opt_in: bool = False
+    observational: bool = True
     risk_class: str
     input_schema: Dict[str, Any] = Field(default_factory=dict)
     output_schema: Dict[str, Any] = Field(default_factory=dict)
@@ -22,6 +24,16 @@ class ActionSkillManifestEntry(BaseModel):
 
 def _family_for_skill(skill_id: str) -> str:
     sid = str(skill_id or "").lower()
+    if "tailscale_mesh_status" in sid:
+        return "mesh_presence"
+    if "disk_health_snapshot" in sid:
+        return "storage_health"
+    if "github_recent_prs" in sid:
+        return "repo_change_intel"
+    if "docker_prune_stopped_containers" in sid:
+        return "runtime_housekeeping"
+    if "mesh_ops_round" in sid:
+        return "runtime_housekeeping"
     if "docker" in sid or "gpu" in sid or "landing_pad" in sid:
         return "system_inspection"
     if "biometrics" in sid:
@@ -35,6 +47,8 @@ def _family_for_skill(skill_id: str) -> str:
 
 def _risk_for_skill(skill_id: str) -> tuple[str, bool, bool]:
     sid = str(skill_id or "").lower()
+    if "docker_prune_stopped_containers" in sid:
+        return "high_impact", False, False
     if "notify" in sid:
         return "benign_actuation", False, False
     return "read_only", True, True
@@ -68,6 +82,8 @@ class ActionsSkillRegistry:
                 read_only=read_only,
                 idempotent=idempotent,
                 requires_confirmation=(risk_class == "high_impact"),
+                requires_execute_opt_in=("docker_prune_stopped_containers" in skill_id.lower()),
+                observational=read_only,
                 risk_class=risk_class,
                 input_schema=raw.get("input_schema") if isinstance(raw.get("input_schema"), dict) else {},
                 output_schema=raw.get("output_schema") if isinstance(raw.get("output_schema"), dict) else {},

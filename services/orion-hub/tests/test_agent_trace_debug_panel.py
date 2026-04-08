@@ -18,6 +18,8 @@ def test_hub_template_includes_agent_trace_debug_panel_next_to_memory_panel() ->
     assert 'id="agentTraceDebugPanel"' in template
     assert 'id="agentTraceDebugPanel" class="hidden' not in template
     assert "Agent Trace" in template
+    assert 'id="agentTraceDebugOpenModal"' in template
+    assert template.index('id="agentTraceDebugOpenModal"') < template.index('id="agentTraceDebugBody"')
     assert 'id="agentTraceDebugOverview"' in template
     assert 'id="agentTraceDebugToolGroups"' in template
     assert 'id="agentTraceDebugTimeline"' in template
@@ -30,6 +32,8 @@ def test_hub_app_updates_agent_trace_debug_panel_from_fresh_orion_messages() -> 
     assert "function updateAgentTraceDebugPanel(summary, meta = {})" in app_js
     assert "updateAgentTraceDebugPanel(meta.agentTrace, meta);" in app_js
     assert "agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);" in app_js
+    assert "agentTraceDebugOpenModal.addEventListener('click', (event) => {" in app_js
+    assert "openAgentTraceModal(lastAgentTraceSummary, lastAgentTraceMeta);" in app_js
     assert "clearAgentTraceDebugPanel();" in app_js
 
 
@@ -82,7 +86,9 @@ def test_memory_and_autonomy_modals_coordinate_scroll_lock_and_visibility() -> N
     assert "function syncDebugModalScrollLock()" in app_js
     assert "closeAutonomyDebugModal();" in app_js
     assert "closeMemoryDebugModal();" in app_js
-    assert "const shouldLock = isModalVisible(memoryDebugModalRoot) || isModalVisible(autonomyDebugModalRoot);" in app_js
+    assert "const shouldLock = isModalVisible(memoryDebugModalRoot)" in app_js
+    assert "|| isModalVisible(autonomyDebugModalRoot)" in app_js
+    assert "|| isModalVisible(agentTraceModal);" in app_js
     assert "document.body.classList.toggle('overflow-hidden', shouldLock);" in app_js
 
 
@@ -104,3 +110,5 @@ def test_agent_trace_populated_render_path_clears_stale_sections_before_append()
     assert "agentTraceDebugToolGroups.innerHTML = '';" in app_js
     assert "agentTraceDebugTimeline.innerHTML = '';" in app_js
     assert "agentTraceDebugRaw.innerHTML = '';" in app_js
+    assert "Timeline details moved to modal for full inspection." in app_js
+    assert "Raw payload inspection is available in the modal." in app_js

@@ -870,6 +870,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "reasoning_content": reasoning_content,
                         "inline_think_content": inline_think_content,
                         "thinking_source": thinking_source,
+                        "thought_capture_step": "llm_chat_general" if str(trace_verb or "").strip() == "chat_general" else None,
                         **(gateway_meta if isinstance(gateway_meta, dict) else {}),
                     }
 
@@ -927,6 +928,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         thinking_source=thinking_source,
                         reasoning_trace=selected_reasoning_trace,
                     )
+                    wrote_chat_history = bool(bus) and (not no_write)
+                    if str(trace_verb or "").strip() == "chat_general":
+                        logger.info(
+                            "chat_general_thought_capture corr=%s step=llm_chat_general think_len=%s source=%s wrote_chat_history=%s",
+                            trace_id,
+                            len(str(inline_think_content or "").strip()),
+                            thinking_source,
+                            wrote_chat_history,
+                        )
                     _schedule_publish(publish_chat_turn(bus, env_turn), "chat.history turn")
                     logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
                     if metacog_traces:

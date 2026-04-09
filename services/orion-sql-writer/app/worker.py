@@ -429,6 +429,15 @@ def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str
     thinking_source = _normalized_text(payload.get("thinking_source")) or "none"
     reasoning_content = _normalized_text(payload.get("reasoning_content"))
     inline_think_content = _normalized_text(payload.get("inline_think_content"))
+    spark_meta = payload.get("spark_meta") if isinstance(payload.get("spark_meta"), dict) else {}
+    trace_verb = _normalized_text((spark_meta or {}).get("trace_verb"))
+    thought_capture_step = _normalized_text((spark_meta or {}).get("thought_capture_step"))
+    if (
+        trace_verb == "chat_general"
+        and thought_capture_step == "llm_chat_general"
+        and inline_think_content
+    ):
+        return inline_think_content, "inline_think_content.chat_general_llm_chat_general"
     if thinking_source == "provider_reasoning" and reasoning_content:
         return reasoning_content, "reasoning_content.provider"
     if thinking_source.startswith("inline_think") and inline_think_content:
@@ -457,6 +466,25 @@ def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str
             if candidate:
                 return candidate, f"metacog_traces[{idx}].content"
     return None, "none"
+
+
+def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], raw_data: dict[str, Any]) -> Optional[str]:
+    incoming = _normalized_text(filtered_data.get("thought_process"))
+    candidate_id = filtered_data.get("id") or filtered_data.get("correlation_id") or raw_data.get("correlation_id")
+    if not candidate_id:
+        return incoming
+    existing = (
+        sess.query(ChatHistoryLogSQL)
+        .filter(
+            (ChatHistoryLogSQL.id == str(candidate_id))
+            | (ChatHistoryLogSQL.correlation_id == str(candidate_id))
+        )
+        .first()
+    )
+    existing_thought = _normalized_text(getattr(existing, "thought_process", None)) if existing is not None else None
+    if existing_thought:
+        return existing_thought
+    return incoming
 
 
 def _map_spark_to_telemetry_row(
@@ -616,6 +644,16 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 _debug_snippet(filtered_data.get("thought_process")),
             )
         if sql_model_cls is ChatHistoryLogSQL:
+            preserved_thought = _chat_history_thought_for_merge(sess, filtered_data, data)
+            if preserved_thought:
+                filtered_data["thought_process"] = preserved_thought
+            elif "thought_process" in filtered_data and not _normalized_text(filtered_data.get("thought_process")):
+                filtered_data.pop("thought_process", None)
+            spark_meta = filtered_data.get("spark_meta")
+            top_level_thinking_source = _normalized_text(data.get("thinking_source"))
+            if top_level_thinking_source:
+                merged_spark_meta = _merge_spark_meta(spark_meta, {"thinking_source": top_level_thinking_source})
+                filtered_data["spark_meta"] = merged_spark_meta
             persisted_value = filtered_data.get("thought_process")
             print(
                 "===THINK_HOP=== hop=sql_row_ready "

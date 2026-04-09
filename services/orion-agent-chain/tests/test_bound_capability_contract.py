@@ -198,3 +198,71 @@ def test_bound_capability_recovery_replan_is_explicit(monkeypatch):
     assert out.text == "replanned fallback"
     assert out.runtime_debug["bound_execution_replanned"] is True
     assert out.runtime_debug["bound_execution_recovery_reason"] == "selected_verb_missing"
+
+
+def test_bound_capability_semantic_mismatch_fast_fail(monkeypatch):
+    fake_exec = _FakeToolExecutor()
+
+    async def _fake_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called for bound mismatch")
+
+    bad_contract = _bound_contract()
+    bad_contract.selected_verb = "summarize_recent_changes"
+    req = AgentChainRequest(
+        text="dry-run cleanup of stopped docker containers",
+        mode="agent",
+        tools=[{"tool_id": "summarize_recent_changes", "execution_mode": "capability_backed", "requires_capability_selector": True}],
+        bound_capability_execution=bad_contract,
+        messages=[{"role": "user", "content": "dry-run cleanup of stopped docker containers"}],
+    )
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+
+    out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
+    assert fake_exec.calls == []
+    bound = out.structured["bound_capability"]
+    assert bound["reason"] == "policy_blocked"
+    assert bound["observation"]["path"] == "bound_direct_semantic_mismatch"
+    assert bound["observation"]["reply_emitted"] is True
+
+
+def test_bound_capability_no_compatible_terminal_path(monkeypatch):
+    class _NoSkillExecutor(_FakeToolExecutor):
+        async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
+            self.calls.append((tool_id, tool_input, parent_correlation_id))
+            return {"selected_verb": tool_id, "selected_skill": None, "capability_decision": {"candidate_skills": []}}
+
+    fake_exec = _NoSkillExecutor()
+
+    async def _fake_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called on bound direct path")
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+
+    out = asyncio.run(agent_api.execute_agent_chain(_bound_request(), correlation_id=str(uuid4()), rpc_bus=object()))
+    bound = out.structured["bound_capability"]
+    assert bound["reason"] == "no_compatible_capability"
+    assert bound["observation"]["path"] == "bound_direct_no_compatible_capability"
+    assert bound["observation"]["reply_emitted"] is True
+
+
+def test_bound_capability_internal_error_terminal_reply(monkeypatch):
+    class _BoomExecutor(_FakeToolExecutor):
+        async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
+            raise RuntimeError("executor boom")
+
+    fake_exec = _BoomExecutor()
+
+    async def _fake_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called on bound direct path")
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+
+    out = asyncio.run(agent_api.execute_agent_chain(_bound_request(), correlation_id=str(uuid4()), rpc_bus=object()))
+    bound = out.structured["bound_capability"]
+    assert bound["reason"] == "capability_executor_unavailable"
+    assert bound["observation"]["path"] == "bound_direct_internal_error"
+    assert bound["observation"]["reply_emitted"] is True

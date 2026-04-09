@@ -191,19 +191,108 @@ def _available_operational_semantic_tools(toolset: List[ToolDef]) -> List[ToolDe
     return operational
 
 
-def _select_preferred_operational_tool(user_text: str, tools: List[ToolDef]) -> Optional[ToolDef]:
-    if not tools:
-        return None
-    ask_terms = set(_extract_key_terms(user_text))
-    best: Optional[ToolDef] = None
-    best_score = -1
+
+_RUNTIME_CLEANUP_TERMS = {"docker", "container", "cleanup", "stopped", "prune", "runtime", "housekeep", "housekeeping", "dry", "run"}
+_CHANGE_SUMMARY_TERMS = {"summarize", "summary", "recent", "changes", "change", "changelog", "intel"}
+_UNSAFE_ASSISTANT_COMMAND_PATTERN = re.compile(r"(docker\s+(rm|rmi|system\s+prune|container\s+prune|volume\s+rm|network\s+rm)|rm\s+-rf|kubectl\s+delete)", re.IGNORECASE)
+
+
+def _tool_semantic_haystack(tool: ToolDef) -> str:
+    families = " ".join(str(item) for item in (getattr(tool, "preferred_skill_families", []) or []))
+    return " ".join(
+        [
+            str(tool.tool_id or ""),
+            str(tool.description or ""),
+            families,
+            str(getattr(tool, "execution_mode", "") or ""),
+            str(getattr(tool, "side_effect_level", "") or ""),
+        ]
+    ).lower()
+
+
+def _semantic_override_scores(*, user_text: str, normalized_action_input: Dict[str, Any] | None, tools: List[ToolDef]) -> List[Dict[str, Any]]:
+    action_blob = json.dumps(normalized_action_input or {}, ensure_ascii=False, default=str).lower()
+    ask = f"{str(user_text or '').lower()} {action_blob}".strip()
+    ask_has_runtime_cleanup = all(term in ask for term in ("cleanup", "container")) or ("docker" in ask and ("prune" in ask or "stopped" in ask))
+    ask_terms = set(_extract_key_terms(ask))
+    scored: List[Dict[str, Any]] = []
     for tool in tools:
-        hay = f"{tool.tool_id} {tool.description or ''}".lower()
-        score = sum(1 for term in ask_terms if term in hay)
-        if score > best_score:
-            best = tool
-            best_score = score
-    return best or tools[0]
+        hay = _tool_semantic_haystack(tool)
+        score = 0
+        reasons: List[str] = []
+
+        lexical_hits = sorted(term for term in ask_terms if term and term in hay)
+        if lexical_hits:
+            score += len(lexical_hits) * 3
+            reasons.append(f"lexical_overlap:{','.join(lexical_hits[:6])}")
+
+        runtime_hits = sorted(term for term in _RUNTIME_CLEANUP_TERMS if term in ask and term in hay)
+        if runtime_hits:
+            score += len(runtime_hits) * 5
+            reasons.append(f"runtime_hits:{','.join(runtime_hits[:6])}")
+
+        if ask_has_runtime_cleanup and "runtime_housekeeping" in hay:
+            score += 12
+            reasons.append("preferred_family:runtime_housekeeping")
+        if ask_has_runtime_cleanup and "housekeep" in hay:
+            score += 8
+            reasons.append("verb_housekeep_match")
+
+        if ask_has_runtime_cleanup and any(term in hay for term in _CHANGE_SUMMARY_TERMS):
+            score -= 18
+            reasons.append("mismatch:change_summary_for_runtime_cleanup")
+        if ask_has_runtime_cleanup and "summarize_recent_changes" in hay:
+            score -= 30
+            reasons.append("hard_mismatch:summarize_recent_changes")
+
+        if str(getattr(tool, "execution_mode", "") or "").lower() == "capability_backed":
+            score += 2
+            reasons.append("capability_backed")
+
+        scored.append({"tool_id": tool.tool_id, "score": score, "reasons": reasons, "tool": tool})
+
+    scored.sort(key=lambda item: (int(item.get("score") or 0), str(item.get("tool_id") or "")), reverse=True)
+    return scored
+
+
+def _select_preferred_operational_tool(
+    user_text: str,
+    tools: List[ToolDef],
+    *,
+    normalized_action_input: Dict[str, Any] | None = None,
+) -> Tuple[Optional[ToolDef], List[Dict[str, Any]]]:
+    if not tools:
+        return None, []
+    scored = _semantic_override_scores(user_text=user_text, normalized_action_input=normalized_action_input, tools=tools)
+    best = scored[0]["tool"] if scored else None
+    return best, scored
+
+
+def _sanitize_operational_history(messages: List[LLMMessage], *, user_text: str) -> Tuple[List[LLMMessage], Dict[str, Any]]:
+    lowered = str(user_text or "").lower()
+    safety_sensitive = any(token in lowered for token in ("dry-run", "dry run", "preview", "safe"))
+    operational = _detect_operational_intent(lowered)
+    if not operational:
+        return messages, {"operational_history_filtering": False, "dropped": 0}
+
+    filtered: List[LLMMessage] = []
+    dropped = 0
+    for msg in messages:
+        if msg.role != "assistant":
+            filtered.append(msg)
+            continue
+        content = str(msg.content or "")
+        has_unsafe_command = bool(_UNSAFE_ASSISTANT_COMMAND_PATTERN.search(content))
+        if safety_sensitive and has_unsafe_command:
+            dropped += 1
+            continue
+        filtered.append(msg)
+    return filtered, {
+        "operational_history_filtering": True,
+        "safety_sensitive": safety_sensitive,
+        "dropped": dropped,
+        "kept": len(filtered),
+    }
 
 
 def _build_blocked_execution_explanation(*, selected_tool: Optional[str], no_write_active: bool) -> str:
@@ -614,12 +703,15 @@ class Supervisor:
         ext_facts["execution_blocked_reason"] = ctx.get("execution_blocked_reason")
         ext_facts["operational_intent_detected"] = bool(ctx.get("operational_intent_detected"))
         ext_facts["available_operational_tools"] = list(ctx.get("available_operational_tools") or [])
+        history_msgs = [LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])]
+        sanitized_history, history_filter_meta = _sanitize_operational_history(history_msgs, user_text=goal_text)
+        ext_facts["operational_history_filter"] = history_filter_meta
         planner_req = PlannerRequest(
             request_id=correlation_id,
             caller="cortex-exec",
             goal=Goal(description=goal_text, metadata={"verb": ctx.get("verb")}),
             context=ContextBlock(
-                conversation_history=[LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])],
+                conversation_history=sanitized_history,
                 external_facts=ext_facts,
             ),
             toolset=toolset,
@@ -1066,7 +1158,11 @@ class Supervisor:
         operational_intent_detected = _detect_operational_intent(user_text)
         operational_tools = _available_operational_semantic_tools(tools)
         offered_operational_tool_ids = [t.tool_id for t in operational_tools]
-        preferred_operational_tool = _select_preferred_operational_tool(user_text, operational_tools)
+        preferred_operational_tool, override_scores = _select_preferred_operational_tool(
+            user_text,
+            operational_tools,
+            normalized_action_input=ctx.get("normalized_action_input") if isinstance(ctx.get("normalized_action_input"), dict) else None,
+        )
         ctx["no_write_active"] = no_write_active
         ctx["execution_blocked_reason"] = execution_blocked_reason
         ctx["operational_intent_detected"] = operational_intent_detected
@@ -1079,6 +1175,38 @@ class Supervisor:
                 "operational_action",
                 offered_operational_tool_ids,
                 no_write_active,
+            )
+            logger.info(
+                "semantic_tool_override_candidates corr_id=%s candidates=%s",
+                correlation_id,
+                [
+                    {
+                        "tool_id": item.get("tool_id"),
+                        "score": item.get("score"),
+                        "reasons": item.get("reasons"),
+                    }
+                    for item in override_scores
+                ],
+            )
+            if preferred_operational_tool:
+                logger.info(
+                    "semantic_tool_override_selected corr_id=%s selected=%s score=%s reasons=%s",
+                    correlation_id,
+                    preferred_operational_tool.tool_id,
+                    next((item.get("score") for item in override_scores if item.get("tool_id") == preferred_operational_tool.tool_id), None),
+                    next((item.get("reasons") for item in override_scores if item.get("tool_id") == preferred_operational_tool.tool_id), []),
+                )
+            logger.info(
+                "semantic_tool_override_rejected corr_id=%s rejected=%s",
+                correlation_id,
+                [
+                    {
+                        "tool_id": item.get("tool_id"),
+                        "score": item.get("score"),
+                        "reasons": item.get("reasons"),
+                    }
+                    for item in override_scores[1:]
+                ],
             )
 
         if not self._should_use_react(mode, tools):

@@ -81,6 +81,20 @@ def _normalize_and_validate_verb(req: CortexClientRequest) -> tuple[bool, str | 
     req.verb = verb
     return True, None
 
+
+
+def _safe_req_verb(req: CortexClientRequest | None, raw_payload: dict | None = None) -> str:
+    if req is not None:
+        value = getattr(req, "verb", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if isinstance(raw_payload, dict):
+        for key in ("verb", "verb_name", "requested_verb"):
+            value = raw_payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "unknown"
+
 def _cfg() -> ChassisConfig:
     s = get_settings()
     return ChassisConfig(
@@ -428,7 +442,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
-            verb=req.verb or "unknown",
+            verb=_safe_req_verb(req, raw_payload),
             status=result_payload.get("status") or "fail",
             final_text=result_payload.get("final_text"),
             reasoning_content=reasoning_content if isinstance(reasoning_content, str) else None,
@@ -466,8 +480,34 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=client_payload,
         )
 
+    except TimeoutError as e:
+        fallback_verb = _safe_req_verb(locals().get("req", None), locals().get("raw_payload", None))
+        logger.error("orch_timeout_terminalized corr=%s verb=%s error=%s", str(env.correlation_id), fallback_verb, str(e))
+        if fallback_verb == "unknown":
+            logger.info("orch_timeout_verb_fallback_applied corr=%s", str(env.correlation_id))
+        payload = CortexClientResult(
+            ok=False,
+            mode=getattr(locals().get("req", None), "mode", "brain"),
+            verb=fallback_verb,
+            status="fail",
+            final_text=None,
+            memory_used=False,
+            recall_debug={},
+            steps=[],
+            error={"message": str(e), "type": type(e).__name__, "category": "timeout", "terminalized": True},
+            correlation_id=str(env.correlation_id),
+            metadata={"timeout": True, "orch_timeout_terminalized": True},
+        ).model_dump(mode="json")
+        logger.info("orch_timeout_error_payload_emitted corr=%s verb=%s", str(env.correlation_id), fallback_verb)
+        return CortexOrchResult(
+            source=sref,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload=payload,
+        )
+
     except Exception as e:
-        logger.exception(f"Execution failed for verb {getattr(req, 'verb', 'unknown')}")
+        logger.exception(f"Execution failed for verb {_safe_req_verb(locals().get('req', None), locals().get('raw_payload', None))}")
         return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
@@ -475,7 +515,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=CortexClientResult(
                 ok=False,
                 mode=getattr(req, "mode", "brain"),
-                verb=getattr(req, "verb", "unknown"),
+                verb=_safe_req_verb(locals().get("req", None), locals().get("raw_payload", None)),
                 status="fail",
                 final_text=None,
                 memory_used=False,

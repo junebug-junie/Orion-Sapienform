@@ -447,6 +447,18 @@ def _bound_terminal_failure(
         runtime_debug=dbg,
     )
 
+
+def _bound_execution_timeout_seconds() -> float:
+    """
+    Bound-capability direct execution guardrail.
+    Keep this strictly below the broader agent-chain / exec hop timeout so
+    we can always emit a terminal bound-capability reply instead of letting
+    the parent RPC time out first.
+    """
+    default_timeout = float(settings.default_timeout_seconds or 90)
+    return max(5.0, min(25.0, default_timeout * 0.5))
+
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -643,13 +655,30 @@ async def execute_agent_chain(
                         observation={"capability_resolution_status": "selected_verb_not_capability"},
                     )
                 try:
+                    execution_timeout = _bound_execution_timeout_seconds()
                     observation = await asyncio.wait_for(
                         tool_executor.execute_llm_verb(
                             selected_verb,
                             action_input,
                             parent_correlation_id=parent_corr_id,
                         ),
-                        timeout=float(settings.default_timeout_seconds),
+                        timeout=execution_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "[agent-chain] bound_capability_execution_timeout selected_verb=%s timeout_sec=%.2f",
+                        selected_verb,
+                        execution_timeout,
+                    )
+                    return _bound_terminal_failure(
+                        body=body,
+                        dbg=dbg,
+                        selected_verb=selected_verb,
+                        reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+                        detail=f"capability execution timed out after {execution_timeout:.2f}s",
+                        path="bound_direct_timeout",
+                        failure_category="execution_timeout",
+                        observation={"capability_resolution_status": "executor_timeout"},
                     )
                 except FileNotFoundError:
                     reason = CapabilityRecoveryReasonV1.selected_verb_missing

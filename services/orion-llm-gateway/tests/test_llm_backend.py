@@ -242,7 +242,7 @@ class TestLLMBackendExecution(unittest.TestCase):
         mock_client.post.return_value.json.return_value = {
             "choices": [{"message": {"content": "<think>scratchpad</think>Visible answer"}}]
         }
-        body = ChatBody(messages=[ChatMessage(role="user", content="hi")])
+        body = ChatBody(messages=[ChatMessage(role="user", content="hi")], trace_id="corr-inline-think-001")
         result = _execute_openai_chat(
             body=body,
             model="test-model",
@@ -252,6 +252,25 @@ class TestLLMBackendExecution(unittest.TestCase):
         self.assertEqual(result.get("text"), "Visible answer")
         self.assertIsNone(result.get("reasoning_content"))
         self.assertEqual(result.get("inline_think_content"), "scratchpad")
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_extracts_close_tag_only_inline_think(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "scratchpad only</think>Visible answer"}}]
+        }
+        body = ChatBody(messages=[ChatMessage(role="user", content="hi")], trace_id="corr-close-tag-001")
+        result = _execute_openai_chat(
+            body=body,
+            model="test-model",
+            base_url="http://localhost",
+            backend_name="llamacpp",
+        )
+        self.assertEqual(result.get("text"), "Visible answer")
+        self.assertIsNone(result.get("reasoning_content"))
+        self.assertEqual(result.get("inline_think_content"), "scratchpad only")
 
     @patch("app.llm_backend._execute_openai_chat")
     def test_no_route_still_uses_default_chat_when_route_table_active(self, mock_execute):

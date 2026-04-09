@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import json
+import re
 
 import httpx
 
@@ -248,9 +249,17 @@ def _extract_reasoning_from_openai_response(data: Dict[str, Any]) -> Optional[st
     return None
 
 
+_THINK_CLOSE_ONLY_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+
+
 def _split_think_blocks(text: str) -> Tuple[str, Optional[str]]:
     raw = str(text or "")
     if "<think>" not in raw:
+        close_match = _THINK_CLOSE_ONLY_RE.search(raw)
+        if close_match:
+            hidden = raw[: close_match.start()].strip()
+            visible = raw[close_match.end() :].strip()
+            return visible, (hidden or None)
         return raw.strip(), None
     visible = raw
     traces: List[str] = []

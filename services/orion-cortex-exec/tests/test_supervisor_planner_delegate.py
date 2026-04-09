@@ -4,14 +4,21 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from orion.core.bus.bus_schemas import ServiceRef
+from orion.core.bus.bus_schemas import LLMMessage, ServiceRef
 from orion.schemas.agents.schemas import FinalAnswer, ToolDef
 from orion.schemas.cortex.schemas import ExecutionPlan, StepExecutionResult
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
-from app.supervisor import Supervisor, _ensure_agent_chain_tool, _extract_latest_planner_thought, _verb_to_step
+from app.supervisor import (
+    Supervisor,
+    _ensure_agent_chain_tool,
+    _extract_latest_planner_thought,
+    _verb_to_step,
+    _select_preferred_operational_tool,
+    _sanitize_operational_history,
+)
 
 
 class StubSupervisor(Supervisor):
@@ -348,6 +355,40 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _verb_to_step(cfg)
 
+
+
+    def test_semantic_override_ranking_prefers_housekeep_for_docker_cleanup(self):
+        tools = [
+            ToolDef(
+                tool_id="summarize_recent_changes",
+                description="Summarize recent system changes and change intel",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                preferred_skill_families=["change_intel"],
+                side_effect_level="none",
+            ),
+            ToolDef(
+                tool_id="housekeep_runtime",
+                description="Runtime housekeeping and container cleanup",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                preferred_skill_families=["runtime_housekeeping"],
+                side_effect_level="low",
+            ),
+        ]
+        selected, scored = _select_preferred_operational_tool(
+            "dry-run cleanup of stopped docker containers",
+            tools,
+            normalized_action_input={"text": "dry-run cleanup stopped containers"},
+        )
+        assert selected is not None
+        self.assertEqual(selected.tool_id, "housekeep_runtime")
+        score_map = {item["tool_id"]: item for item in scored}
+        self.assertGreater(score_map["housekeep_runtime"]["score"], score_map["summarize_recent_changes"]["score"])
+        self.assertIn("hard_mismatch:summarize_recent_changes", score_map["summarize_recent_changes"]["reasons"])
+
     def test_operational_intent_prefers_semantic_tool_over_planner_final_answer(self):
         supervisor = OperationalPreferenceSupervisor()
         source = ServiceRef(name="test", node="test", version="1.0")
@@ -552,6 +593,19 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestRecallContaminationMitigation(unittest.TestCase):
+    def test_operational_history_filter_drops_unsafe_assistant_commands_for_dry_run(self):
+        msgs = [
+            LLMMessage(role="assistant", content="Run docker rm -f $(docker ps -aq) now"),
+            LLMMessage(role="user", content="dry-run cleanup stopped containers"),
+        ]
+        sanitized, meta = _sanitize_operational_history(msgs, user_text="dry-run cleanup of stopped containers")
+        self.assertEqual(len(sanitized), 1)
+        self.assertEqual(sanitized[0].role, "user")
+        self.assertTrue(meta.get("operational_history_filtering"))
+        self.assertEqual(meta.get("dropped"), 1)
+
 
 class TestExtractLatestPlannerThought(unittest.TestCase):
     def test_returns_none_for_empty_trace(self):

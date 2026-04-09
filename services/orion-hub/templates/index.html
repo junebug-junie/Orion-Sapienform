@@ -42,8 +42,10 @@
           >Service Logs</a>
           <a
             id="substratePageLink"
-            href="/substrate"
+            href="#substrate"
+            data-hash-target="#substrate"
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
           >Substrate</a>
         </div>
       </div>
@@ -336,6 +338,34 @@
             <div>
               <div class="text-gray-500 mb-1">Raw compact debug</div>
               <pre id="autonomyDebugRaw" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
+          </div>
+        </div>
+
+        <div id="substrateReviewDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="substrateReviewDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Substrate Review</span>
+              <span id="substrateReviewDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="substrateReviewDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
+          <div id="substrateReviewDebugBody" class="hidden space-y-2 text-xs text-gray-300">
+            <div id="substrateReviewDebugMeta" class="text-[10px] text-gray-500">Loading substrate review runtime status…</div>
+            <div id="substrateReviewDebugOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">--</div>
+            <div class="flex items-center justify-between text-[10px] text-gray-400">
+              <a id="substrateReviewDebugStandaloneLink" href="/substrate" class="text-indigo-300 hover:text-indigo-200 underline">Open standalone /substrate</a>
+              <span>Operator bounded controls in modal</span>
             </div>
           </div>
         </div>
@@ -1899,6 +1929,28 @@
         <div id="serviceLogsTerminals" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
       </section>
 
+      <section id="substrate" data-panel="substrate" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Substrate Inspector</h2>
+            <p class="text-xs text-gray-400">Isolated standalone substrate page embedded in-shell to preserve Hub context.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="substratePanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="substratePanelStandaloneLink" href="/substrate" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe
+            id="substratePanelFrame"
+            src="/substrate"
+            class="w-full h-full border-0 min-h-[40rem]"
+            loading="lazy"
+            title="Substrate Inspector"
+          ></iframe>
+        </div>
+      </section>
+
   <div
     id="agentTraceModal"
     class="hidden fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm px-4 py-6"
@@ -2110,6 +2162,50 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div id="memoryDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="substrateReviewModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="substrateReviewModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="substrateReviewModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-cyan-300">Substrate review runtime</div>
+          <div id="substrateReviewModalMeta" class="mt-1 text-[11px] text-gray-400">Bounded operator controls for single-cycle substrate review checks.</div>
+        </div>
+        <button
+          id="substrateReviewModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4 text-xs text-gray-300">
+        <section class="rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Quick status</div>
+          <div id="substrateReviewModalQuickStatus" class="grid grid-cols-1 gap-2 md:grid-cols-2"></div>
+          <a id="substrateReviewModalSubstrateLink" href="/substrate" class="text-indigo-300 hover:text-indigo-200 underline text-[11px]">Open standalone /substrate</a>
+        </section>
+        <section class="rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Bounded operator test actions</div>
+          <div class="flex flex-wrap gap-2">
+            <button id="substrateReviewActionRefresh" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-[11px] text-gray-100 hover:bg-gray-800" type="button">Refresh status</button>
+            <button id="substrateReviewActionExecuteOnce" class="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-100 hover:bg-emerald-500/20" type="button">Execute once</button>
+            <button id="substrateReviewActionExecuteFollowup" class="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-100 hover:bg-amber-500/20" type="button">Execute once + follow-up</button>
+            <button id="substrateReviewActionSmokeCheck" class="rounded-lg border border-indigo-500/50 bg-indigo-500/10 px-3 py-1 text-[11px] text-indigo-100 hover:bg-indigo-500/20" type="button">Smoke check</button>
+          </div>
+          <div id="substrateReviewActionStatus" class="text-[11px] text-gray-400">Idle.</div>
+        </section>
+        <section class="rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Latest action result</div>
+          <div id="substrateReviewResultSummary" class="space-y-2 text-[11px]">No action run yet.</div>
+          <details class="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+            <summary class="cursor-pointer text-[10px] uppercase tracking-wide text-gray-500">Raw JSON</summary>
+            <pre id="substrateReviewResultRaw" class="mt-2 whitespace-pre-wrap break-words text-[10px] text-gray-200 max-h-64 overflow-y-auto">--</pre>
+          </details>
+        </section>
       </div>
     </div>
   </div>

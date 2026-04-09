@@ -4,11 +4,11 @@ from app.router import _extract_final_text, _extract_reasoning_payload
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 
-def _step(payload: dict) -> StepExecutionResult:
+def _step(payload: dict, *, verb_name: str = "x", step_name: str = "llm") -> StepExecutionResult:
     return StepExecutionResult(
         status="success",
-        verb_name="x",
-        step_name="llm",
+        verb_name=verb_name,
+        step_name=step_name,
         order=0,
         result={"LLMGatewayService": payload},
         latency_ms=1,
@@ -177,4 +177,37 @@ def test_extract_reasoning_payload_falls_back_to_prior_step_results() -> None:
     )
     assert reasoning_content is None
     assert inline_think_content == "prior hidden"
+    assert thinking_source == "inline_think_full_block"
+
+
+def test_extract_reasoning_payload_chat_general_uses_only_llm_chat_general_canonical_step() -> None:
+    reasoning_content, inline_think_content, thinking_source, _ = _extract_reasoning_payload(
+        [
+            _step(
+                {"inline_think_content": "authoritative chat thought", "thinking_source": "inline_think"},
+                verb_name="chat_general",
+                step_name="llm_chat_general",
+            ),
+            _step(
+                {"inline_think_content": "stance thought that must be ignored", "thinking_source": "inline_think"},
+                verb_name="chat_general",
+                step_name="synthesize_chat_stance_brief",
+            ),
+        ],
+        prior_step_results=[
+            {
+                "result": {
+                    "LLMGatewayService": {
+                        "inline_think_content": "follow-on same-corr thought that must not overwrite",
+                        "thinking_source": "inline_think",
+                    }
+                }
+            }
+        ],
+        think_close_tag_only_detected=False,
+        canonical_verb_name="chat_general",
+        canonical_step_name="llm_chat_general",
+    )
+    assert reasoning_content is None
+    assert inline_think_content == "authoritative chat thought"
     assert thinking_source == "inline_think_full_block"

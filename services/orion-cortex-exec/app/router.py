@@ -344,6 +344,15 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
             payload["autonomy_selected_subject"] = None
     if repository_status:
         payload["autonomy_repository_status"] = repository_status
+    inline_think_content = ctx.get("inline_think_content")
+    thinking_source = ctx.get("thinking_source")
+    final_text_clean = ctx.get("chat_general_final_text_clean")
+    if isinstance(inline_think_content, str):
+        payload["inline_think_content"] = inline_think_content
+    if isinstance(thinking_source, str):
+        payload["thinking_source"] = thinking_source
+    if isinstance(final_text_clean, str):
+        payload["final_text_clean"] = final_text_clean
     return payload
 
 
@@ -438,9 +447,22 @@ def _extract_reasoning_payload(
     think_close_tag_only_detected: bool = False,
     prior_step_results: List[Dict[str, Any]] | None = None,
     correlation_id: str | None = None,
+    canonical_verb_name: str | None = None,
+    canonical_step_name: str | None = None,
 ) -> tuple[str | None, str | None, str, Dict[str, Any] | None]:
     def _iter_payloads() -> List[Dict[str, Any]]:
         payloads: List[Dict[str, Any]] = []
+        if canonical_verb_name and canonical_step_name:
+            for step in step_results:
+                if (
+                    str(step.verb_name or "").strip().lower() == str(canonical_verb_name).strip().lower()
+                    and str(step.step_name or "").strip().lower() == str(canonical_step_name).strip().lower()
+                    and isinstance(step.result, dict)
+                ):
+                    payload = step.result.get("LLMGatewayService")
+                    if isinstance(payload, dict):
+                        payloads.append(payload)
+            return payloads
         for step in step_results:
             if not isinstance(step.result, dict):
                 continue
@@ -811,6 +833,8 @@ class PlanRunner:
             think_close_tag_only_detected=bool(final_text_diag.get("think_close_tag_only_detected")),
             prior_step_results=list(ctx.get("prior_step_results") or []),
             correlation_id=correlation_id,
+            canonical_verb_name="chat_general" if plan.verb_name == "chat_general" else None,
+            canonical_step_name="llm_chat_general" if plan.verb_name == "chat_general" else None,
         )
         if reasoning_trace is None and metacog_traces:
             first_trace = metacog_traces[0]
@@ -830,6 +854,17 @@ class PlanRunner:
             thinking_source,
             len(final_text or ""),
         )
+        if plan.verb_name == "chat_general":
+            wrote_chat_history = bool(str(inline_think_content or "").strip())
+            logger.info(
+                "chat_general_thought_capture corr=%s step=llm_chat_general think_len=%s source=%s wrote_chat_history=%s",
+                correlation_id,
+                len(str(inline_think_content or "").strip()),
+                thinking_source,
+                wrote_chat_history,
+            )
+            if isinstance(final_text, str):
+                ctx["chat_general_final_text_clean"] = final_text
         ctx["reasoning_content"] = reasoning_content
         ctx["inline_think_content"] = inline_think_content
         ctx["thinking_source"] = thinking_source

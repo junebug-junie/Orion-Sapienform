@@ -107,6 +107,24 @@ The panel calls:
 *   **Note**: Hub no longer performs local ASR.
 *   **Flow**: Browser sends text (preferred) or downstream services handle raw audio (future). Currently, Hub expects text input from the UI (which may use browser WebSpeech API or similar, or the user types).
 
+### 5. Substrate Review Runtime Debug Surface (Hub convenience panel)
+
+Hub now includes a compact **Substrate Review** debug row in the main runtime debug area, with a separate high-z modal for bounded operator actions.
+
+- Inline row: compact queue/due/outcome/source posture summary.
+- Modal actions:
+  - Refresh status
+  - Execute one bounded `operator_review` cycle
+  - Execute one bounded cycle with explicit frontier follow-up allowed
+  - Run a lightweight smoke check
+- Safety posture:
+  - single-cycle only
+  - operator surface only
+  - no hidden recursion
+  - strict-zone guardrails remain in runtime
+- `/substrate` remains the primary standalone inspection page; Hub modal is a convenience control surface.
+- In-shell navigation now includes a `#substrate` tab that embeds `/substrate` via iframe so switching tabs preserves Hub shell/session context.
+
 ---
 
 ## 🚀 Running Hub
@@ -274,4 +292,3 @@ Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
 ### Static JS cache/version notes
 - Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
 - If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
-

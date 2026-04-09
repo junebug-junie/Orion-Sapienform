@@ -141,6 +141,26 @@ loadDismissedIds();
   const autonomyDebugModalClose = document.getElementById('autonomyDebugModalClose');
   const autonomyDebugModalMeta = document.getElementById('autonomyDebugModalMeta');
   const autonomyDebugModalBody = document.getElementById('autonomyDebugModalBody');
+  const substrateReviewDebugPanel = document.getElementById('substrateReviewDebugPanel');
+  const substrateReviewDebugToggle = document.getElementById('substrateReviewDebugToggle');
+  const substrateReviewDebugCaret = document.getElementById('substrateReviewDebugCaret');
+  const substrateReviewDebugBody = document.getElementById('substrateReviewDebugBody');
+  const substrateReviewDebugMeta = document.getElementById('substrateReviewDebugMeta');
+  const substrateReviewDebugOverview = document.getElementById('substrateReviewDebugOverview');
+  const substrateReviewDebugOpenModal = document.getElementById('substrateReviewDebugOpenModal');
+  const substrateReviewModalRoot = document.getElementById('substrateReviewModalRoot');
+  const substrateReviewModalBackdrop = document.getElementById('substrateReviewModalBackdrop');
+  const substrateReviewModalDialog = document.getElementById('substrateReviewModalDialog');
+  const substrateReviewModalMeta = document.getElementById('substrateReviewModalMeta');
+  const substrateReviewModalClose = document.getElementById('substrateReviewModalClose');
+  const substrateReviewModalQuickStatus = document.getElementById('substrateReviewModalQuickStatus');
+  const substrateReviewActionRefresh = document.getElementById('substrateReviewActionRefresh');
+  const substrateReviewActionExecuteOnce = document.getElementById('substrateReviewActionExecuteOnce');
+  const substrateReviewActionExecuteFollowup = document.getElementById('substrateReviewActionExecuteFollowup');
+  const substrateReviewActionSmokeCheck = document.getElementById('substrateReviewActionSmokeCheck');
+  const substrateReviewActionStatus = document.getElementById('substrateReviewActionStatus');
+  const substrateReviewResultSummary = document.getElementById('substrateReviewResultSummary');
+  const substrateReviewResultRaw = document.getElementById('substrateReviewResultRaw');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
@@ -222,6 +242,8 @@ loadDismissedIds();
   let lastMemoryDebugModel = null;
   let lastAgentTraceSummary = null;
   let lastAgentTraceMeta = {};
+  let lastSubstrateReviewStatus = null;
+  let lastSubstrateReviewAction = null;
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -294,9 +316,13 @@ loadDismissedIds();
   const hubTabButton = document.getElementById("hubTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const serviceLogsTabButton = document.getElementById("serviceLogsTabButton");
+  const substrateTabButton = document.getElementById("substratePageLink");
   const hubTabPanel = document.getElementById("hubTabPanel");
   const topicStudioPanel = document.getElementById("topicStudioPanel");
   const serviceLogsPanel = document.getElementById("service-logs");
+  const substratePanel = document.getElementById("substrate");
+  const substratePanelFrame = document.getElementById("substratePanelFrame");
+  const substratePanelRefresh = document.getElementById("substratePanelRefresh");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -538,16 +564,19 @@ loadDismissedIds();
   }
 
   function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !serviceLogsPanel || !hubTabButton || !topicStudioTabButton || !serviceLogsTabButton) return;
+    if (!hubTabPanel || !topicStudioPanel || !serviceLogsPanel || !substratePanel || !hubTabButton || !topicStudioTabButton || !serviceLogsTabButton || !substrateTabButton) return;
     const isHub = tabKey === "hub";
     const isTopicStudio = tabKey === "topic-studio";
     const isServiceLogs = tabKey === "service-logs";
+    const isSubstrate = tabKey === "substrate";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
+    substratePanel.classList.toggle("hidden", !isSubstrate);
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
+    styleTabButton(substrateTabButton, isSubstrate);
   }
 
   function resolveTopicStudioSubview() {
@@ -1862,6 +1891,7 @@ loadDismissedIds();
     if (!document.body) return;
     const shouldLock = isModalVisible(memoryDebugModalRoot)
       || isModalVisible(autonomyDebugModalRoot)
+      || isModalVisible(substrateReviewModalRoot)
       || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
   }
@@ -2213,6 +2243,197 @@ loadDismissedIds();
     autonomyDebugModalRoot.setAttribute('aria-hidden', 'true');
     if (document.body) document.body.classList.remove('overflow-hidden');
     syncDebugModalScrollLock();
+  }
+
+  async function substrateReviewFetch(path, options = {}) {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      ...options,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+    }
+    return payload;
+  }
+
+  function clearSubstrateReviewDebugPanel() {
+    if (substrateReviewDebugBody) substrateReviewDebugBody.classList.add('hidden');
+    if (substrateReviewDebugCaret) substrateReviewDebugCaret.textContent = '▾';
+    if (substrateReviewDebugMeta) substrateReviewDebugMeta.textContent = 'No substrate review runtime status loaded.';
+    if (substrateReviewDebugOverview) substrateReviewDebugOverview.textContent = 'No substrate review runtime status loaded.';
+    if (substrateReviewModalQuickStatus) substrateReviewModalQuickStatus.innerHTML = '';
+    if (substrateReviewResultSummary) substrateReviewResultSummary.textContent = 'No action run yet.';
+    if (substrateReviewResultRaw) substrateReviewResultRaw.textContent = '--';
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Idle.';
+    lastSubstrateReviewStatus = null;
+    lastSubstrateReviewAction = null;
+  }
+
+  function renderSubstrateQuickStatus(statusPayload) {
+    if (!substrateReviewModalQuickStatus) return;
+    const summary = statusPayload && statusPayload.summary ? statusPayload.summary : {};
+    const source = statusPayload && statusPayload.source ? statusPayload.source : {};
+    const control = source.control_plane || {};
+    const semantic = source.semantic || {};
+    const rows = [
+      ['Queue count', summary.queue_count ?? '--'],
+      ['Due count', summary.due_count ?? '--'],
+      ['Next due', summary.next_due_at || '--'],
+      ['Last outcome', (summary.last_execution && summary.last_execution.execution_outcome) || '--'],
+      ['Telemetry count', summary.telemetry_count ?? '--'],
+      ['Policy profile', summary.policy_active_profile_id || '--'],
+      ['Control posture', `${control.posture || '--'} (${control.kind || '--'})`],
+      ['Semantic posture', `${semantic.posture || '--'} (${semantic.kind || '--'})`],
+    ];
+    substrateReviewModalQuickStatus.innerHTML = '';
+    rows.forEach(([label, value]) => {
+      const card = document.createElement('div');
+      card.className = 'rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-2';
+      const k = document.createElement('div');
+      k.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      k.textContent = label;
+      const v = document.createElement('div');
+      v.className = 'mt-1 text-[11px] text-gray-100 break-words';
+      v.textContent = String(value ?? '--');
+      card.appendChild(k);
+      card.appendChild(v);
+      substrateReviewModalQuickStatus.appendChild(card);
+    });
+  }
+
+  function updateSubstrateReviewDebugPanel(statusPayload) {
+    if (!substrateReviewDebugPanel || !substrateReviewDebugMeta || !substrateReviewDebugOverview) return;
+    const summary = statusPayload && statusPayload.summary ? statusPayload.summary : {};
+    const source = statusPayload && statusPayload.source ? statusPayload.source : {};
+    const control = source.control_plane || {};
+    const semantic = source.semantic || {};
+    lastSubstrateReviewStatus = statusPayload || null;
+    substrateReviewDebugMeta.textContent = `queue ${summary.queue_count ?? '--'} · due ${summary.due_count ?? '--'} · control ${control.posture || '--'} · semantic ${semantic.posture || '--'}`;
+    substrateReviewDebugOverview.innerHTML = '';
+    [
+      `last outcome: ${(summary.last_execution && summary.last_execution.execution_outcome) || '--'}`,
+      `next eligible: ${(summary.next_item && summary.next_item.queue_item_id) || '--'}`,
+      `policy profile: ${summary.policy_active_profile_id || '--'}`,
+      `telemetry count: ${summary.telemetry_count ?? '--'}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.textContent = line;
+      substrateReviewDebugOverview.appendChild(row);
+    });
+    if (substrateReviewModalMeta) substrateReviewModalMeta.textContent = substrateReviewDebugMeta.textContent;
+    renderSubstrateQuickStatus(statusPayload);
+  }
+
+  function toggleSubstrateReviewDebugPanel() {
+    if (!substrateReviewDebugBody) return;
+    const nextHidden = !substrateReviewDebugBody.classList.contains('hidden');
+    substrateReviewDebugBody.classList.toggle('hidden', nextHidden);
+    if (substrateReviewDebugCaret) substrateReviewDebugCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function ensureSubstrateReviewModalRootOnBody() {
+    if (!substrateReviewModalRoot || !document.body) return;
+    if (substrateReviewModalRoot.parentElement !== document.body) {
+      document.body.appendChild(substrateReviewModalRoot);
+    }
+  }
+
+  function openSubstrateReviewModal() {
+    if (!substrateReviewModalRoot) return;
+    closeAutonomyDebugModal();
+    closeMemoryDebugModal();
+    ensureSubstrateReviewModalRootOnBody();
+    substrateReviewModalRoot.style.position = 'fixed';
+    substrateReviewModalRoot.style.inset = '0';
+    substrateReviewModalRoot.style.zIndex = '2147483646';
+    if (substrateReviewModalBackdrop) {
+      substrateReviewModalBackdrop.style.position = 'fixed';
+      substrateReviewModalBackdrop.style.inset = '0';
+      substrateReviewModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (substrateReviewModalDialog) {
+      substrateReviewModalDialog.style.position = 'fixed';
+      substrateReviewModalDialog.style.zIndex = '2147483647';
+    }
+    substrateReviewModalRoot.classList.remove('hidden');
+    substrateReviewModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeSubstrateReviewModal() {
+    if (!substrateReviewModalRoot) return;
+    substrateReviewModalRoot.classList.add('hidden');
+    substrateReviewModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
+  function renderSubstrateActionResult(resultPayload) {
+    if (substrateReviewResultRaw) substrateReviewResultRaw.textContent = JSON.stringify(resultPayload || {}, null, 2);
+    if (!substrateReviewResultSummary) return;
+    const result = resultPayload && resultPayload.result ? resultPayload.result : {};
+    const source = resultPayload && resultPayload.source ? resultPayload.source : {};
+    const control = source.control_plane || {};
+    const semantic = source.semantic || {};
+    substrateReviewResultSummary.innerHTML = '';
+    [
+      `outcome: ${result.outcome || '--'}`,
+      `selected queue item: ${result.selected_queue_item_id || '--'}`,
+      `frontier follow-up invoked: ${result.frontier_followup_invoked ? 'yes' : 'no'}`,
+      `control posture: ${control.posture || '--'} (${control.kind || '--'})`,
+      `semantic posture: ${semantic.posture || '--'} (${semantic.kind || '--'})`,
+      `executed at: ${result.executed_at || '--'}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.className = 'rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2';
+      row.textContent = line;
+      substrateReviewResultSummary.appendChild(row);
+    });
+  }
+
+  async function refreshSubstrateReviewStatus() {
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/status');
+    updateSubstrateReviewDebugPanel(payload);
+    return payload;
+  }
+
+  async function runSubstrateReviewExecuteOnce() {
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Running execute-once…';
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/execute-once', { method: 'POST', body: JSON.stringify({}) });
+    lastSubstrateReviewAction = payload;
+    renderSubstrateActionResult(payload);
+    await refreshSubstrateReviewStatus();
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Execute-once complete.';
+    return payload;
+  }
+
+  async function runSubstrateReviewExecuteOnceWithFollowup() {
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Running execute-once with explicit follow-up…';
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/execute-once-followup', { method: 'POST', body: JSON.stringify({}) });
+    lastSubstrateReviewAction = payload;
+    renderSubstrateActionResult(payload);
+    await refreshSubstrateReviewStatus();
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Execute-once + follow-up complete.';
+    return payload;
+  }
+
+  async function runSubstrateReviewSmokeCheck() {
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Running smoke check…';
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/smoke-check', { method: 'POST', body: JSON.stringify({}) });
+    lastSubstrateReviewAction = payload;
+    if (substrateReviewResultRaw) substrateReviewResultRaw.textContent = JSON.stringify(payload || {}, null, 2);
+    if (substrateReviewResultSummary) {
+      const checks = payload.checks || {};
+      substrateReviewResultSummary.innerHTML = [
+        `queue available: ${checks.queue_available ? 'yes' : 'no'}`,
+        `runtime eligible: ${checks.runtime_eligible ? 'yes' : 'no'}`,
+        `semantic available: ${checks.semantic_available ? 'yes' : 'no'}`,
+        `control plane available: ${checks.control_plane_available ? 'yes' : 'no'}`,
+      ].map((line) => `<div class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2">${line}</div>`).join('');
+    }
+    await refreshSubstrateReviewStatus();
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Smoke check complete.';
+    return payload;
   }
 
   function renderSocialInspectionBadges(container, badges) {
@@ -5123,6 +5344,7 @@ loadDismissedIds();
       clearMemoryDebugPanel();
       clearAgentTraceDebugPanel();
       clearAutonomyDebugPanel();
+      clearSubstrateReviewDebugPanel();
     });
   }
   if (copyButton && conversationDiv) {
@@ -5348,11 +5570,7 @@ loadDismissedIds();
   }
   ensureAutonomyModalRootOnBody();
   if (autonomyDebugOpenModal) {
-    autonomyDebugOpenModal.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openAutonomyDebugModal();
-    });
+    autonomyDebugOpenModal.addEventListener('click', openAutonomyDebugModal);
   }
   if (autonomyDebugModalClose) {
     autonomyDebugModalClose.addEventListener('click', closeAutonomyDebugModal);
@@ -5367,6 +5585,69 @@ loadDismissedIds();
   }
   if (autonomyDebugModalDialog) {
     autonomyDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
+  if (substrateReviewDebugToggle) {
+    substrateReviewDebugToggle.addEventListener('click', toggleSubstrateReviewDebugPanel);
+  }
+  ensureSubstrateReviewModalRootOnBody();
+  if (substrateReviewDebugOpenModal) {
+    substrateReviewDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openSubstrateReviewModal();
+    });
+  }
+  if (substrateReviewModalClose) {
+    substrateReviewModalClose.addEventListener('click', closeSubstrateReviewModal);
+  }
+  if (substrateReviewModalBackdrop) {
+    substrateReviewModalBackdrop.addEventListener('click', closeSubstrateReviewModal);
+  }
+  if (substrateReviewModalRoot) {
+    substrateReviewModalRoot.addEventListener('click', (event) => {
+      if (event.target === substrateReviewModalRoot) closeSubstrateReviewModal();
+    });
+  }
+  if (substrateReviewModalDialog) {
+    substrateReviewModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
+  if (substrateReviewActionRefresh) {
+    substrateReviewActionRefresh.addEventListener('click', async () => {
+      try {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Refreshing…';
+        await refreshSubstrateReviewStatus();
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Status refreshed.';
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Refresh failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (substrateReviewActionExecuteOnce) {
+    substrateReviewActionExecuteOnce.addEventListener('click', async () => {
+      try {
+        await runSubstrateReviewExecuteOnce();
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Execute failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (substrateReviewActionExecuteFollowup) {
+    substrateReviewActionExecuteFollowup.addEventListener('click', async () => {
+      try {
+        await runSubstrateReviewExecuteOnceWithFollowup();
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Execute follow-up failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (substrateReviewActionSmokeCheck) {
+    substrateReviewActionSmokeCheck.addEventListener('click', async () => {
+      try {
+        await runSubstrateReviewSmokeCheck();
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Smoke check failed: ${String(err.message || err)}`;
+      }
+    });
   }
   if (socialInspectionOpen) {
     socialInspectionOpen.addEventListener('click', () => openSocialInspectionModal());
@@ -5481,6 +5762,10 @@ loadDismissedIds();
       closeAutonomyDebugModal();
       return;
     }
+    if (event.key === 'Escape' && substrateReviewModalRoot && !substrateReviewModalRoot.classList.contains('hidden')) {
+      closeSubstrateReviewModal();
+      return;
+    }
     if (event.key === 'Escape' && scheduleModal && !scheduleModal.classList.contains('hidden')) {
       closeScheduleModal();
       return;
@@ -5495,6 +5780,10 @@ loadDismissedIds();
   }
   normalizeRecallProfileDisplay();
   clearMemoryDebugPanel();
+  clearSubstrateReviewDebugPanel();
+  refreshSubstrateReviewStatus().catch((err) => {
+    if (substrateReviewDebugMeta) substrateReviewDebugMeta.textContent = `Substrate review status unavailable: ${String(err.message || err)}`;
+  });
   renderSocialInspectionState(null);
   loadResponseFeedbackOptions();
   loadScheduleInventory();
@@ -6235,7 +6524,7 @@ loadDismissedIds();
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
 
-  if (hubTabButton && topicStudioTabButton && serviceLogsTabButton) {
+  if (hubTabButton && topicStudioTabButton && serviceLogsTabButton && substrateTabButton) {
     hubTabButton.addEventListener("click", () => {
       setActiveTab("hub");
       history.replaceState(null, "", "#hub");
@@ -6249,14 +6538,27 @@ loadDismissedIds();
       setActiveTab("service-logs");
       history.replaceState(null, "", "#service-logs");
     });
+    substrateTabButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      setActiveTab("substrate");
+      history.replaceState(null, "", "#substrate");
+    });
     if (window.location.hash === "#topic-studio") {
       setActiveTab("topic-studio");
       refreshTopicStudio();
     } else if (window.location.hash === "#service-logs") {
       setActiveTab("service-logs");
+    } else if (window.location.hash === "#substrate") {
+      setActiveTab("substrate");
     } else {
       setActiveTab("hub");
     }
+  }
+
+  if (substratePanelRefresh && substratePanelFrame) {
+    substratePanelRefresh.addEventListener("click", () => {
+      substratePanelFrame.contentWindow?.location.reload();
+    });
   }
 
   if (tsDatasetSelect) {

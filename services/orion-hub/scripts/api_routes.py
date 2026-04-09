@@ -45,11 +45,15 @@ from orion.schemas.notify import (
 )
 
 from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
+from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
 from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
+from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
 from orion.substrate.review_queue import GraphReviewQueue
+from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
+from orion.substrate.review_schedule import GraphReviewScheduler
 from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
 
 logger = logging.getLogger("orion-hub.api")
@@ -72,6 +76,16 @@ SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()
 SUBSTRATE_POLICY_COMPARISON = SubstratePolicyComparisonService(
     policy_store=SUBSTRATE_POLICY_STORE,
     telemetry_recorder=SUBSTRATE_REVIEW_TELEMETRY_STORE,
+)
+SUBSTRATE_REVIEW_RUNTIME_EXECUTOR = GraphReviewRuntimeExecutor(
+    queue=SUBSTRATE_REVIEW_QUEUE_STORE,
+    consolidation_evaluator=GraphConsolidationEvaluator(store=SUBSTRATE_SEMANTIC_STORE),
+    scheduler=GraphReviewScheduler(
+        queue=SUBSTRATE_REVIEW_QUEUE_STORE,
+        policy_profiles=SUBSTRATE_POLICY_STORE,
+    ),
+    telemetry_recorder=SUBSTRATE_REVIEW_TELEMETRY_STORE,
+    policy_profiles=SUBSTRATE_POLICY_STORE,
 )
 
 
@@ -114,6 +128,14 @@ class WorkflowScheduleUpdateRequest(BaseModel):
     timezone: Optional[str] = None
     notify_on: Optional[str] = None
     expected_revision: Optional[int] = None
+
+
+class SubstrateReviewExecuteRequest(BaseModel):
+    explicit_queue_item_id: Optional[str] = None
+
+
+class SubstrateReviewSmokeCheckRequest(BaseModel):
+    limit: int = Field(default=10, ge=1, le=100)
 
 
 async def _execute_workflow_schedule_management(*, session_id: str, user_id: Optional[str], request: WorkflowScheduleManageRequestV1) -> Dict[str, Any]:
@@ -1441,6 +1463,111 @@ def _sql_policy_comparison_payload(
         }
 
 
+def _substrate_source_posture() -> Dict[str, Any]:
+    control_kind = SUBSTRATE_REVIEW_QUEUE_STORE.source_kind()
+    telemetry_kind = SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind()
+    semantic_kind_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "source_kind", "graphdb")
+    semantic_kind = semantic_kind_raw() if callable(semantic_kind_raw) else semantic_kind_raw
+    policy_kind = SUBSTRATE_POLICY_STORE.source_kind()
+    control_degraded = bool(SUBSTRATE_REVIEW_QUEUE_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded())
+    semantic_degraded_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "degraded", False)
+    semantic_degraded = bool(semantic_degraded_raw() if callable(semantic_degraded_raw) else semantic_degraded_raw)
+    policy_degraded = bool(SUBSTRATE_POLICY_STORE.degraded())
+    control_posture = "degraded" if control_degraded else ("postgres" if control_kind == "postgres" else "fallback")
+    return {
+        "control_plane": {
+            "kind": control_kind,
+            "telemetry_kind": telemetry_kind,
+            "degraded": control_degraded,
+            "posture": control_posture,
+            "error": SUBSTRATE_REVIEW_QUEUE_STORE.last_error() or SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        },
+        "semantic": {
+            "kind": semantic_kind,
+            "degraded": semantic_degraded,
+            "posture": "degraded" if semantic_degraded else semantic_kind,
+            "error": getattr(SUBSTRATE_SEMANTIC_STORE, "last_error", lambda: None)(),
+        },
+        "policy": {
+            "kind": policy_kind,
+            "degraded": policy_degraded,
+            "posture": "degraded" if policy_degraded else ("postgres" if policy_kind == "postgres" else "fallback"),
+            "error": SUBSTRATE_POLICY_STORE.last_error(),
+        },
+    }
+
+
+def _substrate_runtime_status_payload(*, queue_limit: int = 20, telemetry_limit: int = 20) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    queue_snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=queue_limit)
+    due_items = SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=now, limit=queue_limit)
+    recent_exec = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=1))
+    telemetry_summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=telemetry_limit))
+    policy_inspection = SUBSTRATE_POLICY_STORE.inspect(audit_limit=5)
+    active_profile = policy_inspection.active_profiles[0].model_dump(mode="json") if policy_inspection.active_profiles else {}
+    next_due = min((item.next_review_at for item in due_items), default=None)
+
+    return {
+        "generated_at": now.isoformat(),
+        "summary": {
+            "queue_count": len(queue_snapshot.queue_items),
+            "due_count": len(due_items),
+            "next_due_at": next_due.isoformat() if next_due else None,
+            "next_item": (
+                {
+                    "queue_item_id": due_items[0].queue_item_id,
+                    "target_zone": due_items[0].target_zone,
+                    "subject_ref": due_items[0].subject_ref,
+                    "remaining_cycles": due_items[0].cycle_budget.remaining_cycles,
+                    "next_review_at": due_items[0].next_review_at.isoformat(),
+                }
+                if due_items
+                else None
+            ),
+            "last_execution": recent_exec[0].model_dump(mode="json") if recent_exec else None,
+            "telemetry_count": (
+                telemetry_summary.total_executions
+                + telemetry_summary.total_noops
+                + telemetry_summary.total_suppressed
+                + telemetry_summary.total_terminated
+                + telemetry_summary.total_failed
+            ),
+            "policy_active_profile_id": active_profile.get("profile_id"),
+            "policy_active_profile": active_profile,
+        },
+        "source": _substrate_source_posture(),
+    }
+
+
+def _execute_substrate_review_cycle(*, allow_followup: bool, explicit_queue_item_id: str | None = None) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    before_due = len(SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=now, limit=200))
+    before_count = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
+    request = GraphReviewRuntimeRequestV1(
+        invocation_surface="operator_review",
+        explicit_queue_item_id=explicit_queue_item_id,
+        execute_frontier_followup_allowed=allow_followup,
+        operator_override_strict_zone=False,
+        max_items_to_consider=20,
+    )
+    result = SUBSTRATE_REVIEW_RUNTIME_EXECUTOR.execute_once(request=request, now=now)
+    after_now = datetime.now(timezone.utc)
+    after_due = len(SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=after_now, limit=200))
+    after_count = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
+    return {
+        "request": {
+            "invocation_surface": "operator_review",
+            "allow_frontier_followup": allow_followup,
+            "explicit_queue_item_id": explicit_queue_item_id,
+            "single_cycle": True,
+        },
+        "result": result.model_dump(mode="json"),
+        "queue_before": {"count": before_count, "due_count": before_due},
+        "queue_after": {"count": after_count, "due_count": after_due},
+        "source": _substrate_source_posture(),
+    }
+
+
 @router.get("/substrate")
 async def substrate_page() -> HTMLResponse:
     from .main import TEMPLATES_DIR, build_hub_ui_asset_version
@@ -1503,3 +1630,56 @@ def api_substrate_policy_comparison(
         window_seconds=window_seconds,
         sample_limit=sample_limit,
     )
+
+
+@router.get("/api/substrate/review-runtime/status")
+def api_substrate_review_runtime_status(
+    queue_limit: int = Query(default=20, ge=1, le=200),
+    telemetry_limit: int = Query(default=20, ge=1, le=500),
+) -> Dict[str, Any]:
+    return _substrate_runtime_status_payload(queue_limit=queue_limit, telemetry_limit=telemetry_limit)
+
+
+@router.post("/api/substrate/review-runtime/execute-once")
+def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewExecuteRequest()
+    return _execute_substrate_review_cycle(
+        allow_followup=False,
+        explicit_queue_item_id=req.explicit_queue_item_id,
+    )
+
+
+@router.post("/api/substrate/review-runtime/execute-once-followup")
+def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewExecuteRequest()
+    return _execute_substrate_review_cycle(
+        allow_followup=True,
+        explicit_queue_item_id=req.explicit_queue_item_id,
+    )
+
+
+@router.post("/api/substrate/review-runtime/smoke-check")
+def api_substrate_review_runtime_smoke_check(request: SubstrateReviewSmokeCheckRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewSmokeCheckRequest()
+    now = datetime.now(timezone.utc)
+    queue_snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=req.limit)
+    due_items = SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=now, limit=req.limit)
+    semantic_probe = SUBSTRATE_SEMANTIC_STORE.query_hotspot_region(limit_nodes=min(5, req.limit), limit_edges=max(10, req.limit * 2))
+    source = _substrate_source_posture()
+    return {
+        "generated_at": now.isoformat(),
+        "source": source,
+        "checks": {
+            "queue_available": len(queue_snapshot.queue_items) >= 0,
+            "runtime_eligible": len(due_items) > 0,
+            "semantic_available": not bool(semantic_probe.degraded),
+            "control_plane_available": not bool(source["control_plane"]["degraded"]),
+        },
+        "summary": {
+            "queue_count": len(queue_snapshot.queue_items),
+            "due_count": len(due_items),
+            "semantic_query_kind": semantic_probe.query_kind,
+            "semantic_truncated": bool(semantic_probe.truncated),
+            "semantic_error": semantic_probe.error,
+        },
+    }

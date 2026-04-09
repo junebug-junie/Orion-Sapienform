@@ -117,14 +117,24 @@ def test_backend_substrate_endpoints_have_source_metadata_and_expected_split() -
     assert "query" in queue["source"]
 
 
-def test_main_hub_has_substrate_navigation_link_to_standalone_page() -> None:
+def test_main_hub_has_substrate_navigation_link_in_shell_tabs() -> None:
     index_html = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
 
     assert 'id="substratePageLink"' in index_html
-    assert 'href="/substrate"' in index_html
+    assert 'href="#substrate"' in index_html
+    assert 'data-hash-target="#substrate"' in index_html
     assert ">Substrate<" in index_html
     substrate_link_block = index_html.split('id="substratePageLink"', 1)[1].split("</a>", 1)[0]
-    assert 'data-hash-target="' not in substrate_link_block
+    assert 'role="button"' in substrate_link_block
+
+
+def test_main_hub_has_isolated_substrate_shell_panel_embedding_standalone_page() -> None:
+    index_html = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert '<section id="substrate" data-panel="substrate"' in index_html
+    assert 'id="substratePanelFrame"' in index_html
+    assert 'src="/substrate"' in index_html
+    assert 'id="substratePanelStandaloneLink" href="/substrate"' in index_html
 
 
 def test_substrate_page_keeps_main_shell_untouched() -> None:
@@ -132,7 +142,7 @@ def test_substrate_page_keeps_main_shell_untouched() -> None:
     app_js = (HUB_ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
 
     assert "substrate.js" not in index_html
-    assert "Substrate Inspector" not in index_html
+    assert "id=\"substratePanelFrame\"" in index_html
     assert "/api/substrate/overview" not in app_js
     assert "substrateRefreshButton" not in app_js
 

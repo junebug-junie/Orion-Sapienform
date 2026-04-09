@@ -141,7 +141,7 @@ def test_nested_planner_child_corr_still_replies_to_exec_parent(monkeypatch):
     reply_to = f"orion:exec:result:AgentChainService:{parent_corr}"
     env = _request_env(corr=parent_corr, reply_to=reply_to)
     bus = _FakeBus(env)
-    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body: [])
+    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body, **_kwargs: ([], []))
     monkeypatch.setattr(bus_listener, "execute_agent_chain", agent_api.execute_agent_chain)
 
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))

@@ -986,6 +986,16 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     if client_meta is not None:
         extra_sql_fields["client_meta"] = _json_sanitize(client_meta)
     thought_process, thought_source = _thought_candidate_and_reason(payload)
+    logger.info(
+        "sql_writer_thought_selection corr=%s kind=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s selected_source=%s selected_len=%s",
+        env.correlation_id,
+        env.kind,
+        _debug_len(payload.get("reasoning_content")) if isinstance(payload, dict) else 0,
+        _debug_len(payload.get("inline_think_content")) if isinstance(payload, dict) else 0,
+        payload.get("thinking_source") if isinstance(payload, dict) else None,
+        thought_source,
+        _debug_len(thought_process),
+    )
     if env.kind == "chat.history":
         print(
             "===THINK_HOP=== hop=sql_before_assign "

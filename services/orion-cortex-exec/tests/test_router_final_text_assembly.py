@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.router import _extract_final_text
+from app.router import _extract_final_text, _extract_reasoning_payload
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 
@@ -141,3 +141,40 @@ def test_chat_general_rejects_remaining_planner_candidate_after_cleanup() -> Non
     ], verb_name="chat_general")
     assert final_text == ""
     assert diag["planning_candidate_rejected"] is True
+
+
+def test_extract_reasoning_payload_preserves_inline_think_when_no_provider_reasoning() -> None:
+    _, inline_think_content, thinking_source, _ = _extract_reasoning_payload(
+        [
+            _step(
+                {
+                    "content": "Visible answer.",
+                    "inline_think_content": "hidden thinking",
+                    "thinking_source": "inline_think",
+                }
+            )
+        ],
+        think_close_tag_only_detected=True,
+    )
+    assert inline_think_content == "hidden thinking"
+    assert thinking_source == "inline_think_close_tag_only"
+
+
+def test_extract_reasoning_payload_falls_back_to_prior_step_results() -> None:
+    reasoning_content, inline_think_content, thinking_source, _ = _extract_reasoning_payload(
+        [],
+        prior_step_results=[
+            {
+                "result": {
+                    "LLMGatewayService": {
+                        "inline_think_content": "prior hidden",
+                        "thinking_source": "inline_think",
+                    }
+                }
+            }
+        ],
+        think_close_tag_only_detected=False,
+    )
+    assert reasoning_content is None
+    assert inline_think_content == "prior hidden"
+    assert thinking_source == "inline_think_full_block"

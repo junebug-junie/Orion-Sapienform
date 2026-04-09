@@ -436,17 +436,42 @@ def _extract_reasoning_payload(
     step_results: List[StepExecutionResult],
     *,
     think_close_tag_only_detected: bool = False,
+    prior_step_results: List[Dict[str, Any]] | None = None,
+    correlation_id: str | None = None,
 ) -> tuple[str | None, str | None, str, Dict[str, Any] | None]:
-    for step in step_results:
-        if not isinstance(step.result, dict):
-            continue
-        payload = step.result.get("LLMGatewayService")
-        if not isinstance(payload, dict):
-            continue
+    def _iter_payloads() -> List[Dict[str, Any]]:
+        payloads: List[Dict[str, Any]] = []
+        for step in step_results:
+            if not isinstance(step.result, dict):
+                continue
+            payload = step.result.get("LLMGatewayService")
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        for prior in prior_step_results or []:
+            if not isinstance(prior, dict):
+                continue
+            svc_payload = prior.get("result")
+            if not isinstance(svc_payload, dict):
+                continue
+            payload = svc_payload.get("LLMGatewayService")
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        return payloads
+
+    for payload in _iter_payloads():
         reasoning_content = payload.get("reasoning_content")
         inline_think_content = payload.get("inline_think_content")
         raw_thinking_source = payload.get("thinking_source")
         reasoning_trace = payload.get("reasoning_trace")
+        if correlation_id:
+            logger.info(
+                "exec_step_reasoning_capture corr_id=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s payload_keys=%s",
+                correlation_id,
+                len(reasoning_content) if isinstance(reasoning_content, str) else 0,
+                len(inline_think_content) if isinstance(inline_think_content, str) else 0,
+                raw_thinking_source if isinstance(raw_thinking_source, str) else "none",
+                sorted(list(payload.keys())),
+            )
         if isinstance(reasoning_content, str) and reasoning_content.strip():
             trace_dict = reasoning_trace if isinstance(reasoning_trace, dict) else None
             return reasoning_content.strip(), (
@@ -571,8 +596,12 @@ class PlanRunner:
                 existing_scope,
             )
         ctx["_run_scope_corr_id"] = correlation_id
-        ctx["prior_step_results"] = []
-        ctx.setdefault("prior_step_results_by_corr", {})[correlation_id] = []
+        scoped_results = ctx.setdefault("prior_step_results_by_corr", {})
+        existing_scoped_results = scoped_results.get(correlation_id)
+        if not isinstance(existing_scoped_results, list):
+            existing_scoped_results = []
+            scoped_results[correlation_id] = existing_scoped_results
+        ctx["prior_step_results"] = list(existing_scoped_results)
         if mode == "brain" and plan.verb_name and not is_active(plan.verb_name, node_name=settings.node_name):
             logger.warning("Inactive verb blocked in router corr_id=%s verb=%s", correlation_id, plan.verb_name)
             return PlanExecutionResult(
@@ -780,6 +809,8 @@ class PlanRunner:
         reasoning_content, inline_think_content, thinking_source, reasoning_trace = _extract_reasoning_payload(
             step_results,
             think_close_tag_only_detected=bool(final_text_diag.get("think_close_tag_only_detected")),
+            prior_step_results=list(ctx.get("prior_step_results") or []),
+            correlation_id=correlation_id,
         )
         if reasoning_trace is None and metacog_traces:
             first_trace = metacog_traces[0]
@@ -799,6 +830,11 @@ class PlanRunner:
             thinking_source,
             len(final_text or ""),
         )
+        ctx["reasoning_content"] = reasoning_content
+        ctx["inline_think_content"] = inline_think_content
+        ctx["thinking_source"] = thinking_source
+        if isinstance(reasoning_trace, dict):
+            ctx["reasoning_trace"] = reasoning_trace
         logger.info(
             "cortex_exec_metacog_attached corr_id=%s verb=%s traces=%s",
             correlation_id,

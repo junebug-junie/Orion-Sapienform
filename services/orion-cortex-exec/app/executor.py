@@ -804,6 +804,44 @@ def _last_user_message(ctx: Dict[str, Any]) -> str:
     return str(ctx.get("user_message") or "")
 
 
+def _extract_reasoning_fields_from_ctx(ctx: Dict[str, Any]) -> tuple[str | None, str | None, str]:
+    reasoning_content = ctx.get("reasoning_content")
+    inline_think_content = ctx.get("inline_think_content")
+    thinking_source = str(ctx.get("thinking_source") or "none")
+    if (
+        (isinstance(reasoning_content, str) and reasoning_content.strip())
+        or (isinstance(inline_think_content, str) and inline_think_content.strip())
+    ):
+        return (
+            reasoning_content.strip() if isinstance(reasoning_content, str) and reasoning_content.strip() else None,
+            inline_think_content.strip() if isinstance(inline_think_content, str) and inline_think_content.strip() else None,
+            thinking_source,
+        )
+    prior = ctx.get("prior_step_results")
+    if not isinstance(prior, list):
+        return None, None, "none"
+    for step in reversed(prior):
+        if not isinstance(step, dict):
+            continue
+        result = step.get("result")
+        if not isinstance(result, dict):
+            continue
+        llm_payload = result.get("LLMGatewayService")
+        if not isinstance(llm_payload, dict):
+            continue
+        reasoning_content = llm_payload.get("reasoning_content")
+        inline_think_content = llm_payload.get("inline_think_content")
+        thinking_source = str(llm_payload.get("thinking_source") or "none")
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            return reasoning_content.strip(), (
+                inline_think_content.strip() if isinstance(inline_think_content, str) and inline_think_content.strip() else None
+            ), "provider_reasoning"
+        if isinstance(inline_think_content, str) and inline_think_content.strip():
+            normalized_source = "inline_think_full_block" if thinking_source == "inline_think" else thinking_source
+            return None, inline_think_content.strip(), normalized_source
+    return None, None, "none"
+
+
 def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tuple[int, str, int | None]:
     requested_raw = ctx.get("max_tokens")
     requested: int | None = None
@@ -1289,7 +1327,12 @@ async def call_step_services(
     planner_client = PlannerReactClient(bus)
     agent_client = AgentChainClient(bus)
 
-    def _record_scoped_step(status: str, error: str | None = None) -> None:
+    def _record_scoped_step(
+        status: str,
+        error: str | None = None,
+        result_payload: Dict[str, Any] | None = None,
+        logs_payload: List[str] | None = None,
+    ) -> None:
         scoped = ctx.get("prior_step_results_by_corr")
         if not isinstance(scoped, dict):
             return
@@ -1297,15 +1340,18 @@ async def call_step_services(
         if not isinstance(scoped_list, list):
             scoped_list = []
             scoped[run_scope] = scoped_list
-        scoped_list.append(
-            {
-                "step_name": step.step_name,
-                "verb_name": step.verb_name,
-                "status": status,
-                "error": error,
-                "services": list(step.services or []),
-            }
-        )
+        scoped_entry = {
+            "step_name": step.step_name,
+            "verb_name": step.verb_name,
+            "status": status,
+            "error": error,
+            "services": list(step.services or []),
+        }
+        if isinstance(result_payload, dict):
+            scoped_entry["result"] = result_payload
+        if isinstance(logs_payload, list):
+            scoped_entry["logs"] = list(logs_payload)
+        scoped_list.append(scoped_entry)
         ctx["prior_step_results"] = list(scoped_list)
 
     prepare_brain_reply_context(ctx)
@@ -1702,7 +1748,40 @@ async def call_step_services(
                     continue
 
                 try:
+                    reasoning_content, inline_think_content, thinking_source = _extract_reasoning_fields_from_ctx(ctx)
+                    thought_candidate = None
+                    thought_source = "none"
+                    if thinking_source == "provider_reasoning" and isinstance(reasoning_content, str) and reasoning_content.strip():
+                        thought_candidate = reasoning_content.strip()
+                        thought_source = "reasoning_content.provider_reasoning"
+                    elif thinking_source.startswith("inline_think") and isinstance(inline_think_content, str) and inline_think_content.strip():
+                        thought_candidate = inline_think_content.strip()
+                        thought_source = f"inline_think_content.{thinking_source}"
+
                     entry = normalize_collapse_entry(final_data)
+                    entry_payload = entry.model_dump(mode="json")
+                    state_snapshot = entry_payload.get("state_snapshot")
+                    if not isinstance(state_snapshot, dict):
+                        state_snapshot = {}
+                    telemetry = state_snapshot.get("telemetry")
+                    if not isinstance(telemetry, dict):
+                        telemetry = {}
+                    telemetry["reasoning_content"] = reasoning_content if isinstance(reasoning_content, str) else None
+                    telemetry["inline_think_content"] = inline_think_content if isinstance(inline_think_content, str) else None
+                    telemetry["thinking_source"] = thinking_source
+                    telemetry["thought_process"] = thought_candidate
+                    telemetry["thought_process_source"] = thought_source
+                    state_snapshot["telemetry"] = telemetry
+                    entry_payload["state_snapshot"] = state_snapshot
+                    logger.info(
+                        "metacog_publish_reasoning_payload corr_id=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s selected_thought_len=%s selected_thought_source=%s",
+                        correlation_id,
+                        len(reasoning_content) if isinstance(reasoning_content, str) else 0,
+                        len(inline_think_content) if isinstance(inline_think_content, str) else 0,
+                        thinking_source,
+                        len(thought_candidate) if isinstance(thought_candidate, str) else 0,
+                        thought_source,
+                    )
                     event_id = str(uuid4())
                     trace_meta = _trace_meta_from_ctx(
                         ctx,
@@ -1716,7 +1795,7 @@ async def call_step_services(
                         source=source,
                         correlation_id=correlation_id,
                         trace=trace_meta,
-                        payload=entry.model_dump(mode="json"),
+                        payload=entry_payload,
                     )
 
                     await bus.publish(settings.channel_collapse_sql_write, env)
@@ -2468,7 +2547,7 @@ async def call_step_services(
         except Exception as e:
             logs.append(f"exception <- {service}: {e}")
             logger.error(f"Service {service} failed: {e}")
-            _record_scoped_step("fail", f"{service}: {e}")
+            _record_scoped_step("fail", f"{service}: {e}", merged_result, logs)
             return StepExecutionResult(
                 status="fail",
                 verb_name=step.verb_name,
@@ -2483,7 +2562,7 @@ async def call_step_services(
 
     if step_failed:
         logs.append(f"fail-fast <- {step_error}")
-        _record_scoped_step("fail", step_error)
+        _record_scoped_step("fail", step_error, merged_result, logs)
         return StepExecutionResult(
             status="fail",
             verb_name=step.verb_name,
@@ -2497,7 +2576,7 @@ async def call_step_services(
             error=step_error,
         )
 
-    _record_scoped_step("success", None)
+    _record_scoped_step("success", None, merged_result, logs)
     return StepExecutionResult(
         status="success",
         verb_name=step.verb_name,

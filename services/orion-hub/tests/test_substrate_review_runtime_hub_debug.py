@@ -156,6 +156,106 @@ def test_smoke_check_is_bounded_and_returns_source_and_checks() -> None:
     assert "control_plane" in payload["source"]
 
 
+def test_debug_run_route_returns_structured_payload(monkeypatch) -> None:
+    monkeypatch.setattr(api_routes, "_substrate_runtime_status_payload", lambda **kwargs: {"summary": {"queue_count": 1, "due_count": 1}})
+    monkeypatch.setattr(api_routes, "_sql_review_queue_payload", lambda **kwargs: {"data": {"queue_items": [{"queue_item_id": "q-1"}]}})
+    monkeypatch.setattr(api_routes, "_graphdb_overview_payload", lambda **kwargs: {"data": {"nodes": 3}})
+    monkeypatch.setattr(api_routes, "_graphdb_hotspots_payload", lambda **kwargs: {"data": {"hotspots": ["h1"]}})
+    monkeypatch.setattr(api_routes, "_sql_review_executions_payload", lambda **kwargs: {"data": {"executions": []}})
+    monkeypatch.setattr(api_routes, "_bootstrap_substrate_review_frontier", lambda **kwargs: {"items_enqueued": 2, "notes": ["bootstrap_seeded"]})
+    monkeypatch.setattr(
+        api_routes,
+        "_execute_substrate_review_cycle",
+        lambda **kwargs: {"result": {"outcome": "executed", "audit_summary": {"selection_reason": "eligible_item_selected"}}},
+    )
+    monkeypatch.setattr(api_routes, "_substrate_source_posture", lambda: {"control_plane": {"degraded": False}, "semantic": {"degraded": False}})
+
+    payload = api_routes.api_substrate_review_runtime_debug_run()
+    assert "generated_at" in payload
+    assert "baseline" in payload
+    assert "bootstrap" in payload
+    assert "post_bootstrap" in payload
+    assert "execute_once" in payload
+    assert "final" in payload
+    assert "diagnosis" in payload
+    assert "source_posture" in payload
+
+
+def test_debug_diagnosis_classification_cases() -> None:
+    base_source = {"control_plane": {"degraded": False}, "semantic": {"degraded": False}}
+
+    unavailable = api_routes._classify_substrate_debug_diagnosis(
+        source_posture=base_source,
+        bootstrap_payload={"error": "route down"},
+        baseline_queue_payload={"data": {"queue_items": []}},
+        post_bootstrap_queue_payload={"data": {"queue_items": []}},
+        execute_payload={"result": {"outcome": "noop", "audit_summary": {"selection_reason": "no eligible queue items"}}},
+        final_queue_payload={"data": {"queue_items": []}},
+    )
+    assert "bootstrap route/path unavailable" in unavailable["categories"]
+
+    zero_items = api_routes._classify_substrate_debug_diagnosis(
+        source_posture=base_source,
+        bootstrap_payload={"items_enqueued": 0, "notes": ["seed_skipped:hotspot_region"]},
+        baseline_queue_payload={"data": {"queue_items": []}},
+        post_bootstrap_queue_payload={"data": {"queue_items": []}},
+        execute_payload={"result": {"outcome": "noop", "audit_summary": {"selection_reason": "no eligible queue items"}}},
+        final_queue_payload={"data": {"queue_items": []}},
+    )
+    assert "bootstrap produced zero items" in zero_items["categories"]
+    assert "likely weak seed heuristics for current graph shape" in zero_items["categories"]
+
+    success = api_routes._classify_substrate_debug_diagnosis(
+        source_posture=base_source,
+        bootstrap_payload={"items_enqueued": 2, "notes": ["bootstrap_seeded"]},
+        baseline_queue_payload={"data": {"queue_items": []}},
+        post_bootstrap_queue_payload={"data": {"queue_items": [{"id": 1}]}},
+        execute_payload={"result": {"outcome": "executed", "audit_summary": {"selection_reason": "eligible_item_selected"}}},
+        final_queue_payload={"data": {"queue_items": []}},
+    )
+    assert "bootstrap produced items and execute-once succeeded" in success["categories"]
+
+    enqueue_but_empty = api_routes._classify_substrate_debug_diagnosis(
+        source_posture=base_source,
+        bootstrap_payload={"items_enqueued": 1, "notes": ["bootstrap_seeded"]},
+        baseline_queue_payload={"data": {"queue_items": []}},
+        post_bootstrap_queue_payload={"data": {"queue_items": []}},
+        execute_payload={"result": {"outcome": "noop", "audit_summary": {"selection_reason": "no eligible queue items"}}},
+        final_queue_payload={"data": {"queue_items": []}},
+    )
+    assert "bootstrap claimed to enqueue but queue remained empty" in enqueue_but_empty["categories"]
+
+    queue_nonempty_noop = api_routes._classify_substrate_debug_diagnosis(
+        source_posture=base_source,
+        bootstrap_payload={"items_enqueued": 1, "notes": ["bootstrap_seeded"]},
+        baseline_queue_payload={"data": {"queue_items": []}},
+        post_bootstrap_queue_payload={"data": {"queue_items": [{"id": 1}]}},
+        execute_payload={"result": {"outcome": "noop", "audit_summary": {"selection_reason": "no eligible queue items"}}},
+        final_queue_payload={"data": {"queue_items": [{"id": 1}]}},
+    )
+    assert "queue nonempty but execute-once still noop due to no eligible items" in queue_nonempty_noop["categories"]
+
+    control_degraded = api_routes._classify_substrate_debug_diagnosis(
+        source_posture={"control_plane": {"degraded": True}, "semantic": {"degraded": False}},
+        bootstrap_payload={"items_enqueued": 0, "notes": []},
+        baseline_queue_payload={"data": {"queue_items": []}},
+        post_bootstrap_queue_payload={"data": {"queue_items": []}},
+        execute_payload={"result": {"outcome": "noop", "audit_summary": {"selection_reason": "no eligible queue items"}}},
+        final_queue_payload={"data": {"queue_items": []}},
+    )
+    assert "control plane degraded" in control_degraded["categories"]
+
+    semantic_degraded = api_routes._classify_substrate_debug_diagnosis(
+        source_posture={"control_plane": {"degraded": False}, "semantic": {"degraded": True}},
+        bootstrap_payload={"items_enqueued": 0, "notes": ["seed_skipped:concept_region"]},
+        baseline_queue_payload={"data": {"queue_items": []}},
+        post_bootstrap_queue_payload={"data": {"queue_items": []}},
+        execute_payload={"result": {"outcome": "noop", "audit_summary": {"selection_reason": "no eligible queue items"}}},
+        final_queue_payload={"data": {"queue_items": []}},
+    )
+    assert "semantic substrate degraded" in semantic_degraded["categories"]
+
+
 def test_hub_substrate_debug_surface_does_not_embed_standalone_page() -> None:
     index_html = TEMPLATE_PATH.read_text(encoding="utf-8")
     app_js = APP_JS_PATH.read_text(encoding="utf-8")

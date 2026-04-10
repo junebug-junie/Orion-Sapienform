@@ -24,6 +24,7 @@ class _FakeBus:
         self.codec = _FakeCodec(envelope)
         self.published: list[tuple[str, BaseEnvelope]] = []
         self.forked: _FakePlannerBus | None = None
+        self.fork_start_rpc_worker: bool | None = None
 
     async def connect(self):
         return None
@@ -32,7 +33,8 @@ class _FakeBus:
         return None
 
     async def fork(self, *, start_rpc_worker: bool = False):
-        assert start_rpc_worker is True
+        self.fork_start_rpc_worker = start_rpc_worker
+        assert start_rpc_worker is False
         if self.forked is None:
             self.forked = _FakePlannerBus()
         return self.forked
@@ -107,6 +109,7 @@ def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
 
     assert len(bus.published) == 1
+    assert bus.fork_start_rpc_worker is False
     channel, result_env = bus.published[0]
     assert channel == reply_to
     assert str(result_env.correlation_id) == corr

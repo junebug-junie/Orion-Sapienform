@@ -93,8 +93,8 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any]) -> None:
 
     try:
         req = AgentChainRequest(**payload)
-        rpc_bus = await bus.fork(start_rpc_worker=True)
-        logger.info("[agent-chain] planner rpc bus=fork parent=%s", incoming_corr)
+        rpc_bus = await bus.fork(start_rpc_worker=False)
+        logger.info("[agent-chain] planner rpc bus=fork parent=%s rpc_worker=%s", incoming_corr, False)
         result = await execute_agent_chain(req, correlation_id=incoming_corr, rpc_bus=rpc_bus)
         resp = BaseEnvelope(
             kind="agent.chain.result",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.router import _extract_final_text, _extract_reasoning_payload
+from app.router import _extract_final_text, _extract_reasoning_payload, _should_fail_empty_runtime_skill_output
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 
@@ -211,3 +211,11 @@ def test_extract_reasoning_payload_chat_general_uses_only_llm_chat_general_canon
     assert reasoning_content is None
     assert inline_think_content == "authoritative chat thought"
     assert thinking_source == "inline_think_full_block"
+
+
+def test_runtime_skill_empty_final_text_fail_closes() -> None:
+    assert _should_fail_empty_runtime_skill_output(
+        overall_status="success",
+        verb_name="skills.runtime.docker_prune_stopped_containers.v1",
+        final_text="",
+    ) is True

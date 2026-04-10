@@ -195,6 +195,12 @@ def _available_operational_semantic_tools(toolset: List[ToolDef]) -> List[ToolDe
 _RUNTIME_CLEANUP_TERMS = {"docker", "container", "cleanup", "stopped", "prune", "runtime", "housekeep", "housekeeping", "dry", "run"}
 _CHANGE_SUMMARY_TERMS = {"summarize", "summary", "recent", "changes", "change", "changelog", "intel"}
 _UNSAFE_ASSISTANT_COMMAND_PATTERN = re.compile(r"(docker\s+(rm|rmi|system\s+prune|container\s+prune|volume\s+rm|network\s+rm)|rm\s+-rf|kubectl\s+delete)", re.IGNORECASE)
+_OPERATIONAL_VERB_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("assess_mesh_presence", ("node", "nodes", "mesh", "up", "online", "alive", "status")),
+    ("assess_storage_health", ("disk", "storage", "health", "filesystem", "volume")),
+    ("summarize_recent_changes", ("summarize", "summary", "recent", "changes", "prs", "pull request", "commits")),
+    ("housekeep_runtime", ("cleanup", "clean up", "stopped", "container", "containers", "runtime", "prune", "dry-run", "dry run")),
+]
 
 
 def _tool_semantic_haystack(tool: ToolDef) -> str:
@@ -266,6 +272,34 @@ def _select_preferred_operational_tool(
     scored = _semantic_override_scores(user_text=user_text, normalized_action_input=normalized_action_input, tools=tools)
     best = scored[0]["tool"] if scored else None
     return best, scored
+
+
+def _select_canonical_operational_tool(user_text: str, tools: List[ToolDef]) -> Optional[ToolDef]:
+    if not tools:
+        return None
+    hay = str(user_text or "").lower()
+    tool_map = {str(t.tool_id or ""): t for t in tools}
+    priority_rules = [
+        ("assess_storage_health", ("disk", "storage")),
+        ("summarize_recent_changes", ("recent pr", "recent pull request", "recent changes", "summarize recent")),
+        ("housekeep_runtime", ("cleanup", "dry-run", "dry run", "stopped containers", "prune")),
+        ("assess_mesh_presence", ("nodes are up", "which nodes", "mesh presence", "nodes up")),
+    ]
+    for tool_id, phrases in priority_rules:
+        if tool_id not in tool_map:
+            continue
+        if any(phrase in hay for phrase in phrases):
+            return tool_map[tool_id]
+    best_tool: Optional[ToolDef] = None
+    best_hits = 0
+    for tool_id, terms in _OPERATIONAL_VERB_RULES:
+        if tool_id not in tool_map:
+            continue
+        hits = sum(1 for term in terms if term in hay)
+        if hits > best_hits:
+            best_hits = hits
+            best_tool = tool_map[tool_id]
+    return best_tool if best_hits >= 2 else None
 
 
 def _should_override_planner_operational_action(
@@ -1227,10 +1261,16 @@ class Supervisor:
             operational_tools,
             normalized_action_input=ctx.get("normalized_action_input") if isinstance(ctx.get("normalized_action_input"), dict) else None,
         )
+        canonical_operational_tool = _select_canonical_operational_tool(user_text, operational_tools)
+        if canonical_operational_tool is not None:
+            operational_intent_detected = True
+            preferred_operational_tool = canonical_operational_tool
         ctx["no_write_active"] = no_write_active
         ctx["execution_blocked_reason"] = execution_blocked_reason
         ctx["operational_intent_detected"] = operational_intent_detected
         ctx["available_operational_tools"] = offered_operational_tool_ids
+        if canonical_operational_tool is not None:
+            ctx.setdefault("debug", {})["canonical_operational_tool"] = canonical_operational_tool.tool_id
         allowed_verbs = [str(v).strip() for v in (options.get("allowed_verbs") or []) if str(v).strip()]
         if operational_intent_detected:
             logger.info(
@@ -1368,6 +1408,13 @@ class Supervisor:
                     preferred_tool_id=preferred_operational_tool.tool_id,
                     override_scores=override_scores,
                 )
+                if canonical_operational_tool is not None and str(tool_id or "") != canonical_operational_tool.tool_id:
+                    should_override = True
+                    override_diag = {
+                        **override_diag,
+                        "forced_by": "canonical_operational_rail",
+                        "preferred_tool_id": canonical_operational_tool.tool_id,
+                    }
                 ctx.setdefault("debug", {})["semantic_override_decision"] = override_diag
                 if should_override and action:
                     logger.info(

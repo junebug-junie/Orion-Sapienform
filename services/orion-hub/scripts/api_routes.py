@@ -1642,6 +1642,160 @@ def _bootstrap_substrate_review_frontier(*, limit: int = 12) -> Dict[str, Any]:
     }
 
 
+def _queue_count(payload: Dict[str, Any]) -> int:
+    data = payload.get("data")
+    if isinstance(data, dict):
+        items = data.get("queue_items")
+        if isinstance(items, list):
+            return len(items)
+    return 0
+
+
+def _classify_substrate_debug_diagnosis(
+    *,
+    source_posture: Dict[str, Any],
+    bootstrap_payload: Dict[str, Any],
+    baseline_queue_payload: Dict[str, Any],
+    post_bootstrap_queue_payload: Dict[str, Any],
+    execute_payload: Dict[str, Any],
+    final_queue_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    categories: list[str] = []
+    highlights: list[str] = []
+    severity = "ok"
+
+    control_plane = source_posture.get("control_plane") if isinstance(source_posture, dict) else {}
+    semantic = source_posture.get("semantic") if isinstance(source_posture, dict) else {}
+
+    control_degraded = bool(control_plane.get("degraded")) if isinstance(control_plane, dict) else False
+    semantic_degraded = bool(semantic.get("degraded")) if isinstance(semantic, dict) else False
+
+    if control_degraded:
+        categories.append("control plane degraded")
+        highlights.append("Control-plane storage/reporting is degraded.")
+        severity = "degraded"
+
+    if semantic_degraded:
+        categories.append("semantic substrate degraded")
+        highlights.append("Semantic substrate queries are degraded.")
+        severity = "degraded"
+
+    bootstrap_items_enqueued = int(bootstrap_payload.get("items_enqueued") or 0)
+    bootstrap_notes = bootstrap_payload.get("notes")
+    if isinstance(bootstrap_notes, list) and any("seed_skipped" in str(note) for note in bootstrap_notes):
+        categories.append("likely weak seed heuristics for current graph shape")
+        highlights.append("Bootstrap skipped one or more seed regions.")
+        severity = "warning" if severity != "degraded" else severity
+
+    if "items_enqueued" not in bootstrap_payload and "error" in bootstrap_payload:
+        categories.append("bootstrap route/path unavailable")
+        highlights.append("Bootstrap path could not be invoked.")
+        severity = "degraded"
+    elif bootstrap_items_enqueued <= 0:
+        categories.append("bootstrap produced zero items")
+        highlights.append("Bootstrap completed without queue growth.")
+        severity = "warning" if severity != "degraded" else severity
+
+    baseline_queue_count = _queue_count(baseline_queue_payload)
+    post_bootstrap_queue_count = _queue_count(post_bootstrap_queue_payload)
+    final_queue_count = _queue_count(final_queue_payload)
+
+    if bootstrap_items_enqueued > 0 and post_bootstrap_queue_count <= baseline_queue_count:
+        categories.append("bootstrap claimed to enqueue but queue remained empty")
+        highlights.append("Bootstrap reported enqueues, but queue did not increase.")
+        severity = "degraded"
+
+    execute_result = execute_payload.get("result") if isinstance(execute_payload, dict) else {}
+    execute_outcome = execute_result.get("outcome") if isinstance(execute_result, dict) else None
+    execute_reason = ""
+    execute_audit = execute_result.get("audit_summary") if isinstance(execute_result, dict) else {}
+    if isinstance(execute_audit, dict):
+        execute_reason = str(execute_audit.get("selection_reason") or "").strip().lower()
+    execute_notes = execute_result.get("notes") if isinstance(execute_result, dict) else []
+    execute_notes_lower = " ".join(str(note).lower() for note in execute_notes) if isinstance(execute_notes, list) else ""
+
+    if post_bootstrap_queue_count > 0 and execute_outcome == "noop" and (
+        "no eligible queue items" in execute_reason or "not due yet" in execute_reason
+    ):
+        categories.append("queue nonempty but execute-once still noop due to no eligible items")
+        highlights.append("Queue has items, but none were eligible for this cycle.")
+        severity = "warning" if severity == "ok" else severity
+
+    if bootstrap_items_enqueued > 0 and execute_outcome == "executed":
+        categories.append("bootstrap produced items and execute-once succeeded")
+        highlights.append("Bootstrap seeded the queue and one cycle executed successfully.")
+
+    if "seed_skipped" in execute_notes_lower and "likely weak seed heuristics for current graph shape" not in categories:
+        categories.append("likely weak seed heuristics for current graph shape")
+        highlights.append("Execution notes indicate weak substrate seed coverage.")
+        severity = "warning" if severity == "ok" else severity
+
+    summary = " | ".join(highlights) if highlights else "Debug pass completed."
+    return {
+        "severity": severity,
+        "categories": categories,
+        "summary": summary,
+        "facts": {
+            "baseline_queue_count": baseline_queue_count,
+            "post_bootstrap_queue_count": post_bootstrap_queue_count,
+            "final_queue_count": final_queue_count,
+            "bootstrap_items_enqueued": bootstrap_items_enqueued,
+            "execute_outcome": execute_outcome,
+        },
+    }
+
+
+def _run_substrate_review_debug_pass(*, bootstrap_limit: int = 12) -> Dict[str, Any]:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    baseline_status = _substrate_runtime_status_payload(queue_limit=50, telemetry_limit=20)
+    baseline_queue = _sql_review_queue_payload(limit=50)
+    baseline_overview = _graphdb_overview_payload(limit=10)
+    baseline_hotspots = _graphdb_hotspots_payload(limit=20)
+    baseline_executions = _sql_review_executions_payload(limit=20)
+
+    bootstrap = _bootstrap_substrate_review_frontier(limit=bootstrap_limit)
+    post_bootstrap_queue = _sql_review_queue_payload(limit=50)
+    post_bootstrap_status = _substrate_runtime_status_payload(queue_limit=50, telemetry_limit=20)
+
+    execute_once = _execute_substrate_review_cycle(allow_followup=False)
+    final_queue = _sql_review_queue_payload(limit=50)
+    final_status = _substrate_runtime_status_payload(queue_limit=50, telemetry_limit=20)
+    final_executions = _sql_review_executions_payload(limit=20)
+    source_posture = _substrate_source_posture()
+    diagnosis = _classify_substrate_debug_diagnosis(
+        source_posture=source_posture,
+        bootstrap_payload=bootstrap,
+        baseline_queue_payload=baseline_queue,
+        post_bootstrap_queue_payload=post_bootstrap_queue,
+        execute_payload=execute_once,
+        final_queue_payload=final_queue,
+    )
+
+    return {
+        "generated_at": generated_at,
+        "baseline": {
+            "runtime_status": baseline_status,
+            "review_queue": baseline_queue,
+            "overview": baseline_overview,
+            "hotspots": baseline_hotspots,
+            "recent_executions": baseline_executions,
+        },
+        "bootstrap": bootstrap,
+        "post_bootstrap": {
+            "review_queue": post_bootstrap_queue,
+            "runtime_status": post_bootstrap_status,
+        },
+        "execute_once": execute_once,
+        "final": {
+            "review_queue": final_queue,
+            "runtime_status": final_status,
+            "recent_executions": final_executions,
+        },
+        "diagnosis": diagnosis,
+        "source_posture": source_posture,
+    }
+
+
 @router.get("/substrate")
 async def substrate_page() -> HTMLResponse:
     from .main import TEMPLATES_DIR, build_hub_ui_asset_version
@@ -1736,6 +1890,12 @@ def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewE
 def api_substrate_review_runtime_bootstrap(request: SubstrateReviewBootstrapRequest | None = None) -> Dict[str, Any]:
     req = request or SubstrateReviewBootstrapRequest()
     return _bootstrap_substrate_review_frontier(limit=req.limit)
+
+
+@router.post("/api/substrate/review-runtime/debug-run")
+def api_substrate_review_runtime_debug_run(request: SubstrateReviewBootstrapRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewBootstrapRequest()
+    return _run_substrate_review_debug_pass(bootstrap_limit=req.limit)
 
 
 @router.post("/api/substrate/review-runtime/smoke-check")

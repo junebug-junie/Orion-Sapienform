@@ -13,11 +13,30 @@
       <h1 class="text-xl font-semibold">Substrate Inspector</h1>
       <div class="flex gap-2">
         <button id="substrateRefreshButton" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Refresh</button>
+        <button id="substrateBootstrapButton" class="px-3 py-2 text-xs rounded border border-indigo-700 bg-indigo-900/40 hover:bg-indigo-800/60">Bootstrap Frontier</button>
+        <button id="substrateExecuteOnceButton" class="px-3 py-2 text-xs rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800/60">Execute Once</button>
+        <button id="substrateDebugRunButton" class="px-3 py-2 text-xs rounded border border-purple-700 bg-purple-900/40 hover:bg-purple-800/60">Run Debug Pass</button>
         <a href="/" class="px-3 py-2 text-xs rounded border border-gray-700 bg-gray-900 hover:bg-gray-800">Back to Hub</a>
       </div>
     </div>
 
+    <div id="substrateActionError" class="hidden text-xs text-red-300 bg-red-950/40 border border-red-800 rounded p-2"></div>
     <div id="substrateSourceMeta" class="text-xs text-gray-400"></div>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <h2 class="font-medium mb-2">Diagnosis Summary</h2>
+      <div id="substrateDiagnosisSummary" class="text-sm rounded border border-gray-700 bg-gray-950 p-3 text-gray-200">Run Debug Pass to generate a diagnosis.</div>
+    </section>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <h2 class="font-medium mb-2">Runtime Status</h2>
+      <pre id="substrateRuntimeStatus" class="text-xs bg-gray-950 border border-gray-800 rounded p-3 overflow-auto">Loading…</pre>
+    </section>
+
+    <section class="bg-gray-900 border border-gray-800 rounded p-4">
+      <h2 class="font-medium mb-2">Debug Pass Result</h2>
+      <pre id="substrateDebugRunResult" class="text-xs bg-gray-950 border border-gray-800 rounded p-3 overflow-auto">No debug pass run yet.</pre>
+    </section>
 
     <section class="bg-gray-900 border border-gray-800 rounded p-4">
       <h2 class="font-medium mb-2">Substrate Overview (GraphDB)</h2>

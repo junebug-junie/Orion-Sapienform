@@ -529,15 +529,12 @@ async def _execute_bound_capability_request(
         )
     try:
         execution_timeout = _bound_execution_timeout_seconds()
-        observation = await asyncio.wait_for(
-            tool_executor.execute_llm_verb(
-                selected_verb,
-                action_input,
-                parent_correlation_id=parent_corr_id,
-            ),
-            timeout=execution_timeout,
+        observation = await tool_executor.execute_llm_verb(
+            selected_verb,
+            action_input,
+            parent_correlation_id=parent_corr_id,
         )
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         logger.error(
             "[agent-chain] bound_capability_execution_timeout selected_verb=%s timeout_sec=%.2f",
             selected_verb,

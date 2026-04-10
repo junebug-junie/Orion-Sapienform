@@ -186,7 +186,10 @@ class ToolExecutor:
             )
 
         corr = str(uuid4())
-        reply_channel = f"orion:agent-chain:capability:reply:{corr}"
+        # Nested capability execution is a cortex-orch RPC and should use the
+        # canonical cortex result reply family so bus catalog enforcement and
+        # schema validation remain aligned.
+        reply_channel = f"orion:cortex:result:{corr}"
         normalized_input = self._normalize_inputs(tool_id, tool_input)
         req = CortexClientRequest(
             mode="brain",

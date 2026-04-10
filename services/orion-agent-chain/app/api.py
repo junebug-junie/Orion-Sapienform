@@ -529,10 +529,23 @@ async def _execute_bound_capability_request(
         )
     try:
         execution_timeout = _bound_execution_timeout_seconds()
-        observation = await tool_executor.execute_llm_verb(
+        logger.info(
+            "[agent-chain] bound_capability_pre_tool_executor selected_verb=%s timeout_sec=%.2f",
             selected_verb,
-            action_input,
-            parent_correlation_id=parent_corr_id,
+            execution_timeout,
+        )
+        observation = await asyncio.wait_for(
+            tool_executor.execute_llm_verb(
+                selected_verb,
+                action_input,
+                parent_correlation_id=parent_corr_id,
+            ),
+            timeout=execution_timeout,
+        )
+        logger.info(
+            "[agent-chain] bound_capability_post_tool_executor selected_verb=%s selected_skill=%s",
+            selected_verb,
+            (observation or {}).get("selected_skill") if isinstance(observation, dict) else None,
         )
     except (asyncio.TimeoutError, TimeoutError):
         logger.error(

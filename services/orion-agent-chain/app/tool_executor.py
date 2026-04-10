@@ -225,11 +225,24 @@ class ToolExecutor:
             reply_to=reply_channel,
             payload=req.model_dump(mode="json"),
         )
+        logger.info(
+            "[agent-chain] capability_bridge_pre_nested_rpc selected_verb=%s selected_skill=%s corr=%s reply=%s",
+            tool_id,
+            decision.selected_skill,
+            corr,
+            reply_channel,
+        )
         msg = await self.bus.rpc_request(
             "orion:cortex:request",
             env,
             reply_channel=reply_channel,
             timeout_sec=float(settings.default_timeout_seconds),
+        )
+        logger.info(
+            "[agent-chain] capability_bridge_post_nested_rpc selected_verb=%s selected_skill=%s corr=%s",
+            tool_id,
+            decision.selected_skill,
+            corr,
         )
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:

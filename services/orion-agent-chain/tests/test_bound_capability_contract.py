@@ -273,9 +273,7 @@ def test_bound_capability_timeout_terminal_reply(monkeypatch):
 
     class _TimeoutAfterEmitExecutor(_FakeToolExecutor):
         async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
-            await asyncio.sleep(0.06)
-            state["nested_emit_started"] = True
-            raise TimeoutError("nested capability rpc timeout")
+            await asyncio.Event().wait()
 
     fake_exec = _TimeoutAfterEmitExecutor()
 

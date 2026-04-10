@@ -61,8 +61,10 @@ class _FakePlannerBus:
     def __init__(self, *_, **__):
         self.codec = _FakePlannerCodec()
         self.captured = None
+        self.connected = False
 
     async def connect(self):
+        self.connected = True
         return None
 
     async def close(self):
@@ -110,6 +112,7 @@ def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
 
     assert len(bus.published) == 1
     assert bus.fork_start_rpc_worker is False
+    assert bus.forked is not None and bus.forked.connected is True
     channel, result_env = bus.published[0]
     assert channel == reply_to
     assert str(result_env.correlation_id) == corr

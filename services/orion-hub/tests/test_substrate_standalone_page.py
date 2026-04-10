@@ -36,9 +36,19 @@ def test_substrate_route_and_template_and_bundle_are_standalone() -> None:
 
     assert "Substrate Inspector" in template
     assert "substratePolicyComparison" in template
+    assert 'id="substrateBootstrapButton"' in template
+    assert 'id="substrateExecuteOnceButton"' in template
+    assert 'id="substrateDebugRunButton"' in template
+    assert 'id="substrateRuntimeStatus"' in template
+    assert 'id="substrateDebugRunResult"' in template
+    assert 'id="substrateDiagnosisSummary"' in template
     assert "/static/js/substrate.js?v={{HUB_UI_ASSET_VERSION}}" in template
     assert "window.OrionHub" not in script
     assert "\'/api/substrate/overview?limit=10\'" in script
+    assert "\'/api/substrate/review-runtime/status\'" in script
+    assert "\'/api/substrate/review-runtime/bootstrap\'" in script
+    assert "\'/api/substrate/review-runtime/execute-once\'" in script
+    assert "\'/api/substrate/review-runtime/debug-run\'" in script
     assert "policy-comparison?pair_mode=baseline_vs_active" in script
 
     route_paths = {route.path for route in api_routes.router.routes}

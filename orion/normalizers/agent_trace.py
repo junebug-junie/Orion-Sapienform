@@ -215,6 +215,14 @@ def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
         return "Recall retrieved memory context."
     if service_key == "AgentChainService":
         agent_payload = step.result.get("AgentChainService") if isinstance(step.result, dict) else {}
+        bound_payload = agent_payload.get("bound_capability") if isinstance(agent_payload, dict) else {}
+        if isinstance(bound_payload, dict):
+            bound_status = str(bound_payload.get("status") or "").strip().lower()
+            bound_reason = str(bound_payload.get("reason") or "").strip()
+            bound_detail = str(bound_payload.get("detail") or "").strip()
+            if bound_status == "fail" or bound_reason:
+                message = bound_detail or bound_reason or "bound capability failure"
+                return f"Bound capability execution failed: {_coerce_text(message, limit=140)}."
         nested = []
         if isinstance(agent_payload, dict):
             planner_raw = agent_payload.get("planner_raw") if isinstance(agent_payload.get("planner_raw"), dict) else {}
@@ -380,7 +388,14 @@ def _join_phrases(items: List[str]) -> str:
     return ", ".join(filtered[:-1]) + f", and {filtered[-1]}"
 
 
-def _deterministic_summary(*, tools: List[AgentTraceToolStatV1], action_counts: Dict[str, int], effect_counts: Dict[str, int], final_text: str | None) -> str:
+def _deterministic_summary(
+    *,
+    tools: List[AgentTraceToolStatV1],
+    action_counts: Dict[str, int],
+    effect_counts: Dict[str, int],
+    final_text: str | None,
+    failed_step_count: int,
+) -> str:
     families = []
     seen = set()
     for tool in tools:
@@ -425,6 +440,8 @@ def _deterministic_summary(*, tools: List[AgentTraceToolStatV1], action_counts: 
         sentence += f" with {_join_phrases(effect_notes)}"
     else:
         sentence += " without write or side-effect actions"
+    if failed_step_count > 0:
+        sentence += f", and encountered {failed_step_count} failed {_pluralize('step', failed_step_count)}"
     return sentence + "."
 
 
@@ -453,11 +470,15 @@ def build_agent_trace_summary(
     unique_families.sort(key=lambda value: TOOL_FAMILY_ORDER.index(value) if value in TOOL_FAMILY_ORDER else 999)
     action_counts = _counts_with_order(action_counter, ACTION_ORDER)
     effect_counts = _counts_with_order(effect_counter, EFFECT_ORDER)
+    failed_step_count = sum(1 for step in normalized_steps if str(step.status or "").lower() not in {"success"})
+    if failed_step_count == 0 and str(status or "").lower() not in {"success", "unknown"}:
+        failed_step_count = 1
     summary_text = _deterministic_summary(
         tools=tool_stats,
         action_counts=action_counts,
         effect_counts=effect_counts,
         final_text=final_text,
+        failed_step_count=failed_step_count,
     )
     raw_steps = [step.model_dump(mode="json") if hasattr(step, "model_dump") else step for step in (steps or [])]
     raw_metadata = metadata if isinstance(metadata, dict) else {}

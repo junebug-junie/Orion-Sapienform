@@ -289,6 +289,14 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
     return "", diagnostics
 
 
+def _is_runtime_skill_verb(verb_name: str | None) -> bool:
+    return str(verb_name or "").strip().lower().startswith("skills.runtime.")
+
+
+def _should_fail_empty_runtime_skill_output(*, overall_status: str, verb_name: str | None, final_text: str | None) -> bool:
+    return overall_status == "success" and _is_runtime_skill_verb(verb_name) and not str(final_text or "").strip()
+
+
 def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
     summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
     state = ctx.get("chat_autonomy_state") if isinstance(ctx.get("chat_autonomy_state"), dict) else {}
@@ -609,7 +617,8 @@ class PlanRunner:
             ctx["diagnostic"] = True
 
         ctx["verb"] = plan.verb_name
-        prepare_brain_reply_context(ctx)
+        if mode == "brain" and not _is_runtime_skill_verb(plan.verb_name):
+            prepare_brain_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")
         if existing_scope and existing_scope != correlation_id:
             logger.warning(
@@ -820,6 +829,17 @@ class PlanRunner:
         )
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
+        if _should_fail_empty_runtime_skill_output(
+            overall_status=overall_status,
+            verb_name=plan.verb_name,
+            final_text=final_text,
+        ):
+            overall_status = "fail"
+            logger.error(
+                "runtime_skill_empty_terminal_output corr_id=%s verb=%s status=fail",
+                correlation_id,
+                plan.verb_name,
+            )
 
         if depth == 1:
             logger.info("depth1_complete corr_id=%s verb=%s elapsed=%s", correlation_id, plan.verb_name, sum([s.latency_ms for s in step_results]))
@@ -904,7 +924,7 @@ class PlanRunner:
             recall_debug=recall_debug,
             metacog_traces=metacog_traces,
             metadata=metadata,
-            error=None if overall_status == "success" else step_results[-1].error,
+            error=None if overall_status == "success" else (step_results[-1].error or "empty_runtime_terminal_output"),
         )
 
 

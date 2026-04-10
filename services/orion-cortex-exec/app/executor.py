@@ -1354,7 +1354,8 @@ async def call_step_services(
         scoped_list.append(scoped_entry)
         ctx["prior_step_results"] = list(scoped_list)
 
-    prepare_brain_reply_context(ctx)
+    if _should_prepare_brain_reply_context(step=step, ctx=ctx):
+        prepare_brain_reply_context(ctx)
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
@@ -2612,3 +2613,13 @@ def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = Fa
         len((stance_inputs.get("identity") or {}).get("response_policy") or []),
     )
     return stance_inputs
+
+
+def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, Any]) -> bool:
+    mode = str(ctx.get("mode") or "").strip().lower()
+    if mode != "brain":
+        return False
+    verb_name = str(step.verb_name or "").strip().lower()
+    if verb_name.startswith("skills.runtime."):
+        return False
+    return True

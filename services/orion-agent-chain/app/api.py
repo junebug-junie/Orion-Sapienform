@@ -456,9 +456,11 @@ def _bound_execution_timeout_seconds() -> float:
     the parent RPC time out first.
     """
     default_timeout = float(settings.default_timeout_seconds or 90)
-    # Keep under the parent hop budget while allowing capability-backed verbs
-    # with 30s runtimes (e.g. runtime housekeeping) to complete under nominal load.
-    return max(8.0, min(45.0, default_timeout * 0.75))
+    # Bound execution wraps ToolExecutor.execute_llm_verb(), which for capability-backed
+    # verbs performs a nested cortex-orch RPC using settings.default_timeout_seconds.
+    # The guardrail here must exceed that inner timeout so we don't fail closed early
+    # while the concrete skill invocation is still legitimately in flight.
+    return max(12.0, min(180.0, default_timeout + 15.0))
 
 
 async def _execute_bound_capability_request(
@@ -527,6 +529,11 @@ async def _execute_bound_capability_request(
         )
     try:
         execution_timeout = _bound_execution_timeout_seconds()
+        logger.info(
+            "[agent-chain] bound_capability_pre_tool_executor selected_verb=%s timeout_sec=%.2f",
+            selected_verb,
+            execution_timeout,
+        )
         observation = await asyncio.wait_for(
             tool_executor.execute_llm_verb(
                 selected_verb,
@@ -535,7 +542,12 @@ async def _execute_bound_capability_request(
             ),
             timeout=execution_timeout,
         )
-    except asyncio.TimeoutError:
+        logger.info(
+            "[agent-chain] bound_capability_post_tool_executor selected_verb=%s selected_skill=%s",
+            selected_verb,
+            (observation or {}).get("selected_skill") if isinstance(observation, dict) else None,
+        )
+    except (asyncio.TimeoutError, TimeoutError):
         logger.error(
             "[agent-chain] bound_capability_execution_timeout selected_verb=%s timeout_sec=%.2f",
             selected_verb,

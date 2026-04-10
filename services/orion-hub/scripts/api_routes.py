@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ipaddress
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
+from urllib.parse import urlparse
 import aiohttp
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -61,15 +63,57 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
 
+
+def _hub_uses_host_network_mode() -> bool:
+    mode = str(os.getenv("HUB_DOCKER_NETWORK_MODE", "")).strip().lower()
+    return mode == "host"
+
+
+def _postgres_url_host(postgres_url: str) -> str:
+    try:
+        return str(urlparse(postgres_url).hostname or "").strip()
+    except Exception:
+        return ""
+
+
+def _looks_like_docker_service_hostname(postgres_url: str) -> bool:
+    host = _postgres_url_host(postgres_url)
+    if not host:
+        return False
+    if host in {"localhost", "host.docker.internal"}:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return "." not in host
+
+
+def _resolve_control_plane_postgres_url() -> Optional[str]:
+    control_plane_url = str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip()
+    policy_url = str(os.getenv("SUBSTRATE_POLICY_POSTGRES_URL", "")).strip()
+    database_url = str(os.getenv("DATABASE_URL", "")).strip()
+    resolved = control_plane_url or policy_url or database_url or None
+    if resolved and _hub_uses_host_network_mode() and _looks_like_docker_service_hostname(resolved):
+        logger.warning(
+            "Hub is configured for host networking (HUB_DOCKER_NETWORK_MODE=host), "
+            "but the resolved Postgres hostname '%s' looks like a Docker service name. "
+            "Use a host-reachable address (for example 127.0.0.1, LAN IP, or Tailscale IP).",
+            _postgres_url_host(resolved),
+        )
+    return resolved
+
+
 SUBSTRATE_REVIEW_QUEUE_STORE = GraphReviewQueue(
     max_items=200,
     sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_QUEUE_SQL_DB_PATH", "")).strip() or None,
-    postgres_url=str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip() or str(os.getenv("DATABASE_URL", "")).strip() or None,
+    postgres_url=_resolve_control_plane_postgres_url(),
 )
 SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
     max_records=2000,
     sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_TELEMETRY_SQL_DB_PATH", "")).strip() or None,
-    postgres_url=str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip() or str(os.getenv("DATABASE_URL", "")).strip() or None,
+    postgres_url=_resolve_control_plane_postgres_url(),
 )
 SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
 SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()

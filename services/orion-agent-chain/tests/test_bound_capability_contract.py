@@ -271,8 +271,7 @@ def test_bound_capability_internal_error_terminal_reply(monkeypatch):
 def test_bound_capability_timeout_terminal_reply(monkeypatch):
     class _HangingExecutor(_FakeToolExecutor):
         async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
-            await asyncio.sleep(0.25)
-            return {"selected_verb": tool_id, "selected_skill": "never-returned"}
+            await asyncio.Event().wait()
 
     fake_exec = _HangingExecutor()
 
@@ -290,7 +289,7 @@ def test_bound_capability_timeout_terminal_reply(monkeypatch):
     assert bound["observation"]["reply_emitted"] is True
 
 
-def test_bound_execution_timeout_budget_is_below_parent_hop_budget():
+def test_bound_execution_timeout_budget_exceeds_nested_capability_rpc_budget():
     timeout_sec = agent_api._bound_execution_timeout_seconds()
     assert timeout_sec > 25.0
-    assert timeout_sec < float(agent_api.settings.default_timeout_seconds)
+    assert timeout_sec > float(agent_api.settings.default_timeout_seconds)

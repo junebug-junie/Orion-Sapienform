@@ -309,6 +309,35 @@ class BoundFailureSupervisor(Supervisor):
         )
 
 
+class StructuredBoundFailureSupervisor(BoundFailureSupervisor):
+    async def _execute_action(self, **kwargs):
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=100,
+            result={
+                "AgentChainService": {
+                    "text": "Bound capability execution failed: capability execution timed out after 25.00s",
+                    "structured": {
+                        "finalization_reason": "bound_capability_fail_closed",
+                        "bound_capability": {
+                            "status": "fail",
+                            "reason": "capability_executor_unavailable",
+                            "path": "bound_direct_timeout",
+                            "detail": "capability execution timed out after 25.00s",
+                        },
+                    },
+                    "runtime_debug": {"bound_capability_terminal_path": "bound_direct_timeout"},
+                }
+            },
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+
 class TestSupervisorPlannerDelegate(unittest.TestCase):
     def _run(self, planner_outputs, action_step_output=None, action_outputs=None):
         supervisor = StubSupervisor(planner_outputs, action_step_output=action_step_output, action_outputs=action_outputs)
@@ -594,6 +623,30 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         self.assertNotIn("I may have drifted from your request", result.final_text)
         self.assertEqual(result.status, "fail")
         self.assertIn("runtime_policy", result.metadata)
+        self.assertEqual(result.metadata["runtime_policy"]["bound_failure_signal"]["path"], "bound_direct_timeout")
+
+    def test_structured_bound_failure_passthrough_not_rewritten_by_grounding_guardrail(self):
+        supervisor = StructuredBoundFailureSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "cleanup stopped containers"}],
+            "max_steps": 1,
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-structured-bound-failure",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        assert result.final_text is not None
+        self.assertIn("Bound capability execution failed", result.final_text)
+        self.assertNotIn("I may have drifted from your request", result.final_text)
+        self.assertEqual(result.status, "fail")
         self.assertEqual(result.metadata["runtime_policy"]["bound_failure_signal"]["path"], "bound_direct_timeout")
 
     def test_operational_guidance_blocked_without_validated_semantic_execution(self):

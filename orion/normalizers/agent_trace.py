@@ -215,7 +215,15 @@ def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
         return "Recall retrieved memory context."
     if service_key == "AgentChainService":
         agent_payload = step.result.get("AgentChainService") if isinstance(step.result, dict) else {}
-        bound_payload = agent_payload.get("bound_capability") if isinstance(agent_payload, dict) else {}
+        bound_payload = {}
+        if isinstance(agent_payload, dict):
+            direct_bound = agent_payload.get("bound_capability")
+            if isinstance(direct_bound, dict):
+                bound_payload = direct_bound
+            else:
+                structured = agent_payload.get("structured")
+                if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
+                    bound_payload = structured.get("bound_capability") or {}
         if isinstance(bound_payload, dict):
             bound_status = str(bound_payload.get("status") or "").strip().lower()
             bound_reason = str(bound_payload.get("reason") or "").strip()

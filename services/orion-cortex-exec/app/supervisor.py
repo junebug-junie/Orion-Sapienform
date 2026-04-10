@@ -268,6 +268,61 @@ def _select_preferred_operational_tool(
     return best, scored
 
 
+def _should_override_planner_operational_action(
+    *,
+    planner_tool_id: str | None,
+    preferred_tool_id: str | None,
+    override_scores: List[Dict[str, Any]],
+    minimum_score_gap: int = 10,
+) -> tuple[bool, Dict[str, Any]]:
+    planner_id = str(planner_tool_id or "").strip()
+    preferred_id = str(preferred_tool_id or "").strip()
+    score_map = {
+        str(item.get("tool_id") or ""): int(item.get("score") or 0)
+        for item in (override_scores or [])
+        if str(item.get("tool_id") or "").strip()
+    }
+    planner_score = score_map.get(planner_id)
+    preferred_score = score_map.get(preferred_id)
+    diagnostics = {
+        "planner_tool_id": planner_id or None,
+        "preferred_tool_id": preferred_id or None,
+        "planner_score": planner_score,
+        "preferred_score": preferred_score,
+        "minimum_score_gap": minimum_score_gap,
+        "score_gap": (preferred_score - planner_score) if isinstance(preferred_score, int) and isinstance(planner_score, int) else None,
+    }
+    if not planner_id or not preferred_id or planner_id == preferred_id:
+        return False, diagnostics
+    if planner_score is None or preferred_score is None:
+        return False, diagnostics
+    should_override = (preferred_score - planner_score) >= int(minimum_score_gap)
+    return should_override, diagnostics
+
+
+def _extract_bound_failure_signal(step_results: List[StepExecutionResult]) -> Dict[str, Any] | None:
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        bound = payload.get("bound_capability")
+        if not isinstance(bound, dict):
+            continue
+        status_value = str(bound.get("status") or "").strip().lower()
+        reason = str(bound.get("reason") or "").strip()
+        path = str(bound.get("path") or "").strip()
+        if status_value == "fail" or reason or path.startswith("bound_direct_"):
+            return {
+                "step_name": step.step_name,
+                "verb_name": step.verb_name,
+                "reason": reason or None,
+                "path": path or None,
+                "status": status_value or None,
+                "detail": str(bound.get("detail") or "").strip() or None,
+            }
+    return None
+
+
 def _sanitize_operational_history(messages: List[LLMMessage], *, user_text: str) -> Tuple[List[LLMMessage], Dict[str, Any]]:
     lowered = str(user_text or "").lower()
     safety_sensitive = any(token in lowered for token in ("dry-run", "dry run", "preview", "safe"))
@@ -1298,6 +1353,28 @@ class Supervisor:
 
             tool_id = (action or {}).get("tool_id") if isinstance(action, dict) else None
             logger.info("planner_action corr_id=%s tool_id=%s lane=%s", correlation_id, tool_id, "depth2")
+            if operational_intent_detected and preferred_operational_tool and mode in {"agent", "council"}:
+                should_override, override_diag = _should_override_planner_operational_action(
+                    planner_tool_id=str(tool_id or ""),
+                    preferred_tool_id=preferred_operational_tool.tool_id,
+                    override_scores=override_scores,
+                )
+                ctx.setdefault("debug", {})["semantic_override_decision"] = override_diag
+                if should_override and action:
+                    logger.info(
+                        "semantic_tool_override_applied corr_id=%s planner_tool=%s planner_score=%s preferred_tool=%s preferred_score=%s score_gap=%s",
+                        correlation_id,
+                        override_diag.get("planner_tool_id"),
+                        override_diag.get("planner_score"),
+                        override_diag.get("preferred_tool_id"),
+                        override_diag.get("preferred_score"),
+                        override_diag.get("score_gap"),
+                    )
+                    action = {
+                        **action,
+                        "tool_id": preferred_operational_tool.tool_id,
+                    }
+                    tool_id = preferred_operational_tool.tool_id
 
             if decision["stop_reason"] == "final_answer" and not decision["action_present"]:
                 forced_delegate = False
@@ -1638,7 +1715,9 @@ class Supervisor:
             verdict["scaffolding_markers"],
         )
         explanation_downgrade = bool((ctx.get("debug") or {}).get("downgraded_to_explanation"))
-        if not verdict["anchored"] and not recent_followup_continuity and not explanation_downgrade:
+        bound_failure_signal = _extract_bound_failure_signal(step_results)
+        preserve_operational_failure_text = bound_failure_signal is not None
+        if not verdict["anchored"] and not recent_followup_continuity and not explanation_downgrade and not preserve_operational_failure_text:
             logger.warning(
                 "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
                 correlation_id,
@@ -1649,6 +1728,13 @@ class Supervisor:
                 f"I may have drifted from your request. You asked: {user_text}\n\n"
                 "Could you restate the key constraint and I will answer directly from that prompt?"
             )
+        elif preserve_operational_failure_text:
+            logger.info(
+                "grounding_guardrail_bypassed_for_operational_failure corr_id=%s reason=%s path=%s",
+                correlation_id,
+                bound_failure_signal.get("reason"),
+                bound_failure_signal.get("path"),
+            )
 
         runtime_policy_meta = {
             "no_write_active": no_write_active,
@@ -1657,6 +1743,7 @@ class Supervisor:
             "semantic_tool_preferred": bool(operational_intent_detected and preferred_operational_tool),
             "downgraded_to_explanation": bool((ctx.get("debug") or {}).get("downgraded_to_explanation")),
             "selected_tool_would_have_been": selected_tool_would_have_been,
+            "bound_failure_signal": bound_failure_signal,
         }
         logger.info(
             "blocked_execution_explanation_emitted corr_id=%s emitted=%s selected_tool=%s",
@@ -1666,6 +1753,16 @@ class Supervisor:
         )
 
         overall_status = "success" if step_results and all(s.status == "success" for s in step_results if s) else "partial"
+        overall_error: str | None = None
+        if bound_failure_signal is not None:
+            overall_status = "fail"
+            overall_error = (
+                bound_failure_signal.get("detail")
+                or bound_failure_signal.get("reason")
+                or "bound_capability_failed"
+            )
+        elif overall_status != "success":
+            overall_error = step_results[-1].error if step_results else None
         return PlanExecutionResult(
             verb_name=req.verb_name,
             request_id=correlation_id,
@@ -1678,5 +1775,5 @@ class Supervisor:
             memory_used=memory_used,
             recall_debug=recall_debug,
             metadata={"runtime_policy": runtime_policy_meta},
-            error=None,
+            error=overall_error,
         )

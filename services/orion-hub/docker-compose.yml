@@ -6,7 +6,11 @@ services:
       dockerfile: services/orion-hub/Dockerfile
     container_name: ${PROJECT}-hub
 
-    # use when on atlas:
+    # Default deployment posture for Hub:
+    # network_mode: "host" means this container resolves hosts through the host network stack.
+    # In this mode, Docker service DNS names (e.g. "orion-athena-sql-db") are not valid DB hosts.
+    # Use a host-reachable Postgres host in *_POSTGRES_URL / DATABASE_URL
+    # (127.0.0.1, LAN IP, Tailscale IP, etc.).
     network_mode: "host"
 
     # use when on athena:
@@ -112,6 +116,9 @@ services:
       - HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR=${HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR}
       - HUB_DEFAULT_NO_WRITE=${HUB_DEFAULT_NO_WRITE}
       - HUB_AUTO_DEFAULT_ENABLED=${HUB_AUTO_DEFAULT_ENABLED}
+      - HUB_DOCKER_NETWORK_MODE=${HUB_DOCKER_NETWORK_MODE:-host}
+      # Control-plane Postgres precedence in Hub:
+      # SUBSTRATE_CONTROL_PLANE_POSTGRES_URL -> SUBSTRATE_POLICY_POSTGRES_URL -> DATABASE_URL
       - DATABASE_URL=${DATABASE_URL}
       - SUBSTRATE_CONTROL_PLANE_POSTGRES_URL=${SUBSTRATE_CONTROL_PLANE_POSTGRES_URL}
       - SUBSTRATE_POLICY_POSTGRES_URL=${SUBSTRATE_POLICY_POSTGRES_URL}

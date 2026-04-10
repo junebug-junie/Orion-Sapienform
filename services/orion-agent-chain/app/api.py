@@ -456,9 +456,11 @@ def _bound_execution_timeout_seconds() -> float:
     the parent RPC time out first.
     """
     default_timeout = float(settings.default_timeout_seconds or 90)
-    # Keep under the parent hop budget while allowing capability-backed verbs
-    # with 30s runtimes (e.g. runtime housekeeping) to complete under nominal load.
-    return max(8.0, min(45.0, default_timeout * 0.75))
+    # Bound execution wraps ToolExecutor.execute_llm_verb(), which for capability-backed
+    # verbs performs a nested cortex-orch RPC using settings.default_timeout_seconds.
+    # The guardrail here must exceed that inner timeout so we don't fail closed early
+    # while the concrete skill invocation is still legitimately in flight.
+    return max(12.0, min(180.0, default_timeout + 15.0))
 
 
 async def _execute_bound_capability_request(

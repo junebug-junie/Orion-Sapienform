@@ -236,6 +236,20 @@ class ToolExecutor:
             raise RuntimeError(f"Capability bridge decode failed: {decoded.error}")
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         result = CortexClientResult.model_validate(payload)
+        final_text = str(result.final_text or "").strip()
+        if result.ok and not final_text:
+            fail_closed_decision = decision.model_copy(update={"selected_skill": None})
+            return normalize_capability_observation(
+                decision=fail_closed_decision,
+                execution_summary=(
+                    f"Execution failed closed: {decision.selected_skill} returned empty terminal output."
+                ),
+                raw_payload={
+                    "status": "empty_terminal_output",
+                    "ok": False,
+                    "final_text": "",
+                },
+            )
         summary = f"Executed {decision.selected_skill}: status={result.status} ok={result.ok}"
         return normalize_capability_observation(
             decision=decision,

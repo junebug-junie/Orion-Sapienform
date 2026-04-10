@@ -269,12 +269,15 @@ def test_bound_capability_internal_error_terminal_reply(monkeypatch):
 
 
 def test_bound_capability_timeout_terminal_reply(monkeypatch):
-    class _HangingExecutor(_FakeToolExecutor):
-        async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
-            await asyncio.sleep(0.25)
-            return {"selected_verb": tool_id, "selected_skill": "never-returned"}
+    state = {"nested_emit_started": False}
 
-    fake_exec = _HangingExecutor()
+    class _TimeoutAfterEmitExecutor(_FakeToolExecutor):
+        async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
+            await asyncio.sleep(0.06)
+            state["nested_emit_started"] = True
+            raise TimeoutError("nested capability rpc timeout")
+
+    fake_exec = _TimeoutAfterEmitExecutor()
 
     async def _fake_planner(*_args, **_kwargs):
         raise AssertionError("planner should not be called on bound direct path")
@@ -285,12 +288,13 @@ def test_bound_capability_timeout_terminal_reply(monkeypatch):
 
     out = asyncio.run(agent_api.execute_agent_chain(_bound_request(), correlation_id=str(uuid4()), rpc_bus=object()))
     bound = out.structured["bound_capability"]
+    assert state["nested_emit_started"] is True
     assert bound["reason"] == "capability_executor_unavailable"
     assert bound["observation"]["path"] == "bound_direct_timeout"
     assert bound["observation"]["reply_emitted"] is True
 
 
-def test_bound_execution_timeout_budget_is_below_parent_hop_budget():
+def test_bound_execution_timeout_budget_exceeds_nested_capability_rpc_budget():
     timeout_sec = agent_api._bound_execution_timeout_seconds()
     assert timeout_sec > 25.0
-    assert timeout_sec < float(agent_api.settings.default_timeout_seconds)
+    assert timeout_sec > float(agent_api.settings.default_timeout_seconds)

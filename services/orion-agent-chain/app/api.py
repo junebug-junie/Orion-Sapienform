@@ -456,7 +456,9 @@ def _bound_execution_timeout_seconds() -> float:
     the parent RPC time out first.
     """
     default_timeout = float(settings.default_timeout_seconds or 90)
-    return max(5.0, min(25.0, default_timeout * 0.5))
+    # Keep under the parent hop budget while allowing capability-backed verbs
+    # with 30s runtimes (e.g. runtime housekeeping) to complete under nominal load.
+    return max(8.0, min(45.0, default_timeout * 0.75))
 
 
 async def execute_agent_chain(

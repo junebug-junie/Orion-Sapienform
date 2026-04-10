@@ -301,11 +301,20 @@ def _should_override_planner_operational_action(
 
 
 def _extract_bound_failure_signal(step_results: List[StepExecutionResult]) -> Dict[str, Any] | None:
+    def _bound_payload(agent_payload: Dict[str, Any]) -> Dict[str, Any]:
+        direct = agent_payload.get("bound_capability")
+        if isinstance(direct, dict):
+            return direct
+        structured = agent_payload.get("structured")
+        if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
+            return structured.get("bound_capability") or {}
+        return {}
+
     for step in reversed(step_results or []):
         payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
         if not isinstance(payload, dict):
             continue
-        bound = payload.get("bound_capability")
+        bound = _bound_payload(payload)
         if not isinstance(bound, dict):
             continue
         status_value = str(bound.get("status") or "").strip().lower()
@@ -1499,6 +1508,10 @@ class Supervisor:
                 agent_payload = (action_step.result or {}).get("AgentChainService", {})
                 if isinstance(agent_payload, dict):
                     bound_payload = agent_payload.get("bound_capability")
+                    if not isinstance(bound_payload, dict):
+                        structured_payload = agent_payload.get("structured")
+                        if isinstance(structured_payload, dict):
+                            bound_payload = structured_payload.get("bound_capability")
                     if isinstance(bound_payload, dict) and str(bound_payload.get("path") or "").startswith("blocked_"):
                         ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
                         ctx.setdefault("debug", {})["no_write_downgrade"] = True

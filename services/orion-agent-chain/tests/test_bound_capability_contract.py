@@ -288,3 +288,9 @@ def test_bound_capability_timeout_terminal_reply(monkeypatch):
     assert bound["reason"] == "capability_executor_unavailable"
     assert bound["observation"]["path"] == "bound_direct_timeout"
     assert bound["observation"]["reply_emitted"] is True
+
+
+def test_bound_execution_timeout_budget_is_below_parent_hop_budget():
+    timeout_sec = agent_api._bound_execution_timeout_seconds()
+    assert timeout_sec > 25.0
+    assert timeout_sec < float(agent_api.settings.default_timeout_seconds)

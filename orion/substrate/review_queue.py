@@ -47,6 +47,7 @@ class GraphReviewQueue:
         return self._last_error
 
     def upsert(self, item: GraphReviewQueueItemV1) -> None:
+        self.refresh_from_storage()
         region_key = self._region_key(item.focal_node_refs, item.target_zone)
         existing_id = None
         for item_id, existing in self._items.items():
@@ -74,6 +75,7 @@ class GraphReviewQueue:
         self._persist()
 
     def mark_reviewed(self, queue_item_id: str, *, reviewed_at: datetime | None = None) -> GraphReviewQueueItemV1 | None:
+        self.refresh_from_storage()
         item = self._items.get(queue_item_id)
         if item is None:
             return None
@@ -97,6 +99,7 @@ class GraphReviewQueue:
         return updated
 
     def apply_cycle_feedback(self, queue_item_id: str, *, no_change: bool) -> GraphReviewQueueItemV1 | None:
+        self.refresh_from_storage()
         item = self._items.get(queue_item_id)
         if item is None:
             return None
@@ -115,6 +118,7 @@ class GraphReviewQueue:
         return updated
 
     def list_eligible(self, *, now: datetime | None = None, limit: int = 10) -> list[GraphReviewQueueItemV1]:
+        self.refresh_from_storage()
         t = now or datetime.now(timezone.utc)
         eligible = [
             item
@@ -128,6 +132,7 @@ class GraphReviewQueue:
         return eligible[:limit]
 
     def snapshot(self, *, limit: int = 200) -> GraphReviewQueueSnapshotV1:
+        self.refresh_from_storage()
         items = sorted(self._items.values(), key=lambda item: (-item.priority, item.next_review_at, item.created_at))
         truncated = len(items) > limit
         items = items[:limit]
@@ -143,6 +148,26 @@ class GraphReviewQueue:
             top_priorities=[item.priority for item in items[:10]],
             truncated=truncated,
         )
+
+
+    def refresh_from_storage(self) -> None:
+        if self.postgres_url:
+            try:
+                self._load_from_postgres()
+                self._source_kind = "postgres"
+                self._last_error = None
+                return
+            except Exception as exc:
+                self._source_kind = "fallback"
+                self._last_error = str(exc)
+        if self.sql_db_path:
+            try:
+                self._load_from_sql()
+                self._source_kind = "sqlite"
+                self._last_error = None
+            except Exception as exc:
+                self._source_kind = "fallback"
+                self._last_error = str(exc)
 
     @staticmethod
     def _region_key(node_refs: list[str], zone: str) -> str:

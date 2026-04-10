@@ -54,6 +54,7 @@ from orion.substrate import build_substrate_policy_store_from_env, build_substra
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
 from orion.substrate.review_queue import GraphReviewQueue
+from orion.substrate.review_bootstrap import GraphReviewBootstrapper
 from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
 from orion.substrate.review_schedule import GraphReviewScheduler
 from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
@@ -131,6 +132,10 @@ SUBSTRATE_REVIEW_RUNTIME_EXECUTOR = GraphReviewRuntimeExecutor(
     telemetry_recorder=SUBSTRATE_REVIEW_TELEMETRY_STORE,
     policy_profiles=SUBSTRATE_POLICY_STORE,
 )
+SUBSTRATE_REVIEW_BOOTSTRAPPER = GraphReviewBootstrapper(
+    scheduler=SUBSTRATE_REVIEW_RUNTIME_EXECUTOR.scheduler,
+    semantic_store=SUBSTRATE_SEMANTIC_STORE,
+)
 
 
 def _thought_debug_enabled() -> bool:
@@ -180,6 +185,10 @@ class SubstrateReviewExecuteRequest(BaseModel):
 
 class SubstrateReviewSmokeCheckRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=100)
+
+
+class SubstrateReviewBootstrapRequest(BaseModel):
+    limit: int = Field(default=12, ge=1, le=32)
 
 
 async def _execute_workflow_schedule_management(*, session_id: str, user_id: Optional[str], request: WorkflowScheduleManageRequestV1) -> Dict[str, Any]:
@@ -1585,6 +1594,7 @@ def _substrate_runtime_status_payload(*, queue_limit: int = 20, telemetry_limit:
 
 def _execute_substrate_review_cycle(*, allow_followup: bool, explicit_queue_item_id: str | None = None) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
+    SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
     before_due = len(SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=now, limit=200))
     before_count = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
     request = GraphReviewRuntimeRequestV1(
@@ -1609,6 +1619,26 @@ def _execute_substrate_review_cycle(*, allow_followup: bool, explicit_queue_item
         "queue_before": {"count": before_count, "due_count": before_due},
         "queue_after": {"count": after_count, "due_count": after_due},
         "source": _substrate_source_posture(),
+    }
+
+
+def _bootstrap_substrate_review_frontier(*, limit: int = 12) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
+    execution = SUBSTRATE_REVIEW_BOOTSTRAPPER.bootstrap(now=now, query_limit=limit)
+    return {
+        "generated_at": now.isoformat(),
+        "items_before": execution.items_before,
+        "items_enqueued": execution.items_enqueued,
+        "items_after": execution.items_after,
+        "due_after": execution.due_after,
+        "source_posture": _substrate_source_posture(),
+        "audit_summary": {
+            "scheduled_decision_count": execution.scheduled_decision_count,
+            "semantic_source": execution.semantic_source,
+            "semantic_degraded": execution.semantic_degraded,
+        },
+        "notes": execution.notes,
     }
 
 
@@ -1700,6 +1730,12 @@ def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewE
         allow_followup=True,
         explicit_queue_item_id=req.explicit_queue_item_id,
     )
+
+
+@router.post("/api/substrate/review-runtime/bootstrap")
+def api_substrate_review_runtime_bootstrap(request: SubstrateReviewBootstrapRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewBootstrapRequest()
+    return _bootstrap_substrate_review_frontier(limit=req.limit)
 
 
 @router.post("/api/substrate/review-runtime/smoke-check")

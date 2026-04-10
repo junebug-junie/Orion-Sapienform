@@ -129,5 +129,12 @@ Only real remaining uncertainty.
 - listing hypothetical issues not grounded in the changed code
 - padding with generic best practices
 
+## Closure requires
+For bugs reported from live logs, mocked or service-local harnesses do not count as closure unless the user explicitly asks for a harness only.
+Closure requires either:
+1. a live-stack verification script with pass/fail evidence, or
+2. a direct runtime reproduction with exact commands and exact evidence lines.
+Otherwise reply UNVERIFIED.
+
 ## Preferred style
 Be terse, concrete, and evidence-first.

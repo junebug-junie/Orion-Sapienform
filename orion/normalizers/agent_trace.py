@@ -149,9 +149,31 @@ def _taxonomy_for(tool_id: str | None, *, step_name: str | None = None) -> _Tool
     return _ToolTaxonomy(tool_family="unknown", action_kind="unknown", effect_kind="unknown")
 
 
+# Exec steps sometimes carry extra keys (e.g. metadata) before the service payload; never use
+# ``next(iter(step.result.keys()))`` — that mis-labels the row and skips AgentChain failure overrides.
+_SERVICE_RESULT_KEYS: tuple[str, ...] = (
+    "AgentChainService",
+    "PlannerReactService",
+    "RecallService",
+    "CouncilService",
+)
+
+
 def _step_service_key(step: StepExecutionResult) -> str | None:
     if not isinstance(step.result, dict) or not step.result:
         return None
+    sn = str(step.step_name or "").strip()
+    if sn == "agent_chain" and "AgentChainService" in step.result:
+        return "AgentChainService"
+    if sn == "planner_react" and "PlannerReactService" in step.result:
+        return "PlannerReactService"
+    if sn in {"recall", "recall_step"} and "RecallService" in step.result:
+        return "RecallService"
+    if "council" in sn and "CouncilService" in step.result:
+        return "CouncilService"
+    for key in _SERVICE_RESULT_KEYS:
+        if key in step.result:
+            return key
     return next(iter(step.result.keys()))
 
 

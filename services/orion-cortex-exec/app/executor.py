@@ -1285,6 +1285,16 @@ async def run_recall_step(
         )
 
 
+def _ctx_user_text_for_skill_hints(ctx: Dict[str, Any]) -> str:
+    """Best-effort outer user text for skills that infer options from natural language (e.g. docker prune)."""
+    for key in ("raw_user_text", "user_message"):
+        v = ctx.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    lm = _last_user_message(ctx)
+    return str(lm or "").strip()
+
+
 def _plan_request_from_step_ctx(
     step: ExecutionStep,
     ctx: Dict[str, Any],
@@ -1297,6 +1307,30 @@ def _plan_request_from_step_ctx(
         skill_args.update(pm["skill_args"])
     if isinstance(ctx.get("skill_args"), dict):
         skill_args.update(ctx["skill_args"])
+    verb_n = str(step.verb_name or "")
+    # Capability-bridge nested calls carry user text on Cortex context (raw_user_text / messages) but
+    # historically did not populate plan.metadata.skill_args — NL run_mode for docker prune never fired.
+    if "docker_prune_stopped_containers" in verb_n:
+        hint_keys = ("text", "user_request", "request", "prompt", "natural_language", "instruction", "description")
+        if not any(isinstance(skill_args.get(k), str) and str(skill_args.get(k)).strip() for k in hint_keys):
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["user_request"] = ut
+                logger.info(
+                    "docker_prune_skill_args_injected corr=%s verb=%s user_request_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
+                )
+            else:
+                logger.info(
+                    "docker_prune_skill_args_empty_hints corr=%s verb=%s ctx_keys=%s raw_user_text=%r",
+                    correlation_id,
+                    verb_n,
+                    sorted(str(k) for k in ctx.keys())[:40],
+                    (ctx.get("raw_user_text") or "")[:120],
+                )
     extra: Dict[str, Any] = {}
     if skill_args:
         extra["skill_args"] = skill_args

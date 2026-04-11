@@ -16,6 +16,9 @@ services:
     volumes:
       - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
       - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
+      # Host Docker engine + CLI for skills.runtime.docker_prune_stopped_containers.v1 (and other docker skills).
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${ORION_HOST_DOCKER_CLI:-/usr/bin/docker}:/usr/bin/docker:ro
 
     # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
     privileged: true
@@ -61,6 +64,7 @@ services:
       SKILLS_COMMAND_TIMEOUT_SEC: ${SKILLS_COMMAND_TIMEOUT_SEC:-8}
       SKILLS_MESH_OPS_TIMEOUT_SEC: ${SKILLS_MESH_OPS_TIMEOUT_SEC:-12}
       DOCKER_SOCK_PATH: ${DOCKER_SOCK_PATH:-/var/run/docker.sock}
+      DOCKER_HOST: unix://${DOCKER_SOCK_PATH:-/var/run/docker.sock}
       # Must match ORION_CONTAINER_TAILSCALE_BIN (volume mount target above).
       ORION_ACTIONS_TAILSCALE_PATH: ${ORION_ACTIONS_TAILSCALE_PATH:-/usr/bin/tailscale}
       ORION_ACTIONS_SMARTCTL_PATH: ${ORION_ACTIONS_SMARTCTL_PATH:-/usr/sbin/smartctl}

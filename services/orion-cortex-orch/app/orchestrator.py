@@ -312,6 +312,7 @@ def build_plan_request(
     args = _plan_args(client_request, correlation_id)
     if isinstance(args.extra, dict):
         args.extra["packs"] = list(context.get("packs") or [])
+    ut_preview = _user_text_for_classifier(client_request)
     logger.info(
         "orch_plan_wiring corr=%s output_mode=%s profile=%s packs=%s supervised=%s force_agent_chain=%s output_mode_decision=%s",
         correlation_id,
@@ -321,6 +322,13 @@ def build_plan_request(
         bool(args.extra.get("supervised")) if isinstance(args.extra, dict) else False,
         bool(args.extra.get("force_agent_chain")) if isinstance(args.extra, dict) else False,
         bool(context.get("metadata", {}).get("output_mode_decision")) if isinstance(context.get("metadata"), dict) else False,
+    )
+    logger.info(
+        "orch_plan_user_text_preview corr=%s verb=%s user_text_len=%s head=%r",
+        correlation_id,
+        client_request.verb,
+        len(ut_preview),
+        ut_preview[:220],
     )
 
     # Attach latest Orion state (Spark) as a read-model artifact

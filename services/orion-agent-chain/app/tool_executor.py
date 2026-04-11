@@ -205,6 +205,7 @@ class ToolExecutor:
         # schema validation remain aligned.
         reply_channel = f"orion:cortex:result:{corr}"
         normalized_input = self._normalize_inputs(tool_id, tool_input)
+        bridge_user_text = str(normalized_input.get("text") or "")
         req = CortexClientRequest(
             mode="brain",
             route_intent="none",
@@ -213,9 +214,9 @@ class ToolExecutor:
             options={"policy_dispatch_only": True, "source": "agent_chain_capability_bridge"},
             recall=RecallDirective(enabled=False, required=False, mode="hybrid"),
             context=CortexClientContext(
-                messages=[LLMMessage(role="user", content=str(normalized_input.get("text") or ""))],
-                raw_user_text=str(normalized_input.get("text") or ""),
-                user_message=str(normalized_input.get("text") or ""),
+                messages=[LLMMessage(role="user", content=bridge_user_text)],
+                raw_user_text=bridge_user_text,
+                user_message=bridge_user_text,
                 session_id="agent-chain-capability",
                 user_id="agent-chain",
                 trace_id=parent_correlation_id,
@@ -229,8 +230,17 @@ class ToolExecutor:
                     "requires_confirmation": bool(decision.policy.get("confirmation_required")),
                     "execute_opt_in": bool(decision.policy.get("execute_opt_in")),
                     "observational": bool(decision.observational),
+                    "capability_bridge_user_text": bridge_user_text,
                 },
             ),
+        )
+        logger.info(
+            "[agent-chain] capability_bridge_nested_cortex verb=%s skill=%s parent=%s user_text_len=%s head=%r",
+            tool_id,
+            decision.selected_skill,
+            parent_correlation_id,
+            len(bridge_user_text),
+            bridge_user_text[:220],
         )
         env = BaseEnvelope(
             kind="cortex.orch.request",

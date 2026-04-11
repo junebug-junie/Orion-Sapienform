@@ -30,18 +30,30 @@ def _family_for_skill(skill_id: str) -> str:
         return "storage_health"
     if "github_recent_prs" in sid:
         return "repo_change_intel"
+    if "docker.ps_status" in sid or ("docker" in sid and "ps_status" in sid):
+        return "docker_inventory"
     if "docker_prune_stopped_containers" in sid:
         return "runtime_housekeeping"
     if "mesh_ops_round" in sid:
         return "runtime_housekeeping"
-    if "docker" in sid or "gpu" in sid or "landing_pad" in sid:
-        return "system_inspection"
-    if "biometrics" in sid:
-        return "runtime_health"
+    if "nvidia_smi" in sid or "gpu.nvidia" in sid:
+        return "gpu_presence"
+    if "biometrics.raw_recent" in sid or ("biometrics" in sid and "raw_recent" in sid):
+        return "biometrics_recent"
+    if "biometrics.snapshot" in sid or ("biometrics" in sid and "snapshot" in sid):
+        return "biometrics_snapshot"
+    if "landing_pad.metrics" in sid or ("landing_pad" in sid and "metrics" in sid):
+        return "landing_pad_metrics"
+    if "landing_pad.last_events" in sid or ("landing_pad" in sid and "last_events" in sid):
+        return "landing_pad_events"
     if "notify" in sid:
         return "notification"
     if "time_now" in sid:
         return "temporal_context"
+    if "docker" in sid or "gpu" in sid or "landing_pad" in sid:
+        return "system_inspection"
+    if "biometrics" in sid:
+        return "runtime_health"
     return "system_inspection"
 
 

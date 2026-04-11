@@ -187,14 +187,19 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 json.dumps(raw_payload, default=str),
             )
         req = CortexClientRequest.model_validate(raw_payload)
+        context_metadata = req.context.metadata if isinstance(req.context.metadata, dict) else {}
+        capability_bridge = bool(context_metadata.get("capability_bridge"))
+        requested_verb = context_metadata.get("requested_verb")
 
         logger.info(
-            "orch_intake corr=%s source=%s reply=%s mode=%s verb=%s supervised=%s recall_enabled=%s recall_profile=%s packs=%s",
+            "orch_intake corr=%s source=%s reply=%s mode=%s verb=%s requested_verb=%s capability_bridge=%s supervised=%s recall_enabled=%s recall_profile=%s packs=%s",
             str(env.correlation_id),
             (env.source.name if env.source else "unknown"),
             env.reply_to,
             req.mode,
             req.verb,
+            requested_verb,
+            capability_bridge,
             bool((req.options or {}).get("supervised")),
             req.recall.enabled,
             req.recall.profile,
@@ -526,7 +531,12 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             ).model_dump(mode="json"),
         )
 
-svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
+svc = Rabbit(
+    _cfg(),
+    request_channel=get_settings().channel_cortex_request,
+    handler=handle,
+    concurrent_handlers=True,
+)
 equilibrium_hunter: Hunter
 dream_hunter: Hunter
 

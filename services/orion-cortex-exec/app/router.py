@@ -207,11 +207,14 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
         "result_len": 0,
     }
     structured_expected = _structured_output_expected(verb_name)
+    # Skill/service adapters frequently emit terminal text in `final_text`.
+    # Consider it first for all verbs so capability-backed skills do not lose output.
+    candidate_fields = ("final_text", "content", "text")
     for step in reversed(steps):
         for service_name, payload in (step.result or {}).items():
             if not isinstance(payload, dict):
                 continue
-            for field in ("content", "text"):
+            for field in candidate_fields:
                 candidate = payload.get(field)
                 if not isinstance(candidate, str) or not candidate.strip():
                     continue
@@ -286,6 +289,42 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                 return final_text, diagnostics
     if structured_expected and diagnostics["candidate_count"] > 0:
         diagnostics["structured_output_rejected"] = True
+    if _is_runtime_skill_verb(verb_name):
+        fallback_message = None
+        fallback_status = None
+        for step in reversed(steps):
+            for _service_name, payload in (step.result or {}).items():
+                if not isinstance(payload, dict):
+                    continue
+                if isinstance(payload.get("status"), str):
+                    ps = str(payload.get("status")).strip()
+                    if ps:
+                        fallback_status = ps
+                err = payload.get("error")
+                if isinstance(err, dict) and isinstance(err.get("message"), str):
+                    candidate = str(err.get("message")).strip()
+                    if candidate:
+                        fallback_message = candidate
+                elif isinstance(err, str) and err.strip():
+                    fallback_message = err.strip()
+            if not fallback_status and isinstance(step.status, str) and step.status.strip():
+                fallback_status = step.status.strip()
+            if not fallback_message and isinstance(step.error, str) and step.error.strip():
+                fallback_message = step.error.strip()
+            if fallback_message or fallback_status:
+                break
+        if fallback_message or fallback_status:
+            runtime_text = (
+                f"Runtime skill result: status={fallback_status or 'fail'} "
+                f"message={fallback_message or 'empty_terminal_output'}"
+            )
+            diagnostics["source_field"] = diagnostics["source_field"] or "runtime_fallback"
+            diagnostics["source_service"] = diagnostics["source_service"] or "runtime_fallback"
+            diagnostics["result_len"] = len(runtime_text)
+            diagnostics["final_len"] = len(runtime_text)
+            diagnostics["clean_len"] = len(runtime_text)
+            diagnostics["raw_len"] = len(runtime_text)
+            return runtime_text, diagnostics
     return "", diagnostics
 
 
@@ -541,6 +580,13 @@ class PlanRunner:
             plan.verb_name,
             [s.step_name for s in plan.steps],
         )
+        if _is_runtime_skill_verb(plan.verb_name):
+            logger.info(
+                "runtime_skill_invocation corr_id=%s verb=%s mode=%s",
+                correlation_id,
+                plan.verb_name,
+                start_mode,
+            )
         step_results: List[StepExecutionResult] = []
         overall_status = "success"
         recall_debug: Dict[str, Any] = {}

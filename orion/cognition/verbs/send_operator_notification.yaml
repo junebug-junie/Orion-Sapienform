@@ -1,0 +1,33 @@
+name: send_operator_notification
+label: Send Operator Chat Notification
+description: >
+  Send a short notification message to the operators channel / notify service (Orion alert path).
+  Use when the user explicitly wants to notify operators, page on-call, or send an alert with given text.
+  The user message should be passed in the "text" field including the exact alert body.
+category: ExecutiveControl
+priority: high
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - notification
+side_effect_level: low
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

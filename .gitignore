@@ -7,6 +7,8 @@ MONITOR
 **/tmp/
 scripts/.state/
 
+.orion_dev
+
 # === Python ===
 __pycache__/
 *.py[cod]
@@ -111,3 +113,5 @@ desktop.ini
 *.local
 *.bak
 *.orig
+
+.orion_dev/

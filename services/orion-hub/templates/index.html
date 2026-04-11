@@ -204,6 +204,67 @@
           </div>
         </div>
 
+        <div
+          id="skillRunnerPanel"
+          class="bg-gray-800/40 border border-gray-700 rounded-xl p-2 flex flex-wrap items-end gap-2 text-xs"
+        >
+          <div class="flex flex-col gap-1 min-w-[10rem] flex-1 max-w-xl">
+            <label for="skillRunnerSelect" class="text-[10px] uppercase tracking-wide text-gray-400">Skill Runner</label>
+            <select
+              id="skillRunnerSelect"
+              class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1.5 text-xs w-full"
+              aria-label="Operator skill prompt catalogue"
+            >
+              <option value="">— Select prompt —</option>
+              <optgroup label="System / runtime">
+                <option value="What time is it right now?">1 · What time is it right now?</option>
+                <option value="Show NVIDIA GPU status on this node.">2 · Show NVIDIA GPU status on this node.</option>
+                <option value="Show Docker container status on this node.">3 · Show Docker container status on this node.</option>
+                <option value="Dry-run cleanup of stopped containers.">4 · Dry-run cleanup of stopped containers.</option>
+                <option value="Prune stopped containers.">5 · Prune stopped containers.</option>
+              </optgroup>
+              <optgroup label="Biometrics">
+                <option value="Show the current biometrics snapshot.">6 · Show the current biometrics snapshot.</option>
+                <option value="Show the 10 most recent biometrics readings.">7 · Show the 10 most recent biometrics readings.</option>
+                <option value="Show the most recent biometrics readings for athena.">8 · Show the most recent biometrics readings for athena.</option>
+              </optgroup>
+              <optgroup label="Landing pad">
+                <option value="Show the landing pad metrics snapshot.">9 · Show the landing pad metrics snapshot.</option>
+                <option value="Show the last 10 landing pad events.">10 · Show the last 10 landing pad events.</option>
+                <option value="Show the last 10 landing pad events with salience above 0.7.">11 · Show the last 10 landing pad events with salience above 0.7.</option>
+              </optgroup>
+              <optgroup label="Mesh / storage / repo">
+                <option value="Which nodes are up right now?">12 · Which nodes are up right now?</option>
+                <option value="Run an active mesh probe.">13 · Run an active mesh probe.</option>
+                <option value="Check disk health across active nodes.">14 · Check disk health across active nodes.</option>
+                <option value="Summarize recent PR changes.">15 · Summarize recent PR changes.</option>
+              </optgroup>
+              <optgroup label="Round-up skill">
+                <option value="Run a mesh ops round.">16 · Run a mesh ops round.</option>
+                <option value="Run a mesh ops round with PR digest and disk health.">17 · Run a mesh ops round with PR digest and disk health.</option>
+                <option value="Run a mesh ops round including docker housekeeping preview.">18 · Run a mesh ops round including docker housekeeping preview.</option>
+              </optgroup>
+              <optgroup label="Notify">
+                <option value='Send a notification to operators saying "test alert from Orion".'>19 · Send a notification to operators…</option>
+              </optgroup>
+            </select>
+          </div>
+          <button
+            type="button"
+            id="skillRunnerInsertBtn"
+            class="rounded-lg border border-gray-600 bg-gray-700/80 px-2.5 py-1.5 text-[11px] font-medium text-gray-200 hover:bg-gray-600"
+          >
+            Insert
+          </button>
+          <button
+            type="button"
+            id="skillRunnerRunBtn"
+            class="rounded-lg border border-indigo-500/50 bg-indigo-600/80 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+          >
+            Run
+          </button>
+        </div>
+
         <div id="runtimeDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <button
             id="runtimeDebugPanelToggle"

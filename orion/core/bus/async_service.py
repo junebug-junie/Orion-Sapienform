@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
+from time import perf_counter
 from typing import Any, AsyncIterator, Dict, Optional
 
 from pydantic import BaseModel, ValidationError
@@ -103,12 +104,12 @@ class OrionBusAsync:
         if not decoded.ok:
             return
         corr = str(getattr(decoded.envelope, "correlation_id", "") or "")
-        logger.info("[rpc-fork] reply received corr_id=%s", corr)
+        logger.info("[rpc-fork] reply received corr_id=%s reply_channel=%s", corr, channel)
         key = (channel, corr)
         fut = self._pending_rpc.pop(key, None)
         if fut is not None and not fut.done():
             fut.set_result(msg)
-            logger.info("[rpc-fork] future resolved corr_id=%s", corr)
+            logger.info("[rpc-fork] future resolved corr_id=%s reply_channel=%s", corr, channel)
 
     async def _rpc_subscribe(self, reply_channel: str) -> None:
         await self.connect()
@@ -120,9 +121,12 @@ class OrionBusAsync:
         if self._rpc_pubsub is None:
             raise RuntimeError("RPC worker pubsub is not initialized")
         if reply_channel in self._rpc_subscribed:
+            logger.info("[rpc] reply-listener already subscribed reply_channel=%s", reply_channel)
             return
+        logger.info("[rpc] reply-listener creating reply_channel=%s", reply_channel)
         await self._rpc_pubsub.subscribe(reply_channel)
         self._rpc_subscribed.add(reply_channel)
+        logger.info("[rpc] reply-listener ready reply_channel=%s", reply_channel)
 
     async def connect(self) -> None:
         if not self.enabled:
@@ -232,28 +236,85 @@ class OrionBusAsync:
         """
         Publish `envelope` to request_channel and await first message on reply_channel.
         """
+        started = perf_counter()
+        corr = str(envelope.correlation_id)
         async with self.subscribe(reply_channel) as pubsub:
             try:
                 if self._rpc_worker_task and not self._rpc_worker_task.done():
-                    corr = str(envelope.correlation_id)
                     key = (reply_channel, corr)
                     fut = asyncio.get_running_loop().create_future()
                     self._pending_rpc[key] = fut
                     async with self._rpc_lock:
                         await self._rpc_subscribe(reply_channel)
+                    logger.info(
+                        "[rpc] publish begin corr_id=%s request_channel=%s reply_channel=%s path=worker elapsed_ms=%.1f",
+                        corr,
+                        request_channel,
+                        reply_channel,
+                        (perf_counter() - started) * 1000.0,
+                    )
                     await self.publish(request_channel, envelope)
+                    logger.info(
+                        "[rpc] publish success corr_id=%s request_channel=%s reply_channel=%s path=worker elapsed_ms=%.1f",
+                        corr,
+                        request_channel,
+                        reply_channel,
+                        (perf_counter() - started) * 1000.0,
+                    )
                     try:
+                        logger.info(
+                            "[rpc] waiting for reply corr_id=%s reply_channel=%s timeout_sec=%.2f path=worker",
+                            corr,
+                            reply_channel,
+                            timeout_sec,
+                        )
                         return await asyncio.wait_for(fut, timeout=timeout_sec)
                     finally:
                         self._pending_rpc.pop(key, None)
 
+                logger.info(
+                    "[rpc] publish begin corr_id=%s request_channel=%s reply_channel=%s path=inline elapsed_ms=%.1f",
+                    corr,
+                    request_channel,
+                    reply_channel,
+                    (perf_counter() - started) * 1000.0,
+                )
                 await self.publish(request_channel, envelope)
+                logger.info(
+                    "[rpc] publish success corr_id=%s request_channel=%s reply_channel=%s path=inline elapsed_ms=%.1f",
+                    corr,
+                    request_channel,
+                    reply_channel,
+                    (perf_counter() - started) * 1000.0,
+                )
+
                 async def _wait_one():
                     async for msg in self.iter_messages(pubsub):
+                        logger.info(
+                            "[rpc] reply received corr_id=%s reply_channel=%s path=inline elapsed_ms=%.1f",
+                            corr,
+                            reply_channel,
+                            (perf_counter() - started) * 1000.0,
+                        )
                         return msg
+
+                logger.info(
+                    "[rpc] waiting for reply corr_id=%s reply_channel=%s timeout_sec=%.2f path=inline",
+                    corr,
+                    reply_channel,
+                    timeout_sec,
+                )
                 msg = await asyncio.wait_for(_wait_one(), timeout=timeout_sec)
                 return msg
             except asyncio.TimeoutError:
+                logger.error(
+                    "[rpc] timeout waiting for reply corr_id=%s request_channel=%s reply_channel=%s timeout_sec=%.2f elapsed_ms=%.1f",
+                    corr,
+                    request_channel,
+                    reply_channel,
+                    timeout_sec,
+                    (perf_counter() - started) * 1000.0,
+                )
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
 
     async def rpc_legacy_dict(

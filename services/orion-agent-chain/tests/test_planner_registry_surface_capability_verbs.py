@@ -36,5 +36,12 @@ def test_execute_agent_chain_sends_capability_backed_semantic_verbs_to_planner(m
     assert "assess_storage_health" in first_toolset
     assert "summarize_recent_changes" in first_toolset
     assert "housekeep_runtime" in first_toolset
+    assert "answer_current_datetime" in first_toolset
+    assert "inspect_gpu_status" in first_toolset
+    assert "show_biometrics_snapshot" in first_toolset
+    assert "list_biometrics_recent_readings" in first_toolset
+    assert "send_operator_notification" in first_toolset
+    assert "show_landing_pad_metrics" in first_toolset
+    assert "inspect_docker_container_status" in first_toolset
     assert "skills.mesh.tailscale_mesh_status.v1" not in first_toolset
     assert all(not tool_id.startswith("skills.") for tool_id in first_toolset)

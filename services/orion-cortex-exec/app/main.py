@@ -644,7 +644,12 @@ verb_runtime = VerbRuntime(
     logger=logger,
     allow_backdoor=settings.orion_verb_backdoor_enabled,
 )
-verb_listener = Hunter(_cfg(), handler=handle_verb_request, patterns=["orion:verb:request"])
+verb_listener = Hunter(
+    _cfg(),
+    handler=handle_verb_request,
+    patterns=["orion:verb:request"],
+    concurrent_handlers=True,
+)
 trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition:trace"])
 core_event_listener = Hunter(_cfg(), handler=handle_core_event, patterns=[settings.channel_core_events])
 

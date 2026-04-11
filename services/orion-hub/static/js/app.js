@@ -90,6 +90,9 @@ loadDismissedIds();
   const conversationDiv = document.getElementById('conversation');
   const chatInput = document.getElementById('chatInput');
   const sendButton = document.getElementById('sendButton');
+  const skillRunnerSelect = document.getElementById('skillRunnerSelect');
+  const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
+  const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
@@ -2970,6 +2973,7 @@ loadDismissedIds();
     }
     if (data.text) {
       appendMessage('Orion', data.text, 'text-white', {
+        raw: data.raw,
         workflow: data.workflow,
         correlationId: data.correlation_id,
       });
@@ -4014,6 +4018,7 @@ loadDismissedIds();
     addSection('recall', 'Recall', meta.recallDebug || meta.recall_debug || meta.memoryDigest || meta.memory_digest);
     addSection('agent_trace', 'Agent Trace', meta.agentTrace || meta.agent_trace);
     addSection('routing', 'Routing', meta.routingDebug || meta.routing_debug);
+    addSection('raw', 'Raw cortex', meta.raw);
     return sections;
   }
 
@@ -4281,11 +4286,25 @@ loadDismissedIds();
     }
   }
 
+  function hubCoalesceAssistantText(primary, meta) {
+    const a = String(primary || '').trim();
+    if (!meta || typeof meta !== 'object') return primary || '';
+    const raw = meta.raw;
+    if (!raw || typeof raw !== 'object') return primary || '';
+    let b = String(raw.final_text || '').trim();
+    if (!b && raw.cortex_result && typeof raw.cortex_result === 'object') {
+      b = String(raw.cortex_result.final_text || '').trim();
+    }
+    if (b.length > a.length) return b;
+    return a || b;
+  }
+
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
+    const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     let inspectPanel = null;
     const headerRow = document.createElement('div');
     headerRow.className = 'mb-1 flex items-center justify-between gap-3';
@@ -4338,10 +4357,10 @@ loadDismissedIds();
     }
     const body = document.createElement('p');
     body.className = `${colorClass} whitespace-pre-wrap`;
-    body.textContent = text || "";
+    body.textContent = displayText;
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
     if (sender === 'Orion') {
-      const autonomyMeta = { ...meta, replyText: text || '' };
+      const autonomyMeta = { ...meta, replyText: displayText };
       updateAgentTraceDebugPanel(meta.agentTrace, meta);
       updateAutonomyDebugPanel(meta.autonomySummary || meta.autonomy_summary, meta.autonomyDebug || meta.autonomy_debug, autonomyMeta);
       const actionRow = document.createElement('div');
@@ -4393,8 +4412,8 @@ loadDismissedIds();
         thumbsDown.disabled = true;
         ack.textContent = 'Feedback saved';
       }
-      thumbsUp.addEventListener('click', () => openResponseFeedbackModal('up', meta, text));
-      thumbsDown.addEventListener('click', () => openResponseFeedbackModal('down', meta, text));
+      thumbsUp.addEventListener('click', () => openResponseFeedbackModal('up', meta, displayText));
+      thumbsDown.addEventListener('click', () => openResponseFeedbackModal('down', meta, displayText));
       feedbackRow.appendChild(thumbsUp);
       feedbackRow.appendChild(thumbsDown);
       feedbackRow.appendChild(ack);
@@ -4411,7 +4430,7 @@ loadDismissedIds();
       const autonomyPanel = createAutonomyPanel(
         meta.autonomySummary || meta.autonomy_summary,
         meta.autonomyDebug || meta.autonomy_debug,
-        { ...meta, replyText: text || '' },
+        { ...meta, replyText: displayText },
       );
       if (autonomyPanel) div.appendChild(autonomyPanel);
       const tracePanel = createAgentTracePanel(meta.agentTrace, meta);
@@ -5308,6 +5327,26 @@ loadDismissedIds();
     });
   }
 
+  function getSkillRunnerPrompt() {
+    if (!skillRunnerSelect || !skillRunnerSelect.value) return '';
+    return String(skillRunnerSelect.value);
+  }
+  if (skillRunnerInsertBtn && skillRunnerSelect && chatInput) {
+    skillRunnerInsertBtn.addEventListener('click', () => {
+      const promptText = getSkillRunnerPrompt();
+      if (!promptText) return;
+      chatInput.value = promptText;
+      chatInput.focus();
+    });
+  }
+  if (skillRunnerRunBtn && skillRunnerSelect) {
+    skillRunnerRunBtn.addEventListener('click', async () => {
+      const promptText = getSkillRunnerPrompt();
+      if (!promptText) return;
+      await submitExplicitChatText(promptText, { mode: 'agent' });
+    });
+  }
+
   if (interruptButton) {
     interruptButton.addEventListener('click', () => {
       if (currentAudioSource) currentAudioSource.stop();
@@ -5807,6 +5846,7 @@ loadDismissedIds();
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
           if (d.llm_response) {
             appendMessage('Orion', d.llm_response, 'text-white', {
+              raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
               agentTrace: d.agent_trace,
@@ -5855,7 +5895,7 @@ loadDismissedIds();
     };
   }
 
-  async function submitExplicitChatText(text) {
+  async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
     if (!value) return;
     appendMessage('You', value);
@@ -5864,9 +5904,10 @@ loadDismissedIds();
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
     const effectiveVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
+    const requestMode = opts && opts.mode ? String(opts.mode) : currentMode;
     const payload = {
        text_input: value,
-       mode: currentMode,
+       mode: requestMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
@@ -5900,6 +5941,7 @@ loadDismissedIds();
         .then(d => {
             if(d.text) {
               appendMessage('Orion', d.text, 'text-white', {
+                raw: d.raw,
                 reasoning: d.reasoning,
                 reasoningTrace: d.reasoning_trace,
                 agentTrace: d.agent_trace,

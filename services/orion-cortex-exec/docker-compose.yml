@@ -1,3 +1,8 @@
+# Mesh: skills.mesh.tailscale_mesh_status.v1 runs inside this container. The image does not ship
+# `tailscale`. Bind-mounts below pull the HOST CLI + tailscaled socket so Agent/Hub mesh works after
+# a normal `docker compose up` (no extra -f file). Override ORION_HOST_TAILSCALE_BIN if yours is
+# e.g. /usr/sbin/tailscale. If the host has no Tailscale, `up` may fail on the bind — install it or
+# comment these volumes for dev-only nodes.
 services:
   cortex-exec:
     build:
@@ -7,6 +12,22 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+
+    volumes:
+      - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
+      - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
+      # Host Docker engine + CLI for skills.runtime.docker_prune_stopped_containers.v1 (and other docker skills).
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${ORION_HOST_DOCKER_CLI:-/usr/bin/docker}:/usr/bin/docker:ro
+      # NVIDIA: slim image omits nvidia-smi; bind-mount host binary. Needs NVIDIA Container Toolkit + `gpus`
+      # below. On hosts without a GPU stack, comment this line and `gpus`, or point ORION_HOST_NVIDIA_SMI at a
+      # valid host path.
+      - ${ORION_HOST_NVIDIA_SMI:-/usr/bin/nvidia-smi}:/usr/bin/nvidia-smi:ro
+
+    # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
+    privileged: true
+    # Expose GPU devices + driver libs into the container for nvidia-smi / NVML (requires nvidia-container-toolkit).
+    gpus: all
 
     #volumes:
     #  - ./services/orion-cortex-exec/app:/app/app
@@ -49,9 +70,12 @@ services:
       SKILLS_COMMAND_TIMEOUT_SEC: ${SKILLS_COMMAND_TIMEOUT_SEC:-8}
       SKILLS_MESH_OPS_TIMEOUT_SEC: ${SKILLS_MESH_OPS_TIMEOUT_SEC:-12}
       DOCKER_SOCK_PATH: ${DOCKER_SOCK_PATH:-/var/run/docker.sock}
-      ORION_ACTIONS_TAILSCALE_PATH: ${ORION_ACTIONS_TAILSCALE_PATH:-tailscale}
-      ORION_ACTIONS_SMARTCTL_PATH: ${ORION_ACTIONS_SMARTCTL_PATH:-smartctl}
-      ORION_ACTIONS_NVME_PATH: ${ORION_ACTIONS_NVME_PATH:-nvme}
+      DOCKER_HOST: unix://${DOCKER_SOCK_PATH:-/var/run/docker.sock}
+      # Must match ORION_CONTAINER_TAILSCALE_BIN (volume mount target above).
+      ORION_ACTIONS_TAILSCALE_PATH: ${ORION_ACTIONS_TAILSCALE_PATH:-/usr/bin/tailscale}
+      ORION_ACTIONS_NVIDIA_SMI_PATH: ${ORION_ACTIONS_NVIDIA_SMI_PATH:-/usr/bin/nvidia-smi}
+      ORION_ACTIONS_SMARTCTL_PATH: ${ORION_ACTIONS_SMARTCTL_PATH:-/usr/sbin/smartctl}
+      ORION_ACTIONS_NVME_PATH: ${ORION_ACTIONS_NVME_PATH:-/usr/sbin/nvme}
       ORION_ACTIONS_GITHUB_API_URL: ${ORION_ACTIONS_GITHUB_API_URL:-https://api.github.com}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       ORION_ACTIONS_GITHUB_OWNER: ${ORION_ACTIONS_GITHUB_OWNER:-}
@@ -60,7 +84,7 @@ services:
       ORION_ACTIONS_DOCKER_PRUNE_DEFAULT_UNTIL: ${ORION_ACTIONS_DOCKER_PRUNE_DEFAULT_UNTIL:-72h}
       ORION_ACTIONS_DOCKER_PROTECTED_LABELS: ${ORION_ACTIONS_DOCKER_PROTECTED_LABELS:-orion.keep=true,keep=true,protected=true}
       SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING: ${SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING:-false}
-      BIOMETRICS_SERVICE_URL: ${BIOMETRICS_SERVICE_URL:-http://orion-biometrics:8058}
+      BIOMETRICS_SERVICE_URL: ${BIOMETRICS_SERVICE_URL:-http://orion-athena-biometrics:8100}
       BIOMETRICS_HTTP_TIMEOUT_SEC: ${BIOMETRICS_HTTP_TIMEOUT_SEC:-5}
       ENDOGENOUS_RUNTIME_ENABLED: ${ENDOGENOUS_RUNTIME_ENABLED:-false}
       ENDOGENOUS_RUNTIME_SURFACE_CHAT_REFLECTIVE_ENABLED: ${ENDOGENOUS_RUNTIME_SURFACE_CHAT_REFLECTIVE_ENABLED:-false}

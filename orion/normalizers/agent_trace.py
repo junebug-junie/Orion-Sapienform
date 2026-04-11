@@ -149,9 +149,31 @@ def _taxonomy_for(tool_id: str | None, *, step_name: str | None = None) -> _Tool
     return _ToolTaxonomy(tool_family="unknown", action_kind="unknown", effect_kind="unknown")
 
 
+# Exec steps sometimes carry extra keys (e.g. metadata) before the service payload; never use
+# ``next(iter(step.result.keys()))`` — that mis-labels the row and skips AgentChain failure overrides.
+_SERVICE_RESULT_KEYS: tuple[str, ...] = (
+    "AgentChainService",
+    "PlannerReactService",
+    "RecallService",
+    "CouncilService",
+)
+
+
 def _step_service_key(step: StepExecutionResult) -> str | None:
     if not isinstance(step.result, dict) or not step.result:
         return None
+    sn = str(step.step_name or "").strip()
+    if sn == "agent_chain" and "AgentChainService" in step.result:
+        return "AgentChainService"
+    if sn == "planner_react" and "PlannerReactService" in step.result:
+        return "PlannerReactService"
+    if sn in {"recall", "recall_step"} and "RecallService" in step.result:
+        return "RecallService"
+    if "council" in sn and "CouncilService" in step.result:
+        return "CouncilService"
+    for key in _SERVICE_RESULT_KEYS:
+        if key in step.result:
+            return key
     return next(iter(step.result.keys()))
 
 
@@ -200,6 +222,111 @@ def _extract_observation_text(observation: Any) -> str:
     return _coerce_text(observation)
 
 
+def _bound_capability_payload(agent_payload: Dict[str, Any]) -> Dict[str, Any]:
+    direct_bound = agent_payload.get("bound_capability")
+    if isinstance(direct_bound, dict):
+        return direct_bound
+    structured = agent_payload.get("structured")
+    if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
+        payload = structured.get("bound_capability") or {}
+        if isinstance(payload, dict):
+            capability_decision = payload.get("capability_decision") if isinstance(payload.get("capability_decision"), dict) else {}
+            if not payload.get("selected_skill") and capability_decision.get("selected_skill"):
+                payload = {**payload, "selected_skill": capability_decision.get("selected_skill")}
+            return payload
+    return {}
+
+
+def _agent_chain_failure_signals(agent_payload: Dict[str, Any]) -> bool:
+    """
+    True when AgentChainService delivered a bound-capability failure even if the outer
+    StepExecutionResult.status is still success (RPC completed).
+    """
+    if not isinstance(agent_payload, dict):
+        return False
+    bound = _bound_capability_payload(agent_payload)
+    if isinstance(bound, dict):
+        if str(bound.get("status") or "").strip().lower() == "fail":
+            return True
+        obs = bound.get("observation")
+        if isinstance(obs, dict):
+            rpr = obs.get("raw_payload_ref")
+            if isinstance(rpr, dict):
+                if rpr.get("ok") is False:
+                    return True
+                if rpr.get("domain_negative") is True:
+                    return True
+    structured = agent_payload.get("structured")
+    if isinstance(structured, dict):
+        fr = str(structured.get("finalization_reason") or "")
+        if fr == "bound_capability_domain_negative":
+            return True
+        if fr.startswith("bound_capability_") and any(
+            tok in fr for tok in ("fail", "negative", "closed", "blocked", "timeout")
+        ):
+            return True
+    rd = agent_payload.get("runtime_debug")
+    if isinstance(rd, dict):
+        path = str(rd.get("bound_capability_terminal_path") or "").lower()
+        if path and any(
+            tok in path
+            for tok in (
+                "_fail",
+                "_negative",
+                "fail_closed",
+                "domain_negative",
+                "timeout",
+                "blocked",
+                "empty_terminal",
+                "no_compatible",
+            )
+        ):
+            # Avoid treating a successful terminal path as failure.
+            if "bound_direct_success" in path or path.endswith("success"):
+                return False
+            return True
+    return False
+
+
+def _agent_chain_failure_detail(agent_payload: Dict[str, Any]) -> str:
+    bound = _bound_capability_payload(agent_payload)
+    if isinstance(bound, dict):
+        d = str(bound.get("detail") or "").strip()
+        if d:
+            return d
+    text = str(agent_payload.get("text") or "").strip()
+    if text:
+        return text
+    return "bound capability reported failure"
+
+
+def _agent_chain_delegate_status(step: StepExecutionResult, agent_payload: Dict[str, Any]) -> str:
+    if _agent_chain_failure_signals(agent_payload):
+        return "fail"
+    return str(step.status or "unknown")
+
+
+def _agent_chain_delegate_summary(step: StepExecutionResult, agent_payload: Dict[str, Any], tool_id: str | None) -> str:
+    if isinstance(agent_payload, dict) and _agent_chain_failure_signals(agent_payload):
+        detail = _agent_chain_failure_detail(agent_payload)
+        return f"Bound capability failed: {_coerce_text(detail, limit=220)}."
+    return _step_summary(step, tool_id)
+
+
+def _bound_effect_kind(bound_payload: Dict[str, Any]) -> EffectKind:
+    policy = bound_payload.get("policy_metadata") if isinstance(bound_payload.get("policy_metadata"), dict) else {}
+    if not policy:
+        capability_decision = bound_payload.get("capability_decision") if isinstance(bound_payload.get("capability_decision"), dict) else {}
+        policy = capability_decision.get("policy") if isinstance(capability_decision.get("policy"), dict) else {}
+    execute_opt_in = bool(policy.get("execute_opt_in"))
+    risk_class = str(policy.get("risk_class") or "").strip().lower()
+    if execute_opt_in or risk_class in {"high_impact", "state_change"}:
+        return "side_effect"
+    if bound_payload.get("selected_skill"):
+        return "external_io"
+    return "read_only"
+
+
 def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
     service_key = _step_service_key(step)
     if step.step_name == "planner_react":
@@ -215,15 +342,7 @@ def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
         return "Recall retrieved memory context."
     if service_key == "AgentChainService":
         agent_payload = step.result.get("AgentChainService") if isinstance(step.result, dict) else {}
-        bound_payload = {}
-        if isinstance(agent_payload, dict):
-            direct_bound = agent_payload.get("bound_capability")
-            if isinstance(direct_bound, dict):
-                bound_payload = direct_bound
-            else:
-                structured = agent_payload.get("structured")
-                if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
-                    bound_payload = structured.get("bound_capability") or {}
+        bound_payload = _bound_capability_payload(agent_payload) if isinstance(agent_payload, dict) else {}
         if isinstance(bound_payload, dict):
             bound_status = str(bound_payload.get("status") or "").strip().lower()
             bound_reason = str(bound_payload.get("reason") or "").strip()
@@ -231,6 +350,10 @@ def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
             if bound_status == "fail" or bound_reason:
                 message = bound_detail or bound_reason or "bound capability failure"
                 return f"Bound capability execution failed: {_coerce_text(message, limit=140)}."
+            selected_skill = str(bound_payload.get("selected_skill") or "").strip()
+            selected_verb = str(bound_payload.get("selected_verb") or "").strip()
+            if selected_skill:
+                return f"Bound capability executed {selected_verb or 'semantic_verb'} via {selected_skill}."
         nested = []
         if isinstance(agent_payload, dict):
             planner_raw = agent_payload.get("planner_raw") if isinstance(agent_payload.get("planner_raw"), dict) else {}
@@ -254,6 +377,7 @@ def _nested_agent_trace_steps(step: StepExecutionResult, *, start_index: int) ->
     agent_payload = step.result.get("AgentChainService")
     if not isinstance(agent_payload, dict):
         return []
+    failure = _agent_chain_failure_signals(agent_payload)
     planner_raw = agent_payload.get("planner_raw") if isinstance(agent_payload.get("planner_raw"), dict) else {}
     trace = planner_raw.get("trace") if isinstance(planner_raw.get("trace"), list) else []
     nested_steps: List[AgentTraceStepV1] = []
@@ -267,6 +391,10 @@ def _nested_agent_trace_steps(step: StepExecutionResult, *, start_index: int) ->
         summary = _extract_observation_text(trace_item.get("observation"))
         if not summary:
             summary = f"Agent Chain selected {tool_id or 'an internal tool'}."
+        if failure:
+            row_status: str = "fail"
+        else:
+            row_status = "success" if trace_item.get("observation") is not None else "partial"
         nested_steps.append(
             AgentTraceStepV1(
                 index=next_index,
@@ -275,7 +403,7 @@ def _nested_agent_trace_steps(step: StepExecutionResult, *, start_index: int) ->
                 tool_family=taxonomy.tool_family,
                 action_kind=taxonomy.action_kind,
                 effect_kind=taxonomy.effect_kind,
-                status="success" if trace_item.get("observation") is not None else "partial",
+                status=row_status,
                 duration_ms=None,
                 summary=summary,
                 detail={
@@ -286,6 +414,32 @@ def _nested_agent_trace_steps(step: StepExecutionResult, *, start_index: int) ->
             )
         )
         next_index += 1
+    if not nested_steps:
+        bound_payload = _bound_capability_payload(agent_payload)
+        selected_skill = str(bound_payload.get("selected_skill") or "").strip()
+        selected_verb = str(bound_payload.get("selected_verb") or "").strip()
+        if selected_skill or str(bound_payload.get("selected_verb") or "").strip():
+            target = selected_skill or "no_concrete_skill"
+            nested_fail = failure or str(bound_payload.get("status") or "").strip().lower() == "fail"
+            nested_steps.append(
+                AgentTraceStepV1(
+                    index=next_index,
+                    event_type="agent_delegate_tool",
+                    tool_id=selected_skill or str(bound_payload.get("selected_verb") or "").strip() or "bound_capability",
+                    tool_family="runtime",
+                    action_kind="execute",
+                    effect_kind=_bound_effect_kind(bound_payload),
+                    status="fail" if nested_fail else "success",
+                    duration_ms=None,
+                    summary=f"Bound capability selected {selected_verb or 'semantic_verb'} -> {target}.",
+                    detail={
+                        "source": "AgentChainService.bound_capability",
+                        "selected_verb": selected_verb,
+                        "selected_skill": selected_skill,
+                        "capability_decision": bound_payload.get("capability_decision"),
+                    },
+                )
+            )
     return nested_steps
 
 
@@ -310,6 +464,21 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
         else:
             raw_tool_id = step.verb_name or service_key or step.step_name
         taxonomy = _taxonomy_for(raw_tool_id, step_name=step.step_name)
+        summary_tool_id = str(raw_tool_id) if raw_tool_id else None
+        step_status = step.status or "unknown"
+        step_summary = _step_summary(step, summary_tool_id)
+        if service_key == "AgentChainService" and isinstance(step.result, dict):
+            agent_payload = step.result.get("AgentChainService")
+            if isinstance(agent_payload, dict):
+                bound_payload = _bound_capability_payload(agent_payload)
+                if bound_payload:
+                    taxonomy = _ToolTaxonomy(
+                        tool_family="orchestration",
+                        action_kind="execute" if bound_payload.get("selected_skill") else "delegate",
+                        effect_kind=_bound_effect_kind(bound_payload),
+                    )
+                step_status = _agent_chain_delegate_status(step, agent_payload)
+                step_summary = _agent_chain_delegate_summary(step, agent_payload, summary_tool_id)
         normalized.append(
             AgentTraceStepV1(
                 index=next_index,
@@ -318,9 +487,9 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
                 tool_family=taxonomy.tool_family,
                 action_kind=taxonomy.action_kind,
                 effect_kind=taxonomy.effect_kind,
-                status=step.status or "unknown",
+                status=step_status,
                 duration_ms=step.latency_ms,
-                summary=_step_summary(step, str(raw_tool_id) if raw_tool_id else None),
+                summary=step_summary,
                 detail={
                     "step_name": step.step_name,
                     "verb_name": step.verb_name,
@@ -479,7 +648,11 @@ def build_agent_trace_summary(
     action_counts = _counts_with_order(action_counter, ACTION_ORDER)
     effect_counts = _counts_with_order(effect_counter, EFFECT_ORDER)
     failed_step_count = sum(1 for step in normalized_steps if str(step.status or "").lower() not in {"success"})
-    if failed_step_count == 0 and str(status or "").lower() not in {"success", "unknown"}:
+    if (
+        normalized_steps
+        and failed_step_count == 0
+        and str(status or "").lower() not in {"success", "unknown"}
+    ):
         failed_step_count = 1
     summary_text = _deterministic_summary(
         tools=tool_stats,

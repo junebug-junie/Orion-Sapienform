@@ -29,6 +29,7 @@ from .library import scan_cognition_library
 from .trace_payloads import extract_agent_trace_payload
 from .autonomy_payloads import extract_autonomy_payload
 from .workflow_payloads import extract_workflow_payload
+from .cortex_chat_display import hub_effective_chat_text
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .social_room import is_social_room_payload, social_room_client_meta
 from .service_logs import collect_service_inventory
@@ -870,11 +871,11 @@ async def handle_chat_request(
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
         resp: CortexChatResult = await cortex_client.chat(req, correlation_id=corr_id)
 
-        # Extract Text
-        text = resp.final_text or ""
-
-        # Map raw result for UI debug
+        # Map raw result for UI debug (HTTP + WS clients use this to coalesce display text)
         raw_result = resp.cortex_result.model_dump(mode="json")
+
+        # Extract Text — prefer longest answer if top-level vs nested diverge (parity with curl `raw.final_text`)
+        text = hub_effective_chat_text(resp)
 
         # Use the correlation_id from the response (gateway) if available
         # or it might be passed back from the client logic if modified to do so.

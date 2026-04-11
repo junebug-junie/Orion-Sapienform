@@ -1,0 +1,11 @@
+# Deprecated: Tailscale bind-mounts live in docker-compose.yml so `docker compose up` works without
+# a second -f file. This file is kept so old CI/scripts that pass `-f docker-compose.tailscale-live.yml`
+# still merge the same volumes (duplicate mounts are harmless).
+
+services:
+  cortex-exec:
+    volumes:
+      - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
+      - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
+    environment:
+      ORION_ACTIONS_TAILSCALE_PATH: ${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}

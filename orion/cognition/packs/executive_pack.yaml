@@ -12,6 +12,13 @@ verbs:
   - evaluate
   - extract_facts
   - assess_runtime_state
+  - answer_current_datetime
+  - inspect_gpu_status
+  - show_biometrics_snapshot
+  - list_biometrics_recent_readings
+  - send_operator_notification
+  - show_landing_pad_metrics
+  - inspect_docker_container_status
   - assess_mesh_presence
   - assess_storage_health
   - summarize_recent_changes

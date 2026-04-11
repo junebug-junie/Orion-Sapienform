@@ -7,7 +7,7 @@ from app.capability_bridge import normalize_capability_observation, resolve_capa
 
 
 def test_capability_selector_resolves_semantic_verb_to_system_inspection_skill():
-    registry = ActionsSkillRegistry(verbs_dir=Path("/workspace/Orion-Sapienform/orion/cognition/verbs"))
+    registry = ActionsSkillRegistry(verbs_dir=Path(__file__).resolve().parents[3] / "orion" / "cognition" / "verbs")
     decision = resolve_capability_decision(
         verb="assess_runtime_state",
         preferred_skill_families=["system_inspection"],
@@ -20,7 +20,7 @@ def test_capability_selector_resolves_semantic_verb_to_system_inspection_skill()
 
 
 def test_normalized_capability_observation_shape():
-    registry = ActionsSkillRegistry(verbs_dir=Path("/workspace/Orion-Sapienform/orion/cognition/verbs"))
+    registry = ActionsSkillRegistry(verbs_dir=Path(__file__).resolve().parents[3] / "orion" / "cognition" / "verbs")
     decision = resolve_capability_decision(
         verb="assess_runtime_state",
         preferred_skill_families=["system_inspection"],
@@ -42,7 +42,7 @@ def test_normalized_capability_observation_shape():
 
 
 def test_housekeep_runtime_selects_mutating_skill_with_execute_opt_in_policy():
-    registry = ActionsSkillRegistry(verbs_dir=Path("/workspace/Orion-Sapienform/orion/cognition/verbs"))
+    registry = ActionsSkillRegistry(verbs_dir=Path(__file__).resolve().parents[3] / "orion" / "cognition" / "verbs")
     decision = resolve_capability_decision(
         verb="housekeep_runtime",
         preferred_skill_families=["runtime_housekeeping"],

@@ -196,7 +196,8 @@ _RUNTIME_CLEANUP_TERMS = {"docker", "container", "cleanup", "stopped", "prune", 
 _CHANGE_SUMMARY_TERMS = {"summarize", "summary", "recent", "changes", "change", "changelog", "intel"}
 _UNSAFE_ASSISTANT_COMMAND_PATTERN = re.compile(r"(docker\s+(rm|rmi|system\s+prune|container\s+prune|volume\s+rm|network\s+rm)|rm\s+-rf|kubectl\s+delete)", re.IGNORECASE)
 _OPERATIONAL_VERB_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("assess_mesh_presence", ("node", "nodes", "mesh", "up", "online", "alive", "status")),
+    # Avoid generic "node"/"status" — they match "Docker … on this node" and steal routing from docker/gpu.
+    ("assess_mesh_presence", ("mesh", "tailscale", "subnet", "subnets", "peers", "peer")),
     ("assess_storage_health", ("disk", "storage", "health", "filesystem", "volume")),
     ("summarize_recent_changes", ("summarize", "summary", "recent", "changes", "prs", "pull request", "commits")),
     ("housekeep_runtime", ("cleanup", "clean up", "stopped", "container", "containers", "runtime", "prune", "dry-run", "dry run")),
@@ -251,6 +252,22 @@ def _semantic_override_scores(*, user_text: str, normalized_action_input: Dict[s
             score -= 30
             reasons.append("hard_mismatch:summarize_recent_changes")
 
+        if "biometric" in ask:
+            if str(tool.tool_id or "") in {"assess_mesh_presence", "inspect_docker_container_status", "housekeep_runtime"}:
+                score -= 40
+                reasons.append("penalty:biometrics_prompt")
+            if str(tool.tool_id or "") in {"show_biometrics_snapshot", "list_biometrics_recent_readings"}:
+                score += 22
+                reasons.append("boost:biometrics_prompt")
+
+        if ("docker" in ask or "container status" in ask) and "biometric" not in ask:
+            if str(tool.tool_id or "") == "inspect_docker_container_status":
+                score += 24
+                reasons.append("boost:docker_status_prompt")
+            if str(tool.tool_id or "") == "assess_mesh_presence" and "mesh" not in ask and "tailscale" not in ask:
+                score -= 40
+                reasons.append("penalty:docker_prompt_not_mesh")
+
         if str(getattr(tool, "execution_mode", "") or "").lower() == "capability_backed":
             score += 2
             reasons.append("capability_backed")
@@ -280,6 +297,49 @@ def _select_canonical_operational_tool(user_text: str, tools: List[ToolDef]) -> 
     hay = str(user_text or "").lower()
     tool_map = {str(t.tool_id or ""): t for t in tools}
     priority_rules = [
+        ("answer_current_datetime", ("what time", "current time", "time is it", "what's the time", "clock", "date and time")),
+        ("inspect_gpu_status", ("nvidia", "gpu status", "gpu ", "nvidia-smi", "cuda")),
+        (
+            "show_biometrics_snapshot",
+            ("biometrics snapshot", "current biometrics", "biometric snapshot", "biometrics card"),
+        ),
+        (
+            "list_biometrics_recent_readings",
+            (
+                "most recent biometrics",
+                "recent biometrics reading",
+                "biometrics readings",
+                "biometrics reading",
+                "raw biometrics",
+                "recent biometrics",
+            ),
+        ),
+        (
+            "send_operator_notification",
+            (
+                "notify operator",
+                "notification to operator",
+                "send a notification",
+                "alert operator",
+                "operators saying",
+                "notification to operators",
+                "page on-call",
+            ),
+        ),
+        (
+            "inspect_docker_container_status",
+            (
+                "docker container",
+                "docker containers",
+                "docker ps",
+                "container status",
+                "containers running",
+                "list containers",
+                "running containers",
+                "docker status",
+            ),
+        ),
+        ("show_landing_pad_metrics", ("landing pad metrics", "landing pad metric", "landing pad snapshot", "pad metrics")),
         ("assess_storage_health", ("disk", "storage")),
         ("summarize_recent_changes", ("recent pr", "recent pull request", "recent changes", "summarize recent")),
         ("housekeep_runtime", ("cleanup", "dry-run", "dry run", "stopped containers", "prune")),
@@ -364,6 +424,62 @@ def _extract_bound_failure_signal(step_results: List[StepExecutionResult]) -> Di
                 "detail": str(bound.get("detail") or "").strip() or None,
             }
     return None
+
+
+def _enrich_final_text_with_bound_skill_output(
+    final_text: str | None,
+    step_results: List[StepExecutionResult],
+) -> str | None:
+    """Append nested cortex final_text JSON when the user-facing line is only the execution summary."""
+    if not final_text or not str(final_text).strip():
+        return final_text
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        structured = payload.get("structured")
+        if not isinstance(structured, dict):
+            continue
+        bc = structured.get("bound_capability")
+        if not isinstance(bc, dict):
+            continue
+        sk = bc.get("structured_skill_output")
+        if not isinstance(sk, dict):
+            continue
+        raw = sk.get("raw_payload_ref")
+        if not isinstance(raw, dict):
+            continue
+        nested = raw.get("final_text")
+        if not isinstance(nested, str) or not nested.strip():
+            continue
+        if nested.strip() in final_text:
+            return final_text
+        return f"{final_text.rstrip()}\n\nSkill output:\n{nested.strip()}"
+    return final_text
+
+
+def _bound_capability_succeeded(step_results: List[StepExecutionResult]) -> bool:
+    """True when AgentChain reported a successful bound-capability execution (avoid grounding drift rewrite)."""
+
+    def _bound_payload(agent_payload: Dict[str, Any]) -> Dict[str, Any]:
+        direct = agent_payload.get("bound_capability")
+        if isinstance(direct, dict):
+            return direct
+        structured = agent_payload.get("structured")
+        if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
+            return structured.get("bound_capability") or {}
+        return {}
+
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        bound = _bound_payload(payload)
+        if not isinstance(bound, dict):
+            continue
+        if str(bound.get("status") or "").strip().lower() == "ok":
+            return True
+    return False
 
 
 def _sanitize_operational_history(messages: List[LLMMessage], *, user_text: str) -> Tuple[List[LLMMessage], Dict[str, Any]]:
@@ -1760,6 +1876,7 @@ class Supervisor:
             packs,
             [s.step_name for s in step_results],
         )
+        final_text = _enrich_final_text_with_bound_skill_output(final_text, step_results)
         user_text = _last_user_message(ctx)
         verdict = _grounding_verdict(user_text, final_text or "")
         recent_followup_continuity = _has_recent_followup_continuity(ctx.get("messages"), final_text or "")
@@ -1777,7 +1894,14 @@ class Supervisor:
         explanation_downgrade = bool((ctx.get("debug") or {}).get("downgraded_to_explanation"))
         bound_failure_signal = _extract_bound_failure_signal(step_results)
         preserve_operational_failure_text = bound_failure_signal is not None
-        if not verdict["anchored"] and not recent_followup_continuity and not explanation_downgrade and not preserve_operational_failure_text:
+        preserve_bound_capability_text = _bound_capability_succeeded(step_results)
+        if (
+            not verdict["anchored"]
+            and not recent_followup_continuity
+            and not explanation_downgrade
+            and not preserve_operational_failure_text
+            and not preserve_bound_capability_text
+        ):
             logger.warning(
                 "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
                 correlation_id,
@@ -1787,6 +1911,11 @@ class Supervisor:
             final_text = (
                 f"I may have drifted from your request. You asked: {user_text}\n\n"
                 "Could you restate the key constraint and I will answer directly from that prompt?"
+            )
+        elif preserve_bound_capability_text:
+            logger.info(
+                "grounding_guardrail_bypassed_for_bound_capability corr_id=%s",
+                correlation_id,
             )
         elif preserve_operational_failure_text:
             logger.info(

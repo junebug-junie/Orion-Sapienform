@@ -606,6 +606,52 @@ class NotifyChatMessageOutput(SkillVerbOutput):
     notification_id: str | None = None
 
 
+def _resolve_tailscale_binary() -> tuple[str | None, list[str]]:
+    """
+    Resolve a usable tailscale CLI path. Tries ORION_ACTIONS_TAILSCALE_PATH first, then
+    common absolute paths, then PATH. Containers often lack `tailscale` on PATH even when
+    the binary is bind-mounted at /usr/bin/tailscale (see docker-compose.tailscale-live.yml).
+    """
+    configured = str(settings.tailscale_path or "tailscale").strip() or "tailscale"
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cand in (configured, "/usr/bin/tailscale", "/usr/sbin/tailscale", "tailscale"):
+        if cand and cand not in seen:
+            seen.add(cand)
+            candidates.append(cand)
+    for cand in candidates:
+        path = Path(cand)
+        if path.is_absolute():
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path.resolve()), candidates
+        else:
+            resolved = shutil.which(cand)
+            if resolved:
+                return resolved, candidates
+    return None, candidates
+
+
+def _resolve_nvidia_smi_binary() -> tuple[str | None, list[str]]:
+    """Resolve nvidia-smi like the Tailscale CLI: env path, common mount targets, then PATH."""
+    configured = str(settings.nvidia_smi_path or "").strip()
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cand in (configured, "/usr/bin/nvidia-smi", "/usr/sbin/nvidia-smi", "nvidia-smi"):
+        if cand and cand not in seen:
+            seen.add(cand)
+            candidates.append(cand)
+    for cand in candidates:
+        path = Path(cand)
+        if path.is_absolute():
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path.resolve()), candidates
+        else:
+            resolved = shutil.which(cand)
+            if resolved:
+                return resolved, candidates
+    return None, candidates
+
+
 class SafeCommandRunner:
     def __init__(self, *, allowed_commands: set[str], timeout_sec: float) -> None:
         self.allowed_commands = set(allowed_commands)
@@ -615,11 +661,15 @@ class SafeCommandRunner:
         if not command:
             raise PermissionError("empty_command")
         binary = str(command[0]).strip()
-        if binary not in self.allowed_commands:
+        base = os.path.basename(binary) or binary
+        if base not in self.allowed_commands:
             raise PermissionError(f"command_not_allowlisted:{binary}")
-        resolved = shutil.which(binary)
+        if os.path.isabs(binary) and os.path.isfile(binary) and os.access(binary, os.X_OK):
+            resolved = binary
+        else:
+            resolved = shutil.which(base)
         if not resolved:
-            raise FileNotFoundError(binary)
+            raise FileNotFoundError(base)
         return subprocess.run(
             [resolved, *command[1:]],
             capture_output=True,
@@ -732,6 +782,183 @@ def _parse_docker_ps_lines(text: str) -> List[Dict[str, Any]]:
             }
         )
     return containers
+
+
+_DOCKER_PRUNE_PREVIEW_MODE_ALIASES = frozenset({"preview", "dry_run", "dry-run", "plan", "simulate", "list"})
+_DOCKER_PRUNE_EXECUTE_MODE_ALIASES = frozenset({"execute", "prune", "apply", "mutate"})
+
+
+def _docker_prune_user_request_text(skill_args: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in ("user_request", "request", "prompt", "natural_language", "text", "description", "instruction"):
+        val = skill_args.get(key)
+        if isinstance(val, str) and val.strip():
+            parts.append(val.strip())
+    return " ".join(parts).strip()
+
+
+def _docker_prune_nl_run_mode(text: str) -> Optional[str]:
+    """Infer preview|execute from natural-language hints. None = no strong signal."""
+    t = (text or "").lower().strip()
+    if not t:
+        return None
+    if any(p in t for p in ("don't ", "do not ", "never prune", "should not prune", "without deleting", "no deletion")):
+        return "preview"
+    preview_markers = (
+        "dry-run",
+        "dry run",
+        "dryrun",
+        "would be pruned",
+        "would be removed",
+        "show me which",
+        "which stopped containers",
+        "preview mode",
+        "preview only",
+        "no changes",
+        "list matching",
+        "dry-run cleanup",
+    )
+    if any(m in t for m in preview_markers):
+        return "preview"
+    if re.search(r"\bprune\b", t):
+        if "dry" in t or "would be" in t or "show me" in t:
+            return "preview"
+        return "execute"
+    return None
+
+
+def _resolve_docker_prune_run_mode(skill_args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Resolve canonical run_mode: preview | execute. Default preview (no mutation)."""
+    resolution: Dict[str, Any] = {"sources_considered": []}
+    resolution["skill_arg_keys"] = sorted(str(k) for k in skill_args.keys())
+    hint_blob = _docker_prune_user_request_text(skill_args)
+    resolution["sources_considered"].append(
+        {"step": "user_text_fields", "chars": len(hint_blob), "head": hint_blob[:220]}
+    )
+    raw_mode = skill_args.get("mode")
+    if isinstance(raw_mode, str):
+        m = raw_mode.strip().lower()
+        if m in _DOCKER_PRUNE_PREVIEW_MODE_ALIASES:
+            resolution["source"] = "mode_arg"
+            resolution["raw_mode"] = raw_mode
+            return "preview", resolution
+        if m in _DOCKER_PRUNE_EXECUTE_MODE_ALIASES:
+            resolution["source"] = "mode_arg"
+            resolution["raw_mode"] = raw_mode
+            return "execute", resolution
+
+    if bool(skill_args.get("execute", False)):
+        resolution["source"] = "execute_flag"
+        resolution["sources_considered"].append({"step": "execute_flag", "value": True})
+        return "execute", resolution
+
+    if "dry_run" in skill_args:
+        resolution["source"] = "dry_run_flag"
+        dv = bool(skill_args.get("dry_run"))
+        resolution["sources_considered"].append({"step": "dry_run_key", "value": dv})
+        return ("preview" if dv else "execute"), resolution
+
+    nl = _docker_prune_nl_run_mode(hint_blob)
+    resolution["sources_considered"].append({"step": "nl_infer", "result": nl})
+    if nl:
+        resolution["source"] = "natural_language"
+        resolution["natural_language"] = nl
+        return nl, resolution
+
+    resolution["source"] = "default_safe_preview"
+    resolution["sources_considered"].append({"step": "fallback", "reason": "no_mode_flags_or_nl"})
+    return "preview", resolution
+
+
+def _docker_inspect_labels_and_size(runner: SafeCommandRunner, container_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Map full container id -> {created, size_root_fs, labels}."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not container_ids:
+        return out
+    chunk_size = 40
+    for i in range(0, len(container_ids), chunk_size):
+        chunk = container_ids[i : i + chunk_size]
+        proc = runner.run(["docker", "container", "inspect", *chunk])
+        if proc.returncode != 0 or not (proc.stdout or "").strip():
+            continue
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, list):
+            continue
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("Id") or "")
+            if not cid:
+                continue
+            cfg = item.get("Config") if isinstance(item.get("Config"), dict) else {}
+            labels = cfg.get("Labels") if isinstance(cfg.get("Labels"), dict) else {}
+            try:
+                sz = int(item.get("SizeRootFs") or 0)
+            except (TypeError, ValueError):
+                sz = 0
+            out[cid] = {
+                "created": str(item.get("Created") or ""),
+                "size_root_fs": sz,
+                "labels": labels,
+            }
+    return out
+
+
+def _parse_docker_until_cutoff(until: str) -> Optional[datetime]:
+    """Return cutoff UTC: containers with Created strictly before this instant are prune-eligible (Docker ``until`` semantics)."""
+    u = str(until or "").strip()
+    if not u:
+        return None
+    low = u.lower()
+    now = datetime.now(timezone.utc)
+    m = re.match(r"^(\d+)(h|m|d|s)$", low)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        delta = {"h": timedelta(hours=n), "m": timedelta(minutes=n), "d": timedelta(days=n), "s": timedelta(seconds=n)}[unit]
+        return now - delta
+    try:
+        dt = datetime.fromisoformat(u.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _docker_created_before(creates: str, cutoff: datetime) -> bool:
+    if not creates or cutoff is None:
+        return True
+    try:
+        # Docker inspect: "2024-01-15T10:00:00.123456789Z"
+        cnorm = creates.replace("Z", "+00:00")
+        if re.search(r"\.\d{7,}", cnorm):
+            cnorm = re.sub(r"(\.\d{6})\d+", r"\1", cnorm)
+        ct = datetime.fromisoformat(cnorm)
+        if ct.tzinfo is None:
+            ct = ct.replace(tzinfo=timezone.utc)
+        return ct.astimezone(timezone.utc) < cutoff
+    except Exception:
+        return True
+
+
+def _docker_label_protection_reason(labels: Dict[str, Any], keep_labels: List[str]) -> Optional[str]:
+    if not isinstance(labels, dict) or not keep_labels:
+        return None
+    for kl in keep_labels:
+        rule = str(kl).strip()
+        if not rule:
+            continue
+        if "=" in rule:
+            k, _, v = rule.partition("=")
+            k, v = k.strip(), v.strip()
+            if str(labels.get(k)) == v:
+                return f"protected_label:{rule}"
+        elif rule in labels:
+            return f"protected_label_key:{rule}"
+    return None
 
 
 def _read_docker_engine_containers(sock_path: str) -> List[Dict[str, Any]]:
@@ -954,6 +1181,37 @@ def _normalize_smartctl_device(*, node_name: str, device: str, payload: Dict[str
     }
 
 
+def _discover_local_block_devices(*, max_devices: int = 12) -> List[str]:
+    """
+    Whole-disk device paths (e.g. /dev/nvme0n1, /dev/sda) from /sys/block.
+    Skips partitions and non-disk entries when possible.
+    """
+    root = Path("/sys/block")
+    if not root.is_dir():
+        return []
+    out: List[str] = []
+    for p in sorted(root.iterdir()):
+        name = p.name
+        if name.startswith(("loop", "dm-", "sr", "zd", "md", "ram", "fd")):
+            continue
+        if re.fullmatch(r"nvme\d+n\d+p\d+", name):
+            continue
+        if re.fullmatch(r"sd[a-z]+\d+", name):
+            continue
+        if not (
+            re.fullmatch(r"nvme\d+n\d+", name)
+            or re.fullmatch(r"sd[a-z]+", name)
+            or re.fullmatch(r"vd[a-z]+", name)
+        ):
+            continue
+        devp = Path("/dev") / name
+        if devp.exists():
+            out.append(str(devp))
+        if len(out) >= max_devices:
+            break
+    return out
+
+
 def _normalize_nvme_smart_log(*, node_name: str, device: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "node_name": node_name,
@@ -1031,8 +1289,12 @@ class NvidiaSmiSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
         runner = SafeCommandRunner(allowed_commands={"nvidia-smi"}, timeout_sec=settings.skills_command_timeout_sec)
+        smi_bin, _cands = _resolve_nvidia_smi_binary()
+        if not smi_bin:
+            result = {"available": False, "reason": "nvidia_smi_not_installed", "gpus": []}
+            return _skill_result_output(skill_name="skills.gpu.nvidia_smi_snapshot.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
         command = [
-            "nvidia-smi",
+            smi_bin,
             "--query-gpu=index,name,uuid,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw,pstate",
             "--format=csv,noheader,nounits",
         ]
@@ -1199,12 +1461,31 @@ class TailscaleMeshStatusVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         skill_args = _skill_args(payload)
         active_probe = bool(skill_args.get("active_probe", False))
         timeout_sec = float(settings.skills_mesh_ops_timeout_sec or settings.skills_command_timeout_sec)
-        binary = str(settings.tailscale_path or "tailscale").strip() or "tailscale"
-        runner = SafeCommandRunner(allowed_commands={binary}, timeout_sec=timeout_sec)
+        resolved_binary, candidates_tried = _resolve_tailscale_binary()
+        if not resolved_binary:
+            result = {
+                "available": False,
+                "reason": "tailscale_not_installed",
+                "unsupported": True,
+                "nodes": [],
+                "executor_node": settings.node_name,
+                "tailscale_path_configured": str(settings.tailscale_path or ""),
+                "tailscale_candidates_tried": candidates_tried,
+            }
+            return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
+        runner = SafeCommandRunner(allowed_commands={resolved_binary}, timeout_sec=timeout_sec)
         try:
-            proc = await asyncio.to_thread(runner.run, [binary, "status", "--json"])
+            proc = await asyncio.to_thread(runner.run, [resolved_binary, "status", "--json"])
         except FileNotFoundError:
-            result = {"available": False, "reason": "tailscale_not_installed", "unsupported": True, "nodes": []}
+            result = {
+                "available": False,
+                "reason": "tailscale_not_installed",
+                "unsupported": True,
+                "nodes": [],
+                "executor_node": settings.node_name,
+                "tailscale_path_configured": str(settings.tailscale_path or ""),
+                "tailscale_candidates_tried": candidates_tried,
+            }
             return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
         except Exception as exc:
             result = {"available": False, "reason": str(exc), "nodes": []}
@@ -1217,12 +1498,14 @@ class TailscaleMeshStatusVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         if active_probe:
             for node_name in _derive_active_nodes(_parse_tailscale_status_json(raw)):
                 try:
-                    ping_proc = await asyncio.to_thread(runner.run, [binary, "ping", "--timeout", "2s", "--c", "1", node_name])
+                    ping_proc = await asyncio.to_thread(runner.run, [resolved_binary, "ping", "--timeout", "2s", "--c", "1", node_name])
                     probe_results[node_name] = {"ok": ping_proc.returncode == 0, "summary": (ping_proc.stdout or ping_proc.stderr).strip()[:220]}
                 except Exception as exc:
                     probe_results[node_name] = {"ok": False, "summary": str(exc)}
         result = _parse_tailscale_status_json(raw, probe_results=probe_results)
         result["probe_enabled"] = active_probe
+        result["executor_node"] = settings.node_name
+        result["tailscale_binary"] = resolved_binary
         return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result), []
 
 
@@ -1233,7 +1516,13 @@ class DiskHealthSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
         skill_args = _skill_args(payload)
-        devices = skill_args.get("devices") if isinstance(skill_args.get("devices"), list) else ["/dev/sda", "/dev/nvme0n1"]
+        if isinstance(skill_args.get("devices"), list) and skill_args.get("devices"):
+            devices = [str(d).strip() for d in skill_args["devices"] if str(d).strip()]
+        else:
+            discovered = _discover_local_block_devices()
+            devices = discovered if discovered else ["/dev/sda", "/dev/nvme0n1"]
+        if not devices:
+            devices = ["/dev/sda", "/dev/nvme0n1"]
         node_name = str(skill_args.get("node_name") or settings.node_name)
         timeout_sec = float(settings.skills_mesh_ops_timeout_sec or settings.skills_command_timeout_sec)
         smartctl_binary = str(settings.smartctl_path or "smartctl").strip() or "smartctl"
@@ -1362,49 +1651,187 @@ class DockerPruneStoppedContainersVerb(BaseVerb[PlanExecutionRequest, SkillVerbO
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
         skill_args = _skill_args(payload)
-        dry_run = bool(skill_args.get("dry_run", True))
-        execute_requested = bool(skill_args.get("execute", False))
-        if execute_requested:
-            dry_run = False
+        run_mode, mode_resolution = _resolve_docker_prune_run_mode(skill_args)
+        logger.info(
+            "docker_prune_run_mode_inputs corr=%s run_mode=%s source=%s skill_arg_keys=%s nl_head=%r",
+            ctx.meta.get("correlation_id"),
+            run_mode,
+            mode_resolution.get("source"),
+            mode_resolution.get("skill_arg_keys"),
+            (_docker_prune_user_request_text(skill_args) or "")[:220],
+        )
+        dry_run_compat = run_mode == "preview"
         until = str(skill_args.get("until") or settings.docker_prune_default_until or "").strip()
         keep_labels = [str(item).strip() for item in str(settings.docker_protected_labels or "").split(",") if str(item).strip()]
         if isinstance(skill_args.get("keep_labels"), list):
             keep_labels = [str(item).strip() for item in skill_args.get("keep_labels") if str(item).strip()]
+        filters_applied: Dict[str, Any] = {"status": "exited", "until": until or None, "keep_labels": list(keep_labels)}
+        cutoff = _parse_docker_until_cutoff(until) if until else None
         runner = SafeCommandRunner(allowed_commands={"docker"}, timeout_sec=float(settings.skills_mesh_ops_timeout_sec))
         try:
             ps_cmd = ["docker", "ps", "-a", "--filter", "status=exited", "--format", "{{json .}}"]
             proc = await asyncio.to_thread(runner.run, ps_cmd)
-        except Exception as exc:
-            result = {"node_name": settings.node_name, "dry_run": dry_run, "status": "unavailable", "reason": str(exc), "observed_at_utc": _utc_now_iso()}
-            return _skill_result_output(skill_name="skills.runtime.docker_prune_stopped_containers.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
-        containers = _parse_docker_ps_lines(proc.stdout) if proc.returncode == 0 else []
-        matched = len(containers)
-        if dry_run:
+        except FileNotFoundError as exc:
             result = {
                 "node_name": settings.node_name,
-                "dry_run": True,
-                "requested_filters": {"until": until, "keep_labels": keep_labels},
-                "matched_container_count": matched,
-                "pruned_container_count": 0,
-                "reclaimed_bytes": 0,
-                "protected_skips": [],
-                "command": "docker container prune --filter status=exited",
-                "stdout_stderr_summary": "dry_run_only",
-                "status": "dry_run",
+                "run_mode": run_mode,
+                "mode_resolution": mode_resolution,
+                "dry_run": dry_run_compat,
+                "mutated": False,
+                "user_facing_summary": f"{run_mode.upper()}: Docker CLI is missing or not on PATH; no inspection or changes were attempted.",
+                "filters_applied": filters_applied,
+                "status": "unavailable",
+                "reason": "docker_cli_missing_or_not_on_path",
+                "detail": str(exc),
+                "docker_host": os.environ.get("DOCKER_HOST", ""),
+                "docker_sock_path": str(settings.docker_sock_path or ""),
                 "observed_at_utc": _utc_now_iso(),
             }
-            return _skill_result_output(skill_name="skills.runtime.docker_prune_stopped_containers.v1", result=result), []
-
-        if not settings.skills_allow_mutating_runtime_housekeeping:
+            return _skill_result_output(
+                skill_name="skills.runtime.docker_prune_stopped_containers.v1",
+                result=result,
+                ok=False,
+                status="unavailable",
+                error={"message": "docker_cli_missing_or_not_on_path", "detail": str(exc)},
+            ), []
+        except Exception as exc:
             result = {
                 "node_name": settings.node_name,
-                "dry_run": False,
-                "requested_filters": {"until": until, "keep_labels": keep_labels},
-                "matched_container_count": matched,
+                "run_mode": run_mode,
+                "mode_resolution": mode_resolution,
+                "dry_run": dry_run_compat,
+                "mutated": False,
+                "user_facing_summary": f"{run_mode.upper()}: Docker listing failed ({exc!s}); no changes made.",
+                "filters_applied": filters_applied,
+                "status": "unavailable",
+                "reason": str(exc),
+                "observed_at_utc": _utc_now_iso(),
+            }
+            return _skill_result_output(skill_name="skills.runtime.docker_prune_stopped_containers.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
+
+        ps_out = (proc.stdout or "") if proc.returncode == 0 else ""
+        containers = _parse_docker_ps_lines(ps_out)
+        exited_listed = len(containers)
+        id_strings = [str(c.get("id") or "").strip() for c in containers if str(c.get("id") or "").strip()]
+        inspect_map = _docker_inspect_labels_and_size(runner, id_strings) if id_strings else {}
+        if id_strings and not inspect_map and keep_labels:
+            ufs = (
+                f"{run_mode.upper()}: `docker container inspect` returned no usable data while label protections "
+                f"are configured ({keep_labels!r}); refusing to guess prune eligibility."
+            )
+            result = {
+                "node_name": settings.node_name,
+                "run_mode": run_mode,
+                "mode_resolution": mode_resolution,
+                "dry_run": dry_run_compat,
+                "mutated": False,
+                "user_facing_summary": ufs,
+                "filters_applied": filters_applied,
+                "exited_listed_count": exited_listed,
+                "status": "unavailable",
+                "reason": "docker_inspect_failed_with_label_policy",
+                "observed_at_utc": _utc_now_iso(),
+            }
+            return _skill_result_output(
+                skill_name="skills.runtime.docker_prune_stopped_containers.v1",
+                result=result,
+                ok=False,
+                status="unavailable",
+                error={"message": "docker_inspect_failed_with_label_policy"},
+            ), []
+
+        prunable: List[Dict[str, Any]] = []
+        protected_skips: List[Dict[str, Any]] = []
+        for c in containers:
+            raw_id = str(c.get("id") or "").strip()
+            if not raw_id:
+                continue
+            full_key = next((k for k in inspect_map if k == raw_id or k.startswith(raw_id) or (len(raw_id) >= 12 and k.startswith(raw_id[:12]))), None)
+            meta = inspect_map.get(full_key or "", {"created": "", "size_root_fs": 0, "labels": {}})
+            if cutoff is not None and not _docker_created_before(str(meta.get("created") or ""), cutoff):
+                continue
+            lbls = meta.get("labels") if isinstance(meta.get("labels"), dict) else {}
+            skip_reason = _docker_label_protection_reason(lbls, keep_labels)
+            name = str(c.get("name") or "")
+            if name.startswith("/"):
+                name = name[1:]
+            image = str(c.get("image") or "")
+            short_id = raw_id[:12]
+            full_id = full_key or raw_id
+            est = int(meta.get("size_root_fs") or 0)
+            row = {"id": short_id, "full_id": full_id, "name": name, "image": image, "estimated_reclaim_bytes": est}
+            if skip_reason:
+                protected_skips.append({**row, "skip_reason": skip_reason})
+            else:
+                prunable.append(row)
+
+        matched_after_filters = len(prunable) + len(protected_skips)
+        estimated_reclaim = sum(int(p.get("estimated_reclaim_bytes") or 0) for p in prunable)
+        matching_for_response = [
+            {"id": p["id"], "name": p["name"], "image": p["image"], "estimated_reclaim_bytes": p["estimated_reclaim_bytes"]} for p in prunable
+        ]
+
+        if run_mode == "preview":
+            ufs = (
+                f"PREVIEW (no changes made): listed {exited_listed} exited container(s); "
+                f"{len(prunable)} match removal filters and would be pruned; "
+                f"{len(protected_skips)} skipped as protected by labels; "
+                f"estimated reclaim ~{estimated_reclaim} bytes (SizeRootFs sum)."
+            )
+            result = {
+                "node_name": settings.node_name,
+                "run_mode": "preview",
+                "mode_resolution": mode_resolution,
+                "dry_run": True,
+                "mutated": False,
+                "user_facing_summary": ufs,
+                "filters_applied": filters_applied,
+                "exited_listed_count": exited_listed,
+                "matched_container_count": matched_after_filters,
+                "would_prune_count": len(prunable),
+                "would_prune": matching_for_response,
+                "protected_skips": protected_skips,
+                "estimated_reclaim_bytes": estimated_reclaim,
                 "pruned_container_count": 0,
                 "reclaimed_bytes": 0,
-                "protected_skips": [],
-                "command": "docker container prune --filter status=exited",
+                "command": "docker ps -a --filter status=exited + docker container inspect (preview only; no prune/rm)",
+                "stdout_stderr_summary": (proc.stderr or "").strip()[:200] if proc.returncode != 0 else "preview_ok",
+                "status": "preview" if proc.returncode == 0 else "failed",
+                "observed_at_utc": _utc_now_iso(),
+            }
+            return _skill_result_output(
+                skill_name="skills.runtime.docker_prune_stopped_containers.v1",
+                result=result,
+                ok=proc.returncode == 0,
+                status="success" if proc.returncode == 0 else "fail",
+                error=None if proc.returncode == 0 else {"message": "docker_ps_list_failed"},
+            ), []
+
+        if not settings.skills_allow_mutating_runtime_housekeeping:
+            ufs = (
+                "EXECUTE was requested, but runtime housekeeping mutations are disabled "
+                "(SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING=false). No containers were removed. "
+                "Use preview mode to list candidates, or enable the policy flag on this executor."
+            )
+            result = {
+                "node_name": settings.node_name,
+                "run_mode": "execute",
+                "mode_resolution": mode_resolution,
+                "dry_run": False,
+                "mutated": False,
+                "user_facing_summary": ufs,
+                "policy_blocked": True,
+                "policy_detail": "SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING is false",
+                "filters_applied": filters_applied,
+                "exited_listed_count": exited_listed,
+                "matched_container_count": matched_after_filters,
+                "would_prune_count": len(prunable),
+                "would_prune": matching_for_response,
+                "protected_skips": protected_skips,
+                "estimated_reclaim_bytes": estimated_reclaim,
+                "pruned_container_count": 0,
+                "reclaimed_bytes": 0,
+                "command": "policy_block: execute not permitted",
                 "stdout_stderr_summary": "policy_blocked_execute_opt_in_required",
                 "status": "blocked",
                 "observed_at_utc": _utc_now_iso(),
@@ -1414,31 +1841,59 @@ class DockerPruneStoppedContainersVerb(BaseVerb[PlanExecutionRequest, SkillVerbO
                 result=result,
                 ok=False,
                 status="blocked",
-                error={"message": "execute_mode_blocked_by_policy"},
+                error={"message": "execute_mode_blocked_by_policy", "detail": ufs},
             ), []
-        cmd = ["docker", "container", "prune", "--force"]
-        if until:
-            cmd += ["--filter", f"until={until}"]
-        prune_proc = await asyncio.to_thread(runner.run, cmd)
+
+        pruned_count = 0
+        rm_summaries: List[str] = []
+        ok_exec = True
+        chunk_rm = 30
+        for i in range(0, len(prunable), chunk_rm):
+            chunk = prunable[i : i + chunk_rm]
+            ids = [str(c.get("full_id")) for c in chunk if c.get("full_id")]
+            if not ids:
+                continue
+            rm_proc = await asyncio.to_thread(runner.run, ["docker", "rm", "-f", *ids])
+            blob = ((rm_proc.stdout or "") + "\n" + (rm_proc.stderr or "")).strip()
+            if blob:
+                rm_summaries.append(blob[:400])
+            if rm_proc.returncode != 0:
+                ok_exec = False
+            pruned_count += len([ln for ln in (rm_proc.stdout or "").splitlines() if ln.strip()])
+
+        reclaimed_estimate = estimated_reclaim if ok_exec else None
+        ufs = (
+            f"EXECUTE: removed {pruned_count} stopped container(s) "
+            f"(filters: exited + until={until or 'none'} + label protections applied); "
+            f"~{estimated_reclaim} bytes estimated from SizeRootFs before removal; "
+            f"{len(protected_skips)} were skipped as protected."
+        )
         result = {
             "node_name": settings.node_name,
+            "run_mode": "execute",
+            "mode_resolution": mode_resolution,
             "dry_run": False,
-            "requested_filters": {"until": until, "keep_labels": keep_labels},
-            "matched_container_count": matched,
-            "pruned_container_count": matched if prune_proc.returncode == 0 else 0,
-            "reclaimed_bytes": None,
-            "protected_skips": [],
-            "command": " ".join(cmd),
-            "stdout_stderr_summary": (prune_proc.stdout or prune_proc.stderr or "").strip()[:400],
-            "status": "success" if prune_proc.returncode == 0 else "failed",
+            "mutated": bool(pruned_count),
+            "user_facing_summary": ufs,
+            "filters_applied": filters_applied,
+            "exited_listed_count": exited_listed,
+            "matched_container_count": matched_after_filters,
+            "would_prune_count": len(prunable),
+            "protected_skips": protected_skips,
+            "pruned_container_count": pruned_count,
+            "reclaimed_bytes": reclaimed_estimate,
+            "estimated_reclaim_bytes": estimated_reclaim,
+            "command": "docker rm -f <matched_stopped_ids_respecting_until_and_keep_labels>",
+            "stdout_stderr_summary": "; ".join(rm_summaries)[:500] if rm_summaries else ("ok" if ok_exec else "partial_or_failed"),
+            "status": "success" if ok_exec else "failed",
             "observed_at_utc": _utc_now_iso(),
         }
         return _skill_result_output(
             skill_name="skills.runtime.docker_prune_stopped_containers.v1",
             result=result,
-            ok=prune_proc.returncode == 0,
-            status="success" if prune_proc.returncode == 0 else "fail",
-            error=None if prune_proc.returncode == 0 else {"message": "docker_prune_failed"},
+            ok=ok_exec,
+            status="success" if ok_exec else "fail",
+            error=None if ok_exec else {"message": "docker_rm_failed", "detail": "; ".join(rm_summaries)[:400]},
         ), []
 
 
@@ -1618,7 +2073,33 @@ class NotifyChatMessageVerb(BaseVerb[PlanExecutionRequest, NotifyChatMessageOutp
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[NotifyChatMessageOutput, List[VerbEffectV1]]:
         metadata = _metadata_from_payload(payload)
-        skill_args = _skill_args(payload)
+        skill_args = dict(_skill_args(payload))
+        body = str(skill_args.get("body_text") or skill_args.get("text") or "").strip()
+        if not body:
+            ctx_d = payload.context if isinstance(payload.context, dict) else {}
+            for key in ("raw_user_text", "user_message"):
+                v = ctx_d.get(key)
+                if isinstance(v, str) and v.strip():
+                    body = v.strip()
+                    break
+            if not body:
+                cap = metadata.get("capability_bridge_user_text")
+                if isinstance(cap, str) and cap.strip():
+                    body = cap.strip()
+            if not body:
+                msgs = ctx_d.get("messages")
+                if isinstance(msgs, list):
+                    for m in reversed(msgs):
+                        if not isinstance(m, dict):
+                            continue
+                        if str(m.get("role") or "").lower() != "user":
+                            continue
+                        c = m.get("content") or m.get("text") or ""
+                        if isinstance(c, str) and c.strip():
+                            body = c.strip()
+                            break
+            if body:
+                skill_args["body_text"] = body
         notify_request = NotificationRequest(
             source_service=settings.service_name,
             event_kind="orion.chat.message",

@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     skills_mesh_ops_timeout_sec: float = Field(12.0, alias="SKILLS_MESH_OPS_TIMEOUT_SEC")
     docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
     tailscale_path: str = Field("tailscale", alias="ORION_ACTIONS_TAILSCALE_PATH")
+    # Optional absolute path to nvidia-smi (host bind-mount or image-installed). When unset, skill resolves PATH.
+    nvidia_smi_path: str | None = Field(None, alias="ORION_ACTIONS_NVIDIA_SMI_PATH")
     smartctl_path: str = Field("smartctl", alias="ORION_ACTIONS_SMARTCTL_PATH")
     nvme_path: str = Field("nvme", alias="ORION_ACTIONS_NVME_PATH")
     github_api_url: str = Field("https://api.github.com", alias="ORION_ACTIONS_GITHUB_API_URL")
@@ -73,7 +75,7 @@ class Settings(BaseSettings):
     docker_prune_default_until: str = Field("72h", alias="ORION_ACTIONS_DOCKER_PRUNE_DEFAULT_UNTIL")
     docker_protected_labels: str = Field("orion.keep=true,keep=true,protected=true", alias="ORION_ACTIONS_DOCKER_PROTECTED_LABELS")
     skills_allow_mutating_runtime_housekeeping: bool = Field(False, alias="SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING")
-    biometrics_service_url: str = Field("http://orion-biometrics:8058", alias="BIOMETRICS_SERVICE_URL")
+    biometrics_service_url: str = Field("http://orion-athena-biometrics:8100", alias="BIOMETRICS_SERVICE_URL")
     biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
     endogenous_runtime_enabled: bool = Field(False, alias="ENDOGENOUS_RUNTIME_ENABLED")
     endogenous_runtime_surface_chat_reflective_enabled: bool = Field(

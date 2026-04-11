@@ -7,6 +7,7 @@ Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -26,7 +27,8 @@ from orion.core.contracts.recall import RecallQueryV1
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
-from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
+from orion.core.verbs.base import VerbContext
+from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.pad.v1 import KIND_PAD_RPC_REQUEST_V1, PadRpcRequestV1, PadRpcResponseV1
@@ -1283,6 +1285,128 @@ async def run_recall_step(
         )
 
 
+def _ctx_user_text_for_skill_hints(ctx: Dict[str, Any]) -> str:
+    """Best-effort outer user text for skills that infer options from natural language (e.g. docker prune)."""
+    for key in ("raw_user_text", "user_message"):
+        v = ctx.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    lm = _last_user_message(ctx)
+    return str(lm or "").strip()
+
+
+def _plan_request_from_step_ctx(
+    step: ExecutionStep,
+    ctx: Dict[str, Any],
+    correlation_id: str,
+) -> PlanExecutionRequest:
+    """Rebuild PlanExecutionRequest args/context from exec ctx (merged from payload.args.extra and plan metadata)."""
+    pm = ctx.get("plan_metadata") if isinstance(ctx.get("plan_metadata"), dict) else {}
+    skill_args: Dict[str, Any] = {}
+    if isinstance(pm.get("skill_args"), dict):
+        skill_args.update(pm["skill_args"])
+    if isinstance(ctx.get("skill_args"), dict):
+        skill_args.update(ctx["skill_args"])
+    md_top = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    bridge_sa = md_top.get("capability_bridge_skill_args")
+    if isinstance(bridge_sa, dict):
+        skill_args.update(bridge_sa)
+    verb_n = str(step.verb_name or "")
+    # Capability-bridge nested calls carry user text on Cortex context (raw_user_text / messages) but
+    # historically did not populate plan.metadata.skill_args — NL run_mode for docker prune never fired.
+    if "docker_prune_stopped_containers" in verb_n:
+        hint_keys = ("text", "user_request", "request", "prompt", "natural_language", "instruction", "description")
+        if not any(isinstance(skill_args.get(k), str) and str(skill_args.get(k)).strip() for k in hint_keys):
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["user_request"] = ut
+                logger.info(
+                    "docker_prune_skill_args_injected corr=%s verb=%s user_request_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
+                )
+            else:
+                logger.info(
+                    "docker_prune_skill_args_empty_hints corr=%s verb=%s ctx_keys=%s raw_user_text=%r",
+                    correlation_id,
+                    verb_n,
+                    sorted(str(k) for k in ctx.keys())[:40],
+                    (ctx.get("raw_user_text") or "")[:120],
+                )
+    # Nested capability bridge passes user text as messages/raw_user_text but often omits
+    # plan.metadata.skill_args; notify_chat_message reads body_text (not planner "text").
+    if "notify_chat_message" in verb_n:
+        if not str(skill_args.get("body_text") or "").strip():
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["body_text"] = ut
+                logger.info(
+                    "notify_chat_skill_args_injected corr=%s verb=%s body_text_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
+                )
+    extra: Dict[str, Any] = {}
+    if skill_args:
+        extra["skill_args"] = skill_args
+    for key in ("packs", "options", "mode", "recall", "diagnostic"):
+        if key in ctx and ctx[key] is not None:
+            extra[key] = ctx[key]
+    ctx_metadata: Dict[str, Any] = dict(pm) if isinstance(pm, dict) else {}
+    if skill_args:
+        ctx_metadata["skill_args"] = skill_args
+    return PlanExecutionRequest(
+        plan=ExecutionPlan(verb_name=step.verb_name, steps=[]),
+        args=PlanExecutionArgs(
+            request_id=str(ctx.get("request_id") or correlation_id),
+            user_id=ctx.get("user_id"),
+            trigger_source=ctx.get("trigger_source"),
+            extra=extra,
+        ),
+        context={"metadata": ctx_metadata},
+    )
+
+
+def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | None:
+    """
+    If a SkillVerbOutput model_dump indicates the skill did not succeed in-domain, return a short reason
+    so the exec step is marked fail (orch ok=false) instead of false-green success.
+    """
+    if not isinstance(skill_payload, dict):
+        return None
+    if skill_payload.get("ok") is False:
+        err = skill_payload.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err.get("message") or "").strip() or None
+        return str(skill_payload.get("status") or "failed").strip() or None
+    meta = skill_payload.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    sr = meta.get("skill_result")
+    if not isinstance(sr, dict):
+        return None
+    # Mesh / tailscale-style
+    if sr.get("unsupported") is True and sr.get("available") is False:
+        return str(sr.get("reason") or "unsupported").strip() or "unsupported"
+    if sr.get("available") is False and sr.get("reason"):
+        return str(sr.get("reason")).strip()
+    # Disk snapshot: only when every device is unsupported (e.g. smartctl missing), not when some
+    # failed/warned with real probe output.
+    devices = sr.get("devices")
+    summary = sr.get("summary")
+    if isinstance(devices, list) and isinstance(summary, dict) and len(devices) > 0:
+        unsup = int(summary.get("unsupported") or 0)
+        healthy = int(summary.get("healthy") or 0)
+        failed = int(summary.get("failed") or 0)
+        warning = int(summary.get("warning") or 0)
+        if unsup >= len(devices) and healthy == 0 and failed == 0 and warning == 0:
+            return "disk_health_unavailable_for_all_probed_devices"
+    return None
+
+
 async def call_step_services(
     bus: OrionBusAsync,
     *,
@@ -1356,6 +1480,97 @@ async def call_step_services(
 
     if _should_prepare_brain_reply_context(step=step, ctx=ctx):
         prepare_brain_reply_context(ctx)
+
+    # Skill YAMLs may list services: [] while the work is implemented as local verb_adapters.
+    # Without this branch the service loop runs zero times and final_text assembly sees no candidates.
+    if not step.services and str(step.verb_name or "").startswith("skills."):
+        from . import verb_adapters as _verb_adapters  # noqa: F401 — register skills.* on registry
+
+        from orion.core.verbs.registry import registry
+
+        verb_cls = registry.get(step.verb_name)
+        if verb_cls is None:
+            err = f"local_skill_verb_not_registered:{step.verb_name}"
+            logger.error(
+                "local_skill_verb_missing_registry corr_id=%s verb=%s — empty services with no registered adapter; "
+                "check cortex-exec loads verb_adapters",
+                correlation_id,
+                step.verb_name,
+            )
+            logs.append(f"fail <- {err}")
+            merged_result["error"] = {"message": err, "verb": step.verb_name}
+            _record_scoped_step("fail", err, merged_result, logs)
+            return StepExecutionResult(
+                status="fail",
+                verb_name=step.verb_name,
+                step_name=step.step_name,
+                order=step.order,
+                result=merged_result,
+                latency_ms=int((time.time() - t0) * 1000),
+                node=settings.node_name,
+                logs=logs,
+                error=err,
+            )
+        logs.append(f"exec -> local_skill_verb:{step.verb_name}")
+        try:
+            plan_req = _plan_request_from_step_ctx(step, ctx, correlation_id)
+            vctx = VerbContext(
+                request_id=str(ctx.get("request_id") or correlation_id),
+                meta={
+                    "correlation_id": correlation_id,
+                    "bus": bus,
+                    "source": source,
+                },
+            )
+            raw = verb_cls().execute(vctx, plan_req)
+            if inspect.isawaitable(raw):
+                out, _effects = await raw
+            else:
+                out, _effects = raw
+            merged_result[step.verb_name] = out.model_dump(mode="json")
+            fail_reason = _local_skill_payload_failure_reason(merged_result[step.verb_name])
+            if fail_reason:
+                logs.append(f"fail <- local_skill_domain_negative:{step.verb_name}:{fail_reason}")
+                _record_scoped_step("fail", fail_reason, merged_result, logs)
+                return StepExecutionResult(
+                    status="fail",
+                    verb_name=step.verb_name,
+                    step_name=step.step_name,
+                    order=step.order,
+                    result=merged_result,
+                    spark_vector=spark_vector,
+                    latency_ms=int((time.time() - t0) * 1000),
+                    node=settings.node_name,
+                    logs=logs,
+                    error=fail_reason,
+                )
+        except Exception as e:
+            logger.exception("local_skill_verb_failed verb=%s", step.verb_name)
+            logs.append(f"exception <- local_skill_verb:{step.verb_name}: {e}")
+            _record_scoped_step("fail", str(e), merged_result, logs)
+            return StepExecutionResult(
+                status="fail",
+                verb_name=step.verb_name,
+                step_name=step.step_name,
+                order=step.order,
+                result=merged_result,
+                latency_ms=int((time.time() - t0) * 1000),
+                node=settings.node_name,
+                logs=logs,
+                error=str(e),
+            )
+        _record_scoped_step("success", None, merged_result, logs)
+        return StepExecutionResult(
+            status="success",
+            verb_name=step.verb_name,
+            step_name=step.step_name,
+            order=step.order,
+            result=merged_result,
+            spark_vector=spark_vector,
+            latency_ms=int((time.time() - t0) * 1000),
+            node=settings.node_name,
+            logs=logs,
+        )
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"

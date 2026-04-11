@@ -190,87 +190,117 @@ class Rabbit(BaseChassis):
     Listens on a single request channel and replies to reply_to.
     """
 
-    def __init__(self, cfg: ChassisConfig, *, request_channel: str, handler: Handler):
+    def __init__(
+        self,
+        cfg: ChassisConfig,
+        *,
+        request_channel: str,
+        handler: Handler,
+        concurrent_handlers: bool = False,
+    ):
         super().__init__(cfg)
         self.request_channel = request_channel
         self.handler = handler
+        self.concurrent_handlers = bool(concurrent_handlers)
+        self._inflight_tasks: set[asyncio.Task] = set()
+
+    async def _handle_decoded_envelope(self, *, channel: str, env: BaseEnvelope) -> None:
+        trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+        logger.info(
+            f"Rabbit request received channel={channel} kind={env.kind} "
+            f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+        )
+        out = await self.handler(env)
+        if out is not None and env.reply_to:
+            payload_obj = getattr(out, "payload", None)
+            payload_keys = []
+            reasoning_content = None
+            trace_content = None
+            if isinstance(payload_obj, dict):
+                payload_keys = sorted(payload_obj.keys())
+                reasoning_content = payload_obj.get("reasoning_content")
+                rt = payload_obj.get("reasoning_trace")
+                trace_content = rt.get("content") if isinstance(rt, dict) else None
+            elif hasattr(payload_obj, "model_dump"):
+                try:
+                    dumped = payload_obj.model_dump(mode="json")
+                except Exception:
+                    dumped = payload_obj.model_dump()
+                if isinstance(dumped, dict):
+                    payload_keys = sorted(dumped.keys())
+                    reasoning_content = dumped.get("reasoning_content")
+                    rt = dumped.get("reasoning_trace")
+                    trace_content = rt.get("content") if isinstance(rt, dict) else None
+                else:
+                    payload_keys = [type(payload_obj).__name__]
+            else:
+                payload_keys = [type(payload_obj).__name__ if payload_obj is not None else "NoneType"]
+            preview_text = str(reasoning_content or trace_content or "")[:220]
+            print(
+                "===THINK_HOP=== hop=llm_gateway_bus_reply "
+                f"corr={getattr(out, 'correlation_id', None) or env.correlation_id} "
+                f"kind={getattr(out, 'kind', None)} "
+                f"payload_keys={payload_keys} "
+                f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+                f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+                f"preview={repr(preview_text)}",
+                flush=True,
+            )
+            await self.bus.publish(env.reply_to, out)
 
     async def _run(self) -> None:
         logger.info(f"Rabbit listening channel={self.request_channel} bus={self.cfg.bus_url}")
 
         async with self.bus.subscribe(self.request_channel) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._stop.is_set():
-                    break
-                if not isinstance(msg, dict):
-                    continue
-                data = msg.get("data")
-                if data is None:
-                    continue
+            try:
+                async for msg in self.bus.iter_messages(pubsub):
+                    if self._stop.is_set():
+                        break
+                    if not isinstance(msg, dict):
+                        continue
+                    data = msg.get("data")
+                    if data is None:
+                        continue
 
-                channel = msg.get("channel")
-                if hasattr(channel, "decode"):
-                    channel = channel.decode("utf-8")
+                    channel = msg.get("channel")
+                    if hasattr(channel, "decode"):
+                        channel = channel.decode("utf-8")
 
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok or decoded.envelope is None:
-                    logger.warning(
-                        f"Rabbit decode failed channel={channel} error={decoded.error}"
-                    )
-                    await self._publish_error(
-                        RuntimeError(decoded.error or "decode_failed"),
-                        when="rabbit.decode",
-                        env=None,
-                    )
-                    continue
-
-                env = decoded.envelope
-                trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
-                # [FIX] LOG RECEIPT TO PROVE WE HIT CORTEX
-                logger.info(
-                    f"Rabbit request received channel={channel} kind={env.kind} "
-                    f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
-                )
-                try:
-                    out = await self.handler(env)
-                    if out is not None and env.reply_to:
-                        payload_obj = getattr(out, "payload", None)
-                        payload_keys = []
-                        reasoning_content = None
-                        trace_content = None
-                        if isinstance(payload_obj, dict):
-                            payload_keys = sorted(payload_obj.keys())
-                            reasoning_content = payload_obj.get("reasoning_content")
-                            rt = payload_obj.get("reasoning_trace")
-                            trace_content = rt.get("content") if isinstance(rt, dict) else None
-                        elif hasattr(payload_obj, "model_dump"):
-                            try:
-                                dumped = payload_obj.model_dump(mode="json")
-                            except Exception:
-                                dumped = payload_obj.model_dump()
-                            if isinstance(dumped, dict):
-                                payload_keys = sorted(dumped.keys())
-                                reasoning_content = dumped.get("reasoning_content")
-                                rt = dumped.get("reasoning_trace")
-                                trace_content = rt.get("content") if isinstance(rt, dict) else None
-                            else:
-                                payload_keys = [type(payload_obj).__name__]
-                        else:
-                            payload_keys = [type(payload_obj).__name__ if payload_obj is not None else "NoneType"]
-                        preview_text = str(reasoning_content or trace_content or "")[:220]
-                        print(
-                            "===THINK_HOP=== hop=llm_gateway_bus_reply "
-                            f"corr={getattr(out, 'correlation_id', None) or env.correlation_id} "
-                            f"kind={getattr(out, 'kind', None)} "
-                            f"payload_keys={payload_keys} "
-                            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
-                            f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
-                            f"preview={repr(preview_text)}",
-                            flush=True,
+                    decoded = self.bus.codec.decode(data)
+                    if not decoded.ok or decoded.envelope is None:
+                        logger.warning(
+                            f"Rabbit decode failed channel={channel} error={decoded.error}"
                         )
-                        await self.bus.publish(env.reply_to, out)
-                except Exception as e:
-                    await self._publish_error(e, when="rabbit.handle", env=env)
+                        await self._publish_error(
+                            RuntimeError(decoded.error or "decode_failed"),
+                            when="rabbit.decode",
+                            env=None,
+                        )
+                        continue
+
+                    env = decoded.envelope
+                    if self.concurrent_handlers:
+                        async def _run_handler(envelope: BaseEnvelope, channel_name: str) -> None:
+                            try:
+                                await self._handle_decoded_envelope(channel=channel_name, env=envelope)
+                            except Exception as e:
+                                await self._publish_error(e, when="rabbit.handle", env=envelope)
+
+                        task = asyncio.create_task(_run_handler(env, str(channel)))
+                        self._inflight_tasks.add(task)
+                        task.add_done_callback(lambda t: self._inflight_tasks.discard(t))
+                        continue
+
+                    try:
+                        await self._handle_decoded_envelope(channel=str(channel), env=env)
+                    except Exception as e:
+                        await self._publish_error(e, when="rabbit.handle", env=env)
+            finally:
+                if self._inflight_tasks:
+                    for task in list(self._inflight_tasks):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
 
 
 class Hunter(BaseChassis):
@@ -284,7 +314,8 @@ class Hunter(BaseChassis):
         *,
         handler: Callable[[BaseEnvelope], Awaitable[None]],
         patterns: Union[List[str], str, None] = None,
-        pattern: Optional[str] = None
+        pattern: Optional[str] = None,
+        concurrent_handlers: bool = False,
     ):
         super().__init__(cfg)
         
@@ -312,6 +343,8 @@ class Hunter(BaseChassis):
             raise ValueError("Hunter requires at least one pattern (via 'patterns' list or 'pattern' str)")
             
         self.handler = handler
+        self.concurrent_handlers = bool(concurrent_handlers)
+        self._inflight_tasks: set[asyncio.Task] = set()
 
     async def _run(self) -> None:
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in self.patterns)
@@ -323,44 +356,63 @@ class Hunter(BaseChassis):
         )
 
         async with self.bus.subscribe(*self.patterns, patterns=uses_glob) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._stop.is_set():
-                    break
-                if not isinstance(msg, dict):
-                    continue
-                data = msg.get("data")
-                if data is None:
-                    continue
+            try:
+                async for msg in self.bus.iter_messages(pubsub):
+                    if self._stop.is_set():
+                        break
+                    if not isinstance(msg, dict):
+                        continue
+                    data = msg.get("data")
+                    if data is None:
+                        continue
 
-                channel = msg.get("channel")
-                if hasattr(channel, "decode"):
-                    channel = channel.decode("utf-8")
-                pattern = msg.get("pattern")
-                if hasattr(pattern, "decode"):
-                    pattern = pattern.decode("utf-8")
+                    channel = msg.get("channel")
+                    if hasattr(channel, "decode"):
+                        channel = channel.decode("utf-8")
+                    pattern = msg.get("pattern")
+                    if hasattr(pattern, "decode"):
+                        pattern = pattern.decode("utf-8")
 
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok or decoded.envelope is None:
-                    logger.warning(
-                        f"Hunter decode failed channel={channel} pattern={pattern} error={decoded.error}"
+                    decoded = self.bus.codec.decode(data)
+                    if not decoded.ok or decoded.envelope is None:
+                        logger.warning(
+                            f"Hunter decode failed channel={channel} pattern={pattern} error={decoded.error}"
+                        )
+                        await self._publish_error(
+                            RuntimeError(decoded.error or "decode_failed"),
+                            when="hunter.decode",
+                            env=None,
+                        )
+                        continue
+
+                    env = decoded.envelope
+                    trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+                    logger.info(
+                        f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
+                        f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
                     )
-                    await self._publish_error(
-                        RuntimeError(decoded.error or "decode_failed"),
-                        when="hunter.decode",
-                        env=None,
-                    )
-                    continue
+                    if self.concurrent_handlers:
+                        async def _run_handler(envelope: BaseEnvelope) -> None:
+                            try:
+                                await self.handler(envelope)
+                            except Exception as e:
+                                await self._publish_error(e, when="hunter.handle", env=envelope)
 
-                env = decoded.envelope
-                trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
-                logger.info(
-                    f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
-                    f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
-                )
-                try:
-                    await self.handler(env)
-                except Exception as e:
-                    await self._publish_error(e, when="hunter.handle", env=env)
+                        task = asyncio.create_task(_run_handler(env))
+                        self._inflight_tasks.add(task)
+                        task.add_done_callback(lambda t: self._inflight_tasks.discard(t))
+                        continue
+
+                    try:
+                        await self.handler(env)
+                    except Exception as e:
+                        await self._publish_error(e, when="hunter.handle", env=env)
+            finally:
+                if self._inflight_tasks:
+                    for task in list(self._inflight_tasks):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
 
 
 class Clock(BaseChassis):

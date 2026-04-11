@@ -22,6 +22,7 @@ from scripts.chat_history import (
     select_reasoning_trace_for_history,
 )
 from scripts.social_room import is_social_room_payload, social_room_client_meta
+from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.autonomy_payloads import extract_autonomy_payload
 from scripts.workflow_payloads import extract_workflow_payload
@@ -663,7 +664,7 @@ async def websocket_endpoint(websocket: WebSocket):
             explicit_reasoning_trace: Optional[Dict[str, Any]] = None
             try:
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
-                orion_response_text = resp.final_text or ""
+                orion_response_text = hub_effective_chat_text(resp)
                 if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
                     recall_debug = resp.cortex_result.recall_debug
                     memory_digest = recall_debug.get("memory_digest")
@@ -818,6 +819,8 @@ async def websocket_endpoint(websocket: WebSocket):
             )
             ws_payload = {
                 "llm_response": orion_response_text,
+                # Parity with HTTP /api/chat: lets the UI coalesce if primary string ever lags `raw.final_text`
+                "raw": cortex_result_dump if isinstance(cortex_result_dump, dict) else {},
                 "mode": mode,
                 "correlation_id": trace_id,
                 "memory_digest": memory_digest,

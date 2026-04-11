@@ -17,6 +17,9 @@ services:
       - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
       - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
 
+    # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
+    privileged: true
+
     #volumes:
     #  - ./services/orion-cortex-exec/app:/app/app
 
@@ -60,8 +63,8 @@ services:
       DOCKER_SOCK_PATH: ${DOCKER_SOCK_PATH:-/var/run/docker.sock}
       # Must match ORION_CONTAINER_TAILSCALE_BIN (volume mount target above).
       ORION_ACTIONS_TAILSCALE_PATH: ${ORION_ACTIONS_TAILSCALE_PATH:-/usr/bin/tailscale}
-      ORION_ACTIONS_SMARTCTL_PATH: ${ORION_ACTIONS_SMARTCTL_PATH:-smartctl}
-      ORION_ACTIONS_NVME_PATH: ${ORION_ACTIONS_NVME_PATH:-nvme}
+      ORION_ACTIONS_SMARTCTL_PATH: ${ORION_ACTIONS_SMARTCTL_PATH:-/usr/sbin/smartctl}
+      ORION_ACTIONS_NVME_PATH: ${ORION_ACTIONS_NVME_PATH:-/usr/sbin/nvme}
       ORION_ACTIONS_GITHUB_API_URL: ${ORION_ACTIONS_GITHUB_API_URL:-https://api.github.com}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       ORION_ACTIONS_GITHUB_OWNER: ${ORION_ACTIONS_GITHUB_OWNER:-}

@@ -979,6 +979,37 @@ def _normalize_smartctl_device(*, node_name: str, device: str, payload: Dict[str
     }
 
 
+def _discover_local_block_devices(*, max_devices: int = 12) -> List[str]:
+    """
+    Whole-disk device paths (e.g. /dev/nvme0n1, /dev/sda) from /sys/block.
+    Skips partitions and non-disk entries when possible.
+    """
+    root = Path("/sys/block")
+    if not root.is_dir():
+        return []
+    out: List[str] = []
+    for p in sorted(root.iterdir()):
+        name = p.name
+        if name.startswith(("loop", "dm-", "sr", "zd", "md", "ram", "fd")):
+            continue
+        if re.fullmatch(r"nvme\d+n\d+p\d+", name):
+            continue
+        if re.fullmatch(r"sd[a-z]+\d+", name):
+            continue
+        if not (
+            re.fullmatch(r"nvme\d+n\d+", name)
+            or re.fullmatch(r"sd[a-z]+", name)
+            or re.fullmatch(r"vd[a-z]+", name)
+        ):
+            continue
+        devp = Path("/dev") / name
+        if devp.exists():
+            out.append(str(devp))
+        if len(out) >= max_devices:
+            break
+    return out
+
+
 def _normalize_nvme_smart_log(*, node_name: str, device: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "node_name": node_name,
@@ -1279,7 +1310,13 @@ class DiskHealthSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
         skill_args = _skill_args(payload)
-        devices = skill_args.get("devices") if isinstance(skill_args.get("devices"), list) else ["/dev/sda", "/dev/nvme0n1"]
+        if isinstance(skill_args.get("devices"), list) and skill_args.get("devices"):
+            devices = [str(d).strip() for d in skill_args["devices"] if str(d).strip()]
+        else:
+            discovered = _discover_local_block_devices()
+            devices = discovered if discovered else ["/dev/sda", "/dev/nvme0n1"]
+        if not devices:
+            devices = ["/dev/sda", "/dev/nvme0n1"]
         node_name = str(skill_args.get("node_name") or settings.node_name)
         timeout_sec = float(settings.skills_mesh_ops_timeout_sec or settings.skills_command_timeout_sec)
         smartctl_binary = str(settings.smartctl_path or "smartctl").strip() or "smartctl"

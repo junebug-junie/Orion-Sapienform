@@ -1341,13 +1341,16 @@ def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | 
         return str(sr.get("reason") or "unsupported").strip() or "unsupported"
     if sr.get("available") is False and sr.get("reason"):
         return str(sr.get("reason")).strip()
-    # Disk snapshot: all probed devices unsupported (smartctl missing, etc.)
+    # Disk snapshot: only when every device is unsupported (e.g. smartctl missing), not when some
+    # failed/warned with real probe output.
     devices = sr.get("devices")
     summary = sr.get("summary")
     if isinstance(devices, list) and isinstance(summary, dict) and len(devices) > 0:
         unsup = int(summary.get("unsupported") or 0)
         healthy = int(summary.get("healthy") or 0)
-        if unsup >= len(devices) and healthy == 0:
+        failed = int(summary.get("failed") or 0)
+        warning = int(summary.get("warning") or 0)
+        if unsup >= len(devices) and healthy == 0 and failed == 0 and warning == 0:
             return "disk_health_unavailable_for_all_probed_devices"
     return None
 

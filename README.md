@@ -14,6 +14,10 @@
 
 ---
 
+## Operator documentation
+
+- **[Operator skill prompt catalogue](docs/operator_skill_prompt_catalgoe.md)** — canonical agent-mode prompts for live skills (time, GPU, Docker, biometrics, landing pad, mesh, notify, etc.).
+
 ## Project Overview
 
 **Orion is not a product; it’s an instrument.**

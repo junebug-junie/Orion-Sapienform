@@ -90,6 +90,9 @@ loadDismissedIds();
   const conversationDiv = document.getElementById('conversation');
   const chatInput = document.getElementById('chatInput');
   const sendButton = document.getElementById('sendButton');
+  const skillRunnerSelect = document.getElementById('skillRunnerSelect');
+  const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
+  const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
@@ -5324,6 +5327,26 @@ loadDismissedIds();
     });
   }
 
+  function getSkillRunnerPrompt() {
+    if (!skillRunnerSelect || !skillRunnerSelect.value) return '';
+    return String(skillRunnerSelect.value);
+  }
+  if (skillRunnerInsertBtn && skillRunnerSelect && chatInput) {
+    skillRunnerInsertBtn.addEventListener('click', () => {
+      const promptText = getSkillRunnerPrompt();
+      if (!promptText) return;
+      chatInput.value = promptText;
+      chatInput.focus();
+    });
+  }
+  if (skillRunnerRunBtn && skillRunnerSelect) {
+    skillRunnerRunBtn.addEventListener('click', async () => {
+      const promptText = getSkillRunnerPrompt();
+      if (!promptText) return;
+      await submitExplicitChatText(promptText, { mode: 'agent' });
+    });
+  }
+
   if (interruptButton) {
     interruptButton.addEventListener('click', () => {
       if (currentAudioSource) currentAudioSource.stop();
@@ -5872,7 +5895,7 @@ loadDismissedIds();
     };
   }
 
-  async function submitExplicitChatText(text) {
+  async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
     if (!value) return;
     appendMessage('You', value);
@@ -5881,9 +5904,10 @@ loadDismissedIds();
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
     const effectiveVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
+    const requestMode = opts && opts.mode ? String(opts.mode) : currentMode;
     const payload = {
        text_input: value,
-       mode: currentMode,
+       mode: requestMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,

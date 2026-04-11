@@ -219,3 +219,39 @@ def test_runtime_skill_empty_final_text_fail_closes() -> None:
         verb_name="skills.runtime.docker_prune_stopped_containers.v1",
         final_text="",
     ) is True
+
+
+def test_runtime_skill_extracts_terminal_text_from_final_text_field() -> None:
+    final_text, diag = _extract_final_text(
+        [
+            _step(
+                {
+                    "ok": True,
+                    "status": "dry_run",
+                    "final_text": "{\"dry_run\":true,\"matched_container_count\":4}",
+                }
+            )
+        ],
+        verb_name="skills.runtime.docker_prune_stopped_containers.v1",
+    )
+    assert final_text == "{\"dry_run\":true,\"matched_container_count\":4}"
+    assert diag["source_field"] == "final_text"
+    assert diag["result_len"] > 0
+
+
+def test_runtime_skill_falls_back_to_status_and_error_when_terminal_text_missing() -> None:
+    final_text, diag = _extract_final_text(
+        [
+            _step(
+                {
+                    "ok": False,
+                    "status": "fail",
+                    "error": {"message": "docker daemon unavailable"},
+                }
+            )
+        ],
+        verb_name="skills.runtime.docker_prune_stopped_containers.v1",
+    )
+    assert "status=fail" in final_text
+    assert "docker daemon unavailable" in final_text
+    assert diag["source_field"] == "runtime_fallback"

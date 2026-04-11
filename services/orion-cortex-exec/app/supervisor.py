@@ -366,6 +366,62 @@ def _extract_bound_failure_signal(step_results: List[StepExecutionResult]) -> Di
     return None
 
 
+def _enrich_final_text_with_bound_skill_output(
+    final_text: str | None,
+    step_results: List[StepExecutionResult],
+) -> str | None:
+    """Append nested cortex final_text JSON when the user-facing line is only the execution summary."""
+    if not final_text or not str(final_text).strip():
+        return final_text
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        structured = payload.get("structured")
+        if not isinstance(structured, dict):
+            continue
+        bc = structured.get("bound_capability")
+        if not isinstance(bc, dict):
+            continue
+        sk = bc.get("structured_skill_output")
+        if not isinstance(sk, dict):
+            continue
+        raw = sk.get("raw_payload_ref")
+        if not isinstance(raw, dict):
+            continue
+        nested = raw.get("final_text")
+        if not isinstance(nested, str) or not nested.strip():
+            continue
+        if nested.strip() in final_text:
+            return final_text
+        return f"{final_text.rstrip()}\n\nSkill output:\n{nested.strip()}"
+    return final_text
+
+
+def _bound_capability_succeeded(step_results: List[StepExecutionResult]) -> bool:
+    """True when AgentChain reported a successful bound-capability execution (avoid grounding drift rewrite)."""
+
+    def _bound_payload(agent_payload: Dict[str, Any]) -> Dict[str, Any]:
+        direct = agent_payload.get("bound_capability")
+        if isinstance(direct, dict):
+            return direct
+        structured = agent_payload.get("structured")
+        if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
+            return structured.get("bound_capability") or {}
+        return {}
+
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        bound = _bound_payload(payload)
+        if not isinstance(bound, dict):
+            continue
+        if str(bound.get("status") or "").strip().lower() == "ok":
+            return True
+    return False
+
+
 def _sanitize_operational_history(messages: List[LLMMessage], *, user_text: str) -> Tuple[List[LLMMessage], Dict[str, Any]]:
     lowered = str(user_text or "").lower()
     safety_sensitive = any(token in lowered for token in ("dry-run", "dry run", "preview", "safe"))
@@ -1760,6 +1816,7 @@ class Supervisor:
             packs,
             [s.step_name for s in step_results],
         )
+        final_text = _enrich_final_text_with_bound_skill_output(final_text, step_results)
         user_text = _last_user_message(ctx)
         verdict = _grounding_verdict(user_text, final_text or "")
         recent_followup_continuity = _has_recent_followup_continuity(ctx.get("messages"), final_text or "")
@@ -1777,7 +1834,14 @@ class Supervisor:
         explanation_downgrade = bool((ctx.get("debug") or {}).get("downgraded_to_explanation"))
         bound_failure_signal = _extract_bound_failure_signal(step_results)
         preserve_operational_failure_text = bound_failure_signal is not None
-        if not verdict["anchored"] and not recent_followup_continuity and not explanation_downgrade and not preserve_operational_failure_text:
+        preserve_bound_capability_text = _bound_capability_succeeded(step_results)
+        if (
+            not verdict["anchored"]
+            and not recent_followup_continuity
+            and not explanation_downgrade
+            and not preserve_operational_failure_text
+            and not preserve_bound_capability_text
+        ):
             logger.warning(
                 "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
                 correlation_id,
@@ -1787,6 +1851,11 @@ class Supervisor:
             final_text = (
                 f"I may have drifted from your request. You asked: {user_text}\n\n"
                 "Could you restate the key constraint and I will answer directly from that prompt?"
+            )
+        elif preserve_bound_capability_text:
+            logger.info(
+                "grounding_guardrail_bypassed_for_bound_capability corr_id=%s",
+                correlation_id,
             )
         elif preserve_operational_failure_text:
             logger.info(

@@ -606,6 +606,31 @@ class NotifyChatMessageOutput(SkillVerbOutput):
     notification_id: str | None = None
 
 
+def _resolve_tailscale_binary() -> tuple[str | None, list[str]]:
+    """
+    Resolve a usable tailscale CLI path. Tries ORION_ACTIONS_TAILSCALE_PATH first, then
+    common absolute paths, then PATH. Containers often lack `tailscale` on PATH even when
+    the binary is bind-mounted at /usr/bin/tailscale (see docker-compose.tailscale-live.yml).
+    """
+    configured = str(settings.tailscale_path or "tailscale").strip() or "tailscale"
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cand in (configured, "/usr/bin/tailscale", "/usr/sbin/tailscale", "tailscale"):
+        if cand and cand not in seen:
+            seen.add(cand)
+            candidates.append(cand)
+    for cand in candidates:
+        path = Path(cand)
+        if path.is_absolute():
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path.resolve()), candidates
+        else:
+            resolved = shutil.which(cand)
+            if resolved:
+                return resolved, candidates
+    return None, candidates
+
+
 class SafeCommandRunner:
     def __init__(self, *, allowed_commands: set[str], timeout_sec: float) -> None:
         self.allowed_commands = set(allowed_commands)
@@ -1199,12 +1224,31 @@ class TailscaleMeshStatusVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         skill_args = _skill_args(payload)
         active_probe = bool(skill_args.get("active_probe", False))
         timeout_sec = float(settings.skills_mesh_ops_timeout_sec or settings.skills_command_timeout_sec)
-        binary = str(settings.tailscale_path or "tailscale").strip() or "tailscale"
-        runner = SafeCommandRunner(allowed_commands={binary}, timeout_sec=timeout_sec)
+        resolved_binary, candidates_tried = _resolve_tailscale_binary()
+        if not resolved_binary:
+            result = {
+                "available": False,
+                "reason": "tailscale_not_installed",
+                "unsupported": True,
+                "nodes": [],
+                "executor_node": settings.node_name,
+                "tailscale_path_configured": str(settings.tailscale_path or ""),
+                "tailscale_candidates_tried": candidates_tried,
+            }
+            return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
+        runner = SafeCommandRunner(allowed_commands={resolved_binary}, timeout_sec=timeout_sec)
         try:
-            proc = await asyncio.to_thread(runner.run, [binary, "status", "--json"])
+            proc = await asyncio.to_thread(runner.run, [resolved_binary, "status", "--json"])
         except FileNotFoundError:
-            result = {"available": False, "reason": "tailscale_not_installed", "unsupported": True, "nodes": []}
+            result = {
+                "available": False,
+                "reason": "tailscale_not_installed",
+                "unsupported": True,
+                "nodes": [],
+                "executor_node": settings.node_name,
+                "tailscale_path_configured": str(settings.tailscale_path or ""),
+                "tailscale_candidates_tried": candidates_tried,
+            }
             return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
         except Exception as exc:
             result = {"available": False, "reason": str(exc), "nodes": []}
@@ -1217,12 +1261,14 @@ class TailscaleMeshStatusVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         if active_probe:
             for node_name in _derive_active_nodes(_parse_tailscale_status_json(raw)):
                 try:
-                    ping_proc = await asyncio.to_thread(runner.run, [binary, "ping", "--timeout", "2s", "--c", "1", node_name])
+                    ping_proc = await asyncio.to_thread(runner.run, [resolved_binary, "ping", "--timeout", "2s", "--c", "1", node_name])
                     probe_results[node_name] = {"ok": ping_proc.returncode == 0, "summary": (ping_proc.stdout or ping_proc.stderr).strip()[:220]}
                 except Exception as exc:
                     probe_results[node_name] = {"ok": False, "summary": str(exc)}
         result = _parse_tailscale_status_json(raw, probe_results=probe_results)
         result["probe_enabled"] = active_probe
+        result["executor_node"] = settings.node_name
+        result["tailscale_binary"] = resolved_binary
         return _skill_result_output(skill_name="skills.mesh.tailscale_mesh_status.v1", result=result), []
 
 

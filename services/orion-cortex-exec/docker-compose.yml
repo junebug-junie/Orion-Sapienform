@@ -1,3 +1,8 @@
+# Mesh: skills.mesh.tailscale_mesh_status.v1 runs inside this container. The image does not ship
+# `tailscale`. Bind-mounts below pull the HOST CLI + tailscaled socket so Agent/Hub mesh works after
+# a normal `docker compose up` (no extra -f file). Override ORION_HOST_TAILSCALE_BIN if yours is
+# e.g. /usr/sbin/tailscale. If the host has no Tailscale, `up` may fail on the bind — install it or
+# comment these volumes for dev-only nodes.
 services:
   cortex-exec:
     build:
@@ -7,6 +12,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+
+    volumes:
+      - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
+      - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
 
     #volumes:
     #  - ./services/orion-cortex-exec/app:/app/app
@@ -49,7 +58,8 @@ services:
       SKILLS_COMMAND_TIMEOUT_SEC: ${SKILLS_COMMAND_TIMEOUT_SEC:-8}
       SKILLS_MESH_OPS_TIMEOUT_SEC: ${SKILLS_MESH_OPS_TIMEOUT_SEC:-12}
       DOCKER_SOCK_PATH: ${DOCKER_SOCK_PATH:-/var/run/docker.sock}
-      ORION_ACTIONS_TAILSCALE_PATH: ${ORION_ACTIONS_TAILSCALE_PATH:-tailscale}
+      # Must match ORION_CONTAINER_TAILSCALE_BIN (volume mount target above).
+      ORION_ACTIONS_TAILSCALE_PATH: ${ORION_ACTIONS_TAILSCALE_PATH:-/usr/bin/tailscale}
       ORION_ACTIONS_SMARTCTL_PATH: ${ORION_ACTIONS_SMARTCTL_PATH:-smartctl}
       ORION_ACTIONS_NVME_PATH: ${ORION_ACTIONS_NVME_PATH:-nvme}
       ORION_ACTIONS_GITHUB_API_URL: ${ORION_ACTIONS_GITHUB_API_URL:-https://api.github.com}

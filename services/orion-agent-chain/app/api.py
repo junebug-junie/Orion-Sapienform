@@ -6,6 +6,7 @@ import logging
 import os
 import asyncio
 import uuid
+from time import perf_counter
 from pathlib import Path
 from typing import Any, List
 
@@ -516,6 +517,14 @@ async def _execute_bound_capability_request(
             or bool(candidate.requires_capability_selector)
         )
     )
+    logger.info(
+        "[agent-chain] bound_capability_candidate selected_verb=%s candidate_exists=%s capability_backed=%s execution_mode=%s requires_selector=%s",
+        selected_verb,
+        bool(candidate),
+        is_capability,
+        str(candidate.execution_mode) if candidate else None,
+        bool(candidate.requires_capability_selector) if candidate else False,
+    )
     if not is_capability:
         return _bound_terminal_failure(
             body=body,
@@ -527,12 +536,15 @@ async def _execute_bound_capability_request(
             failure_category="no_compatible_capability",
             observation={"capability_resolution_status": "selected_verb_not_capability"},
         )
+    exec_started = perf_counter()
     try:
         execution_timeout = _bound_execution_timeout_seconds()
         logger.info(
-            "[agent-chain] bound_capability_pre_tool_executor selected_verb=%s timeout_sec=%.2f",
+            "[agent-chain] bound_capability_pre_tool_executor selected_verb=%s correlation_id=%s timeout_sec=%.2f elapsed_ms=%.1f",
             selected_verb,
+            parent_corr_id,
             execution_timeout,
+            0.0,
         )
         observation = await asyncio.wait_for(
             tool_executor.execute_llm_verb(
@@ -543,15 +555,21 @@ async def _execute_bound_capability_request(
             timeout=execution_timeout,
         )
         logger.info(
-            "[agent-chain] bound_capability_post_tool_executor selected_verb=%s selected_skill=%s",
+            "[agent-chain] bound_capability_post_tool_executor selected_verb=%s correlation_id=%s elapsed_ms=%.1f has_observation=%s selected_skill=%s",
             selected_verb,
+            parent_corr_id,
+            (perf_counter() - exec_started) * 1000.0,
+            bool(isinstance(observation, dict)),
             (observation or {}).get("selected_skill") if isinstance(observation, dict) else None,
         )
     except (asyncio.TimeoutError, TimeoutError):
         logger.error(
-            "[agent-chain] bound_capability_execution_timeout selected_verb=%s timeout_sec=%.2f",
+            "[agent-chain] bound_capability_execution_timeout selected_verb=%s correlation_id=%s timeout_sec=%.2f elapsed_ms=%.1f has_observation=%s",
             selected_verb,
+            parent_corr_id,
             execution_timeout,
+            (perf_counter() - exec_started) * 1000.0,
+            False,
         )
         return _bound_terminal_failure(
             body=body,
@@ -583,7 +601,13 @@ async def _execute_bound_capability_request(
             observation={"capability_resolution_status": "selected_verb_missing"},
         )
     except Exception as e:
-        logger.exception("[agent-chain] bound_capability_resolution_failed selected_verb=%s", selected_verb)
+        logger.exception(
+            "[agent-chain] bound_capability_resolution_failed selected_verb=%s correlation_id=%s elapsed_ms=%.1f has_observation=%s",
+            selected_verb,
+            parent_corr_id,
+            (perf_counter() - exec_started) * 1000.0,
+            False,
+        )
         return _bound_terminal_failure(
             body=body,
             dbg=dbg,
@@ -597,7 +621,22 @@ async def _execute_bound_capability_request(
 
     selected_skill = observation.get("selected_skill") if isinstance(observation, dict) else None
     if not selected_skill:
-        logger.error("[agent-chain] bound_capability_no_compatible_capability selected_verb=%s", selected_verb)
+        failure_reason = (
+            (observation or {}).get("capability_decision", {}).get("resolution_failure")
+            if isinstance(observation, dict)
+            else None
+        )
+        rejection_reasons = (
+            (observation or {}).get("capability_decision", {}).get("rejection_reasons")
+            if isinstance(observation, dict)
+            else None
+        )
+        logger.error(
+            "[agent-chain] bound_capability_no_compatible_capability selected_verb=%s resolution_failure=%s rejection_reasons=%s",
+            selected_verb,
+            failure_reason,
+            rejection_reasons,
+        )
         return _bound_terminal_failure(
             body=body,
             dbg=dbg,
@@ -610,7 +649,62 @@ async def _execute_bound_capability_request(
             observation={
                 "capability_resolution_status": "no_skill",
                 "selected_tool_would_have_been": selected_verb,
+                "resolution_failure": failure_reason,
+                "rejection_reasons": rejection_reasons or [],
             },
+        )
+    raw_payload_ref = (observation or {}).get("raw_payload_ref", {}) if isinstance(observation, dict) else {}
+    if str(raw_payload_ref.get("status") or "").strip().lower() == "empty_terminal_output":
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+            detail=f"{selected_skill} returned empty terminal output.",
+            path="bound_direct_empty_terminal_output",
+            failure_category="empty_terminal_output",
+            capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+            observation={
+                "capability_resolution_status": "selected_skill_empty_output",
+                "selected_tool_would_have_been": selected_verb,
+                "selected_skill": selected_skill,
+            },
+        )
+    if raw_payload_ref.get("ok") is False or raw_payload_ref.get("domain_negative"):
+        friendly = str((observation or {}).get("execution_summary") or "").strip()
+        detail = friendly or str(raw_payload_ref.get("domain_reason") or "skill_domain_negative")
+        failure = BoundCapabilityExecutionFailureV1(
+            reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+            selected_verb=selected_verb,
+            detail=detail,
+            recovery=CapabilityRecoveryDecisionV1(
+                reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+                allow_replan=False,
+                replanned=False,
+                detail="bound_direct_skill_domain_negative",
+            ),
+            capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+            observation={
+                "capability_resolution_status": "skill_domain_negative",
+                "selected_tool_would_have_been": selected_verb,
+                "selected_skill": selected_skill,
+                "raw_payload_ref": raw_payload_ref,
+                "failure_category": "skill_domain_negative",
+            },
+        )
+        dbg["bound_capability_terminal_path"] = "bound_direct_skill_domain_negative"
+        dbg["bound_capability_reply_emitted"] = True
+        logger.info(
+            "[agent-chain] bound_capability_terminal_reply_emitted selected_verb=%s path=bound_direct_skill_domain_negative selected_skill=%s",
+            selected_verb,
+            selected_skill,
+        )
+        return AgentChainResult(
+            mode=body.mode,
+            text=friendly or f"Bound capability execution failed: {detail}",
+            structured={"finalization_reason": "bound_capability_domain_negative", "bound_capability": failure.model_dump(mode="json")},
+            planner_raw={"runtime_debug": dbg, "trace": []},
+            runtime_debug={**dbg, "bound_capability_reply_emitted": True},
         )
     dbg["bound_execution_completed"] = True
     logger.info(

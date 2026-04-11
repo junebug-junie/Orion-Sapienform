@@ -126,6 +126,38 @@ def test_bound_capability_policy_blocked_defense_in_depth_without_no_write(monke
     assert observation["action_execution_policy"] == "none"
     assert observation["execution_blocked_reason"] == "action_execution_policy=none"
 
+def test_bound_capability_domain_negative_terminal_path(monkeypatch):
+    class _DomainNegExecutor(_FakeToolExecutor):
+        async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
+            self.calls.append((tool_id, tool_input, parent_correlation_id))
+            return {
+                "selected_verb": tool_id,
+                "selected_skill_family": "mesh_presence",
+                "selected_skill": "skills.mesh.tailscale_mesh_status.v1",
+                "execution_summary": "Could not check mesh status: tailscale_not_installed",
+                "raw_payload_ref": {
+                    "ok": False,
+                    "domain_negative": True,
+                    "domain_reason": "tailscale_not_installed",
+                    "final_text": '{"available": false}',
+                },
+            }
+
+    async def _fake_planner(*_args, **_kwargs):
+        raise AssertionError("planner should not be called for bound capability execution")
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: _DomainNegExecutor())
+
+    out = asyncio.run(agent_api.execute_agent_chain(_bound_request(), correlation_id=str(uuid4()), rpc_bus=object()))
+
+    assert out.structured["finalization_reason"] == "bound_capability_domain_negative"
+    failure = out.structured["bound_capability"]
+    assert failure["status"] == "fail"
+    assert failure["reason"] == "capability_executor_unavailable"
+    assert "mesh status" in out.text.lower()
+
+
 def test_bound_capability_executes_without_planner(monkeypatch):
     fake_exec = _FakeToolExecutor()
     planner_calls = {"count": 0}
@@ -269,8 +301,6 @@ def test_bound_capability_internal_error_terminal_reply(monkeypatch):
 
 
 def test_bound_capability_timeout_terminal_reply(monkeypatch):
-    state = {"nested_emit_started": False}
-
     class _TimeoutAfterEmitExecutor(_FakeToolExecutor):
         async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
             await asyncio.Event().wait()
@@ -286,7 +316,6 @@ def test_bound_capability_timeout_terminal_reply(monkeypatch):
 
     out = asyncio.run(agent_api.execute_agent_chain(_bound_request(), correlation_id=str(uuid4()), rpc_bus=object()))
     bound = out.structured["bound_capability"]
-    assert state["nested_emit_started"] is True
     assert bound["reason"] == "capability_executor_unavailable"
     assert bound["observation"]["path"] == "bound_direct_timeout"
     assert bound["observation"]["reply_emitted"] is True

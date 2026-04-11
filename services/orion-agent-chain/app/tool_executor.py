@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict
 from uuid import uuid4
 
@@ -14,7 +15,12 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, ServiceR
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, CortexClientResult, LLMMessage, RecallDirective
 
 from .actions_skill_registry import ActionsSkillRegistry
-from .capability_bridge import normalize_capability_observation, resolve_capability_decision
+from .capability_bridge import (
+    humanize_domain_failure,
+    normalize_capability_observation,
+    resolve_capability_decision,
+    skill_domain_failure_reason_from_final_text,
+)
 from .settings import settings
 
 logger = logging.getLogger("agent-chain.tool-exec")
@@ -179,6 +185,14 @@ class ToolExecutor:
             registry=self._actions_registry,
         )
         if not decision.selected_skill:
+            logger.warning(
+                "[agent-chain] capability_bridge_no_skill selected_verb=%s selected_family=%s candidate_skills=%s rejection_reasons=%s resolution_failure=%s",
+                tool_id,
+                decision.skill_family,
+                decision.candidate_skills,
+                decision.rejection_reasons,
+                decision.resolution_failure,
+            )
             return normalize_capability_observation(
                 decision=decision,
                 execution_summary="No compatible orion-actions skill available.",
@@ -225,12 +239,17 @@ class ToolExecutor:
             reply_to=reply_channel,
             payload=req.model_dump(mode="json"),
         )
+        nested_started = perf_counter()
         logger.info(
-            "[agent-chain] capability_bridge_pre_nested_rpc selected_verb=%s selected_skill=%s corr=%s reply=%s",
+            "[agent-chain] capability_bridge_pre_nested_rpc selected_verb=%s selected_family=%s candidate_skills=%s rejection_reasons=%s selected_skill=%s nested_corr=%s reply_channel=%s elapsed_ms=%.1f",
             tool_id,
+            decision.skill_family,
+            decision.candidate_skills,
+            decision.rejection_reasons,
             decision.selected_skill,
             corr,
             reply_channel,
+            0.0,
         )
         msg = await self.bus.rpc_request(
             "orion:cortex:request",
@@ -239,23 +258,59 @@ class ToolExecutor:
             timeout_sec=float(settings.default_timeout_seconds),
         )
         logger.info(
-            "[agent-chain] capability_bridge_post_nested_rpc selected_verb=%s selected_skill=%s corr=%s",
+            "[agent-chain] capability_bridge_post_nested_rpc selected_verb=%s selected_skill=%s nested_corr=%s elapsed_ms=%.1f",
             tool_id,
             decision.selected_skill,
             corr,
+            (perf_counter() - nested_started) * 1000.0,
         )
+        decode_started = perf_counter()
         decoded = self.bus.codec.decode(msg.get("data"))
+        logger.info(
+            "[agent-chain] capability_bridge_post_decode selected_verb=%s selected_skill=%s nested_corr=%s elapsed_ms=%.1f decode_ok=%s",
+            tool_id,
+            decision.selected_skill,
+            corr,
+            (perf_counter() - decode_started) * 1000.0,
+            bool(decoded.ok),
+        )
         if not decoded.ok:
             raise RuntimeError(f"Capability bridge decode failed: {decoded.error}")
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        validate_started = perf_counter()
         result = CortexClientResult.model_validate(payload)
         final_text = str(result.final_text or "").strip()
-        if result.ok and not final_text:
-            fail_closed_decision = decision.model_copy(update={"selected_skill": None})
+        raw_payload = {
+            "status": result.status,
+            "ok": result.ok,
+            "final_text": result.final_text,
+        }
+        logger.info(
+            "[agent-chain] capability_bridge_post_validate selected_verb=%s selected_skill=%s nested_corr=%s elapsed_ms=%.1f result_ok=%s final_text_len=%s",
+            tool_id,
+            decision.selected_skill,
+            corr,
+            (perf_counter() - validate_started) * 1000.0,
+            bool(result.ok),
+            len(final_text),
+        )
+        if "empty_terminal_output" in final_text.lower():
             return normalize_capability_observation(
-                decision=fail_closed_decision,
+                decision=decision,
                 execution_summary=(
-                    f"Execution failed closed: {decision.selected_skill} returned empty terminal output."
+                    f"Execution failed: {decision.selected_skill} returned synthetic empty-output fallback text."
+                ),
+                raw_payload={
+                    "status": "empty_terminal_output",
+                    "ok": False,
+                    "final_text": result.final_text,
+                },
+            )
+        if result.ok and not final_text:
+            return normalize_capability_observation(
+                decision=decision,
+                execution_summary=(
+                    f"Execution failed: {decision.selected_skill} returned empty terminal output."
                 ),
                 raw_payload={
                     "status": "empty_terminal_output",
@@ -263,9 +318,37 @@ class ToolExecutor:
                     "final_text": "",
                 },
             )
+        domain_reason = skill_domain_failure_reason_from_final_text(final_text)
+        if domain_reason:
+            human = humanize_domain_failure(decision.selected_skill or "", domain_reason)
+            return normalize_capability_observation(
+                decision=decision,
+                execution_summary=human,
+                raw_payload={
+                    "status": "fail",
+                    "ok": False,
+                    "final_text": result.final_text,
+                    "domain_negative": True,
+                    "domain_reason": domain_reason,
+                    "nested_ok": result.ok,
+                    "nested_status": result.status,
+                },
+            )
+        if not result.ok:
+            dr = skill_domain_failure_reason_from_final_text(final_text)
+            summary = (
+                humanize_domain_failure(decision.selected_skill or "", dr)
+                if dr
+                else f"Execution failed: {decision.selected_skill} status={result.status} ok={result.ok}"
+            )
+            return normalize_capability_observation(
+                decision=decision,
+                execution_summary=summary,
+                raw_payload={**raw_payload, "ok": False, "domain_negative": bool(dr)},
+            )
         summary = f"Executed {decision.selected_skill}: status={result.status} ok={result.ok}"
         return normalize_capability_observation(
             decision=decision,
             execution_summary=summary,
-            raw_payload={"status": result.status, "ok": result.ok, "final_text": result.final_text},
+            raw_payload=raw_payload,
         )

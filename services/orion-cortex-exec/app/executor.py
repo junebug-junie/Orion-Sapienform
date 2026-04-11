@@ -1307,6 +1307,10 @@ def _plan_request_from_step_ctx(
         skill_args.update(pm["skill_args"])
     if isinstance(ctx.get("skill_args"), dict):
         skill_args.update(ctx["skill_args"])
+    md_top = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    bridge_sa = md_top.get("capability_bridge_skill_args")
+    if isinstance(bridge_sa, dict):
+        skill_args.update(bridge_sa)
     verb_n = str(step.verb_name or "")
     # Capability-bridge nested calls carry user text on Cortex context (raw_user_text / messages) but
     # historically did not populate plan.metadata.skill_args — NL run_mode for docker prune never fired.
@@ -1330,6 +1334,20 @@ def _plan_request_from_step_ctx(
                     verb_n,
                     sorted(str(k) for k in ctx.keys())[:40],
                     (ctx.get("raw_user_text") or "")[:120],
+                )
+    # Nested capability bridge passes user text as messages/raw_user_text but often omits
+    # plan.metadata.skill_args; notify_chat_message reads body_text (not planner "text").
+    if "notify_chat_message" in verb_n:
+        if not str(skill_args.get("body_text") or "").strip():
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["body_text"] = ut
+                logger.info(
+                    "notify_chat_skill_args_injected corr=%s verb=%s body_text_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
                 )
     extra: Dict[str, Any] = {}
     if skill_args:

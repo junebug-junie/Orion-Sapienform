@@ -631,6 +631,27 @@ def _resolve_tailscale_binary() -> tuple[str | None, list[str]]:
     return None, candidates
 
 
+def _resolve_nvidia_smi_binary() -> tuple[str | None, list[str]]:
+    """Resolve nvidia-smi like the Tailscale CLI: env path, common mount targets, then PATH."""
+    configured = str(settings.nvidia_smi_path or "").strip()
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cand in (configured, "/usr/bin/nvidia-smi", "/usr/sbin/nvidia-smi", "nvidia-smi"):
+        if cand and cand not in seen:
+            seen.add(cand)
+            candidates.append(cand)
+    for cand in candidates:
+        path = Path(cand)
+        if path.is_absolute():
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path.resolve()), candidates
+        else:
+            resolved = shutil.which(cand)
+            if resolved:
+                return resolved, candidates
+    return None, candidates
+
+
 class SafeCommandRunner:
     def __init__(self, *, allowed_commands: set[str], timeout_sec: float) -> None:
         self.allowed_commands = set(allowed_commands)
@@ -640,11 +661,15 @@ class SafeCommandRunner:
         if not command:
             raise PermissionError("empty_command")
         binary = str(command[0]).strip()
-        if binary not in self.allowed_commands:
+        base = os.path.basename(binary) or binary
+        if base not in self.allowed_commands:
             raise PermissionError(f"command_not_allowlisted:{binary}")
-        resolved = shutil.which(binary)
+        if os.path.isabs(binary) and os.path.isfile(binary) and os.access(binary, os.X_OK):
+            resolved = binary
+        else:
+            resolved = shutil.which(base)
         if not resolved:
-            raise FileNotFoundError(binary)
+            raise FileNotFoundError(base)
         return subprocess.run(
             [resolved, *command[1:]],
             capture_output=True,
@@ -1264,8 +1289,12 @@ class NvidiaSmiSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
         runner = SafeCommandRunner(allowed_commands={"nvidia-smi"}, timeout_sec=settings.skills_command_timeout_sec)
+        smi_bin, _cands = _resolve_nvidia_smi_binary()
+        if not smi_bin:
+            result = {"available": False, "reason": "nvidia_smi_not_installed", "gpus": []}
+            return _skill_result_output(skill_name="skills.gpu.nvidia_smi_snapshot.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
         command = [
-            "nvidia-smi",
+            smi_bin,
             "--query-gpu=index,name,uuid,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw,pstate",
             "--format=csv,noheader,nounits",
         ]
@@ -2044,7 +2073,33 @@ class NotifyChatMessageVerb(BaseVerb[PlanExecutionRequest, NotifyChatMessageOutp
 
     async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[NotifyChatMessageOutput, List[VerbEffectV1]]:
         metadata = _metadata_from_payload(payload)
-        skill_args = _skill_args(payload)
+        skill_args = dict(_skill_args(payload))
+        body = str(skill_args.get("body_text") or skill_args.get("text") or "").strip()
+        if not body:
+            ctx_d = payload.context if isinstance(payload.context, dict) else {}
+            for key in ("raw_user_text", "user_message"):
+                v = ctx_d.get(key)
+                if isinstance(v, str) and v.strip():
+                    body = v.strip()
+                    break
+            if not body:
+                cap = metadata.get("capability_bridge_user_text")
+                if isinstance(cap, str) and cap.strip():
+                    body = cap.strip()
+            if not body:
+                msgs = ctx_d.get("messages")
+                if isinstance(msgs, list):
+                    for m in reversed(msgs):
+                        if not isinstance(m, dict):
+                            continue
+                        if str(m.get("role") or "").lower() != "user":
+                            continue
+                        c = m.get("content") or m.get("text") or ""
+                        if isinstance(c, str) and c.strip():
+                            body = c.strip()
+                            break
+            if body:
+                skill_args["body_text"] = body
         notify_request = NotificationRequest(
             source_service=settings.service_name,
             event_kind="orion.chat.message",

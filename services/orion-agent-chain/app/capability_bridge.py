@@ -7,6 +7,17 @@ from pydantic import BaseModel, Field
 
 from .actions_skill_registry import ActionsSkillRegistry
 
+# One-to-one mapping from planner-visible semantic verbs to concrete skills (avoids family ordering bugs).
+_SEMANTIC_VERB_TO_SKILL: dict[str, str] = {
+    "answer_current_datetime": "skills.system.time_now.v1",
+    "inspect_gpu_status": "skills.gpu.nvidia_smi_snapshot.v1",
+    "show_biometrics_snapshot": "skills.biometrics.snapshot.v1",
+    "list_biometrics_recent_readings": "skills.biometrics.raw_recent.v1",
+    "inspect_docker_container_status": "skills.docker.ps_status.v1",
+    "send_operator_notification": "skills.system.notify_chat_message.v1",
+    "show_landing_pad_metrics": "skills.landing_pad.metrics_snapshot.v1",
+}
+
 
 class CapabilityDecision(BaseModel):
     verb: str
@@ -28,6 +39,28 @@ def resolve_capability_decision(
     preferred_skill_families: list[str] | None,
     registry: ActionsSkillRegistry,
 ) -> CapabilityDecision:
+    fixed = _SEMANTIC_VERB_TO_SKILL.get(str(verb or "").strip())
+    if fixed:
+        entry = next((item for item in registry.list() if item.skill_id == fixed), None)
+        if entry:
+            policy: Dict[str, Any] = {
+                "risk_class": entry.risk_class,
+                "confirmation_required": bool(entry.requires_confirmation),
+                "execute_opt_in": bool(entry.requires_execute_opt_in),
+            }
+            return CapabilityDecision(
+                verb=verb,
+                needs_skill=True,
+                skill_family=entry.family,
+                candidate_skills=[fixed],
+                selected_skill=fixed,
+                reason=f"Semantic verb '{verb}' pinned to concrete skill '{fixed}'.",
+                confidence=1.0,
+                policy=policy,
+                observational=bool(entry.observational),
+                rejection_reasons=[],
+                resolution_failure=None,
+            )
     families = [str(item).strip() for item in (preferred_skill_families or []) if str(item).strip()]
     if not families:
         families = ["system_inspection"]

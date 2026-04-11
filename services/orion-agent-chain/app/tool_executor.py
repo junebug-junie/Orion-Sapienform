@@ -206,6 +206,16 @@ class ToolExecutor:
         reply_channel = f"orion:cortex:result:{corr}"
         normalized_input = self._normalize_inputs(tool_id, tool_input)
         bridge_user_text = str(normalized_input.get("text") or "")
+        bridge_skill_args: Dict[str, Any] = {}
+        lim = normalized_input.get("limit")
+        try:
+            if lim is not None and str(lim).strip() != "":
+                bridge_skill_args["limit"] = max(1, min(500, int(lim)))
+        except (TypeError, ValueError):
+            pass
+        tz = normalized_input.get("timezone")
+        if isinstance(tz, str) and tz.strip():
+            bridge_skill_args["timezone"] = tz.strip()
         req = CortexClientRequest(
             mode="brain",
             route_intent="none",
@@ -231,6 +241,7 @@ class ToolExecutor:
                     "execute_opt_in": bool(decision.policy.get("execute_opt_in")),
                     "observational": bool(decision.observational),
                     "capability_bridge_user_text": bridge_user_text,
+                    **({"capability_bridge_skill_args": bridge_skill_args} if bridge_skill_args else {}),
                 },
             ),
         )

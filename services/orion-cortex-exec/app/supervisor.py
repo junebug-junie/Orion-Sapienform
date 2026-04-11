@@ -196,7 +196,8 @@ _RUNTIME_CLEANUP_TERMS = {"docker", "container", "cleanup", "stopped", "prune", 
 _CHANGE_SUMMARY_TERMS = {"summarize", "summary", "recent", "changes", "change", "changelog", "intel"}
 _UNSAFE_ASSISTANT_COMMAND_PATTERN = re.compile(r"(docker\s+(rm|rmi|system\s+prune|container\s+prune|volume\s+rm|network\s+rm)|rm\s+-rf|kubectl\s+delete)", re.IGNORECASE)
 _OPERATIONAL_VERB_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("assess_mesh_presence", ("node", "nodes", "mesh", "up", "online", "alive", "status")),
+    # Avoid generic "node"/"status" — they match "Docker … on this node" and steal routing from docker/gpu.
+    ("assess_mesh_presence", ("mesh", "tailscale", "subnet", "subnets", "peers", "peer")),
     ("assess_storage_health", ("disk", "storage", "health", "filesystem", "volume")),
     ("summarize_recent_changes", ("summarize", "summary", "recent", "changes", "prs", "pull request", "commits")),
     ("housekeep_runtime", ("cleanup", "clean up", "stopped", "container", "containers", "runtime", "prune", "dry-run", "dry run")),
@@ -251,6 +252,22 @@ def _semantic_override_scores(*, user_text: str, normalized_action_input: Dict[s
             score -= 30
             reasons.append("hard_mismatch:summarize_recent_changes")
 
+        if "biometric" in ask:
+            if str(tool.tool_id or "") in {"assess_mesh_presence", "inspect_docker_container_status", "housekeep_runtime"}:
+                score -= 40
+                reasons.append("penalty:biometrics_prompt")
+            if str(tool.tool_id or "") in {"show_biometrics_snapshot", "list_biometrics_recent_readings"}:
+                score += 22
+                reasons.append("boost:biometrics_prompt")
+
+        if ("docker" in ask or "container status" in ask) and "biometric" not in ask:
+            if str(tool.tool_id or "") == "inspect_docker_container_status":
+                score += 24
+                reasons.append("boost:docker_status_prompt")
+            if str(tool.tool_id or "") == "assess_mesh_presence" and "mesh" not in ask and "tailscale" not in ask:
+                score -= 40
+                reasons.append("penalty:docker_prompt_not_mesh")
+
         if str(getattr(tool, "execution_mode", "") or "").lower() == "capability_backed":
             score += 2
             reasons.append("capability_backed")
@@ -280,6 +297,49 @@ def _select_canonical_operational_tool(user_text: str, tools: List[ToolDef]) -> 
     hay = str(user_text or "").lower()
     tool_map = {str(t.tool_id or ""): t for t in tools}
     priority_rules = [
+        ("answer_current_datetime", ("what time", "current time", "time is it", "what's the time", "clock", "date and time")),
+        ("inspect_gpu_status", ("nvidia", "gpu status", "gpu ", "nvidia-smi", "cuda")),
+        (
+            "show_biometrics_snapshot",
+            ("biometrics snapshot", "current biometrics", "biometric snapshot", "biometrics card"),
+        ),
+        (
+            "list_biometrics_recent_readings",
+            (
+                "most recent biometrics",
+                "recent biometrics reading",
+                "biometrics readings",
+                "biometrics reading",
+                "raw biometrics",
+                "recent biometrics",
+            ),
+        ),
+        (
+            "send_operator_notification",
+            (
+                "notify operator",
+                "notification to operator",
+                "send a notification",
+                "alert operator",
+                "operators saying",
+                "notification to operators",
+                "page on-call",
+            ),
+        ),
+        (
+            "inspect_docker_container_status",
+            (
+                "docker container",
+                "docker containers",
+                "docker ps",
+                "container status",
+                "containers running",
+                "list containers",
+                "running containers",
+                "docker status",
+            ),
+        ),
+        ("show_landing_pad_metrics", ("landing pad metrics", "landing pad metric", "landing pad snapshot", "pad metrics")),
         ("assess_storage_health", ("disk", "storage")),
         ("summarize_recent_changes", ("recent pr", "recent pull request", "recent changes", "summarize recent")),
         ("housekeep_runtime", ("cleanup", "dry-run", "dry run", "stopped containers", "prune")),

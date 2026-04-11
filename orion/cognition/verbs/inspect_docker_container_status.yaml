@@ -1,0 +1,34 @@
+name: inspect_docker_container_status
+label: Inspect Docker container status
+description: >
+  List running/stopped Docker containers on this node (read-only docker ps / engine API).
+  Use when the user asks for Docker container status, docker ps, what containers are running,
+  or container inventory on the node.
+  Do NOT use for Tailscale mesh presence, GPU status, disk health, or biometrics.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - docker_inventory
+side_effect_level: none
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

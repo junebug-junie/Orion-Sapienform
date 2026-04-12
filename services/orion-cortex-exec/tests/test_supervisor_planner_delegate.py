@@ -729,6 +729,35 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         self.assertIn("V100s", result.final_text)
         self.assertNotIn("Return your normal council output contract", result.final_text)
 
+    def test_grounding_guardrail_suppressed_for_coaching_growth_prompt(self):
+        """Planner answers may not repeat tokens like 'version'; do not replace with drift boilerplate."""
+        supervisor = StubSupervisor(
+            planner_outputs=[
+                (FinalAnswer(content="Focus on habits, sleep, and consistent reflection."), None, "final_answer")
+            ]
+        )
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "raw_user_text": "how do I become a better version of myself?",
+            "messages": [{"role": "user", "content": "how do I become a better version of myself?"}],
+            "max_steps": 1,
+        }
+
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-coaching-growth",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        assert result.final_text is not None
+        self.assertNotIn("I may have drifted from your request", result.final_text)
+        self.assertIn("habits", result.final_text.lower())
+
     def test_grounding_guardrail_allows_direct_followup_answer_when_recent_thread_is_coherent(self):
         supervisor = StubSupervisor(
             planner_outputs=[(FinalAnswer(content="Given your Docker compose setup, start with 2 replicas and raise CPU limits."), None, "final_answer")]

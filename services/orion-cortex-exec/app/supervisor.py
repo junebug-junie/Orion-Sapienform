@@ -601,6 +601,29 @@ def _is_operational_guidance_text(answer: str) -> bool:
     return bool(_SHELL_GUIDANCE_PATTERN.search(str(answer or "")))
 
 
+def _looks_like_coaching_growth_prompt(user_text: str) -> bool:
+    """
+    Open-ended self-improvement / wellness prompts: lexical overlap checks are weak because
+    planner answers may not repeat words like "version" or "become". Suppress the generic
+    "drifted from your request" replacement for this lane only (agent_runtime still allowed).
+    """
+    t = " " + " ".join(str(user_text or "").lower().split()) + " "
+    hints = (
+        " myself ",
+        " yourself ",
+        "motivat",
+        "better version",
+        "self-improve",
+        "self improvement",
+        "become a better",
+        " become better ",
+        "personal growth",
+        "well-being",
+        "wellbeing",
+    )
+    return any(h in t for h in hints)
+
+
 def _grounding_verdict(user_text: str, answer_text: str) -> Dict[str, Any]:
     ask_terms = _extract_key_terms(user_text)
     answer_lower = str(answer_text or "").lower()
@@ -1902,16 +1925,24 @@ class Supervisor:
             and not preserve_operational_failure_text
             and not preserve_bound_capability_text
         ):
-            logger.warning(
-                "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
-                correlation_id,
-                _truncate_text(user_text, 220),
-                _truncate_text(final_text, 220),
-            )
-            final_text = (
-                f"I may have drifted from your request. You asked: {user_text}\n\n"
-                "Could you restate the key constraint and I will answer directly from that prompt?"
-            )
+            if _looks_like_coaching_growth_prompt(user_text):
+                logger.info(
+                    "grounding_guardrail_suppressed corr_id=%s reason=coaching_growth_lane ask_head=%r answer_head=%r",
+                    correlation_id,
+                    _truncate_text(user_text, 220),
+                    _truncate_text(final_text, 220),
+                )
+            else:
+                logger.warning(
+                    "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
+                    correlation_id,
+                    _truncate_text(user_text, 220),
+                    _truncate_text(final_text, 220),
+                )
+                final_text = (
+                    f"I may have drifted from your request. You asked: {user_text}\n\n"
+                    "Could you restate the key constraint and I will answer directly from that prompt?"
+                )
         elif preserve_bound_capability_text:
             logger.info(
                 "grounding_guardrail_bypassed_for_bound_capability corr_id=%s",

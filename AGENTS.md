@@ -83,10 +83,12 @@ Check:
 
 ### Env/config/settings
 Check whether the change also requires updating:
-- `.env_example`
+- `.env_example` (or the service’s checked-in env template beside `.env`)
 - service `.env`
 - `docker-compose.yml`
 - settings/config loaders
+
+**`.env` / template parity (non-negotiable):** If you add, remove, rename, or change the meaning of any key in a service **`.env`**, update the accompanying **`.env_example`** in the **same** `services/<service_name>/` directory in the **same** change set so the example stays an accurate, copy-pastable contract (use empty or safe placeholder values for secrets; keep comments in sync where they document behavior). The reverse applies when you introduce variables in `.env_example` that operators are expected to copy into `.env`.
 
 ### Bus/schema/channel changes
 Check whether the change also requires updating:

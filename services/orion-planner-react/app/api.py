@@ -177,11 +177,32 @@ def _extract_first_balanced_json_object(text: str) -> Optional[str]:
     return None
 
 
+def _thought_reads_as_internal_planner_routing(thought: str) -> bool:
+    """
+    Detect planner-internal monologue (output mode / tool choice) that must not be shown as final_answer.
+    """
+    t = (thought or "").lower()
+    signals = 0
+    if "output mode" in t:
+        signals += 1
+    if "write_guide" in t or "write guide" in t:
+        signals += 1
+    if "implementation_guide" in t or "implementation guide" in t:
+        signals += 1
+    if "i should use" in t or "i should call" in t:
+        signals += 1
+    if "response profile" in t or "response_profile" in t:
+        signals += 1
+    if "the user is asking" in t and ("i should" in t or "write_guide" in t or "write guide" in t):
+        signals += 1
+    return signals >= 2
+
+
 def _extract_text_field(value: Any) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value
     if isinstance(value, dict):
-        for key in ("content", "text", "answer"):
+        for key in ("content", "text", "answer", "message", "body", "summary", "reply"):
             candidate = value.get(key)
             if isinstance(candidate, str) and candidate.strip():
                 return candidate
@@ -436,7 +457,12 @@ def _stringify_final_answer_node(value: Any, *, depth: int = 0) -> str:
     return ""
 
 
-def _normalize_finished_final_answer(final_answer: Any, thought: str) -> Optional[Dict[str, Any]]:
+def _normalize_finished_final_answer(
+    final_answer: Any,
+    thought: str,
+    *,
+    thought_fallback_for_finish: bool = False,
+) -> Optional[Dict[str, Any]]:
     if isinstance(final_answer, str):
         return {
             "content": final_answer,
@@ -481,6 +507,16 @@ def _normalize_finished_final_answer(final_answer: Any, thought: str) -> Optiona
         return None
 
     if final_answer is None and isinstance(thought, str) and thought.strip():
+        if thought_fallback_for_finish:
+            if _thought_reads_as_internal_planner_routing(thought):
+                return None
+            # finish=true path: models sometimes put the user-visible reply only in "thought".
+            return {
+                "content": thought.strip(),
+                "structured": {},
+                "normalized": True,
+                "type": "thought_fallback",
+            }
         return None
 
     return None
@@ -491,6 +527,7 @@ def _validate_or_normalize_planner_step(
     *,
     toolset: List[ToolDef],
     from_salvage: bool = False,
+    planning_goal_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(planner_step, dict):
         raise PlannerSchemaError(f"planner response must be an object, got {type(planner_step).__name__}")
@@ -504,7 +541,11 @@ def _validate_or_normalize_planner_step(
     final_answer_salvaged = False
     normalization_mode = "raw_parse_success"
     if finish is None:
-        inferred_final = _normalize_finished_final_answer(normalized.get("final_answer"), normalized["thought"])
+        inferred_final = _normalize_finished_final_answer(
+            normalized.get("final_answer"),
+            normalized["thought"],
+            thought_fallback_for_finish=False,
+        )
         raw_action = normalized.get("action")
         if inferred_final is not None:
             finish = True
@@ -620,9 +661,44 @@ def _validate_or_normalize_planner_step(
 
     normalized["action"] = action
 
-    final_info = _normalize_finished_final_answer(normalized.get("final_answer"), normalized["thought"]) if finish else None
+    final_info = (
+        _normalize_finished_final_answer(
+            normalized.get("final_answer"),
+            normalized["thought"],
+            thought_fallback_for_finish=True,
+        )
+        if finish
+        else None
+    )
     if finish:
         if final_info is None or not final_info["content"].strip():
+            thought_only = _normalize_finished_final_answer(
+                None,
+                normalized["thought"],
+                thought_fallback_for_finish=True,
+            )
+            if thought_only is not None and thought_only["content"].strip():
+                final_info = thought_only
+        if final_info is None or not final_info["content"].strip():
+            goal_txt = (planning_goal_text or "").strip()
+            offered_ids = {t.tool_id for t in toolset}
+            if (
+                goal_txt
+                and "answer_direct" in offered_ids
+                and _thought_reads_as_internal_planner_routing(str(normalized.get("thought") or ""))
+            ):
+                coerced = {
+                    **normalized,
+                    "finish": False,
+                    "final_answer": None,
+                    "action": {"tool_id": "answer_direct", "input": {"text": goal_txt}},
+                }
+                return _validate_or_normalize_planner_step(
+                    coerced,
+                    toolset=toolset,
+                    from_salvage=from_salvage,
+                    planning_goal_text=planning_goal_text,
+                )
             raise PlannerSchemaError("finish=true requires a usable final_answer")
         normalized["final_answer"] = final_info["content"]
         normalized["_final_answer_structured"] = final_info["structured"]
@@ -944,6 +1020,7 @@ async def _repair_or_fallback_step(
             repaired,
             toolset=toolset,
             from_salvage=True,
+            planning_goal_text=goal.description,
         )
         if repair_meta.get("salvage_succeeded") or normalized_repaired.get("_action_salvaged"):
             logger.info(
@@ -1202,6 +1279,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                         raw_planner_step,
                         toolset=payload.toolset,
                         from_salvage=bool(planner_meta.get("salvage_succeeded")),
+                        planning_goal_text=payload.goal.description if payload.goal else None,
                     )
                     if planner_meta.get("salvage_succeeded"):
                         logger.info(

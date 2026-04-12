@@ -48,6 +48,62 @@ def semantic_toolset() -> list[ToolDef]:
     ]
 
 
+def test_finish_true_accepts_thought_when_final_answer_missing(semantic_toolset):
+    step = api._validate_or_normalize_planner_step(
+        {
+            "thought": "Here is a concise answer about self-improvement habits.",
+            "finish": True,
+            "action": None,
+            "final_answer": None,
+        },
+        toolset=semantic_toolset,
+        from_salvage=False,
+    )
+    assert "self-improvement" in step["final_answer"]
+
+
+def test_finish_true_accepts_summary_key_in_final_answer_dict(semantic_toolset):
+    step = api._validate_or_normalize_planner_step(
+        {
+            "thought": "done",
+            "finish": True,
+            "action": None,
+            "final_answer": {"summary": "Focus on sleep, movement, and one keystone habit."},
+        },
+        toolset=semantic_toolset,
+        from_salvage=False,
+    )
+    assert "keystone" in step["final_answer"]
+
+
+@pytest.fixture()
+def semantic_toolset_with_answer_direct(semantic_toolset) -> list[ToolDef]:
+    return list(semantic_toolset) + [
+        ToolDef(tool_id="answer_direct", description="Answer the user directly", input_schema={}),
+    ]
+
+
+def test_finish_true_meta_planner_thought_coerces_to_answer_direct(semantic_toolset_with_answer_direct):
+    step = api._validate_or_normalize_planner_step(
+        {
+            "thought": (
+                "The user is asking how to become a better version of themselves. This is a self-improvement "
+                "question, which requires a guide or tutorial. Since the output mode is implementation_guide, "
+                "I should use write_guide to provide structured steps."
+            ),
+            "finish": True,
+            "action": None,
+            "final_answer": None,
+        },
+        toolset=semantic_toolset_with_answer_direct,
+        from_salvage=False,
+        planning_goal_text="how do I become a better version of myself?",
+    )
+    assert step["finish"] is False
+    assert step["action"]["tool_id"] == "answer_direct"
+    assert "better version" in step["action"]["input"]["text"].lower()
+
+
 def test_clean_parse_accepts_valid_tool(semantic_toolset):
     step = api._validate_or_normalize_planner_step(
         {

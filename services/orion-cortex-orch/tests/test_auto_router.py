@@ -224,3 +224,90 @@ def test_auto_router_menu_followup_variants_preserve_chat_lane():
         assert routed.request.verb == "chat_general"
         assert routed.decision.reason == "heuristic:menu_topic_selection_followup"
         assert "hm_mesh_continuity" not in json.dumps(routed.request.model_dump(mode="json"))
+
+
+def test_auto_route_motivation_free_form_stays_chat_general_not_agent_runtime():
+    """Regression: 'how do' matched INSTRUCTION_TERMS and forced agent_runtime → Hub gateway:result timeouts."""
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="How do I motivate myself to do stuff?")
+    routed = asyncio.run(router.route(req, correlation_id="c-motivate", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 0
+    assert routed.request.mode == "brain"
+    assert routed.request.verb == "chat_general"
+    assert routed.decision.reason == "stabilize:personal_coaching_chat_general"
+    assert routed.decision.source == "heuristic"
+
+
+def test_auto_route_engineering_how_do_still_uses_agent_runtime():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="How do I fix this docker compose error?")
+    routed = asyncio.run(router.route(req, correlation_id="c-howdo-docker", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 2
+    assert routed.request.verb == "agent_runtime"
+
+
+def test_auto_route_prune_containers_stays_depth0_chat_general():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="Prune stopped containers")
+    routed = asyncio.run(router.route(req, correlation_id="c-prune", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 0
+    assert routed.request.verb == "chat_general"
+
+
+def test_auto_route_workflow_planner_agent_chain_goes_agent_runtime():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="Help me design a workflow for log triage with planner and agent chain")
+    routed = asyncio.run(router.route(req, correlation_id="c-workflow", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 2
+    assert routed.request.verb == "agent_runtime"
+    assert routed.decision.reason in ("heuristic:engineering", "heuristic:planner_agent_chain_design")
+
+
+def test_auto_route_mixed_time_and_coaching_forces_chat_general_documented():
+    """Single user turn: time question + coaching; stabilizer wins so the lane stays exec/chat_general."""
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="What time is it right now? Also how do I motivate myself?")
+    routed = asyncio.run(router.route(req, correlation_id="c-mixed", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 0
+    assert routed.request.verb == "chat_general"
+    assert routed.decision.reason == "stabilize:personal_coaching_chat_general"
+    assert routed.decision.source == "heuristic"
+
+
+def test_explicit_skill_verb_request_skips_auto_router(monkeypatch):
+    called = {"router": 0}
+
+    class _NeverRouter:
+        def __init__(self, *_a, **_k):
+            called["router"] += 1
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        return VerbResultV1(verb=req.verb or "unknown", ok=True, output={"result": {"status": "success", "steps": []}}, request_id="r")
+
+    monkeypatch.setattr(orch_main, "DecisionRouter", _NeverRouter)
+    monkeypatch.setattr(orch_main, "call_verb_runtime", _fake_call_verb_runtime)
+    monkeypatch.setattr(orch_main, "svc", SimpleNamespace(bus=object()))
+    monkeypatch.setattr(orch_main, "is_active", lambda *_args, **_kwargs: True)
+
+    env = BaseEnvelope(
+        kind="cortex.orch.request",
+        source=ServiceRef(name="cortex-gateway", version="0", node="n"),
+        correlation_id="22222222-2222-2222-2222-222222222222",
+        payload={
+            "mode": "brain",
+            "verb": "skills.runtime.docker_prune_stopped_containers.v1",
+            "route_intent": "none",
+            "packs": [],
+            "options": {},
+            "recall": {"enabled": False, "required": False, "mode": "hybrid", "profile": None},
+            "context": {
+                "messages": [{"role": "user", "content": "Prune stopped containers"}],
+                "raw_user_text": "Prune stopped containers",
+                "user_message": "Prune stopped containers",
+                "metadata": {},
+            },
+        },
+    )
+    asyncio.run(orch_main.handle(env))
+    assert called["router"] == 0

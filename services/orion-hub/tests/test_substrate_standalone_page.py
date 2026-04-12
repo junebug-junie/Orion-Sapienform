@@ -39,6 +39,7 @@ def test_substrate_route_and_template_and_bundle_are_standalone() -> None:
     assert 'id="substrateBootstrapButton"' in template
     assert 'id="substrateExecuteOnceButton"' in template
     assert 'id="substrateDebugRunButton"' in template
+    assert 'id="substrateActivatePolicyButton"' in template
     assert 'id="substrateRuntimeStatus"' in template
     assert 'id="substrateDebugRunResult"' in template
     assert 'id="substrateDiagnosisSummary"' in template
@@ -49,10 +50,15 @@ def test_substrate_route_and_template_and_bundle_are_standalone() -> None:
     assert "\'/api/substrate/review-runtime/bootstrap\'" in script
     assert "\'/api/substrate/review-runtime/execute-once\'" in script
     assert "\'/api/substrate/review-runtime/debug-run\'" in script
+    assert "\'/api/substrate/policy/adopt\'" in script
     assert "policy-comparison?pair_mode=baseline_vs_active" in script
+    # Inspector meta strip: review-runtime/status uses nested source.{semantic,control_plane,policy}.kind
+    assert "metaForSection" in script
+    assert "key === 'runtimeStatus'" in script
 
     route_paths = {route.path for route in api_routes.router.routes}
     assert "/substrate" in route_paths
+    assert "/api/substrate/policy/adopt" in route_paths
 
 
 def test_backend_substrate_endpoints_have_source_metadata_and_expected_split() -> None:
@@ -166,3 +172,31 @@ def test_policy_comparison_source_honesty_prefers_postgres_metadata(monkeypatch)
     monkeypatch.setattr(api_routes.SUBSTRATE_REVIEW_TELEMETRY_STORE, "last_error", lambda: None)
     payload = api_routes.api_substrate_policy_comparison(pair_mode="baseline_vs_active", sample_limit=50)
     assert payload["source"]["kind"] == "postgres"
+
+
+def test_last_execution_predates_active_profile_detects_clock_order() -> None:
+    assert (
+        api_routes._last_execution_predates_active_profile(
+            {"selected_at": "2026-04-12T00:19:23.968490Z"},
+            {"activated_at": "2026-04-12T00:33:04.361600Z"},
+        )
+        is True
+    )
+    assert (
+        api_routes._last_execution_predates_active_profile(
+            {"selected_at": "2026-04-12T00:40:00.000000+00:00"},
+            {"activated_at": "2026-04-12T00:33:04.361600Z"},
+        )
+        is False
+    )
+    assert api_routes._last_execution_predates_active_profile(None, {"activated_at": "2026-04-12T00:33:04Z"}) is None
+
+
+def test_api_substrate_policy_adopt_endpoint_returns_activation_payload() -> None:
+    payload = api_routes.api_substrate_policy_adopt(api_routes.SubstratePolicyAdoptHubRequest())
+    assert "source" in payload
+    assert "data" in payload
+    assert payload["data"]["action_taken"] == "activated"
+    assert payload["data"]["profile_id"]
+    assert payload["data"]["active_scope_summary"]["invocation_surfaces"] == ["operator_review"]
+    assert payload["data"]["active_scope_summary"]["target_zones"] == []

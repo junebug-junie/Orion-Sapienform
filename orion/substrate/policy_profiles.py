@@ -241,12 +241,30 @@ class SubstratePolicyProfileStore:
             comparison_notes=notes,
         )
 
+    def _prune_stale_scope_slots(self) -> None:
+        """Drop ``_active_by_scope`` entries that no longer point at an *active* profile."""
+        stale = [
+            key
+            for key, vid in self._active_by_scope.items()
+            if vid not in self._profiles or self._profiles[vid].activation_state != "active"
+        ]
+        for key in stale:
+            self._active_by_scope.pop(key, None)
+
     def _activate_profile(self, *, profile_id: str, operator_id: str | None, rationale: str) -> tuple[SubstratePolicyProfileV1, str | None]:
         profile = self._profiles[profile_id]
         scope_key = _scope_key(profile.rollout_scope)
-        previous_id = self._active_by_scope.get(scope_key)
-        if previous_id and previous_id in self._profiles:
-            self._deactivate(previous_id, state="inactive")
+        # Capture before cross-scope sweep: prune clears slots whose profile is no longer active.
+        same_slot_previous = self._active_by_scope.get(scope_key)
+
+        # One active profile globally: different rollout_scope keys used to stack actives
+        # (e.g. concept_graph-only vs empty target_zones), confusing resolve() vs inspector UIs.
+        for other in list(self._profiles.values()):
+            if other.activation_state == "active" and other.profile_id != profile_id:
+                self._deactivate(other.profile_id, state="inactive")
+        self._prune_stale_scope_slots()
+
+        previous_id = same_slot_previous
 
         activated = profile.model_copy(
             update={

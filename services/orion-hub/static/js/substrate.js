@@ -17,6 +17,7 @@
   const bootstrapButton = document.getElementById('substrateBootstrapButton');
   const executeOnceButton = document.getElementById('substrateExecuteOnceButton');
   const debugRunButton = document.getElementById('substrateDebugRunButton');
+  const activatePolicyButton = document.getElementById('substrateActivatePolicyButton');
 
   async function fetchSection(path) {
     const res = await fetch(path, { headers: { 'Accept': 'application/json' } });
@@ -72,6 +73,38 @@
     return payload;
   }
 
+  /**
+   * Review-runtime/status returns source: { control_plane, semantic, policy } — no top-level source.kind.
+   * Other substrate endpoints use source: { kind, degraded, error }.
+   */
+  function metaForSection(key, payload) {
+    if (key === 'runtimeStatus') {
+      const s = payload?.source;
+      if (!s || typeof s !== 'object') {
+        return { kind: 'unknown', degraded: false, error: null };
+      }
+      const sem = s.semantic?.kind ?? 'unknown';
+      const ctl = s.control_plane?.kind ?? 'unknown';
+      const pol = s.policy?.kind ?? 'unknown';
+      const degraded = Boolean(
+        s.control_plane?.degraded || s.semantic?.degraded || s.policy?.degraded,
+      );
+      const err =
+        s.control_plane?.error || s.semantic?.error || s.policy?.error || null;
+      return {
+        kind: `semantic:${sem}|control:${ctl}|policy:${pol}`,
+        degraded,
+        error: err,
+      };
+    }
+    const src = payload?.source || {};
+    return {
+      kind: src.kind || 'unknown',
+      degraded: Boolean(src.degraded),
+      error: src.error || null,
+    };
+  }
+
   function renderDiagnosis(payload) {
     if (!sections.diagnosisSummary) return;
     const diagnosis = payload?.diagnosis || {};
@@ -106,8 +139,8 @@
       try {
         const payload = await fetchSection(path);
         renderSection(sections[key], payload.data ?? payload);
-        const src = payload.source || {};
-        meta.push({ section: key, kind: src.kind || 'unknown', degraded: Boolean(src.degraded), error: src.error || null });
+        const m = metaForSection(key, payload);
+        meta.push({ section: key, kind: m.kind, degraded: m.degraded, error: m.error });
       } catch (error) {
         renderError(sections[key], error);
         meta.push({ section: key, kind: 'fallback', degraded: true, error: String(error) });
@@ -170,6 +203,21 @@
         renderError(sections.debugResult, error);
       } finally {
         setButtonBusy(debugRunButton, 'Running Debug Pass', false);
+      }
+    });
+  }
+
+  if (activatePolicyButton) {
+    activatePolicyButton.addEventListener('click', async () => {
+      setActionError(null);
+      setButtonBusy(activatePolicyButton, 'Activating policy', true);
+      try {
+        await postAction('/api/substrate/policy/adopt', {});
+        await refresh();
+      } catch (error) {
+        setActionError(error);
+      } finally {
+        setButtonBusy(activatePolicyButton, 'Activating policy', false);
       }
     });
   }

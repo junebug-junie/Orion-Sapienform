@@ -12,7 +12,7 @@ import aiohttp
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import requests
 
 from .settings import settings
@@ -50,7 +50,14 @@ from orion.schemas.notify import (
 from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
+from orion.core.schemas.frontier_expansion import FrontierTargetZoneV1
+from orion.core.schemas.substrate_policy_adoption import (
+    SubstratePolicyAdoptionRequestV1,
+    SubstratePolicyOverridesV1,
+    SubstratePolicyRolloutScopeV1,
+)
 from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
+from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
@@ -190,6 +197,26 @@ class SubstrateReviewSmokeCheckRequest(BaseModel):
 
 class SubstrateReviewBootstrapRequest(BaseModel):
     limit: int = Field(default=12, ge=1, le=32)
+
+
+class SubstratePolicyAdoptHubRequest(BaseModel):
+    """Hub-facing adopt payload; defaults match Substrate Inspector operator_review cycles.
+
+    Empty ``target_zones`` applies the profile to every review zone (see
+    ``SubstratePolicyProfileStore._matches_scope``); a single zone caused
+    autonomy_graph/world_ontology runs to stay on baseline while Postgres
+    still showed an active profile for concept_graph only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    activate_now: bool = True
+    operator_id: Optional[str] = None
+    rationale: str = "substrate-inspector"
+    invocation_surfaces: list[GraphReviewRuntimeSurfaceV1] = Field(default_factory=lambda: ["operator_review"])
+    target_zones: list[FrontierTargetZoneV1] = Field(default_factory=list)
+    operator_only: bool = False
+    policy_overrides: SubstratePolicyOverridesV1 = Field(default_factory=SubstratePolicyOverridesV1)
 
 
 async def _execute_workflow_schedule_management(*, session_id: str, user_id: Optional[str], request: WorkflowScheduleManageRequestV1) -> Dict[str, Any]:
@@ -1426,6 +1453,12 @@ def _sql_calibration_payload(*, limit: int = 20) -> Dict[str, Any]:
     recommendations = GraphReviewCalibrationAnalyzer().recommend(summary=summary)
     baseline_policy = GraphReviewCyclePolicyV1().model_dump(mode="json")
     inspection = SUBSTRATE_POLICY_STORE.inspect(audit_limit=limit)
+    actives_cal = list(inspection.active_profiles)
+    if actives_cal:
+        actives_cal.sort(key=lambda p: p.activated_at or p.created_at, reverse=True)
+        active_profile_dump = actives_cal[0].model_dump(mode="json")
+    else:
+        active_profile_dump = baseline_policy
     source_kind = "postgres" if (
         SUBSTRATE_POLICY_STORE.source_kind() == "postgres"
         and SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind() == "postgres"
@@ -1438,11 +1471,7 @@ def _sql_calibration_payload(*, limit: int = 20) -> Dict[str, Any]:
             error=SUBSTRATE_POLICY_STORE.last_error() or SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
         ),
         "data": {
-            "active_profile": (
-                inspection.active_profiles[0].model_dump(mode="json")
-                if inspection.active_profiles
-                else baseline_policy
-            ),
+            "active_profile": active_profile_dump,
             "staged_profiles": [item.model_dump(mode="json") for item in inspection.staged_profiles],
             "recent_audit_events": [item.model_dump(mode="json") for item in inspection.recent_audit_events],
             "rolled_back_profiles": [item.model_dump(mode="json") for item in inspection.rolled_back_profiles],
@@ -1551,6 +1580,41 @@ def _substrate_source_posture() -> Dict[str, Any]:
     }
 
 
+def _parse_substrate_status_instant(value: object) -> datetime | None:
+    """Parse ISO-8601 strings or datetimes for substrate status clock comparisons."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    if isinstance(value, str):
+        text = value.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    return None
+
+
+def _last_execution_predates_active_profile(
+    last_execution: Dict[str, Any] | None,
+    active_profile: Dict[str, Any],
+) -> bool | None:
+    """True when the newest telemetry row is older than the active policy's activation time."""
+    if not last_execution or not active_profile.get("activated_at"):
+        return None
+    selected = _parse_substrate_status_instant(last_execution.get("selected_at"))
+    activated = _parse_substrate_status_instant(active_profile.get("activated_at"))
+    if selected is None or activated is None:
+        return None
+    return selected < activated
+
+
 def _substrate_runtime_status_payload(*, queue_limit: int = 20, telemetry_limit: int = 20) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     queue_snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=queue_limit)
@@ -1558,7 +1622,14 @@ def _substrate_runtime_status_payload(*, queue_limit: int = 20, telemetry_limit:
     recent_exec = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=1))
     telemetry_summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=telemetry_limit))
     policy_inspection = SUBSTRATE_POLICY_STORE.inspect(audit_limit=5)
-    active_profile = policy_inspection.active_profiles[0].model_dump(mode="json") if policy_inspection.active_profiles else {}
+    actives = list(policy_inspection.active_profiles)
+    if actives:
+        actives.sort(key=lambda p: p.activated_at or p.created_at, reverse=True)
+        active_profile = actives[0].model_dump(mode="json")
+    else:
+        active_profile = {}
+    last_execution = recent_exec[0].model_dump(mode="json") if recent_exec else None
+    last_predates = _last_execution_predates_active_profile(last_execution, active_profile)
     next_due = min((item.next_review_at for item in due_items), default=None)
 
     return {
@@ -1578,7 +1649,8 @@ def _substrate_runtime_status_payload(*, queue_limit: int = 20, telemetry_limit:
                 if due_items
                 else None
             ),
-            "last_execution": recent_exec[0].model_dump(mode="json") if recent_exec else None,
+            "last_execution": last_execution,
+            "last_execution_predates_active_profile": last_predates,
             "telemetry_count": (
                 telemetry_summary.total_executions
                 + telemetry_summary.total_noops
@@ -1859,6 +1931,32 @@ def api_substrate_policy_comparison(
         window_seconds=window_seconds,
         sample_limit=sample_limit,
     )
+
+
+@router.post("/api/substrate/policy/adopt")
+def api_substrate_policy_adopt(request: SubstratePolicyAdoptHubRequest) -> Dict[str, Any]:
+    """Stage or activate a substrate review policy profile (operator-controlled)."""
+    adoption = SubstratePolicyAdoptionRequestV1(
+        rollout_scope=SubstratePolicyRolloutScopeV1(
+            invocation_surfaces=list(request.invocation_surfaces),
+            target_zones=list(request.target_zones),
+            operator_only=request.operator_only,
+        ),
+        policy_overrides=request.policy_overrides,
+        activate_now=request.activate_now,
+        operator_id=request.operator_id,
+        rationale=request.rationale,
+    )
+    result = SUBSTRATE_POLICY_STORE.adopt(adoption)
+    return {
+        "source": _source_meta(
+            kind=SUBSTRATE_POLICY_STORE.source_kind(),
+            degraded=SUBSTRATE_POLICY_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_POLICY_STORE.last_error(),
+        ),
+        "data": result.model_dump(mode="json"),
+    }
 
 
 @router.get("/api/substrate/review-runtime/status")

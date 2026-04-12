@@ -38,7 +38,18 @@ ORCH_INTERNAL_DENY = {
     "auto_depth_select",
 }
 ENGINEERING_TERMS = {
-    "fix", "debug", "refactor", "stack trace", "traceback", "docker", "compose", "error", "logs", "exception", "pytest",
+    "fix",
+    "debug",
+    "refactor",
+    "stack trace",
+    "traceback",
+    "docker",
+    "compose",
+    "error",
+    "logs",
+    "log triage",
+    "exception",
+    "pytest",
 }
 ANALYSIS_TERMS = {"analyze", "analysis", "summarize", "summary", "extract", "classify", "intent"}
 COUNCIL_TERMS = {"argue both sides", "deliberate", "debate", "multi-perspective", "deep deliberation", "council"}
@@ -56,6 +67,38 @@ ORDINAL_SELECTION_TERMS = {
     "third one",
     "that third one",
 }
+
+# Substrings that indicate self-coaching / wellness free-form, not operational "how do I …" runbooks.
+# Keeps auto-routed prompts on the stable brain/chat_general + verb-runtime path instead of agent_runtime
+# (planner/agent-chain can stall or exceed Hub waits on gateway:result).
+PERSONAL_COACHING_HINTS = (
+    "motivat",
+    "better version",
+    "myself",
+    "procrastin",
+    "burnout",
+    "feel stuck",
+    " i feel ",
+    "i'm stuck",
+    "im stuck",
+    "anxiety",
+    "depress",
+    "self-care",
+    "self care",
+    "mental health",
+    "can't focus",
+    "cant focus",
+    "lazy",
+    "habit",
+    " self-discipline",
+    " self discipline",
+    "personal discipline",
+)
+
+
+def _looks_like_personal_coaching(text: str) -> bool:
+    t = " " + " ".join(str(text or "").lower().split()) + " "
+    return any(hint in t for hint in PERSONAL_COACHING_HINTS)
 
 
 @dataclass(frozen=True)
@@ -163,6 +206,14 @@ class DecisionRouter:
             return AutoDepthDecisionV1(execution_depth=3, primary_verb=None, confidence=0.82, reason="heuristic:council", source="heuristic")
         if "```" in text or any(term in text for term in ENGINEERING_TERMS):
             return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.85, reason="heuristic:engineering", source="heuristic")
+        if "planner" in text and ("agent chain" in text or "agent_chain" in text):
+            return AutoDepthDecisionV1(
+                execution_depth=2,
+                primary_verb=None,
+                confidence=0.86,
+                reason="heuristic:planner_agent_chain_design",
+                source="heuristic",
+            )
         if any(term in text for term in INSTRUCTION_TERMS):
             return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.84, reason="heuristic:instruction", source="heuristic")
         if any(term in text for term in ANALYSIS_TERMS):
@@ -232,6 +283,15 @@ class DecisionRouter:
             decision = self.heuristic_router(req, shortlist=shortlist)
 
         clamped = self._clamp_decision(decision, shortlist=shortlist)
+        user_text = self._user_text(req)
+        if clamped.execution_depth >= 1 and _looks_like_personal_coaching(user_text):
+            clamped = AutoDepthDecisionV1(
+                execution_depth=0,
+                primary_verb=None,
+                confidence=min(0.9, float(clamped.confidence)),
+                reason="stabilize:personal_coaching_chat_general",
+                source="heuristic",
+            )
         rewritten = req.model_copy(deep=True)
         rewritten.options["execution_depth"] = clamped.execution_depth
 

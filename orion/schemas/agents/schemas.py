@@ -43,6 +43,7 @@ class AgentChainRequest(BaseModel):
     packs: Optional[List[str]] = None
     output_mode: Optional[str] = None
     response_profile: Optional[str] = None
+    answer_contract: Optional[Dict[str, Any]] = None
     bound_capability_execution: Optional[BoundCapabilityExecutionRequestV1] = None
 
 

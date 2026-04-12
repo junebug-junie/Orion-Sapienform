@@ -14,6 +14,7 @@ from orion.cognition.workflows import (
     workflow_registry_payload,
 )
 from orion.schemas.cortex.contracts import CortexChatRequest
+from orion.cognition.answer_contract_normalize import build_answer_contract_draft_for_hub
 from orion.schemas.social_memory import (
     SocialParticipantContinuityV1,
     SocialRoomContinuityV1,
@@ -358,6 +359,12 @@ def build_cortex_chat_request(
         },
         "available_workflows": workflow_registry_payload(user_invocable_only=True),
     }
+    draft_ac = build_answer_contract_draft_for_hub(prompt)
+    metadata["answer_contract_draft"] = draft_ac
+    logger.info(
+        "answer_contract_built source=hub request_kind=%s",
+        draft_ac.get("request_kind"),
+    )
     if workflow_request_override is not None:
         workflow_id = str(workflow_request_override.get("workflow_id") or "").strip()
         if workflow_id:

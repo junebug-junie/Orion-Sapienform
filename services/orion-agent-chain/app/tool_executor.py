@@ -25,6 +25,16 @@ from .settings import settings
 
 logger = logging.getLogger("agent-chain.tool-exec")
 
+_FINDINGS_RENDER_TEMPLATES: dict[str, str] = {
+    "write_guide": "render_from_findings_write_guide.j2",
+    "finalize_response": "render_from_findings_finalize_response.j2",
+    "write_tutorial": "render_from_findings_write_guide.j2",
+    "write_runbook": "render_from_findings_write_guide.j2",
+    "write_recommendation": "render_from_findings_write_guide.j2",
+    "compare_options": "render_from_findings_write_guide.j2",
+    "synthesize_patterns": "render_from_findings_write_guide.j2",
+}
+
 
 class ToolExecutor:
     """Executes LLM-backed cognition verbs locally from agent-chain."""
@@ -130,6 +140,11 @@ class ToolExecutor:
 
         normalized_input = self._normalize_inputs(tool_id, tool_input)
         template_name = self._resolve_prompt_template(verb_cfg)
+        if (
+            tool_id in _FINDINGS_RENDER_TEMPLATES
+            and isinstance(normalized_input.get("findings_bundle"), dict)
+        ):
+            template_name = _FINDINGS_RENDER_TEMPLATES[tool_id]
         prompt = self._render_prompt(template_name, normalized_input)
 
         corr = str(uuid4())

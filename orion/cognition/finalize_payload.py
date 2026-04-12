@@ -14,10 +14,12 @@ def build_finalize_tool_input(
     trace_snapshot: list,
     output_mode: str | None,
     response_profile: str | None,
+    findings_bundle: dict[str, Any] | None = None,
+    answer_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     grounding = build_delivery_grounding_context(user_text=user_text, output_mode=output_mode)
     trace_preferred_output, trace_used = extract_trace_preferred_output(trace_snapshot)
-    return {
+    out: dict[str, Any] = {
         "original_request": user_text,
         "request": user_text,
         "text": user_text,
@@ -29,3 +31,10 @@ def build_finalize_tool_input(
         "finalization_source_trace_used": trace_used,
         **grounding,
     }
+    if isinstance(findings_bundle, dict):
+        out["findings_bundle"] = findings_bundle
+        out["findings_bundle_json"] = json.dumps(findings_bundle, ensure_ascii=False, default=str)[:12000]
+    if isinstance(answer_contract, dict):
+        out["answer_contract"] = answer_contract
+        out["preferred_render_style"] = answer_contract.get("preferred_render_style") or "answer"
+    return out

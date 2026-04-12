@@ -30,6 +30,8 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 from orion.cognition.output_mode_classifier import classify_output_mode
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
+from orion.cognition.answer_contract_normalize import investigation_state_for_contract
+from orion.schemas.cognition.answer_contract import AnswerContract
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -348,6 +350,19 @@ def build_plan_request(
             normalized_depth = str(int(router_metadata.get("execution_depth")))
             plan.metadata["execution_depth"] = normalized_depth
             context.setdefault("metadata", {})["execution_depth"] = int(router_metadata.get("execution_depth"))
+    ac_raw = options.get("answer_contract")
+    if isinstance(ac_raw, dict):
+        try:
+            ac = AnswerContract.model_validate(ac_raw)
+            context.setdefault("metadata", {})["answer_contract"] = ac.model_dump(mode="json")
+            context.setdefault("metadata", {})["investigation_state"] = investigation_state_for_contract(ac)
+            context.setdefault("metadata", {})["evidence_first_investigation"] = bool(
+                ac.requires_repo_grounding or ac.requires_runtime_grounding
+            )
+            if ac.requires_repo_grounding or ac.requires_runtime_grounding:
+                plan.metadata["evidence_first_investigation"] = "1"
+        except Exception as exc:
+            logger.warning("orch_answer_contract_attach_failed corr=%s err=%s", correlation_id, exc)
     return PlanExecutionRequest(plan=plan, args=args, context=context)
 
 

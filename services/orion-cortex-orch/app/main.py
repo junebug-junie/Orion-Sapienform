@@ -28,6 +28,7 @@ from orion.spark.concept_induction.profile_repository import concept_profile_par
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
+from orion.cognition.answer_contract_normalize import bootstrap_answer_contract_on_request, enrich_answer_contract_after_routing
 
 logger = logging.getLogger("orion.cortex.orch")
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
@@ -187,6 +188,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 json.dumps(raw_payload, default=str),
             )
         req = CortexClientRequest.model_validate(raw_payload)
+        req = bootstrap_answer_contract_on_request(req)
         context_metadata = req.context.metadata if isinstance(req.context.metadata, dict) else {}
         capability_bridge = bool(context_metadata.get("capability_bridge"))
         requested_verb = context_metadata.get("requested_verb")
@@ -238,6 +240,19 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         elif str(req.mode).lower() == "auto":
             logger.info("auto_route_gate corr_id=%s fallback_mode=brain reason=%s", str(env.correlation_id), route_reason)
             req.mode = "brain"
+
+        req = enrich_answer_contract_after_routing(req)
+        ac_opts = (req.options or {}).get("answer_contract") if isinstance(req.options, dict) else {}
+        if isinstance(ac_opts, dict):
+            logger.info(
+                "answer_contract_normalized corr=%s request_kind=%s preferred_render_style=%s classifier_style=%s",
+                str(env.correlation_id),
+                ac_opts.get("request_kind"),
+                ac_opts.get("preferred_render_style"),
+                (req.context.metadata or {}).get("classifier_preferred_render_style")
+                if isinstance(req.context.metadata, dict)
+                else None,
+            )
 
         if has_explicit_workflow_request(req):
             try:

@@ -24,6 +24,7 @@ from orion.schemas.cortex.contracts import (
     CortexClientRequest,
     OutputModeDecisionV1,
 )
+from orion.schemas.cognition.answer_contract import AnswerContract
 
 from .output_mode_classifier import classify_output_mode
 from .settings import get_settings
@@ -283,6 +284,21 @@ class DecisionRouter:
             decision = self.heuristic_router(req, shortlist=shortlist)
 
         clamped = self._clamp_decision(decision, shortlist=shortlist)
+        ac_raw = (req.options or {}).get("answer_contract")
+        if isinstance(ac_raw, dict):
+            try:
+                ac_model = AnswerContract.model_validate(ac_raw)
+                if (
+                    ac_model.requires_repo_grounding or ac_model.requires_runtime_grounding
+                ) and int(clamped.execution_depth) < 2:
+                    clamped = clamped.model_copy(
+                        update={
+                            "execution_depth": 2,
+                            "reason": f"{clamped.reason}+acquisition_contract",
+                        }
+                    )
+            except Exception:
+                logger.debug("router_answer_contract_acquisition_skip corr=%s", correlation_id)
         user_text = self._user_text(req)
         if clamped.execution_depth >= 1 and _looks_like_personal_coaching(user_text):
             clamped = AutoDepthDecisionV1(

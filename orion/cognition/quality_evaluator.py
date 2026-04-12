@@ -6,7 +6,7 @@ Flags meta-plan or shallow outputs that should be rewritten before returning.
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Any, Tuple
 
 # Phrases that indicate meta-plan / executive scaffolding rather than actual answer
 META_PLAN_PHRASES = [
@@ -34,6 +34,50 @@ ORION_RUNTIME_PATTERN = re.compile(
     r"\b(orion|hub|orch|exec|plannerreact|planner react|agentchain|agent chain|llm gateway|discord)\b",
     re.IGNORECASE,
 )
+
+PIP_INSTALL_PATTERN = re.compile(r"\bpip\s+install\b", re.IGNORECASE)
+APT_INSTALL_PATTERN = re.compile(r"\bapt(?:-get)?\s+install\b", re.IGNORECASE)
+
+
+def verified_tokens_from_findings_bundle(fb: dict[str, Any] | None) -> set[str]:
+    """Lowercased tokens from findings the pipeline treated as verified evidence."""
+    toks: set[str] = set()
+    if not isinstance(fb, dict):
+        return toks
+    for item in fb.get("findings") or []:
+        if not isinstance(item, dict):
+            continue
+        claim = str(item.get("claim") or "").strip().lower()
+        if claim:
+            toks.add(claim)
+        ref = str(item.get("source_ref") or "").strip().lower()
+        if ref:
+            toks.add(ref)
+        if item.get("verified") is True and claim:
+            toks.add("verified:" + claim[:200])
+    return toks
+
+
+def detect_unverified_install_commands(
+    text: str,
+    verified_tokens: set[str],
+) -> Tuple[bool, str]:
+    """
+    Deterministic guardrail: block pip/apt install specifics unless echoed in findings.
+    """
+    if not text or not isinstance(text, str):
+        return False, ""
+    if PIP_INSTALL_PATTERN.search(text):
+        for v in verified_tokens:
+            if "pip install" in v:
+                return False, ""
+        return True, "unsupported_specific_pip_install"
+    if APT_INSTALL_PATTERN.search(text):
+        for v in verified_tokens:
+            if "apt install" in v or "apt-get install" in v:
+                return False, ""
+        return True, "unsupported_specific_apt_install"
+    return False, ""
 
 
 def looks_like_meta_plan(text: str) -> bool:
@@ -69,6 +113,8 @@ def should_rewrite_for_instructional(
     *,
     request_text: str = "",
     grounding_mode: str | None = None,
+    findings_bundle: dict[str, Any] | None = None,
+    answer_contract: dict[str, Any] | None = None,
 ) -> Tuple[bool, str]:
     """
     Return (should_rewrite, reason).
@@ -98,7 +144,34 @@ def should_rewrite_for_instructional(
     )
     if generic_drift:
         return True, generic_reason
+    ac_gate = answer_contract if isinstance(answer_contract, dict) else {}
+    if ac_gate.get("requires_repo_grounding") or ac_gate.get("requires_runtime_grounding"):
+        unsafe, unsafe_reason = should_block_unsupported_specifics(
+            text,
+            findings_bundle=findings_bundle if isinstance(findings_bundle, dict) else {},
+            answer_contract=ac_gate,
+        )
+        if unsafe:
+            return True, unsafe_reason
     # Short generic outputs that lack specifics
     if len(text.strip()) < 120 and not any(c in text for c in ["`", "1.", "2.", "Step", "```"]):
         return False, ""
     return False, ""
+
+
+def should_block_unsupported_specifics(
+    text: str,
+    *,
+    findings_bundle: dict[str, Any] | None,
+    answer_contract: dict[str, Any] | None,
+) -> Tuple[bool, str]:
+    """Fail-closed when contract disallows unverified specifics and install commands appear without evidence."""
+    if not text:
+        return False, ""
+    contract = answer_contract if isinstance(answer_contract, dict) else {}
+    if contract.get("allow_unverified_specifics") is True:
+        return False, ""
+    fb = findings_bundle if isinstance(findings_bundle, dict) else {}
+    toks = verified_tokens_from_findings_bundle(fb)
+    bad, reason = detect_unverified_install_commands(text, toks)
+    return bad, reason

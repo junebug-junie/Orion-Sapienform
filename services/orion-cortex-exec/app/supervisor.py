@@ -29,6 +29,7 @@ from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecu
 from orion.cognition.verb_activation import is_active
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
 from orion.cognition.quality_evaluator import should_rewrite_for_instructional
+from orion.cognition.findings_bundle_synth import merge_findings_bundle_dicts
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionRequestV1,
     CapabilityRecoveryDecisionV1,
@@ -41,6 +42,23 @@ from .recall_utils import delivery_safe_recall_decision, has_inline_recall
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.supervisor")
+
+
+def _merge_agent_findings_into_ctx(ctx: Dict[str, Any], agent_payload: Any) -> None:
+    if not isinstance(agent_payload, dict):
+        return
+    rd = agent_payload.get("runtime_debug")
+    if not isinstance(rd, dict):
+        return
+    fb = rd.get("findings_bundle")
+    if not isinstance(fb, dict):
+        return
+    prev = ctx.get("merged_findings_bundle")
+    ctx["merged_findings_bundle"] = merge_findings_bundle_dicts(
+        prev if isinstance(prev, dict) else None,
+        fb,
+    )
+
 
 ORION_PKG_DIR = Path(orion.__file__).resolve().parent
 PROMPTS_DIR = ORION_PKG_DIR / "cognition" / "prompts"
@@ -1233,6 +1251,9 @@ class Supervisor:
             "output_mode": ctx.get("output_mode"),
             "response_profile": ctx.get("response_profile"),
         }
+        ac = ctx.get("answer_contract")
+        if isinstance(ac, dict):
+            agent_req["answer_contract"] = ac
         bound_execution = ctx.get("__bound_execution")
         if isinstance(bound_execution, dict):
             contract = BoundCapabilityExecutionRequestV1.model_validate(bound_execution)
@@ -1692,6 +1713,7 @@ class Supervisor:
 
             try:
                 agent_payload = (action_step.result or {}).get("AgentChainService", {})
+                _merge_agent_findings_into_ctx(ctx, agent_payload)
                 if isinstance(agent_payload, dict):
                     bound_payload = agent_payload.get("bound_capability")
                     if not isinstance(bound_payload, dict):
@@ -1790,6 +1812,7 @@ class Supervisor:
             step_results.append(agent_step)
             try:
                 agent_payload = agent_step.result.get("AgentChainService", {})
+                _merge_agent_findings_into_ctx(ctx, agent_payload)
                 if isinstance(agent_payload, dict):
                     final_text = agent_payload.get("text") or final_text
             except Exception:
@@ -1806,6 +1829,8 @@ class Supervisor:
                 ctx.get("output_mode"),
                 request_text=_last_user_message(ctx),
                 grounding_mode=grounding.get("delivery_grounding_mode"),
+                findings_bundle=ctx.get("merged_findings_bundle") if isinstance(ctx.get("merged_findings_bundle"), dict) else None,
+                answer_contract=ctx.get("answer_contract") if isinstance(ctx.get("answer_contract"), dict) else None,
             )
             if shallow:
                 logger.info(
@@ -1837,6 +1862,14 @@ class Supervisor:
                     "response_profile": ctx.get("response_profile") or "direct_answer",
                     **grounding,
                 }
+                mfb = ctx.get("merged_findings_bundle")
+                if isinstance(mfb, dict):
+                    finalize_input_blob["findings_bundle"] = mfb
+                    finalize_input_blob["findings_bundle_json"] = json.dumps(mfb, ensure_ascii=False, default=str)[:12000]
+                ac = ctx.get("answer_contract")
+                if isinstance(ac, dict):
+                    finalize_input_blob["answer_contract"] = ac
+                    finalize_input_blob["preferred_render_style"] = ac.get("preferred_render_style") or "answer"
                 scaffold_markers = _detect_scaffolding_markers(finalize_input_blob)
                 if scaffold_markers:
                     logger.warning(

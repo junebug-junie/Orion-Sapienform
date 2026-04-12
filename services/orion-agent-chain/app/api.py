@@ -26,7 +26,11 @@ from orion.schemas.agents.bound_capability import (
     CapabilityRecoveryReasonV1,
 )
 from orion.cognition.output_mode_classifier import classify_output_mode
-from orion.cognition.quality_evaluator import detect_generic_delivery_drift, should_rewrite_for_instructional
+from orion.cognition.quality_evaluator import (
+    detect_generic_delivery_drift,
+    should_block_unsupported_specifics,
+    should_rewrite_for_instructional,
+)
 from orion.cognition.runtime_pack_merge import ensure_delivery_pack_in_packs
 from orion.cognition.agent_chain_guards import (
     consecutive_tool_count,
@@ -35,7 +39,8 @@ from orion.cognition.agent_chain_guards import (
 )
 from orion.cognition.finalize_payload import build_finalize_tool_input
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
-
+from orion.cognition.answer_contract_normalize import output_modes_for_answer_contract_style
+from orion.cognition.findings_bundle_synth import attach_findings_to_debug, synthesize_findings_bundle
 logger = logging.getLogger("agent-chain.api")
 
 
@@ -57,14 +62,22 @@ async def _maybe_rewrite_meta_plan(
     output_mode: str | None,
     response_profile: str | None = None,
     trace_snapshot: list | None = None,
+    *,
+    findings_bundle: dict[str, Any] | None = None,
+    answer_contract: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
     """If text looks like meta-plan for instructional mode, rewrite via finalize_response."""
     grounding = build_delivery_grounding_context(user_text=body.text, output_mode=output_mode)
+    ac = answer_contract if isinstance(answer_contract, dict) else (
+        body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None
+    )
     should_rewrite, rewrite_reason = should_rewrite_for_instructional(
         text,
         output_mode,
         request_text=body.text,
         grounding_mode=grounding.get("delivery_grounding_mode"),
+        findings_bundle=findings_bundle,
+        answer_contract=ac,
     )
     if not should_rewrite:
         return text, False
@@ -75,6 +88,13 @@ async def _maybe_rewrite_meta_plan(
         grounding.get("delivery_grounding_mode"),
     )
     try:
+        ac_dict = ac if isinstance(ac, dict) else {}
+        fb = synthesize_findings_bundle(
+            answer_contract=ac_dict,
+            trace=list(trace_snapshot or []),
+            tools_called=[],
+        )
+        fb_use = findings_bundle if isinstance(findings_bundle, dict) else fb
         fin_result = await tool_executor.execute_llm_verb(
             "finalize_response",
             {
@@ -84,6 +104,10 @@ async def _maybe_rewrite_meta_plan(
                 "output_mode": output_mode or "direct_answer",
                 "response_profile": response_profile or "direct_answer",
                 "trace_preferred_output": text[:8000],
+                "findings_bundle": fb_use,
+                "findings_bundle_json": json.dumps(fb_use, ensure_ascii=False, default=str)[:12000],
+                "answer_contract": ac_dict,
+                "preferred_render_style": str(ac_dict.get("preferred_render_style") or "answer"),
                 **grounding,
             },
             parent_correlation_id=parent_corr_id,
@@ -97,6 +121,11 @@ async def _maybe_rewrite_meta_plan(
 def _effective_output_modes(body: AgentChainRequest) -> tuple[str | None, str | None]:
     om = getattr(body, "output_mode", None) or None
     rp = getattr(body, "response_profile", None) or None
+    ac = getattr(body, "answer_contract", None)
+    if isinstance(ac, dict) and ac.get("preferred_render_style"):
+        om_hint, rp_hint = output_modes_for_answer_contract_style(str(ac.get("preferred_render_style") or ""))
+        om = om or om_hint
+        rp = rp or rp_hint
     if not om or not rp:
         omd = classify_output_mode(body.text or "")
         om = om or omd.output_mode
@@ -125,12 +154,21 @@ def _finalize_tool_input(
     *,
     output_mode: str | None,
     response_profile: str | None,
+    tools_called: list[str] | None = None,
 ) -> dict[str, Any]:
+    ac = body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else {}
+    fb = synthesize_findings_bundle(
+        answer_contract=ac,
+        trace=list(trace_snapshot or []),
+        tools_called=list(tools_called or []),
+    )
     return build_finalize_tool_input(
         user_text=body.text,
         trace_snapshot=trace_snapshot,
         output_mode=output_mode,
         response_profile=response_profile,
+        findings_bundle=fb,
+        answer_contract=ac or None,
     )
 
 
@@ -164,16 +202,42 @@ def _ground_tool_input(
     grounded.setdefault("original_request", body.text)
     grounded.setdefault("trace", json.dumps([dict(s) for s in trace_snapshot], default=str)[:12000])
     grounded.update({k: v for k, v in grounding.items() if k not in grounded})
-    finalize_payload = build_finalize_tool_input(
-        user_text=body.text,
-        trace_snapshot=trace_snapshot,
+    finalize_payload = _finalize_tool_input(
+        body,
+        trace_snapshot,
         output_mode=output_mode,
         response_profile=response_profile,
+        tools_called=[],
     )
-    for key in ("trace_preferred_output", "finalization_source_trace_used"):
+    for key in (
+        "trace_preferred_output",
+        "finalization_source_trace_used",
+        "findings_bundle",
+        "findings_bundle_json",
+        "answer_contract",
+        "preferred_render_style",
+    ):
         if key in finalize_payload and key not in grounded:
             grounded[key] = finalize_payload[key]
     return grounded
+
+
+def _finalize_claim_guard(body: AgentChainRequest, dbg: dict[str, Any], text: str) -> str:
+    ac = body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None
+    if not isinstance(ac, dict) or not (ac.get("requires_repo_grounding") or ac.get("requires_runtime_grounding")):
+        return text
+    blocked, reason = should_block_unsupported_specifics(
+        text,
+        findings_bundle=dbg.get("findings_bundle") if isinstance(dbg.get("findings_bundle"), dict) else {},
+        answer_contract=ac,
+    )
+    if not blocked:
+        return text
+    dbg["unsupported_specific_blocked"] = reason
+    return (
+        "Blocked unverified package install lines pending evidence in the findings bundle. "
+        "Add repo reads or runtime observations, then retry."
+    )
 
 
 def _delivery_override_for_plan_action_repeat(
@@ -796,6 +860,7 @@ async def execute_agent_chain(
                 "text": body.text,
                 "output_mode": output_mode,
                 "response_profile": response_profile,
+                "answer_contract": body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else {},
                 **grounding,
             },
         },
@@ -936,6 +1001,12 @@ async def execute_agent_chain(
                     request_text=body.text,
                     grounding_mode=dbg.get("delivery_grounding_mode"),
                 )
+                attach_findings_to_debug(
+                    dbg,
+                    answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+                    trace=planner_payload.get("trace") or [],
+                    tools_called=tools_called,
+                )
                 text, rewrote = await _maybe_rewrite_meta_plan(
                     text,
                     body,
@@ -945,6 +1016,8 @@ async def execute_agent_chain(
                     output_mode,
                     response_profile,
                     trace_snapshot=planner_payload.get("trace") or [],
+                    findings_bundle=dbg.get("findings_bundle"),
+                    answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
                 )
                 if rewrote:
                     dbg["finalize_response_invoked"] = True
@@ -958,6 +1031,7 @@ async def execute_agent_chain(
                     logger.info("[agent-chain] generic_drift_detected=1 output_mode=%s", output_mode)
                 dbg["quality_evaluator_rewrite"] = rewrote
                 dbg["finalization_reason"] = dbg.get("finalization_reason") or "planner_finish"
+                text = _finalize_claim_guard(body, dbg, text)
                 raw_resp = {**raw_resp, "runtime_debug": dbg}
                 return AgentChainResult(
                     mode=body.mode,
@@ -995,6 +1069,7 @@ async def execute_agent_chain(
                     planner_payload.get("trace") or [],
                     output_mode=output_mode,
                     response_profile=response_profile,
+                    tools_called=tools_called,
                 )
                 if tool_id != "finalize_response":
                     tool_input = {"request": body.text, "text": body.text, "goal": body.text, **tool_input}
@@ -1014,7 +1089,11 @@ async def execute_agent_chain(
                     tool_id = "finalize_response"
                     trace_snapshot = planner_payload.get("trace") or []
                     tool_input = _finalize_tool_input(
-                        body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
+                        body,
+                        trace_snapshot,
+                        output_mode=output_mode,
+                        response_profile=response_profile,
+                        tools_called=tools_called,
                     )
                     dbg["finalize_response_invoked"] = True
 
@@ -1049,6 +1128,7 @@ async def execute_agent_chain(
                                     trace_snapshot,
                                     output_mode=output_mode,
                                     response_profile=response_profile,
+                                    tools_called=tools_called,
                                 ),
                                 parent_correlation_id=parent_corr_id,
                             )
@@ -1066,11 +1146,20 @@ async def execute_agent_chain(
                         output_mode,
                         response_profile,
                         trace_snapshot=planner_payload.get("trace") or [],
+                        findings_bundle=dbg.get("findings_bundle"),
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
                     )
                     dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
                     if rewrote:
                         dbg["finalize_response_invoked"] = True
                     dbg["finalization_reason"] = dbg.get("finalization_reason") or "fallback_finalization"
+                    attach_findings_to_debug(
+                        dbg,
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+                        trace=planner_payload.get("trace") or [],
+                        tools_called=tools_called,
+                    )
+                    fallback = _finalize_claim_guard(body, dbg, fallback)
                     raw_resp = {**raw_resp, "runtime_debug": dbg}
                     return AgentChainResult(
                         mode=body.mode,
@@ -1099,6 +1188,7 @@ async def execute_agent_chain(
                     planner_payload.get("trace") or [],
                     output_mode=output_mode,
                     response_profile=response_profile,
+                    tools_called=tools_called,
                 )
                 if tool_id != "finalize_response":
                     tool_input = {"request": body.text, "text": body.text, "goal": body.text, **tool_input}
@@ -1110,7 +1200,11 @@ async def execute_agent_chain(
                 tool_id = "finalize_response"
                 trace_snapshot = planner_payload.get("trace") or []
                 tool_input = _finalize_tool_input(
-                    body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
+                    body,
+                    trace_snapshot,
+                    output_mode=output_mode,
+                    response_profile=response_profile,
+                    tools_called=tools_called,
                 )
                 dbg["finalize_response_invoked"] = True
 
@@ -1216,6 +1310,12 @@ async def execute_agent_chain(
                 final_text = _usable_finalized_text(observation)
                 if final_text:
                     dbg["quality_evaluator_rewrite"] = True
+                    attach_findings_to_debug(
+                        dbg,
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+                        trace=planner_payload.get("trace") or [],
+                        tools_called=tools_called,
+                    )
                     final_text, rewrote = await _maybe_rewrite_meta_plan(
                         final_text,
                         body,
@@ -1225,6 +1325,8 @@ async def execute_agent_chain(
                         output_mode,
                         response_profile,
                         trace_snapshot=planner_payload.get("trace") or [],
+                        findings_bundle=dbg.get("findings_bundle"),
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
                     )
                     dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
                     drifted, _ = detect_generic_delivery_drift(
@@ -1235,6 +1337,7 @@ async def execute_agent_chain(
                     dbg["generic_drift_detected"] = dbg["generic_drift_detected"] or drifted
                     if drifted:
                         logger.info("[agent-chain] generic_drift_detected=1 output_mode=%s", output_mode)
+                    final_text = _finalize_claim_guard(body, dbg, final_text)
                     return AgentChainResult(
                         mode=body.mode,
                         text=final_text,
@@ -1256,7 +1359,11 @@ async def execute_agent_chain(
             fin_result = await tool_executor.execute_llm_verb(
                 "finalize_response",
                 _finalize_tool_input(
-                    body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
+                    body,
+                    trace_snapshot,
+                    output_mode=output_mode,
+                    response_profile=response_profile,
+                    tools_called=tools_called,
                 ),
                 parent_correlation_id=parent_corr_id,
             )
@@ -1264,6 +1371,12 @@ async def execute_agent_chain(
         except Exception as e:
             logger.warning("[agent-chain] finalize_response at step cap failed: %s", e)
             final_text = "Max steps reached. Please try a more focused request."
+        attach_findings_to_debug(
+            dbg,
+            answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+            trace=planner_payload.get("trace") or [],
+            tools_called=tools_called,
+        )
         final_text, rewrote = await _maybe_rewrite_meta_plan(
             final_text,
             body,
@@ -1273,8 +1386,11 @@ async def execute_agent_chain(
             output_mode,
             response_profile,
             trace_snapshot=planner_payload.get("trace") or [],
+            findings_bundle=dbg.get("findings_bundle"),
+            answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
         )
         dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
+        final_text = _finalize_claim_guard(body, dbg, final_text)
         return AgentChainResult(
             mode=body.mode,
             text=final_text,

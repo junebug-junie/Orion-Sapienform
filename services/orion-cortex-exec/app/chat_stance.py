@@ -723,13 +723,175 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def parse_chat_stance_brief(raw_text: str) -> ChatStanceBrief | None:
+    parsed, _ = parse_chat_stance_brief_with_debug(raw_text)
+    return parsed
+
+
+def parse_chat_stance_brief_with_debug(raw_text: str) -> tuple[ChatStanceBrief | None, dict[str, Any]]:
+    info: dict[str, Any] = {"normalized_applied": False}
     obj = _extract_json_object(raw_text)
     if not obj:
-        return None
+        info["parse_error"] = "missing_json_object"
+        return None, info
     try:
-        return normalize_chat_stance_brief(ChatStanceBrief.model_validate(obj))
-    except Exception:
-        return None
+        parsed = ChatStanceBrief.model_validate(obj)
+        normalized = normalize_chat_stance_brief(parsed)
+        parsed_json = parsed.model_dump(mode="json")
+        normalized_json = normalized.model_dump(mode="json")
+        info["normalized_applied"] = parsed_json != normalized_json
+        info["parsed_brief"] = parsed_json
+        return normalized, info
+    except Exception as exc:
+        info["parse_error"] = str(exc)
+        return None, info
+
+
+def build_chat_stance_debug_payload(
+    *,
+    ctx: Dict[str, Any],
+    synthesized_brief: Dict[str, Any],
+    final_brief: Dict[str, Any],
+    fallback_invoked: bool,
+    normalized_applied: bool,
+    semantic_fallback: bool,
+    quality_modified: bool,
+    parse_error: str | None = None,
+) -> Dict[str, Any]:
+    stance_inputs = ctx.get("chat_stance_inputs") if isinstance(ctx.get("chat_stance_inputs"), dict) else {}
+    concept = stance_inputs.get("concept_induction") if isinstance(stance_inputs.get("concept_induction"), dict) else {}
+    social = stance_inputs.get("social") if isinstance(stance_inputs.get("social"), dict) else {}
+    social_bridge = stance_inputs.get("social_bridge") if isinstance(stance_inputs.get("social_bridge"), dict) else {}
+    reflective = stance_inputs.get("reflective") if isinstance(stance_inputs.get("reflective"), dict) else {}
+    autonomy = stance_inputs.get("autonomy") if isinstance(stance_inputs.get("autonomy"), dict) else {}
+    autonomy_summary = autonomy.get("summary") if isinstance(autonomy.get("summary"), dict) else {}
+    autonomy_debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
+    reasoning = stance_inputs.get("reasoning_summary") if isinstance(stance_inputs.get("reasoning_summary"), dict) else {}
+    identity = stance_inputs.get("identity") if isinstance(stance_inputs.get("identity"), dict) else {}
+
+    user_message = _compact(ctx.get("user_message") or "", limit=600)
+    memory_digest = ctx.get("memory_digest")
+    if not isinstance(memory_digest, str):
+        memory_digest = ""
+    categories_present = sorted(
+        [
+            key
+            for key, value in {
+                "identity": identity,
+                "concept_induction": concept,
+                "social": social,
+                "social_bridge": social_bridge,
+                "reflective": reflective,
+                "autonomy": autonomy_summary,
+                "reasoning": reasoning,
+            }.items()
+            if isinstance(value, dict) and any(value.values())
+        ]
+    )
+
+    final_prompt_contract = {
+        "chat_stance_brief": final_brief,
+        "memory_digest": memory_digest,
+        "orion_identity_summary": list(ctx.get("orion_identity_summary") or []),
+        "juniper_relationship_summary": list(ctx.get("juniper_relationship_summary") or []),
+        "response_policy_summary": list(ctx.get("response_policy_summary") or []),
+    }
+
+    notes: list[str] = []
+    if fallback_invoked:
+        notes.append("fallback_chat_stance_brief invoked")
+    if semantic_fallback:
+        notes.append("semantic quality guard modified/replaced synthesized brief")
+    if quality_modified:
+        notes.append("final brief differs from synthesized brief after enforcement")
+    if normalized_applied:
+        notes.append("brief normalization compacted or deduplicated generated fields")
+    if parse_error:
+        notes.append(f"parse_error: {parse_error}")
+    if not notes:
+        notes.append("no enforcement deltas")
+
+    return {
+        "overview": {
+            "categories_present": categories_present,
+            "fallback_invoked": fallback_invoked,
+            "normalized_applied": normalized_applied,
+            "quality_enforcement_modified": quality_modified,
+            "semantic_fallback": semantic_fallback,
+        },
+        "source_inputs": {
+            "user_message": user_message,
+            "memory_digest": memory_digest,
+            "identity_kernel": {
+                "orion_identity_summary": list(identity.get("orion") or []),
+                "juniper_relationship_summary": list(identity.get("juniper") or []),
+                "response_policy_summary": list(identity.get("response_policy") or []),
+            },
+            "concept_induction": {
+                "self": list(concept.get("self") or []),
+                "relationship": list(concept.get("relationship") or []),
+                "growth": list(concept.get("growth") or []),
+                "tension": list(concept.get("tension") or []),
+            },
+            "social": {
+                "social_posture": list(social.get("social_posture") or []),
+                "relationship_facets": list(social.get("relationship_facets") or []),
+                "hazards": list(social.get("hazards") or []),
+            },
+            "social_bridge": {
+                "posture": list(social_bridge.get("posture") or []),
+                "hazards": list(social_bridge.get("hazards") or []),
+                "framing": list(social_bridge.get("framing") or []),
+                "turn_decision": social_bridge.get("turn_decision"),
+                "summary": list(social_bridge.get("summary") or []),
+            },
+            "reflective": {
+                "themes": list(reflective.get("themes") or []),
+                "tensions": list(reflective.get("tensions") or []),
+                "dream_motifs": list(reflective.get("dream_motifs") or []),
+            },
+            "autonomy": {
+                "summary": autonomy_summary,
+                "selected_subject": ctx.get("chat_autonomy_selected_subject"),
+                "backend": ctx.get("chat_autonomy_backend"),
+                "compact_debug": autonomy_debug,
+            },
+            "reasoning": {
+                "summary": reasoning,
+                "hazards": list(reasoning.get("hazards") or []),
+                "tensions": list(reasoning.get("tensions") or []),
+                "fallback_recommended": bool(reasoning.get("fallback_recommended")),
+                "used": bool(ctx.get("chat_reasoning_summary_used")),
+            },
+        },
+        "synthesized_brief": synthesized_brief,
+        "enforcement": {
+            "fallback_invoked": fallback_invoked,
+            "normalized_applied": normalized_applied,
+            "quality_modified": quality_modified,
+            "semantic_fallback": semantic_fallback,
+            "notes": notes,
+        },
+        "final_prompt_contract": final_prompt_contract,
+        "lineage_summary": [
+            f"concept/self injected: {len((concept.get('self') or []))} items",
+            f"social hazards injected: {len((social.get('hazards') or []))} items",
+            f"autonomy summary present: {'yes' if bool(autonomy_summary) else 'no'}",
+            f"reasoning summary used: {'yes' if bool(ctx.get('chat_reasoning_summary_used')) else 'no'}",
+            f"fallback applied: {'yes' if fallback_invoked or semantic_fallback else 'no'}",
+        ],
+        "raw": {
+            "source_inputs": stance_inputs,
+            "synthesized_brief": synthesized_brief,
+            "final_prompt_contract": final_prompt_contract,
+            "enforcement": {
+                "fallback_invoked": fallback_invoked,
+                "normalized_applied": normalized_applied,
+                "semantic_fallback": semantic_fallback,
+                "quality_modified": quality_modified,
+                "parse_error": parse_error,
+            },
+        },
+    }
 
 
 def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:

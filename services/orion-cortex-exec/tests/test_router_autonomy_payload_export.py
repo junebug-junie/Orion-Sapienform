@@ -71,6 +71,10 @@ def test_router_exports_autonomy_metadata_from_chat_stance_context(monkeypatch) 
             "active_drives": ["coherence"],
             "tension_kinds": ["scope_sprawl"],
         },
+        "chat_stance_debug": {
+            "overview": {"fallback_invoked": False},
+            "final_prompt_contract": {"chat_stance_brief": {"task_mode": "direct_response"}},
+        },
     }
     result = asyncio.run(
         runner.run_plan(
@@ -86,6 +90,7 @@ def test_router_exports_autonomy_metadata_from_chat_stance_context(monkeypatch) 
     assert result.metadata["autonomy_state_preview"]["dominant_drive"] == "coherence"
     assert result.metadata["autonomy_backend"] == "graph"
     assert result.metadata["autonomy_selected_subject"] == "orion"
+    assert result.metadata["chat_stance_debug"]["overview"]["fallback_invoked"] is False
 
 
 def test_router_omits_autonomy_metadata_when_absent(monkeypatch) -> None:
@@ -113,7 +118,10 @@ def test_router_omits_autonomy_metadata_when_absent(monkeypatch) -> None:
             ctx={"mode": "brain", "raw_user_text": "hello"},
         )
     )
-    assert result.metadata == {}
+    assert "autonomy_summary" not in result.metadata
+    assert "autonomy_debug" not in result.metadata
+    assert "autonomy_state_preview" not in result.metadata
+    assert "chat_stance_debug" not in result.metadata
 
 
 def test_router_prepares_brain_autonomy_context_for_non_chat_general_verbs(monkeypatch) -> None:

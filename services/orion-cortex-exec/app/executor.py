@@ -54,11 +54,12 @@ from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_c
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
 from .chat_stance import (
+    build_chat_stance_debug_payload,
     build_chat_stance_inputs,
     enforce_chat_stance_quality,
     fallback_chat_stance_brief,
     identity_kernel_with_fallbacks,
-    parse_chat_stance_brief,
+    parse_chat_stance_brief_with_debug,
 )
 
 logger = logging.getLogger("orion.cortex.exec")
@@ -2550,9 +2551,11 @@ async def call_step_services(
                 merged_result[service] = result_payload
                 if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
                     brief_text = _extract_llm_text(result_object)
-                    parsed_brief = parse_chat_stance_brief(brief_text)
+                    parsed_brief, parse_debug = parse_chat_stance_brief_with_debug(brief_text)
+                    fallback_invoked = False
                     if parsed_brief is None:
                         parsed_brief = fallback_chat_stance_brief(ctx)
+                        fallback_invoked = True
                         logs.append("warn <- chat stance brief parse failed; using fallback brief")
                     else:
                         logger.info(
@@ -2562,6 +2565,7 @@ async def call_step_services(
                             len(parsed_brief.active_relationship_facets),
                             len(parsed_brief.response_priorities),
                         )
+                    synthesized_brief = parsed_brief.model_dump(mode="json")
                     parsed_brief, semantic_fallback = enforce_chat_stance_quality(parsed_brief, ctx)
                     if semantic_fallback:
                         logs.append("warn <- chat stance brief semantic guard enriched/replaced brief")
@@ -2573,7 +2577,19 @@ async def call_step_services(
                         semantic_fallback,
                     )
                     ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
+                    quality_modified = synthesized_brief != ctx["chat_stance_brief"]
+                    ctx["chat_stance_debug"] = build_chat_stance_debug_payload(
+                        ctx=ctx,
+                        synthesized_brief=synthesized_brief,
+                        final_brief=ctx["chat_stance_brief"],
+                        fallback_invoked=fallback_invoked,
+                        normalized_applied=bool(parse_debug.get("normalized_applied")),
+                        semantic_fallback=semantic_fallback,
+                        quality_modified=quality_modified,
+                        parse_error=str(parse_debug.get("parse_error") or "") or None,
+                    )
                     merged_result["ChatStanceBrief"] = ctx["chat_stance_brief"]
+                    merged_result["ChatStanceDebug"] = ctx["chat_stance_debug"]
 
                 if spark_vector is None:
                     try:

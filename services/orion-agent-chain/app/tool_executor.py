@@ -23,6 +23,9 @@ from .capability_bridge import (
 )
 from .settings import settings
 
+from orion.cognition.answer_contract_normalize import heuristic_answer_contract
+from orion.cognition.finalize_payload import answer_contract_expects_findings_rendering
+
 logger = logging.getLogger("agent-chain.tool-exec")
 
 _FINDINGS_RENDER_TEMPLATES: dict[str, str] = {
@@ -140,9 +143,19 @@ class ToolExecutor:
 
         normalized_input = self._normalize_inputs(tool_id, tool_input)
         template_name = self._resolve_prompt_template(verb_cfg)
+        ac = normalized_input.get("answer_contract")
+        if not isinstance(ac, dict):
+            ut = str(
+                normalized_input.get("original_request")
+                or normalized_input.get("request")
+                or normalized_input.get("text")
+                or ""
+            )
+            ac = heuristic_answer_contract(ut).model_dump(mode="json")
         if (
             tool_id in _FINDINGS_RENDER_TEMPLATES
             and isinstance(normalized_input.get("findings_bundle"), dict)
+            and answer_contract_expects_findings_rendering(ac)
         ):
             template_name = _FINDINGS_RENDER_TEMPLATES[tool_id]
         prompt = self._render_prompt(template_name, normalized_input)

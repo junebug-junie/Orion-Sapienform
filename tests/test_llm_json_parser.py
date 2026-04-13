@@ -47,3 +47,11 @@ def test_parse_json_object_single_quoted_escaped_blob_from_logs() -> None:
     assert isinstance(parsed, dict)
     assert parsed["action"]["tool_id"] == "analyze_text"
     assert parsed["finish"] is False
+
+
+def test_parse_json_object_invalid_backslash_apostrophe_in_string() -> None:
+    """RFC 8259 has no \\'; models often emit it for possessives inside JSON strings."""
+    text = '{"thought": "Orion' + "\\'" + 's self-improvement", "finish": true, "action": null, "final_answer": {"content": "ok"}}'
+    parsed = parse_json_object(text)
+    assert parsed["thought"] == "Orion's self-improvement"
+    assert parsed["final_answer"]["content"] == "ok"

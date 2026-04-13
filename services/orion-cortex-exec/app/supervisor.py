@@ -28,6 +28,7 @@ from orion.schemas.agents.schemas import (
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionResult, StepExecutionResult
 from orion.cognition.verb_activation import is_active
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
+from orion.cognition.finalize_payload import answer_contract_expects_findings_rendering
 from orion.cognition.quality_evaluator import should_rewrite_for_instructional
 from orion.cognition.findings_bundle_synth import merge_findings_bundle_dicts
 from orion.schemas.agents.bound_capability import (
@@ -1109,9 +1110,9 @@ class Supervisor:
                 },
                 recovery=CapabilityRecoveryDecisionV1(
                     reason=CapabilityRecoveryReasonV1.internal_contract_error,
-                    allow_replan=False,
+                    allow_replan=True,
                     replanned=False,
-                    detail="default_fail_closed",
+                    detail="supervisor_bound_allow_planner_fallback_on_miss",
                 ),
             )
             chain_ctx = {**ctx, "__bound_execution": bound_execution.model_dump(mode="json")}
@@ -1863,10 +1864,12 @@ class Supervisor:
                     **grounding,
                 }
                 mfb = ctx.get("merged_findings_bundle")
-                if isinstance(mfb, dict):
+                ac = ctx.get("answer_contract")
+                if isinstance(mfb, dict) and answer_contract_expects_findings_rendering(
+                    ac if isinstance(ac, dict) else None
+                ):
                     finalize_input_blob["findings_bundle"] = mfb
                     finalize_input_blob["findings_bundle_json"] = json.dumps(mfb, ensure_ascii=False, default=str)[:12000]
-                ac = ctx.get("answer_contract")
                 if isinstance(ac, dict):
                     finalize_input_blob["answer_contract"] = ac
                     finalize_input_blob["preferred_render_style"] = ac.get("preferred_render_style") or "answer"
@@ -1951,6 +1954,7 @@ class Supervisor:
         bound_failure_signal = _extract_bound_failure_signal(step_results)
         preserve_operational_failure_text = bound_failure_signal is not None
         preserve_bound_capability_text = _bound_capability_succeeded(step_results)
+        output_mode_lane = str(ctx.get("output_mode") or "").strip() == "implementation_guide"
         if (
             not verdict["anchored"]
             and not recent_followup_continuity
@@ -1958,10 +1962,11 @@ class Supervisor:
             and not preserve_operational_failure_text
             and not preserve_bound_capability_text
         ):
-            if _looks_like_coaching_growth_prompt(user_text):
+            if _looks_like_coaching_growth_prompt(user_text) or output_mode_lane:
                 logger.info(
-                    "grounding_guardrail_suppressed corr_id=%s reason=coaching_growth_lane ask_head=%r answer_head=%r",
+                    "grounding_guardrail_suppressed corr_id=%s reason=%s ask_head=%r answer_head=%r",
                     correlation_id,
+                    "coaching_growth_lane" if _looks_like_coaching_growth_prompt(user_text) else "implementation_guide_lane",
                     _truncate_text(user_text, 220),
                     _truncate_text(final_text, 220),
                 )

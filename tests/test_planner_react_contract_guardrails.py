@@ -83,7 +83,42 @@ def semantic_toolset_with_answer_direct(semantic_toolset) -> list[ToolDef]:
     ]
 
 
-def test_finish_true_meta_planner_thought_coerces_to_answer_direct(semantic_toolset_with_answer_direct):
+@pytest.fixture()
+def semantic_toolset_with_write_guide_and_answer_direct(semantic_toolset) -> list[ToolDef]:
+    return list(semantic_toolset) + [
+        ToolDef(tool_id="write_guide", description="Structured implementation guide", input_schema={}),
+        ToolDef(tool_id="answer_direct", description="Answer the user directly", input_schema={}),
+    ]
+
+
+def test_finish_true_meta_planner_thought_coerces_to_write_guide_for_implementation_guide(
+    semantic_toolset_with_write_guide_and_answer_direct,
+):
+    step = api._validate_or_normalize_planner_step(
+        {
+            "thought": (
+                "The user is asking how to become a better version of themselves. This is a self-improvement "
+                "question, which requires a guide or tutorial. Since the output mode is implementation_guide, "
+                "I should use write_guide to provide structured steps."
+            ),
+            "finish": True,
+            "action": None,
+            "final_answer": None,
+        },
+        toolset=semantic_toolset_with_write_guide_and_answer_direct,
+        from_salvage=False,
+        planning_goal_text="how do I become a better version of myself?",
+        output_mode="implementation_guide",
+    )
+    assert step["finish"] is False
+    assert step["action"]["tool_id"] == "write_guide"
+    assert "better version" in (step["action"]["input"].get("request") or "").lower()
+    assert "better version" in (step["action"]["input"].get("text") or "").lower()
+
+
+def test_finish_true_meta_planner_thought_falls_back_to_answer_direct_without_write_guide(
+    semantic_toolset_with_answer_direct,
+):
     step = api._validate_or_normalize_planner_step(
         {
             "thought": (
@@ -98,10 +133,29 @@ def test_finish_true_meta_planner_thought_coerces_to_answer_direct(semantic_tool
         toolset=semantic_toolset_with_answer_direct,
         from_salvage=False,
         planning_goal_text="how do I become a better version of myself?",
+        output_mode="implementation_guide",
     )
     assert step["finish"] is False
     assert step["action"]["tool_id"] == "answer_direct"
     assert "better version" in step["action"]["input"]["text"].lower()
+
+
+def test_finish_false_missing_action_salvages_to_answer_direct_when_offered(semantic_toolset_with_answer_direct):
+    step = api._validate_or_normalize_planner_step(
+        {
+            "thought": "I will answer next.",
+            "finish": False,
+            "action": None,
+            "final_answer": None,
+        },
+        toolset=semantic_toolset_with_answer_direct,
+        from_salvage=False,
+        planning_goal_text="how do I eat a sandwich in space?",
+        output_mode="implementation_guide",
+    )
+    assert step["finish"] is False
+    assert step["action"]["tool_id"] == "answer_direct"
+    assert "sandwich" in step["action"]["input"]["text"].lower()
 
 
 def test_clean_parse_accepts_valid_tool(semantic_toolset):
@@ -275,3 +329,17 @@ def test_dry_run_non_regression_valid_semantic_tool(monkeypatch, semantic_toolse
     assert response.stop_reason == "delegate"
     assert response.trace and response.trace[0].action
     assert response.trace[0].action["tool_id"] == "housekeep_runtime"
+
+
+def test_parse_planner_raw_decode_after_invalid_apostrophe_escape_and_trailing_text():
+    raw = (
+        '{"thought": "Orion'
+        + "\\'"
+        + 's improvement", "finish": true, "action": null, "final_answer": {"content": "## Guide\\nok"}}'
+        "\n\n(Additional analysis omitted.)"
+    )
+    parsed, meta = api._parse_planner_response_text(raw)
+    assert meta["parse_mode"] in ("raw_decode_leading_object", "normalized_from_jsonish")
+    assert parsed["thought"] == "Orion's improvement"
+    assert parsed["finish"] is True
+    assert parsed["final_answer"]["content"] == "## Guide\nok"

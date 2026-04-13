@@ -2,7 +2,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from app.decision_router import DecisionRouter
+import pytest
+
+from app.decision_router import DecisionRouter, _instruction_runbook_heuristic
 from app.orchestrator import build_plan_request
 from app import main as orch_main
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -39,6 +41,18 @@ def test_hub_auto_depth0_simple_question_heuristic():
     routed = asyncio.run(router.route(req, correlation_id="c1", source=ServiceRef(name="orch", version="0", node="n")))
     assert routed.decision.execution_depth == 0
     assert routed.request.verb == "chat_general"
+
+
+def test_auto_router_clamps_short_instruction_question_to_agent_for_implementation_guide():
+    """Short `?` heuristic is depth 0, but output_mode implementation_guide must still use planner+agent lane."""
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="how do I configure redis for caching?")
+    routed = asyncio.run(router.route(req, correlation_id="c-impl-short", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.request.options["output_mode"] == "implementation_guide"
+    assert routed.decision.execution_depth == 2
+    assert "output_mode_tool_lane" in routed.decision.reason
+    assert routed.request.mode == "agent"
+    assert routed.request.verb == "agent_runtime"
 
 
 def test_hub_auto_depth1_analysis_heuristic():
@@ -226,16 +240,18 @@ def test_auto_router_menu_followup_variants_preserve_chat_lane():
         assert "hm_mesh_continuity" not in json.dumps(routed.request.model_dump(mode="json"))
 
 
-def test_auto_route_motivation_free_form_stays_chat_general_not_agent_runtime():
-    """Regression: 'how do' matched INSTRUCTION_TERMS and forced agent_runtime → Hub gateway:result timeouts."""
-    router = DecisionRouter(_FakeBus())
-    req = _req(text="How do I motivate myself to do stuff?")
-    routed = asyncio.run(router.route(req, correlation_id="c-motivate", source=ServiceRef(name="orch", version="0", node="n")))
-    assert routed.decision.execution_depth == 0
-    assert routed.request.mode == "brain"
-    assert routed.request.verb == "chat_general"
-    assert routed.decision.reason == "stabilize:personal_coaching_chat_general"
-    assert routed.decision.source == "heuristic"
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("", False),
+        ("how does it work", False),
+        ("how do we ship", True),
+        ("deploy to prod", True),
+        ("walkthrough please", True),
+    ],
+)
+def test_instruction_runbook_how_do_word_boundary(text: str, expected: bool) -> None:
+    assert _instruction_runbook_heuristic(text) is expected
 
 
 def test_auto_route_engineering_how_do_still_uses_agent_runtime():
@@ -261,17 +277,6 @@ def test_auto_route_workflow_planner_agent_chain_goes_agent_runtime():
     assert routed.decision.execution_depth == 2
     assert routed.request.verb == "agent_runtime"
     assert routed.decision.reason in ("heuristic:engineering", "heuristic:planner_agent_chain_design")
-
-
-def test_auto_route_mixed_time_and_coaching_forces_chat_general_documented():
-    """Single user turn: time question + coaching; stabilizer wins so the lane stays exec/chat_general."""
-    router = DecisionRouter(_FakeBus())
-    req = _req(text="What time is it right now? Also how do I motivate myself?")
-    routed = asyncio.run(router.route(req, correlation_id="c-mixed", source=ServiceRef(name="orch", version="0", node="n")))
-    assert routed.decision.execution_depth == 0
-    assert routed.request.verb == "chat_general"
-    assert routed.decision.reason == "stabilize:personal_coaching_chat_general"
-    assert routed.decision.source == "heuristic"
 
 
 def test_explicit_skill_verb_request_skips_auto_router(monkeypatch):

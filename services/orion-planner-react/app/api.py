@@ -387,6 +387,25 @@ def _parse_planner_response_text(raw_text: str) -> Tuple[Dict[str, Any], Dict[st
         except Exception:
             continue
 
+    # One top-level object then trailing prose; apply same repairs as parse_json_object (e.g. invalid \').
+    repaired_for_decode = repair_json(raw)
+    start_obj = repaired_for_decode.find("{")
+    if start_obj != -1:
+        try:
+            obj, end = json.JSONDecoder().raw_decode(repaired_for_decode, start_obj)
+            if isinstance(obj, dict) and any(k in obj for k in ("thought", "finish", "action", "final_answer")):
+                return obj, {
+                    "salvage_succeeded": True,
+                    "parse_mode": "raw_decode_leading_object",
+                    "salvage_source": "json_decoder_raw_decode",
+                    "final_answer_salvaged": False,
+                    "action_salvaged": False,
+                    "raw_snippet": _truncate_for_log(raw),
+                    "salvaged_snippet": _truncate_for_log(repaired_for_decode[start_obj:end]),
+                }
+        except Exception:
+            pass
+
     if not needs_salvage_hint:
         try:
             parsed = parse_json_object(raw)
@@ -522,12 +541,48 @@ def _normalize_finished_final_answer(
     return None
 
 
+def _output_mode_coercion_tool(
+    output_mode: Optional[str],
+    goal_txt: str,
+    offered_ids: set[str],
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """
+    When the model sets finish=true with only internal-routing thought, pick a delivery
+    tool from output_mode instead of always defaulting to answer_direct.
+    """
+    om = (output_mode or "").strip().lower()
+    if not goal_txt:
+        return None
+    if om == "implementation_guide" and "write_guide" in offered_ids:
+        return ("write_guide", {"request": goal_txt, "text": goal_txt})
+    if om == "code_delivery" and "generate_code_scaffold" in offered_ids:
+        return ("generate_code_scaffold", {"request": goal_txt, "text": goal_txt})
+    if om == "comparative_analysis" and "compare_options" in offered_ids:
+        return ("compare_options", {"request": goal_txt, "text": goal_txt})
+    if om == "decision_support" and "write_recommendation" in offered_ids:
+        return ("write_recommendation", {"request": goal_txt, "text": goal_txt})
+    if "answer_direct" in offered_ids:
+        return ("answer_direct", {"text": goal_txt})
+    return None
+
+
+def _external_output_mode_from_context(context: Optional[ContextBlock]) -> Optional[str]:
+    if context is None:
+        return None
+    ext = context.external_facts if isinstance(context.external_facts, dict) else {}
+    raw = ext.get("output_mode")
+    if raw is None or raw == "":
+        return None
+    return str(raw).strip()
+
+
 def _validate_or_normalize_planner_step(
     planner_step: Any,
     *,
     toolset: List[ToolDef],
     from_salvage: bool = False,
     planning_goal_text: Optional[str] = None,
+    output_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not isinstance(planner_step, dict):
         raise PlannerSchemaError(f"planner response must be an object, got {type(planner_step).__name__}")
@@ -682,23 +737,23 @@ def _validate_or_normalize_planner_step(
         if final_info is None or not final_info["content"].strip():
             goal_txt = (planning_goal_text or "").strip()
             offered_ids = {t.tool_id for t in toolset}
-            if (
-                goal_txt
-                and "answer_direct" in offered_ids
-                and _thought_reads_as_internal_planner_routing(str(normalized.get("thought") or ""))
-            ):
-                coerced = {
-                    **normalized,
-                    "finish": False,
-                    "final_answer": None,
-                    "action": {"tool_id": "answer_direct", "input": {"text": goal_txt}},
-                }
-                return _validate_or_normalize_planner_step(
-                    coerced,
-                    toolset=toolset,
-                    from_salvage=from_salvage,
-                    planning_goal_text=planning_goal_text,
-                )
+            if goal_txt and _thought_reads_as_internal_planner_routing(str(normalized.get("thought") or "")):
+                coerced_tool = _output_mode_coercion_tool(output_mode, goal_txt, offered_ids)
+                if coerced_tool is not None:
+                    tool_id, tool_input = coerced_tool
+                    coerced = {
+                        **normalized,
+                        "finish": False,
+                        "final_answer": None,
+                        "action": {"tool_id": tool_id, "input": tool_input},
+                    }
+                    return _validate_or_normalize_planner_step(
+                        coerced,
+                        toolset=toolset,
+                        from_salvage=from_salvage,
+                        planning_goal_text=planning_goal_text,
+                        output_mode=output_mode,
+                    )
             raise PlannerSchemaError("finish=true requires a usable final_answer")
         normalized["final_answer"] = final_info["content"]
         normalized["_final_answer_structured"] = final_info["structured"]
@@ -710,6 +765,24 @@ def _validate_or_normalize_planner_step(
         return normalized
 
     if action is None:
+        goal_txt = (planning_goal_text or "").strip()
+        offered_ids = {t.tool_id for t in toolset}
+        salvaged_tool = _output_mode_coercion_tool(output_mode, goal_txt, offered_ids)
+        if salvaged_tool is not None:
+            tool_id, tool_input = salvaged_tool
+            coerced = {
+                **normalized,
+                "finish": False,
+                "final_answer": None,
+                "action": {"tool_id": tool_id, "input": tool_input},
+            }
+            return _validate_or_normalize_planner_step(
+                coerced,
+                toolset=toolset,
+                from_salvage=True,
+                planning_goal_text=planning_goal_text,
+                output_mode=output_mode,
+            )
         raise PlannerSchemaError("finish=false requires an action")
 
     normalized["_final_answer_structured"] = {}
@@ -877,6 +950,13 @@ NEXT STEP (JSON ONLY):
 
     planner_model = os.environ.get("PLANNER_MODEL") or "llama-3-8b-instruct-q4_k_m"
 
+    planner_opts: Dict[str, Any] = {
+        "temperature": 0.1,
+        "max_tokens": int(settings.planner_max_completion_tokens),
+        "return_json": True,
+    }
+    if options_override:
+        planner_opts = {**planner_opts, **options_override}
     payload = {
         "model": planner_model,
         "messages": [
@@ -884,7 +964,7 @@ NEXT STEP (JSON ONLY):
             {"role": "user", "content": user_prompt},
         ],
         "route": "agent",
-        "options": options_override or {"temperature": 0.1, "max_tokens": 256, "return_json": True},
+        "options": planner_opts,
     }
 
     env = BaseEnvelope(
@@ -1021,6 +1101,7 @@ async def _repair_or_fallback_step(
             toolset=toolset,
             from_salvage=True,
             planning_goal_text=goal.description,
+            output_mode=_external_output_mode_from_context(context),
         )
         if repair_meta.get("salvage_succeeded") or normalized_repaired.get("_action_salvaged"):
             logger.info(
@@ -1280,6 +1361,7 @@ async def run_react_loop(payload: PlannerRequest) -> PlannerResponse:
                         toolset=payload.toolset,
                         from_salvage=bool(planner_meta.get("salvage_succeeded")),
                         planning_goal_text=payload.goal.description if payload.goal else None,
+                        output_mode=_external_output_mode_from_context(payload.context),
                     )
                     if planner_meta.get("salvage_succeeded"):
                         logger.info(

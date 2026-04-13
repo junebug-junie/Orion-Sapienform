@@ -54,9 +54,24 @@ ENGINEERING_TERMS = {
 }
 ANALYSIS_TERMS = {"analyze", "analysis", "summarize", "summary", "extract", "classify", "intent"}
 COUNCIL_TERMS = {"argue both sides", "deliberate", "debate", "multi-perspective", "deep deliberation", "council"}
-INSTRUCTION_TERMS = {"how do", "how to", "instructions", "deploy", "guide", "tutorial", "setup", "walkthrough"}
+# "how do" as substring matched inside "how does…" and mis-fired the instruction / agent_runtime lane.
+_INSTRUCTION_RUNBOOK_SUBSTRINGS = frozenset(
+    {"how to", "instructions", "deploy", "guide", "tutorial", "setup", "walkthrough"}
+)
 MENU_HINT_TERMS = {"options", "choose", "proceed", "deep dive", "axes", "first one", "second one", "third one"}
 TOPIC_FILLER_PREFIXES = ("hm ", "hmm ", "uh ", "um ", "okay ", "ok ", "sure ", "let's do ", "lets do ", "deep dive on ")
+# After routing heuristics / LLM, bump to planner+agent when classifier says these modes need verb/tool lanes.
+TOOL_HEAVY_OUTPUT_MODES = frozenset(
+    {
+        "implementation_guide",
+        "code_delivery",
+        "comparative_analysis",
+        "decision_support",
+        "debug_diagnosis",
+        "project_planning",
+    }
+)
+
 ORDINAL_SELECTION_TERMS = {
     "the first one",
     "first one",
@@ -69,37 +84,12 @@ ORDINAL_SELECTION_TERMS = {
     "that third one",
 }
 
-# Substrings that indicate self-coaching / wellness free-form, not operational "how do I …" runbooks.
-# Keeps auto-routed prompts on the stable brain/chat_general + verb-runtime path instead of agent_runtime
-# (planner/agent-chain can stall or exceed Hub waits on gateway:result).
-PERSONAL_COACHING_HINTS = (
-    "motivat",
-    "better version",
-    "myself",
-    "procrastin",
-    "burnout",
-    "feel stuck",
-    " i feel ",
-    "i'm stuck",
-    "im stuck",
-    "anxiety",
-    "depress",
-    "self-care",
-    "self care",
-    "mental health",
-    "can't focus",
-    "cant focus",
-    "lazy",
-    "habit",
-    " self-discipline",
-    " self discipline",
-    "personal discipline",
-)
-
-
-def _looks_like_personal_coaching(text: str) -> bool:
-    t = " " + " ".join(str(text or "").lower().split()) + " "
-    return any(hint in t for hint in PERSONAL_COACHING_HINTS)
+def _instruction_runbook_heuristic(text: str) -> bool:
+    """Likely runbook/setup intent. *how do* uses a word boundary so *how does* is not a substring false positive."""
+    t = str(text or "").lower()
+    if any(term in t for term in _INSTRUCTION_RUNBOOK_SUBSTRINGS):
+        return True
+    return bool(re.search(r"\bhow do\b", t))
 
 
 @dataclass(frozen=True)
@@ -215,7 +205,7 @@ class DecisionRouter:
                 reason="heuristic:planner_agent_chain_design",
                 source="heuristic",
             )
-        if any(term in text for term in INSTRUCTION_TERMS):
+        if _instruction_runbook_heuristic(text):
             return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.84, reason="heuristic:instruction", source="heuristic")
         if any(term in text for term in ANALYSIS_TERMS):
             primary = shortlist[0].name if shortlist else "analyze_text"
@@ -232,7 +222,7 @@ class DecisionRouter:
             raw_user_text=req.context.raw_user_text or req.context.user_message,
             options={
                 "temperature": 0.0,
-                "max_tokens": 220,
+                "max_tokens": 512,
                 "stream": False,
                 "response_format": {"type": "json_object"},
             },
@@ -299,23 +289,24 @@ class DecisionRouter:
                     )
             except Exception:
                 logger.debug("router_answer_contract_acquisition_skip corr=%s", correlation_id)
-        user_text = self._user_text(req)
-        if clamped.execution_depth >= 1 and _looks_like_personal_coaching(user_text):
-            clamped = AutoDepthDecisionV1(
-                execution_depth=0,
-                primary_verb=None,
-                confidence=min(0.9, float(clamped.confidence)),
-                reason="stabilize:personal_coaching_chat_general",
-                source="heuristic",
-            )
         rewritten = req.model_copy(deep=True)
-        rewritten.options["execution_depth"] = clamped.execution_depth
 
         # Output mode classification for delivery-oriented routing
         output_mode_decision = classify_output_mode(self._user_text(req))
         rewritten.options["output_mode"] = output_mode_decision.output_mode
         rewritten.options["response_profile"] = output_mode_decision.response_profile
         rewritten.options["output_mode_decision"] = output_mode_decision.model_dump()
+
+        om = str(output_mode_decision.output_mode or "").strip()
+        if om in TOOL_HEAVY_OUTPUT_MODES and int(clamped.execution_depth) < 2:
+            clamped = clamped.model_copy(
+                update={
+                    "execution_depth": 2,
+                    "reason": f"{clamped.reason}+output_mode_tool_lane",
+                }
+            )
+
+        rewritten.options["execution_depth"] = clamped.execution_depth
 
         if clamped.execution_depth == 1:
             rewritten.mode = "brain"

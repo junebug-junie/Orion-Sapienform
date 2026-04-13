@@ -423,7 +423,8 @@ def test_mixed_text_final_answer_is_salvaged() -> None:
 
 def test_finish_true_with_final_answer_content_and_no_action_normalizes_cleanly() -> None:
     normalized = api._validate_or_normalize_planner_step(
-        {"thought": "done", "finish": True, "action": None, "final_answer": {"content": "Ship it"}}
+        {"thought": "done", "finish": True, "action": None, "final_answer": {"content": "Ship it"}},
+        toolset=[],
     )
 
     assert normalized["finish"] is True
@@ -432,8 +433,13 @@ def test_finish_true_with_final_answer_content_and_no_action_normalizes_cleanly(
 
 
 def test_finish_false_without_action_fails_cleanly() -> None:
+    """No salvage when the toolset cannot satisfy any coercion (no answer_direct / delivery tools)."""
     with pytest.raises(api.PlannerSchemaError, match="finish=false requires an action"):
-        api._validate_or_normalize_planner_step({"thought": "need tool", "finish": False, "action": None, "final_answer": None})
+        api._validate_or_normalize_planner_step(
+            {"thought": "need tool", "finish": False, "action": None, "final_answer": None},
+            toolset=[],
+            planning_goal_text="do something",
+        )
 
 
 def test_unrecoverable_garbage_still_falls_back() -> None:

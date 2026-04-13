@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
+    # Planner LLM completion budget (JSON + thought); avoid truncating mid-object
+    planner_max_completion_tokens: int = Field(2048, alias="PLANNER_MAX_COMPLETION_TOKENS")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

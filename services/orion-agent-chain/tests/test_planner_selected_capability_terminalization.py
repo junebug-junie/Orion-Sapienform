@@ -52,6 +52,23 @@ async def _planner_returns_housekeep(_payload, *, parent_correlation_id=None, rp
     }
 
 
+async def _planner_returns_finalize(_payload, *, parent_correlation_id=None, rpc_bus=None):
+    return {
+        "status": "ok",
+        "trace": [
+            {
+                "step_index": 0,
+                "thought": "finalize after miss",
+                "action": {
+                    "tool_id": "finalize_response",
+                    "input": {"text": "dry-run cleanup of stopped containers"},
+                },
+                "observation": None,
+            }
+        ],
+    }
+
+
 def _tools():
     return [
         ToolDef(
@@ -80,17 +97,42 @@ def test_planner_selected_capability_routes_to_bound_terminal_success(monkeypatc
     assert out.runtime_debug["bound_capability_terminal_path"] == "bound_direct_success"
 
 
-def test_planner_selected_capability_fail_closed_terminal_reply(monkeypatch):
-    fake_exec = _FakeCapabilityExecutorNoSkill()
+def test_planner_selected_capability_no_skill_replans_then_planner_continues(monkeypatch):
+    calls = {"planner": 0}
+
+    class _NoSkillThenFinalize(_FakeCapabilityExecutorNoSkill):
+        async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
+            self.calls.append((tool_id, tool_input, parent_correlation_id))
+            if tool_id == "housekeep_runtime":
+                return {
+                    "selected_skill": None,
+                    "selected_skill_family": "runtime_housekeeping",
+                    "execution_summary": "No skill",
+                    "capability_decision": {"selected_skill": None},
+                }
+            if tool_id == "finalize_response":
+                return {"llm_output": "Synthesized after capability selector found no skill."}
+            return await super().execute_llm_verb(tool_id, tool_input, parent_correlation_id=parent_correlation_id)
+
+    fake_exec = _NoSkillThenFinalize()
+
+    async def _planner_two_phase(_payload, *, parent_correlation_id=None, rpc_bus=None):
+        calls["planner"] += 1
+        if calls["planner"] == 1:
+            return await _planner_returns_housekeep(_payload, parent_correlation_id=parent_correlation_id, rpc_bus=rpc_bus)
+        return await _planner_returns_finalize(_payload, parent_correlation_id=parent_correlation_id, rpc_bus=rpc_bus)
+
     monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
-    monkeypatch.setattr(agent_api, "call_planner_react", _planner_returns_housekeep)
+    monkeypatch.setattr(agent_api, "call_planner_react", _planner_two_phase)
     monkeypatch.setattr(agent_api, "_resolve_tools", lambda body, output_mode=None: (_tools(), ["executive_pack"]))
 
     req = AgentChainRequest(text="dry-run cleanup of stopped containers", mode="agent", messages=[{"role": "user", "content": "cleanup"}])
     out = asyncio.run(agent_api.execute_agent_chain(req, correlation_id=str(uuid4()), rpc_bus=object()))
 
-    assert out.structured["finalization_reason"] == "bound_capability_fail_closed"
-    assert out.runtime_debug["bound_capability_terminal_path"] == "bound_direct_no_compatible_capability"
+    assert calls["planner"] == 2
+    assert "Synthesized after capability selector" in (out.text or "")
+    assert out.runtime_debug.get("planner_selected_capability_replan") is True
+    assert out.runtime_debug.get("bound_execution_recovery_reason") == "no_compatible_capability"
 
 
 def test_bound_and_planner_selected_paths_have_terminalization_parity(monkeypatch):

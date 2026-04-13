@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     llm_chat_quick_max_tokens: int = Field(384, alias="LLM_CHAT_QUICK_MAX_TOKENS")
     llm_chat_general_max_tokens: int = Field(768, alias="LLM_CHAT_GENERAL_MAX_TOKENS")
     llm_chat_fallback_max_tokens: int = Field(512, alias="LLM_CHAT_FALLBACK_MAX_TOKENS")
+    # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
+    llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
 
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
     diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")

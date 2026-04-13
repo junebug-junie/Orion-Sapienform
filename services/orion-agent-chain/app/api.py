@@ -37,9 +37,15 @@ from orion.cognition.agent_chain_guards import (
     plan_action_saturated,
     triage_must_finalize,
 )
-from orion.cognition.finalize_payload import build_finalize_tool_input
+from orion.cognition.finalize_payload import (
+    answer_contract_expects_findings_rendering,
+    build_finalize_tool_input,
+)
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
-from orion.cognition.answer_contract_normalize import output_modes_for_answer_contract_style
+from orion.cognition.answer_contract_normalize import (
+    heuristic_answer_contract,
+    output_modes_for_answer_contract_style,
+)
 from orion.cognition.findings_bundle_synth import attach_findings_to_debug, synthesize_findings_bundle
 logger = logging.getLogger("agent-chain.api")
 
@@ -95,21 +101,23 @@ async def _maybe_rewrite_meta_plan(
             tools_called=[],
         )
         fb_use = findings_bundle if isinstance(findings_bundle, dict) else fb
+        fin_payload: dict[str, Any] = {
+            "original_request": body.text,
+            "request": f"Rewrite the following as a concrete, architecture-grounded answer. Do not use meta-planning language or silently swap architectures:\n\n{text[:4000]}",
+            "trace": text[:8000],
+            "output_mode": output_mode or "direct_answer",
+            "response_profile": response_profile or "direct_answer",
+            "trace_preferred_output": text[:8000],
+            "answer_contract": ac_dict,
+            "preferred_render_style": str(ac_dict.get("preferred_render_style") or "answer"),
+            **grounding,
+        }
+        if answer_contract_expects_findings_rendering(ac_dict):
+            fin_payload["findings_bundle"] = fb_use
+            fin_payload["findings_bundle_json"] = json.dumps(fb_use, ensure_ascii=False, default=str)[:12000]
         fin_result = await tool_executor.execute_llm_verb(
             "finalize_response",
-            {
-                "original_request": body.text,
-                "request": f"Rewrite the following as a concrete, architecture-grounded answer. Do not use meta-planning language or silently swap architectures:\n\n{text[:4000]}",
-                "trace": text[:8000],
-                "output_mode": output_mode or "direct_answer",
-                "response_profile": response_profile or "direct_answer",
-                "trace_preferred_output": text[:8000],
-                "findings_bundle": fb_use,
-                "findings_bundle_json": json.dumps(fb_use, ensure_ascii=False, default=str)[:12000],
-                "answer_contract": ac_dict,
-                "preferred_render_style": str(ac_dict.get("preferred_render_style") or "answer"),
-                **grounding,
-            },
+            fin_payload,
             parent_correlation_id=parent_corr_id,
         )
         return str(fin_result.get("llm_output") or text), True
@@ -220,6 +228,23 @@ def _ground_tool_input(
         if key in finalize_payload and key not in grounded:
             grounded[key] = finalize_payload[key]
     return grounded
+
+
+def _contract_for_findings_gate(body: AgentChainRequest) -> dict[str, Any]:
+    """Prefer bus-threaded contract; fall back to same heuristic as orch when exec omitted it."""
+    ac = body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else {}
+    if ac:
+        return ac
+    return heuristic_answer_contract(str(body.text or "")).model_dump(mode="json")
+
+
+def _strip_findings_from_planner_input_if_unneeded(body: AgentChainRequest, tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Planner JSON may hallucinate findings_bundle; never let it trigger findings-only prompts for coaching."""
+    tid = dict(tool_input or {})
+    if not answer_contract_expects_findings_rendering(_contract_for_findings_gate(body)):
+        tid.pop("findings_bundle", None)
+        tid.pop("findings_bundle_json", None)
+    return tid
 
 
 def _finalize_claim_guard(body: AgentChainRequest, dbg: dict[str, Any], text: str) -> str:
@@ -701,11 +726,23 @@ async def _execute_bound_capability_request(
             failure_reason,
             rejection_reasons,
         )
+        miss_reason = CapabilityRecoveryReasonV1.no_compatible_capability
+        if _replan_allowed_for_bound_recovery(bound_contract, miss_reason):
+            logger.warning(
+                "[agent-chain] bound_capability_recovery_replan=1 reason=%s selected_verb=%s",
+                miss_reason.value,
+                selected_verb,
+            )
+            dbg["bound_execution_replanned"] = True
+            dbg["bound_execution_recovery_reason"] = miss_reason.value
+            bound_contract.recovery.reason = miss_reason
+            bound_contract.recovery.replanned = True
+            return None
         return _bound_terminal_failure(
             body=body,
             dbg=dbg,
             selected_verb=selected_verb,
-            reason=CapabilityRecoveryReasonV1.no_compatible_capability,
+            reason=miss_reason,
             detail="no compatible capability skill was resolved.",
             path="bound_direct_no_compatible_capability",
             failure_category="no_compatible_capability",
@@ -1231,9 +1268,13 @@ async def execute_agent_chain(
             tool_id = resolved_tool_id
             if not tool_id:
                 raise RuntimeError("Planner selected invalid delegate tool and no fallback tool is available")
+            tool_input = _strip_findings_from_planner_input_if_unneeded(
+                body,
+                tool_input if isinstance(tool_input, dict) else {},
+            )
             tool_input = _ground_tool_input(
                 tool_id=str(tool_id),
-                tool_input=tool_input if isinstance(tool_input, dict) else {},
+                tool_input=tool_input,
                 body=body,
                 trace_snapshot=planner_payload.get("trace") or [],
                 output_mode=output_mode,
@@ -1270,9 +1311,9 @@ async def execute_agent_chain(
                     policy_metadata={},
                     recovery=CapabilityRecoveryDecisionV1(
                         reason=CapabilityRecoveryReasonV1.internal_contract_error,
-                        allow_replan=False,
+                        allow_replan=True,
                         replanned=False,
-                        detail="planner_selected_capability_fail_closed",
+                        detail="planner_selected_capability_allow_planner_fallback",
                     ),
                 )
                 logger.info("[agent-chain] planner_selected_capability_bound_entry tool_id=%s", tool_id)
@@ -1288,6 +1329,22 @@ async def execute_agent_chain(
                 if bound_result is not None:
                     logger.info("[agent-chain] planner_selected_capability_terminal_reply_emitted tool_id=%s", tool_id)
                     return bound_result
+                if synthetic_bound.recovery.replanned:
+                    logger.warning(
+                        "[agent-chain] planner_selected_capability_replan_continue tool_id=%s step=%s",
+                        tool_id,
+                        step_idx,
+                    )
+                    dbg["planner_selected_capability_replan"] = True
+                    if trace and isinstance(trace[-1], dict):
+                        cap_obs = trace[-1].setdefault("observation", {})
+                        if isinstance(cap_obs, dict):
+                            cap_obs["capability_replan"] = {
+                                "reason": "no_compatible_capability",
+                                "requested_tool_id": str(tool_id),
+                            }
+                    planner_payload["trace"] = trace
+                    continue
                 logger.error("[agent-chain] planner_selected_capability_fail_closed tool_id=%s", tool_id)
                 return _bound_terminal_failure(
                     body=body,

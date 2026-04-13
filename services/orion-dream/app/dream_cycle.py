@@ -137,7 +137,8 @@ async def _clean_one_chat_fragment(
         "options": {
             "temperature": 0.0,
             "num_ctx": 4096,
-            "num_predict": 1024,
+            # Ollama: -1 = no cap on completion tokens (model/context limits still apply).
+            "num_predict": int(os.environ.get("DREAM_PREPROCESS_NUM_PREDICT", "-1")),
             "stop": ["User:", "Assistant:", "Orion:"],
         },
         "stream": False,
@@ -329,7 +330,7 @@ async def run_dream():
             "presence_penalty": 0.25,
             "frequency_penalty": 0.25,
             "num_ctx": 4096,
-            "num_predict": 400,
+            "num_predict": int(os.environ.get("DREAM_SYNTHESIS_NUM_PREDICT", "-1")),
             "stop": ["User:", "Assistant:", "Orion:", "```", "\"\"\"", "Once upon a time"],
         },
         "format": "json",

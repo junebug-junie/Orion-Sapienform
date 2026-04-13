@@ -207,6 +207,37 @@ def test_bound_capability_fail_closed_when_no_skill(monkeypatch):
     assert "no compatible capability skill" in out.text.lower()
 
 
+def test_bound_capability_no_skill_replans_to_planner_when_allowed(monkeypatch):
+    class _NoSkillExecutor(_FakeToolExecutor):
+        async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):
+            self.calls.append((tool_id, tool_input, parent_correlation_id))
+            return {
+                "selected_verb": tool_id,
+                "selected_skill_family": "runtime_housekeeping",
+                "selected_skill": None,
+                "execution_summary": "No compatible skill available.",
+            }
+
+    fake_exec = _NoSkillExecutor()
+    planner_calls = {"count": 0}
+
+    async def _fake_planner(*_args, **_kwargs):
+        planner_calls["count"] += 1
+        return {"status": "ok", "final_answer": {"content": "fallback after capability miss", "structured": {}}, "trace": []}
+
+    monkeypatch.setattr(agent_api, "call_planner_react", _fake_planner)
+    monkeypatch.setattr(agent_api, "ToolExecutor", lambda *_a, **_k: fake_exec)
+
+    out = asyncio.run(
+        agent_api.execute_agent_chain(_bound_request(allow_replan=True), correlation_id=str(uuid4()), rpc_bus=object())
+    )
+
+    assert planner_calls["count"] == 1
+    assert out.text == "fallback after capability miss"
+    assert out.runtime_debug["bound_execution_replanned"] is True
+    assert out.runtime_debug["bound_execution_recovery_reason"] == "no_compatible_capability"
+
+
 def test_bound_capability_recovery_replan_is_explicit(monkeypatch):
     class _MissingVerbExecutor(_FakeToolExecutor):
         async def execute_llm_verb(self, tool_id, tool_input, *, parent_correlation_id=None):

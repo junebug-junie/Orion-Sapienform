@@ -2,7 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from app.executor import call_step_services
+from app.executor import _resolve_llm_chat_max_tokens, _resolve_llm_max_tokens, call_step_services
 from orion.core.bus.bus_schemas import ChatResponsePayload, ServiceRef
 from orion.schemas.cortex.schemas import ExecutionStep
 
@@ -150,3 +150,44 @@ def test_ctx_override_max_tokens_takes_precedence() -> None:
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.options["max_tokens"] == 222
+
+
+def test_dream_synthesis_uses_dream_max_tokens_budget(monkeypatch) -> None:
+    """dream_cycle + dream_synthesis must not fall through to default chat completion cap."""
+    import app.executor as executor_mod
+
+    class _DreamSettings:
+        llm_dream_max_tokens = 22222
+
+    monkeypatch.setattr(executor_mod, "settings", _DreamSettings())
+    step = ExecutionStep(
+        step_name="dream_synthesis",
+        verb_name="dream_cycle",
+        services=["LLMGatewayService"],
+        order=1,
+        prompt_template="x",
+    )
+    eff_chat, _req, src_chat = _resolve_llm_chat_max_tokens(step, {})
+    assert eff_chat == 22222
+    assert src_chat == "settings.llm_dream_max_tokens"
+
+    eff_max, src_max, _ = _resolve_llm_max_tokens(ctx={}, step=step)
+    assert eff_max == 22222
+    assert src_max == "dream_default"
+
+
+def test_dream_synthesis_ctx_max_tokens_override(monkeypatch) -> None:
+    import app.executor as executor_mod
+
+    monkeypatch.setattr(executor_mod, "settings", type("S", (), {"llm_dream_max_tokens": 99999})())
+    step = ExecutionStep(
+        step_name="dream_synthesis",
+        verb_name="dream_cycle",
+        services=["LLMGatewayService"],
+        order=1,
+        prompt_template="x",
+    )
+    eff, req, src = _resolve_llm_chat_max_tokens(step, {"max_tokens": 50})
+    assert eff == 50
+    assert src == "ctx.max_tokens"
+    assert req == 50

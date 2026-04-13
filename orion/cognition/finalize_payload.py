@@ -8,6 +8,23 @@ from typing import Any
 from .delivery_grounding import build_delivery_grounding_context, extract_trace_preferred_output
 
 
+def answer_contract_expects_findings_rendering(answer_contract: dict[str, Any] | None) -> bool:
+    """
+    Findings-only prompts are for evidence acquisition shapes.
+    Personal / conceptual coaching must not receive an empty synthetic bundle (it steers models to refuse help).
+    """
+    if not isinstance(answer_contract, dict):
+        return False
+    kind = answer_contract.get("request_kind")
+    if kind == "personal":
+        return False
+    if kind in ("repo_technical", "runtime_debug", "mixed"):
+        return True
+    return bool(
+        answer_contract.get("requires_repo_grounding") or answer_contract.get("requires_runtime_grounding")
+    )
+
+
 def build_finalize_tool_input(
     *,
     user_text: str,
@@ -31,7 +48,7 @@ def build_finalize_tool_input(
         "finalization_source_trace_used": trace_used,
         **grounding,
     }
-    if isinstance(findings_bundle, dict):
+    if isinstance(findings_bundle, dict) and answer_contract_expects_findings_rendering(answer_contract):
         out["findings_bundle"] = findings_bundle
         out["findings_bundle_json"] = json.dumps(findings_bundle, ensure_ascii=False, default=str)[:12000]
     if isinstance(answer_contract, dict):

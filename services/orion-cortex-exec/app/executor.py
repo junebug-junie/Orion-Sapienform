@@ -226,6 +226,9 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if requested is not None and requested > 0:
         return requested, requested, "ctx.max_tokens"
 
+    if step.verb_name == "dream_cycle" and step.step_name == "dream_synthesis":
+        return int(settings.llm_dream_max_tokens), requested, "settings.llm_dream_max_tokens"
+
     if step.verb_name == "chat_quick":
         return int(settings.llm_chat_quick_max_tokens), requested, "settings.llm_chat_quick_max_tokens"
 
@@ -852,6 +855,9 @@ def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tupl
 
     if requested is not None:
         return requested, "ctx_override", requested
+
+    if step.verb_name == "dream_cycle" and step.step_name == "dream_synthesis":
+        return max(1, int(settings.llm_dream_max_tokens)), "dream_default", requested
 
     if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
         return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested

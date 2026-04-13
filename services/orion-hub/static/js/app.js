@@ -144,6 +144,21 @@ loadDismissedIds();
   const autonomyDebugModalClose = document.getElementById('autonomyDebugModalClose');
   const autonomyDebugModalMeta = document.getElementById('autonomyDebugModalMeta');
   const autonomyDebugModalBody = document.getElementById('autonomyDebugModalBody');
+  const chatStanceDebugPanel = document.getElementById('chatStanceDebugPanel');
+  const chatStanceDebugToggle = document.getElementById('chatStanceDebugToggle');
+  const chatStanceDebugCaret = document.getElementById('chatStanceDebugCaret');
+  const chatStanceDebugBody = document.getElementById('chatStanceDebugBody');
+  const chatStanceDebugMeta = document.getElementById('chatStanceDebugMeta');
+  const chatStanceDebugOverview = document.getElementById('chatStanceDebugOverview');
+  const chatStanceDebugLineage = document.getElementById('chatStanceDebugLineage');
+  const chatStanceDebugRaw = document.getElementById('chatStanceDebugRaw');
+  const chatStanceDebugOpenModal = document.getElementById('chatStanceDebugOpenModal');
+  const chatStanceDebugModalRoot = document.getElementById('chatStanceDebugModalRoot');
+  const chatStanceDebugModalBackdrop = document.getElementById('chatStanceDebugModalBackdrop');
+  const chatStanceDebugModalDialog = document.getElementById('chatStanceDebugModalDialog');
+  const chatStanceDebugModalClose = document.getElementById('chatStanceDebugModalClose');
+  const chatStanceDebugModalMeta = document.getElementById('chatStanceDebugModalMeta');
+  const chatStanceDebugModalBody = document.getElementById('chatStanceDebugModalBody');
   const substrateReviewDebugPanel = document.getElementById('substrateReviewDebugPanel');
   const substrateReviewDebugToggle = document.getElementById('substrateReviewDebugToggle');
   const substrateReviewDebugCaret = document.getElementById('substrateReviewDebugCaret');
@@ -245,6 +260,7 @@ loadDismissedIds();
   let lastMemoryDebugModel = null;
   let lastAgentTraceSummary = null;
   let lastAgentTraceMeta = {};
+  let lastChatStanceDebug = null;
   let lastSubstrateReviewStatus = null;
   let lastSubstrateReviewAction = null;
 
@@ -1894,6 +1910,7 @@ loadDismissedIds();
     if (!document.body) return;
     const shouldLock = isModalVisible(memoryDebugModalRoot)
       || isModalVisible(autonomyDebugModalRoot)
+      || isModalVisible(chatStanceDebugModalRoot)
       || isModalVisible(substrateReviewModalRoot)
       || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
@@ -2245,6 +2262,132 @@ loadDismissedIds();
     autonomyDebugModalRoot.classList.add('hidden');
     autonomyDebugModalRoot.setAttribute('aria-hidden', 'true');
     if (document.body) document.body.classList.remove('overflow-hidden');
+    syncDebugModalScrollLock();
+  }
+
+  function clearChatStanceDebugPanel() {
+    lastChatStanceDebug = null;
+    if (chatStanceDebugBody) chatStanceDebugBody.classList.add('hidden');
+    if (chatStanceDebugCaret) chatStanceDebugCaret.textContent = '▾';
+    if (chatStanceDebugMeta) chatStanceDebugMeta.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugOverview) chatStanceDebugOverview.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugLineage) chatStanceDebugLineage.textContent = '--';
+    if (chatStanceDebugRaw) chatStanceDebugRaw.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugModalMeta) chatStanceDebugModalMeta.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugModalBody) chatStanceDebugModalBody.textContent = 'No chat stance debug payload on this turn.';
+  }
+
+  function buildChatStanceSection(title, value) {
+    const section = document.createElement('section');
+    section.className = 'rounded-xl border border-gray-700 bg-gray-900/50 p-3 space-y-2';
+    const heading = document.createElement('div');
+    heading.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    heading.textContent = title;
+    section.appendChild(heading);
+    const pre = document.createElement('pre');
+    pre.className = 'whitespace-pre-wrap break-words text-[11px] text-gray-200';
+    pre.textContent = JSON.stringify(value || {}, null, 2);
+    section.appendChild(pre);
+    return section;
+  }
+
+  function updateChatStanceDebugPanel(payload) {
+    if (!chatStanceDebugPanel) return;
+    const model = payload && typeof payload === 'object' ? payload : null;
+    if (!model) {
+      clearChatStanceDebugPanel();
+      return;
+    }
+    lastChatStanceDebug = model;
+    const overview = model.overview && typeof model.overview === 'object' ? model.overview : {};
+    const lineage = Array.isArray(model.lineage_summary) ? model.lineage_summary : [];
+    if (chatStanceDebugMeta) {
+      chatStanceDebugMeta.textContent = `categories ${Array.isArray(overview.categories_present) ? overview.categories_present.length : 0} · fallback ${overview.fallback_invoked ? 'yes' : 'no'} · quality modified ${overview.quality_enforcement_modified ? 'yes' : 'no'}`;
+    }
+    if (chatStanceDebugOverview) {
+      chatStanceDebugOverview.innerHTML = '';
+      [
+        `categories present: ${(overview.categories_present || []).join(', ') || '--'}`,
+        `fallback invoked: ${overview.fallback_invoked ? 'yes' : 'no'}`,
+        `normalized applied: ${overview.normalized_applied ? 'yes' : 'no'}`,
+        `quality enforcement modified: ${overview.quality_enforcement_modified ? 'yes' : 'no'}`,
+        `semantic fallback: ${overview.semantic_fallback ? 'yes' : 'no'}`,
+      ].forEach((line) => {
+        const row = document.createElement('div');
+        row.textContent = line;
+        chatStanceDebugOverview.appendChild(row);
+      });
+    }
+    if (chatStanceDebugLineage) {
+      chatStanceDebugLineage.innerHTML = '';
+      if (!lineage.length) {
+        chatStanceDebugLineage.textContent = '--';
+      } else {
+        lineage.forEach((line) => {
+          const row = document.createElement('div');
+          row.textContent = String(line || '--');
+          chatStanceDebugLineage.appendChild(row);
+        });
+      }
+    }
+    if (chatStanceDebugRaw) chatStanceDebugRaw.textContent = JSON.stringify(model, null, 2);
+    if (chatStanceDebugModalMeta) chatStanceDebugModalMeta.textContent = chatStanceDebugMeta ? chatStanceDebugMeta.textContent : '--';
+    if (chatStanceDebugModalBody) {
+      chatStanceDebugModalBody.innerHTML = '';
+      if (!model || Object.keys(model).length === 0) {
+        chatStanceDebugModalBody.textContent = 'No chat stance debug payload on this turn.';
+      } else {
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Overview', model.overview || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Source Inputs by Category', model.source_inputs || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Synthesized Brief', model.synthesized_brief || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Enforcement / Fallback', model.enforcement || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Final Prompt Contract', model.final_prompt_contract || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Raw compact JSON', model.raw || model));
+      }
+    }
+  }
+
+  function toggleChatStanceDebugPanel() {
+    if (!chatStanceDebugBody) return;
+    const nextHidden = !chatStanceDebugBody.classList.contains('hidden');
+    chatStanceDebugBody.classList.toggle('hidden', nextHidden);
+    if (chatStanceDebugCaret) chatStanceDebugCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function ensureChatStanceModalRootOnBody() {
+    if (!chatStanceDebugModalRoot || !document.body) return;
+    if (chatStanceDebugModalRoot.parentElement !== document.body) {
+      document.body.appendChild(chatStanceDebugModalRoot);
+    }
+  }
+
+  function openChatStanceDebugModal() {
+    if (!chatStanceDebugModalRoot) return;
+    closeAutonomyDebugModal();
+    closeMemoryDebugModal();
+    ensureChatStanceModalRootOnBody();
+    chatStanceDebugModalRoot.style.position = 'fixed';
+    chatStanceDebugModalRoot.style.inset = '0';
+    chatStanceDebugModalRoot.style.zIndex = '2147483646';
+    if (chatStanceDebugModalBackdrop) {
+      chatStanceDebugModalBackdrop.style.position = 'fixed';
+      chatStanceDebugModalBackdrop.style.inset = '0';
+      chatStanceDebugModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (chatStanceDebugModalDialog) {
+      chatStanceDebugModalDialog.style.position = 'fixed';
+      chatStanceDebugModalDialog.style.zIndex = '2147483647';
+    }
+    updateChatStanceDebugPanel(lastChatStanceDebug);
+    chatStanceDebugModalRoot.classList.remove('hidden');
+    chatStanceDebugModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeChatStanceDebugModal() {
+    if (!chatStanceDebugModalRoot) return;
+    chatStanceDebugModalRoot.classList.add('hidden');
+    chatStanceDebugModalRoot.setAttribute('aria-hidden', 'true');
     syncDebugModalScrollLock();
   }
 
@@ -4363,6 +4506,7 @@ loadDismissedIds();
       const autonomyMeta = { ...meta, replyText: displayText };
       updateAgentTraceDebugPanel(meta.agentTrace, meta);
       updateAutonomyDebugPanel(meta.autonomySummary || meta.autonomy_summary, meta.autonomyDebug || meta.autonomy_debug, autonomyMeta);
+      updateChatStanceDebugPanel(meta.chatStanceDebug || meta.chat_stance_debug);
       const actionRow = document.createElement('div');
       actionRow.className = 'flex items-center gap-2';
       if (agentTraceApi.shouldShowAgentTrace && agentTraceApi.shouldShowAgentTrace(meta.agentTrace)) {
@@ -5383,6 +5527,7 @@ loadDismissedIds();
       clearMemoryDebugPanel();
       clearAgentTraceDebugPanel();
       clearAutonomyDebugPanel();
+      clearChatStanceDebugPanel();
       clearSubstrateReviewDebugPanel();
     });
   }
@@ -5625,6 +5770,31 @@ loadDismissedIds();
   if (autonomyDebugModalDialog) {
     autonomyDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  if (chatStanceDebugToggle) {
+    chatStanceDebugToggle.addEventListener('click', toggleChatStanceDebugPanel);
+  }
+  ensureChatStanceModalRootOnBody();
+  if (chatStanceDebugOpenModal) {
+    chatStanceDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openChatStanceDebugModal();
+    });
+  }
+  if (chatStanceDebugModalClose) {
+    chatStanceDebugModalClose.addEventListener('click', closeChatStanceDebugModal);
+  }
+  if (chatStanceDebugModalBackdrop) {
+    chatStanceDebugModalBackdrop.addEventListener('click', closeChatStanceDebugModal);
+  }
+  if (chatStanceDebugModalRoot) {
+    chatStanceDebugModalRoot.addEventListener('click', (event) => {
+      if (event.target === chatStanceDebugModalRoot) closeChatStanceDebugModal();
+    });
+  }
+  if (chatStanceDebugModalDialog) {
+    chatStanceDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
   if (substrateReviewDebugToggle) {
     substrateReviewDebugToggle.addEventListener('click', toggleSubstrateReviewDebugPanel);
   }
@@ -5801,6 +5971,10 @@ loadDismissedIds();
       closeAutonomyDebugModal();
       return;
     }
+    if (event.key === 'Escape' && chatStanceDebugModalRoot && !chatStanceDebugModalRoot.classList.contains('hidden')) {
+      closeChatStanceDebugModal();
+      return;
+    }
     if (event.key === 'Escape' && substrateReviewModalRoot && !substrateReviewModalRoot.classList.contains('hidden')) {
       closeSubstrateReviewModal();
       return;
@@ -5819,6 +5993,7 @@ loadDismissedIds();
   }
   normalizeRecallProfileDisplay();
   clearMemoryDebugPanel();
+  clearChatStanceDebugPanel();
   clearSubstrateReviewDebugPanel();
   refreshSubstrateReviewStatus().catch((err) => {
     if (substrateReviewDebugMeta) substrateReviewDebugMeta.textContent = `Substrate review status unavailable: ${String(err.message || err)}`;
@@ -5864,6 +6039,7 @@ loadDismissedIds();
               autonomyBackend: d.autonomy_backend,
               autonomySelectedSubject: d.autonomy_selected_subject,
               autonomyRepositoryStatus: d.autonomy_repository_status,
+              chatStanceDebug: d.chat_stance_debug,
             });
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
@@ -5959,6 +6135,7 @@ loadDismissedIds();
                 autonomyBackend: d.autonomy_backend,
                 autonomySelectedSubject: d.autonomy_selected_subject,
                 autonomyRepositoryStatus: d.autonomy_repository_status,
+                chatStanceDebug: d.chat_stance_debug,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
             } else if(d.error) appendMessage('System', d.error, 'text-red-400');

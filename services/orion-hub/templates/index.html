@@ -403,6 +403,38 @@
           </div>
         </div>
 
+        <div id="chatStanceDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="chatStanceDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Chat Stance</span>
+              <span id="chatStanceDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="chatStanceDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
+          <div id="chatStanceDebugBody" class="hidden space-y-3 text-xs text-gray-300">
+            <div id="chatStanceDebugMeta" class="text-[10px] text-gray-500">No chat stance debug payload on this turn.</div>
+            <div id="chatStanceDebugOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">No chat stance debug payload on this turn.</div>
+            <div>
+              <div class="text-gray-500 mb-1">Compact lineage summary</div>
+              <div id="chatStanceDebugLineage" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Raw compact JSON</div>
+              <pre id="chatStanceDebugRaw" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
+          </div>
+        </div>
+
         <div id="substrateReviewDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <div class="flex items-center justify-between gap-2">
             <button
@@ -2223,6 +2255,28 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div id="memoryDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="chatStanceDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="chatStanceDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="chatStanceDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Chat stance debug</div>
+          <div id="chatStanceDebugModalMeta" class="mt-1 text-[11px] text-gray-400">Source inputs, synthesized brief, and final stance contract for this turn.</div>
+        </div>
+        <button
+          id="chatStanceDebugModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="chatStanceDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
       </div>
     </div>
   </div>

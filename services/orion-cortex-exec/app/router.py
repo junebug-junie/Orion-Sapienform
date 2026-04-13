@@ -394,12 +394,15 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     inline_think_content = ctx.get("inline_think_content")
     thinking_source = ctx.get("thinking_source")
     final_text_clean = ctx.get("chat_general_final_text_clean")
+    chat_stance_debug = ctx.get("chat_stance_debug") if isinstance(ctx.get("chat_stance_debug"), dict) else None
     if isinstance(inline_think_content, str):
         payload["inline_think_content"] = inline_think_content
     if isinstance(thinking_source, str):
         payload["thinking_source"] = thinking_source
     if isinstance(final_text_clean, str):
         payload["final_text_clean"] = final_text_clean
+    if chat_stance_debug:
+        payload["chat_stance_debug"] = chat_stance_debug
     return payload
 
 

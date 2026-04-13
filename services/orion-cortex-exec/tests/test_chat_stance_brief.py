@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from app.chat_stance import (
+    build_chat_stance_debug_payload,
     build_chat_stance_inputs,
     enforce_chat_stance_quality,
     fallback_chat_stance_brief,
     normalize_chat_stance_brief,
     parse_chat_stance_brief,
+    parse_chat_stance_brief_with_debug,
 )
 from orion.schemas.chat_stance import ChatStanceBrief
 
@@ -248,6 +250,49 @@ def test_semantic_guard_enriches_weak_generic_identity_brief() -> None:
     assert enriched.active_identity_facets
     assert enriched.active_relationship_facets
     assert enriched.conversation_frame == "identity_emergence"
+
+
+def test_parse_chat_stance_brief_with_debug_reports_normalization_flag() -> None:
+    brief, debug = parse_chat_stance_brief_with_debug(
+        '{"conversation_frame":"mixed","user_intent":"help","self_relevance":"x","juniper_relevance":"y","active_identity_facets":["ongoing cognitive presence in a long-running shared project"],"active_growth_axes":[],"active_relationship_facets":[],"social_posture":[],"reflective_themes":[],"active_tensions":[],"dream_motifs":[],"response_priorities":["direct"],"response_hazards":["sludge"],"answer_strategy":"DirectAnswer","stance_summary":"short"}'
+    )
+    assert brief is not None
+    assert debug["normalized_applied"] is True
+
+
+def test_build_chat_stance_debug_payload_includes_grouped_contract_and_lineage() -> None:
+    ctx = {
+        "user_message": "what changed?",
+        "memory_digest": "m1",
+        "orion_identity_summary": ["orion-id"],
+        "juniper_relationship_summary": ["juniper-rel"],
+        "response_policy_summary": ["policy"],
+        "chat_reasoning_summary_used": True,
+        "chat_autonomy_selected_subject": "orion",
+        "chat_autonomy_backend": "graph",
+        "chat_stance_inputs": {
+            "identity": {"orion": ["orion-id"], "juniper": ["juniper-rel"], "response_policy": ["policy"]},
+            "concept_induction": {"self": ["continuity"], "relationship": [], "growth": [], "tension": []},
+            "social": {"social_posture": ["direct"], "relationship_facets": ["shared_build"], "hazards": ["h1"]},
+            "social_bridge": {"posture": ["direct"], "hazards": [], "framing": [], "turn_decision": "reply", "summary": ["s"]},
+            "reflective": {"themes": [], "tensions": [], "dream_motifs": []},
+            "autonomy": {"summary": {"stance_hint": "focus"}, "debug": {"_runtime": {"backend": "graph"}}},
+            "reasoning_summary": {"summary_text": "r", "hazards": ["h"], "tensions": [], "fallback_recommended": False},
+        },
+    }
+    payload = build_chat_stance_debug_payload(
+        ctx=ctx,
+        synthesized_brief={"task_mode": "direct_response"},
+        final_brief={"task_mode": "direct_response"},
+        fallback_invoked=False,
+        normalized_applied=True,
+        semantic_fallback=False,
+        quality_modified=False,
+    )
+    assert payload["source_inputs"]["concept_induction"]["self"] == ["continuity"]
+    assert payload["enforcement"]["normalized_applied"] is True
+    assert payload["final_prompt_contract"]["chat_stance_brief"]["task_mode"] == "direct_response"
+    assert payload["lineage_summary"][0].startswith("concept/self injected")
 
 
 def test_semantic_guard_triage_adds_self_intro_suppression_hazard() -> None:

@@ -15,6 +15,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from app.verb_adapters import RespondToJuniperCollapseMirrorVerb  # noqa: E402
+from app.settings import settings  # noqa: E402
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
 from orion.core.verbs.base import VerbContext  # noqa: E402
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2  # noqa: E402
@@ -80,7 +81,7 @@ def collapse_request() -> PlanExecutionRequest:
                 "session_id": "collapse_mirror",
                 "notify_dedupe_key": f"actions:collapse_reply:{entry.event_id}",
                 "notify_dedupe_window_seconds": 86400,
-                "recall_profile": "reflect.v1",
+                "recall_profile": "collapse_mirror.v1",
             }
         },
     )
@@ -127,6 +128,8 @@ def test_actions_verb_prompt_contains_relevant_memory_marker(monkeypatch, collap
 
     llm_channel, llm_envelope = bus.calls[-1]
     assert "LLMGatewayService" in llm_channel
+    assert llm_envelope.payload.get("route") == "metacog"
+    assert llm_envelope.payload.get("profile") == settings.atlas_metacog_profile_name
     messages = llm_envelope.payload["messages"]
     assert "RELEVANT MEMORY" in messages[1]["content"]
     assert "memory block" in messages[1]["content"]

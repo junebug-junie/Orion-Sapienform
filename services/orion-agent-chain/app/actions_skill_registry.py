@@ -50,6 +50,8 @@ def _family_for_skill(skill_id: str) -> str:
         return "notification"
     if "time_now" in sid:
         return "temporal_context"
+    if "discussion_window" in sid:
+        return "chat_transcript"
     if "docker" in sid or "gpu" in sid or "landing_pad" in sid:
         return "system_inspection"
     if "biometrics" in sid:

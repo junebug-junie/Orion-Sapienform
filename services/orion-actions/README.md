@@ -11,6 +11,8 @@
 - operational notifications (including recurring-schedule attention notifications),
 - bounded operational side effects (daily pulse/metacog, journaling triggers, collapse-response dispatch).
 
+**Recall profile for dispatch:** `ACTIONS_RECALL_PROFILE` (default `collapse_mirror.v1`) is passed into Cortex `recall.profile` and metadata `recall_profile` for collapse-mirror response and journaling paths that use `settings.actions_recall_profile`. See `services/orion-actions/.env_example`.
+
 This service sits between chat/operator intent and execution infrastructure:
 
 - **Hub** collects operator intent (chat or UI) and shows schedule state.

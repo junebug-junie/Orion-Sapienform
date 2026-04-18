@@ -322,6 +322,52 @@ def test_semantic_guard_triage_adds_self_intro_suppression_hazard() -> None:
     assert "triage_operational_blockers_first" in enriched.response_priorities
 
 
+def test_ensure_chat_stance_pipeline_ctx_populates_stance_inputs_for_agent_mode(monkeypatch) -> None:
+    monkeypatch.setenv("AUTONOMY_REPOSITORY_BACKEND", "local")
+    from app.executor import ensure_chat_stance_pipeline_ctx
+
+    ctx: dict = {"mode": "agent", "user_message": "hello", "verb": "chat_general", "correlation_id": "pytest-stance-1"}
+    ensure_chat_stance_pipeline_ctx(ctx)
+    inputs = ctx.get("chat_stance_inputs")
+    assert isinstance(inputs, dict)
+    assert inputs.get("identity", {}).get("orion")
+    assert "autonomy" in inputs
+    first = inputs
+    ensure_chat_stance_pipeline_ctx(ctx)
+    assert ctx.get("chat_stance_inputs") is first
+
+
+def test_parse_chat_stance_brief_coerces_playful_invitation_and_scalar_social_posture() -> None:
+    raw = (
+        '{"conversation_frame":"playful_invitation","task_mode":"playful_exchange","identity_salience":"medium",'
+        '"user_intent":"greet","self_relevance":"x","juniper_relevance":"y",'
+        '"active_identity_facets":[],"active_growth_axes":[],"active_relationship_facets":[],'
+        '"social_posture":"friendly and playful",'
+        '"reflective_themes":[],"active_tensions":[],"dream_motifs":[],'
+        '"response_priorities":["direct"],"response_hazards":["sludge"],'
+        '"answer_strategy":"DirectAnswer","stance_summary":"short"}'
+    )
+    brief, debug = parse_chat_stance_brief_with_debug(raw)
+    assert brief is not None
+    assert debug.get("parse_error") is None
+    assert debug.get("coercion_applied") is True
+    assert brief.conversation_frame == "playful_relational"
+    assert brief.social_posture == ["friendly and playful"]
+
+
+def test_parse_chat_stance_brief_unknown_frame_defaults_to_mixed() -> None:
+    raw = (
+        '{"conversation_frame":"ceremonial_launch","task_mode":"direct_response","identity_salience":"medium",'
+        '"user_intent":"u","self_relevance":"s","juniper_relevance":"j",'
+        '"active_identity_facets":[],"active_growth_axes":[],"active_relationship_facets":[],"social_posture":[],'
+        '"reflective_themes":[],"active_tensions":[],"dream_motifs":[],'
+        '"response_priorities":[],"response_hazards":[],"answer_strategy":"A","stance_summary":"z"}'
+    )
+    brief, debug = parse_chat_stance_brief_with_debug(raw)
+    assert brief is not None
+    assert brief.conversation_frame == "mixed"
+
+
 def test_normalize_chat_stance_brief_deliteralizes_known_phrases() -> None:
     brief = ChatStanceBrief(
         conversation_frame="identity_emergence",

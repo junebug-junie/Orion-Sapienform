@@ -38,6 +38,8 @@ def test_named_workflow_prompt_routes_into_explicit_workflow_request() -> None:
 def test_explicit_workflow_prompts_resolve_for_all_supported_named_workflows() -> None:
     cases = [
         ("Would you please run a journal pass?", "journal_pass"),
+        ("Please journal the last 47 minutes", "journal_discussion_window_pass"),
+        ("Journal our chat discussion for the last day", "journal_discussion_window_pass"),
         ("Run a self review", "self_review"),
         ("Run your dream cycle", "dream_cycle"),
         ("Run through your concept induction graphs", "concept_induction_pass"),

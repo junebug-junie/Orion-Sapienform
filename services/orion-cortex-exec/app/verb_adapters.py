@@ -45,6 +45,7 @@ from .self_study_policy import (
     resolve_self_study_consumer_policy,
 )
 from .settings import settings
+from .workflow_journal_exec import maybe_publish_workflow_journal_write
 
 logger = logging.getLogger("orion.cortex.exec.verb_adapters")
 VERBS_DIR = Path(orion.__file__).resolve().parent / "cognition" / "verbs"
@@ -236,6 +237,15 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
             ctx=ctx_payload,
         )
         result.recall_debug["self_study"] = self_study_payload
+        journal_err = await maybe_publish_workflow_journal_write(
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            payload=payload,
+            result=result,
+        )
+        if journal_err:
+            result = result.model_copy(update={"status": "fail", "error": journal_err})
         return LegacyPlanOutput(result=result), []
 
 
@@ -475,7 +485,7 @@ class RespondToJuniperCollapseMirrorVerb(BaseVerb[PlanExecutionRequest, JuniperC
                 reply_to=recall_reply,
                 payload=RecallQueryV1(
                     fragment=str(metadata.get("recall_fragment") or _collapse_to_fragment(entry)),
-                    profile=str(metadata.get("recall_profile") or "reflect.v1"),
+                    profile=str(metadata.get("recall_profile") or "collapse_mirror.v1"),
                     session_id=str(metadata.get("session_id") or "collapse_mirror"),
                     node_id=settings.node_name,
                     verb="collapse_mirror",
@@ -483,7 +493,12 @@ class RespondToJuniperCollapseMirrorVerb(BaseVerb[PlanExecutionRequest, JuniperC
                 ).model_dump(mode="json"),
             )
             logger.info("collapse_mirror_recall_request corr=%s event_id=%s", correlation_id, entry.event_id)
-            recall_msg = await bus.rpc_request(settings.channel_recall_intake, recall_env, reply_channel=recall_reply, timeout_sec=60.0)
+            recall_msg = await bus.rpc_request(
+                settings.channel_recall_intake,
+                recall_env,
+                reply_channel=recall_reply,
+                timeout_sec=float(settings.recall_rpc_timeout_sec),
+            )
             recall_decoded = bus.codec.decode(recall_msg.get("data"))
             if not recall_decoded.ok or recall_decoded.envelope is None:
                 raise RuntimeError(f"recall_decode_failed:{recall_decoded.error}")
@@ -511,7 +526,8 @@ class RespondToJuniperCollapseMirrorVerb(BaseVerb[PlanExecutionRequest, JuniperC
                         ),
                     ],
                     raw_user_text=entry.summary,
-                    route="chat",
+                    route="metacog",
+                    profile=settings.atlas_metacog_profile_name,
                     options={"max_tokens": 512, "temperature": 0.3},
                     session_id=str(metadata.get("session_id") or "collapse_mirror"),
                     user_id=None,
@@ -1280,6 +1296,63 @@ class TimeNowVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             "local_time": now_local.time().replace(microsecond=0).isoformat(),
         }
         return _skill_result_output(skill_name="skills.system.time_now.v1", result=result), []
+
+
+@verb("skills.chat.discussion_window.v1")
+class ChatDiscussionWindowVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    """Bounded SQL read of chat_history_log for journaling workflows (no session semantics)."""
+
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        from orion.discussion_window.sql_fetch import fetch_discussion_window
+        from orion.schemas.discussion_window import DiscussionWindowRequestV1
+
+        merged = dict(_skill_args(payload))
+        try:
+            req = DiscussionWindowRequestV1.model_validate(merged)
+        except Exception as exc:
+            return (
+                _skill_result_output(
+                    skill_name="skills.chat.discussion_window.v1",
+                    result={"error": "invalid_request", "detail": str(exc)},
+                    ok=False,
+                    status="invalid",
+                    error={"message": str(exc)},
+                ),
+                [],
+            )
+        db_url = (os.environ.get("DATABASE_URL") or "").strip() or str(
+            settings.endogenous_runtime_sql_database_url or ""
+        ).strip()
+        if not db_url:
+            return (
+                _skill_result_output(
+                    skill_name="skills.chat.discussion_window.v1",
+                    result={"error": "missing_database_url"},
+                    ok=False,
+                    status="unavailable",
+                    error={"message": "DATABASE_URL or ENDOGENOUS_RUNTIME_SQL_DATABASE_URL required"},
+                ),
+                [],
+            )
+        try:
+            result_model = await asyncio.to_thread(fetch_discussion_window, db_url, req)
+            result = result_model.model_dump(mode="json")
+        except Exception as exc:
+            logger.exception("skills.chat.discussion_window.v1 failed")
+            return (
+                _skill_result_output(
+                    skill_name="skills.chat.discussion_window.v1",
+                    result={"error": "fetch_failed", "detail": str(exc)},
+                    ok=False,
+                    status="error",
+                    error={"message": str(exc)},
+                ),
+                [],
+            )
+        return _skill_result_output(skill_name="skills.chat.discussion_window.v1", result=result), []
 
 
 @verb("skills.gpu.nvidia_smi_snapshot.v1")

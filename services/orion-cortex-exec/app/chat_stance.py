@@ -231,6 +231,114 @@ def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
     return None
 
 
+_ALLOWED_CONVERSATION_FRAMES = frozenset(
+    {
+        "technical",
+        "planning",
+        "reflective",
+        "playful_relational",
+        "identity_emergence",
+        "mixed",
+    }
+)
+_ALLOWED_TASK_MODES = frozenset(
+    {
+        "direct_response",
+        "triage",
+        "technical_collaboration",
+        "identity_dialogue",
+        "reflective_dialogue",
+        "playful_exchange",
+        "mixed",
+    }
+)
+_ALLOWED_IDENTITY_SALIENCE = frozenset({"low", "medium", "high"})
+
+_CONVERSATION_FRAME_ALIASES: dict[str, str] = {
+    "playful_invitation": "playful_relational",
+    "playfulrelational": "playful_relational",
+    "identity_emergent": "identity_emergence",
+}
+
+_TASK_MODE_ALIASES: dict[str, str] = {
+    "direct": "direct_response",
+    "playful": "playful_exchange",
+    "reflective": "reflective_dialogue",
+}
+
+_STANCE_BRIEF_LIST_KEYS = frozenset(
+    {
+        "active_identity_facets",
+        "active_growth_axes",
+        "active_relationship_facets",
+        "social_posture",
+        "reflective_themes",
+        "active_tensions",
+        "dream_motifs",
+        "response_priorities",
+        "response_hazards",
+    }
+)
+
+
+def _coerce_str_list_field(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = " ".join(value.split()).strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple)):
+        out: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = " ".join(str(item).split()).strip()
+            if text:
+                out.append(text)
+        return out
+    text = " ".join(str(value).split()).strip()
+    return [text] if text else []
+
+
+def _normalize_stance_literal(*, raw: str, allowed: frozenset[str], aliases: dict[str, str], default: str) -> str:
+    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    resolved = aliases.get(key, key)
+    if resolved in allowed:
+        return resolved
+    return default
+
+
+def _coerce_stance_brief_obj(obj: dict[str, Any]) -> dict[str, Any]:
+    """Repair common LLM JSON shape drift before Pydantic validation. Mutates a shallow copy."""
+    out = dict(obj)
+    for field in _STANCE_BRIEF_LIST_KEYS:
+        if field not in out:
+            continue
+        out[field] = _coerce_str_list_field(out.get(field))
+    if "conversation_frame" in out and isinstance(out["conversation_frame"], str):
+        out["conversation_frame"] = _normalize_stance_literal(
+            raw=out["conversation_frame"],
+            allowed=_ALLOWED_CONVERSATION_FRAMES,
+            aliases=_CONVERSATION_FRAME_ALIASES,
+            default="mixed",
+        )
+    if "task_mode" in out and isinstance(out["task_mode"], str):
+        out["task_mode"] = _normalize_stance_literal(
+            raw=out["task_mode"],
+            allowed=_ALLOWED_TASK_MODES,
+            aliases=_TASK_MODE_ALIASES,
+            default="direct_response",
+        )
+    if "identity_salience" in out and isinstance(out["identity_salience"], str):
+        out["identity_salience"] = _normalize_stance_literal(
+            raw=out["identity_salience"],
+            allowed=_ALLOWED_IDENTITY_SALIENCE,
+            aliases={},
+            default="medium",
+        )
+    return out
+
+
 def identity_kernel_with_fallbacks(ctx: Dict[str, Any]) -> dict[str, list[str]]:
     def _list_from_ctx(key: str, fallback: list[str]) -> list[str]:
         value = ctx.get(key)
@@ -728,13 +836,18 @@ def parse_chat_stance_brief(raw_text: str) -> ChatStanceBrief | None:
 
 
 def parse_chat_stance_brief_with_debug(raw_text: str) -> tuple[ChatStanceBrief | None, dict[str, Any]]:
-    info: dict[str, Any] = {"normalized_applied": False}
+    info: dict[str, Any] = {"normalized_applied": False, "coercion_applied": False}
     obj = _extract_json_object(raw_text)
     if not obj:
         info["parse_error"] = "missing_json_object"
         return None, info
+    coerced = _coerce_stance_brief_obj(obj)
     try:
-        parsed = ChatStanceBrief.model_validate(obj)
+        info["coercion_applied"] = json.dumps(obj, sort_keys=True) != json.dumps(coerced, sort_keys=True)
+    except Exception:
+        info["coercion_applied"] = coerced != obj
+    try:
+        parsed = ChatStanceBrief.model_validate(coerced)
         normalized = normalize_chat_stance_brief(parsed)
         parsed_json = parsed.model_dump(mode="json")
         normalized_json = normalized.model_dump(mode="json")

@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
         chassis_cfg(),
         request_channel=settings.RECALL_BUS_INTAKE,
         handler=None,  # set below once rabbit exists
+        concurrent_handlers=settings.RECALL_RABBIT_CONCURRENT_HANDLERS,
     )
 
     # avoid referencing 'rabbit' before assignment inside a lambda

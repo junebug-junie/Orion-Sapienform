@@ -1265,6 +1265,7 @@ async def process_recall(
         ranking_debug=ranking_debug if diagnostic else [],
         recall_debug=(
             {
+                "latency_breakdown_ms": timing_breakdown_ms,
                 "profile_selected": str(profile.get("profile") or q.profile),
                 "profile_requested": q.profile,
                 "query_expansion_enabled": enable_qe,
@@ -1280,11 +1281,10 @@ async def process_recall(
                     "self_hit_suppressed": suppressed,
                 },
                 "fusion": bundle.stats.diagnostic or {},
-                "latency_breakdown_ms": timing_breakdown_ms,
                 "selected_summary": _bounded_selected_summary(list(bundle.items)),
             }
             if diagnostic
-            else {}
+            else {"latency_breakdown_ms": timing_breakdown_ms}
         ),
     )
     if diagnostic:
@@ -1356,7 +1356,34 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
             payload={"error": "validation_failed", "details": ve.errors()},
         )
 
-    bundle, decision = await process_recall(q, corr_id=str(env.correlation_id), diagnostic=diagnostic)
+    corr = str(env.correlation_id)
+    logger.info(
+        "recall_bus_request_begin corr_id=%s verb=%s profile=%s session_id=%s node_id=%s",
+        corr,
+        q.verb,
+        q.profile,
+        q.session_id,
+        q.node_id,
+    )
+    wall_t0 = time.perf_counter()
+    bundle, decision = await process_recall(q, corr_id=corr, diagnostic=diagnostic)
+    wall_ms = int((time.perf_counter() - wall_t0) * 1000)
+    logger.info(
+        "recall_bus_request_complete corr_id=%s wall_ms=%s process_latency_ms=%s profile=%s verb=%s backend_counts=%s",
+        corr,
+        wall_ms,
+        decision.latency_ms,
+        decision.profile,
+        decision.verb,
+        decision.backend_counts,
+    )
+    if wall_ms >= 30000:
+        logger.warning(
+            "recall_bus_request_slow corr_id=%s wall_ms=%s latency_breakdown_ms=%s",
+            corr,
+            wall_ms,
+            (decision.recall_debug or {}).get("latency_breakdown_ms"),
+        )
 
     # emit telemetry (fire and forget)
     try:

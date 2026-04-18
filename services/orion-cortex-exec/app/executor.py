@@ -236,6 +236,11 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens"
 
+    # journal.compose returns strict JSON; recall-heavy prompts need a general-lane budget or the
+    # model hits max_tokens mid-object (finish_reason=length) and structured output is rejected.
+    if step.verb_name == "journal.compose" and step.step_name == "draft_journal_entry":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_journal_compose"
+
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 
@@ -1488,6 +1493,9 @@ async def call_step_services(
     if _should_prepare_brain_reply_context(step=step, ctx=ctx):
         prepare_brain_reply_context(ctx)
 
+    if str(step.verb_name or "") == "chat_general" and str(step.step_name or "") == "synthesize_chat_stance_brief":
+        ensure_chat_stance_pipeline_ctx(ctx)
+
     # Skill YAMLs may list services: [] while the work is implemented as local verb_adapters.
     # Without this branch the service loop runs zero times and final_text assembly sees no candidates.
     if not step.services and str(step.verb_name or "").startswith("skills."):
@@ -1626,6 +1634,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route="metacog",
@@ -1813,6 +1822,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text="metacog_enrich",
                     route="metacog",
@@ -2494,6 +2504,10 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=(
+                        ctx.get("profile_name")
+                        or (settings.atlas_metacog_profile_name if llm_route == "metacog" else None)
+                    ),
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,
@@ -2826,6 +2840,19 @@ async def call_step_services(
         node=settings.node_name,
         logs=logs,
     )
+
+
+def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
+    """Populate identity kernel and chat_stance_inputs for chat_general stance synthesis in any exec mode.
+
+    Brain-lane uses prepare_brain_reply_context first; this path covers agent (and other) modes where
+    stance debug and the stance LLM prompt must still see the same bounded inputs.
+    """
+    existing = ctx.get("chat_stance_inputs")
+    if isinstance(existing, dict) and "identity" in existing and "autonomy" in existing:
+        return
+    _inject_identity_context(ctx)
+    build_chat_stance_inputs(ctx)
 
 
 def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:

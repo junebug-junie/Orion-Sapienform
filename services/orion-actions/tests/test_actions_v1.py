@@ -70,7 +70,7 @@ def test_actions_emits_cortex_orch_request_not_notify():
         recipient_group="juniper_primary",
         dedupe_key="evt-1",
         dedupe_window_seconds=86400,
-        recall_profile="reflect.v1",
+        recall_profile="collapse_mirror.v1",
     )
 
     asyncio.run(dispatch_cortex_request(bus=bus, channel="orion:cortex:request", envelope=env))

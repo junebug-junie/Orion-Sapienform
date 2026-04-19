@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 from dataclasses import dataclass
@@ -83,24 +84,56 @@ async def _run_with_items(monkeypatch, *, user_text: str, items: list[_FakeItem]
     return ctx
 
 
-def test_identity_query_selects_expected_entry(monkeypatch) -> None:
+def test_service_backed_path_is_primary(monkeypatch) -> None:
     items = [
         _FakeItem(id="i1", source_ref="entry-identity", snippet="Identity continuity reflection.", tags=["theme:identity"]),
         _FakeItem(id="i2", source_ref="entry-other", snippet="Unrelated operational note."),
     ]
+
+    async def _native_must_not_run(**kwargs):
+        raise AssertionError("native selector should not run when service succeeds")
+
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "get_journal_corpus_status",
+        lambda self: {"build_success": True, "corpus_exists": True},
+    )
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "query_journal_pageindex",
+        lambda self, query, allow_fallback=False, top_k=8: {
+            "query_invoked": True,
+            "query_result_count": 1,
+            "fallback_invoked": False,
+            "results": [
+                {
+                    "entry_id": "entry-service",
+                    "node_id": "entry-service::node::1",
+                    "heading": "Service heading",
+                    "excerpt": "Service excerpt about reflective continuity.",
+                    "created_at": "2026-03-10T12:00:00Z",
+                    "source_kind": "journal.entry.index",
+                    "provenance": {"reflective_themes": ["continuity"]},
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(executor, "_journal_pageindex_select_with_llm", _native_must_not_run)
     ctx = asyncio.run(
         _run_with_items(
             monkeypatch,
             user_text="Can you reflect on my identity continuity?",
             items=items,
-            selection={"selected_entry_ids": ["entry-identity"], "selected_block_ids": [], "reasons": {"entry-identity": "identity match"}},
+            selection={},
         )
     )
-    selected = (ctx.get("journal_pageindex_context") or {}).get("selected_entries") or []
-    assert selected and selected[0]["entry_id"] == "entry-identity"
+    pageindex = ctx.get("journal_pageindex_context") or {}
+    assert [item["entry_id"] for item in pageindex.get("selected_entries") or []] == ["entry-service"]
+    assert [item["block_id"] for item in pageindex.get("selected_blocks") or []] == ["entry-service::node::1"]
+    assert pageindex.get("fallback_invoked") is False
 
 
-def test_tension_query_selects_entry_and_block(monkeypatch) -> None:
+def test_service_unavailable_falls_back_to_native(monkeypatch) -> None:
     items = [
         _FakeItem(
             id="i1",
@@ -109,6 +142,11 @@ def test_tension_query_selects_entry_and_block(monkeypatch) -> None:
             tags=["tension:speed_vs_depth"],
         )
     ]
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "get_journal_corpus_status",
+        lambda self: (_ for _ in ()).throw(RuntimeError("service unavailable")),
+    )
     ctx = asyncio.run(
         _run_with_items(
             monkeypatch,
@@ -124,13 +162,23 @@ def test_tension_query_selects_entry_and_block(monkeypatch) -> None:
     pageindex = ctx.get("journal_pageindex_context") or {}
     assert [item["entry_id"] for item in pageindex.get("selected_entries") or []] == ["entry-tension"]
     assert [item["block_id"] for item in pageindex.get("selected_blocks") or []] == ["entry-tension::block::1"]
+    assert pageindex.get("fallback_invoked") is True
 
 
-def test_dream_query_selects_dream_entry_and_block(monkeypatch) -> None:
+def test_service_error_falls_back_to_native(monkeypatch) -> None:
     items = [
-        _FakeItem(id="i1", source_ref="entry-dream", snippet="Dream motif of bridges returning.", tags=["dream:bridge"]),
-        _FakeItem(id="i2", source_ref="entry-other", snippet="No dream content."),
+        _FakeItem(id="i1", source_ref="entry-dream", snippet="Dream motif of bridges returning.", tags=["dream:bridge"])
     ]
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "get_journal_corpus_status",
+        lambda self: {"build_success": True, "corpus_exists": True},
+    )
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "query_journal_pageindex",
+        lambda self, query, allow_fallback=False, top_k=8: (_ for _ in ()).throw(RuntimeError("query failed")),
+    )
     ctx = asyncio.run(
         _run_with_items(
             monkeypatch,
@@ -142,27 +190,67 @@ def test_dream_query_selects_dream_entry_and_block(monkeypatch) -> None:
     pageindex = ctx.get("journal_pageindex_context") or {}
     assert [item["entry_id"] for item in pageindex.get("selected_entries") or []] == ["entry-dream"]
     assert [item["block_id"] for item in pageindex.get("selected_blocks") or []] == ["entry-dream::block::1"]
+    assert pageindex.get("fallback_invoked") is True
 
 
-def test_collapse_response_query_selects_collapse_entry(monkeypatch) -> None:
+def test_service_shape_stays_chat_stance_compatible(monkeypatch) -> None:
     items = [
-        _FakeItem(id="i1", source_ref="entry-collapse", snippet="Collapse response journal from storage event."),
-        _FakeItem(id="i2", source_ref="entry-other", snippet="General note."),
+        _FakeItem(id="i1", source_ref="entry-collapse", snippet="Collapse response journal from storage event.")
     ]
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "get_journal_corpus_status",
+        lambda self: {"build_success": True, "corpus_exists": True},
+    )
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "query_journal_pageindex",
+        lambda self, query, allow_fallback=False, top_k=8: {
+            "query_invoked": True,
+            "query_result_count": 1,
+            "fallback_invoked": False,
+            "results": [
+                {
+                    "entry_id": "entry-service",
+                    "node_id": "entry-service::node::1",
+                    "heading": "Service heading",
+                    "excerpt": "Service excerpt about reflective continuity.",
+                    "created_at": "2026-03-10T12:00:00Z",
+                    "source_kind": "journal.entry.index",
+                    "provenance": {"reflective_themes": ["continuity"]},
+                }
+            ],
+        },
+    )
     ctx = asyncio.run(
         _run_with_items(
             monkeypatch,
             user_text="Find my collapse response reflection.",
             items=items,
-            selection={"selected_entry_ids": ["entry-collapse"], "selected_block_ids": [], "reasons": {}},
+            selection={},
         )
     )
-    selected = (ctx.get("journal_pageindex_context") or {}).get("selected_entries") or []
-    assert selected and selected[0]["entry_id"] == "entry-collapse"
+    pageindex = ctx.get("journal_pageindex_context") or {}
+    selected = pageindex.get("selected_entries") or []
+    assert selected and selected[0]["entry_id"] == "entry-service"
+    assert "body_excerpt" in selected[0]
+    selected_blocks = pageindex.get("selected_blocks") or []
+    assert selected_blocks and selected_blocks[0]["excerpt"] == "Service excerpt about reflective continuity."
 
 
-def test_weak_hit_falls_back_safely(monkeypatch) -> None:
+def test_logs_report_impl_and_service_status(monkeypatch, caplog) -> None:
     items = [_FakeItem(id="i1", source_ref="entry-fallback", snippet="Thin signal.")]
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "get_journal_corpus_status",
+        lambda self: {"build_success": True, "corpus_exists": True},
+    )
+    monkeypatch.setattr(
+        executor.JournalPageIndexClient,
+        "query_journal_pageindex",
+        lambda self, query, allow_fallback=False, top_k=8: (_ for _ in ()).throw(RuntimeError("query failed")),
+    )
+    caplog.set_level(logging.INFO, logger="orion.cortex.exec")
     ctx = asyncio.run(
         _run_with_items(
             monkeypatch,
@@ -173,5 +261,5 @@ def test_weak_hit_falls_back_safely(monkeypatch) -> None:
     )
     pageindex = ctx.get("journal_pageindex_context") or {}
     assert pageindex.get("fallback_invoked") is True
-    selected_entries = pageindex.get("selected_entries") or []
-    assert selected_entries and selected_entries[0]["entry_id"] == "entry-fallback"
+    assert any("journal_pageindex_impl=legacy_fallback" in rec.message for rec in caplog.records)
+    assert any("pageindex_service_status=error" in rec.message for rec in caplog.records)

@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI, HTTPException
+
+from .models import BuildResponse, QueryRequest, QueryResponse, StatusResponse
+from .pageindex_cli import PageIndexCliError
+from .service import JournalPageIndexService
+from .settings import settings
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(settings.SERVICE_NAME)
+
+app = FastAPI(title="Orion PageIndex", version=settings.SERVICE_VERSION)
+svc = JournalPageIndexService()
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    return svc.health()
+
+
+@app.post("/corpora/journals/rebuild", response_model=BuildResponse)
+def rebuild_journals() -> BuildResponse:
+    out = svc.rebuild_journals()
+    logger.info(
+        "pageindex_impl=%s pageindex_installation_mode=%s journal_corpus_row_count=%s markdown_export_path=%s pageindex_tree_artifact_path=%s last_build_started_at=%s last_build_completed_at=%s build_success=%s",
+        out.pageindex_impl,
+        out.pageindex_installation_mode,
+        out.journal_corpus_row_count,
+        out.markdown_export_path,
+        out.pageindex_tree_artifact_path,
+        out.last_build_started_at,
+        out.last_build_completed_at,
+        out.build_success,
+    )
+    return out
+
+
+@app.get("/corpora/journals/status", response_model=StatusResponse)
+def journals_status() -> StatusResponse:
+    return svc.status()
+
+
+@app.post("/corpora/journals/query", response_model=QueryResponse)
+def journals_query(body: QueryRequest) -> QueryResponse:
+    try:
+        out = svc.query_journals(query=body.query, allow_fallback=body.allow_fallback, top_k=body.top_k)
+        logger.info(
+            "query_invoked=true query_result_count=%s fallback_invoked=%s",
+            out.query_result_count,
+            out.fallback_invoked,
+        )
+        return out
+    except PageIndexCliError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -24,6 +24,8 @@ from . metacognition_enriched import MetacognitionEnrichedSQL
 from .metacog_trigger import MetacogTriggerSQL
 from .metacognitive_trace import MetacognitiveTraceSQL
 from .journal_entry import JournalEntrySQL
+from .journal_entry_index import JournalEntryIndexSQL
+from .evidence_unit import EvidenceUnitSQL
 from .social_room_turn import SocialRoomTurnSQL
 from .external_room_message import ExternalRoomMessageSQL
 from .external_room_participant import ExternalRoomParticipantSQL
@@ -53,6 +55,8 @@ __all__ = [
     "MetacogTriggerSQL",
     "MetacognitiveTraceSQL",
     "JournalEntrySQL",
+    "JournalEntryIndexSQL",
+    "EvidenceUnitSQL",
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",
     "ExternalRoomParticipantSQL",

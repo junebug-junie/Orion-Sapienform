@@ -580,6 +580,28 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
                 if item.get("dream_motif"):
                     dream_motifs.append(str(item.get("dream_motif")))
 
+    pageindex_ctx = ctx.get("journal_pageindex_context")
+    if isinstance(pageindex_ctx, dict):
+        selected_entries = pageindex_ctx.get("selected_entries")
+        if isinstance(selected_entries, list):
+            for entry in selected_entries[:6]:
+                if not isinstance(entry, dict):
+                    continue
+                themes.extend(str(v) for v in (entry.get("reflective_themes") or []) if str(v).strip())
+                tensions.extend(str(v) for v in (entry.get("active_tensions") or []) if str(v).strip())
+                dream_motifs.extend(str(v) for v in (entry.get("dream_motifs") or []) if str(v).strip())
+                excerpt = _compact(entry.get("body_excerpt"), limit=180)
+                if excerpt:
+                    themes.append(excerpt)
+        selected_blocks = pageindex_ctx.get("selected_blocks")
+        if isinstance(selected_blocks, list):
+            for block in selected_blocks[:8]:
+                if not isinstance(block, dict):
+                    continue
+                excerpt = _compact(block.get("excerpt") or block.get("text"), limit=180)
+                if excerpt:
+                    themes.append(excerpt)
+
     return {
         "themes": _unique(themes, limit=6),
         "tensions": _unique(tensions, limit=6),

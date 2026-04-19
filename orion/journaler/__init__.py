@@ -1,4 +1,5 @@
-from .schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalTriggerV1
+from .indexing import build_journal_entry_index_payload
+from .schemas import JournalEntryDraftV1, JournalEntryIndexV1, JournalEntryWriteV1, JournalTriggerV1
 from .worker import (
     JOURNAL_COMPOSE_VERB,
     JOURNAL_CREATED_KIND,
@@ -20,6 +21,7 @@ from .worker import (
 __all__ = [
     "JournalTriggerV1",
     "JournalEntryDraftV1",
+    "JournalEntryIndexV1",
     "JournalEntryWriteV1",
     "JOURNAL_COMPOSE_VERB",
     "JOURNAL_CREATED_KIND",
@@ -36,4 +38,5 @@ __all__ = [
     "cooldown_key_for_trigger",
     "draft_from_cortex_result",
     "journal_mode_for_trigger",
+    "build_journal_entry_index_payload",
 ]

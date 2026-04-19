@@ -44,11 +44,22 @@ from app.models import (
     EndogenousRuntimeRecordSQL,
     EndogenousRuntimeAuditSQL,
     CalibrationProfileAuditSQL,
+    JournalEntryIndexSQL,
+    EvidenceUnitSQL,
 )
+from orion.evidence_index import build_evidence_units
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.journaler import JOURNAL_CREATED_KIND, JOURNAL_WRITE_KIND, JournalEntryWriteV1, build_created_event_payload
+from orion.journaler import (
+    JOURNAL_CREATED_KIND,
+    JOURNAL_WRITE_KIND,
+    JournalEntryWriteV1,
+    JournalTriggerV1,
+    build_created_event_payload,
+    build_journal_entry_index_payload,
+)
+from orion.schemas.chat_stance import ChatStanceBrief
 
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
@@ -72,6 +83,7 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionRecordV1, EndogenousRuntimeAuditV1
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
+from orion.schemas.evidence_index import EvidenceUnitV1
 
 from app.spark_contract_metrics import SparkContractMetrics, LEGACY_KINDS
 
@@ -150,6 +162,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "EndogenousRuntimeRecordSQL": (EndogenousRuntimeRecordSQL, EndogenousRuntimeExecutionRecordV1),
     "EndogenousRuntimeAuditSQL": (EndogenousRuntimeAuditSQL, EndogenousRuntimeAuditV1),
     "CalibrationProfileAuditSQL": (CalibrationProfileAuditSQL, CalibrationProfileAuditV1),
+    "EvidenceUnitSQL": (EvidenceUnitSQL, EvidenceUnitV1),
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
 }
 
@@ -257,6 +270,36 @@ def _payload_for_schema_validation(payload: Any, schema_cls: Type[BaseModel] | N
         )
         return nested_payload, "envelope_payload"
     return payload, "payload"
+
+
+def _extract_journal_index_context(payload: Any) -> tuple[JournalTriggerV1 | None, ChatStanceBrief | None, dict[str, Any] | None]:
+    if not isinstance(payload, dict):
+        return None, None, None
+
+    container = payload
+    if _looks_like_nested_envelope(payload):
+        container = payload
+
+    raw_trigger = container.get("journal_trigger") or container.get("trigger")
+    raw_stance = container.get("chat_stance_brief") or container.get("stance")
+    raw_stance_meta = container.get("stance_metadata")
+
+    trigger = None
+    if isinstance(raw_trigger, dict):
+        try:
+            trigger = JournalTriggerV1.model_validate(raw_trigger)
+        except Exception:
+            logger.warning("Invalid journal trigger metadata for index payload; continuing without trigger.")
+
+    stance = None
+    if isinstance(raw_stance, dict):
+        try:
+            stance = ChatStanceBrief.model_validate(raw_stance)
+        except Exception:
+            logger.warning("Invalid chat stance metadata for index payload; continuing without stance.")
+
+    stance_meta = raw_stance_meta if isinstance(raw_stance_meta, dict) else None
+    return trigger, stance, stance_meta
 
 
 def _json_sanitize(obj: Any, *, _seen: Optional[set[int]] = None, _depth: int = 0, _max_depth: int = 20) -> Any:
@@ -979,6 +1022,34 @@ async def _write(
 
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     route_key = settings.route_map.get(env.kind)
+
+    async def _persist_evidence_units() -> bool:
+        try:
+            evidence_units = build_evidence_units(
+                env.kind,
+                env.payload,
+                correlation_id=extra_sql_fields.get("correlation_id"),
+            )
+            if not evidence_units:
+                return False
+            for unit in evidence_units:
+                evidence_row = unit.model_dump(mode="json")
+                evidence_row["metadata_json"] = evidence_row.pop("metadata", {})
+                await _write(
+                    EvidenceUnitSQL,
+                    None,
+                    evidence_row,
+                    {},
+                    kind="evidence.unit.v1",
+                )
+            return True
+        except Exception:
+            logger.exception(
+                "Failed to persist evidence units for kind=%s corr=%s",
+                env.kind,
+                getattr(env, "correlation_id", None),
+            )
+            return False
     if env.kind == "metacognitive.trace.v1":
         logger.info(
             "sql_writer_metacog_consumed kind=%s corr=%s route=%s",
@@ -1204,6 +1275,26 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                 write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
+            if env.kind == JOURNAL_WRITE_KIND and write_ok:
+                try:
+                    journal_input, _ = _payload_for_schema_validation(env.payload, JournalEntryWriteV1, kind=env.kind)
+                    journal_payload = JournalEntryWriteV1.model_validate(journal_input)
+                    trigger, chat_stance, stance_meta = _extract_journal_index_context(env.payload)
+                    index_payload = build_journal_entry_index_payload(
+                        journal_payload,
+                        trigger=trigger,
+                        chat_stance=chat_stance,
+                        stance_metadata=stance_meta,
+                    )
+                    await _write(JournalEntryIndexSQL, None, index_payload, {}, kind="journal.entry.index.v1")
+                except Exception:
+                    logger.exception(
+                        "Failed to persist journal_entry_index row; preserving append-only write. corr=%s",
+                        getattr(env, "correlation_id", None),
+                    )
+            if write_ok:
+                await _persist_evidence_units()
+
             # Post-commit safety: emit only after _write() has returned success.
             if env.kind == JOURNAL_WRITE_KIND and write_ok and bus is not None and settings.sql_writer_emit_journal_created:
                 try:
@@ -1263,6 +1354,9 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")
             await asyncio.to_thread(_write_fallback, env.kind, extra_sql_fields.get("correlation_id", ""), env.payload, str(e))
     else:
+        if await _persist_evidence_units():
+            logger.info("Written %s -> evidence_units (adapter-only path)", env.kind)
+            return
         logger.warning(f"Unknown kind {env.kind} (Route: {route_key}), writing to fallback log.")
         await asyncio.to_thread(_write_fallback, env.kind, extra_sql_fields.get("correlation_id", ""), env.payload, "Unknown kind")
 

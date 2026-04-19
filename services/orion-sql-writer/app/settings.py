@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Dict
 import json
 
 from pydantic import Field
@@ -10,7 +9,7 @@ import logging
 
 logger = logging.getLogger("sql-writer.settings")
 
-DEFAULT_ROUTE_MAP: Dict[str, str] = {
+DEFAULT_ROUTE_MAP: dict[str, str] = {
     "collapse.mirror": "CollapseMirror",
     "collapse.mirror.entry.v2": "CollapseMirror",
     "collapse.enrichment": "CollapseEnrichment",
@@ -38,6 +37,8 @@ DEFAULT_ROUTE_MAP: Dict[str, str] = {
     "notify.recipient.update.v1": "RecipientProfileDB",
     "notify.preference.update.v1": "NotificationPreferenceDB",
     "journal.entry.write.v1": "JournalEntrySQL",
+    "journal.entry.index.v1": "JournalEntryIndexSQL",
+    "evidence.unit.v1": "EvidenceUnitSQL",
     "social.turn.v1": "SocialRoomTurnSQL",
     "external.room.message.v1": "ExternalRoomMessageSQL",
     "external.room.post.result.v1": "ExternalRoomMessageSQL",
@@ -71,7 +72,7 @@ class Settings(BaseSettings):
 
     # Routing
     # Comma-separated or JSON list of channels to subscribe to
-    sql_writer_subscribe_channels: List[str] = Field(
+    sql_writer_subscribe_channels: list[str] = Field(
         default=[
             "orion:tags:enriched",
             "orion:collapse:sql-write",
@@ -99,6 +100,10 @@ class Settings(BaseSettings):
             "orion:notify:persistence:request",
             "orion:notify:persistence:receipt",
             "orion:journal:write",
+            "orion:journal:index",
+            "orion:evidence:index:upsert",
+            "orion:evidence:markdown:ingest",
+            "orion:evidence:parsed:ingest",
             "orion:endogenous:runtime:record",
             "orion:endogenous:runtime:audit",
             "orion:calibration:profile:audit",
@@ -127,7 +132,7 @@ class Settings(BaseSettings):
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
 
     @property
-    def route_map(self) -> Dict[str, str]:
+    def route_map(self) -> dict[str, str]:
         try:
             overrides = json.loads(self.sql_writer_route_map_json)
         except Exception:
@@ -135,7 +140,7 @@ class Settings(BaseSettings):
         return {**DEFAULT_ROUTE_MAP, **overrides}
 
     @property
-    def effective_subscribe_channels(self) -> List[str]:
+    def effective_subscribe_channels(self) -> list[str]:
         """Back-compat alias.
 
         Some refactor branches referenced `effective_subscribe_channels`.

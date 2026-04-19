@@ -7,6 +7,7 @@ from orion.evidence_index.adapters.collapse_mirror import CollapseMirrorEvidence
 from orion.evidence_index.adapters.journal import JournalEvidenceAdapter
 from orion.evidence_index.adapters.markdown_spec import MarkdownSpecEvidenceAdapter
 from orion.evidence_index.adapters.notify_output import NotifyOutputEvidenceAdapter
+from orion.evidence_index.adapters.parsed_document import ParsedDocumentEvidenceAdapter
 from orion.schemas.evidence_index import EvidenceUnitV1
 
 _ADAPTERS_BY_KIND: dict[str, EvidenceAdapter] = {
@@ -14,6 +15,7 @@ _ADAPTERS_BY_KIND: dict[str, EvidenceAdapter] = {
     "collapse.mirror": CollapseMirrorEvidenceAdapter(),
     "collapse.mirror.entry.v2": CollapseMirrorEvidenceAdapter(),
     "document.markdown.spec.v1": MarkdownSpecEvidenceAdapter(),
+    "document.parsed.v1": ParsedDocumentEvidenceAdapter(),
     "notify.notification.request.v1": NotifyOutputEvidenceAdapter(),
     "notify.notification.receipt.v1": NotifyOutputEvidenceAdapter(),
 }

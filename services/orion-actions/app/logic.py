@@ -208,7 +208,7 @@ def build_journal_cortex_orch_envelope(
     trigger: JournalTriggerV1,
     session_id: str,
     user_id: str | None = None,
-    recall_profile: str | None = "reflect.v1",
+    recall_profile: str | None = "collapse_mirror.v1",
     options: Dict[str, Any] | None = None,
 ) -> BaseEnvelope:
     req = build_compose_request(

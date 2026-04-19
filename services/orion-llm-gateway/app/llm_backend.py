@@ -111,7 +111,7 @@ def _load_route_targets() -> Dict[str, RouteTarget]:
 
     served_by_defaults = {
         "chat": settings.llm_route_chat_served_by or "atlas-worker-1",
-        "metacog": settings.llm_route_metacog_served_by or "athena-worker-1",
+        "metacog": settings.llm_route_metacog_served_by or settings.atlas_metacog_service_name or "atlas-worker-2",
         "latents": settings.llm_route_latents_served_by or "atlas-worker-2",
         "specialist": settings.llm_route_specialist_served_by or "atlas-worker-3",
     }
@@ -1017,10 +1017,18 @@ def _execute_openai_chat(
 # ─────────────────────────────────────────────
 
 def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
-    profile = _select_profile(body.profile_name)
+    route, route_target, has_route_table, route_source = _resolve_route(body)
+    effective_profile_name = body.profile_name
+    if (
+        route == "metacog"
+        and not effective_profile_name
+        and settings.atlas_metacog_profile_name
+    ):
+        # Keep metacog lane deterministic even when callers omit profile.
+        effective_profile_name = settings.atlas_metacog_profile_name
+    profile = _select_profile(effective_profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
-    route, route_target, has_route_table, route_source = _resolve_route(body)
 
     if has_route_table and not route_target:
         logger.error("[LLM-GW] Route '%s' not configured in route table", route)

@@ -5,7 +5,7 @@
 Orion already has three different layers with different responsibilities:
 
 1. **Cognitive primitives / verbs** such as `dream_cycle`, `journal.compose`, `self_concept_reflect`, and `concept_induction`.
-2. **Chat-invoked cognitive workflows** such as `dream_cycle`, `journal_pass`, `self_review`, and `concept_induction_pass`.
+2. **Chat-invoked cognitive workflows** such as `dream_cycle`, `journal_pass`, `journal_discussion_window_pass`, `self_review`, and `concept_induction_pass`.
 3. **Operational capabilities / Actions skills** such as notification, scheduling, runtime inspection, or other bounded side effects.
 
 The workflow lane keeps **workflow identity on the cognition side**. A workflow can reuse an actions-side capability as a helper, but the named workflow itself is not modeled as an `orion-actions` skill. This preserves the distinction between “run a bounded reflective routine” and “perform an operational side effect.”
@@ -46,6 +46,13 @@ Phase 1 is deterministic and registry-driven:
 - Reuses `orion.journaler.worker.build_manual_trigger` and `build_compose_request`.
 - Reuses `journal.compose` for prose generation.
 - Persists only through the existing append-only `journal.entry.write.v1` boundary on `orion:journal:write`.
+
+### `journal_discussion_window_pass`
+- Parses an explicit relative window (minutes / hours / day(s)) from the user text, or defaults to 24 hours when the user asks to journal **our chat / discussion** without a narrower window (see `orion.discussion_window.timeframe.parse_journal_discussion_lookback_seconds`).
+- Invokes the bounded read-only skill `skills.chat.discussion_window.v1` (Cortex Exec) to load a **contiguous, time-bounded** slice of rows from SQL `chat_history_log` (`created_at` boundary by default). Optional `user_id` / `source` SQL filters are **not** taken from Hub chat routing metadata (those labels often differ from `chat_history_log` columns); set `context.metadata.discussion_window_user_id` and/or `discussion_window_source` when you need explicit scoping. This path does **not** use `session_id` semantics or semantic recall.
+- Builds a manual journal trigger via `build_discussion_window_journal_trigger` (transcript in `prompt_seed`, `source_ref` encoding window bounds and turn count).
+- Reuses `journal.compose` and persists only through `journal.entry.write.v1` on `orion:journal:write`, same as `journal_pass`.
+- Registry aliases cover phrases such as “journal the last hour”, “journal our chat discussion for the last day”, and “do a journal discussion pass”; additional minute/hour/day phrasing is matched when the same journal-command intent is detected (see `resolve_user_workflow_invocation` in `orion/cognition/workflows/registry.py`).
 
 ### `self_review`
 - Reuses `self_concept_reflect` and existing self-study reflection writebacks.

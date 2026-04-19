@@ -191,3 +191,24 @@ def test_dream_synthesis_ctx_max_tokens_override(monkeypatch) -> None:
     assert eff == 50
     assert src == "ctx.max_tokens"
     assert req == 50
+
+
+def test_journal_compose_draft_uses_general_lane_max_tokens(monkeypatch) -> None:
+    import app.executor as executor_mod
+
+    monkeypatch.setattr(
+        executor_mod,
+        "settings",
+        type("S", (), {"llm_chat_general_max_tokens": 2048, "llm_chat_max_tokens_default": 512})(),
+    )
+    step = ExecutionStep(
+        step_name="draft_journal_entry",
+        verb_name="journal.compose",
+        services=["LLMGatewayService"],
+        order=0,
+        prompt_template="x",
+    )
+    eff, req, src = _resolve_llm_chat_max_tokens(step, {})
+    assert eff == 2048
+    assert src == "settings.llm_chat_general_max_tokens_journal_compose"
+    assert req is None

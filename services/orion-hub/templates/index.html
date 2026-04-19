@@ -247,6 +247,18 @@
               <optgroup label="Notify">
                 <option value='Send a notification to operators saying "test alert from Orion".'>19 · Send a notification to operators…</option>
               </optgroup>
+              <optgroup label="Chat history (SQL)">
+                <option
+                  value="Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 3600 and max_turns 30 (optional filters: current user_id and hub source)."
+                >
+                  20 · Discussion window · last hour (SQL)
+                </option>
+                <option
+                  value="Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 86400 and max_turns 30 (optional filters: current user_id and hub source)."
+                >
+                  21 · Discussion window · last day (SQL)
+                </option>
+              </optgroup>
             </select>
           </div>
           <button

@@ -74,3 +74,48 @@ class MarkdownSpecIngestV1(BaseModel):
     source_kind: str = "markdown_spec"
     correlation_id: str | None = None
     created_at: datetime
+
+
+class ParsedDocumentBlockV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    block_id: str
+    block_type: str
+    title: str | None = None
+    summary: str | None = None
+    body: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    facets: list[str] = Field(default_factory=list)
+    source_provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class ParsedDocumentSectionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: str
+    title: str
+    summary: str | None = None
+    body: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    facets: list[str] = Field(default_factory=list)
+    blocks: list[ParsedDocumentBlockV1] = Field(default_factory=list)
+
+
+class ParsedDocumentIngestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    doc_id: str
+    title: str
+    source_ref: str
+    source_kind: str = "parsed_document"
+    correlation_id: str | None = None
+    created_at: datetime
+    summary: str | None = None
+    body: str | None = None
+    facets: list[str] = Field(default_factory=list)
+    source_provenance: dict[str, Any] = Field(default_factory=dict)
+    sections: list[ParsedDocumentSectionV1] = Field(default_factory=list)

@@ -79,3 +79,12 @@ def test_chat_general_profile_is_narrower_than_reflect_profile():
     assert chat["vector_top_k"] < reflect["vector_top_k"]
     assert chat["rdf_top_k"] < reflect["rdf_top_k"]
     assert chat["sql_top_k"] < reflect["sql_top_k"]
+
+
+def test_collapse_mirror_profile_is_lighter_than_reflect():
+    collapse = get_profile("collapse_mirror.v1")
+    reflect = get_profile("reflect.v1")
+    assert collapse["profile"] == "collapse_mirror.v1"
+    assert collapse["enable_query_expansion"] is False
+    assert int(collapse.get("sql_top_k") or 0) < int(reflect.get("sql_top_k") or 0)
+    assert int(collapse.get("sql_since_minutes") or 0) < int(reflect.get("sql_since_minutes") or 0)

@@ -38,6 +38,15 @@ If you have debug enabled (recommended while wiring), you may also have:
 
 > **Note:** `session_id` is accepted in recall requests for backwards compatibility, but recall ignores it for retrieval and ranking.
 
+### Debugging RPC timeouts (cortex-exec ↔ recall)
+
+When cortex-exec logs `RPC timeout waiting on orion:exec:result:RecallService:...`, align timelines using the **same `correlation_id`** as the bus envelope:
+
+- **Recall logs**: `recall_bus_request_begin` and `recall_bus_request_complete` include `corr_id`, `verb`, `profile`, `wall_ms`, and `process_latency_ms`. If `wall_ms` exceeds 30s, `recall_bus_request_slow` logs `latency_breakdown_ms` from `process_recall`.
+- **Telemetry** (`RECALL_BUS_TELEMETRY`): each `recall.decision.v1` payload includes `corr_id`, `latency_ms`, `backend_counts`, and `recall_debug.latency_breakdown_ms` (always populated).
+
+**Head-of-line blocking:** the Rabbit consumer runs **one** handler at a time unless `RECALL_RABBIT_CONCURRENT_HANDLERS=true` (see `.env_example`).
+
 ---
 
 ## 2) Environment Variables (high-signal)
@@ -52,6 +61,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/a
 | `RECALL_BUS_INTAKE` | `orion:exec:request:RecallService` | RPC intake |
 | `RECALL_BUS_REPLY_DEFAULT` | `orion:exec:result:RecallService` | RPC reply prefix |
 | `RECALL_BUS_TELEMETRY` | `orion:recall:telemetry` | recall.decision.v1 |
+| `RECALL_RABBIT_CONCURRENT_HANDLERS` | `false` | When `true`, run multiple RPC handlers concurrently (less head-of-line blocking). |
 
 ### RDF / GraphDB
 

@@ -18,6 +18,16 @@ for candidate in (REPO_ROOT, APP_ROOT):
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
+from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
+from orion.journaler.schemas import JournalTriggerV1
+from orion.journaler.workflow_journal_delegate import workflow_journal_write_delegated_to_exec
+from orion.journaler.worker import (
+    JOURNAL_WRITE_KIND,
+    build_write_payload,
+    coerce_journal_title,
+    draft_from_cortex_result,
+    stable_journal_entry_id_for_workflow_compose,
+)
 
 from app import main as orch_main
 from app.workflow_runtime import execute_chat_workflow
@@ -39,10 +49,66 @@ class DummyBus:
 
 
 class DummyVerbResult:
-    def __init__(self, *, ok: bool = True, payload: dict | None = None, error: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        ok: bool = True,
+        payload: dict | None = None,
+        output: dict | None = None,
+        error: str | None = None,
+    ) -> None:
         self.ok = ok
-        self.output = payload or {'result': {'status': 'success', 'final_text': 'ok', 'steps': [], 'metadata': {}}}
         self.error = error
+        if output is not None:
+            self.output = output
+        else:
+            self.output = payload or {'result': {'status': 'success', 'final_text': 'ok', 'steps': [], 'metadata': {}}}
+
+
+async def _simulate_delegated_journal_write_from_compose_fake(
+    *,
+    bus: DummyBus,
+    kwargs: dict,
+    final_text_json: str,
+) -> None:
+    """When orch skips bus publish, mirror exec-side journal write so tests still see orion:journal:write."""
+    req = kwargs["client_request"]
+    corr = str(kwargs["correlation_id"])
+    source = kwargs.get("source") or ServiceRef(name="cortex-exec")
+    md = req.context.metadata or {}
+    if not workflow_journal_write_delegated_to_exec(md):
+        return
+    raw_trigger = md.get("journal_trigger")
+    if not isinstance(raw_trigger, dict):
+        return
+    trigger = JournalTriggerV1.model_validate(raw_trigger)
+    wf = md.get("workflow_execution") or {}
+    wf_id = str(md.get("workflow_id") or (wf.get("workflow_id") if isinstance(wf, dict) else "") or "").strip()
+    compose_payload = {"final_text": final_text_json, "status": "success", "metadata": {}}
+    draft = draft_from_cortex_result(compose_payload)
+    title = coerce_journal_title(
+        raw_title=draft.title, fallback_summary=trigger.summary, correlation_id=corr
+    )
+    body = str(draft.body or "").strip()
+    if not body:
+        return
+    draft = draft.model_copy(update={"title": title, "body": body}, deep=True)
+    entry_id = stable_journal_entry_id_for_workflow_compose(
+        correlation_id=corr, workflow_id=wf_id, draft=draft, trigger=trigger
+    )
+    author = str(req.context.user_id or "").strip() or "orion"
+    write = build_write_payload(
+        draft, trigger=trigger, correlation_id=corr, author=author, entry_id=entry_id
+    )
+    envelope = BaseEnvelope(
+        kind=JOURNAL_WRITE_KIND,
+        source=source,
+        correlation_id=corr,
+        causality_chain=list(kwargs.get("causality_chain") or []),
+        trace={"trace_id": corr, "workflow_id": wf_id, "workflow_journal": "orch_test_fake_exec"},
+        payload=write.model_dump(mode="json"),
+    )
+    await bus.publish("orion:journal:write", envelope)
 
 
 def _req(workflow_id: str) -> CortexClientRequest:
@@ -232,13 +298,110 @@ def test_dream_cycle_reports_persisted_only_when_confirmed(monkeypatch) -> None:
     assert result.metadata['workflow']['dream_persistence_confirmed'] is True
 
 
+def _req_journal_discussion_window(*, user_text: str) -> CortexClientRequest:
+    req = _req('journal_discussion_window_pass')
+    req.context.raw_user_text = user_text
+    req.context.user_message = user_text
+    return req
+
+
+def test_journal_discussion_window_pass_workflow_reuses_discussion_skill_compose_and_write(monkeypatch) -> None:
+    bus = DummyBus()
+    t0 = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 1, 2, 12, 5, tzinfo=timezone.utc)
+    window = DiscussionWindowResultV1(
+        window_start_utc=t0,
+        window_end_utc=t1,
+        turn_count=1,
+        source='hub_http',
+        user_id='user-1',
+        turns=[
+            DiscussionWindowTurnV1(
+                created_at=t1,
+                source='hub_http',
+                user_id='user-1',
+                correlation_id='c1',
+                prompt='hi',
+                response='hello',
+            )
+        ],
+        transcript_text='U: hi\nA: hello',
+        selection_strategy='time_bound_then_contiguous_suffix',
+    )
+    skill_blob = window.model_dump(mode="json")
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs['client_request']
+        if req.verb == 'skills.chat.discussion_window.v1':
+            assert req.context.metadata.get('skill_args', {}).get('lookback_seconds') == 34 * 60
+            return DummyVerbResult(
+                ok=True,
+                output={
+                    'ok': True,
+                    'status': 'success',
+                    'final_text': '{}',
+                    'metadata': {'skill_result': skill_blob},
+                },
+            )
+        if req.verb == 'journal.compose':
+            ft = '{"mode":"manual","title":null,"body":"Meaningful Body"}'
+            await _simulate_delegated_journal_write_from_compose_fake(
+                bus=bus, kwargs=kwargs, final_text_json=ft
+            )
+            return DummyVerbResult(
+                payload={
+                    'result': {
+                        'status': 'success',
+                        'final_text': ft,
+                        'steps': [],
+                        'metadata': {},
+                        'recall_debug': {},
+                    }
+                }
+            )
+        raise AssertionError(f'unexpected verb {req.verb}')
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name='cortex-orch'),
+            req=_req_journal_discussion_window(user_text='Please journal the last 34 minutes'),
+            correlation_id='00000000-0000-0000-0000-000000000088',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata['workflow']['workflow_id'] == 'journal_discussion_window_pass'
+    assert result.metadata['workflow']['lookback_seconds'] == 34 * 60
+    assert result.metadata['workflow']['discussion_window']['turn_count'] == 1
+    assert 'Entry id:' in (result.metadata['workflow']['main_result'] or '')
+    assert any(channel == 'orion:journal:write' for channel, _ in bus.published)
+
+
 def test_journal_pass_workflow_reuses_journal_compose_and_append_only_write(monkeypatch) -> None:
     bus = DummyBus()
 
     async def _fake_call_verb_runtime(*args, **kwargs):
         req = kwargs['client_request']
         assert req.verb == 'journal.compose'
-        return DummyVerbResult(payload={'result': {'status': 'success', 'final_text': '{"mode":"manual","title":null,"body":"Meaningful Body"}', 'steps': [], 'metadata': {}, 'recall_debug': {}}})
+        ft = '{"mode":"manual","title":null,"body":"Meaningful Body"}'
+        await _simulate_delegated_journal_write_from_compose_fake(
+            bus=bus, kwargs=kwargs, final_text_json=ft
+        )
+        return DummyVerbResult(
+            payload={
+                'result': {
+                    'status': 'success',
+                    'final_text': ft,
+                    'steps': [],
+                    'metadata': {},
+                    'recall_debug': {},
+                }
+            }
+        )
 
     result = asyncio.run(
         execute_chat_workflow(

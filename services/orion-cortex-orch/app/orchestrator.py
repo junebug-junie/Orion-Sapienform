@@ -45,6 +45,7 @@ _DIRECT_VERB_TRIGGERS = {
     "skills.landing_pad.metrics_snapshot.v1",
     "skills.landing_pad.last_events.v1",
     "skills.system.notify_chat_message.v1",
+    "skills.chat.discussion_window.v1",
 }
 
 def build_agent_plan(verb_name: str | None) -> ExecutionPlan:

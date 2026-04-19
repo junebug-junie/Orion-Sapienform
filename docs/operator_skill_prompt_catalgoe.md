@@ -114,6 +114,20 @@
     - Intended concrete skill: `skills.system.notify_chat_message.v1`
     - Expected result: notify request dispatched or precise policy/runtime failure
 
+## Chat history (SQL discussion window)
+
+These prompts target the **read-only** bounded SQL skill `skills.chat.discussion_window.v1` (persisted `chat_history_log`, `created_at` window, contiguous suffix). They are **not** semantic recall and do **not** use `session_id` as the selection key. Cortex Exec must have `DATABASE_URL` or `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL` configured.
+
+20. Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 3600 and max_turns 30 (optional filters: current user_id and hub source).
+
+    - Intended concrete skill: `skills.chat.discussion_window.v1`
+    - Expected result: `window_start_utc` / `window_end_utc`, `turn_count`, `transcript_text`, `selection_strategy`; or empty window / DB unavailable message
+
+21. Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 86400 and max_turns 30 (optional filters: current user_id and hub source).
+
+    - Intended concrete skill: `skills.chat.discussion_window.v1`
+    - Expected result: same as (20) with a 24-hour lookback
+
 ## Notes
 
 - These prompts are examples, not the only valid phrasings.
@@ -125,4 +139,5 @@
   - Biometrics service for biometrics
   - Notify service for notifications
   - Landing pad RPC/service for landing pad
+  - Postgres / `DATABASE_URL` (or exec `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL`) for `skills.chat.discussion_window.v1`
 - Prefer precise failure messages over generic refusal.

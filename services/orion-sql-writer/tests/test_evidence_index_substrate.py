@@ -335,3 +335,140 @@ def test_notify_adapter_ingestion_and_retrieval_shape() -> None:
     sql = str(build_evidence_query_select(query).compile(dialect=postgresql.dialect()))
     assert "evidence_units.source_family IN" in sql
     assert "ILIKE" in sql
+
+
+def test_parsed_document_adapter_hierarchical_emission_and_page_metadata() -> None:
+    payload = {
+        "doc_id": "parsed-1",
+        "title": "Parsed Ops Runbook",
+        "source_ref": "s3://docs/runbook.pdf#parsed",
+        "source_kind": "pdf_parsed",
+        "correlation_id": "corr-parsed-1",
+        "created_at": "2026-04-19T02:00:00+00:00",
+        "source_provenance": {"parser": "layout-v1", "source_uri": "s3://docs/runbook.pdf"},
+        "sections": [
+            {
+                "section_id": "s1",
+                "title": "Checklist",
+                "summary": "Start checklist",
+                "body": "Run health checks.",
+                "page_start": 2,
+                "page_end": 3,
+                "heading_path": ["Runbook", "Checklist"],
+                "blocks": [
+                    {
+                        "block_id": "b1",
+                        "block_type": "paragraph",
+                        "body": "Verify services are up.",
+                        "page_start": 2,
+                        "page_end": 2,
+                        "heading_path": ["Runbook", "Checklist"],
+                        "source_provenance": {"bbox": [0, 0, 100, 100]},
+                    },
+                    {
+                        "block_id": "b2",
+                        "block_type": "table",
+                        "body": "| check | status |",
+                        "page_start": 3,
+                        "page_end": 3,
+                        "heading_path": ["Runbook", "Checklist"],
+                    },
+                ],
+            }
+        ],
+    }
+    units = build_evidence_units("document.parsed.v1", payload)
+    doc = [u for u in units if u.unit_kind == "document"][0]
+    section = [u for u in units if u.unit_kind == "document_section"][0]
+    leaves = [u for u in units if u.unit_kind == "document_leaf"]
+
+    assert section.parent_unit_id == doc.unit_id
+    assert len(leaves) == 2
+    assert all(leaf.parent_unit_id == section.unit_id for leaf in leaves)
+    assert doc.metadata["page_span"]["page_start"] == 2
+    assert leaves[0].metadata["page_start"] == 2
+    assert leaves[1].metadata["page_start"] == 3
+
+
+def test_parsed_leaf_hit_with_parent_expansion() -> None:
+    parent_section = SimpleNamespace(
+        unit_id="parsed-1::section::s1",
+        unit_kind="document_section",
+        source_family="parsed_document",
+        source_kind="pdf_parsed",
+        source_ref="s3://docs/runbook.pdf#parsed",
+        correlation_id="corr-parsed-1",
+        title="Checklist",
+        summary="Section summary",
+        body="Section body",
+        facets=["artifact:section", "block_type:table"],
+        created_at=datetime(2026, 4, 19, tzinfo=timezone.utc),
+        parent_unit_id="parsed-1",
+    )
+    leaf = SimpleNamespace(
+        unit_id="parsed-1::section::s1::leaf::b2",
+        unit_kind="document_leaf",
+        source_family="parsed_document",
+        source_kind="pdf_parsed",
+        source_ref="s3://docs/runbook.pdf#parsed",
+        correlation_id="corr-parsed-1",
+        title="Checklist [table]",
+        summary="table summary",
+        body="| check | status |",
+        facets=["artifact:leaf", "block_type:table"],
+        created_at=datetime(2026, 4, 19, tzinfo=timezone.utc),
+        parent_unit_id="parsed-1::section::s1",
+    )
+
+    class _Scalars:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            return _Scalars(self._rows)
+
+    class FakeSession:
+        def execute(self, stmt):
+            sql = str(stmt.compile(dialect=postgresql.dialect()))
+            if "FROM evidence_units" in sql:
+                return _Result([leaf])
+            return _Result([])
+
+        def get(self, _model, key):
+            if key == "parsed-1::section::s1":
+                return parent_section
+            return None
+
+    results = query_evidence_units(
+        FakeSession(),
+        EvidenceQueryV1(
+            search_level="leaf",
+            text_query="status",
+            source_family=["parsed_document"],
+            include_parent_context=True,
+        ),
+    )
+    assert len(results) == 1
+    assert results[0].parent_context and results[0].parent_context["unit_id"] == "parsed-1::section::s1"
+    assert "body" in results[0].matched_fields
+
+
+def test_parsed_section_search_with_block_type_filtering_sql_shape() -> None:
+    query = EvidenceQueryV1(
+        search_level="section",
+        source_family=["parsed_document"],
+        required_facets=["block_type:table"],
+        text_query="Checklist",
+    )
+    sql = str(build_evidence_query_select(query).compile(dialect=postgresql.dialect()))
+    assert "evidence_units.unit_kind = %(unit_kind_1)s" in sql
+    assert "evidence_units.source_family IN" in sql
+    assert "evidence_units.facets" in sql
+    assert "ILIKE" in sql

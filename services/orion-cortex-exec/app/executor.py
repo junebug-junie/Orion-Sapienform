@@ -236,6 +236,11 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens"
 
+    # journal.compose returns strict JSON; recall-heavy prompts need a general-lane budget or the
+    # model hits max_tokens mid-object (finish_reason=length) and structured output is rejected.
+    if step.verb_name == "journal.compose" and step.step_name == "draft_journal_entry":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_journal_compose"
+
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 
@@ -1102,6 +1107,134 @@ def _extract_first_json_object(text: str) -> Dict[str, Any] | None:
     return None
 
 
+def _journal_pageindex_query(user_text: str) -> bool:
+    lowered = (user_text or "").lower()
+    markers = (
+        "identity",
+        "continuity",
+        "tension",
+        "reflect",
+        "dream",
+        "journal",
+        "collapse",
+        "stance",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _journal_pageindex_tree(recall_fragments: List[Dict[str, Any]]) -> Dict[str, Any]:
+    journal_frags = [
+        frag for frag in recall_fragments
+        if "journal" in str(frag.get("source") or "").lower()
+        or "journal" in str(frag.get("source_ref") or "").lower()
+    ][:8]
+    entries: list[dict[str, Any]] = []
+    blocks_by_entry: dict[str, list[dict[str, Any]]] = {}
+    for frag in journal_frags:
+        entry_id = str(frag.get("source_ref") or frag.get("id") or "").strip()
+        if not entry_id:
+            continue
+        text = str(frag.get("snippet") or "").strip()
+        tag_set = [str(tag) for tag in (frag.get("tags") or []) if str(tag).strip()]
+        entry = {
+            "entry_id": entry_id,
+            "unit_id": entry_id,
+            "created_at": None,
+            "mode": next((tag.split(":", 1)[1] for tag in tag_set if tag.startswith("mode:")), None),
+            "source_kind": str(frag.get("source") or "journal"),
+            "title": _truncate_text(text, 96),
+            "stance_summary": None,
+            "active_identity_facets": [tag.split(":", 1)[1] for tag in tag_set if tag.startswith("identity:")][:4],
+            "active_growth_axes": [tag.split(":", 1)[1] for tag in tag_set if tag.startswith("growth:")][:4],
+            "active_relationship_facets": [tag.split(":", 1)[1] for tag in tag_set if tag.startswith("relationship:")][:4],
+            "social_posture": [tag.split(":", 1)[1] for tag in tag_set if tag.startswith("posture:")][:3],
+            "reflective_themes": [tag.split(":", 1)[1] for tag in tag_set if tag.startswith("theme:")][:4],
+            "active_tensions": [tag.split(":", 1)[1] for tag in tag_set if tag.startswith("tension:")][:4],
+            "dream_motifs": [tag.split(":", 1)[1] for tag in tag_set if tag.startswith("dream:")][:3],
+            "body_excerpt": _truncate_text(text, 180),
+        }
+        entries.append(entry)
+        blocks: list[dict[str, Any]] = []
+        for idx, para in enumerate([p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()][:4], start=1):
+            blocks.append(
+                {
+                    "block_id": f"{entry_id}::block::{idx}",
+                    "entry_id": entry_id,
+                    "block_index": idx,
+                    "text": para,
+                    "excerpt": _truncate_text(para, 140),
+                    "source_kind": entry["source_kind"],
+                    "mode": entry["mode"],
+                }
+            )
+        blocks_by_entry[entry_id] = blocks
+    return {
+        "journal_corpus": {"unit_id": "journal_corpus", "entry_count": len(entries)},
+        "entries": entries,
+        "blocks_by_entry": blocks_by_entry,
+    }
+
+
+def _journal_pageindex_llm_prompt(kind: str, query: str, items: List[Dict[str, Any]]) -> str:
+    item_json = json.dumps(items, ensure_ascii=False)
+    if kind == "entry":
+        return (
+            "Select the most relevant journal entry ids for the query.\n"
+            "Return strict JSON: {\"selected_entry_ids\":[...],\"reasons\":{\"id\":\"reason\"}}\n"
+            f"Query: {query}\nEntries: {item_json}"
+        )
+    return (
+        "Select the most relevant journal block ids for the query.\n"
+        "Return strict JSON: {\"selected_block_ids\":[...],\"reasons\":{\"id\":\"reason\"}}\n"
+        f"Query: {query}\nBlocks: {item_json}"
+    )
+
+
+async def _journal_pageindex_select_with_llm(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    query_text: str,
+    entries: List[Dict[str, Any]],
+    blocks: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    llm = LLMGatewayClient(bus)
+    reply_channel = f"orion:exec:result:LLMGatewayService:{uuid4()}"
+
+    async def _call(kind: str, payload_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        req = ChatRequestPayload(
+            profile="deterministic_json",
+            messages=[
+                LLMMessage(role="system", content="You return only JSON."),
+                LLMMessage(role="user", content=_journal_pageindex_llm_prompt(kind, query_text, payload_items)),
+            ],
+            raw_user_text=query_text,
+            options={"temperature": 0.0, "max_tokens": 250},
+        )
+        resp = await llm.chat(
+            source=source,
+            req=req,
+            correlation_id=correlation_id,
+            reply_to=reply_channel,
+            timeout_sec=min(4.0, float(settings.step_timeout_ms) / 1000.0),
+        )
+        parsed = _extract_first_json_object(resp.content or "") or {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    entry_selection = await _call("entry", entries)
+    selected_entry_ids = [str(v) for v in (entry_selection.get("selected_entry_ids") or []) if str(v).strip()]
+    selected_blocks_in = [b for b in blocks if str(b.get("entry_id")) in set(selected_entry_ids)]
+    block_selection = await _call("block", selected_blocks_in)
+    selected_block_ids = [str(v) for v in (block_selection.get("selected_block_ids") or []) if str(v).strip()]
+    return {
+        "selected_entry_ids": selected_entry_ids,
+        "selected_block_ids": selected_block_ids,
+        "entry_reasons": entry_selection.get("reasons") if isinstance(entry_selection.get("reasons"), dict) else {},
+        "block_reasons": block_selection.get("reasons") if isinstance(block_selection.get("reasons"), dict) else {},
+    }
+
+
 async def run_recall_step(
     bus: OrionBusAsync,
     *,
@@ -1120,13 +1253,13 @@ async def run_recall_step(
 
     recall_timeout = float(settings.step_timeout_ms) / 1000.0
 
-    fragment = _last_user_message(ctx) or ""
+    fragment_text = _last_user_message(ctx) or ""
     _log_grounding_snapshot(
         component=f"recall:{step_name}",
         ctx=ctx,
         correlation_id=correlation_id,
         text_source="last_user_message",
-        payload_text=fragment,
+        payload_text=fragment_text,
         recall_included=False,
     )
     trace_val = ctx.get("trace_id") or recall_cfg.get("trace_id") or correlation_id
@@ -1144,7 +1277,7 @@ async def run_recall_step(
         if value and value not in active_turn_ids:
             active_turn_ids.append(value)
     req = RecallQueryV1(
-        fragment=fragment,
+        fragment=fragment_text,
         verb=str(ctx.get("verb") or recall_cfg.get("verb") or "unknown"),
         intent=ctx.get("intent"),
         session_id=ctx.get("session_id"),
@@ -1152,7 +1285,7 @@ async def run_recall_step(
         profile=recall_profile or recall_cfg.get("profile") or "reflect.v1",
         exclude={
             "active_turn_ids": active_turn_ids,
-            "active_turn_text": fragment,
+            "active_turn_text": fragment_text,
             "active_turn_ts": time.time(),
         },
         reply_to=reply_channel,
@@ -1200,7 +1333,7 @@ async def run_recall_step(
         recall_citations: List[Dict[str, Any]] = []
         for item in bundle.items[:12]:
             snippet = str(getattr(item, "snippet", "") or "")[:480]
-            fragment = {
+            recall_fragment = {
                 "id": str(getattr(item, "id", "") or ""),
                 "snippet": snippet,
                 "score": float(getattr(item, "score", 0.0) or 0.0),
@@ -1209,13 +1342,13 @@ async def run_recall_step(
                 "source_ref": getattr(item, "source_ref", None),
                 "uri": getattr(item, "uri", None),
             }
-            recall_fragments.append(fragment)
+            recall_fragments.append(recall_fragment)
             recall_citations.append(
                 {
-                    "id": fragment["id"],
-                    "source": fragment["source"],
-                    "source_ref": fragment["source_ref"],
-                    "uri": fragment["uri"],
+                    "id": recall_fragment["id"],
+                    "source": recall_fragment["source"],
+                    "source_ref": recall_fragment["source_ref"],
+                    "uri": recall_fragment["uri"],
                 }
             )
 
@@ -1234,6 +1367,68 @@ async def run_recall_step(
             }
             for frag in recall_fragments[:8]
         ]
+
+        # Journal PageIndex MVP (journals-only reflective/identity/continuity lane)
+        user_query = fragment_text
+        pageindex_fallback_invoked = False
+        try:
+            if _journal_pageindex_query(user_query):
+                tree = _journal_pageindex_tree(recall_fragments)
+                entries = list(tree.get("entries") or [])
+                logger.info(
+                    "journal_pageindex_invoked corr_id=%s candidate_count=%s",
+                    correlation_id,
+                    len(entries),
+                )
+                if entries:
+                    blocks: list[dict[str, Any]] = []
+                    for item in entries:
+                        blocks.extend(list((tree.get("blocks_by_entry") or {}).get(str(item.get("entry_id")), [])))
+                    selection = await _journal_pageindex_select_with_llm(
+                        bus=bus,
+                        source=source,
+                        correlation_id=correlation_id,
+                        query_text=user_query,
+                        entries=entries,
+                        blocks=blocks,
+                    )
+                    selected_entry_ids = list(selection.get("selected_entry_ids") or [])
+                    selected_block_ids = list(selection.get("selected_block_ids") or [])
+                    if not selected_entry_ids:
+                        pageindex_fallback_invoked = True
+                        selected_entry_ids = [str(entries[0].get("entry_id"))]
+                    if not selected_block_ids:
+                        pageindex_fallback_invoked = True
+                    selected_entries = [entry for entry in entries if str(entry.get("entry_id")) in set(selected_entry_ids)]
+                    selected_blocks = [blk for blk in blocks if str(blk.get("block_id")) in set(selected_block_ids)]
+                    ctx["journal_pageindex_context"] = {
+                        "tree": tree,
+                        "selected_entries": selected_entries,
+                        "selected_blocks": selected_blocks,
+                        "entry_reasons": selection.get("entry_reasons") or {},
+                        "block_reasons": selection.get("block_reasons") or {},
+                        "fallback_invoked": pageindex_fallback_invoked,
+                    }
+                    logger.info(
+                        "journal_pageindex_selected corr_id=%s selected_entry_ids=%s selected_block_ids=%s fallback_invoked=%s final_context_entry_count=%s",
+                        correlation_id,
+                        selected_entry_ids,
+                        selected_block_ids,
+                        pageindex_fallback_invoked,
+                        len(selected_entries),
+                    )
+                else:
+                    pageindex_fallback_invoked = True
+                    logger.info(
+                        "journal_pageindex_invoked corr_id=%s candidate_count=0 fallback_invoked=true",
+                        correlation_id,
+                    )
+            else:
+                logger.debug("journal_pageindex_skipped corr_id=%s", correlation_id)
+        except Exception as exc:
+            pageindex_fallback_invoked = True
+            logger.warning("journal_pageindex_error corr_id=%s error=%s", correlation_id, exc)
+
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
         logger.info(
             "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s profile_source=%s override_source=%s items=%s source_gating=%s drop_counts=%s latency_breakdown_ms=%s summary=%s",
@@ -1488,6 +1683,9 @@ async def call_step_services(
     if _should_prepare_brain_reply_context(step=step, ctx=ctx):
         prepare_brain_reply_context(ctx)
 
+    if str(step.verb_name or "") == "chat_general" and str(step.step_name or "") == "synthesize_chat_stance_brief":
+        ensure_chat_stance_pipeline_ctx(ctx)
+
     # Skill YAMLs may list services: [] while the work is implemented as local verb_adapters.
     # Without this branch the service loop runs zero times and final_text assembly sees no candidates.
     if not step.services and str(step.verb_name or "").startswith("skills."):
@@ -1626,6 +1824,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route="metacog",
@@ -1813,6 +2012,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text="metacog_enrich",
                     route="metacog",
@@ -2492,8 +2692,30 @@ async def call_step_services(
                     len(prompt or ""),
                 )
 
+                effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)
+                prompt_token_count = _safe_int(ctx.get("prompt_token_count"))
+                logger.info(
+                    "llm_chat_budget corr_id=%s mode=%s verb=%s step=%s route=%s requested_max_tokens=%s effective_max_tokens=%s max_tokens_source=%s profile=%s model=%s prompt_token_count=%s prompt_char_count=%s",
+                    correlation_id,
+                    ctx.get("mode"),
+                    step.verb_name,
+                    step.step_name,
+                    llm_route,
+                    requested_max_tokens,
+                    effective_max_tokens,
+                    max_tokens_source,
+                    ctx.get("profile_name"),
+                    req_model,
+                    prompt_token_count,
+                    len(prompt or ""),
+                )
+
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=(
+                        ctx.get("profile_name")
+                        or (settings.atlas_metacog_profile_name if llm_route == "metacog" else None)
+                    ),
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,
@@ -2826,6 +3048,19 @@ async def call_step_services(
         node=settings.node_name,
         logs=logs,
     )
+
+
+def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
+    """Populate identity kernel and chat_stance_inputs for chat_general stance synthesis in any exec mode.
+
+    Brain-lane uses prepare_brain_reply_context first; this path covers agent (and other) modes where
+    stance debug and the stance LLM prompt must still see the same bounded inputs.
+    """
+    existing = ctx.get("chat_stance_inputs")
+    if isinstance(existing, dict) and "identity" in existing and "autonomy" in existing:
+        return
+    _inject_identity_context(ctx)
+    build_chat_stance_inputs(ctx)
 
 
 def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:

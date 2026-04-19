@@ -58,16 +58,17 @@ def ensure_repo_exists():
    rep:repositoryImpl [
      rep:repositoryType "graphdb:SailRepository" ;
      sr:sailImpl [
-       sail:sailType "graphdb:SailStore" ;
+       sail:sailType "graphdb:Sail" ;
        graphdb:ruleset "rdfsplus-optimized"
      ]
    ] .
 """.strip()
 
+    # GraphDB REST repository creation expects multipart form upload
+    # with a "config" file part, not a raw text/turtle request body.
     r = requests.post(
         REST_REPOS,
-        headers={"Content-Type": "text/turtle"},
-        data=cfg_ttl.encode("utf-8"),
+        files={"config": ("repo-config.ttl", cfg_ttl, "text/turtle")},
         timeout=15,
     )
     if r.status_code >= 400:

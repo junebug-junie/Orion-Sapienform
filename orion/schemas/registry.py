@@ -405,7 +405,15 @@ from orion.schemas.notify import (
 )
 from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
 from orion.schemas.chat_stance import ChatStanceBrief
-from orion.schemas.evidence_index import EvidenceQueryResultItemV1, EvidenceQueryV1, EvidenceUnitV1, MarkdownSpecIngestV1
+from orion.schemas.evidence_index import (
+    EvidenceQueryResultItemV1,
+    EvidenceQueryV1,
+    EvidenceUnitV1,
+    MarkdownSpecIngestV1,
+    ParsedDocumentBlockV1,
+    ParsedDocumentIngestV1,
+    ParsedDocumentSectionV1,
+)
 from orion.schemas.topic_foundry import (
     KgEdgeIngestV1,
     TopicFoundryDriftAlertV1,
@@ -811,6 +819,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "EvidenceQueryV1": EvidenceQueryV1,
     "EvidenceQueryResultItemV1": EvidenceQueryResultItemV1,
     "MarkdownSpecIngestV1": MarkdownSpecIngestV1,
+    "ParsedDocumentIngestV1": ParsedDocumentIngestV1,
+    "ParsedDocumentSectionV1": ParsedDocumentSectionV1,
+    "ParsedDocumentBlockV1": ParsedDocumentBlockV1,
 
 }
 

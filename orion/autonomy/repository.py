@@ -266,7 +266,7 @@ WHERE {{
   }}
 }}
 ORDER BY DESC(?created_at) DESC(STR(?artifact_id))
-LIMIT 200
+LIMIT 80
 """.strip()
         rows = self._select_rows(sparql)
         if not rows:

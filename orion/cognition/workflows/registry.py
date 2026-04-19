@@ -5,6 +5,8 @@ from typing import Any, Dict, Iterable, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.discussion_window.timeframe import parse_journal_discussion_lookback_seconds
+
 
 ExecutionMode = Literal["sync", "async_capable"]
 
@@ -104,6 +106,39 @@ _WORKFLOWS: tuple[WorkflowDefinition, ...] = (
         planner_hints=["Use when the user explicitly asks for a journal pass or journal entry."],
     ),
     WorkflowDefinition(
+        workflow_id="journal_discussion_window_pass",
+        display_name="Journal discussion window",
+        description=(
+            "Bounded journaling workflow that reads a time window from persisted chat_history_log "
+            "(skills.chat.discussion_window.v1), then composes and persists via journal.compose and journal.entry.write.v1."
+        ),
+        aliases=[
+            "journal the last 34 minutes",
+            "journal the last hour",
+            "journal our chat discussion for the last day",
+            "journal our chat discussion",
+            "do a journal discussion pass",
+        ],
+        user_invocable=True,
+        autonomous_invocable=False,
+        execution_mode="sync",
+        may_call_actions=False,
+        persistence_policy="Compose through journal.compose and persist only through journal.entry.write.v1; chat turns are read-only from SQL.",
+        result_surface="Return window bounds, turn count, persisted journal entry id, and a short summary.",
+        steps=[
+            WorkflowStepDefinition(
+                step_id="discussion_window",
+                description="Fetch bounded discussion turns from chat_history_log.",
+                adapter="verb:skills.chat.discussion_window.v1",
+            ),
+            WorkflowStepDefinition(step_id="compose", description="Invoke journal.compose with prompt_seed from transcript.", adapter="journaler:compose_request"),
+            WorkflowStepDefinition(step_id="persist", description="Persist through journal.entry.write.v1.", adapter="journaler:append_only_write"),
+        ],
+        planner_hints=[
+            "Use when the user asks to journal recent chat or discussion for an explicit minutes/hours/day window.",
+        ],
+    ),
+    WorkflowDefinition(
         workflow_id="self_review",
         display_name="Self Review",
         description="Bounded metacognitive workflow that reuses self-study reflection pathways to produce a structured self-review.",
@@ -175,6 +210,14 @@ def workflow_registry_payload(*, user_invocable_only: bool = False) -> List[Dict
     return [workflow.model_dump(mode="json") for workflow in list_workflows(user_invocable_only=user_invocable_only)]
 
 
+def _journal_discussion_window_command_intent(lowered: str) -> bool:
+    """True when the prompt is clearly a user-directed journal/log command, not a passing mention of journaling."""
+    s = (lowered or "").strip()
+    if re.search(r"\bjournal\s+discussion\s+pass\b", s) or re.search(r"\bdo\s+a\s+journal\s+discussion\s+pass\b", s):
+        return True
+    return bool(re.match(r"^(please\s+)?(journal|log(\s+our\s+chat)?)\b", s))
+
+
 def resolve_user_workflow_invocation(prompt: str, *, allow_workflow_ids: Iterable[str] | None = None) -> Optional[WorkflowInvocationMatch]:
     normalized_prompt = _normalize_text(prompt)
     if not normalized_prompt:
@@ -192,5 +235,18 @@ def resolve_user_workflow_invocation(prompt: str, *, allow_workflow_ids: Iterabl
                 normalized_prompt=normalized_prompt,
             )
             if best is None or len(alias) > len(best.matched_alias):
+                best = candidate
+
+    # Time-bounded chat discussion journaling: explicit durations (any minute count) and related phrases.
+    if "journal_discussion_window_pass" in allowed:
+        lowered = (prompt or "").strip().lower()
+        if parse_journal_discussion_lookback_seconds(lowered) is not None and _journal_discussion_window_command_intent(lowered):
+            synthetic = "journal_discussion_window_time_bounded_sql_v1"
+            candidate = WorkflowInvocationMatch(
+                workflow_id="journal_discussion_window_pass",
+                matched_alias=synthetic,
+                normalized_prompt=normalized_prompt,
+            )
+            if best is None or len(candidate.matched_alias) > len(best.matched_alias):
                 best = candidate
     return best

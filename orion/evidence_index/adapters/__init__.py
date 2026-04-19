@@ -3,6 +3,7 @@ from .collapse_mirror import CollapseMirrorEvidenceAdapter
 from .journal import JournalEvidenceAdapter
 from .markdown_spec import MarkdownSpecEvidenceAdapter
 from .notify_output import NotifyOutputEvidenceAdapter
+from .parsed_document import ParsedDocumentEvidenceAdapter
 
 __all__ = [
     "EvidenceAdapter",
@@ -10,4 +11,5 @@ __all__ = [
     "CollapseMirrorEvidenceAdapter",
     "MarkdownSpecEvidenceAdapter",
     "NotifyOutputEvidenceAdapter",
+    "ParsedDocumentEvidenceAdapter",
 ]

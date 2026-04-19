@@ -35,6 +35,10 @@ This service flow persists Orion Hub chat messages into vector memory using the 
 - **Vector write:** `orion-vector-writer` listens on `orion:vector:semantic:upsert` and writes the embedding to the semantic collection (default `VECTOR_DB_COLLECTION`).
 - **Metadata logged:** `source_service`, `role`, `session_id`, `correlation_id`, and `original_channel` are included with each vector upsert.
 
+## Deterministic SQL consumers (non-vector)
+
+The same Hub → bus → persistence path that feeds vector memory also lands rows in relational `chat_history_log`. **Time-window discussion extraction** for journaling uses that SQL log directly: the skill `skills.chat.discussion_window.v1` reads by `created_at` bounds (and optional `user_id` / `source`), applies a **contiguous-cluster** policy on the newest turns, and supplies a transcript to the `journal_discussion_window_pass` workflow. That consumer is intentionally **non-semantic** (no embeddings / recall) and does not use `session_id` as the selection key.
+
 ## Configuration quick reference
 - **Hub**
   - `.env_example`: `CHAT_HISTORY_LOG_CHANNEL` (new) + legacy `CHANNEL_CHAT_HISTORY_LOG`

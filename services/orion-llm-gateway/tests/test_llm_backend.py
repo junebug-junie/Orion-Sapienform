@@ -217,6 +217,81 @@ class TestLLMBackendExecution(unittest.TestCase):
             settings.llm_route_table_json = original
             _load_route_targets.cache_clear()
 
+    def test_route_table_metacog_served_by_defaults_from_atlas_service_name(self):
+        original_table = settings.llm_route_table_json
+        original_service = settings.atlas_metacog_service_name
+        try:
+            settings.atlas_metacog_service_name = "atlas-worker-2"
+            settings.llm_route_table_json = (
+                '{"metacog":{"url":"http://atlas:8012","backend":"llamacpp"}}'
+            )
+            _load_route_targets.cache_clear()
+            targets = _load_route_targets()
+            self.assertEqual(targets["metacog"].served_by, "atlas-worker-2")
+        finally:
+            settings.llm_route_table_json = original_table
+            settings.atlas_metacog_service_name = original_service
+            _load_route_targets.cache_clear()
+
+    @patch("app.llm_backend._select_profile")
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_run_llm_chat_injects_atlas_metacog_profile_when_missing(
+        self,
+        mock_execute,
+        mock_select_profile,
+    ):
+        original_table = settings.llm_route_table_json
+        original_profile = settings.atlas_metacog_profile_name
+        try:
+            settings.atlas_metacog_profile_name = "llama3-8b-instruct-q4km-atlas-metacog"
+            settings.llm_route_table_json = (
+                '{"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"}}'
+            )
+            mock_select_profile.return_value = None
+            mock_execute.return_value = {"text": "OK", "raw": {}}
+            _load_route_targets.cache_clear()
+            run_llm_chat(
+                ChatBody(
+                    route="metacog",
+                    messages=[ChatMessage(role="user", content="hello")],
+                )
+            )
+            mock_select_profile.assert_called_once_with("llama3-8b-instruct-q4km-atlas-metacog")
+        finally:
+            settings.llm_route_table_json = original_table
+            settings.atlas_metacog_profile_name = original_profile
+            _load_route_targets.cache_clear()
+
+    @patch("app.llm_backend._select_profile")
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_run_llm_chat_keeps_explicit_profile_on_metacog_route(
+        self,
+        mock_execute,
+        mock_select_profile,
+    ):
+        original_table = settings.llm_route_table_json
+        original_profile = settings.atlas_metacog_profile_name
+        try:
+            settings.atlas_metacog_profile_name = "llama3-8b-instruct-q4km-atlas-metacog"
+            settings.llm_route_table_json = (
+                '{"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"}}'
+            )
+            mock_select_profile.return_value = None
+            mock_execute.return_value = {"text": "OK", "raw": {}}
+            _load_route_targets.cache_clear()
+            run_llm_chat(
+                ChatBody(
+                    route="metacog",
+                    profile_name="custom-profile",
+                    messages=[ChatMessage(role="user", content="hello")],
+                )
+            )
+            mock_select_profile.assert_called_once_with("custom-profile")
+        finally:
+            settings.llm_route_table_json = original_table
+            settings.atlas_metacog_profile_name = original_profile
+            _load_route_targets.cache_clear()
+
     def test_missing_route_fails_closed_when_route_table_active(self):
         original = settings.llm_route_table_json
         try:

@@ -19,6 +19,7 @@ Adapters (artifact-specific logic):
 - `JournalEvidenceAdapter`
 - `CollapseMirrorEvidenceAdapter`
 - `MarkdownSpecEvidenceAdapter` (hierarchical doc/section/leaf units)
+- `ParsedDocumentEvidenceAdapter` (hierarchical units from pre-parsed document payloads; no raw PDF parsing in substrate)
 
 The worker calls `build_evidence_units(kind, payload)` and persists resulting normalized `EvidenceUnitV1` rows.
 

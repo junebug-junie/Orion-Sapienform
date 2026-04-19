@@ -46,6 +46,8 @@ class LlamaCppConfig(BaseModel):
 
     reasoning: Optional[Literal["on", "off", "auto"]] = None
     reasoning_format: Optional[Literal["none", "deepseek", "deepseek-legacy", "auto"]] = None
+    # llama-server --reasoning-budget (use 0 to disable Qwen3-style thinking; complements chat_template_kwargs)
+    reasoning_budget: Optional[int] = None
     chat_template_kwargs: Optional[Dict[str, Any]] = None
 
     flash_attn: Optional[Literal["on", "off", "auto"]] = None
